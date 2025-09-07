@@ -48,7 +48,7 @@ jobs:
           ${{ runner.os }}-pip-
 
     - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group dev
+      run: uv pip install --system -r pyproject.toml --editable . --group dev --group docs
 
     - name: 🔍 Lint with ruff
       run: ruff check src tests
@@ -58,6 +58,9 @@ jobs:
 
     - name: 🔬 Type check with mypy
       run: mypy src
+
+    - name: 📚 Validate documentation build
+      run: make docs-check
 
   test:
     name: 🧪 Test Suite
@@ -198,11 +201,11 @@ jobs:
         cache-suffix: docs
 
     - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group dev
+      run: uv pip install --system -r pyproject.toml --editable . --group docs
 
     - name: 🏗️ Build documentation
       run: |
-        sphinx-build -W --keep-going -b html docs docs/_build/html
+        make docs-full-ci
         touch docs/_build/html/.nojekyll
 
     - name: Setup Pages

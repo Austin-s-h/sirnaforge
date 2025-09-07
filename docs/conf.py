@@ -22,8 +22,11 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
+    "sphinx.ext.todo",
+    "sphinx.ext.ifconfig",
     "sphinx_autodoc_typehints",
     "myst_parser",
+    "sphinx_design",
 ]
 
 templates_path = ["_templates"]
@@ -33,6 +36,43 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 html_logo = "branding/sirnaforge_logo_3.svg"
+
+# Enhanced HTML theme options
+html_theme_options = {
+    "collapse_navigation": False,
+    "sticky_navigation": True,
+    "navigation_depth": 4,
+    "includehidden": True,
+    "titles_only": False,
+    "prev_next_buttons_location": "both",
+    "style_external_links": True,
+}
+
+# HTML context for better navigation
+html_context = {
+    "display_github": True,
+    "github_user": "Austin-s-h",
+    "github_repo": "sirnaforge",
+    "github_version": "master",
+    "conf_py_path": "/docs/",
+}
+
+# Additional HTML options
+html_use_index = True
+html_split_index = True
+html_show_sourcelink = True
+html_show_sphinx = False
+html_copy_source = False
+html_show_copyright = True
+
+# Custom CSS and JS files
+html_css_files = [
+    'custom.css',
+]
+
+html_js_files = [
+    'custom.js',
+]
 
 # -- Extension configuration -------------------------------------------------
 
@@ -56,10 +96,16 @@ autodoc_default_options = {
     "special-members": "__init__",
     "undoc-members": True,
     "exclude-members": "__weakref__",
+    "show-inheritance": True,
 }
 
 # Autosummary settings
 autosummary_generate = True
+autosummary_imported_members = True
+
+# Todo extension settings
+todo_include_todos = True
+todo_emit_warnings = False
 
 # MyST parser settings (Markdown support)
 myst_enable_extensions = [
@@ -76,6 +122,8 @@ myst_enable_extensions = [
     "substitution",
     "tasklist",
 ]
+
+myst_fence_as_directive = ["mermaid"]
 
 # Intersphinx mapping
 intersphinx_mapping = {

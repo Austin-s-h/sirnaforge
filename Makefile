@@ -21,9 +21,17 @@ help: ## Show this help message
 	@echo "  test-cov             Run tests with coverage report"
 	@echo ""
 	@echo "📚 Documentation Commands:"
+	@echo "  docs                 Build Sphinx documentation"
+	@echo "  docs-serve           Serve documentation locally on :8000"
+	@echo "  docs-dev             Build and serve docs with auto-reload"
+	@echo "  docs-clean           Clean documentation build artifacts"
+	@echo "  docs-check           Quick validation (for CI)"
+	@echo "  docs-outdated        Check if generated docs need updating"
 	@echo "  docs-cli             Generate CLI reference documentation"
 	@echo "  docs-examples        Generate usage examples"
 	@echo "  docs-full           Generate all documentation"
+	@echo "  docs-full-ci        Generate all documentation (CI mode)"
+	@echo "  docs-all            Complete docs rebuild (clean + generate + build)"
 	@echo ""
 	@echo "🐳 Docker Commands:"
 	@echo "  docker-build         Build comprehensive Docker image"
@@ -215,15 +223,47 @@ docs: ## Build Sphinx documentation
 	uv run sphinx-build -b html docs docs/_build/html
 	@echo "✅ Documentation built in docs/_build/html/"
 
+docs-ci: ## Build documentation for CI/CD (with stricter error handling)
+	uv sync --group docs
+	uv run sphinx-build -W --keep-going -b html docs docs/_build/html
+	@echo "✅ Documentation built for CI/CD in docs/_build/html/"
+
 docs-serve: ## Serve documentation locally
 	uv sync --group docs
 	@echo "🌐 Serving documentation at http://localhost:8000"
 	@echo "Press Ctrl+C to stop the server"
 	cd docs/_build/html && uv run python -m http.server 8000
 
+docs-dev: ## Build docs and serve with auto-reload (requires sphinx-autobuild)
+	@echo "🔄 Starting documentation development server with auto-reload..."
+	uv sync --group docs
+	uv run sphinx-autobuild docs docs/_build/html --host 0.0.0.0 --port 8000
+
 docs-clean: ## Clean documentation build artifacts
 	rm -rf docs/_build/
 	@echo "✅ Documentation build artifacts cleaned"
+
+docs-check: ## Quick documentation validation (for CI lint phase)
+	@echo "🔍 Validating documentation..."
+	uv sync --group docs
+	# Generate CLI docs to ensure CLI is working
+	@mkdir -p docs/
+	@uv run sirnaforge --help > /dev/null || (echo "❌ CLI not working" && exit 1)
+	# Quick syntax check of Sphinx docs (allowing warnings for quick validation)
+	uv run sphinx-build -q -E -b html docs docs/_build/html
+	@echo "✅ Documentation validation passed!"
+
+docs-outdated: ## Check if generated docs are outdated
+	@echo "🔍 Checking if generated docs are outdated..."
+	@if [ ! -f docs/CLI_REFERENCE.md ]; then \
+		echo "❌ CLI_REFERENCE.md missing - run 'make docs-cli'"; \
+		exit 1; \
+	fi
+	@if [ ! -f docs/USAGE_EXAMPLES.md ]; then \
+		echo "❌ USAGE_EXAMPLES.md missing - run 'make docs-examples'"; \
+		exit 1; \
+	fi
+	@echo "✅ Generated docs are present!"
 
 docs-cli: ## Generate CLI reference documentation
 	@echo "🔧 Generating CLI documentation..."
@@ -292,10 +332,37 @@ docs-full: docs-cli docs-examples docs-api ## Generate complete documentation se
 	uv run sphinx-build -b html docs docs/_build/html
 	@echo "✅ Complete documentation generated in docs/ and docs/_build/html/"
 
+docs-full-ci: docs-cli docs-examples docs-api ## Generate complete documentation for CI/CD with strict error handling
+	@echo "📚 Generating complete documentation for CI/CD..."
+	@mkdir -p docs/
+	@echo "# siRNAforge Documentation" > docs/README.md
+	@echo "" >> docs/README.md
+	@echo "Complete documentation for siRNAforge — Design. Verify. Deliver." >> docs/README.md
+	@echo "" >> docs/README.md
+	@echo "## Available Documentation" >> docs/README.md
+	@echo "" >> docs/README.md
+	@echo "- [Getting Started](getting_started.md) - Installation and first steps" >> docs/README.md
+	@echo "- [CLI Reference](CLI_REFERENCE.md) - Complete command documentation" >> docs/README.md
+	@echo "- [Usage Examples](USAGE_EXAMPLES.md) - Real-world usage patterns" >> docs/README.md
+	@echo "- [Gene Search Guide](gene_search.md) - Gene search functionality" >> docs/README.md
+	@echo "- [Architecture](architecture.md) - System design and components" >> docs/README.md
+	@echo "- [API Reference](api_reference.rst) - Python API documentation" >> docs/README.md
+	@echo "- [Tutorials](tutorials/index.md) - Step-by-step guides" >> docs/README.md
+	@echo "- [Development Guide](development.md) - Contributing and development" >> docs/README.md
+	@echo "" >> docs/README.md
+	@echo "Generated on: $$(date)" >> docs/README.md
+	@echo "siRNAforge version: $$(uv run sirnaforge version 2>/dev/null || echo 'Development')" >> docs/README.md
+	uv sync --group docs
+	uv run sphinx-build -W --keep-going -b html docs docs/_build/html
+	@echo "✅ Complete documentation generated for CI/CD in docs/ and docs/_build/html/"
+
 docs-api: ## Generate API documentation from docstrings
 	@echo "🔧 Generating API documentation..."
 	uv sync --group docs
 	@echo "✅ API documentation updated in docs/api_reference.rst"
+
+docs-all: docs-clean docs-full ## Complete docs rebuild (clean + generate + build)
+	@echo "🚀 Complete documentation rebuild finished!"
 
 # Utilities
 check: lint test ## Run all checks (lint + test)
@@ -336,6 +403,10 @@ security-check: ## Run security checks
 	uv run safety check
 
 pre-commit: ## Run pre-commit hooks
+	uv run pre-commit run --all-files
+
+pre-commit-docs: ## Update docs and run pre-commit (ensures docs are current)
+	make docs-cli docs-examples
 	uv run pre-commit run --all-files
 
 # CI/CD helpers

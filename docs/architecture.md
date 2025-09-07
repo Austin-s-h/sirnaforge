@@ -6,8 +6,131 @@ This document describes the architecture and design principles of siRNAforge.
 
 siRNAforge is built as a modern Python package with clear separation of concerns, type safety, and extensibility. The architecture follows domain-driven design principles with distinct layers for different responsibilities.
 
+```{raw} html
+<div class="mermaid">
+graph TD
+    A[CLI Interface] --> B[Workflow Orchestration]
+    B --> C[Core Algorithms]
+    B --> D[Data Access Layer]
+    B --> E[Pipeline Integration]
+    
+    C --> C1[siRNA Design]
+    C --> C2[Thermodynamics]
+    C --> C3[Off-target Analysis]
+    
+    D --> D1[Gene Search]
+    D --> D2[ORF Analysis]
+    D --> D3[External APIs]
+    
+    E --> E1[Nextflow Pipeline]
+    E --> E2[Docker Integration]
+    
+    F[Data Models] --> C
+    F --> D
+    G[Utils & Validation] --> C
+    G --> D
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style C fill:#e8f5e8
+    style D fill:#fff3e0
+    style E fill:#fce4ec
+</div>
+```
+
+## System Architecture Flow
+
+```{raw} html
+<div class="mermaid">
+sequenceDiagram
+    participant User
+    participant CLI
+    participant Workflow
+    participant Core
+    participant Data
+    participant External
+    
+    User->>CLI: sirnaforge workflow GENE
+    CLI->>Workflow: orchestrate_workflow(gene)
+    Workflow->>Data: search_gene_transcripts(gene)
+    Data->>External: query_ncbi/ensembl()
+    External-->>Data: transcript_sequences
+    Data-->>Workflow: validated_transcripts
+    
+    Workflow->>Core: design_sirnas(transcripts)
+    Core->>Core: thermodynamic_analysis()
+    Core->>Core: off_target_prediction()
+    Core-->>Workflow: scored_candidates
+    
+    Workflow->>CLI: results_summary
+    CLI->>User: formatted_output + files
+</div>
+```
+
 ## Package Structure
 
+## Package Structure
+
+```{raw} html
+<div class="mermaid">
+graph TB
+    subgraph "siRNAforge Package"
+        A[__init__.py<br/>Version & Config]
+        B[cli.py<br/>Command Interface]
+        C[workflow.py<br/>Orchestration]
+        
+        subgraph "Core Algorithms"
+            D[design.py<br/>siRNA Design]
+            E[thermodynamics.py<br/>RNA Folding]
+            F[off_target.py<br/>Off-target Analysis]
+        end
+        
+        subgraph "Data Models"
+            G[sirna.py<br/>Pydantic Models]
+        end
+        
+        subgraph "Data Access"
+            H[gene_search.py<br/>Gene/Transcript Search]
+            I[orf_analysis.py<br/>ORF Analysis]
+            J[base.py<br/>Base Classes]
+        end
+        
+        subgraph "Pipeline Integration"
+            K[nextflow/<br/>Pipeline Modules]
+        end
+        
+        subgraph "Utilities"
+            L[validation.py<br/>Input Validation]
+            M[config.py<br/>Configuration]
+        end
+    end
+    
+    B --> C
+    C --> D
+    C --> E
+    C --> F
+    C --> H
+    C --> I
+    
+    D --> G
+    E --> G
+    F --> G
+    H --> G
+    I --> G
+    
+    C --> K
+    
+    style D fill:#e8f5e8
+    style E fill:#e8f5e8  
+    style F fill:#e8f5e8
+    style G fill:#fff3e0
+    style H fill:#f3e5f5
+    style I fill:#f3e5f5
+    style J fill:#f3e5f5
+</div>
+```
+
+### Directory Structure
 ```
 src/sirnaforge/
 ├── __init__.py          # Package initialization and version
@@ -29,9 +152,6 @@ src/sirnaforge/
 │
 ├── pipeline/           # Pipeline and workflow integration
 │   └── __init__.py    # Nextflow pipeline interfaces
-│
-└── utils/              # Utilities and helpers
-    └── logging_utils.py  # Logging configuration
 ```
 
 ## Architectural Layers

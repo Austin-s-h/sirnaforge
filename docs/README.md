@@ -13,9 +13,9 @@ Complete documentation for siRNAforge — Design. Verify. Deliver.
 - [Tutorials](tutorials/index.md) - Step-by-step guides
 - [Development Guide](development.md) - Contributing and development
 
-Generated on: Sat Sep  6 13:01:41 EDT 2025
-siRNAforge version: ╭──── Version Info ─────╮
-│ 🧬 siRNAforge Toolkit │
-│ Version: 0.1.0        │
-│ Author: Austin S. H.  │
-╰───────────────────────╯
+Generated on: Sat Sep  6 22:42:25 EDT 2025
+siRNAforge version: ╭─────── Version Info ───────╮
+│ 🧬 siRNAforge Toolkit      │
+│ Version: 0.1.0             │
+│ Author: Austin S. Hovland. │
+╰────────────────────────────╯

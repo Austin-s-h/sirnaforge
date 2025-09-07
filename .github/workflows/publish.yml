@@ -28,7 +28,7 @@ jobs:
         activate-environment: false
 
     - name: 🧰 Install build deps
-      run: uv pip install --active -e .[dev]
+      run: uv pip install --system -r pyproject.toml --editable . --group dev
 
     - name: 🏗️ Build package
       run: python -m build
