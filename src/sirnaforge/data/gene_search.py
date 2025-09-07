@@ -120,8 +120,13 @@ class GeneSearcher(BaseEnsemblClient):
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 processed_results.append(GeneSearchResult(query=query, database=databases[i], error=str(result)))
-            else:
+            elif isinstance(result, GeneSearchResult):
                 processed_results.append(result)
+            else:
+                # Handle unexpected result type
+                processed_results.append(
+                    GeneSearchResult(query=query, database=databases[i], error="Unexpected result type")
+                )
 
         return processed_results
 
@@ -161,7 +166,7 @@ class GeneSearcher(BaseEnsemblClient):
 
     async def _ensembl_get_transcripts(self, gene_id: str, include_sequence: bool) -> list[TranscriptInfo]:
         """Get all transcripts for a gene from Ensembl using inherited lookup method."""
-        transcripts = []
+        transcripts: list[TranscriptInfo] = []
 
         try:
             # Get transcript list with expansion

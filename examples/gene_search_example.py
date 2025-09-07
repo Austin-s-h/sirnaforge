@@ -6,7 +6,7 @@ import asyncio
 from sirnaforge.data.gene_search import DatabaseType, GeneSearcher
 
 
-async def main():
+async def main() -> None:
     """Example gene search demonstration."""
 
     # Initialize the gene searcher
@@ -16,7 +16,7 @@ async def main():
     print("🔍 Searching for TP53 gene (metadata only)...")
     result = await searcher.search_gene("TP53", include_sequence=False)
 
-    if result.success:
+    if result.success and result.gene_info:
         print(f"✅ Found gene: {result.gene_info.gene_name} ({result.gene_info.gene_id})")
         print(f"📍 Location: {result.gene_info.chromosome}:{result.gene_info.start}-{result.gene_info.end}")
         print(f"🧬 Found {len(result.transcripts)} transcripts")
@@ -35,7 +35,7 @@ async def main():
     results = await searcher.search_multiple_databases("BRCA1", include_sequence=False)
 
     for result in results:
-        if result.success:
+        if result.success and result.gene_info:
             print(f"✅ {result.database.value}: {result.gene_info.gene_name} - {len(result.transcripts)} transcripts")
         else:
             print(f"❌ {result.database.value}: {result.error}")

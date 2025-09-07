@@ -21,9 +21,9 @@ except ImportError:
     yaml = None
 
 
-def parse_simple_yaml(path):
+def parse_simple_yaml(path: str) -> dict[str, str]:
     # Minimal YAML fallback: parse top-level key: value pairs where value is a string
-    data = {}
+    data: dict[str, str] = {}
     try:
         with Path(path).open() as fh:
             for file_line in fh:
@@ -40,10 +40,10 @@ def parse_simple_yaml(path):
     return data
 
 
-def main():  # noqa: PLR0912
+def main() -> None:  # noqa: PLR0912
     if len(sys.argv) < 2:
         print("", end="")
-        return 0
+        return
 
     sp = sys.argv[1]
     cfg = None
@@ -85,8 +85,6 @@ def main():  # noqa: PLR0912
 
     if idx:
         sys.stdout.write(idx)
-        return None
-    return None
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ class ThermodynamicCalculator:
             fc = RNA.fold_compound(duplex_seq, self.model_details)
             mfe_structure, mfe = fc.mfe()
 
-            return mfe
+            return float(mfe)
         except Exception:
             return self._fallback_duplex_stability(guide, passenger)
 
@@ -137,7 +137,7 @@ class ThermodynamicCalculator:
             fc = RNA.fold_compound(duplex_seq, self.model_details)
             _, mfe = fc.mfe()
 
-            return mfe
+            return float(mfe)
 
         except Exception:
             return self._fallback_end_stability(guide_end, passenger_end)

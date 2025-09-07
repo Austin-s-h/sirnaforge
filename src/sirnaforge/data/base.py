@@ -3,7 +3,7 @@
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -63,7 +63,7 @@ class TranscriptInfo(BaseModel):
 
     @field_validator("sequence")
     @classmethod
-    def validate_sequence(cls, v):
+    def validate_sequence(cls, v: Optional[str]) -> Optional[str]:
         """Validate RNA sequence."""
         if v is not None:
             # Convert to uppercase and check for valid RNA bases
@@ -83,10 +83,7 @@ class BaseEnsemblClient:
         self.species = "homo_sapiens"
 
     async def get_sequence(
-        self,
-        identifier: str,
-        sequence_type: SequenceType = SequenceType.CDNA,
-        headers: Optional[dict] = None
+        self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA, headers: Optional[dict] = None
     ) -> Optional[str]:
         """
         Get sequence from Ensembl REST API.
@@ -104,7 +101,7 @@ class BaseEnsemblClient:
             SequenceType.CDNA: "cdna",
             SequenceType.CDS: "cds",
             SequenceType.PROTEIN: "protein",
-            SequenceType.GENOMIC: "genomic"
+            SequenceType.GENOMIC: "genomic",
         }
 
         seq_type = type_mapping.get(sequence_type, "cdna")
@@ -116,7 +113,7 @@ class BaseEnsemblClient:
         try:
             async with (
                 aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
-                session.get(url, headers=headers) as response
+                session.get(url, headers=headers) as response,
             ):
                 if response.status == 200:
                     sequence = await response.text()
@@ -130,11 +127,7 @@ class BaseEnsemblClient:
             logger.debug(f"Error fetching {seq_type} sequence for {identifier}: {e}")
             return None
 
-    async def lookup_gene(
-        self,
-        query: str,
-        expand: bool = False
-    ) -> Optional[dict]:
+    async def lookup_gene(self, query: str, expand: bool = False) -> Optional[dict]:
         """
         Look up gene information from Ensembl.
 
@@ -161,7 +154,7 @@ class BaseEnsemblClient:
                 try:
                     async with session.get(url, headers=headers) as response:
                         if response.status == 200:
-                            return await response.json()
+                            return cast(Optional[dict], await response.json())
                 except Exception as e:
                     logger.debug(f"Failed lookup at {url}: {e}")
                     continue
@@ -178,24 +171,24 @@ class SequenceUtils:
         if not sequence:
             return 0.0
 
-        gc_count = sequence.count('G') + sequence.count('C')
+        gc_count = sequence.count("G") + sequence.count("C")
         return (gc_count / len(sequence)) * 100.0
 
     @staticmethod
     def reverse_complement(sequence: str) -> str:
         """Get reverse complement of DNA sequence."""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G', 'N': 'N'}
-        return ''.join(complement.get(base, 'N') for base in reversed(sequence.upper()))
+        complement = {"A": "T", "T": "A", "G": "C", "C": "G", "N": "N"}
+        return "".join(complement.get(base, "N") for base in reversed(sequence.upper()))
 
     @staticmethod
     def transcribe_dna_to_rna(sequence: str) -> str:
         """Convert DNA sequence to RNA (T -> U)."""
-        return sequence.upper().replace('T', 'U')
+        return sequence.upper().replace("T", "U")
 
     @staticmethod
     def reverse_transcribe_rna_to_dna(sequence: str) -> str:
         """Convert RNA sequence to DNA (U -> T)."""
-        return sequence.upper().replace('U', 'T')
+        return sequence.upper().replace("U", "T")
 
 
 class FastaUtils:
@@ -203,9 +196,7 @@ class FastaUtils:
 
     @staticmethod
     def save_sequences_fasta(
-        sequences: list[tuple[str, str]],
-        output_path: Union[str, Path],
-        line_length: int = 80
+        sequences: list[tuple[str, str]], output_path: Union[str, Path], line_length: int = 80
     ) -> None:
         """
         Save sequences to FASTA format.
@@ -226,7 +217,7 @@ class FastaUtils:
 
                 # Write sequence with line wrapping
                 for i in range(0, len(sequence), line_length):
-                    f.write(sequence[i:i + line_length] + "\n")
+                    f.write(sequence[i : i + line_length] + "\n")
 
         logger.info(f"Saved {len(sequences)} sequences to {output_path}")
 
@@ -241,9 +232,9 @@ class FastaUtils:
         Returns:
             List of (header, sequence) tuples
         """
-        sequences = []
-        current_header = None
-        current_sequence = []
+        sequences: list[tuple[str, str]] = []
+        current_header: Optional[str] = None
+        current_sequence: list[str] = []
 
         with Path(file_path).open() as f:
             for file_line in f:
@@ -265,13 +256,13 @@ class FastaUtils:
 
 def get_database_display_name(database: DatabaseType) -> str:
     """Get display name for database, handling both enum and string values."""
-    if hasattr(database, 'value'):
+    if hasattr(database, "value"):
         return database.value
     return str(database)
 
 
 def get_sequence_type_display_name(seq_type: SequenceType) -> str:
     """Get display name for sequence type, handling both enum and string values."""
-    if hasattr(seq_type, 'value'):
+    if hasattr(seq_type, "value"):
         return seq_type.value
     return str(seq_type)

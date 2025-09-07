@@ -27,7 +27,7 @@ app = typer.Typer(
 console = Console()
 
 
-def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):
+def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
     """Filter transcripts based on type and canonical status."""
     filtered = transcripts
 
@@ -43,7 +43,7 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
     return filtered
 
 
-def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):
+def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # type: ignore
     """Extract canonical transcripts to a separate file."""
     canonical = [t for t in transcripts if t.is_canonical]
 
@@ -375,17 +375,19 @@ def workflow(
         ) as progress:
             task = progress.add_task("Running complete siRNA design workflow...", total=None)
 
-            results = asyncio.run(run_sirna_workflow(
-                gene_query=gene_query,
-                output_dir=str(output_dir),
-                database=database,
-                top_n_candidates=top_n_candidates,
-                top_n_offtarget=top_n_offtarget,
-                genome_species=species_list,
-                gc_min=gc_min,
-                gc_max=gc_max,
-                sirna_length=sirna_length
-            ))
+            results = asyncio.run(
+                run_sirna_workflow(
+                    gene_query=gene_query,
+                    output_dir=str(output_dir),
+                    database=database,
+                    top_n_candidates=top_n_candidates,
+                    top_n_offtarget=top_n_offtarget,
+                    genome_species=species_list,
+                    gc_min=gc_min,
+                    gc_max=gc_max,
+                    sirna_length=sirna_length,
+                )
+            )
 
             progress.remove_task(task)
 
@@ -406,19 +408,17 @@ def workflow(
         summary_table.add_row(
             "📄 Transcript Retrieval",
             "✅ Complete",
-            f"{transcript_summary.get('total_transcripts', 0)} transcripts from {database}"
+            f"{transcript_summary.get('total_transcripts', 0)} transcripts from {database}",
         )
 
         summary_table.add_row(
-            "🧬 siRNAforge",
-            "✅ Complete",
-            f"{design_summary.get('total_candidates', 0)} candidates generated"
+            "🧬 siRNAforge", "✅ Complete", f"{design_summary.get('total_candidates', 0)} candidates generated"
         )
 
         summary_table.add_row(
             "🎯 Off-target Analysis",
             "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
-            f"Method: {offtarget_summary.get('method', 'basic')}"
+            f"Method: {offtarget_summary.get('method', 'basic')}",
         )
 
         console.print(summary_table)

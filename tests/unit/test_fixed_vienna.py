@@ -52,7 +52,7 @@ def test_fixed_asymmetry_calculation():
         gc_content=52.4,
         length=21,
         asymmetry_score=0.0,
-        composite_score=0.0
+        composite_score=0.0,
     )
 
     # This should work now without segfault
@@ -81,7 +81,7 @@ def test_multiple_sequences():
     ]
 
     for i, (guide, passenger) in enumerate(sequences):
-        print(f"Testing sequence {i+1}: {guide}")
+        print(f"Testing sequence {i + 1}: {guide}")
 
         # Test duplex stability
         dg = calc.calculate_duplex_stability(guide, passenger)

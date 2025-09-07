@@ -11,7 +11,7 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.docker
-def test_offtarget_wrapper_integration():
+def test_offtarget_wrapper_integration() -> None:
     """Test off-target wrapper with toy genome and queries in Docker environment."""
 
     # Check required tools
@@ -133,7 +133,7 @@ def test_offtarget_wrapper_integration():
 @pytest.mark.integration
 @pytest.mark.docker
 @pytest.mark.slow
-def test_offtarget_wrapper_combined_mode():
+def test_offtarget_wrapper_combined_mode() -> None:
     """Test off-target wrapper in combined mode (requires both bowtie and bwa-mem2)."""
 
     # Check for both tools
@@ -169,7 +169,11 @@ def test_offtarget_wrapper_combined_mode():
         assert bwa_result.returncode == 0, f"BWA-MEM2 index failed: {bwa_result.stderr}"
 
         bowtie_result = subprocess.run(
-            ["bowtie-build", str(genome_file), str(genome_file)], check=False, capture_output=True, text=True, cwd=work_dir
+            ["bowtie-build", str(genome_file), str(genome_file)],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=work_dir,
         )
         assert bowtie_result.returncode == 0, f"Bowtie index failed: {bowtie_result.stderr}"
 

@@ -72,7 +72,7 @@ class OffTargetAnalyzer:
         # Validate inputs
         self._validate_parameters()
 
-    def _validate_parameters(self):
+    def _validate_parameters(self) -> None:
         """Validate analysis parameters."""
         if not Path(self.index_prefix).exists():
             logger.warning(f"Index path {self.index_prefix} does not exist")
@@ -290,7 +290,7 @@ class OffTargetAnalyzer:
         """
         sequences = {}
         current_name = None
-        current_seq = []
+        current_seq: list[str] = []
 
         try:
             with Path(fasta_path).open() as f:
@@ -528,7 +528,7 @@ class OffTargetAnalyzer:
         return tsv_path, json_path
 
 
-def main():
+def main() -> None:
     """Main entry point for command-line usage."""
     parser = argparse.ArgumentParser(
         description="Comprehensive off-target analysis for siRNA candidates",

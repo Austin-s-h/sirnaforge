@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo
 
 
 class FilterCriteria(BaseModel):
@@ -17,8 +17,9 @@ class FilterCriteria(BaseModel):
     min_asymmetry_score: float = Field(default=0.0, ge=0, le=1, description="Minimum thermodynamic asymmetry")
 
     @field_validator("gc_max")
-    def gc_max_greater_than_min(cls, v: float, values: dict[str, Any]) -> float:
-        if "gc_min" in values and v < values["gc_min"]:
+    @classmethod
+    def gc_max_greater_than_min(cls, v: float, info: ValidationInfo) -> float:
+        if "gc_min" in info.data and v < info.data["gc_min"]:
             raise ValueError("gc_max must be greater than or equal to gc_min")
         return v
 
@@ -33,8 +34,9 @@ class ScoringWeights(BaseModel):
     empirical: float = Field(default=0.10, ge=0, le=1, description="Empirical rules weight")
 
     @field_validator("empirical")
-    def weights_sum_to_one(cls, v: float, values: dict[str, Any]) -> float:
-        total = sum(values.values()) + v
+    @classmethod
+    def weights_sum_to_one(cls, v: float, info: ValidationInfo) -> float:
+        total = sum(info.data.values()) + v
         if not (0.95 <= total <= 1.05):  # Allow small floating point errors
             raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
         return v
@@ -114,6 +116,7 @@ class SiRNACandidate(BaseModel):
     quality_issues: list[str] = Field(default_factory=list, description="List of quality concerns")
 
     @field_validator("guide_sequence", "passenger_sequence")
+    @classmethod
     def validate_nucleotide_sequence(cls, v: str) -> str:
         valid_bases = set("ATCGU")
         if not all(base.upper() in valid_bases for base in v):
@@ -121,8 +124,9 @@ class SiRNACandidate(BaseModel):
         return v.upper()
 
     @field_validator("passenger_sequence")
-    def sequences_same_length(cls, v: str, values: dict[str, Any]) -> str:
-        if "guide_sequence" in values and len(v) != len(values["guide_sequence"]):
+    @classmethod
+    def sequences_same_length(cls, v: str, info: ValidationInfo) -> str:
+        if "guide_sequence" in info.data and len(v) != len(info.data["guide_sequence"]):
             raise ValueError("Guide and passenger sequences must be the same length")
         return v
 

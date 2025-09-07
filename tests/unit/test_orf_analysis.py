@@ -4,8 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from sirnaforge.data.orf_analysis import analyze_multiple_transcript_orfs
 from sirnaforge.data import TranscriptInfo
+from sirnaforge.data.orf_analysis import analyze_multiple_transcript_orfs
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)

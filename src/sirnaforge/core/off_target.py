@@ -5,6 +5,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from sirnaforge.models.sirna import SiRNACandidate
 
@@ -14,9 +15,9 @@ class OffTargetAnalyzer:
 
     def __init__(
         self,
-        transcriptome_file: str = None,
-        bowtie_index: str = None,
-        bwa_index: str = None,
+        transcriptome_file: Optional[str] = None,
+        bowtie_index: Optional[str] = None,
+        bwa_index: Optional[str] = None,
         use_external_tools: bool = False,
     ):
         """
@@ -32,12 +33,12 @@ class OffTargetAnalyzer:
         self.bowtie_index = bowtie_index
         self.bwa_index = bwa_index
         self.use_external_tools = use_external_tools
-        self.transcriptome_seqs = {}
+        self.transcriptome_seqs: dict[str, str] = {}
 
         if transcriptome_file and Path(transcriptome_file).exists():
             self._load_transcriptome()
 
-    def _load_transcriptome(self):
+    def _load_transcriptome(self) -> None:
         """Load transcriptome sequences for off-target analysis."""
         # Would use Bio.SeqIO in production
         self.transcriptome_seqs = {}
@@ -102,6 +103,7 @@ class OffTargetAnalyzer:
                 seed_fasta = tmp_file.name
 
             # Run Bowtie with parameters for seed search
+            assert self.bowtie_index is not None, "Bowtie index must be set"
             cmd = [
                 "bowtie",
                 "-v",
@@ -131,6 +133,7 @@ class OffTargetAnalyzer:
         # as the query_fasta already contains the sequence
         try:
             # Run BWA-MEM with parameters for short sequences
+            assert self.bwa_index is not None, "BWA index must be set"
             cmd = [
                 "bwa-mem2",
                 "mem",
@@ -184,7 +187,7 @@ class OffTargetAnalyzer:
         # Check for homopolymer runs
         for base in ["A", "T", "G", "C", "U"]:
             max_run = self._longest_run(sequence, base)
-            if max_run >= 4:
+            if max_run >= 4:  # TODO parameterize threshold
                 penalty += max_run * 5
 
         # Check for dinucleotide repeats
@@ -261,7 +264,6 @@ class OffTargetAnalyzer:
         # Transform penalty to score using exponential decay
         return math.exp(-penalty / 50.0)
 
-
     def get_seed_sequence(self, guide: str) -> str:
         """Extract seed sequence (positions 2-8) from guide."""
         if len(guide) < 8:
@@ -274,76 +276,3 @@ class OffTargetAnalyzer:
         # Convert penalty to estimated matches
         estimated_matches = int(penalty / 50)
         return estimated_matches <= max_matches
-
-    def _check_low_complexity(self, sequence: str) -> float:
-        """Check for low complexity regions that increase off-target risk."""
-        penalty = 0.0
-
-        # Check for homopolymer runs
-        for base in ["A", "T", "G", "C", "U"]:
-            max_run = self._longest_run(sequence, base)
-            if max_run >= 4:
-                penalty += max_run * 5
-
-        # Check for dinucleotide repeats
-        for i in range(len(sequence) - 3):
-            dinuc = sequence[i : i + 2]
-            next_dinuc = sequence[i + 2 : i + 4]
-            if dinuc == next_dinuc:
-                penalty += 10
-
-        return penalty
-
-    def _check_seed_uniqueness(self, guide: str) -> float:
-        """Check seed region (positions 2-8) for uniqueness."""
-        if len(guide) < 8:
-            return 0.0
-
-        seed = guide[1:8]  # Positions 2-8 (0-based indexing)
-        penalty = 0.0
-
-        # Check for internal seed matches within the guide itself
-        guide_without_seed = guide[:1] + guide[8:]
-        seed_matches = len(re.findall(seed, guide_without_seed))
-        penalty += seed_matches * 50
-
-        # Simple complexity check for seed
-        unique_bases = len(set(seed))
-        if unique_bases < 3:
-            penalty += 20
-
-        return penalty
-
-    def _check_gc_skew(self, sequence: str) -> float:
-        """Check for GC skew that might affect off-target binding."""
-        penalty = 0.0
-
-        # Check 5' end GC content (positions 1-10)
-        five_prime = sequence[:10]
-        five_gc = (five_prime.count("G") + five_prime.count("C")) / len(five_prime)
-
-        # Check 3' end GC content (positions 12-21)
-        three_prime = sequence[11:21] if len(sequence) >= 21 else sequence[11:]
-        if three_prime:
-            three_gc = (three_prime.count("G") + three_prime.count("C")) / len(three_prime)
-
-            # Extreme skew increases off-target risk
-            skew = abs(five_gc - three_gc)
-            if skew > 0.6:
-                penalty += skew * 30
-
-        return penalty
-
-    def _longest_run(self, sequence: str, base: str) -> int:
-        """Find the longest run of a specific base in sequence."""
-        max_run = 0
-        current_run = 0
-
-        for char in sequence:
-            if char == base:
-                current_run += 1
-                max_run = max(max_run, current_run)
-            else:
-                current_run = 0
-
-        return max_run

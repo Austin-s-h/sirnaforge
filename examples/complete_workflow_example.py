@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from sirnaforge.workflow import run_sirna_workflow
 
 
-async def run_complete_example():
+async def run_complete_example() -> None:
     """Run complete siRNA design workflow for TP53."""
 
     print("🧬 Starting Complete siRNAforge Workflow Example")
@@ -43,7 +43,7 @@ async def run_complete_example():
             genome_species=["human", "rat", "rhesus"],
             gc_min=30.0,
             gc_max=52.0,
-            sirna_length=21
+            sirna_length=21,
         )
 
         print("✅ Workflow completed successfully!")
@@ -82,15 +82,12 @@ async def run_complete_example():
         print("3. Select top candidates for experimental validation")
         print("4. Consider additional specificity testing if needed")
 
-        return results
-
     except Exception as e:
         print(f"❌ Workflow failed: {e}")
         traceback.print_exc()
-        return None
 
 
-async def run_nextflow_only_example():
+async def run_nextflow_only_example() -> None:
     """Example of running just the Nextflow off-target analysis."""
 
     print("\n🔬 Nextflow Off-target Analysis Example")
@@ -109,7 +106,7 @@ async def run_nextflow_only_example():
 
     # Write to FASTA
     input_fasta = output_dir / "example_sirnas.fasta"
-    with input_fasta.open('w') as f:
+    with input_fasta.open("w") as f:
         for seq_id, sequence in example_sequences:
             f.write(f">{seq_id}\n{sequence}\n")
 
@@ -121,11 +118,17 @@ async def run_nextflow_only_example():
 
     if nextflow_script.exists():
         cmd = [
-            "nextflow", "run", str(nextflow_script),
-            "--input", str(input_fasta),
-            "--outdir", str(output_dir / "results"),
-            "--genome_species", "human",
-            "--download_indexes", "true"  # This will build indexes if needed
+            "nextflow",
+            "run",
+            str(nextflow_script),
+            "--input",
+            str(input_fasta),
+            "--outdir",
+            str(output_dir / "results"),
+            "--genome_species",
+            "human",
+            "--download_indexes",
+            "true",  # This will build indexes if needed
         ]
 
         print("\n🚀 Running Nextflow command:")

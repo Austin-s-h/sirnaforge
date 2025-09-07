@@ -43,7 +43,7 @@ class WorkflowConfig:
         design_params: Optional[DesignParameters] = None,
         top_n_for_offtarget: int = 10,
         nextflow_config: Optional[dict] = None,
-        genome_species: list[str] = None
+        genome_species: Optional[list[str]] = None,
     ):
         self.output_dir = Path(output_dir)
         self.gene_query = gene_query
@@ -69,7 +69,7 @@ class SiRNAWorkflow:
         self.gene_searcher = GeneSearcher()
         self.orf_analyzer = ORFAnalyzer()
         self.sirnaforgeer = SiRNADesigner(config.design_params)
-        self.results = {}
+        self.results: dict = {}
 
     async def run_complete_workflow(self) -> dict:
         """Run the complete siRNA design workflow."""
@@ -115,17 +115,17 @@ class SiRNAWorkflow:
                 "gene_query": self.config.gene_query,
                 "database": self.config.database.value,
                 "output_dir": str(self.config.output_dir),
-                "processing_time": total_time
+                "processing_time": total_time,
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
-            "offtarget_summary": offtarget_results
+            "offtarget_summary": offtarget_results,
         }
 
         # Save workflow summary
         summary_file = self.config.output_dir / "workflow_summary.json"
-        with summary_file.open('w') as f:
+        with summary_file.open("w") as f:
             json.dump(final_results, f, indent=2, default=str)
 
         console.print(f"\n✅ [bold green]Workflow completed in {total_time:.2f}s[/bold green]")
@@ -139,9 +139,7 @@ class SiRNAWorkflow:
 
         # Search for gene
         gene_result = await self.gene_searcher.search_gene(
-            self.config.gene_query,
-            self.config.database,
-            include_sequence=True
+            self.config.gene_query, self.config.database, include_sequence=True
         )
         progress.advance(task)
 
@@ -153,18 +151,18 @@ class SiRNAWorkflow:
         progress.advance(task)
 
         # Filter for protein-coding transcripts
-        protein_transcripts = [
-            t for t in transcripts
-            if t.transcript_type == "protein_coding" and t.sequence
-        ]
+        protein_transcripts = [t for t in transcripts if t.transcript_type == "protein_coding" and t.sequence]
 
         if not protein_transcripts:
             raise ValueError("No protein-coding transcripts found with sequences")
 
         # Save transcripts to file
         transcript_file = self.config.output_dir / "transcripts" / f"{self.config.gene_query}_transcripts.fasta"
-        sequences = [(f"{t.transcript_id} {t.gene_name} type:{t.transcript_type} length:{t.length}",
-                      t.sequence) for t in protein_transcripts]
+        sequences = [
+            (f"{t.transcript_id} {t.gene_name} type:{t.transcript_type} length:{t.length}", t.sequence or "")
+            for t in protein_transcripts
+            if t.sequence is not None
+        ]
 
         FastaUtils.save_sequences_fasta(sequences, transcript_file)
         progress.advance(task)
@@ -228,7 +226,7 @@ class SiRNAWorkflow:
 
         return design_result
 
-    async def step4_generate_reports(self, design_results: DesignResult):
+    async def step4_generate_reports(self, design_results: DesignResult) -> None:
         """Step 4: Generate comprehensive reports."""
 
         # Generate candidate summary report
@@ -237,8 +235,10 @@ class SiRNAWorkflow:
 
         # Generate top candidates FASTA for off-target analysis
         top_candidates_fasta = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_top_candidates.fasta"
-        top_sequences = [(f"{c.id} score:{c.composite_score:.1f}", c.guide_sequence)
-                        for c in design_results.top_candidates[:self.config.top_n_for_offtarget]]
+        top_sequences = [
+            (f"{c.id} score:{c.composite_score:.1f}", c.guide_sequence)
+            for c in design_results.top_candidates[: self.config.top_n_for_offtarget]
+        ]
 
         FastaUtils.save_sequences_fasta(top_sequences, top_candidates_fasta)
 
@@ -250,7 +250,7 @@ class SiRNAWorkflow:
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict:
         """Step 5: Run off-target analysis using Nextflow pipeline."""
 
-        top_candidates = design_results.top_candidates[:self.config.top_n_for_offtarget]
+        top_candidates = design_results.top_candidates[: self.config.top_n_for_offtarget]
 
         if not top_candidates:
             console.print("⚠️  No candidates available for off-target analysis")
@@ -270,17 +270,22 @@ class SiRNAWorkflow:
 
         # Run Nextflow pipeline
         try:
-
             nf_work_dir = self.config.output_dir / "off_target" / "nextflow_work"
             nf_output_dir = self.config.output_dir / "off_target" / "results"
 
             cmd = [
-                "nextflow", "run", str(nf_script),
-                "--input", str(input_fasta),
-                "--outdir", str(nf_output_dir),
-                "--genome_species", ",".join(self.config.genome_species),
-                "-w", str(nf_work_dir),
-                "-resume"
+                "nextflow",
+                "run",
+                str(nf_script),
+                "--input",
+                str(input_fasta),
+                "--outdir",
+                str(nf_output_dir),
+                "--genome_species",
+                ",".join(self.config.genome_species),
+                "-w",
+                str(nf_work_dir),
+                "-resume",
             ]
 
             console.print("🚀 Running Nextflow off-target analysis...")
@@ -296,23 +301,28 @@ class SiRNAWorkflow:
                 mapped = {}
                 for c in top_candidates:
                     qid = c.id
-                    entry = parsed.get('results', {}).get(qid)
+                    entry = parsed.get("results", {}).get(qid)
                     if entry:
                         mapped[qid] = {
-                            'off_target_count': entry.get('off_target_count', 0),
-                            'off_target_score': entry.get('off_target_score', 0.0),
-                            'hits': entry.get('hits', [])
+                            "off_target_count": entry.get("off_target_count", 0),
+                            "off_target_score": entry.get("off_target_score", 0.0),
+                            "hits": entry.get("hits", []),
                         }
                         # Update candidate object fields if available
                         try:
-                            c.off_target_count = mapped[qid]['off_target_count']
-                            c.off_target_score = mapped[qid]['off_target_score']
+                            c.off_target_count = mapped[qid]["off_target_count"]
+                            c.off_target_penalty = mapped[qid]["off_target_score"]
                         except Exception:
                             pass
                     else:
-                        mapped[qid] = {'off_target_count': 0, 'off_target_score': 0.0, 'hits': []}
+                        mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
 
-                return {"status": "completed", "method": "nextflow", "output_dir": str(nf_output_dir), "results": mapped}
+                return {
+                    "status": "completed",
+                    "method": "nextflow",
+                    "output_dir": str(nf_output_dir),
+                    "results": mapped,
+                }
             console.print(f"❌ Nextflow pipeline failed: {result.stderr}")
             return await self._basic_offtarget_analysis(top_candidates)
 
@@ -325,7 +335,7 @@ class SiRNAWorkflow:
         possible_locations = [
             Path(__file__).parent.parent.parent / "nextflow_pipeline" / "main.nf",
             Path.cwd() / "nextflow_pipeline" / "main.nf",
-            Path(__file__).parent / "pipeline" / "offtarget_analysis.nf"
+            Path(__file__).parent / "pipeline" / "offtarget_analysis.nf",
         ]
 
         for location in possible_locations:
@@ -347,12 +357,12 @@ class SiRNAWorkflow:
                 "off_target_count": off_target_count,
                 "off_target_penalty": penalty,
                 "off_target_score": score,
-                "method": "sequence_analysis"
+                "method": "sequence_analysis",
             }
 
         # Save results
         results_file = self.config.output_dir / "off_target" / "basic_analysis.json"
-        with results_file.open('w') as f:
+        with results_file.open("w") as f:
             json.dump(results, f, indent=2)
 
         console.print(f"📊 Basic off-target analysis completed for {len(candidates)} candidates")
@@ -360,28 +370,28 @@ class SiRNAWorkflow:
 
     async def _parse_nextflow_results(self, output_dir: Path) -> dict:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis."""
-        results = {}
+        results: dict = {}
 
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
         # Prefer combined TSV if present
-        combined_tsv = output_dir / 'combined_offtargets.tsv'
-        combined_json = output_dir / 'combined_offtargets.json'
+        combined_tsv = output_dir / "combined_offtargets.tsv"
+        combined_json = output_dir / "combined_offtargets.json"
 
-        def _ensure_row_key(d, key, default=0):
+        def _ensure_row_key(d: dict, key: str, default: int = 0) -> None:
             if key not in d:
                 d[key] = default
 
         if combined_tsv.exists():
             with combined_tsv.open() as fh:
-                reader = csv.DictReader(fh, delimiter='\t')
+                reader = csv.DictReader(fh, delimiter="\t")
                 for row in reader:
-                    qname = row.get('qname') or row.get('query') or row.get('id')
+                    qname = row.get("qname") or row.get("query") or row.get("id")
                     if not qname:
                         continue
                     try:
-                        score = float(row.get('offtarget_score') or 0)
+                        score = float(row.get("offtarget_score") or 0)
                     except Exception:
                         score = 0.0
 
@@ -398,11 +408,11 @@ class SiRNAWorkflow:
                 except Exception:
                     data = []
                 for item in data:
-                    qname = item.get('qname') or item.get('query') or item.get('id')
+                    qname = item.get("qname") or item.get("query") or item.get("id")
                     if not qname:
                         continue
                     try:
-                        score = float(item.get('offtarget_score') or 0)
+                        score = float(item.get("offtarget_score") or 0)
                     except Exception:
                         score = 0.0
                     entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
@@ -412,16 +422,16 @@ class SiRNAWorkflow:
 
         else:
             # Fallback: scan for any per-species TSV files under output_dir
-            files = list(output_dir.glob('**/*_offtargets.tsv'))
+            files = list(output_dir.glob("**/*_offtargets.tsv"))
             for fpath in files:
                 with Path(fpath).open() as fh:
-                    reader = csv.DictReader(fh, delimiter='\t')
+                    reader = csv.DictReader(fh, delimiter="\t")
                     for row in reader:
-                        qname = row.get('qname') or row.get('query') or row.get('id')
+                        qname = row.get("qname") or row.get("query") or row.get("id")
                         if not qname:
                             continue
                         try:
-                            score = float(row.get('offtarget_score') or 0)
+                            score = float(row.get("offtarget_score") or 0)
                         except Exception:
                             score = 0.0
                         entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
@@ -431,9 +441,9 @@ class SiRNAWorkflow:
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-    def _generate_orf_report(self, orf_results: dict, report_file: Path):
+    def _generate_orf_report(self, orf_results: dict, report_file: Path) -> None:
         """Generate ORF validation report."""
-        with report_file.open('w') as f:
+        with report_file.open("w") as f:
             f.write(f"ORF Validation Report for {self.config.gene_query}\n")
             f.write("=" * 60 + "\n\n")
 
@@ -451,9 +461,9 @@ class SiRNAWorkflow:
                     f.write(f"  Longest ORF: {orf.start_pos}-{orf.end_pos} ({orf.length} bp)\n")
                 f.write("\n")
 
-    def _generate_candidate_report(self, design_results: DesignResult, report_file: Path):
+    def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:
         """Generate siRNA candidate summary report."""
-        with report_file.open('w') as f:
+        with report_file.open("w") as f:
             f.write(f"siRNAforge Results for {self.config.gene_query}\n")
             f.write("=" * 60 + "\n\n")
 
@@ -486,7 +496,10 @@ class SiRNAWorkflow:
             "total_transcripts": len(transcripts),
             "transcript_types": list({t.transcript_type for t in transcripts}),
             "databases": list({t.database for t in transcripts}),
-            "avg_length": sum(t.length for t in transcripts) / len(transcripts) if transcripts else 0
+            "avg_length": sum(t.length for t in transcripts if t.length is not None)
+            / len([t for t in transcripts if t.length is not None])
+            if any(t.length is not None for t in transcripts)
+            else 0,
         }
 
     def _summarize_orf_results(self, orf_results: dict) -> dict:
@@ -497,7 +510,7 @@ class SiRNAWorkflow:
         return {
             "total_analyzed": len(results),
             "valid_orfs": valid_count,
-            "validation_rate": valid_count / len(results) if results else 0
+            "validation_rate": valid_count / len(results) if results else 0,
         }
 
     def _summarize_design_results(self, design_results: DesignResult) -> dict:
@@ -512,10 +525,10 @@ async def run_sirna_workflow(
     database: str = "ensembl",
     top_n_candidates: int = 20,
     top_n_offtarget: int = 10,
-    genome_species: list[str] = None,
+    genome_species: Optional[list[str]] = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
-    sirna_length: int = 21
+    sirna_length: int = 21,
 ) -> dict:
     """
     Run complete siRNA design workflow.
@@ -541,11 +554,7 @@ async def run_sirna_workflow(
     )
 
     # Configure workflow
-    design_params = DesignParameters(
-        top_n=top_n_candidates,
-        sirna_length=sirna_length,
-        filters=filter_criteria
-    )
+    design_params = DesignParameters(top_n=top_n_candidates, sirna_length=sirna_length, filters=filter_criteria)
     database_enum = DatabaseType(database.lower())
 
     config = WorkflowConfig(
@@ -554,7 +563,7 @@ async def run_sirna_workflow(
         database=database_enum,
         design_params=design_params,
         top_n_for_offtarget=top_n_offtarget,
-        genome_species=genome_species or ["human", "rat", "rhesus"]
+        genome_species=genome_species or ["human", "rat", "rhesus"],
     )
 
     # Run workflow
@@ -566,12 +575,9 @@ if __name__ == "__main__":
     # Example usage
     import asyncio
 
-    async def main():
+    async def main() -> None:
         results = await run_sirna_workflow(
-            gene_query="TP53",
-            output_dir="/tmp/sirna_workflow_test",
-            top_n_candidates=20,
-            top_n_offtarget=10
+            gene_query="TP53", output_dir="/tmp/sirna_workflow_test", top_n_candidates=20, top_n_offtarget=10
         )
         print(f"Workflow completed: {results}")
 

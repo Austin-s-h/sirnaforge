@@ -34,7 +34,8 @@ def _read_version_from_pyproject() -> str | None:
         if not pyproject.exists():
             return None
         data = tomllib.loads(pyproject.read_text(encoding="utf8"))
-        return data.get("project", {}).get("version")
+        version = data.get("project", {}).get("version")
+        return str(version) if version is not None else None
     except Exception:
         return None
 

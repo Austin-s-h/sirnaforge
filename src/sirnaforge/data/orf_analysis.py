@@ -187,9 +187,7 @@ class ORFAnalyzer(BaseEnsemblClient):
 
         return protein
 
-    async def get_sequence_from_ensembl(
-        self, transcript_id: str, sequence_type: SequenceType
-    ) -> Optional[str]:
+    async def get_sequence_from_ensembl(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
         """Retrieve specific sequence type from Ensembl using inherited method."""
         return await self.get_sequence(transcript_id, sequence_type)
 
@@ -257,12 +255,14 @@ class ORFAnalyzer(BaseEnsemblClient):
             return SequenceType.CDS
 
         # If we have a CDS sequence and our sequence is longer, likely cDNA
-        if cds_sequence and len(transcript.sequence) > len(cds_sequence):
+        if cds_sequence and transcript.sequence and len(transcript.sequence) > len(cds_sequence):
             return SequenceType.CDNA
 
         # If we have good ORFs and the sequence starts with ATG, likely CDS or cDNA
-        if orfs and transcript.sequence.startswith("ATG"):
-            return SequenceType.CDS if len(orfs[0]) == len(transcript.sequence) else SequenceType.CDNA
+        if orfs and transcript.sequence and transcript.sequence.startswith("ATG"):
+            # Compare the length of the first ORF sequence with the transcript sequence
+            orf_sequence = orfs[0].sequence if hasattr(orfs[0], "sequence") else str(orfs[0])
+            return SequenceType.CDS if len(orf_sequence) == len(transcript.sequence) else SequenceType.CDNA
 
         # Default assumption for Ensembl transcript sequences
         return SequenceType.CDNA
