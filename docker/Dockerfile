@@ -50,7 +50,7 @@ RUN uv build
 # can copy it into the runtime image without an expensive recursive chown.
 FROM mambaorg/micromamba:bookworm-slim as conda-builder
 # Copy environment and install into /opt/conda in this stage
-COPY docker/environment.yml /tmp/environment.yml
+COPY docker/environment-nextflow.yml /tmp/environment.yml
 RUN micromamba install --prefix /opt/conda --file /tmp/environment.yml -y && \
     micromamba clean --all --yes
 
