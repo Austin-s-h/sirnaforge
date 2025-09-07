@@ -19,12 +19,7 @@ def test_docker_cli_help():
     """Test that siRNAforge CLI works in container environment."""
     # This test is designed to be run inside the Docker container via make ci-test-docker
     try:
-        result = subprocess.run(
-            ["sirnaforge", "--help"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(["sirnaforge", "--help"], capture_output=True, text=True, check=True)
         assert "siRNAforge" in result.stdout
         assert "Comprehensive siRNA design toolkit for gene silencing." in result.stdout or "workflow" in result.stdout
     except FileNotFoundError:
@@ -36,12 +31,7 @@ def test_docker_cli_help():
 def test_docker_version():
     """Test version command works in container."""
     try:
-        result = subprocess.run(
-            ["sirnaforge", "version"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(["sirnaforge", "version"], capture_output=True, text=True, check=True)
         # Should output version information
         assert len(result.stdout.strip()) > 0
     except FileNotFoundError:
@@ -56,12 +46,7 @@ def test_docker_command_structure():
 
     for cmd in commands:
         try:
-            result = subprocess.run(
-                ["sirnaforge", cmd, "--help"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = subprocess.run(["sirnaforge", cmd, "--help"], capture_output=True, text=True, check=True)
             assert len(result.stdout) > 0, f"Command {cmd} should show help"
         except FileNotFoundError:
             pytest.skip("sirnaforge CLI not available - run this test in Docker container")
@@ -143,7 +128,7 @@ def test_docker_minimal_workflow():
                 text=True,
                 cwd=work_dir,
                 timeout=30,  # Don't hang CI
-                check=False
+                check=False,
             )
 
             # Command should run without crashing (may have warnings/errors about design parameters)
@@ -177,13 +162,7 @@ def test_docker_bioinformatics_tools():
 
     for tool, args in tools:
         try:
-            result = subprocess.run(
-                [tool] + args,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False
-            )
+            result = subprocess.run([tool] + args, capture_output=True, text=True, timeout=10, check=False)
             # Tool should exist and respond (exit code may vary)
             if result.returncode > 1:  # 0 or 1 are usually okay
                 missing_tools.append(f"{tool} (bad exit code: {result.returncode})")
