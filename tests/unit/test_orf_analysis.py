@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from sirnaforge.data import TranscriptInfo
+from sirnaforge.data.base import DatabaseType
 from sirnaforge.data.orf_analysis import analyze_multiple_transcript_orfs
 from sirnaforge.utils.logging_utils import get_logger
 
@@ -30,13 +31,18 @@ async def _test_orf_analysis():
 
     # Convert test data to TranscriptInfo objects
     transcripts = []
+
     for transcript_data in test_data["transcripts"]:
         transcript = TranscriptInfo(
             transcript_id=transcript_data["transcript_id"],
             transcript_name=transcript_data["transcript_name"],
             transcript_type=transcript_data["transcript_type"],
+            gene_id=transcript_data["gene_id"],
+            gene_name=transcript_data["gene_name"],
             sequence=transcript_data["sequence"],
-            protein_sequence=transcript_data.get("protein_sequence"),
+            database=DatabaseType.ENSEMBL,
+            is_canonical=transcript_data.get("is_canonical", False),
+            length=transcript_data.get("length"),
         )
         transcripts.append(transcript)
 

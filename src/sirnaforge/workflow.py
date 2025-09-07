@@ -496,10 +496,12 @@ class SiRNAWorkflow:
             "total_transcripts": len(transcripts),
             "transcript_types": list({t.transcript_type for t in transcripts}),
             "databases": list({t.database for t in transcripts}),
-            "avg_length": sum(t.length for t in transcripts if t.length is not None)
-            / len([t for t in transcripts if t.length is not None])
-            if any(t.length is not None for t in transcripts)
-            else 0,
+            "avg_length": (
+                sum(t.length for t in transcripts if t.length is not None)
+                / len([t for t in transcripts if t.length is not None])
+                if any(t.length is not None for t in transcripts)
+                else 0
+            ),
         }
 
     def _summarize_orf_results(self, orf_results: dict) -> dict:
