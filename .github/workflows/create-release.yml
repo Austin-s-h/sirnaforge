@@ -97,8 +97,13 @@ jobs:
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         VERSION="v${{ needs.validate-and-prepare.outputs.version }}"
-        git tag -a "$VERSION" -m "Release $VERSION"
-        git push origin "$VERSION"
+        # Check if tag already exists
+        if git rev-parse "$VERSION" >/dev/null 2>&1; then
+          echo "⚠️ Tag $VERSION already exists, skipping tag creation"
+        else
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+        fi
     - name: "🚀 Create GitHub Release"
       id: create
       run: |
@@ -197,8 +202,7 @@ jobs:
     - name: "📦 Install test dependencies"
       run: uv pip install --system pytest pytest-docker
     - name: "🐳 Pull Docker image"
-      run: docker pull ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version
-        }}
+      run: docker pull ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}
     - name: "🧪 Run Docker integration tests"
       run: |
         export SIRNAFORGE_DOCKER_IMAGE=ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}
