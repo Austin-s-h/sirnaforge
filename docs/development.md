@@ -15,7 +15,7 @@ This guide covers development setup, contribution guidelines, and best practices
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/sirnaforge.git
+git clone https://github.com/Austin-s-h/sirnaforge
 cd sirnaforge
 
 # One-command development setup

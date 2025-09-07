@@ -31,7 +31,7 @@
 **🐳 Docker (Recommended - Everything Included):**
 ```bash
 # Build comprehensive image with all dependencies
-git clone https://github.com/your-org/sirnaforge.git
+git clone https://github.com/Austin-s-h/sirnaforge
 cd sirnaforge
 docker build -f docker/Dockerfile -t sirnaforge:latest .
 
@@ -48,7 +48,7 @@ The Docker build uses the `docker/environment.yml` conda environment specificati
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and setup Python environment
-git clone https://github.com/your-org/sirnaforge.git
+git clone https://github.com/Austin-s-h/sirnaforge
 cd sirnaforge
 make install-dev
 ```

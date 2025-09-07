@@ -17,7 +17,7 @@ Welcome to siRNAforge! This guide will help you get started with designing high-
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone the repository
-git clone https://github.com/your-org/sirnaforge.git
+git clone https://github.com/Austin-s-h/sirnaforge
 cd sirnaforge
 
 # One-command setup
