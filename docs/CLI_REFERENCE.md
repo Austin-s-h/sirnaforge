@@ -1,6 +1,6 @@
 # 🧬 siRNAforge CLI Reference
 
-Complete command-line interface documentation for siRNAforge — Design. Verify. Deliver.
+Complete command-line interface documentation for siRNAforge — Comprehensive siRNA design toolkit for gene silencing.
 
 ## Main Commands
 

@@ -270,7 +270,7 @@ docs-cli: ## Generate CLI reference documentation
 	@mkdir -p docs/
 	@echo "# 🧬 siRNAforge CLI Reference" > docs/CLI_REFERENCE.md
 	@echo "" >> docs/CLI_REFERENCE.md
-	@echo "Complete command-line interface documentation for siRNAforge — Design. Verify. Deliver." >> docs/CLI_REFERENCE.md
+	@echo "Complete command-line interface documentation for siRNAforge — Comprehensive siRNA design toolkit for gene silencing." >> docs/CLI_REFERENCE.md
 	@echo "" >> docs/CLI_REFERENCE.md
 	@echo "## Main Commands" >> docs/CLI_REFERENCE.md
 	@echo "" >> docs/CLI_REFERENCE.md
@@ -313,7 +313,7 @@ docs-full: docs-cli docs-examples docs-api ## Generate complete documentation se
 	@mkdir -p docs/
 	@echo "# siRNAforge Documentation" > docs/README.md
 	@echo "" >> docs/README.md
-	@echo "Complete documentation for siRNAforge — Design. Verify. Deliver." >> docs/README.md
+	@echo "Complete documentation for siRNAforge — Comprehensive siRNA design toolkit for gene silencing." >> docs/README.md
 	@echo "" >> docs/README.md
 	@echo "## Available Documentation" >> docs/README.md
 	@echo "" >> docs/README.md
@@ -337,7 +337,7 @@ docs-full-ci: docs-cli docs-examples docs-api ## Generate complete documentation
 	@mkdir -p docs/
 	@echo "# siRNAforge Documentation" > docs/README.md
 	@echo "" >> docs/README.md
-	@echo "Complete documentation for siRNAforge — Design. Verify. Deliver." >> docs/README.md
+	@echo "Complete documentation for siRNAforge — Comprehensive siRNA design toolkit for gene silencing." >> docs/README.md
 	@echo "" >> docs/README.md
 	@echo "## Available Documentation" >> docs/README.md
 	@echo "" >> docs/README.md
@@ -369,6 +369,24 @@ check: lint test ## Run all checks (lint + test)
 
 release-check: clean build test lint ## Full release preparation check
 	@echo "✅ Release checks passed!"
+
+# Release management
+prepare-release: ## Prepare for release (run tests, build, check)
+	@echo "🚀 Preparing release..."
+	make clean
+	make lint
+	make test-fast
+	make build
+	make docs-check
+	@echo "✅ Release preparation complete!"
+
+release-check: clean build test lint ## Full release preparation check
+	@echo "✅ Release checks passed!"
+
+# Generate test data for CI/Docker
+generate-test-data: ## Generate minimal test data for CI/Docker testing
+	@echo "📦 Generating test data..."
+	./scripts/generate_test_data.sh
 
 version: ## Show version information
 	uv run python -c "from sirnaforge import __version__; print(f'Version: {__version__}')"

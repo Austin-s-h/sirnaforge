@@ -1,6 +1,6 @@
 # 🧬 siRNAforge Usage Examples
 
-Comprehensive examples demonstrating real-world usage patterns for siRNAforge — Design. Verify. Deliver.
+Comprehensive examples demonstrating real-world usage patterns for siRNAforge — Comprehensive siRNA design toolkit for gene silencing.
 
 ## Quick Start Examples
 

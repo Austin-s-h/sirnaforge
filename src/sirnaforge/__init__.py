@@ -1,4 +1,4 @@
-"""siRNAforge - Design. Verify. Deliver. Comprehensive gene silencing design and analysis.
+"""siRNAforge - Comprehensive siRNA design toolkit for gene silencing. Comprehensive gene silencing design and analysis.
 
 This module exposes package metadata (author/email/version) in a single place.
 The version is resolved from installed package metadata (importlib.metadata). When

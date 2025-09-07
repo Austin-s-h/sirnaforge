@@ -1,6 +1,6 @@
 # siRNAforge Documentation
 
-Complete documentation for siRNAforge — Design. Verify. Deliver.
+Complete documentation for siRNAforge — Comprehensive siRNA design toolkit for gene silencing.
 
 ## Available Documentation
 

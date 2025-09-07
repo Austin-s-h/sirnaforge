@@ -1,6 +1,6 @@
 # 🧬 siRNAforge Quick Reference
 
-**Design. Verify. Deliver.** — Essential commands at a glance.
+**Comprehensive siRNA design toolkit for gene silencing.** — Essential commands at a glance.
 
 ## 🚀 Quick Start
 

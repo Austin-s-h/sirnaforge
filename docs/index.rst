@@ -1,7 +1,7 @@
 siRNAforge Documentation
 ========================
 
-Welcome to siRNAforge — **Design. Verify. Deliver.**
+Welcome to siRNAforge — **Comprehensive siRNA design toolkit for gene silencing.**
 
 Comprehensive siRNA design toolkit for gene silencing with multi-species off-target analysis.
 

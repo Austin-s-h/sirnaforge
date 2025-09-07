@@ -1,4 +1,4 @@
-# 🧬 siRNAforge — Design. Verify. Deliver.
+# 🧬 siRNAforge — Comprehensive siRNA design toolkit for gene silencing.
 
 <div align="center">
   <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="200"/>
@@ -312,6 +312,6 @@ MIT License - see [`LICENSE`](LICENSE) file for details.
 ---
 
 <div align="center">
-  <strong>siRNAforge — Design. Verify. Deliver.</strong><br>
+  <strong>siRNAforge — Comprehensive siRNA design toolkit for gene silencing.</strong><br>
   Professional siRNA design for the modern researcher.
 </div>
