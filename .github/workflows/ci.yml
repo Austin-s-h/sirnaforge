@@ -59,7 +59,23 @@ jobs:
     - name: 🔬 Type check with mypy
       run: mypy src
 
-    - name: 📚 Validate documentation build
+    - name: �️ Security scan with bandit
+      run: bandit -r src/ -f json -o bandit-report.json || true
+
+    - name: 🔐 Security check with safety
+      run: safety check --json --output safety-report.json || true
+
+    - name: 📤 Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports-${{ github.sha }}
+        path: |
+          bandit-report.json
+          safety-report.json
+        retention-days: 30
+
+    - name: �📚 Validate documentation build
       run: make docs-check
 
   test:

@@ -57,6 +57,8 @@ dev = [
     "types-requests>=2.32.0",
     "pandas-stubs>=2.1.0",
     "codespell>=2.4.0",
+    "bandit[toml]>=1.7.0",
+    "safety>=3.0.0",
 ]
 pipeline = [
     "nextflow>=25.04.0",
