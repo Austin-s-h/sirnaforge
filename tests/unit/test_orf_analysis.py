@@ -1,0 +1,74 @@
+"""Test script for ORF analysis functionality."""
+
+import asyncio
+import json
+from pathlib import Path
+
+from sirnaforge.data.orf_analysis import analyze_multiple_transcript_orfs
+from sirnaforge.data import TranscriptInfo
+from sirnaforge.utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
+async def _test_orf_analysis():
+    """Async implementation of ORF analysis on TP53 transcripts using saved test data."""
+
+    logger.info("=== Testing ORF Analysis on TP53 Transcripts (Test Data) ===")
+
+    # Load test data from saved file
+    test_data_path = Path(__file__).parent / "data" / "tp53_test_data.json"
+
+    with test_data_path.open() as f:
+        test_data = json.load(f)
+
+    logger.info("Loaded test data from file")
+
+    if not test_data["success"]:
+        logger.error("Test data indicates failure")
+        return
+
+    # Convert test data to TranscriptInfo objects
+    transcripts = []
+    for transcript_data in test_data["transcripts"]:
+        transcript = TranscriptInfo(
+            transcript_id=transcript_data["transcript_id"],
+            transcript_name=transcript_data["transcript_name"],
+            transcript_type=transcript_data["transcript_type"],
+            sequence=transcript_data["sequence"],
+            protein_sequence=transcript_data.get("protein_sequence"),
+        )
+        transcripts.append(transcript)
+
+    logger.info(f"Found {len(transcripts)} transcripts for TP53")
+
+    # Filter to protein-coding transcripts with sequences
+    protein_coding = [t for t in transcripts if t.transcript_type == "protein_coding" and t.sequence]
+
+    logger.info(f"Analyzing {len(protein_coding)} protein-coding transcripts...")
+
+    # Perform ORF analysis on all transcripts
+    analyses = await analyze_multiple_transcript_orfs(protein_coding)
+
+    # Summary report
+    logger.info("\n=== ORF Analysis Summary ===")
+    for transcript_id, analysis in analyses.items():
+        logger.info(f"\nTranscript: {transcript_id}")
+        logger.info(f"  Sequence Type: {analysis.sequence_type}")
+        logger.info(f"  Sequence Length: {analysis.sequence_length} bp")
+        logger.info(f"  Valid ORF: {analysis.has_valid_orf}")
+        if analysis.longest_orf:
+            logger.info(f"  Longest ORF: {analysis.longest_orf.length} bp")
+        if analysis.cds_sequence:
+            logger.info(f"  Known CDS Length: {len(analysis.cds_sequence)} bp")
+        if analysis.protein_sequence:
+            logger.info(f"  Protein Length: {len(analysis.protein_sequence)} aa")
+
+
+def test_orf_analysis():
+    """Synchronous pytest-compatible wrapper that runs the async ORF analysis test."""
+    asyncio.run(_test_orf_analysis())
+
+
+if __name__ == "__main__":
+    asyncio.run(_test_orf_analysis())

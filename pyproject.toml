@@ -1,0 +1,314 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sirnaforge"
+version = "0.1.0"
+description = "siRNAforge - Multi-species gene to siRNA design, off-target prediction, and ranking. Comprehensive siRNA design toolkit for gene silencing"
+authors = [
+    {name = "Austin S. Hovland.", email = "austin@sansterbioanalytics.com"}
+]
+readme = "README.md"
+requires-python = ">=3.9, <3.13"
+license = {file = "LICENSE"}
+keywords = ["sirna", "rna-interference", "gene-silencing", "bioinformatics", "computational-biology"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+dependencies = [
+    "biopython>=1.81",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "requests>=2.28.0",
+    "pysam>=0.21.0",
+    "click>=8.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "typer>=0.9.0",
+    "ViennaRNA>=2.7.0",
+    "aiohttp>=3.8.0",
+    "httpx>=0.24.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "pytest-asyncio>=0.21.0",
+    "pytest-xdist>=3.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5",
+    "pre-commit>=3.0",
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "types-requests>=2.28.0",
+    "pandas-stubs>=2.0.0",
+    "codespell>=2.2.0",
+]
+pipeline = [
+    "nextflow>=25.04.0",
+    "docker>=6.0.0",
+]
+analysis = [
+    "jupyter>=1.0.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "plotly>=5.15.0",
+]
+docs = [
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "myst-parser>=2.0.0",
+    "sphinx-autodoc-typehints>=1.24.0",
+    "linkify-it-py>=2.0.3",
+]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "pytest-asyncio>=0.21.0",
+    "pytest-xdist>=3.0",
+]
+lint = [
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5",
+    "types-requests>=2.28.0",
+    "pandas-stubs>=2.0.0",
+    "codespell>=2.2.0",
+    "nextflow>=25.04.0",  # For nextflow lint command
+]
+
+[project.urls]
+Homepage = "https://github.com/Austin-s-h/sirnaforge"
+Documentation = "https://austin-s-h.github.io/sirnaforge"
+Repository = "https://github.com/Austin-s-h/sirnaforge"
+Issues = "https://github.com/Austin-s-h/sirnaforge/issues"
+Changelog = "https://github.com/Austin-s-h/sirnaforge/blob/main/CHANGELOG.md"
+
+[project.scripts]
+sirnaforge = "sirnaforge.cli:app"
+sirnaforge-pipeline = "sirnaforge.pipeline.cli:main"
+ensembl-fetch = "sirnaforge.data.ensembl:main"
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.hatch.version]
+path = "src/sirnaforge/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sirnaforge"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.github",
+    "/docs",
+    "/tests",
+    "/.gitignore",
+]
+
+# Ruff configuration
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+exclude = [
+    # Genomic file formats (glob patterns)
+    "**/*.fasta",
+    "**/*.fa", 
+    "**/*.fastq",
+    "**/*.fq",
+    "**/*.vcf",
+    "**/*.gff",
+    "**/*.gff3",
+    "**/*.gtf",
+    "**/*.bed",
+    "**/*.sam",
+    "**/*.bam",
+    "**/*.bcf",
+    "**/*.wig",
+    "**/*.bigwig",
+    "**/*.bigbed",
+    "**/*.2bit",
+    "**/*.gbk",
+    "**/*.gb",
+    "**/*.genbank",
+    "**/*.embl",
+    "**/*.sff",
+    "**/*.ab1",
+    "**/*.scf",
+    "**/*.qual",
+    "**/*.phylip",
+    "**/*.nexus",
+    "**/*.clustal",
+    "**/*.aln",
+    "**/*.msf",
+    "**/*.pir",
+    "**/*.stockholm",
+    # Standard exclusions
+    ".bzr",
+    ".direnv",
+    ".eggs", 
+    ".git",
+    ".git-rewrite-history",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache", 
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build", 
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG", # flake8-unused-arguments
+    "SIM", # flake8-simplify
+    "RET", # flake8-return
+    "PTH", # flake8-use-pathlib
+    "PL",  # pylint
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+    "B904",  # raise from within except clause (handled by design)
+    "PLR0913", # too many arguments
+    "PLR0915", # too many statements
+    "PLR2004", # magic value used in comparison
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG001", "S101"]
+
+# Black configuration
+[tool.black]
+line-length = 120
+target-version = ['py39']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.bzr
+  | \.direnv
+  | \.eggs
+  | \.git
+  | \.git-rewrite-history
+  | \.hg
+  | \.mypy_cache
+  | \.nox
+  | \.pants\.d
+  | \.pytype
+  | \.ruff_cache
+  | \.svn
+  | \.tox
+  | \.venv
+  | __pypackages__
+  | _build
+  | buck-out
+  | build
+  | dist
+  | node_modules
+  | venv
+  | .*\.(fasta|fa|fastq|fq|vcf|gff|gff3|gtf|bed|sam|bam|bcf|wig|bigwig|bigbed|2bit|gbk|gb|genbank|embl|sff|ab1|scf|qual|phylip|nexus|clustal|aln|msf|pir|stockholm)$
+)/
+'''
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.9"
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+pretty = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_return_any = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_no_return = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "Bio.*",
+    "pysam.*",
+]
+ignore_missing_imports = true
+
+# Codespell configuration
+[tool.codespell]
+count = true
+quiet-level = 3
+skip = './tests/,.venv/,./docs/_build/,./build/,./dist/,**/*.fasta,**/*.fa,**/*.fastq,**/*.fq,**/*.vcf,**/*.gff,**/*.gff3,**/*.gtf,**/*.bed'
+
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = """
+    -ra -q --strict-markers --strict-config
+    -n auto
+    --color=yes
+"""
+testpaths = ["tests"]
+pythonpath = ["src"]
+log_cli = true
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
+log_cli_level = "INFO"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "pipeline: marks tests that require pipeline tools",
+    "docker: marks tests that require Docker environment",
+    "asyncio: marks tests as async",
+    "unit: marks tests as unit tests",
+    "ci: marks tests as continuous integration tests",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

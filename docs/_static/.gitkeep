@@ -1,0 +1,8 @@
+# _static/
+# Contains static assets for Sphinx documentation
+
+# Custom CSS
+custom.css
+
+# Images and diagrams
+images/

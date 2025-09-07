@@ -1,0 +1,8 @@
+# _templates/
+# Contains custom Sphinx templates
+
+# Custom layout templates go here
+layout.html
+
+# Custom index templates
+index.html

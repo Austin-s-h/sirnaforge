@@ -1,0 +1,243 @@
+ORF Validation Report for TP53
+============================================================
+
+Summary: 34/34 transcripts have valid ORFs
+
+Transcript: ENST00000413465
+  Sequence Length: 1018 bp
+  GC Content: 56.3%
+  ORFs Found: 11
+  Valid ORF: ✓
+  Longest ORF: 0-858 (858 bp)
+
+Transcript: ENST00000714356
+  Sequence Length: 1645 bp
+  GC Content: 55.2%
+  ORFs Found: 14
+  Valid ORF: ✓
+  Longest ORF: 380-1424 (1044 bp)
+
+Transcript: ENST00000359597
+  Sequence Length: 1152 bp
+  GC Content: 56.9%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 0-1032 (1032 bp)
+
+Transcript: ENST00000504290
+  Sequence Length: 2331 bp
+  GC Content: 51.2%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 278-923 (645 bp)
+
+Transcript: ENST00000504937
+  Sequence Length: 2271 bp
+  GC Content: 51.7%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 278-1064 (786 bp)
+
+Transcript: ENST00000510385
+  Sequence Length: 2404 bp
+  GC Content: 50.8%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 278-908 (630 bp)
+
+Transcript: ENST00000610623
+  Sequence Length: 2331 bp
+  GC Content: 51.2%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 278-923 (645 bp)
+
+Transcript: ENST00000618944
+  Sequence Length: 2404 bp
+  GC Content: 50.8%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 278-908 (630 bp)
+
+Transcript: ENST00000619186
+  Sequence Length: 2271 bp
+  GC Content: 51.7%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 278-1064 (786 bp)
+
+Transcript: ENST00000610292
+  Sequence Length: 2639 bp
+  GC Content: 53.7%
+  ORFs Found: 17
+  Valid ORF: ✓
+  Longest ORF: 367-1432 (1065 bp)
+
+Transcript: ENST00000620739
+  Sequence Length: 2579 bp
+  GC Content: 53.4%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 190-1372 (1182 bp)
+
+Transcript: ENST00000420246
+  Sequence Length: 2653 bp
+  GC Content: 52.7%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 133-1159 (1026 bp)
+
+Transcript: ENST00000455263
+  Sequence Length: 2580 bp
+  GC Content: 53.1%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 133-1174 (1041 bp)
+
+Transcript: ENST00000610538
+  Sequence Length: 2580 bp
+  GC Content: 53.1%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 133-1174 (1041 bp)
+
+Transcript: ENST00000622645
+  Sequence Length: 2653 bp
+  GC Content: 52.7%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 133-1159 (1026 bp)
+
+Transcript: ENST00000714357
+  Sequence Length: 2448 bp
+  GC Content: 53.0%
+  ORFs Found: 19
+  Valid ORF: ✓
+  Longest ORF: 34-1252 (1218 bp)
+
+Transcript: ENST00000508793
+  Sequence Length: 2660 bp
+  GC Content: 52.8%
+  ORFs Found: 19
+  Valid ORF: ✓
+  Longest ORF: 237-1464 (1227 bp)
+
+Transcript: ENST00000503591
+  Sequence Length: 2552 bp
+  GC Content: 53.1%
+  ORFs Found: 19
+  Valid ORF: ✓
+  Longest ORF: 137-1364 (1227 bp)
+
+Transcript: ENST00000514944
+  Sequence Length: 2170 bp
+  GC Content: 52.3%
+  ORFs Found: 14
+  Valid ORF: ✓
+  Longest ORF: 79-982 (903 bp)
+
+Transcript: ENST00000445888
+  Sequence Length: 2506 bp
+  GC Content: 53.4%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 136-1318 (1182 bp)
+
+Transcript: ENST00000509690
+  Sequence Length: 2106 bp
+  GC Content: 52.5%
+  ORFs Found: 13
+  Valid ORF: ✓
+  Longest ORF: 132-918 (786 bp)
+
+Transcript: ENST00000604348
+  Sequence Length: 2488 bp
+  GC Content: 53.3%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 139-1300 (1161 bp)
+
+Transcript: ENST00000619485
+  Sequence Length: 2506 bp
+  GC Content: 53.4%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 136-1318 (1182 bp)
+
+Transcript: ENST00000269305
+  Sequence Length: 2512 bp
+  GC Content: 53.4%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 142-1324 (1182 bp)
+
+Transcript: ENST00000714408
+  Sequence Length: 2606 bp
+  GC Content: 53.4%
+  ORFs Found: 20
+  Valid ORF: ✓
+  Longest ORF: 142-1378 (1236 bp)
+
+Transcript: ENST00000714409
+  Sequence Length: 3430 bp
+  GC Content: 52.9%
+  ORFs Found: 19
+  Valid ORF: ✓
+  Longest ORF: 142-1246 (1104 bp)
+
+Transcript: ENST00000576024
+  Sequence Length: 2426 bp
+  GC Content: 52.9%
+  ORFs Found: 17
+  Valid ORF: ✓
+  Longest ORF: 163-1198 (1035 bp)
+
+Transcript: ENST00000714359
+  Sequence Length: 2383 bp
+  GC Content: 53.5%
+  ORFs Found: 14
+  Valid ORF: ✓
+  Longest ORF: 117-1299 (1182 bp)
+
+Transcript: ENST00000905353
+  Sequence Length: 1336 bp
+  GC Content: 58.2%
+  ORFs Found: 14
+  Valid ORF: ✓
+  Longest ORF: 95-1277 (1182 bp)
+
+Transcript: ENST00000923566
+  Sequence Length: 2512 bp
+  GC Content: 52.7%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 144-1326 (1182 bp)
+
+Transcript: ENST00000923567
+  Sequence Length: 2639 bp
+  GC Content: 52.7%
+  ORFs Found: 19
+  Valid ORF: ✓
+  Longest ORF: 221-1445 (1224 bp)
+
+Transcript: ENST00000923568
+  Sequence Length: 2554 bp
+  GC Content: 52.9%
+  ORFs Found: 19
+  Valid ORF: ✓
+  Longest ORF: 151-1366 (1215 bp)
+
+Transcript: ENST00000923569
+  Sequence Length: 2555 bp
+  GC Content: 53.2%
+  ORFs Found: 20
+  Valid ORF: ✓
+  Longest ORF: 63-1365 (1302 bp)
+
+Transcript: ENST00000949117
+  Sequence Length: 2519 bp
+  GC Content: 53.4%
+  ORFs Found: 18
+  Valid ORF: ✓
+  Longest ORF: 142-1327 (1185 bp)
+
