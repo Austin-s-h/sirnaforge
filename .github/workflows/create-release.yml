@@ -1,262 +1,240 @@
-name: 🚀 Create Release
-
-on:
+true:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g., v0.1.0)'
-        required: true
-        type: string
-      prerelease:
-        description: 'Mark as pre-release'
-        required: false
-        default: true
-        type: boolean
-      generate_notes:
-        description: 'Auto-generate release notes'
-        required: false
-        default: true
-        type: boolean
-
+    inputs: null
+  version:
+    description: Release version (e.g., v0.1.0)
+    required: true
+    type: string
+  prerelease:
+    description: Mark as pre-release
+    required: false
+    default: true
+    type: boolean
+  generate_notes:
+    description: Auto-generate release notes
+    required: false
+    default: true
+    type: boolean
+  push_images:
+    description: Push Docker images to registries
+    required: false
+    default: true
+    type: boolean
 permissions:
   contents: write
   packages: write
-
+  attestations: write
+  id-token: write
 jobs:
   validate-and-prepare:
-    name: 🔍 Validate Release
+    name: "\U0001F50D Validate Release"
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       changelog: ${{ steps.changelog.outputs.content }}
-    
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+    - name: "\U0001F4E5 Checkout code"
+      uses: actions/checkout@v4
+    - name: "\U0001F40D Set up Python"
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: "\u26A1 Install uv CLI"
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+    - name: "\U0001F4E6 Install dependencies"
+      run: uv sync --group dev
+    - name: "\U0001F50D Validate version format"
+      id: version
+      run: "VERSION=\"${{ github.event.inputs.version }}\"\nVERSION=${VERSION#v}\n\
+        echo \"version=$VERSION\" >> $GITHUB_OUTPUT\nif [[ ! $VERSION =~ ^[0-9]+\\\
+        .[0-9]+\\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then\n  echo \"\u274C Invalid version\
+        \ format: $VERSION\"\n  exit 1\nfi\n"
+    - name: "\U0001F50D Check pyproject.toml version"
+      run: 'PYPROJECT_VERSION=$(grep ''^version = '' pyproject.toml | sed ''s/version
+        = "\(.*\)"/\1/'')
 
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+        echo "pyproject.toml version: $PYPROJECT_VERSION"
 
-      - name: ⚡ Install uv CLI
-        uses: astral-sh/setup-uv@v6
-        with:
-          activate-environment: false
-          enable-cache: true
+        '
+    - name: "\U0001F9EA Run tests to ensure quality"
+      run: 'echo "Running quick test suite to ensure release quality..."
 
-      - name: 📦 Install dependencies
-        run: uv sync --group dev
+        make test-fast
 
-      - name: 🔍 Validate version format
-        id: version
-        run: |
-          VERSION="${{ inputs.version }}"
-          # Remove 'v' prefix if present
-          VERSION=${VERSION#v}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          
-          # Validate semver format
-          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
-            echo "❌ Invalid version format: $VERSION"
-            echo "Expected format: X.Y.Z or X.Y.Z-suffix (e.g., 0.1.0, 0.1.0-beta1)"
-            exit 1
-          fi
-          
-          echo "✅ Version format valid: $VERSION"
-
-      - name: 🔍 Check pyproject.toml version
-        run: |
-          PYPROJECT_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          RELEASE_VERSION="${{ steps.version.outputs.version }}"
-          
-          echo "pyproject.toml version: $PYPROJECT_VERSION"
-          echo "Release version: $RELEASE_VERSION"
-          
-          if [ "$PYPROJECT_VERSION" != "$RELEASE_VERSION" ]; then
-            echo "⚠️  Version mismatch between pyproject.toml ($PYPROJECT_VERSION) and release ($RELEASE_VERSION)"
-            echo "This is OK if you're releasing a different version than what's in main branch"
-          else
-            echo "✅ Versions match!"
-          fi
-
-      - name: 🧪 Run tests to ensure quality
-        run: |
-          echo "Running quick test suite to ensure release quality..."
-          make test-fast
-
-      - name: 📋 Prepare changelog excerpt
-        id: changelog
-        run: |
-          if [ -f CHANGELOG.md ]; then
-            # Extract changelog section for this version
-            VERSION="${{ steps.version.outputs.version }}"
-            
-            # Try to find version section in changelog
-            SECTION=$(sed -n "/## \[${VERSION}\]/,/## \[/p" CHANGELOG.md | sed '$d')
-            
-            if [ -n "$SECTION" ]; then
-              echo "Found changelog section for version $VERSION"
-              echo "content<<EOF" >> $GITHUB_OUTPUT
-              echo "$SECTION" >> $GITHUB_OUTPUT
-              echo "EOF" >> $GITHUB_OUTPUT
-            else
-              echo "No specific changelog section found for $VERSION"
-              echo "content=No specific changelog entry found for this version." >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "No CHANGELOG.md found"
-            echo "content=No changelog available." >> $GITHUB_OUTPUT
-          fi
-
+        '
+    - name: "\U0001F4CB Prepare changelog excerpt"
+      id: changelog
+      run: "if [ -f CHANGELOG.md ]; then\n  VERSION=\"${{ steps.version.outputs.version\
+        \ }}\"\n  SECTION=$(sed -n \"/## \\[${VERSION}\\]/,/## \\[/p\" CHANGELOG.md\
+        \ | sed '$d')\n  if [ -n \"$SECTION\" ]; then\n    echo \"content<<EOF\" >>\
+        \ $GITHUB_OUTPUT\n    echo \"$SECTION\" >> $GITHUB_OUTPUT\n    echo \"EOF\"\
+        \ >> $GITHUB_OUTPUT\n  else\n    echo \"content=No specific changelog entry\
+        \ found for this version.\" >> $GITHUB_OUTPUT\n  fi\nelse\n  echo \"content=No\
+        \ changelog available.\" >> $GITHUB_OUTPUT\nfi\n"
   create-release:
-    name: 🏷️ Create GitHub Release
+    name: "\U0001F3F7\uFE0F Create GitHub Release"
     runs-on: ubuntu-latest
     needs: validate-and-prepare
     outputs:
       release-id: ${{ steps.create.outputs.id }}
       upload-url: ${{ steps.create.outputs.upload_url }}
-    
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+    - name: "\U0001F4E5 Checkout code"
+      uses: actions/checkout@v4
+    - name: "\U0001F3F7\uFE0F Create Git tag"
+      run: 'git config user.name "github-actions[bot]"
 
-      - name: 🏷️ Create Git tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          VERSION="v${{ needs.validate-and-prepare.outputs.version }}"
-          git tag -a "$VERSION" -m "Release $VERSION"
-          git push origin "$VERSION"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: 🚀 Create GitHub Release
-        id: create
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ needs.validate-and-prepare.outputs.version }}
-          release_name: "siRNAforge v${{ needs.validate-and-prepare.outputs.version }}"
-          body: |
-            # 🧬 siRNAforge v${{ needs.validate-and-prepare.outputs.version }}
-            
-            **Comprehensive siRNA design toolkit for gene silencing.**
-            
-            ## 📋 Release Notes
-            
-            ${{ needs.validate-and-prepare.outputs.changelog }}
-            
-            ## 🚀 Installation
-            
-            ### 📦 Python Package (PyPI)
-            ```bash
-            pip install sirnaforge==${{ needs.validate-and-prepare.outputs.version }}
-            ```
-            
-            ### 🐳 Docker Image
-            ```bash
-            # Docker Hub
-            docker pull ${{ secrets.DOCKER_USERNAME }}/sirnaforge:${{ needs.validate-and-prepare.outputs.version }}
-            
-            # GitHub Container Registry
-            docker pull ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}
-            ```
-            
-            ### 📚 Documentation
-            - [Getting Started](https://austin-s-h.github.io/sirnaforge/getting_started.html)
-            - [CLI Reference](https://austin-s-h.github.io/sirnaforge/CLI_REFERENCE.html)
-            - [API Documentation](https://austin-s-h.github.io/sirnaforge/api_reference.html)
-            
-            ## 🧪 Quick Test
-            ```bash
-            # Test with Docker
-            docker run --rm ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }} sirnaforge --help
-            
-            # Test with pip
-            sirnaforge --help
-            ```
-            
-            ---
-            
-            **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ needs.validate-and-prepare.outputs.version }}...HEAD
-          draft: false
-          prerelease: ${{ inputs.prerelease }}
+        VERSION="v${{ needs.validate-and-prepare.outputs.version }}"
 
-  trigger-docker-build:
-    name: 🐳 Trigger Docker Build
+        git tag -a "$VERSION" -m "Release $VERSION"
+
+        git push origin "$VERSION"
+
+        '
+    - name: "\U0001F680 Create GitHub Release"
+      id: create
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.validate-and-prepare.outputs.version }}
+        release_name: siRNAforge v${{ needs.validate-and-prepare.outputs.version }}
+        body: "# \U0001F9EC siRNAforge v${{ needs.validate-and-prepare.outputs.version\
+          \ }}\n${{ needs.validate-and-prepare.outputs.changelog }}\n"
+        draft: false
+        prerelease: ${{ github.event.inputs.prerelease }}
+  docker-build-publish:
+    name: "\U0001F433 Build and Publish Docker Images"
     runs-on: ubuntu-latest
-    needs: [validate-and-prepare, create-release]
-    
+    needs:
+    - validate-and-prepare
+    - create-release
+    if: ${{ github.event.inputs.push_images == 'true' }}
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+    - name: "\U0001F4E5 Checkout code"
+      uses: actions/checkout@v4
+    - name: "\U0001F3F7\uFE0F Checkout release tag"
+      run: 'git fetch origin
 
-      - name: 🏷️ Checkout release tag
-        run: |
-          git fetch origin
-          git checkout v${{ needs.validate-and-prepare.outputs.version }}
+        git checkout v${{ needs.validate-and-prepare.outputs.version }}
 
-      - name: 🐳 Trigger Docker Publish Workflow
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const response = await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'publish-docker.yml',
-              ref: 'v${{ needs.validate-and-prepare.outputs.version }}',
-              inputs: {
-                push_images: 'true'
-              }
-            });
-            
-            console.log('Docker build workflow triggered:', response.status);
+        '
+    - name: "\U0001F510 Log in to Docker Hub"
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    - name: "\U0001F510 Log in to GHCR"
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: "\U0001F3D7\uFE0F Set up Docker Buildx"
+      uses: docker/setup-buildx-action@v2
+      with:
+        driver-opts: 'network=host
 
-  wait-for-docker:
-    name: ⏳ Wait for Docker Build
+          '
+    - name: "\U0001F4CB Extract version from pyproject.toml"
+      id: version
+      run: 'VERSION=$(grep ''^version = '' pyproject.toml | sed ''s/version = "\(.*\)"/\1/'')
+
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+        '
+    - name: "\U0001F4CB Docker metadata"
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: '${{ secrets.DOCKER_USERNAME }}/sirnaforge
+
+          ghcr.io/${{ github.repository }}
+
+          '
+        tags: 'type=raw,value=${{ steps.version.outputs.version }}
+
+          type=raw,value=latest,enable={{is_default_branch}}
+
+          '
+    - name: "\U0001F433 Build and push Docker images"
+      id: push
+      uses: docker/build-push-action@v3
+      with:
+        context: .
+        file: ./docker/Dockerfile
+        push: ${{ github.event.inputs.push_images == 'true' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        platforms: linux/amd64,linux/arm64
+    - name: "\U0001F510 Generate artifact attestation"
+      if: ${{ github.event.inputs.push_images == 'true' }}
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-name: ghcr.io/${{ github.repository }}
+        subject-digest: ${{ steps.push.outputs.digest }}
+        push-to-registry: true
+  docker-integration-tests:
+    name: "\U0001F9EA Docker Integration Tests"
     runs-on: ubuntu-latest
-    needs: [validate-and-prepare, create-release, trigger-docker-build]
-    
+    needs:
+    - validate-and-prepare
+    - docker-build-publish
+    if: always()
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+    - name: "\U0001F4E5 Checkout code"
+      uses: actions/checkout@v4
+    - name: "\U0001F40D Set up Python"
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: "\u26A1 Install uv CLI"
+      uses: astral-sh/setup-uv@v6
+    - name: "\U0001F4E6 Install test dependencies"
+      run: uv pip install --system pytest pytest-docker
+    - name: "\U0001F433 Pull Docker image"
+      run: docker pull ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version
+        }}
+    - name: "\U0001F9EA Run Docker integration tests"
+    run: "export SIRNAFORGE_DOCKER_IMAGE=ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version\
+      \ }}\npytest tests/docker/ -v --tb=short -m docker\n\n- name: \"\U0001F4CA Upload\
+      \ test results\"\n"
+    uses: actions/upload-artifact@v4
+    with:
+      name: docker-test-results-${{ needs.validate-and-prepare.outputs.version }}
+      path: 'pytest-results.xml
 
-      - name: ⏳ Wait for Docker workflow
-        run: |
-          echo "Waiting for Docker build to complete..."
-          echo "You can monitor the progress at:"
-          echo "https://github.com/${{ github.repository }}/actions/workflows/publish-docker.yml"
-          
-          # Wait a bit for the workflow to start
-          sleep 30
-          
-          # Check workflow status (simplified - you might want more sophisticated polling)
-          echo "✅ Docker build has been triggered"
-          echo "The Docker images should be available at:"
-          echo "- Docker Hub: ${{ secrets.DOCKER_USERNAME }}/sirnaforge:${{ needs.validate-and-prepare.outputs.version }}"
-          echo "- GHCR: ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}"
+        docker-test-*.log
 
+        '
+      retention-days: 7
   finalize-release:
-    name: ✅ Finalize Release
+    name: "\u2705 Finalize Release"
     runs-on: ubuntu-latest
-    needs: [validate-and-prepare, create-release, wait-for-docker]
+    needs:
+    - validate-and-prepare
+    - create-release
+    - docker-build-publish
+    - docker-integration-tests
     if: always() && needs.create-release.result == 'success'
-    
     steps:
-      - name: 📊 Release Summary
-        run: |
-          echo "# 🎉 Release v${{ needs.validate-and-prepare.outputs.version }} Complete!"
-          echo ""
-          echo "## 📦 Artifacts Published:"
-          echo "- ✅ GitHub Release: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.validate-and-prepare.outputs.version }}"
-          echo "- 🐳 Docker Images:"
-          echo "  - ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}"
-          echo "  - ${{ secrets.DOCKER_USERNAME }}/sirnaforge:${{ needs.validate-and-prepare.outputs.version }}"
-          echo ""
-          echo "## 🚀 Next Steps:"
-          echo "1. Verify Docker images are available and working"
-          echo "2. Test the release with: docker run --rm ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }} sirnaforge --help"
-          echo "3. Monitor for any issues and prepare patches if needed"
-          echo "4. Celebrate! 🎉"
+    - name: "\U0001F4CA Release Summary"
+    run: "echo \"# \U0001F389 Release v${{ needs.validate-and-prepare.outputs.version\
+      \ }} Complete!\"\necho \"\"\necho \"## \U0001F4E6 Artifacts Published:\"\necho\
+      \ \"- \u2705 GitHub Release: https://github.com/${{ github.repository }}/releases/tag/v${{\
+      \ needs.validate-and-prepare.outputs.version }}\"\nif [ \"${{ github.event.inputs.push_images\
+      \ }}\" = \"true\" ]; then\n  echo \"- \U0001F433 Docker Images:\"\n  echo \"\
+      \  - ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version\
+      \ }}\"\n  echo \"  - ${{ secrets.DOCKER_USERNAME }}/sirnaforge:${{ needs.validate-and-prepare.outputs.version\
+      \ }}\"\n  echo \"- \U0001F9EA Docker Integration Tests: Passed\"\nelse\n  echo\
+      \ \"- \U0001F433 Docker Images: Skipped (push_images=false)\"\nfi\necho \"\"\
+      \necho \"## \U0001F680 Next Steps:\"\necho \"1. Verify Docker images are available\
+      \ and working (if pushed)\"\necho \"2. Test the release with: docker run --rm\
+      \ ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version\
+      \ }} sirnaforge --help\"\necho \"3. Monitor for any issues and prepare patches\
+      \ if needed\"\necho \"4. Celebrate! \U0001F389\"\n"

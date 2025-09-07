@@ -58,7 +58,7 @@ dev = [
     "pandas-stubs>=2.1.0",
     "codespell>=2.4.0",
     "bandit[toml]>=1.7.0",
-    "safety>=3.0.0",
+    "safety>=3.0.0,<4.0.0",
 ]
 pipeline = [
     "nextflow>=25.04.0",
@@ -133,7 +133,7 @@ line-length = 120
 exclude = [
     # Genomic file formats (glob patterns)
     "**/*.fasta",
-    "**/*.fa", 
+    "**/*.fa",
     "**/*.fastq",
     "**/*.fq",
     "**/*.vcf",
@@ -166,7 +166,7 @@ exclude = [
     # Standard exclusions
     ".bzr",
     ".direnv",
-    ".eggs", 
+    ".eggs",
     ".git",
     ".git-rewrite-history",
     ".hg",
@@ -174,14 +174,14 @@ exclude = [
     ".nox",
     ".pants.d",
     ".pytype",
-    ".ruff_cache", 
+    ".ruff_cache",
     ".svn",
     ".tox",
     ".venv",
     "__pypackages__",
     "_build",
     "buck-out",
-    "build", 
+    "build",
     "dist",
     "node_modules",
     "venv",
