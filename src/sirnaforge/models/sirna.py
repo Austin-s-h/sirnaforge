@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 
 class FilterCriteria(BaseModel):
