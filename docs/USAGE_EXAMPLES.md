@@ -549,4 +549,4 @@ done
 
 ---
 
-*For more examples and use cases, see the [examples/](../examples/) directory and the [CLI Reference](CLI_REFERENCE.md).*
+*For more examples and use cases, see the [examples directory](examples/USAGE_EXAMPLES.md) and the [CLI Reference](CLI_REFERENCE.md).*

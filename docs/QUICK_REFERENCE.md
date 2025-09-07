@@ -69,7 +69,7 @@ make docs-cli && make docs-examples
 
 - [Full CLI Reference](CLI_REFERENCE.md)
 - [Usage Examples](USAGE_EXAMPLES.md)
-- [Main README](../README.md)
+- [Main README](README.md)
 
 ---
 *siRNAforge — Professional siRNA design for modern researchers*

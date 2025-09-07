@@ -371,7 +371,7 @@ class Config(BaseModel):
 
 ### 1. Complete Workflow
 
-```mermaid
+```{mermaid}
 graph TD
     A[Gene Query] --> B[Gene Search]
     B --> C[Transcript Retrieval]
@@ -385,7 +385,7 @@ graph TD
 
 ### 2. Component Interaction
 
-```mermaid
+```{mermaid}
 graph LR
     CLI --> Workflow
     Workflow --> Core

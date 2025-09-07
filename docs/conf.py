@@ -27,6 +27,7 @@ extensions = [
     "sphinx_autodoc_typehints",
     "myst_parser",
     "sphinx_design",
+    "sphinxcontrib.mermaid",
 ]
 
 templates_path = ["_templates"]
@@ -123,7 +124,27 @@ myst_enable_extensions = [
     "tasklist",
 ]
 
-myst_fence_as_directive = ["mermaid"]
+myst_fence_as_directive = []
+
+# Mermaid configuration for GitHub Pages compatibility
+mermaid_version = "10.6.1"  # Use a specific stable version
+mermaid_init_js = """
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'default',
+    themeVariables: {
+        primaryColor: '#007acc',
+        primaryTextColor: '#ffffff',
+        primaryBorderColor: '#005a9e',
+        lineColor: '#333333',
+        sectionBkgColor: '#f0f0f0'
+    },
+    flowchart: {
+        useMaxWidth: true,
+        htmlLabels: true
+    }
+});
+"""
 
 # Intersphinx mapping
 intersphinx_mapping = {

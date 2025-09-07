@@ -54,6 +54,14 @@ Comprehensive siRNA design toolkit for gene silencing with multi-species off-tar
    sitemap
    glossary
 
+.. toctree::
+   :maxdepth: 1
+   :caption: 📖 Additional Resources:
+   :hidden:
+
+   README
+   examples/USAGE_EXAMPLES
+
 Quick Navigation
 ================
 
