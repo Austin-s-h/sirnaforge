@@ -151,7 +151,10 @@ jobs:
       uses: docker/setup-buildx-action@v2
       with:
         driver-opts: 'network=host'
-    - name: "📋 Extract version from pyproject.toml"
+    - name: "Compute lowercase repo for GHCR"
+      id: repo
+      run: echo "repo_lc=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+    - name: "Extract version from pyproject.toml"
       id: version
       run: |
         VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
@@ -162,7 +165,7 @@ jobs:
       with:
         images: |
           ${{ secrets.DOCKER_USERNAME }}/sirnaforge
-          ghcr.io/${{ github.repository }}
+          ghcr.io/${{ steps.repo.outputs.repo_lc }}
         tags: |
           type=raw,value=${{ steps.version.outputs.version }}
           type=raw,value=latest,enable={{is_default_branch}}
@@ -180,8 +183,8 @@ jobs:
       if: ${{ github.event.inputs.push_images == 'true' }}
       uses: actions/attest-build-provenance@v3
       with:
-        subject-name: ghcr.io/${{ github.repository }}
-        subject-digest: ${{ steps.push.outputs.digest }}
+        subject-name: "ghcr.io/${{ steps.repo.outputs.repo_lc }}"
+        subject-digest: "${{ steps.push.outputs.digest }}"
         push-to-registry: true
   docker-integration-tests:
     name: "🧪 Docker Integration Tests"
@@ -193,7 +196,10 @@ jobs:
     steps:
     - name: "📥 Checkout code"
       uses: actions/checkout@v4
-    - name: "🐍 Set up Python"
+    - name: "Compute lowercase repo for GHCR"
+      id: repo
+      run: echo "repo_lc=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+    - name: "Set up Python"
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
@@ -202,10 +208,10 @@ jobs:
     - name: "📦 Install test dependencies"
       run: uv pip install --system pytest pytest-docker
     - name: "🐳 Pull Docker image"
-      run: docker pull ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}
+      run: docker pull ghcr.io/${{ steps.repo.outputs.repo_lc }}:${{ needs.validate-and-prepare.outputs.version }}
     - name: "🧪 Run Docker integration tests"
       run: |
-        export SIRNAFORGE_DOCKER_IMAGE=ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}
+        export SIRNAFORGE_DOCKER_IMAGE=ghcr.io/${{ steps.repo.outputs.repo_lc }}:${{ needs.validate-and-prepare.outputs.version }}
         pytest tests/docker/ -v --tb=short -m docker
     - name: "📊 Upload test results"
       uses: actions/upload-artifact@v4
@@ -227,13 +233,15 @@ jobs:
     steps:
     - name: "📊 Release Summary"
       run: |
+        REPO_LC="${GITHUB_REPOSITORY,,}"
+        VERSION="${{ needs.validate-and-prepare.outputs.version }}"
         echo "# 🎉 Release v${{ needs.validate-and-prepare.outputs.version }} Complete!"
         echo ""
         echo "## 📦 Artifacts Published:"
-        echo "- ✅ GitHub Release: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.validate-and-prepare.outputs.version }}"
+        echo "- ✅ GitHub Release: https://github.com/${REPO_LC}/releases/tag/v${VERSION}"
         if [ "${{ github.event.inputs.push_images }}" = "true" ]; then
           echo "- 🐳 Docker Images:"
-          echo "  - ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }}"
+          echo "  - ghcr.io/${REPO_LC}:${VERSION}"
           echo "  - ${{ secrets.DOCKER_USERNAME }}/sirnaforge:${{ needs.validate-and-prepare.outputs.version }}"
           echo "- 🧪 Docker Integration Tests: Passed"
         else
@@ -242,6 +250,6 @@ jobs:
         echo ""
         echo "## 🚀 Next Steps:"
         echo "1. Verify Docker images are available and working (if pushed)"
-        echo "2. Test the release with: docker run --rm ghcr.io/${{ github.repository }}:${{ needs.validate-and-prepare.outputs.version }} sirnaforge --help"
+        echo "2. Test the release with: docker run --rm ghcr.io/${REPO_LC}:${VERSION} sirnaforge --help"
         echo "3. Monitor for any issues and prepare patches if needed"
         echo "4. Celebrate! 🎉"
