@@ -108,17 +108,20 @@ jobs:
       id: create
       run: |
         VERSION="v${{ needs.validate-and-prepare.outputs.version }}"
-        RELEASE_BODY="# 🧬 siRNAforge v${{ needs.validate-and-prepare.outputs.version }}
-        ${{ needs.validate-and-prepare.outputs.changelog }}"
-
         PRERELEASE_FLAG=""
         if [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
           PRERELEASE_FLAG="--prerelease"
         fi
 
+        # Write release notes to a file without performing shell expansion
+        cat > RELEASE_NOTES.md <<'EOF'
+        # 🧬 siRNAforge v${{ needs.validate-and-prepare.outputs.version }}
+        ${{ needs.validate-and-prepare.outputs.changelog }}
+        EOF
+
         gh release create "$VERSION" \
           --title "siRNAforge $VERSION" \
-          --notes "$RELEASE_BODY" \
+          --notes-file RELEASE_NOTES.md \
           $PRERELEASE_FLAG
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
