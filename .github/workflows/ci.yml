@@ -2,9 +2,9 @@ name: 🧬 siRNA Design Toolkit CI/CD
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ master, dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
   release:
     types: [ published ]
 
