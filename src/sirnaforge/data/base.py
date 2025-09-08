@@ -3,7 +3,7 @@
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union, cast
+from typing import Callable, Optional, TypeVar, Union, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -11,6 +11,11 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+# mypy-friendly typed alias for pydantic field_validator
+F = TypeVar("F", bound=Callable[..., object])
+FieldValidatorFactory = Callable[..., Callable[[F], F]]
+field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class DatabaseType(str, Enum):
@@ -61,7 +66,7 @@ class TranscriptInfo(BaseModel):
 
     model_config = ConfigDict(use_enum_values=True)
 
-    @field_validator("sequence")
+    @field_validator_typed("sequence")
     @classmethod
     def validate_sequence(cls, v: Optional[str]) -> Optional[str]:
         """Validate RNA sequence."""
@@ -116,11 +121,11 @@ class BaseEnsemblClient:
                 session.get(url, headers=headers) as response,
             ):
                 if response.status == 200:
-                    sequence = await response.text()
+                    sequence_text: str = str(await response.text())
                     # Remove FASTA header if present
-                    if sequence.startswith(">"):
-                        sequence = "\n".join(sequence.split("\n")[1:])
-                    return sequence.replace("\n", "").upper()
+                    if sequence_text.startswith(">"):
+                        sequence_text = "\n".join(sequence_text.split("\n")[1:])
+                    return sequence_text.replace("\n", "").upper()
                 logger.debug(f"Failed to get {seq_type} for {identifier}: HTTP {response.status}")
                 return None
         except Exception as e:

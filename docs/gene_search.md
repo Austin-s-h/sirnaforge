@@ -28,6 +28,9 @@ uv run sirna search MYC --all -o myc_all_databases.fasta
 
 # Get metadata only (no sequences)
 uv run sirna search EGFR --no-sequence
+
+# Use a local FASTA as input for the full workflow (skip gene search)
+uv run sirna workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
 ```
 
 ### Python API Usage
@@ -54,16 +57,16 @@ from sirna_design.data.gene_search import GeneSearcher, DatabaseType
 
 async def search_genes():
     searcher = GeneSearcher()
-    
+
     # Single database search
     result = await searcher.search_gene("BRCA1", DatabaseType.ENSEMBL)
-    
+
     # Multi-database search
     results = await searcher.search_multiple_databases(
-        "MYC", 
+        "MYC",
         databases=[DatabaseType.ENSEMBL, DatabaseType.REFSEQ]
     )
-    
+
     return results
 
 # Run the search
@@ -133,11 +136,11 @@ if result.success:
     # Save transcripts to FASTA
     searcher = GeneSearcher()
     searcher.save_transcripts_fasta(result.transcripts, "tp53.fasta")
-    
+
     # Design siRNAs
     designer = SiRNADesigner(DesignParameters())
     sirna_results = designer.design_from_file("tp53.fasta")
-    
+
     print(f"Designed {len(sirna_results.candidates)} siRNA candidates")
 ```
 

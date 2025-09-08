@@ -39,19 +39,24 @@ class WorkflowConfig:
         self,
         output_dir: Path,
         gene_query: str,
+        input_fasta: Optional[Path] = None,
         database: DatabaseType = DatabaseType.ENSEMBL,
         design_params: Optional[DesignParameters] = None,
         top_n_for_offtarget: int = 10,
         nextflow_config: Optional[dict] = None,
         genome_species: Optional[list[str]] = None,
+        log_file: Optional[str] = None,
     ):
         self.output_dir = Path(output_dir)
-        self.gene_query = gene_query
+        # If input_fasta is provided, use its stem as the gene_query identifier
+        self.input_fasta = Path(input_fasta) if input_fasta else None
+        self.gene_query = gene_query if not self.input_fasta else self.input_fasta.stem
         self.database = database
         self.design_params = design_params or DesignParameters()
         self.top_n_for_offtarget = top_n_for_offtarget
         self.nextflow_config = nextflow_config or {}
         self.genome_species = genome_species or ["human", "rat", "rhesus"]
+        self.log_file = log_file
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +133,22 @@ class SiRNAWorkflow:
         with summary_file.open("w") as f:
             json.dump(final_results, f, indent=2, default=str)
 
+        # Save a small manifest that records invocation parameters and environment pointers
+        manifest = {
+            "gene_query": self.config.gene_query,
+            "database": self.config.database.value,
+            "output_dir": str(self.config.output_dir),
+            "processing_time": total_time,
+            "start_time": start_time,
+            "end_time": time.time(),
+            "tool_versions": final_results.get("design_summary", {}).get("tool_versions", {}),
+            "log_file": self.config.log_file,  # Effective log file path if configured
+        }
+
+        manifest_file = self.config.output_dir / "workflow_manifest.json"
+        with manifest_file.open("w") as mf:
+            json.dump(manifest, mf, indent=2, default=str)
+
         console.print(f"\n✅ [bold green]Workflow completed in {total_time:.2f}s[/bold green]")
         console.print(f"📊 Results saved to: [blue]{self.config.output_dir}[/blue]")
 
@@ -136,8 +157,38 @@ class SiRNAWorkflow:
     async def step1_retrieve_transcripts(self, progress: Progress) -> list[TranscriptInfo]:
         """Step 1: Retrieve and validate transcript sequences."""
         task = progress.add_task("[yellow]Fetching transcripts...", total=3)
+        # If an input FASTA was provided, read sequences directly and create TranscriptInfo objects
+        if self.config.input_fasta:
+            sequences = FastaUtils.read_fasta(self.config.input_fasta)
+            progress.advance(task)
 
-        # Search for gene
+            transcripts: list[TranscriptInfo] = []
+            for header, seq in sequences:
+                # header may contain transcript id and metadata; use first token as id
+                tid = header.split()[0]
+                transcripts.append(
+                    TranscriptInfo(
+                        transcript_id=tid,
+                        transcript_name=None,
+                        transcript_type="unknown",
+                        gene_id=self.config.gene_query,
+                        gene_name=self.config.gene_query,
+                        sequence=seq,
+                        length=len(seq),
+                        database=self.config.database,
+                    )
+                )
+
+            # Save a normalized transcripts FASTA in the output directory
+            transcript_file = self.config.output_dir / "transcripts" / f"{self.config.gene_query}_transcripts.fasta"
+            sequences_out = [(f"{t.transcript_id} {t.gene_name}", t.sequence or "") for t in transcripts]
+            FastaUtils.save_sequences_fasta(sequences_out, transcript_file)
+            progress.advance(task)
+
+            console.print(f"📄 Loaded {len(transcripts)} sequences from FASTA: {self.config.input_fasta}")
+            return transcripts
+
+        # Otherwise perform a gene search
         gene_result = await self.gene_searcher.search_gene(
             self.config.gene_query, self.config.database, include_sequence=True
         )
@@ -524,6 +575,7 @@ class SiRNAWorkflow:
 async def run_sirna_workflow(
     gene_query: str,
     output_dir: str,
+    input_fasta: Optional[str] = None,
     database: str = "ensembl",
     top_n_candidates: int = 20,
     top_n_offtarget: int = 10,
@@ -531,6 +583,7 @@ async def run_sirna_workflow(
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
+    log_file: Optional[str] = None,
 ) -> dict:
     """
     Run complete siRNA design workflow.
@@ -562,10 +615,12 @@ async def run_sirna_workflow(
     config = WorkflowConfig(
         output_dir=Path(output_dir),
         gene_query=gene_query,
+        input_fasta=Path(input_fasta) if input_fasta else None,
         database=database_enum,
         design_params=design_params,
         top_n_for_offtarget=top_n_offtarget,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        log_file=log_file,
     )
 
     # Run workflow
@@ -575,8 +630,6 @@ async def run_sirna_workflow(
 
 if __name__ == "__main__":
     # Example usage
-    import asyncio
-
     async def main() -> None:
         results = await run_sirna_workflow(
             gene_query="TP53", output_dir="/tmp/sirna_workflow_test", top_n_candidates=20, top_n_offtarget=10

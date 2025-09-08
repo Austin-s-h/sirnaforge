@@ -2,9 +2,9 @@
 
 <div align="center">
   <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="200"/>
-  
+
   **siRNAforge - Multi-species gene to siRNA design, off-target prediction, and ranking. Comprehensive siRNA design toolkit for gene silencing.**
-  
+
   [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
   [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
   [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -14,7 +14,7 @@
 ## ✨ Key Features
 
 - 🎯 **Algorithm-driven design** - Comprehensive siRNA design with thermodynamic analysis
-- 🔍 **Off-target analysis** - Integrated genome-wide off-target prediction  
+- 🔍 **Off-target analysis** - Integrated genome-wide off-target prediction
 - 📊 **Rich scoring system** - Multi-component scoring with customizable weights
 - 🧪 **Secondary structure** - RNA folding prediction using ViennaRNA
 - 🐍 **Modern Python** - Type-safe code with Pydantic models and rich CLI
@@ -36,8 +36,9 @@ cd sirnaforge
 docker build -f docker/Dockerfile -t sirnaforge:latest .
 
 # Quick start - complete workflow
-docker run -v $(pwd):/workspace -w /workspace sirnaforge:latest \
-    sirnaforge workflow TP53 --output-dir results
+```bash
+docker run -v $(pwd):/workspace -w /workspace ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 --output-dir results
 ```
 
 The Docker build uses the `docker/environment.yml` conda environment specification to install all bioinformatics tools and dependencies via micromamba, ensuring consistent versions across all environments.
@@ -58,7 +59,7 @@ make install-dev
 **🐳 Docker (Recommended):**
 The comprehensive Docker image includes everything via the `docker/environment.yml` conda environment:
 - ✅ Nextflow (≥25.04.0) - Workflow management
-- ✅ BWA-MEM2 (≥2.2.1) - Sequence alignment  
+- ✅ BWA-MEM2 (≥2.2.1) - Sequence alignment
 - ✅ SAMtools (≥1.19.2) - BAM/SAM processing
 - ✅ ViennaRNA (≥2.7.0) - RNA folding prediction
 - ✅ AWS CLI (≥2.0) - S3 genome downloads
@@ -74,7 +75,7 @@ micromamba activate nextflow
 
 **Deployment Options:**
 - 🐳 **Docker** - Complete environment in one image
-- ☁️ **AWS Batch** - Scalable cloud computing  
+- ☁️ **AWS Batch** - Scalable cloud computing
 - 🖥️ **HPC/SLURM** - High-performance computing
 - ⚙️ **Kubernetes** - Container orchestration
 
@@ -94,6 +95,9 @@ uv run sirnaforge search TP53 -o transcripts.fasta
 
 # Validate input files
 uv run sirnaforge validate input.fasta
+
+# Run workflow using a local FASTA (skip the gene search step)
+uv run sirnaforge workflow TP53 --input-fasta transcripts.fasta --output-dir results_from_fasta
 
 # Show help
 uv run sirnaforge --help
@@ -137,7 +141,7 @@ for candidate in results.top_candidates:
 sirnaforge/
 ├── 📦 src/sirnaforge/           # Main package (modern src-layout)
 │   ├── 🎯 core/                # Core algorithms (design, scoring, filtering)
-│   ├── 📊 models/              # Pydantic data models  
+│   ├── 📊 models/              # Pydantic data models
 │   ├── 💾 data/                # Data utilities (Ensembl, file I/O)
 │   ├── 🔧 pipeline/            # Nextflow integration
 │   ├── 🛠️ utils/               # Helper utilities
@@ -283,6 +287,30 @@ uv run pytest tests/pipeline/       # Pipeline tests
 
 # With coverage
 uv run pytest --cov=sirnaforge --cov-report=html
+
+
+## 📚 Documentation (Makefile)
+
+The repository `Makefile` includes convenient targets to generate documentation locally. Key targets:
+
+- `make docs` — builds Sphinx HTML docs into `docs/_build/html/` (requires `uv sync --group docs`).
+- `make docs-cli` — generates `docs/CLI_REFERENCE.md` by invoking the CLI help for each command.
+- `make docs-examples` — generates `docs/examples/USAGE_EXAMPLES.md`.
+- `make docs-full` / `make docs-full-ci` — generate a full docs set and place HTML output in `docs/_build/html/` and generated markdown under `docs/`.
+
+Generated files you can expect after running the Makefile targets:
+
+- `docs/_build/html/` — built Sphinx HTML site
+- `docs/CLI_REFERENCE.md` — CLI reference (generated from `sirnaforge --help`)
+- `docs/examples/USAGE_EXAMPLES.md` — usage examples
+- `docs/README.md` — top-level docs summary (created by `make docs-full`)
+
+Run the quick validation to ensure docs build correctly:
+
+```bash
+make docs-cli docs-examples
+make docs
+```
 ```
 
 ## 🤝 Contributing
@@ -304,7 +332,7 @@ MIT License - see [`LICENSE`](LICENSE) file for details.
 ## 🙏 Acknowledgments
 
 - **ViennaRNA** - RNA secondary structure prediction
-- **Bowtie/BWA** - Sequence alignment capabilities  
+- **Bowtie/BWA** - Sequence alignment capabilities
 - **Python Scientific Stack** - NumPy, Pandas, BioPython
 - **Modern Python Tooling** - uv, Pydantic, Typer, Rich
 - **AI Assistance** - Much of the code in this repository was generated with the assistance of AI agents. However, all of it was cobbled together and reviewed by a human.

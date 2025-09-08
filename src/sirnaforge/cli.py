@@ -3,7 +3,7 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 import typer
 from Bio import SeqIO
@@ -17,6 +17,7 @@ from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType
 from sirnaforge.data.gene_search import GeneSearcher, search_gene_sync, search_multiple_databases_sync
 from sirnaforge.models.sirna import DesignParameters, FilterCriteria
+from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
 
 app = typer.Typer(
@@ -25,6 +26,11 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 console = Console()
+
+# mypy-friendly alias for Typer command decorator
+T = TypeVar("T", bound=Callable[..., object])
+CommandDecorator = Callable[..., Callable[[T], T]]
+app_command: CommandDecorator = app.command
 
 
 def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
@@ -61,7 +67,7 @@ def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # t
     return canonical_file, len(canonical)
 
 
-@app.command()
+@app_command()
 def search(  # noqa: PLR0912
     query: str = typer.Argument(..., help="Gene ID, gene name, or transcript ID to search for"),
     output: Path = typer.Option(
@@ -280,9 +286,17 @@ def search(  # noqa: PLR0912
         raise typer.Exit(1)
 
 
-@app.command()
+@app_command()
 def workflow(
     gene_query: str = typer.Argument(..., help="Gene name or ID to analyze"),
+    input_fasta: Optional[Path] = typer.Option(
+        None,
+        "--input-fasta",
+        help="Path to an input FASTA file to use instead of performing a gene search",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
     output_dir: Path = typer.Option(
         Path("sirna_workflow_output"),
         "--output-dir",
@@ -341,6 +355,11 @@ def workflow(
         "-v",
         help="Enable verbose output",
     ),
+    log_file: Optional[Path] = typer.Option(
+        None,
+        "--log-file",
+        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
 ) -> None:
     """🧬 Run complete siRNA design workflow from gene query to off-target analysis."""
 
@@ -354,7 +373,7 @@ def workflow(
     console.print(
         Panel.fit(
             f"🧬 [bold blue]Complete siRNA Workflow[/bold blue]\n"
-            f"Gene Query: [cyan]{gene_query}[/cyan]\n"
+            f"Gene Query: [cyan]{gene_query if not input_fasta else input_fasta.name}[/cyan]\n"
             f"Database: [yellow]{database}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
@@ -375,9 +394,14 @@ def workflow(
         ) as progress:
             task = progress.add_task("Running complete siRNA design workflow...", total=None)
 
+            # Configure logging to file inside the output dir by default if not provided
+            effective_log = str(log_file) if log_file else str(Path(output_dir) / "logs" / "sirnaforge.log")
+            configure_logging(log_file=effective_log, level=os.getenv("SIRNAFORGE_LOG_LEVEL"))
+
             results = asyncio.run(
                 run_sirna_workflow(
                     gene_query=gene_query,
+                    input_fasta=str(input_fasta) if input_fasta else None,
                     output_dir=str(output_dir),
                     database=database,
                     top_n_candidates=top_n_candidates,
@@ -386,6 +410,7 @@ def workflow(
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,
+                    log_file=effective_log,
                 )
             )
 
@@ -441,7 +466,7 @@ def workflow(
         raise typer.Exit(1)
 
 
-@app.command()
+@app_command()
 def design(
     input_file: Path = typer.Argument(
         ...,
@@ -591,6 +616,8 @@ def design(
             candidates_table.add_column("Position", style="yellow")
             candidates_table.add_column("Sequence", style="green")
             candidates_table.add_column("GC%", style="magenta")
+            candidates_table.add_column("Hits", style="white")
+            candidates_table.add_column("Hit %", style="white")
             candidates_table.add_column("Score", style="red")
 
             for candidate in result.top_candidates[:5]:  # Show top 5
@@ -600,6 +627,8 @@ def design(
                     str(candidate.position),
                     candidate.guide_sequence,
                     f"{candidate.gc_content:.1f}",
+                    str(candidate.transcript_hit_count),
+                    f"{candidate.transcript_hit_fraction*100:.1f}%",
                     f"{candidate.composite_score:.1f}",
                 )
 
@@ -614,7 +643,7 @@ def design(
         raise typer.Exit(1)
 
 
-@app.command()
+@app_command()
 def validate(
     input_file: Path = typer.Argument(
         ...,
@@ -672,7 +701,7 @@ def validate(
         raise typer.Exit(1)
 
 
-@app.command()
+@app_command()
 def version() -> None:
     """📦 Show version information."""
 
@@ -693,7 +722,7 @@ def version() -> None:
         raise typer.Exit(1)
 
 
-@app.command()
+@app_command()
 def config() -> None:
     """⚙️  Show default configuration parameters."""
 

@@ -15,12 +15,6 @@ params.fasta_url = null
 params.outdir = 'indices'
 params.container = ''   // optional docker image to run indexing inside (set to image name to use)
 
-if (!params.species) {
-    error "--species is required"
-}
-if (!params.fasta_url) {
-    error "--fasta_url is required (can also be a local path)"
-}
 
 process BUILD_BWA_INDEX {
     tag { params.species }
@@ -91,6 +85,14 @@ process BUILD_BWA_INDEX {
 }
 
 workflow {
+    // Validate required params at workflow evaluation time
+    if (!params.species) {
+        error "--species is required"
+    }
+    if (!params.fasta_url) {
+        error "--fasta_url is required (can also be a local path)"
+    }
+
     // If the provided fasta_url points to a local file, pass its absolute path so the process can copy it.
     def fasta_arg = file(params.fasta_url).exists() ? file(params.fasta_url).toAbsolutePath().toString() : params.fasta_url
     BUILD_BWA_INDEX(params.species, fasta_arg)
