@@ -3,7 +3,6 @@
 from unittest.mock import patch
 
 import pytest
-
 from sirnaforge.data.gene_search import (
     DatabaseType,
     GeneInfo,

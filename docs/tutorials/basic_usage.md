@@ -97,7 +97,7 @@ head -11 tp53_analysis/sirna_design/TP53_top_candidates.tsv
 **Key Columns to Note:**
 - `sirna_id`: Unique identifier
 - `guide_sequence`: The antisense strand (21 nt)
-- `passenger_sequence`: The sense strand (21 nt)  
+- `passenger_sequence`: The sense strand (21 nt)
 - `position`: Location on transcript
 - `gc_content`: GC percentage
 - `composite_score`: Overall quality score
@@ -141,7 +141,7 @@ wc -l tp53_strict/sirna_design/TP53_top_candidates.tsv
 # Compare average GC content
 awk -F'\t' 'NR>1 {sum+=$6; count++} END {print "Average GC:", sum/count"%"}' \
   tp53_analysis/sirna_design/TP53_top_candidates.tsv
-  
+
 awk -F'\t' 'NR>1 {sum+=$6; count++} END {print "Average GC:", sum/count"%"}' \
   tp53_strict/sirna_design/TP53_top_candidates.tsv
 ```
@@ -261,14 +261,14 @@ uv run sirnaforge design --help
 Now that you understand basic usage:
 
 1. **{doc}`advanced_workflows`** - Multi-species analysis and optimization
-2. **{doc}`python_api`** - Automate workflows programmatically  
+2. **{doc}`python_api`** - Automate workflows programmatically
 3. **{doc}`pipeline_integration`** - Scale to large datasets
 4. **{doc}`custom_scoring`** - Develop specialized scoring functions
 
 ## Key Takeaways
 
-✅ **Complete Workflow**: `sirnaforge workflow` handles everything automatically  
-✅ **Quality Control**: Use GC content and composite scores to select candidates  
-✅ **Customization**: Adjust parameters based on your specific requirements  
-✅ **Validation**: Always validate inputs and examine outputs carefully  
+✅ **Complete Workflow**: `sirnaforge workflow` handles everything automatically
+✅ **Quality Control**: Use GC content and composite scores to select candidates
+✅ **Customization**: Adjust parameters based on your specific requirements
+✅ **Validation**: Always validate inputs and examine outputs carefully
 ✅ **Batch Processing**: Automate analysis of multiple genes efficiently

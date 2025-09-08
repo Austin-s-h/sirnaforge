@@ -36,12 +36,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 useMaxWidth: true
             }
         });
-        
+
         // Process all mermaid diagrams
         mermaid.run();
     };
     document.head.appendChild(script);
-    
+
     // Enhanced search functionality
     function enhanceSearch() {
         var searchInput = document.querySelector('input[type="search"]');
@@ -49,10 +49,10 @@ document.addEventListener('DOMContentLoaded', function() {
             searchInput.setAttribute('placeholder', '🔍 Search siRNAforge docs...');
         }
     }
-    
+
     // Call enhancements
     enhanceSearch();
-    
+
     // Add scroll-to-top functionality
     var scrollButton = document.createElement('button');
     scrollButton.innerHTML = '↑';
@@ -73,13 +73,13 @@ document.addEventListener('DOMContentLoaded', function() {
         font-size: 18px;
         box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     `;
-    
+
     scrollButton.addEventListener('click', function() {
         window.scrollTo({top: 0, behavior: 'smooth'});
     });
-    
+
     document.body.appendChild(scrollButton);
-    
+
     // Show/hide scroll button
     window.addEventListener('scroll', function() {
         if (window.pageYOffset > 300) {

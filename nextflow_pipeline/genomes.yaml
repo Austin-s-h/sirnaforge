@@ -22,7 +22,7 @@ rhesus:
 # human:
 #   index_prefix: /path/to/your/human/genome/index
 #   container: biocontainers/bwa-mem2:v2.2.1_cv1
-# 
+#
 # rat:
 #   index_prefix: /path/to/your/rat/genome/index
 #   container: biocontainers/bwa-mem2:v2.2.1_cv1

@@ -14,7 +14,7 @@ Comprehensive siRNA design toolkit for gene silencing with multi-species off-tar
    QUICK_REFERENCE
 
 .. toctree::
-   :maxdepth: 3  
+   :maxdepth: 3
    :caption: 📖 User Guides:
    :numbered:
 
@@ -74,7 +74,7 @@ Quick Navigation
 
       Start here for installation and your first siRNA design workflow
 
-   .. grid-item-card:: 📋 Quick Reference  
+   .. grid-item-card:: 📋 Quick Reference
       :link: QUICK_REFERENCE
       :link-type: doc
 
@@ -109,7 +109,7 @@ Features
 
 🎯 **Algorithm-driven design** - Comprehensive siRNA design with thermodynamic analysis
 
-🔍 **Off-target analysis** - Integrated genome-wide off-target prediction  
+🔍 **Off-target analysis** - Integrated genome-wide off-target prediction
 
 📊 **Rich scoring system** - Multi-component scoring with customizable weights
 
@@ -126,7 +126,7 @@ Search & Reference
    :columns: 3
 
    * :ref:`genindex` - General Index
-   * :ref:`modindex` - Module Index  
+   * :ref:`modindex` - Module Index
    * :ref:`search` - Search Documentation
    * :doc:`sitemap` - Complete Site Map
    * :doc:`glossary` - Terms & Definitions
@@ -136,5 +136,5 @@ Search & Reference
    * :doc:`tutorials/index` - All Tutorials
 
 .. todo::
-   
+
    Add comprehensive glossary of siRNA terminology and methodology references.

@@ -54,7 +54,7 @@ class DesignParameters(BaseModel):
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA length in nucleotides")
-    top_n: int = Field(default=10, ge=1, le=1000, description="Number of top candidates to return")
+    top_n: int = Field(default=50, ge=1, le=1000, description="Number of top candidates to return")
 
     # Filtering criteria
     filters: FilterCriteria = Field(default_factory=FilterCriteria)
@@ -68,7 +68,9 @@ class DesignParameters(BaseModel):
     predict_structure: bool = Field(default=True, description="Predict secondary structures")
 
     # File paths (optional)
+    # TODO: review snp incorporation feature
     snp_file: Optional[str] = Field(default=None, description="Path to SNP VCF file")
+    # Review genome index passing / FASTA selection
     genome_index: Optional[str] = Field(default=None, description="Path to genome index for off-targets")
 
 

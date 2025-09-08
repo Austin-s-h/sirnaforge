@@ -17,7 +17,7 @@ Tutorial Overview
 These tutorials provide step-by-step guidance for using siRNAforge effectively:
 
 - **Basic Usage**: Start here for your first siRNA design
-- **Python API**: Programmatic access and automation  
+- **Python API**: Programmatic access and automation
 - **Advanced Workflows**: Multi-gene analysis and optimization
 - **Pipeline Integration**: Nextflow workflows for large datasets
 - **Custom Scoring**: Developing application-specific scoring functions

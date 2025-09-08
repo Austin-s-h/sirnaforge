@@ -312,16 +312,16 @@ from pathlib import Path
 
 def run_sirnaforge_workflow(gene: str, output_dir: str = None, **kwargs):
     """Run siRNAforge workflow from Python"""
-    
+
     cmd = ["uv", "run", "sirnaforge", "workflow", gene]
-    
+
     if output_dir:
         cmd.extend(["--output-dir", output_dir])
-    
+
     # Add additional parameters
     for key, value in kwargs.items():
         cmd.extend([f"--{key.replace('_', '-')}", str(value)])
-    
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print(f"✅ Workflow completed for {gene}")
@@ -333,7 +333,7 @@ def run_sirnaforge_workflow(gene: str, output_dir: str = None, **kwargs):
 # Usage example
 if __name__ == "__main__":
     genes = ["TP53", "BRCA1", "EGFR"]
-    
+
     for gene in genes:
         output = run_sirnaforge_workflow(
             gene=gene,
@@ -343,7 +343,7 @@ if __name__ == "__main__":
             gc_max=55,
             verbose=True
         )
-        
+
         if output:
             print(f"Analysis for {gene} completed successfully")
 ```
@@ -395,10 +395,10 @@ process_gene() {
     local gene=$1
     local max_retries=3
     local attempt=1
-    
+
     while [ $attempt -le $max_retries ]; do
         echo "Attempt $attempt for $gene..."
-        
+
         if uv run sirnaforge workflow "$gene" \
             --output-dir "analysis_$gene" \
             --verbose 2>"error_$gene.log"; then
@@ -410,7 +410,7 @@ process_gene() {
             sleep 5
         fi
     done
-    
+
     echo "❌ $gene failed after $max_retries attempts"
     return 1
 }
@@ -430,13 +430,13 @@ done
 validate_and_process() {
     local input_file=$1
     local output_prefix=${input_file%.fasta}
-    
+
     echo "🔍 Validating $input_file..."
     if ! uv run sirnaforge validate "$input_file"; then
         echo "❌ Validation failed for $input_file"
         return 1
     fi
-    
+
     echo "🎯 Processing $input_file..."
     if uv run sirnaforge design "$input_file" \
         -o "${output_prefix}_sirnas.tsv" \
@@ -465,21 +465,21 @@ done
 run_qc_pipeline() {
     local gene=$1
     local output_dir="qc_${gene}_$(date +%Y%m%d)"
-    
+
     mkdir -p "$output_dir"
-    
+
     echo "🧬 QC Pipeline for $gene"
     echo "======================="
-    
+
     # 1. Search and validate
     echo "1. Searching for transcripts..."
     uv run sirnaforge search "$gene" \
         -o "$output_dir/${gene}_transcripts.fasta" \
         --verbose
-    
+
     echo "2. Validating sequences..."
     uv run sirnaforge validate "$output_dir/${gene}_transcripts.fasta"
-    
+
     # 2. Design with multiple parameter sets
     echo "3. Designing with strict parameters..."
     uv run sirnaforge design "$output_dir/${gene}_transcripts.fasta" \
@@ -487,14 +487,14 @@ run_qc_pipeline() {
         --max-poly-runs 2 \
         --top-n 50 \
         -o "$output_dir/${gene}_strict.tsv"
-    
+
     echo "4. Designing with relaxed parameters..."
     uv run sirnaforge design "$output_dir/${gene}_transcripts.fasta" \
         --gc-min 25 --gc-max 65 \
         --max-poly-runs 4 \
         --top-n 50 \
         -o "$output_dir/${gene}_relaxed.tsv"
-    
+
     # 3. Generate summary
     echo "5. Generating QC summary..."
     {
@@ -512,7 +512,7 @@ run_qc_pipeline() {
         echo "Relaxed parameters results:"
         wc -l "$output_dir/${gene}_relaxed.tsv"
     } > "$output_dir/qc_summary.txt"
-    
+
     echo "✅ QC complete for $gene. Results in $output_dir"
 }
 

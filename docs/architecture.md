@@ -13,23 +13,23 @@ graph TD
     B --> C[Core Algorithms]
     B --> D[Data Access Layer]
     B --> E[Pipeline Integration]
-    
+
     C --> C1[siRNA Design]
     C --> C2[Thermodynamics]
     C --> C3[Off-target Analysis]
-    
+
     D --> D1[Gene Search]
     D --> D2[ORF Analysis]
     D --> D3[External APIs]
-    
+
     E --> E1[Nextflow Pipeline]
     E --> E2[Docker Integration]
-    
+
     F[Data Models] --> C
     F --> D
     G[Utils & Validation] --> C
     G --> D
-    
+
     style A fill:#e1f5fe
     style B fill:#f3e5f5
     style C fill:#e8f5e8
@@ -49,19 +49,19 @@ sequenceDiagram
     participant Core
     participant Data
     participant External
-    
+
     User->>CLI: sirnaforge workflow GENE
     CLI->>Workflow: orchestrate_workflow(gene)
     Workflow->>Data: search_gene_transcripts(gene)
     Data->>External: query_ncbi/ensembl()
     External-->>Data: transcript_sequences
     Data-->>Workflow: validated_transcripts
-    
+
     Workflow->>Core: design_sirnas(transcripts)
     Core->>Core: thermodynamic_analysis()
     Core->>Core: off_target_prediction()
     Core-->>Workflow: scored_candidates
-    
+
     Workflow->>CLI: results_summary
     CLI->>User: formatted_output + files
 </div>
@@ -78,50 +78,50 @@ graph TB
         A[__init__.py<br/>Version & Config]
         B[cli.py<br/>Command Interface]
         C[workflow.py<br/>Orchestration]
-        
+
         subgraph "Core Algorithms"
             D[design.py<br/>siRNA Design]
             E[thermodynamics.py<br/>RNA Folding]
             F[off_target.py<br/>Off-target Analysis]
         end
-        
+
         subgraph "Data Models"
             G[sirna.py<br/>Pydantic Models]
         end
-        
+
         subgraph "Data Access"
             H[gene_search.py<br/>Gene/Transcript Search]
             I[orf_analysis.py<br/>ORF Analysis]
             J[base.py<br/>Base Classes]
         end
-        
+
         subgraph "Pipeline Integration"
             K[nextflow/<br/>Pipeline Modules]
         end
-        
+
         subgraph "Utilities"
             L[validation.py<br/>Input Validation]
             M[config.py<br/>Configuration]
         end
     end
-    
+
     B --> C
     C --> D
     C --> E
     C --> F
     C --> H
     C --> I
-    
+
     D --> G
     E --> G
     F --> G
     H --> G
     I --> G
-    
+
     C --> K
-    
+
     style D fill:#e8f5e8
-    style E fill:#e8f5e8  
+    style E fill:#e8f5e8
     style F fill:#e8f5e8
     style G fill:#fff3e0
     style H fill:#f3e5f5
@@ -160,7 +160,7 @@ src/sirnaforge/
 
 **Purpose**: User interface and command orchestration
 
-**Technologies**: 
+**Technologies**:
 - [Typer](https://typer.tiangolo.com/) for CLI framework
 - [Rich](https://rich.readthedocs.io/) for beautiful output
 
@@ -194,10 +194,10 @@ src/sirnaforge/
 ```python
 class SiRNADesigner:
     """Main siRNA design orchestrator"""
-    
+
 class SiRNACandidate:
     """Individual siRNA candidate with scoring"""
-    
+
 class DesignParameters:
     """Configuration for design algorithms"""
 ```
@@ -206,7 +206,7 @@ class DesignParameters:
 ```python
 class ThermodynamicsCalculator:
     """ViennaRNA integration for structure prediction"""
-    
+
 class SecondaryStructure:
     """RNA secondary structure representation"""
 ```
@@ -215,7 +215,7 @@ class SecondaryStructure:
 ```python
 class OffTargetPredictor:
     """Multi-genome off-target prediction"""
-    
+
 class AlignmentResult:
     """Off-target alignment with scoring"""
 ```
@@ -238,13 +238,13 @@ class SiRNACandidate(BaseModel):
     passenger_sequence: str
     position: int
     scores: ScoringResult
-    
+
 class ScoringResult(BaseModel):
     """Comprehensive scoring information"""
     composite_score: float
     thermodynamic_score: float
     off_target_score: float
-    
+
 class DesignParameters(BaseModel):
     """Design configuration with validation"""
     sirna_length: int = Field(ge=19, le=23)
@@ -264,10 +264,10 @@ class DesignParameters(BaseModel):
 ```python
 class GeneSearcher:
     """Multi-database gene search"""
-    
+
 class EnsemblAdapter:
     """Ensembl REST API integration"""
-    
+
 class RefSeqAdapter:
     """RefSeq/NCBI integration (planned)"""
 ```
@@ -310,7 +310,7 @@ class DesignParameters(BaseModel):
 
 Each layer has distinct responsibilities:
 - **CLI**: User interaction
-- **Workflow**: Process orchestration  
+- **Workflow**: Process orchestration
 - **Core**: Algorithm implementation
 - **Models**: Data representation
 - **Data**: External integration
@@ -354,15 +354,15 @@ Centralized configuration with environment support:
 ```python
 class Config(BaseModel):
     """Global configuration with environment variable support"""
-    
+
     # Database settings
     ensembl_base_url: str = "https://rest.ensembl.org"
     request_timeout: int = 30
-    
+
     # Algorithm settings
     default_sirna_length: int = 21
     default_candidates: int = 10
-    
+
     class Config:
         env_prefix = "SIRNAFORGE_"
 ```
@@ -404,7 +404,7 @@ class CustomScorer(BaseScorer):
     def calculate_score(self, candidate: SiRNACandidate) -> float:
         # Custom scoring logic
         return score
-        
+
 # Register with the design engine
 designer.register_scorer("custom", CustomScorer())
 ```
@@ -416,7 +416,7 @@ class CustomDataProvider(BaseDataProvider):
     async def search_gene(self, query: str) -> SearchResult:
         # Custom gene search logic
         return result
-        
+
 # Register with the searcher
 searcher.register_provider("custom", CustomDataProvider())
 ```
@@ -428,7 +428,7 @@ class CustomOutputWriter(BaseOutputWriter):
     def write_results(self, results: DesignResults, path: Path) -> None:
         # Custom output format
         pass
-        
+
 # Register with the workflow
 workflow.register_output_writer("custom", CustomOutputWriter())
 ```
@@ -443,7 +443,7 @@ External API calls and I/O operations use asyncio:
 async def search_multiple_databases(query: str) -> List[SearchResult]:
     tasks = [
         search_ensembl(query),
-        search_refseq(query), 
+        search_refseq(query),
         search_gencode(query)
     ]
     return await asyncio.gather(*tasks)
@@ -479,7 +479,7 @@ def calculate_thermodynamics(sequence: str) -> ThermodynamicResult:
 - Mock external dependencies
 - Focus on algorithm correctness
 
-### 2. Integration Tests (`tests/integration/`)  
+### 2. Integration Tests (`tests/integration/`)
 - Test component interactions
 - Use real external services (with rate limiting)
 - Validate end-to-end workflows

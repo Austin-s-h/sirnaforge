@@ -7,12 +7,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from sirnaforge.core.thermodynamics import ThermodynamicCalculator
+from sirnaforge.models.sirna import SiRNACandidate
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-
-from sirnaforge.core.thermodynamics import ThermodynamicCalculator
-from sirnaforge.models.sirna import SiRNACandidate
 
 VIENNA_AVAILABLE = importlib.util.find_spec("RNA") is not None
 

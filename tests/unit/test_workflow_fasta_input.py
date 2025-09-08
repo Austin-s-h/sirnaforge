@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.workflow import run_sirna_workflow

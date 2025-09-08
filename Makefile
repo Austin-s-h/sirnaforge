@@ -151,7 +151,7 @@ docker-run: ## Run workflow in Docker container
 	IMG=sirnaforge:latest
 	if [ -n "$$VERSION" ]; then IMG=sirnaforge:$$VERSION; fi
 	docker run -v $$(pwd):/workspace -w /workspace $$IMG sirnaforge --help
-	
+
 	IMG=sirnaforge:latest
 	if [ -n "$$VERSION" ]; then IMG=sirnaforge:$$VERSION; fi
 	docker run -v $$(pwd):/workspace -w /workspace $$IMG sirnaforge --help
@@ -187,7 +187,7 @@ nextflow-run: ## Run Nextflow pipeline with test data
 		--genome_species human \
 		-profile test
 
-nextflow-run-docker: ## Run Nextflow pipeline with Docker profile  
+nextflow-run-docker: ## Run Nextflow pipeline with Docker profile
 	uv run --group pipeline nextflow run nextflow_pipeline/main.nf \
 		--input nextflow_pipeline/candidates.fasta \
 		--outdir nextflow_results \

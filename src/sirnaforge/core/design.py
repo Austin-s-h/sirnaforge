@@ -6,7 +6,6 @@ import time
 from Bio import SeqIO
 from Bio.Seq import Seq
 
-from sirnaforge.core.off_target import OffTargetAnalyzer
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 
@@ -292,25 +291,22 @@ class SiRNADesigner:
             return 1.0 - abs(at_content - 0.5) * 2.0
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate off-target score using enhanced analysis."""
-        try:
-            analyzer = OffTargetAnalyzer()
-            return analyzer.calculate_off_target_score(candidate)
-        except ImportError:
-            # Fallback to simplified version
-            guide = candidate.guide_sequence
+        """Calculate off-target score using simplified analysis."""
+        # Simplified version - comprehensive off-target analysis would require
+        # external databases and more complex alignment tools
+        guide = candidate.guide_sequence
 
-            # Simple penalty for repetitive sequences
-            penalty = 0
-            for i in range(len(guide) - 6):
-                seed = guide[i : i + 7]
-                # Count occurrences of this 7-mer in the sequence
-                if guide.count(seed) > 1:
-                    penalty += 10
+        # Simple penalty for repetitive sequences
+        penalty = 0
+        for i in range(len(guide) - 6):
+            seed = guide[i : i + 7]
+            # Count occurrences of this 7-mer in the sequence
+            if guide.count(seed) > 1:
+                penalty += 10
 
-            # Transform penalty to score: OT_score = exp(-penalty/50)
-            candidate.off_target_penalty = penalty
-            return math.exp(-penalty / 50)
+        # Transform penalty to score: OT_score = exp(-penalty/50)
+        candidate.off_target_penalty = penalty
+        return math.exp(-penalty / 50)
 
     def _calculate_empirical_score(self, candidate: SiRNACandidate) -> float:
         """Calculate empirical score using Reynolds et al. rules (simplified)."""

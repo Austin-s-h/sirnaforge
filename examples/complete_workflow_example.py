@@ -12,10 +12,10 @@ import sys
 import traceback
 from pathlib import Path
 
+from sirnaforge.workflow import run_sirna_workflow
+
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from sirnaforge.workflow import run_sirna_workflow
 
 
 async def run_complete_example() -> None:

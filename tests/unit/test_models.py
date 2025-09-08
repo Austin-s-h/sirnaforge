@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from sirnaforge.cli import app
 from sirnaforge.models.sirna import DesignParameters, FilterCriteria, SiRNACandidate
 

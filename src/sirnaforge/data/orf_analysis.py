@@ -16,6 +16,7 @@ from sirnaforge.utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
+# TODO: The output report of this should be more machine-readable aka tab delim.
 class ORFInfo(BaseModel):
     """Information about an Open Reading Frame."""
 

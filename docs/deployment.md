@@ -259,15 +259,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Setup Micromamba
       uses: mamba-org/provision-with-micromamba@main
       with:
         environment-file: environment.yml
-        
+
     - name: Install Python dependencies
       run: uv sync
-      
+
     - name: Test pipeline
       run: |
         micromamba activate nextflow

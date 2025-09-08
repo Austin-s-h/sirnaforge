@@ -240,4 +240,3 @@ Transcript: ENST00000949117
   ORFs Found: 18
   Valid ORF: ✓
   Longest ORF: 142-1327 (1185 bp)
-

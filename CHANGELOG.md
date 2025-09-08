@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Core Features
 - **Gene Search**: Multi-database transcript retrieval
 - **siRNA Design**: Algorithm-driven candidate generation
-- **Quality Control**: GC content, structure, and specificity filters  
+- **Quality Control**: GC content, structure, and specificity filters
 - **Scoring System**: Composite scoring with multiple components
 - **Workflow Orchestration**: End-to-end gene-to-siRNA pipeline
 - **CLI Interface**: Rich, user-friendly command-line tools

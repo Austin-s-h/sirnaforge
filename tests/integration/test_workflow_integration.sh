@@ -4,7 +4,7 @@ Test script for the complete siRNA workflow integration.
 
 This script demonstrates:
 1. Gene search and transcript retrieval
-2. ORF validation 
+2. ORF validation
 3. siRNA design
 4. Off-target analysis with Nextflow
 5. Comprehensive reporting
@@ -73,7 +73,7 @@ OFFTARGET_FILES=$(find "$OUTPUT_DIR/off_target" -name "*.tsv" 2>/dev/null | wc -
 echo "Results Summary:"
 echo "  📄 Transcript files: $TRANSCRIPT_FILES"
 echo "  🔍 ORF reports: $ORF_REPORTS"
-echo "  🎯 siRNA results: $SIRNA_RESULTS"  
+echo "  🎯 siRNA results: $SIRNA_RESULTS"
 echo "  🚫 Off-target files: $OFFTARGET_FILES"
 
 # Show file sizes
@@ -123,7 +123,7 @@ echo "  🎯 siRNA design..."
 if [ -f "$SEARCH_OUTPUT" ] && [ "$SEARCH_SEQS" -gt 0 ]; then
     DESIGN_OUTPUT="${OUTPUT_DIR}/test_design.csv"
     uv run sirna design "$SEARCH_OUTPUT" -o "$DESIGN_OUTPUT" --top-n 10
-    
+
     if [ -f "$DESIGN_OUTPUT" ]; then
         DESIGN_CANDIDATES=$(tail -n +2 "$DESIGN_OUTPUT" 2>/dev/null | wc -l || echo "0")
         echo "    ✅ Generated $DESIGN_CANDIDATES candidates"
@@ -147,19 +147,19 @@ if [ "$SKIP_NEXTFLOW" = false ] && [ -f "$OUTPUT_DIR/sirna_design/${GENE_QUERY}_
     echo ""
     echo "🚀 Step 4: Testing Nextflow integration..."
     echo "-----------------------------------------"
-    
+
     CANDIDATES_FASTA="$OUTPUT_DIR/sirna_design/${GENE_QUERY}_top_candidates.fasta"
     NEXTFLOW_OUTPUT="$OUTPUT_DIR/nextflow_test"
-    
+
     # Check if nextflow pipeline exists
     PIPELINE_PATH="$(dirname "$0")/main.nf"
     if [ ! -f "$PIPELINE_PATH" ]; then
         PIPELINE_PATH="../nextflow_pipeline/main.nf"
     fi
-    
+
     if [ -f "$PIPELINE_PATH" ]; then
         echo "  🧪 Running Nextflow pipeline..."
-        
+
         # Run with test profile for quick execution
         nextflow run "$PIPELINE_PATH" \
             --input "$CANDIDATES_FASTA" \
@@ -168,7 +168,7 @@ if [ "$SKIP_NEXTFLOW" = false ] && [ -f "$OUTPUT_DIR/sirna_design/${GENE_QUERY}_
             --max_hits 100 \
             -profile test \
             -resume || echo "    ⚠️  Nextflow execution failed (indices may not be available)"
-        
+
         if [ -d "$NEXTFLOW_OUTPUT" ]; then
             NF_FILES=$(find "$NEXTFLOW_OUTPUT" -name "*.tsv" -o -name "*.json" 2>/dev/null | wc -l)
             echo "    ✅ Nextflow generated $NF_FILES result files"
