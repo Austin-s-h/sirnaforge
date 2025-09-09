@@ -6,7 +6,8 @@ Optimized for both standalone use and parallelized Nextflow workflows.
 """
 
 import json
-import subprocess
+import shutil
+import subprocess  # nosec B404
 import tempfile
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -21,6 +22,28 @@ logger = get_logger(__name__)
 # =============================================================================
 # Core Analyzer Classes
 # =============================================================================
+
+
+def _get_executable_path(tool_name: str) -> Optional[str]:
+    """Get the full path to an executable, ensuring it exists."""
+    path = shutil.which(tool_name)
+    if path is None:
+        logger.warning(f"Tool '{tool_name}' not found in PATH")
+    return path
+
+
+def _validate_command_args(cmd: list[str]) -> None:
+    """Validate command arguments for subprocess execution."""
+    if not cmd:
+        raise ValueError("Command list cannot be empty")
+
+    executable = cmd[0]
+    if not executable:
+        raise ValueError("Executable path cannot be empty")
+
+    # Ensure we have an absolute path to the executable
+    if not Path(executable).is_absolute():
+        raise ValueError(f"Executable must be an absolute path: {executable}")
 
 
 class BowtieAnalyzer:
@@ -61,10 +84,25 @@ class BowtieAnalyzer:
         temp_fasta_path = create_temp_fasta(sequences)
 
         try:
-            cmd = ["bowtie", "-v", str(self.mismatches), "-a", "--sam", "--quiet", self.index_prefix, temp_fasta_path]
+            # Get absolute path to bowtie executable
+            bowtie_path = _get_executable_path("bowtie")
+            if not bowtie_path:
+                raise FileNotFoundError("Bowtie executable not found in PATH")
+
+            cmd = [
+                bowtie_path,
+                "-v",
+                str(self.mismatches),
+                "-a",
+                "--sam",
+                "--quiet",
+                self.index_prefix,
+                temp_fasta_path,
+            ]
+            _validate_command_args(cmd)
             logger.info(f"Running Bowtie: {' '.join(cmd)}")
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=True)  # nosec B603
             results = self._parse_sam_output(result.stdout, sequences)
             logger.info(f"Bowtie analysis completed: {len(results)} hits found")
 
@@ -166,8 +204,13 @@ class BwaAnalyzer:
         temp_fasta_path = create_temp_fasta(sequences)
 
         try:
+            # Get absolute path to bwa-mem2 executable
+            bwa_path = _get_executable_path("bwa-mem2")
+            if not bwa_path:
+                raise FileNotFoundError("BWA-MEM2 executable not found in PATH")
+
             cmd = [
-                "bwa-mem2",
+                bwa_path,
                 "mem",
                 "-a",
                 "-k",
@@ -180,8 +223,9 @@ class BwaAnalyzer:
                 temp_fasta_path,
             ]
 
+            _validate_command_args(cmd)
             logger.info(f"Running BWA-MEM2: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=None, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=None, check=True)  # nosec B603
             results = self._parse_sam_output(result.stdout, sequences)
             results = self._filter_and_rank(results)
             logger.info(f"BWA-MEM2 analysis completed: {len(results)} hits found")
@@ -470,10 +514,16 @@ def build_bowtie_index(fasta_file: str, index_prefix: str) -> str:
 
     Path(index_prefix).parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["bowtie-build", fasta_file, index_prefix]
+    # Get absolute path to bowtie-build executable
+    bowtie_build_path = _get_executable_path("bowtie-build")
+    if not bowtie_build_path:
+        raise FileNotFoundError("bowtie-build executable not found in PATH")
+
+    cmd = [bowtie_build_path, fasta_file, index_prefix]
+    _validate_command_args(cmd)
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=3600)
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=3600)  # nosec B603
         logger.info(f"Bowtie index built successfully: {index_prefix}")
         return index_prefix
     except subprocess.CalledProcessError as e:
@@ -493,10 +543,16 @@ def build_bwa_index(fasta_file: str, index_prefix: str) -> str:
 
     Path(index_prefix).parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["bwa-mem2", "index", "-p", index_prefix, fasta_file]
+    # Get absolute path to bwa-mem2 executable
+    bwa_path = _get_executable_path("bwa-mem2")
+    if not bwa_path:
+        raise FileNotFoundError("bwa-mem2 executable not found in PATH")
+
+    cmd = [bwa_path, "index", "-p", index_prefix, fasta_file]
+    _validate_command_args(cmd)
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)  # nosec B603
         logger.info(f"BWA-MEM2 index built successfully: {index_prefix}")
         return index_prefix
     except subprocess.CalledProcessError as e:
@@ -536,7 +592,14 @@ def write_fasta_file(sequences: dict[str, str], output_file: str) -> None:
 def check_tool_availability(tool: str) -> bool:
     """Check if external tool is available."""
     try:
-        result = subprocess.run([tool, "--help"], capture_output=True, check=False, timeout=10)
+        # Get absolute path to tool executable
+        tool_path = _get_executable_path(tool)
+        if not tool_path:
+            return False
+
+        cmd = [tool_path, "--help"]
+        _validate_command_args(cmd)
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=10)  # nosec B603
         return result.returncode in {0, 1}
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False

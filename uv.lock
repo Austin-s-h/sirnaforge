@@ -966,20 +966,6 @@ wheels = [
 ]
 
 [[package]]
-name = "docker"
-version = "7.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
-    { name = "requests" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/91/9b/4a2ea29aeba62471211598dac5d96825bb49348fa07e906ea930394a83ce/docker-7.1.0.tar.gz", hash = "sha256:ad8c70e6e3f8926cb8a92619b832b4ea5299e2831c14284663184e200546fa6c", size = 117834, upload-time = "2024-05-23T11:13:57.216Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/26/57c6fb270950d476074c087527a558ccb6f4436657314bfb6cdf484114c4/docker-7.1.0-py3-none-any.whl", hash = "sha256:c96b93b7f0a746f9e77d325bcfb87422a3d8bd4f03136ae8a85b37f1898d5fc0", size = 147774, upload-time = "2024-05-23T11:13:55.01Z" },
-]
-
-[[package]]
 name = "docutils"
 version = "0.21.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3698,7 +3684,7 @@ wheels = [
 
 [[package]]
 name = "sirnaforge"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -3706,6 +3692,7 @@ dependencies = [
     { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "click", version = "8.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "httpx" },
+    { name = "nextflow" },
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -3719,20 +3706,20 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-analysis = [
-    { name = "jupyter" },
-    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "matplotlib", version = "3.10.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "plotly" },
-    { name = "seaborn" },
-]
 dev = [
     { name = "bandit", extra = ["toml"] },
     { name = "black" },
     { name = "codespell" },
+    { name = "jupyter" },
+    { name = "linkify-it-py" },
+    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "matplotlib", version = "3.10.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "mypy" },
+    { name = "myst-parser", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "myst-parser", version = "4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pandas-stubs", version = "2.2.2.240807", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pandas-stubs", version = "2.3.2.250827", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "plotly" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3741,16 +3728,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "safety" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "sphinx-rtd-theme" },
-    { name = "types-requests" },
-]
-docs = [
-    { name = "linkify-it-py" },
-    { name = "myst-parser", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "myst-parser", version = "4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "seaborn" },
     { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
     { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -3762,27 +3740,7 @@ docs = [
     { name = "sphinx-design" },
     { name = "sphinx-rtd-theme" },
     { name = "sphinxcontrib-mermaid" },
-]
-lint = [
-    { name = "black" },
-    { name = "codespell" },
-    { name = "mypy" },
-    { name = "nextflow" },
-    { name = "pandas-stubs", version = "2.2.2.240807", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "pandas-stubs", version = "2.3.2.250827", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "ruff" },
     { name = "types-requests" },
-]
-pipeline = [
-    { name = "docker" },
-    { name = "nextflow" },
-]
-test = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "pytest-xdist" },
 ]
 
 [package.metadata]
@@ -3791,6 +3749,7 @@ requires-dist = [
     { name = "biopython", specifier = ">=1.84" },
     { name = "click", specifier = ">=8.0.0" },
     { name = "httpx", specifier = ">=0.28.0" },
+    { name = "nextflow", specifier = ">=25.4.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.3.0" },
     { name = "pydantic", specifier = ">=2.11.0" },
@@ -3802,18 +3761,17 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-analysis = [
-    { name = "jupyter", specifier = ">=1.0.0" },
-    { name = "matplotlib", specifier = ">=3.7.0" },
-    { name = "plotly", specifier = ">=5.15.0" },
-    { name = "seaborn", specifier = ">=0.12.0" },
-]
 dev = [
     { name = "bandit", extras = ["toml"], specifier = ">=1.7.0" },
     { name = "black", specifier = ">=24.0" },
     { name = "codespell", specifier = ">=2.4.0" },
+    { name = "jupyter", specifier = ">=1.0.0" },
+    { name = "linkify-it-py", specifier = ">=2.0.3" },
+    { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "mypy", specifier = ">=1.10" },
+    { name = "myst-parser", specifier = ">=2.0.0" },
     { name = "pandas-stubs", specifier = ">=2.1.0" },
+    { name = "plotly", specifier = ">=5.15.0" },
     { name = "pre-commit", specifier = ">=3.8" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=1.1.0" },
@@ -3822,39 +3780,14 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8" },
     { name = "ruff", specifier = ">=0.12.0" },
     { name = "safety", specifier = ">=3.0.0,<4.0.0" },
-    { name = "sphinx", specifier = ">=7.3.0" },
-    { name = "sphinx-rtd-theme", specifier = ">=2.0.0" },
-    { name = "types-requests", specifier = ">=2.32.0" },
-]
-docs = [
-    { name = "linkify-it-py", specifier = ">=2.0.3" },
-    { name = "myst-parser", specifier = ">=2.0.0" },
+    { name = "seaborn", specifier = ">=0.12.0" },
     { name = "sphinx", specifier = ">=7.3.0" },
     { name = "sphinx-autobuild", specifier = ">=2024.9.19" },
     { name = "sphinx-autodoc-typehints", specifier = ">=2.0.0" },
     { name = "sphinx-design", specifier = ">=0.6.0" },
     { name = "sphinx-rtd-theme", specifier = ">=2.0.0" },
     { name = "sphinxcontrib-mermaid", specifier = ">=1.0.0" },
-]
-lint = [
-    { name = "black", specifier = ">=24.0" },
-    { name = "codespell", specifier = ">=2.4.0" },
-    { name = "mypy", specifier = ">=1.10" },
-    { name = "nextflow", specifier = ">=25.4.0" },
-    { name = "pandas-stubs", specifier = ">=2.1.0" },
-    { name = "ruff", specifier = ">=0.12.0" },
     { name = "types-requests", specifier = ">=2.32.0" },
-]
-pipeline = [
-    { name = "docker", specifier = ">=6.0.0" },
-    { name = "nextflow", specifier = ">=25.4.0" },
-]
-test = [
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=1.1.0" },
-    { name = "pytest-cov", specifier = ">=6.0" },
-    { name = "pytest-mock", specifier = ">=3.15" },
-    { name = "pytest-xdist", specifier = ">=3.8" },
 ]
 
 [[package]]

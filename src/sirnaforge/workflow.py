@@ -13,6 +13,7 @@ import asyncio
 import csv
 import json
 import math
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -407,8 +408,10 @@ class SiRNAWorkflow:
         try:
             candidate.off_target_count = result_data["off_target_count"]
             candidate.off_target_penalty = result_data["off_target_score"]
-        except Exception:
-            pass
+        except KeyError as e:
+            logger.warning(f"Missing key in result data: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error updating candidate scores: {e}")
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict:
         """Fallback basic off-target analysis."""
@@ -655,9 +658,11 @@ async def run_sirna_workflow(
 if __name__ == "__main__":
     # Example usage
     async def main() -> None:
-        results = await run_sirna_workflow(
-            gene_query="TP53", output_dir="/tmp/sirna_workflow_test", top_n_candidates=20, top_n_offtarget=10
-        )
-        print(f"Workflow completed: {results}")
+        # Use secure temporary directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results = await run_sirna_workflow(
+                gene_query="TP53", output_dir=temp_dir, top_n_candidates=20, top_n_offtarget=10
+            )
+            print(f"Workflow completed: {results}")
 
     asyncio.run(main())

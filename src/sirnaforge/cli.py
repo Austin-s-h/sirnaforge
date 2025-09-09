@@ -61,6 +61,7 @@ def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # t
     canonical_file = output_dir / f"{gene_name}_canonical.fasta"
 
     # Create a temporary searcher to use the save method
+    # TODO: directly use fasta utils
     searcher = GeneSearcher()
     searcher.save_transcripts_fasta(canonical, canonical_file)
 

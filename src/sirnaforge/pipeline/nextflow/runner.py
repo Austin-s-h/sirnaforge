@@ -6,7 +6,8 @@ for siRNA off-target analysis with proper Docker integration.
 """
 
 import asyncio
-import subprocess
+import shutil
+import subprocess  # nosec B404
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,6 +19,30 @@ from sirnaforge.utils.logging_utils import get_logger
 from .config import NextflowConfig
 
 logger = get_logger(__name__)
+
+
+def _get_executable_path(tool_name: str) -> Optional[str]:
+    """Get the full path to an executable, ensuring it exists."""
+    path = shutil.which(tool_name)
+    if path is None:
+        logger.warning(f"Tool '{tool_name}' not found in PATH")
+    return path
+
+
+def _validate_command_args(cmd: list[str]) -> None:
+    """Validate command arguments for subprocess execution."""
+    if not cmd:
+        raise ValueError("Command list cannot be empty")
+
+    executable = cmd[0]
+    if not executable:
+        raise ValueError("Executable path cannot be empty")
+
+    # Ensure we have an absolute path to the executable
+    if not Path(executable).is_absolute():
+        raise ValueError(f"Executable must be an absolute path: {executable}")
+
+
 console = Console()
 
 
@@ -220,9 +245,17 @@ class NextflowRunner:
 
         # Check Nextflow
         try:
-            result = subprocess.run(["nextflow", "-version"], capture_output=True, timeout=10, check=True)
-            tools["nextflow"] = True
-            logger.debug(f"Nextflow version: {result.stdout.decode()}")
+            # Get absolute path to nextflow executable
+            nextflow_path = _get_executable_path("nextflow")
+            if not nextflow_path:
+                tools["nextflow"] = False
+                logger.warning("Nextflow not available - not found in PATH")
+            else:
+                cmd = [nextflow_path, "-version"]
+                _validate_command_args(cmd)
+                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                tools["nextflow"] = True
+                logger.debug(f"Nextflow version: {result.stdout.decode()}")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
             tools["nextflow"] = False
             logger.warning("Nextflow not available")
