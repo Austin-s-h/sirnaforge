@@ -111,6 +111,7 @@ class NextflowConfig:
         output_dir: Path,
         genome_species: list[str],
         additional_params: Optional[dict[str, Any]] = None,
+        include_test_profile: bool = False,
     ) -> list[str]:
         """
         Generate Nextflow command arguments.
@@ -120,6 +121,7 @@ class NextflowConfig:
             output_dir: Output directory
             genome_species: List of genome species to analyze
             additional_params: Additional parameters to pass
+            include_test_profile: Whether to include 'test' profile for integration testing
 
         Returns:
             List of command arguments for Nextflow
@@ -141,6 +143,10 @@ class NextflowConfig:
             str(abs_work_dir),
             "-resume",
         ]
+
+        # Add test profile for local integration testing
+        if include_test_profile and os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes"):
+            args.extend(["-profile", "test"])
 
         # Add Docker image if using Docker profile
         if self.profile == "docker":
@@ -377,6 +383,6 @@ process {{
             max_time="240.h",
         )
 
-        # Auto-detect and adjust profile
+        # Auto-detect and adjust profile (will return "test,docker" if Docker is available)
         instance.profile = instance.get_execution_profile()
         return instance

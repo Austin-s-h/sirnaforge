@@ -5,6 +5,7 @@ Tests the integrated Python-Nextflow pipeline functionality.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -65,7 +66,16 @@ class TestPipelineIntegration:
             input_file=Path("test.fasta"),
             output_dir=Path("results"),
             genome_species=["human", "rat"],
+            include_test_profile=True,  # Include test profile for integration testing
         )
+
+        # Determine expected profiles based on actual configuration
+        expected_main_profile = config.profile  # This will be 'test' or 'local' depending on environment
+        expected_profiles = [expected_main_profile]
+
+        # If include_test_profile is True and SIRNAFORGE_USE_LOCAL_EXECUTION is set, add test profile
+        if os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes"):
+            expected_profiles.append("test")
 
         expected_args = [
             "--input",
@@ -74,20 +84,27 @@ class TestPipelineIntegration:
             str(output_dir),
             "--genome_species",
             "human,rat",
-            "-profile",
-            "test",
-            "-w",
-            str(config.work_dir),
-            "-resume",
-            "--max_cpus",
-            "2",
-            "--max_memory",
-            "'6.GB'",
-            "--max_time",
-            "'6.h'",
-            "--max_hits",
-            "100",
         ]
+
+        # Add profile arguments
+        for profile in expected_profiles:
+            expected_args.extend(["-profile", profile])
+
+        expected_args.extend(
+            [
+                "-w",
+                str(config.work_dir),
+                "-resume",
+                "--max_cpus",
+                "2",
+                "--max_memory",
+                "'6.GB'",
+                "--max_time",
+                "'6.h'",
+                "--max_hits",
+                "100",
+            ]
+        )
 
         # Check that all expected args are present
         for arg in expected_args:
