@@ -48,24 +48,27 @@ jobs:
           ${{ runner.os }}-pip-
 
     - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group dev --group docs
+      run: uv pip install --system -r pyproject.toml --editable . --group dev
 
     - name: 🔍 Lint with ruff
       run: ruff check src tests
 
-    - name: 🎨 Check formatting with black
-      run: black --check src tests
+    - name: 🎨 Check formatting with ruff
+      run: ruff format --check src tests
 
     - name: 🔬 Type check with mypy
       run: mypy src
 
-    - name: �️ Security scan with bandit
-      run: bandit -r src/ -f json -o bandit-report.json || true
+    - name: 🛡️ Security scan with bandit
+      run: |
+        bandit -r src/ -f json -o bandit-report.json || true
+        bandit -r src/ -f txt || echo "Bandit found security issues - check bandit-report.json"
 
     - name: 🔐 Security check with safety
       run: |
         # Try safety check, create empty report if it fails due to dependency issues
         safety check --json --output safety-report.json || echo '{"report": [], "vulnerabilities": []}' > safety-report.json
+        safety check || echo "Safety found vulnerabilities - check safety-report.json"
 
     - name: 📤 Upload security reports
       uses: actions/upload-artifact@v4
@@ -77,8 +80,10 @@ jobs:
           safety-report.json
         retention-days: 30
 
-    - name: �📚 Validate documentation build
-      run: make docs-check
+    - name: 📚 Validate documentation build
+      run: |
+        uv run --group dev sphinx-build -W -b html docs docs/_build/html
+        echo "✅ Documentation builds without warnings"
 
   test:
     name: 🧪 Test Suite
