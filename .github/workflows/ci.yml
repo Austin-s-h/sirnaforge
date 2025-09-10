@@ -228,7 +228,7 @@ jobs:
 
     - name: 🏗️ Build documentation
       run: |
-        make docs-full-ci
+        make docs
         touch docs/_build/html/.nojekyll
 
     - name: Setup Pages
