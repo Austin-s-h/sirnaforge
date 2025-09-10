@@ -143,8 +143,6 @@ jobs:
         uv run --group dev mypy src
 
     - name: "🧪 Run comprehensive test suite"
-      env:
-        SIRNAFORGE_USE_LOCAL_EXECUTION: true
       run: uv run --group dev pytest --cov=sirnaforge --cov-report=xml -v
 
     - name: "📦 Test package build"
@@ -221,40 +219,54 @@ jobs:
     - name: "📥 Checkout code"
       uses: actions/checkout@v4
 
-    - name: "📥 Download Docker image"
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image-${{ needs.validate-and-prepare.outputs.version }}
-        path: /tmp/
+    - name: "Set up Docker image"
+      run: |
+        if [ -n "${{ github.event.inputs.local_image }}" ]; then
+          echo "Using local Docker image: ${{ github.event.inputs.local_image }}"
+          export DOCKER_IMAGE="${{ github.event.inputs.local_image }}"
+        else
+          echo "Using built Docker image from artifact"
+          # Try to download from artifact first
+          if command -v gh &> /dev/null; then
+            echo "Attempting to download artifact..."
+            gh run download --name "docker-image-${{ needs.validate-and-prepare.outputs.version }}" -D /tmp/ || true
+          fi
 
-    - name: "🐳 Load Docker image"
-      run: docker load --input /tmp/sirnaforge-image.tar
+          if [ -f "/tmp/sirnaforge-image.tar" ]; then
+            docker load --input /tmp/sirnaforge-image.tar
+            REPO_LC="${GITHUB_REPOSITORY,,}"
+            export DOCKER_IMAGE="ghcr.io/${REPO_LC}:${{ needs.validate-and-prepare.outputs.version }}"
+          else
+            echo "Artifact not found - attempting to pull from GHCR"
+            REPO_LC="${GITHUB_REPOSITORY,,}"
+            export DOCKER_IMAGE="ghcr.io/${REPO_LC}:${{ needs.validate-and-prepare.outputs.version }}"
+            if ! docker pull "$DOCKER_IMAGE"; then
+              echo "❌ Failed to load or pull Docker image"
+              exit 1
+            fi
+          fi
+        fi
+
+        echo "DOCKER_IMAGE=$DOCKER_IMAGE" >> $GITHUB_ENV
 
     - name: "🧪 Test Docker image functionality"
       run: |
-        # Test basic functionality
-        REPO_LC="${GITHUB_REPOSITORY,,}"
-        IMAGE="ghcr.io/${REPO_LC}:${{ needs.validate-and-prepare.outputs.version }}"
-
         echo "Testing basic CLI functionality..."
-        docker run --rm $IMAGE sirnaforge --help
+        docker run --rm $DOCKER_IMAGE sirnaforge --help
 
         echo "Testing version command..."
-        docker run --rm $IMAGE sirnaforge version
+        docker run --rm $DOCKER_IMAGE sirnaforge version
 
         echo "Testing workflow command structure..."
-        docker run --rm $IMAGE sirnaforge workflow --help
+        docker run --rm $DOCKER_IMAGE sirnaforge workflow --help
 
     - name: "🧪 Run Docker-based tests"
-      env:
-        SIRNAFORGE_USE_LOCAL_EXECUTION: true
       run: |
         # Set up test environment
         uv sync --group dev
 
         # Run Docker integration tests
-        REPO_LC="${GITHUB_REPOSITORY,,}"
-        export SIRNAFORGE_DOCKER_IMAGE="ghcr.io/${REPO_LC}:${{ needs.validate-and-prepare.outputs.version }}"
+        export SIRNAFORGE_DOCKER_IMAGE="$DOCKER_IMAGE"
 
         uv run --group dev pytest tests/docker/ -v --tb=short -m docker --maxfail=3
 
@@ -262,7 +274,8 @@ jobs:
   create-release:
     name: "🚀 Create GitHub Release"
     runs-on: ubuntu-latest
-    needs: [validate-and-prepare, test-release, build-docker, test-docker]
+    needs: [validate-and-prepare, test-release, test-docker]
+    if: always() && needs.test-docker.result == 'success'
     outputs:
       release-id: ${{ steps.create.outputs.id }}
       release-url: ${{ steps.create.outputs.html_url }}

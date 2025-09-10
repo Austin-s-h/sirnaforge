@@ -12,7 +12,6 @@ dependencies:
 
   # Sequence alignment tools
   - bwa-mem2 >=2.2.1
-  - bwa >=0.7.17  # Fallback option
   - samtools >=1.19.2
 
   # RNA analysis
@@ -28,7 +27,6 @@ dependencies:
 
   # Compression utilities
   - pigz
-  # 'bgzip' is provided by htslib in conda packages
   - htslib
   # Keep Python runtime and native/binary packages in conda. Pure-Python
   # dependencies will be installed by pip from wheels during the wheel
