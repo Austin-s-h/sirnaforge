@@ -1,0 +1,28 @@
+# Genome configuration file used by the siRNA off-target pipeline
+# Provide per-species index_prefix (required) and optional container image (for dockerized execution)
+# TODO: gut and remake
+# Default configuration uses repository-local relative paths under nextflow_pipeline/genomes_indices
+# You can either build indexes in these locations, or edit this file to point to your system-wide indexes,
+# or pass --genome_indices "human:/abs/path/to/index,rat:/abs/path" to the Nextflow run command.
+
+# Option 1: Use public S3 references (requires --download_indexes true)
+human:
+  index_prefix: s3://ngi-igenomes/igenomes/Homo_sapiens/NCBI/GRCh38/Sequence/WholeGenomeFasta/
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+rat:
+  index_prefix: s3://ngi-igenomes/igenomes/Rattus_norvegicus/NCBI/Rnor_6.0/Sequence/WholeGenomeFasta/
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+rhesus:
+  index_prefix: s3://ngi-igenomes/igenomes/Macaca_mulatta/NCBI/Mmul_10/Sequence/WholeGenomeFasta/
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+# Option 2: If you want to use local indices (uncomment and modify paths)
+# human:
+#   index_prefix: /path/to/your/human/genome/index
+#   container: biocontainers/bwa-mem2:v2.2.1_cv1
+#
+# rat:
+#   index_prefix: /path/to/your/rat/genome/index
+#   container: biocontainers/bwa-mem2:v2.2.1_cv1

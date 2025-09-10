@@ -21,7 +21,7 @@ Glossary
    Passenger strand
       The strand of siRNA that is typically degraded during RISC loading.
 
-   Seed region  
+   Seed region
       Nucleotides 2-8 of the siRNA guide strand, critical for target recognition.
 
    ORF

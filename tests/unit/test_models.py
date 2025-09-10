@@ -9,6 +9,9 @@ from sirnaforge.cli import app
 from sirnaforge.models.sirna import DesignParameters, FilterCriteria, SiRNACandidate
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestDesignParameters:
     """Test DesignParameters model."""
 
@@ -16,7 +19,7 @@ class TestDesignParameters:
         """Test default parameter values."""
         params = DesignParameters()
         assert params.sirna_length == 21
-        assert params.top_n == 10
+        assert params.top_n == 50
         assert params.filters.gc_min == 30.0
         assert params.filters.gc_max == 52.0
 
@@ -34,6 +37,9 @@ class TestDesignParameters:
             FilterCriteria(gc_min=60.0, gc_max=50.0)  # gc_max < gc_min
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestSiRNACandidate:
     """Test SiRNACandidate model."""
 
@@ -103,6 +109,9 @@ class TestSiRNACandidate:
         assert fasta == expected
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestCLI:
     """Test CLI functionality."""
 

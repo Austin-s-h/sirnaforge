@@ -61,7 +61,7 @@ cat > tests/data/ci/expected_sirnas.json << 'EOF'
     "score": 0.85
   },
   {
-    "id": "test_sirna_2", 
+    "id": "test_sirna_2",
     "sequence": "CCGGGAAAUCCCAUUGGAUGA",
     "target_gene": "test_transcript_1",
     "position": 105,

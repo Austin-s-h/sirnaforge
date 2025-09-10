@@ -6,7 +6,7 @@ This tutorial demonstrates how to use siRNAforge programmatically through its Py
 
 - Use siRNAforge classes and functions directly in Python
 - Automate siRNA design workflows
-- Customize scoring and filtering algorithms  
+- Customize scoring and filtering algorithms
 - Integrate with existing Python data analysis pipelines
 
 ## Prerequisites
@@ -94,7 +94,7 @@ result = search_gene_sync("TP53", database=DatabaseType.ENSEMBL)
 
 if result.success:
     print(f"Found {len(result.transcripts)} transcripts for {result.gene_info.gene_name}")
-    
+
     # Access transcript information
     for transcript in result.transcripts:
         print(f"  {transcript.transcript_id}: {len(transcript.sequence)} bp")
@@ -112,15 +112,15 @@ from sirnaforge.data.gene_search import GeneSearcher
 
 async def search_multiple_genes():
     searcher = GeneSearcher()
-    
+
     genes = ["TP53", "BRCA1", "EGFR", "MYC"]
     results = {}
-    
+
     for gene in genes:
         print(f"Searching for {gene}...")
         result = await searcher.search_gene(gene, DatabaseType.ENSEMBL)
         results[gene] = result
-    
+
     return results
 
 # Run the async search
@@ -143,31 +143,31 @@ from sirnaforge.models.sirna import SiRNACandidate
 
 class CustomScorer(BaseScorer):
     """Custom scoring algorithm for specific research needs."""
-    
+
     def __init__(self, weight_gc=0.3, weight_position=0.2, weight_structure=0.5):
         self.weight_gc = weight_gc
-        self.weight_position = weight_position  
+        self.weight_position = weight_position
         self.weight_structure = weight_structure
-    
+
     def calculate_score(self, candidate: SiRNACandidate) -> float:
         """Calculate custom composite score."""
-        
+
         # GC content scoring (optimal around 45%)
         gc_score = 1.0 - abs(candidate.gc_content - 45.0) / 45.0
-        
+
         # Position scoring (prefer 5' region)
         position_score = max(0, 1.0 - candidate.position / 1000)
-        
+
         # Structure scoring (from thermodynamics)
         structure_score = candidate.thermodynamic_score
-        
+
         # Weighted combination
         composite = (
             self.weight_gc * gc_score +
             self.weight_position * position_score +
             self.weight_structure * structure_score
         )
-        
+
         return composite
 
 # Use custom scorer
@@ -226,18 +226,18 @@ results_data = []
 
 for _, row in gene_list.iterrows():
     gene_name = row['gene_name']
-    
+
     try:
         # Search for gene
         search_result = search_gene_sync(gene_name)
-        
+
         if search_result.success:
             # Design siRNAs
             designer = SiRNADesigner(DesignParameters(top_candidates=10))
             design_result = designer.design_from_sequences([
                 t.sequence for t in search_result.transcripts if t.sequence
             ])
-            
+
             # Add to results
             for candidate in design_result.candidates:
                 results_data.append({
@@ -248,7 +248,7 @@ for _, row in gene_list.iterrows():
                     'composite_score': candidate.composite_score,
                     'transcript_count': len(search_result.transcripts)
                 })
-                
+
     except Exception as e:
         print(f"Error processing {gene_name}: {e}")
 
@@ -325,53 +325,53 @@ from sirnaforge.core.exceptions import (
 
 def robust_sirna_design(gene_name, max_retries=3):
     """Robust siRNA design with error handling and retries."""
-    
+
     for attempt in range(max_retries):
         try:
             # Search for gene
             print(f"Attempt {attempt + 1}: Searching for {gene_name}")
             search_result = search_gene_sync(gene_name)
-            
+
             if not search_result.success:
                 raise DesignException(f"Gene search failed: {search_result.error}")
-            
+
             # Validate sequences
             valid_transcripts = []
             for transcript in search_result.transcripts:
                 if transcript.sequence and len(transcript.sequence) > 100:
                     valid_transcripts.append(transcript)
-            
+
             if not valid_transcripts:
                 raise ValidationException("No valid transcripts found")
-            
+
             # Design siRNAs
             designer = SiRNADesigner(DesignParameters(top_candidates=20))
             results = designer.design_from_sequences([
                 t.sequence for t in valid_transcripts
             ])
-            
+
             if not results.candidates:
                 raise DesignException("No siRNA candidates generated")
-            
+
             print(f"✅ Successfully designed {len(results.candidates)} candidates for {gene_name}")
             return results
-            
+
         except ValidationException as e:
             print(f"❌ Validation error for {gene_name}: {e}")
             break  # Don't retry validation errors
-            
+
         except (DesignException, SiRNAForgeException) as e:
             print(f"⚠️  Attempt {attempt + 1} failed for {gene_name}: {e}")
             if attempt == max_retries - 1:
                 print(f"❌ All attempts failed for {gene_name}")
                 return None
-            
+
         except Exception as e:
             print(f"💥 Unexpected error for {gene_name}: {e}")
             if attempt == max_retries - 1:
                 print(f"❌ All attempts failed for {gene_name}")
                 return None
-    
+
     return None
 
 # Use robust design
@@ -392,21 +392,21 @@ from pydantic import BaseSettings
 
 class CustomConfig(BaseSettings):
     """Custom configuration with environment variable support."""
-    
+
     # Default parameters
     default_sirna_length: int = 21
     default_candidates: int = 20
     gc_min_default: float = 30.0
     gc_max_default: float = 52.0
-    
+
     # API settings
     ensembl_base_url: str = "https://rest.ensembl.org"
     request_timeout: int = 30
-    
+
     # Quality thresholds
     min_composite_score: float = 5.0
     max_off_targets: int = 5
-    
+
     class Config:
         env_prefix = "SIRNAFORGE_"
 
@@ -437,23 +437,23 @@ from sirnaforge.models.sirna import DesignParameters
 
 def test_custom_api_usage():
     """Test custom API usage patterns."""
-    
+
     # Test parameters
     params = DesignParameters(
         sirna_length=21,
         top_candidates=10,
         gc_content_range=(35.0, 50.0)
     )
-    
+
     designer = SiRNADesigner(params)
-    
+
     # Test with known sequences
     test_sequences = [
         "AUGCGCGAUCUCGAUGCAUGUGCGAUCGAUGCGUAUCGAU" * 2  # 80 nt
     ]
-    
+
     results = designer.design_from_sequences(test_sequences)
-    
+
     # Assertions
     assert len(results.candidates) > 0
     assert all(35.0 <= c.gc_content <= 50.0 for c in results.candidates)
@@ -462,7 +462,7 @@ def test_custom_api_usage():
 @patch('sirnaforge.data.gene_search.httpx.AsyncClient')
 async def test_mock_api_integration(mock_client):
     """Test API integration with mocked responses."""
-    
+
     # Mock successful response
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -471,12 +471,12 @@ async def test_mock_api_integration(mock_client):
     }
     mock_response.raise_for_status.return_value = None
     mock_client.return_value.__aenter__.return_value.get.return_value = mock_response
-    
+
     # Test search
     from sirnaforge.data.gene_search import GeneSearcher
     searcher = GeneSearcher()
     result = await searcher.search_gene("TP53")
-    
+
     # Verify mock was called
     assert mock_client.called
 ```
@@ -513,24 +513,24 @@ import time
 
 def batch_design_with_progress(genes, output_dir):
     """Batch design with progress monitoring."""
-    
+
     results = {}
-    
+
     for gene in tqdm(genes, desc="Processing genes"):
         try:
             # Add small delay to show progress
             time.sleep(0.1)
-            
+
             result = robust_sirna_design(gene)
             results[gene] = result
-            
+
             # Update progress description
             tqdm.write(f"✅ Completed {gene}")
-            
+
         except Exception as e:
             tqdm.write(f"❌ Failed {gene}: {e}")
             results[gene] = None
-    
+
     return results
 ```
 
@@ -539,19 +539,19 @@ def batch_design_with_progress(genes, output_dir):
 ```python
 def stream_large_fasta(file_path, chunk_size=1000):
     """Process large FASTA files in chunks."""
-    
+
     from Bio import SeqIO
-    
+
     with open(file_path, 'r') as handle:
         sequences = []
-        
+
         for record in SeqIO.parse(handle, "fasta"):
             sequences.append(str(record.seq))
-            
+
             if len(sequences) >= chunk_size:
                 yield sequences
                 sequences = []
-        
+
         # Yield remaining sequences
         if sequences:
             yield sequences
@@ -563,7 +563,7 @@ all_results = []
 for chunk in stream_large_fasta("large_transcripts.fasta", chunk_size=100):
     chunk_results = designer.design_from_sequences(chunk)
     all_results.extend(chunk_results.candidates)
-    
+
     # Optional: Save intermediate results
     print(f"Processed chunk, total candidates: {len(all_results)}")
 ```

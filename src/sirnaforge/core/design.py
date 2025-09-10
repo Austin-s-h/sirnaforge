@@ -6,7 +6,6 @@ import time
 from Bio import SeqIO
 from Bio.Seq import Seq
 
-from sirnaforge.core.off_target import OffTargetAnalyzer
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 
@@ -28,6 +27,8 @@ class SiRNADesigner:
             raise ValueError(f"No sequences found in {input_file}")
 
         all_candidates = []
+        # Map guide_sequence -> set of transcript_ids where it appears
+        guide_to_transcripts: dict[str, set[str]] = {}
 
         # Process each sequence
         for seq_record in sequences:
@@ -43,6 +44,10 @@ class SiRNADesigner:
             # Score candidates
             scored_candidates = self._score_candidates(filtered_candidates)
 
+            # Track which transcripts each guide appears in
+            for c in scored_candidates:
+                guide_to_transcripts.setdefault(c.guide_sequence, set()).add(c.transcript_id)
+
             all_candidates.extend(scored_candidates)
 
         # Sort by composite score (descending)
@@ -52,6 +57,12 @@ class SiRNADesigner:
         top_candidates = all_candidates[: self.parameters.top_n]
 
         processing_time = time.time() - start_time
+        # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
+        total_seqs = len(sequences)
+        for c in all_candidates:
+            hits = len(guide_to_transcripts.get(c.guide_sequence, {c.transcript_id}))
+            c.transcript_hit_count = hits
+            c.transcript_hit_fraction = hits / total_seqs if total_seqs > 0 else 0.0
 
         return DesignResult(
             input_file=input_file,
@@ -87,7 +98,10 @@ class SiRNADesigner:
         top_candidates = scored_candidates[: self.parameters.top_n]
 
         processing_time = time.time() - start_time
-
+        # For single-sequence runs, transcript hit metrics are trivial (hits=1, fraction=1.0)
+        for c in scored_candidates:
+            c.transcript_hit_count = 1
+            c.transcript_hit_fraction = 1.0
         return DesignResult(
             input_file="<direct_input>",
             parameters=self.parameters,
@@ -277,25 +291,22 @@ class SiRNADesigner:
             return 1.0 - abs(at_content - 0.5) * 2.0
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate off-target score using enhanced analysis."""
-        try:
-            analyzer = OffTargetAnalyzer()
-            return analyzer.calculate_off_target_score(candidate)
-        except ImportError:
-            # Fallback to simplified version
-            guide = candidate.guide_sequence
+        """Calculate off-target score using simplified analysis."""
+        # Simplified version - comprehensive off-target analysis would require
+        # external databases and more complex alignment tools
+        guide = candidate.guide_sequence
 
-            # Simple penalty for repetitive sequences
-            penalty = 0
-            for i in range(len(guide) - 6):
-                seed = guide[i : i + 7]
-                # Count occurrences of this 7-mer in the sequence
-                if guide.count(seed) > 1:
-                    penalty += 10
+        # Simple penalty for repetitive sequences
+        penalty = 0
+        for i in range(len(guide) - 6):
+            seed = guide[i : i + 7]
+            # Count occurrences of this 7-mer in the sequence
+            if guide.count(seed) > 1:
+                penalty += 10
 
-            # Transform penalty to score: OT_score = exp(-penalty/50)
-            candidate.off_target_penalty = penalty
-            return math.exp(-penalty / 50)
+        # Transform penalty to score: OT_score = exp(-penalty/50)
+        candidate.off_target_penalty = penalty
+        return math.exp(-penalty / 50)
 
     def _calculate_empirical_score(self, candidate: SiRNACandidate) -> float:
         """Calculate empirical score using Reynolds et al. rules (simplified)."""

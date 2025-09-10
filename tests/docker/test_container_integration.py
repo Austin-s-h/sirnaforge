@@ -14,7 +14,7 @@ import pytest
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_cli_help():
     """Test that siRNAforge CLI works in container environment."""
     # This test is designed to be run inside the Docker container via make ci-test-docker
@@ -27,7 +27,7 @@ def test_docker_cli_help():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_version():
     """Test version command works in container."""
     try:
@@ -39,7 +39,7 @@ def test_docker_version():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_command_structure():
     """Test that main commands are available in container."""
     commands = ["search", "workflow", "design"]
@@ -55,7 +55,7 @@ def test_docker_command_structure():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_python_environment():
     """Test that key Python packages are available in container."""
     required_packages = [
@@ -78,7 +78,7 @@ def test_docker_python_environment():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_sirnaforge_imports():
     """Test that siRNAforge modules can be imported in container."""
     # Test that basic modules can be imported
@@ -162,10 +162,29 @@ def test_docker_bioinformatics_tools():
 
     for tool, args in tools:
         try:
-            result = subprocess.run([tool] + args, capture_output=True, text=True, timeout=10, check=False)
+            # Avoid automatic text decoding by subprocess (some tool outputs contain
+            # non-UTF-8 bytes). Capture raw bytes and decode defensively.
+            result = subprocess.run([tool] + args, capture_output=True, text=False, timeout=10, check=False)
+            # Decode safely for any later inspection (replace invalid bytes)
+            stdout = (
+                result.stdout.decode("utf-8", errors="replace")
+                if isinstance(result.stdout, (bytes, bytearray))
+                else str(result.stdout)
+            )
+            stderr = (
+                result.stderr.decode("utf-8", errors="replace")
+                if isinstance(result.stderr, (bytes, bytearray))
+                else str(result.stderr)
+            )
+
             # Tool should exist and respond (exit code may vary)
             if result.returncode > 1:  # 0 or 1 are usually okay
                 missing_tools.append(f"{tool} (bad exit code: {result.returncode})")
+
+            # Also consider evidence in stdout/stderr that the binary is missing or failed
+            combined = (stdout or "") + "\n" + (stderr or "")
+            if any(term in combined.lower() for term in ["not found", "command not found", "error", "unable to"]):
+                missing_tools.append(f"{tool} (error output: {combined.strip()[:200]})")
         except FileNotFoundError:
             missing_tools.append(f"{tool} (not found)")
         except subprocess.TimeoutExpired:

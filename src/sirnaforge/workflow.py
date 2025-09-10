@@ -12,7 +12,8 @@ Coordinates the complete siRNA design pipeline:
 import asyncio
 import csv
 import json
-import subprocess
+import math
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,11 +22,12 @@ from rich.console import Console
 from rich.progress import Progress
 
 from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.core.off_target import OffTargetAnalyzer
+from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
+from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -39,19 +41,24 @@ class WorkflowConfig:
         self,
         output_dir: Path,
         gene_query: str,
+        input_fasta: Optional[Path] = None,
         database: DatabaseType = DatabaseType.ENSEMBL,
         design_params: Optional[DesignParameters] = None,
         top_n_for_offtarget: int = 10,
         nextflow_config: Optional[dict] = None,
         genome_species: Optional[list[str]] = None,
+        log_file: Optional[str] = None,
     ):
         self.output_dir = Path(output_dir)
-        self.gene_query = gene_query
+        # If input_fasta is provided, use its stem as the gene_query identifier
+        self.input_fasta = Path(input_fasta) if input_fasta else None
+        self.gene_query = gene_query if not self.input_fasta else self.input_fasta.stem
         self.database = database
         self.design_params = design_params or DesignParameters()
         self.top_n_for_offtarget = top_n_for_offtarget
         self.nextflow_config = nextflow_config or {}
         self.genome_species = genome_species or ["human", "rat", "rhesus"]
+        self.log_file = log_file
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +135,22 @@ class SiRNAWorkflow:
         with summary_file.open("w") as f:
             json.dump(final_results, f, indent=2, default=str)
 
+        # Save a small manifest that records invocation parameters and environment pointers
+        manifest = {
+            "gene_query": self.config.gene_query,
+            "database": self.config.database.value,
+            "output_dir": str(self.config.output_dir),
+            "processing_time": total_time,
+            "start_time": start_time,
+            "end_time": time.time(),
+            "tool_versions": final_results.get("design_summary", {}).get("tool_versions", {}),
+            "log_file": self.config.log_file,  # Effective log file path if configured
+        }
+
+        manifest_file = self.config.output_dir / "workflow_manifest.json"
+        with manifest_file.open("w") as mf:
+            json.dump(manifest, mf, indent=2, default=str)
+
         console.print(f"\n✅ [bold green]Workflow completed in {total_time:.2f}s[/bold green]")
         console.print(f"📊 Results saved to: [blue]{self.config.output_dir}[/blue]")
 
@@ -136,8 +159,38 @@ class SiRNAWorkflow:
     async def step1_retrieve_transcripts(self, progress: Progress) -> list[TranscriptInfo]:
         """Step 1: Retrieve and validate transcript sequences."""
         task = progress.add_task("[yellow]Fetching transcripts...", total=3)
+        # If an input FASTA was provided, read sequences directly and create TranscriptInfo objects
+        if self.config.input_fasta:
+            sequences = FastaUtils.read_fasta(self.config.input_fasta)
+            progress.advance(task)
 
-        # Search for gene
+            transcripts: list[TranscriptInfo] = []
+            for header, seq in sequences:
+                # header may contain transcript id and metadata; use first token as id
+                tid = header.split()[0]
+                transcripts.append(
+                    TranscriptInfo(
+                        transcript_id=tid,
+                        transcript_name=None,
+                        transcript_type="unknown",
+                        gene_id=self.config.gene_query,
+                        gene_name=self.config.gene_query,
+                        sequence=seq,
+                        length=len(seq),
+                        database=self.config.database,
+                    )
+                )
+
+            # Save a normalized transcripts FASTA in the output directory
+            transcript_file = self.config.output_dir / "transcripts" / f"{self.config.gene_query}_transcripts.fasta"
+            sequences_out = [(f"{t.transcript_id} {t.gene_name}", t.sequence or "") for t in transcripts]
+            FastaUtils.save_sequences_fasta(sequences_out, transcript_file)
+            progress.advance(task)
+
+            console.print(f"📄 Loaded {len(transcripts)} sequences from FASTA: {self.config.input_fasta}")
+            return transcripts
+
+        # Otherwise perform a gene search
         gene_result = await self.gene_searcher.search_gene(
             self.config.gene_query, self.config.database, include_sequence=True
         )
@@ -248,110 +301,135 @@ class SiRNAWorkflow:
         console.print(f"   - Top {len(top_sequences)} candidates for off-target analysis")
 
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict:
-        """Step 5: Run off-target analysis using Nextflow pipeline."""
-
+        """Step 5: Run off-target analysis using embedded Nextflow pipeline."""
         top_candidates = design_results.top_candidates[: self.config.top_n_for_offtarget]
 
         if not top_candidates:
             console.print("⚠️  No candidates available for off-target analysis")
             return {"status": "skipped", "reason": "no_candidates"}
 
-        # Create Nextflow input
-        input_fasta = self.config.output_dir / "off_target" / "input_candidates.fasta"
-        sequences = [(f"{c.id}", c.guide_sequence) for c in top_candidates]
+        # Prepare input files
+        input_fasta = await self._prepare_offtarget_input(top_candidates)
 
-        FastaUtils.save_sequences_fasta(sequences, input_fasta)
-
-        # Prepare Nextflow command
-        nf_script = self._find_nextflow_script()
-        if not nf_script:
-            console.print("⚠️  Nextflow off-target pipeline not found, using basic analysis")
-            return await self._basic_offtarget_analysis(top_candidates)
-
-        # Run Nextflow pipeline
+        # Try Nextflow pipeline first, fall back to basic analysis
         try:
-            nf_work_dir = self.config.output_dir / "off_target" / "nextflow_work"
-            nf_output_dir = self.config.output_dir / "off_target" / "results"
-
-            cmd = [
-                "nextflow",
-                "run",
-                str(nf_script),
-                "--input",
-                str(input_fasta),
-                "--outdir",
-                str(nf_output_dir),
-                "--genome_species",
-                ",".join(self.config.genome_species),
-                "-w",
-                str(nf_work_dir),
-                "-resume",
-            ]
-
-            console.print("🚀 Running Nextflow off-target analysis...")
-            console.print(f"   Command: {' '.join(cmd)}")
-
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=1800)  # 30 min timeout
-
-            if result.returncode == 0:
-                console.print("✅ Nextflow pipeline completed successfully")
-                parsed = await self._parse_nextflow_results(nf_output_dir)
-
-                # Map parsed results back to the top candidates so classification can use them
-                mapped = {}
-                for c in top_candidates:
-                    qid = c.id
-                    entry = parsed.get("results", {}).get(qid)
-                    if entry:
-                        mapped[qid] = {
-                            "off_target_count": entry.get("off_target_count", 0),
-                            "off_target_score": entry.get("off_target_score", 0.0),
-                            "hits": entry.get("hits", []),
-                        }
-                        # Update candidate object fields if available
-                        try:
-                            c.off_target_count = mapped[qid]["off_target_count"]
-                            c.off_target_penalty = mapped[qid]["off_target_score"]
-                        except Exception:
-                            pass
-                    else:
-                        mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
-
-                return {
-                    "status": "completed",
-                    "method": "nextflow",
-                    "output_dir": str(nf_output_dir),
-                    "results": mapped,
-                }
-            console.print(f"❌ Nextflow pipeline failed: {result.stderr}")
-            return await self._basic_offtarget_analysis(top_candidates)
-
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            return await self._run_nextflow_offtarget_analysis(top_candidates, input_fasta)
+        except Exception as e:
             console.print(f"⚠️  Nextflow execution failed: {e}")
+            logger.exception("Nextflow pipeline execution error")
             return await self._basic_offtarget_analysis(top_candidates)
 
-    def _find_nextflow_script(self) -> Optional[Path]:
-        """Find the Nextflow off-target analysis script."""
-        possible_locations = [
-            Path(__file__).parent.parent.parent / "nextflow_pipeline" / "main.nf",
-            Path.cwd() / "nextflow_pipeline" / "main.nf",
-            Path(__file__).parent / "pipeline" / "offtarget_analysis.nf",
-        ]
+    async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
+        """Prepare FASTA input file for off-target analysis."""
+        input_fasta = self.config.output_dir / "off_target" / "input_candidates.fasta"
+        sequences = [(f"{c.id}", c.guide_sequence) for c in candidates]
+        FastaUtils.save_sequences_fasta(sequences, input_fasta)
+        return input_fasta
 
-        for location in possible_locations:
-            if location.exists():
-                return location
+    async def _run_nextflow_offtarget_analysis(self, candidates: list[SiRNACandidate], input_fasta: Path) -> dict:
+        """Run Nextflow-based off-target analysis."""
+        # Configure Nextflow runner
+        runner = self._setup_nextflow_runner()
 
-        return None
+        # Validate installation
+        if not self._validate_nextflow_environment(runner):
+            return await self._basic_offtarget_analysis(candidates)
+
+        # Execute pipeline
+        console.print("🚀 Running embedded Nextflow off-target analysis...")
+        nf_output_dir = self.config.output_dir / "off_target" / "results"
+
+        results = await runner.run_offtarget_analysis(
+            input_file=input_fasta,
+            output_dir=nf_output_dir,
+            genome_species=self.config.genome_species,
+            additional_params=self.config.nextflow_config,
+            show_progress=True,
+        )
+
+        if results["status"] == "completed":
+            return await self._process_nextflow_results(candidates, nf_output_dir, results)
+
+        console.print(f"❌ Nextflow pipeline failed: {results}")
+        return await self._basic_offtarget_analysis(candidates)
+
+    def _setup_nextflow_runner(self) -> NextflowRunner:
+        """Configure Nextflow runner with user settings."""
+        nf_config = NextflowConfig.for_production()
+        if self.config.nextflow_config:
+            for key, value in self.config.nextflow_config.items():
+                setattr(nf_config, key, value)
+        return NextflowRunner(nf_config)
+
+    def _validate_nextflow_environment(self, runner: NextflowRunner) -> bool:
+        """Validate Nextflow installation and workflow files."""
+        validation = runner.validate_installation()
+        if not validation["nextflow"]:
+            console.print("⚠️  Nextflow not available, using basic analysis")
+            return False
+        if not validation["workflow_files"]:
+            console.print("⚠️  Nextflow workflows not found, using basic analysis")
+            return False
+        return True
+
+    async def _process_nextflow_results(
+        self, candidates: list[SiRNACandidate], output_dir: Path, results: dict
+    ) -> dict:
+        """Process and map Nextflow pipeline results to candidates."""
+        console.print("✅ Nextflow pipeline completed successfully")
+        parsed = await self._parse_nextflow_results(output_dir)
+
+        # Map parsed results back to candidates
+        mapped = {}
+        for c in candidates:
+            qid = c.id
+            entry = parsed.get("results", {}).get(qid)
+            if entry:
+                mapped[qid] = {
+                    "off_target_count": entry.get("off_target_count", 0),
+                    "off_target_score": entry.get("off_target_score", 0.0),
+                    "hits": entry.get("hits", []),
+                }
+                # Update candidate object fields
+                self._update_candidate_scores(c, mapped[qid])
+            else:
+                mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
+
+        return {
+            "status": "completed",
+            "method": "embedded_nextflow",
+            "output_dir": str(output_dir),
+            "results": mapped,
+            "execution_metadata": results,
+        }
+
+    def _update_candidate_scores(self, candidate: SiRNACandidate, result_data: dict) -> None:
+        """Update candidate object with off-target analysis results."""
+        try:
+            candidate.off_target_count = result_data["off_target_count"]
+            candidate.off_target_penalty = result_data["off_target_score"]
+        except KeyError as e:
+            logger.warning(f"Missing key in result data: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error updating candidate scores: {e}")
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict:
         """Fallback basic off-target analysis."""
-        analyzer = OffTargetAnalyzer()
+        # Use simplified analysis when external tools are not available
+        analyzer = OffTargetAnalysisManager(species="human")  # Default to human for basic analysis
         results = {}
 
         for candidate in candidates:
-            off_target_count, penalty = analyzer.analyze_off_targets(candidate)
-            score = analyzer.calculate_off_target_score(candidate)
+            analysis_result = analyzer.analyze_sirna_candidate(candidate)
+
+            # Extract relevant metrics for backward compatibility
+            mirna_hits = analysis_result.get("mirna_hits", [])
+            transcriptome_hits = analysis_result.get("transcriptome_hits", [])
+
+            # Calculate basic scores
+            off_target_count = len(mirna_hits) + len(transcriptome_hits)
+            penalty = off_target_count * 10  # Simple penalty calculation
+            score = math.exp(-penalty / 50)  # Score calculation
 
             results[candidate.id] = {
                 "off_target_count": off_target_count,
@@ -524,6 +602,7 @@ class SiRNAWorkflow:
 async def run_sirna_workflow(
     gene_query: str,
     output_dir: str,
+    input_fasta: Optional[str] = None,
     database: str = "ensembl",
     top_n_candidates: int = 20,
     top_n_offtarget: int = 10,
@@ -531,6 +610,7 @@ async def run_sirna_workflow(
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
+    log_file: Optional[str] = None,
 ) -> dict:
     """
     Run complete siRNA design workflow.
@@ -562,10 +642,12 @@ async def run_sirna_workflow(
     config = WorkflowConfig(
         output_dir=Path(output_dir),
         gene_query=gene_query,
+        input_fasta=Path(input_fasta) if input_fasta else None,
         database=database_enum,
         design_params=design_params,
         top_n_for_offtarget=top_n_offtarget,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        log_file=log_file,
     )
 
     # Run workflow
@@ -575,12 +657,12 @@ async def run_sirna_workflow(
 
 if __name__ == "__main__":
     # Example usage
-    import asyncio
-
     async def main() -> None:
-        results = await run_sirna_workflow(
-            gene_query="TP53", output_dir="/tmp/sirna_workflow_test", top_n_candidates=20, top_n_offtarget=10
-        )
-        print(f"Workflow completed: {results}")
+        # Use secure temporary directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results = await run_sirna_workflow(
+                gene_query="TP53", output_dir=temp_dir, top_n_candidates=20, top_n_offtarget=10
+            )
+            print(f"Workflow completed: {results}")
 
     asyncio.run(main())

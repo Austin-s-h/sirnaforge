@@ -183,11 +183,11 @@ from pydantic import BaseModel, Field, validator
 
 class DesignParameters(BaseModel):
     """Design parameters with validation."""
-    
+
     sirna_length: int = Field(21, ge=19, le=23)
     gc_min: float = Field(30.0, ge=0, le=100)
     gc_max: float = Field(52.0, ge=0, le=100)
-    
+
     @validator('gc_max')
     def gc_max_greater_than_min(cls, v, values):
         if 'gc_min' in values and v <= values['gc_min']:
@@ -208,7 +208,7 @@ class DesignException(SiRNAForgeException):
 def design_candidates(sequences: List[str]) -> List[SiRNACandidate]:
     if not sequences:
         raise DesignException("No sequences provided for design")
-    
+
     try:
         # Design logic
         return candidates
@@ -222,18 +222,18 @@ Use comprehensive docstrings:
 ```python
 def calculate_thermodynamics(sequence: str, temperature: float = 37.0) -> ThermodynamicResult:
     """Calculate thermodynamic properties of RNA sequence.
-    
+
     Args:
         sequence: RNA sequence (A, U, G, C only)
         temperature: Temperature in Celsius for calculations
-        
+
     Returns:
         ThermodynamicResult containing folding energy, structure, and stability metrics
-        
+
     Raises:
         ValidationException: If sequence contains invalid characters
         CalculationException: If thermodynamic calculation fails
-        
+
     Example:
         >>> result = calculate_thermodynamics("AUGCAUGCAUGC")
         >>> print(f"ΔG = {result.free_energy:.2f} kcal/mol")
@@ -294,7 +294,7 @@ Test multiple scenarios efficiently:
 ```python
 @pytest.mark.parametrize("gc_min,gc_max,expected_count", [
     (30, 70, 10),  # Relaxed parameters
-    (40, 60, 5),   # Strict parameters  
+    (40, 60, 5),   # Strict parameters
     (45, 55, 2),   # Very strict parameters
 ])
 def test_gc_filtering(sample_sequences, gc_min, gc_max, expected_count):
@@ -316,7 +316,7 @@ async def test_gene_search_api_error(mock_client):
     mock_response = MagicMock()
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError("API Error", request=None, response=None)
     mock_client.return_value.__aenter__.return_value.get.return_value = mock_response
-    
+
     # Test that error is handled gracefully
     searcher = GeneSearcher()
     result = await searcher.search_gene("TESTGENE")
@@ -361,7 +361,7 @@ refactor(models): simplify sirna candidate validation
 
 **Quality Checklist:**
 - [ ] Tests pass (`make test`)
-- [ ] Code is formatted (`make format`)  
+- [ ] Code is formatted (`make format`)
 - [ ] No linting errors (`make lint`)
 - [ ] Documentation updated
 - [ ] Changelog updated (for significant changes)
@@ -386,10 +386,10 @@ from .design import BaseDesigner
 
 class CustomAlgorithm(BaseDesigner):
     """Custom siRNA design algorithm."""
-    
+
     def __init__(self, parameters: DesignParameters):
         super().__init__(parameters)
-        
+
     def design_candidates(self, sequence: str) -> List[SiRNACandidate]:
         """Implement your custom design logic."""
         candidates = []
@@ -409,7 +409,7 @@ from .base import BaseDataProvider
 
 class CustomDataProvider(BaseDataProvider):
     """Custom gene data provider."""
-    
+
     async def search_gene(self, query: str) -> SearchResult:
         """Implement custom gene search."""
         # Your search logic here
@@ -509,7 +509,7 @@ make docs-deploy
 ## Getting Help
 
 - **Discord/Slack**: Development discussions
-- **GitHub Issues**: Bug reports and feature requests  
+- **GitHub Issues**: Bug reports and feature requests
 - **GitHub Discussions**: General questions and ideas
 - **Email**: Direct contact with maintainers
 

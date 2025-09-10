@@ -3,7 +3,7 @@
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union, cast
+from typing import Callable, Optional, TypeVar, Union, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -11,6 +11,11 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+# mypy-friendly typed alias for pydantic field_validator
+F = TypeVar("F", bound=Callable[..., object])
+FieldValidatorFactory = Callable[..., Callable[[F], F]]
+field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class DatabaseType(str, Enum):
@@ -61,7 +66,7 @@ class TranscriptInfo(BaseModel):
 
     model_config = ConfigDict(use_enum_values=True)
 
-    @field_validator("sequence")
+    @field_validator_typed("sequence")
     @classmethod
     def validate_sequence(cls, v: Optional[str]) -> Optional[str]:
         """Validate RNA sequence."""
@@ -116,11 +121,11 @@ class BaseEnsemblClient:
                 session.get(url, headers=headers) as response,
             ):
                 if response.status == 200:
-                    sequence = await response.text()
+                    sequence_text: str = str(await response.text())
                     # Remove FASTA header if present
-                    if sequence.startswith(">"):
-                        sequence = "\n".join(sequence.split("\n")[1:])
-                    return sequence.replace("\n", "").upper()
+                    if sequence_text.startswith(">"):
+                        sequence_text = "\n".join(sequence_text.split("\n")[1:])
+                    return sequence_text.replace("\n", "").upper()
                 logger.debug(f"Failed to get {seq_type} for {identifier}: HTTP {response.status}")
                 return None
         except Exception as e:
@@ -252,6 +257,79 @@ class FastaUtils:
                 sequences.append((current_header, "".join(current_sequence)))
 
         return sequences
+
+    @staticmethod
+    def parse_fasta_to_dict(file_path: Union[str, Path]) -> dict[str, str]:
+        """
+        Parse FASTA file into a dictionary.
+
+        Args:
+            file_path: Path to FASTA file
+
+        Returns:
+            Dictionary mapping sequence names to sequences
+        """
+        sequences_list = FastaUtils.read_fasta(file_path)
+
+        # Convert to dictionary
+        sequences_dict = {}
+        for header, sequence in sequences_list:
+            # Clean header (remove > if present)
+            clean_header = header.lstrip(">")
+            sequences_dict[clean_header] = sequence.upper().replace("U", "T")
+
+        logger.info(f"Parsed {len(sequences_dict)} sequences from {file_path}")
+        return sequences_dict
+
+    @staticmethod
+    def write_dict_to_fasta(sequences: dict[str, str], output_path: Union[str, Path]) -> None:
+        """
+        Write sequences dictionary to FASTA format.
+
+        Args:
+            sequences: Dictionary of sequence name -> sequence
+            output_path: Output file path
+        """
+        # Convert to list format
+        fasta_sequences = list(sequences.items())
+
+        # Use existing save method
+        FastaUtils.save_sequences_fasta(fasta_sequences, output_path)
+
+        logger.info(f"Wrote {len(sequences)} sequences to {output_path}")
+
+    @staticmethod
+    def validate_sirna_sequences(sequences: dict[str, str], expected_length: int = 21) -> dict[str, str]:
+        """
+        Validate siRNA sequences for correct length and nucleotide content.
+
+        Args:
+            sequences: Dictionary of sequence name -> sequence
+            expected_length: Expected siRNA length
+
+        Returns:
+            Dictionary of valid sequences
+        """
+        valid_sequences = {}
+        invalid_count = 0
+
+        for name, seq in sequences.items():
+            # Clean sequence
+            clean_seq = seq.upper().replace("U", "T")
+
+            # Validate length and nucleotide content
+            if len(clean_seq) == expected_length and all(base in "ATCG" for base in clean_seq):
+                valid_sequences[name] = clean_seq
+            else:
+                invalid_count += 1
+                logger.debug(f"Invalid sequence {name}: length={len(clean_seq)}, sequence={clean_seq}")
+
+        logger.info(f"Validation complete: {len(valid_sequences)} valid, {invalid_count} invalid sequences")
+
+        if len(valid_sequences) == 0:
+            raise ValueError("No valid sequences found after validation")
+
+        return valid_sequences
 
 
 def get_database_display_name(database: DatabaseType) -> str:

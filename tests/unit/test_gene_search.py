@@ -14,6 +14,9 @@ from sirnaforge.data.gene_search import (
 )
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestGeneSearchModels:
     """Test gene search data models."""
 
@@ -65,6 +68,9 @@ class TestGeneSearchModels:
         assert failed_result.success is False
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestGeneSearcher:
     """Test GeneSearcher functionality."""
 
@@ -91,11 +97,12 @@ class TestGeneSearcher:
             is_canonical=True,
         )
 
-        with patch.object(searcher, "_search_ensembl") as mock_ensembl:
-            mock_ensembl.return_value = GeneSearchResult(
+        async def _fake_search_ensembl(query, include_sequence=True):
+            return GeneSearchResult(
                 query="TP53", database=DatabaseType.ENSEMBL, gene_info=mock_gene_info, transcripts=[mock_transcript]
             )
 
+        with patch.object(searcher, "_search_ensembl", new=_fake_search_ensembl):
             result = await searcher.search_gene("TP53", DatabaseType.ENSEMBL)
 
             assert result.success is True
@@ -108,11 +115,10 @@ class TestGeneSearcher:
         """Test searching multiple databases."""
         searcher = GeneSearcher()
 
-        with patch.object(searcher, "search_gene") as mock_search:
-            mock_search.return_value = GeneSearchResult(
-                query="TP53", database=DatabaseType.ENSEMBL, error="Mock result"
-            )
+        async def _fake_search_gene(query, database, include_sequence=True):
+            return GeneSearchResult(query="TP53", database=DatabaseType.ENSEMBL, error="Mock result")
 
+        with patch.object(searcher, "search_gene", new=_fake_search_gene):
             results = await searcher.search_multiple_databases("TP53", [DatabaseType.ENSEMBL, DatabaseType.REFSEQ])
 
             assert len(results) == 2
@@ -154,16 +160,24 @@ class TestGeneSearcher:
 
     def test_synchronous_wrapper(self):
         """Test synchronous wrapper function."""
-        with patch("sirnaforge.data.gene_search.asyncio.run") as mock_run:
-            mock_result = GeneSearchResult(query="TP53", database=DatabaseType.ENSEMBL)
+        mock_result = GeneSearchResult(query="TP53", database=DatabaseType.ENSEMBL)
+        # Patch GeneSearcher.search_gene to return a plain result so no coroutine is created
+        with (
+            patch.object(GeneSearcher, "search_gene", return_value=mock_result) as mock_search,
+            patch("sirnaforge.data.gene_search.asyncio.run") as mock_run,
+        ):
             mock_run.return_value = mock_result
 
             result = search_gene_sync("TP53")
 
             assert result == mock_result
             mock_run.assert_called_once()
+            mock_search.assert_called_once()
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestDatabaseSpecificMethods:
     """Test database-specific search methods."""
 

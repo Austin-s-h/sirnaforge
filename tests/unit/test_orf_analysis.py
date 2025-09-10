@@ -4,6 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from sirnaforge.data import TranscriptInfo
 from sirnaforge.data.base import DatabaseType
 from sirnaforge.data.orf_analysis import analyze_multiple_transcript_orfs
@@ -71,6 +73,9 @@ async def _test_orf_analysis():
             logger.info(f"  Protein Length: {len(analysis.protein_sequence)} aa")
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_orf_analysis():
     """Synchronous pytest-compatible wrapper that runs the async ORF analysis test."""
     asyncio.run(_test_orf_analysis())

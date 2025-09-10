@@ -8,15 +8,18 @@ from pathlib import Path
 
 import pytest
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import SiRNACandidate
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 VIENNA_AVAILABLE = importlib.util.find_spec("RNA") is not None
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_fixed_duplex_stability():
     """Test that duplex stability calculation works without segfault."""
     if not VIENNA_AVAILABLE:
@@ -36,6 +39,9 @@ def test_fixed_duplex_stability():
     print(f"✓ Duplex stability: {dg}")
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_fixed_asymmetry_calculation():
     """Test that asymmetry score calculation works without segfault."""
     if not VIENNA_AVAILABLE:
@@ -64,6 +70,9 @@ def test_fixed_asymmetry_calculation():
     print(f"✓ Asymmetry calculation: 5'={dg_5p}, 3'={dg_3p}, asym={asymmetry}")
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_multiple_sequences():
     """Test multiple sequences to ensure stability."""
     if not VIENNA_AVAILABLE:

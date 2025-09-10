@@ -68,11 +68,11 @@ html_show_copyright = True
 
 # Custom CSS and JS files
 html_css_files = [
-    'custom.css',
+    "custom.css",
 ]
 
 html_js_files = [
-    'custom.js',
+    "custom.js",
 ]
 
 # -- Extension configuration -------------------------------------------------
@@ -124,7 +124,7 @@ myst_enable_extensions = [
     "tasklist",
 ]
 
-myst_fence_as_directive = []
+myst_fence_as_directive: list[str] = []
 
 # Mermaid configuration for GitHub Pages compatibility
 mermaid_version = "10.6.1"  # Use a specific stable version

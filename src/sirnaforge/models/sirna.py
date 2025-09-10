@@ -1,10 +1,15 @@
 """Pydantic models for siRNA design data structures."""
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+# mypy-friendly typed alias for pydantic's untyped decorator factory
+F = TypeVar("F", bound=Callable[..., Any])
+FieldValidatorFactory = Callable[..., Callable[[F], F]]
+field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class FilterCriteria(BaseModel):
@@ -16,7 +21,7 @@ class FilterCriteria(BaseModel):
     max_paired_fraction: float = Field(default=0.6, ge=0, le=1, description="Maximum secondary structure pairing")
     min_asymmetry_score: float = Field(default=0.0, ge=0, le=1, description="Minimum thermodynamic asymmetry")
 
-    @field_validator("gc_max")
+    @field_validator_typed("gc_max")
     @classmethod
     def gc_max_greater_than_min(cls, v: float, info: ValidationInfo) -> float:
         if "gc_min" in info.data and v < info.data["gc_min"]:
@@ -33,7 +38,7 @@ class ScoringWeights(BaseModel):
     off_target: float = Field(default=0.20, ge=0, le=1, description="Off-target avoidance weight")
     empirical: float = Field(default=0.10, ge=0, le=1, description="Empirical rules weight")
 
-    @field_validator("empirical")
+    @field_validator_typed("empirical")
     @classmethod
     def weights_sum_to_one(cls, v: float, info: ValidationInfo) -> float:
         total = sum(info.data.values()) + v
@@ -49,7 +54,7 @@ class DesignParameters(BaseModel):
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA length in nucleotides")
-    top_n: int = Field(default=10, ge=1, le=1000, description="Number of top candidates to return")
+    top_n: int = Field(default=50, ge=1, le=1000, description="Number of top candidates to return")
 
     # Filtering criteria
     filters: FilterCriteria = Field(default_factory=FilterCriteria)
@@ -63,7 +68,9 @@ class DesignParameters(BaseModel):
     predict_structure: bool = Field(default=True, description="Predict secondary structures")
 
     # File paths (optional)
+    # TODO: review snp incorporation feature
     snp_file: Optional[str] = Field(default=None, description="Path to SNP VCF file")
+    # Review genome index passing / FASTA selection
     genome_index: Optional[str] = Field(default=None, description="Path to genome index for off-targets")
 
 
@@ -107,6 +114,14 @@ class SiRNACandidate(BaseModel):
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-targets")
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score")
 
+    # Transcript hit metrics (how many input transcripts this guide hits)
+    transcript_hit_count: int = Field(
+        default=1, ge=0, description="Number of input transcripts that contain this guide sequence"
+    )
+    transcript_hit_fraction: float = Field(
+        default=1.0, ge=0, le=1, description="Fraction of input transcripts hit by this guide sequence"
+    )
+
     # Composite scoring
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual component scores")
     composite_score: float = Field(ge=0, le=100, description="Final composite score")
@@ -115,7 +130,7 @@ class SiRNACandidate(BaseModel):
     passes_filters: bool = Field(default=True, description="Passes all quality filters")
     quality_issues: list[str] = Field(default_factory=list, description="List of quality concerns")
 
-    @field_validator("guide_sequence", "passenger_sequence")
+    @field_validator_typed("guide_sequence", "passenger_sequence")
     @classmethod
     def validate_nucleotide_sequence(cls, v: str) -> str:
         valid_bases = set("ATCGU")
@@ -123,7 +138,7 @@ class SiRNACandidate(BaseModel):
             raise ValueError(f"Sequence contains invalid nucleotides: {v}")
         return v.upper()
 
-    @field_validator("passenger_sequence")
+    @field_validator_typed("passenger_sequence")
     @classmethod
     def sequences_same_length(cls, v: str, info: ValidationInfo) -> str:
         if "guide_sequence" in info.data and len(v) != len(info.data["guide_sequence"]):
@@ -171,6 +186,8 @@ class DesignResult(BaseModel):
                 "asymmetry_score": candidate.asymmetry_score,
                 "paired_fraction": candidate.paired_fraction,
                 "off_target_count": candidate.off_target_count,
+                "transcript_hit_count": candidate.transcript_hit_count,
+                "transcript_hit_fraction": candidate.transcript_hit_fraction,
                 "composite_score": candidate.composite_score,
                 "passes_filters": candidate.passes_filters,
             }

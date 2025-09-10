@@ -1,1 +1,19 @@
-"""Empty __init__.py files for proper package structure."""
+"""Pydantic models for siRNA design data structures."""
+
+from .sirna import (
+    DesignParameters,
+    DesignResult,
+    FilterCriteria,
+    ScoringWeights,
+    SequenceType,
+    SiRNACandidate,
+)
+
+__all__ = [
+    "DesignParameters",
+    "DesignResult",
+    "FilterCriteria",
+    "ScoringWeights",
+    "SequenceType",
+    "SiRNACandidate",
+]

@@ -6,26 +6,26 @@ channels:
 dependencies:
   # Java runtime (required for Nextflow)
   - openjdk >=17,<25
-  
+
   # Workflow management
   - nextflow >=25.04.0
-  
+
   # Sequence alignment tools
   - bwa-mem2 >=2.2.1
   - bwa >=0.7.17  # Fallback option
   - samtools >=1.19.2
-  
+
   # RNA analysis
   - viennarna >=2.7.0
-  
+
   # Cloud storage and utilities
   - awscli >=2.0
   - curl
   - wget
-  
+
   # JSON processing
   - jq
-  
+
   # Compression utilities
   - pigz
   # 'bgzip' is provided by htslib in conda packages

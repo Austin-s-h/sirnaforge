@@ -112,4 +112,3 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.authors="Austin S. Hovland"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.source="https://github.com/example/sirnaforge"
-

@@ -11,7 +11,7 @@ Quick Access by Category
    - :doc:`QUICK_REFERENCE` - Essential Commands
 
 📖 **User Documentation**
-   - :doc:`CLI_REFERENCE` - Complete CLI Reference  
+   - :doc:`CLI_REFERENCE` - Complete CLI Reference
    - :doc:`USAGE_EXAMPLES` - Real-world Examples
    - :doc:`gene_search` - Gene Search Guide
    - :doc:`tutorials/index` - Step-by-step Tutorials
