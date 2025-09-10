@@ -5,13 +5,55 @@
 
 # Variables
 DOCKER_IMAGE = sirnaforge
-VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
+VERSION = $(shell uv run --group dev python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
 
 # Default target
 help: ## Show available commands
 	@echo "🧬 siRNAforge Development Commands"
 	@echo "================================="
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo ""
+	@echo "📦 PACKAGE MANAGEMENT"
+	@echo "  install         Install production dependencies"
+	@echo "  install-dev     Install with development dependencies"
+	@echo "  install-pipeline Pipeline tools (included in main deps)"
+	@echo ""
+	@echo "🧪 TESTING (3 Groups)"
+	@echo "  test-unit           Unit tests (fast, Python-only)"
+	@echo "  test-local-python   Local Python development tests"
+	@echo "  test-local-nextflow Local Nextflow development tests"
+	@echo "  test-ci            CI/CD optimized tests"
+	@echo "  test-integration   Integration tests (Docker + Nextflow)"
+	@echo "  docker-test        Docker tests (development)"
+	@echo "  docker-test-fast   Fast Docker tests (minimal resources)"
+	@echo "  docker-test-full   Full Docker tests (high resources)"
+	@echo ""
+	@echo "🔧 CODE QUALITY"
+	@echo "  lint               Run all linting tools"
+	@echo "  format             Format code with black and ruff"
+	@echo "  check              Run quality checks + fast tests"
+	@echo ""
+	@echo "🐳 DOCKER"
+	@echo "  docker             Build Docker image"
+	@echo "  docker-run         Run workflow in Docker"
+	@echo "  docker-dev         Interactive Docker shell"
+	@echo ""
+	@echo "📚 DOCUMENTATION"
+	@echo "  docs               Build documentation"
+	@echo "  docs-serve         Serve docs locally"
+	@echo "  docs-cli           Generate CLI reference"
+	@echo ""
+	@echo "🚀 NEXTFLOW"
+	@echo "  nextflow-check     Check Nextflow installation"
+	@echo "  nextflow-run       Run Nextflow pipeline"
+	@echo ""
+	@echo "🛠️  UTILITIES"
+	@echo "  dev                Quick development setup"
+	@echo "  example            Run basic example"
+	@echo "  version            Show version"
+	@echo "  release            Prepare release"
+	@echo "  security           Run security checks"
+	@echo "  pre-commit         Run pre-commit hooks"
+	@echo "  clean              Clean build artifacts"
 
 # Installation
 install: ## Install production dependencies only
@@ -28,33 +70,49 @@ install-pipeline: ## Pipeline tools are now in main dependencies
 
 # Development & Testing
 test: ## Run all tests
-	uv run pytest -v
+	uv run --group dev pytest -v
 
-test-unit: ## Run unit tests only
-	uv run pytest -v -m "unit"
+test-unit: ## Run unit tests only (fast, Python-only)
+	uv run --group dev pytest -v -m "unit"
 
-test-integration: ## Run integration tests
-	uv run pytest -v -m "integration"
+test-integration: ## Run integration tests (full workflow, requires Docker + Nextflow)
+	uv run --group dev pytest -v -m "integration"
 
 test-fast: ## Run tests excluding slow ones
-	uv run pytest -v -m "not slow"
+	uv run --group dev pytest -v -m "not slow"
 
 test-cov: ## Run tests with coverage report
-	uv run pytest --cov=sirnaforge --cov-report=html --cov-report=term-missing
+	uv run --group dev pytest --cov=sirnaforge --cov-report=html --cov-report=term-missing
+
+# Environment-specific test targets
+test-local-python: ## Run tests for local Python development (unit tests only)
+	uv run --group dev pytest -v -m "local_python"
+
+test-local-nextflow: ## Run tests for local Nextflow development (includes pipeline tests)
+	uv run --group dev pytest -v -m "local_nextflow"
+
+test-ci: ## Run tests optimized for CI environment
+	uv run --group dev pytest -v -m "ci"
 
 # Code Quality
 lint: ## Run all linting tools
-	uv run ruff check src tests
-	uv run black --check src tests
-	uv run mypy src
+	uv run --group dev ruff check src tests
+	uv run --group dev ruff format --check src tests
+	uv run --group dev mypy src
 	@echo "✅ Code quality checks passed!"
 
-format: ## Format code with black and ruff
-	uv run black src tests
-	uv run ruff check --fix src tests
+format: ## Format code with ruff (auto-fix)
+	uv run --group dev ruff format src tests
+	uv run --group dev ruff check --fix src tests
 	@echo "✅ Code formatted!"
 
-check: lint test-fast ## Run quick quality checks (lint + fast tests)
+lint-fix: ## Run linting with auto-fix (matches pre-commit behavior)
+	uv run --group dev ruff check --fix --exit-non-zero-on-fix src tests
+	uv run --group dev ruff format src tests
+	uv run --group dev mypy src
+	@echo "✅ Code quality checks and fixes applied!"
+
+check: lint-fix test-fast ## Run quick quality checks with auto-fix (lint + fast tests)
 
 # Build & Release
 build: ## Build package
@@ -82,24 +140,57 @@ docker-run: ## Run workflow in Docker (usage: make docker-run GENE=<gene>)
 docker-dev: ## Interactive Docker development shell
 	docker run -it -v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest bash
 
-docker-test: ## Run tests in Docker
-	docker run --rm -v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
-		uv run pytest -v
+docker-test: ## Run tests in Docker (resource-limited for development)
+	docker run --rm \
+		--cpus=2 \
+		--memory=4g \
+		--memory-swap=6g \
+		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
+		uv run --group dev pytest -v -n 1 --maxfail=5
+
+docker-test-fast: ## Run fast tests only in Docker (minimal resources)
+	docker run --rm \
+		--cpus=1 \
+		--memory=2g \
+		--memory-swap=3g \
+		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
+		uv run --group dev pytest -q -n 1 -m "not slow" --maxfail=3
+
+docker-test-lightweight: ## Run only lightweight Docker tests
+	docker run --rm \
+		--cpus=1 \
+		--memory=1g \
+		--memory-swap=2g \
+		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
+		uv run --group dev pytest -q -n 1 -m "lightweight or docker" --maxfail=3
+
+docker-test-full: ## Run all tests in Docker (high resources, for CI)
+	docker run --rm \
+		--cpus=4 \
+		--memory=8g \
+		--memory-swap=12g \
+		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
+		uv run --group dev pytest -v -n 2
+
+docker-test-integration: ## Run integration tests in Docker (full workflow)
+	docker run --rm \
+		--cpus=2 \
+		--memory=4g \
+		--memory-swap=6g \
+		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
+		uv run --group dev pytest -v -m "integration" --maxfail=3
 
 # Documentation
 docs: ## Build documentation
-	uv sync --group dev
-	uv run sphinx-build -b html docs docs/_build/html
+	uv run --group dev sphinx-build -b html docs docs/_build/html
 	@echo "✅ Documentation built in docs/_build/html/"
 
 docs-serve: ## Serve documentation locally on port 8000
-	uv sync --group dev
 	@echo "🌐 Serving at http://localhost:8000 (Ctrl+C to stop)"
-	cd docs/_build/html && uv run python -m http.server 8000
+	cd docs/_build/html && uv run --group dev python -m http.server 8000
 
 docs-dev: ## Live-reload documentation development
-	uv sync --group dev
-	uv run sphinx-autobuild docs docs/_build/html --host 0.0.0.0 --port 8000
+	uv run --group dev sphinx-autobuild docs docs/_build/html --host 0.0.0.0 --port 8000
 
 docs-cli: ## Generate CLI reference documentation
 	@echo "🔧 Generating CLI documentation..."
@@ -149,8 +240,8 @@ release: clean build test lint ## Prepare release (full checks)
 
 # Security & Maintenance
 security: ## Run security checks
-	uv run bandit -r src/ || echo "⚠️ Install dev dependencies: make install-dev"
-	uv run safety check || echo "⚠️ Install dev dependencies: make install-dev"
+	uv run --group dev bandit -r src/ || echo "⚠️ Install dev dependencies: make install-dev"
+	uv run --group dev safety check || echo "⚠️ Install dev dependencies: make install-dev"
 
 pre-commit: ## Run pre-commit hooks
-	uv run pre-commit run --all-files
+	uv run --group dev pre-commit run --all-files

@@ -1,18 +1,16 @@
 #!/bin/bash
-"""
-Test script for the complete siRNA workflow integration.
-
-This script demonstrates:
-1. Gene search and transcript retrieval
-2. ORF validation
-3. siRNA design
-4. Off-target analysis with Nextflow
-5. Comprehensive reporting
-
-Usage:
-    ./test_workflow_integration.sh TP53
-    ./test_workflow_integration.sh BRCA1 --genome-species human,mouse
-"""
+# Test script for the complete siRNA workflow integration.
+#
+# This script demonstrates:
+# 1. Gene search and transcript retrieval
+# 2. ORF validation
+# 3. siRNA design
+# 4. Off-target analysis with Nextflow
+# 5. Comprehensive reporting
+#
+# Usage:
+#     ./test_workflow_integration.sh TP53
+#     ./test_workflow_integration.sh BRCA1 --genome-species human,mouse
 
 set -e  # Exit on any error
 
@@ -46,7 +44,7 @@ echo "📋 Step 1: Running complete workflow..."
 echo "---------------------------------------"
 
 # Run the complete workflow
-uv run sirna workflow \
+uv run sirnaforge workflow \
     "$GENE_QUERY" \
     --output-dir "$OUTPUT_DIR" \
     --genome-species "$GENOME_SPECIES" \
@@ -110,7 +108,7 @@ echo "Testing individual CLI commands:"
 
 echo "  🔍 Gene search..."
 SEARCH_OUTPUT="${OUTPUT_DIR}/test_search.fasta"
-uv run sirna search "$GENE_QUERY" -o "$SEARCH_OUTPUT" --canonical-only
+uv run sirnaforge search "$GENE_QUERY" -o "$SEARCH_OUTPUT" --canonical-only
 
 if [ -f "$SEARCH_OUTPUT" ]; then
     SEARCH_SEQS=$(grep -c "^>" "$SEARCH_OUTPUT" 2>/dev/null || echo "0")
@@ -122,7 +120,7 @@ fi
 echo "  🎯 siRNA design..."
 if [ -f "$SEARCH_OUTPUT" ] && [ "$SEARCH_SEQS" -gt 0 ]; then
     DESIGN_OUTPUT="${OUTPUT_DIR}/test_design.csv"
-    uv run sirna design "$SEARCH_OUTPUT" -o "$DESIGN_OUTPUT" --top-n 10
+    uv run sirnaforge design "$SEARCH_OUTPUT" -o "$DESIGN_OUTPUT" --top-n 10
 
     if [ -f "$DESIGN_OUTPUT" ]; then
         DESIGN_CANDIDATES=$(tail -n +2 "$DESIGN_OUTPUT" 2>/dev/null | wc -l || echo "0")
@@ -136,7 +134,7 @@ fi
 
 echo "  📋 FASTA validation..."
 if [ -f "$SEARCH_OUTPUT" ]; then
-    uv run sirna validate "$SEARCH_OUTPUT" > /dev/null 2>&1
+    uv run sirnaforge validate "$SEARCH_OUTPUT" > /dev/null 2>&1
     echo "    ✅ Validation completed"
 else
     echo "    ⏭️  Skipped (no FASTA file)"
@@ -203,4 +201,4 @@ fi
 
 echo ""
 echo "To run the workflow again with different parameters:"
-echo "uv run sirna workflow $GENE_QUERY --output-dir my_analysis --genome-species human,mouse,rat"
+echo "uv run sirnaforge workflow $GENE_QUERY --output-dir my_analysis --genome-species human,mouse,rat"

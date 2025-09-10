@@ -1,7 +1,12 @@
+import pytest
+
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.models.sirna import DesignParameters
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_shared_guides(tmp_path):
     """Two identical transcripts -> each guide should hit both transcripts."""
 
@@ -21,6 +26,9 @@ def test_shared_guides(tmp_path):
     assert top.transcript_hit_fraction == 1.0
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_unique_guides(tmp_path):
     """Two different transcripts -> typical guide should hit only one transcript."""
 

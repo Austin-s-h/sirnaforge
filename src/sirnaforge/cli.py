@@ -629,7 +629,7 @@ def design(
                     candidate.guide_sequence,
                     f"{candidate.gc_content:.1f}",
                     str(candidate.transcript_hit_count),
-                    f"{candidate.transcript_hit_fraction*100:.1f}%",
+                    f"{candidate.transcript_hit_fraction * 100:.1f}%",
                     f"{candidate.composite_score:.1f}",
                 )
 

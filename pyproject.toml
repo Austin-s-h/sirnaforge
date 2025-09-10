@@ -44,12 +44,12 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "uv>=0.4.0",
     "pytest>=8.0",
     "pytest-cov>=6.0",
     "pytest-mock>=3.15",
     "pytest-asyncio>=1.1.0",
     "pytest-xdist>=3.8",
-    "black>=24.0",
     "ruff>=0.12.0",
     "mypy>=1.10",
     "pre-commit>=3.8",
@@ -176,7 +176,7 @@ select = [
     "PL",  # pylint
 ]
 ignore = [
-    "E501",  # line too long, handled by black
+    "E501",  # line too long, handled by ruff format
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex
     "B904",  # raise from within except clause (handled by design)
@@ -266,7 +266,7 @@ skip = './tests/,.venv/,./docs/_build/,./build/,./dist/,**/*.fasta,**/*.fa,**/*.
 minversion = "7.0"
 addopts = """
     -ra -q --strict-markers --strict-config
-    -n auto
+    -n 2
     --color=yes
 """
 testpaths = ["tests"]
@@ -280,9 +280,14 @@ markers = [
     "integration: marks tests as integration tests",
     "pipeline: marks tests that require pipeline tools",
     "docker: marks tests that require Docker environment",
+    "nextflow: marks tests that require Nextflow workflows",
     "asyncio: marks tests as async",
     "unit: marks tests as unit tests",
     "ci: marks tests as continuous integration tests",
+    "lightweight: marks tests as lightweight and fast",
+    # Environment-specific markers
+    "local_python: Local development tests - Python environment only",
+    "local_nextflow: Local development tests - includes Nextflow workflows",
 ]
 
 # Coverage configuration

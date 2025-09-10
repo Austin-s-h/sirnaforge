@@ -14,7 +14,7 @@ import pytest
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_cli_help():
     """Test that siRNAforge CLI works in container environment."""
     # This test is designed to be run inside the Docker container via make ci-test-docker
@@ -27,7 +27,7 @@ def test_docker_cli_help():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_version():
     """Test version command works in container."""
     try:
@@ -39,7 +39,7 @@ def test_docker_version():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_command_structure():
     """Test that main commands are available in container."""
     commands = ["search", "workflow", "design"]
@@ -55,7 +55,7 @@ def test_docker_command_structure():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_python_environment():
     """Test that key Python packages are available in container."""
     required_packages = [
@@ -78,7 +78,7 @@ def test_docker_python_environment():
 
 
 @pytest.mark.docker
-@pytest.mark.integration
+@pytest.mark.lightweight
 def test_docker_sirnaforge_imports():
     """Test that siRNAforge modules can be imported in container."""
     # Test that basic modules can be imported

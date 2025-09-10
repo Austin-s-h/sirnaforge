@@ -5,14 +5,49 @@ This module handles configuration for Nextflow workflows, including
 Docker settings, resource management, and parameter validation.
 """
 
+import os
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
 from typing import Any, Optional
 
+from pydantic import BaseModel, Field
+
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+class EnvironmentInfo(BaseModel):
+    """Information about the current execution environment."""
+
+    running_in_docker: bool = Field(description="Whether the current process is running inside a Docker container")
+    docker_available: bool = Field(description="Whether Docker is available and functional for Nextflow execution")
+    requested_profile: str = Field(description="The originally requested execution profile")
+    recommended_profile: str = Field(description="The profile recommended based on environment detection")
+    docker_image: Optional[str] = Field(default=None, description="Docker image to use (if applicable)")
+    profile_override_reason: Optional[str] = Field(default=None, description="Reason for profile override (if any)")
+
+    def is_profile_overridden(self) -> bool:
+        """Check if the recommended profile differs from the requested profile."""
+        return self.requested_profile != self.recommended_profile
+
+    def get_execution_summary(self) -> str:
+        """Get a human-readable summary of the execution environment."""
+        summary = f"Profile: {self.recommended_profile}"
+
+        if self.is_profile_overridden():
+            summary += f" (overridden from {self.requested_profile})"
+            if self.profile_override_reason:
+                summary += f" - {self.profile_override_reason}"
+
+        if self.running_in_docker:
+            summary += " | Running in container"
+
+        if self.docker_available and self.recommended_profile == "docker":
+            summary += f" | Using Docker image: {self.docker_image}"
+
+        return summary
 
 
 def _get_executable_path(tool_name: str) -> Optional[str]:
@@ -89,17 +124,21 @@ class NextflowConfig:
         Returns:
             List of command arguments for Nextflow
         """
+        # Ensure all paths are absolute to avoid working directory issues
+        abs_input_file = input_file.resolve()
+        abs_output_dir = output_dir.resolve()
+        abs_work_dir = self.work_dir.resolve()
         args = [
             "--input",
-            str(input_file),
+            str(abs_input_file),
             "--outdir",
-            str(output_dir),
+            str(abs_output_dir),
             "--genome_species",
             ",".join(genome_species),
             "-profile",
             self.profile,
             "-w",
-            str(self.work_dir),
+            str(abs_work_dir),
             "-resume",
         ]
 
@@ -171,10 +210,13 @@ process {{
 
     def validate_docker_available(self) -> bool:
         """
-        Check if Docker is available for execution.
+        Check if Docker is available for Nextflow execution.
+
+        This checks if Docker can be used by Nextflow to run containers.
+        Note: This is different from running tests inside Docker containers.
 
         Returns:
-            True if Docker is available and accessible
+            True if Docker is available and accessible for Nextflow
         """
         try:
             # Get absolute path to docker executable
@@ -186,41 +228,135 @@ process {{
             cmd = [docker_path, "version"]
             _validate_command_args(cmd)
             subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
-            logger.debug("Docker is available")
+
+            # Additional check: try to run a simple container to ensure Docker daemon is accessible
+            # This helps distinguish between Docker being installed vs Docker daemon being available
+            test_cmd = [docker_path, "run", "--rm", "hello-world"]
+            subprocess.run(test_cmd, capture_output=True, timeout=30, check=True)  # nosec B603
+
+            logger.debug("Docker is available and functional for Nextflow")
             return True
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            logger.warning("Docker is not available")
+            logger.warning("Docker is not available or not functional for Nextflow")
+            return False
+
+    def is_running_in_docker(self) -> bool:
+        """
+        Check if we're currently running inside a Docker container.
+
+        This is useful for determining the appropriate execution profile
+        when running tests or workflows.
+
+        Returns:
+            True if running inside a Docker container
+        """
+        try:
+            # Check for Docker-specific files
+            if Path("/.dockerenv").exists():
+                return True
+
+            # Check cgroup for Docker container indicators
+            cgroup_content = Path("/proc/1/cgroup").read_text()
+            return "docker" in cgroup_content or "containerd" in cgroup_content
+        except (FileNotFoundError, OSError):
             return False
 
     def get_execution_profile(self) -> str:
         """
-        Get the appropriate execution profile based on available tools.
+        Get the appropriate execution profile based on available tools and environment.
+
+        This method considers:
+        1. Environment variables (SIRNAFORGE_USE_LOCAL_EXECUTION)
+        2. Whether we're running inside a Docker container (for testing)
+        3. Whether Docker is available for Nextflow execution
+        4. The requested profile
 
         Returns:
             Recommended execution profile
         """
-        if self.profile == "docker" and self.validate_docker_available():
-            return "docker"
-        if self.profile == "docker" and not self.validate_docker_available():
+        # Check for explicit environment variable to force local execution
+        if os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes"):
+            logger.info("SIRNAFORGE_USE_LOCAL_EXECUTION set, using local execution profile")
+            return "local"
+
+        # If we're running inside a Docker container (e.g., for testing),
+        # we might not have access to Docker daemon, so use local execution
+        if self.is_running_in_docker():
+            logger.info("Running inside Docker container, using local execution profile")
+            return "local"
+
+        # If Docker profile is requested, check if Docker is available
+        if self.profile == "docker":
+            if self.validate_docker_available():
+                logger.debug("Using Docker profile for Nextflow execution")
+                return "docker"
             logger.warning("Docker requested but not available, falling back to local")
             return "local"
+
+        # Use the requested profile as-is
+        logger.debug(f"Using requested profile: {self.profile}")
         return self.profile
+
+    def get_environment_info(self) -> EnvironmentInfo:
+        """
+        Get information about the current execution environment.
+
+        This provides structured information about Docker availability,
+        profile selection, and environment detection.
+
+        Returns:
+            EnvironmentInfo model with environment details
+        """
+        running_in_docker = self.is_running_in_docker()
+        docker_available = self.validate_docker_available()
+        recommended_profile = self.get_execution_profile()
+
+        # Determine override reason
+        override_reason = None
+        if self.profile != recommended_profile:
+            if running_in_docker:
+                override_reason = "Running inside container"
+            elif os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION"):
+                override_reason = "Environment variable SIRNAFORGE_USE_LOCAL_EXECUTION set"
+            elif self.profile == "docker" and not docker_available:
+                override_reason = "Docker not available"
+
+        return EnvironmentInfo(
+            running_in_docker=running_in_docker,
+            docker_available=docker_available,
+            requested_profile=self.profile,
+            recommended_profile=recommended_profile,
+            docker_image=self.docker_image if recommended_profile == "docker" else None,
+            profile_override_reason=override_reason,
+        )
 
     @classmethod
     def for_testing(cls) -> "NextflowConfig":
         """
         Create a configuration optimized for testing.
 
+        This automatically detects if we're running in Docker and adjusts accordingly.
+
         Returns:
             NextflowConfig instance with test-friendly settings
         """
-        return cls(
-            profile="test",
+        # For testing, use test profile by default, but allow environment override
+        instance = cls(
+            profile="test",  # Use test profile which runs locally with conda
             max_cpus=2,
             max_memory="6.GB",
             max_time="6.h",
             max_hits=100,
         )
+
+        # Auto-detect and adjust profile only if environment variable is set or in container
+        detected_profile = instance.get_execution_profile()
+        if detected_profile != instance.profile and (
+            os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes")
+            or instance.is_running_in_docker()
+        ):
+            instance.profile = detected_profile
+        return instance
 
     @classmethod
     def for_production(cls, docker_image: Optional[str] = None) -> "NextflowConfig":
@@ -233,10 +369,14 @@ process {{
         Returns:
             NextflowConfig instance with production settings
         """
-        return cls(
+        instance = cls(
             docker_image=docker_image or "ghcr.io/austin-s-h/sirnaforge:latest",
             profile="docker",
             max_cpus=16,
             max_memory="128.GB",
             max_time="240.h",
         )
+
+        # Auto-detect and adjust profile
+        instance.profile = instance.get_execution_profile()
+        return instance

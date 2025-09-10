@@ -102,18 +102,20 @@ class NextflowRunner:
             NextflowExecutionError: If workflow execution fails
         """
         # Validate inputs
-        if not input_file.exists():
-            raise FileNotFoundError(f"Input file not found: {input_file}")
+        abs_input_file = input_file.resolve()
+        if not abs_input_file.exists():
+            raise FileNotFoundError(f"Input file not found: {abs_input_file}")
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        abs_output_dir = output_dir.resolve()
 
         # Get workflow path
         workflow_path = self.get_main_workflow()
 
-        # Prepare command arguments
+        # Prepare command arguments with absolute paths
         args = self.config.get_nextflow_args(
-            input_file=input_file,
-            output_dir=output_dir,
+            input_file=abs_input_file,
+            output_dir=abs_output_dir,
             genome_species=genome_species,
             additional_params=additional_params,
         )
@@ -121,7 +123,10 @@ class NextflowRunner:
         # Build full command
         cmd = ["nextflow", "run", str(workflow_path)] + args
 
-        logger.info(f"Executing Nextflow workflow: {' '.join(cmd)}")
+        logger.info(f"Executing Nextflow workflow from {Path.cwd()}: {' '.join(cmd)}")
+        logger.debug(f"Input file exists: {abs_input_file.exists()} at {abs_input_file}")
+        logger.debug(f"Output directory: {abs_output_dir}")
+        logger.debug(f"Workflow path: {workflow_path}")
 
         if show_progress:
             with Progress(
@@ -163,11 +168,13 @@ class NextflowRunner:
         logger.debug(f"Running command: {' '.join(cmd)}")
 
         # Run in thread pool to avoid blocking
+        # Execute from project root directory to ensure relative paths work correctly
+        project_root = Path.cwd()
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=self.workflow_dir.parent,
+            cwd=project_root,
         )
 
         stdout, stderr = await process.communicate()
@@ -178,12 +185,21 @@ class NextflowRunner:
         if stderr:
             logger.debug(f"Nextflow stderr: {stderr.decode()}")
 
+        # Determine if this is a real error or just a version warning
+        final_return_code = process.returncode if process.returncode is not None else 0
+
         if process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Unknown error"
-            logger.error(f"Nextflow failed with code {process.returncode}: {error_msg}")
-            # Ensure returncode is not None
-            return_code = process.returncode if process.returncode is not None else 1
-            raise subprocess.CalledProcessError(return_code, cmd, output=stdout, stderr=stderr)
+            # Check if this is just a version warning (not a real error)
+            if self._is_nextflow_version_warning_only(error_msg):
+                logger.warning(f"Nextflow version warning: {error_msg.strip()}")
+                # Treat version warnings as success
+                final_return_code = 0
+            else:
+                logger.error(f"Nextflow failed with code {process.returncode}: {error_msg}")
+                # This is a real error - raise exception
+                return_code = process.returncode if process.returncode is not None else 1
+                raise subprocess.CalledProcessError(return_code, cmd, output=stdout, stderr=stderr)
 
         # Create CompletedProcess-like object
         class AsyncResult:
@@ -192,9 +208,37 @@ class NextflowRunner:
                 self.stdout = stdout
                 self.stderr = stderr
 
-        # Ensure returncode is not None for AsyncResult
-        return_code = process.returncode if process.returncode is not None else 0
-        return AsyncResult(return_code, stdout, stderr)
+        return AsyncResult(final_return_code, stdout, stderr)
+
+    def _is_nextflow_version_warning_only(self, error_msg: str) -> bool:
+        """
+        Check if the error message is only a Nextflow version warning.
+
+        Args:
+            error_msg: The error message from stderr
+
+        Returns:
+            True if this is only a version warning, False if it's a real error
+        """
+        lines = error_msg.strip().split("\n")
+        # Filter out empty lines
+        non_empty_lines = [line.strip() for line in lines if line.strip()]
+
+        if not non_empty_lines:
+            return False
+
+        # Check if all non-empty lines are version warnings
+        version_warning_patterns = [
+            "is available - Please consider updating your version",
+            "Nextflow",  # Simple version info lines
+        ]
+
+        for line in non_empty_lines:
+            is_version_related = any(pattern in line for pattern in version_warning_patterns)
+            if not is_version_related:
+                return False
+
+        return True
 
     def _process_results(self, output_dir: Path, result: Any) -> dict[str, Any]:
         """

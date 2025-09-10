@@ -117,6 +117,8 @@ jobs:
       run: uv pip install --system -r pyproject.toml --editable . --group dev
 
     - name: 🧪 Run tests with pytest
+      env:
+        SIRNAFORGE_USE_LOCAL_EXECUTION: true
       run: pytest --cov=sirnaforge --cov-report=xml
 
     - name: 📊 Upload coverage to Codecov

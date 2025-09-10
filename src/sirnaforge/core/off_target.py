@@ -46,126 +46,18 @@ def _validate_command_args(cmd: list[str]) -> None:
         raise ValueError(f"Executable must be an absolute path: {executable}")
 
 
-class BowtieAnalyzer:
-    """Bowtie-based analyzer for miRNA seed matches."""
-
-    def __init__(
-        self,
-        index_prefix: str,
-        mismatches: int = 0,
-        seed_start: int = 2,
-        seed_end: int = 8,
-    ):
-        """
-        Initialize Bowtie analyzer for miRNA seed search.
-
-        Args:
-            index_prefix: Path to Bowtie index
-            mismatches: Number of allowed mismatches
-            seed_start: Seed region start (1-based)
-            seed_end: Seed region end (1-based)
-        """
-        self.index_prefix = index_prefix
-        self.mismatches = mismatches
-        self.seed_start = seed_start
-        self.seed_end = seed_end
-
-    def analyze_sequences(self, sequences: dict[str, str]) -> list[dict[str, Any]]:
-        """
-        Run Bowtie analysis on sequences.
-
-        Args:
-            sequences: Dictionary of sequence name -> sequence
-
-        Returns:
-            List of alignment dictionaries
-        """
-        results = []
-        temp_fasta_path = create_temp_fasta(sequences)
-
-        try:
-            # Get absolute path to bowtie executable
-            bowtie_path = _get_executable_path("bowtie")
-            if not bowtie_path:
-                raise FileNotFoundError("Bowtie executable not found in PATH")
-
-            cmd = [
-                bowtie_path,
-                "-v",
-                str(self.mismatches),
-                "-a",
-                "--sam",
-                "--quiet",
-                self.index_prefix,
-                temp_fasta_path,
-            ]
-            _validate_command_args(cmd)
-            logger.info(f"Running Bowtie: {' '.join(cmd)}")
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=True)  # nosec B603
-            results = self._parse_sam_output(result.stdout, sequences)
-            logger.info(f"Bowtie analysis completed: {len(results)} hits found")
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Bowtie failed: {e.stderr}")
-        except subprocess.TimeoutExpired:
-            logger.error("Bowtie timed out")
-        finally:
-            Path(temp_fasta_path).unlink(missing_ok=True)
-
-        return results
-
-    def _parse_sam_output(self, sam_output: str, sequences: dict[str, str]) -> list[dict[str, Any]]:
-        """Parse SAM output from Bowtie."""
-        results = []
-
-        for line in sam_output.splitlines():
-            if line.startswith("@") or not line.strip():
-                continue
-
-            parts = line.split("\t")
-            if len(parts) < 11:
-                continue
-
-            qname = parts[0]
-            flag = int(parts[1])
-            rname = parts[2]
-            pos = int(parts[3])
-
-            if flag & 4:  # Skip unmapped
-                continue
-
-            strand = "-" if (flag & 16) else "+"
-            coord = f"{rname}:{pos}"
-
-            # Count mismatches (for exact Bowtie -v mode)
-            total_mismatches = self.mismatches
-            seed_mismatches = 0  # Calculate based on mismatch positions if available
-
-            # Calculate score (lower is better for miRNA seed matches)
-            score = total_mismatches + (seed_mismatches * 3)
-
-            result = {
-                "qname": qname,
-                "qseq": sequences.get(qname, ""),
-                "rname": rname,
-                "coord": coord,
-                "strand": strand,
-                "mismatches": total_mismatches,
-                "seed_mismatches": seed_mismatches,
-                "score": score,
-            }
-            results.append(result)
-
-        return results
+# =============================================================================
+# Core Analyzer Classes
+# =============================================================================
 
 
 class BwaAnalyzer:
-    """BWA-MEM2 based analyzer for transcriptome off-target search."""
+    """BWA-MEM2 based analyzer for both transcriptome and miRNA off-target search."""
 
     def __init__(
         self,
         index_prefix: str,
+        mode: str = "transcriptome",  # "transcriptome" or "mirna_seed"
         seed_length: int = 12,
         min_score: int = 15,
         max_hits: int = 10000,
@@ -173,10 +65,11 @@ class BwaAnalyzer:
         seed_end: int = 8,
     ):
         """
-        Initialize BWA-MEM2 analyzer for transcriptome search.
+        Initialize BWA-MEM2 analyzer.
 
         Args:
             index_prefix: Path to BWA index
+            mode: Analysis mode - "transcriptome" for long targets, "mirna_seed" for short targets
             seed_length: BWA seed length parameter
             min_score: Minimum alignment score
             max_hits: Maximum hits to return
@@ -184,11 +77,24 @@ class BwaAnalyzer:
             seed_end: Seed region end (1-based)
         """
         self.index_prefix = index_prefix
+        self.mode = mode
         self.seed_length = seed_length
         self.min_score = min_score
         self.max_hits = max_hits
         self.seed_start = seed_start
         self.seed_end = seed_end
+
+        # Configure parameters based on mode
+        if mode == "mirna_seed":
+            # For miRNA seed analysis: short query vs short target
+            self.seed_length = min(seed_length, 7)  # Limit seed length for short sequences
+            self.min_score = max(min_score, 10)  # Lower threshold for seed matches
+        elif mode == "transcriptome":
+            # For transcriptome analysis: short query vs long target
+            self.seed_length = seed_length  # Use provided seed length
+            self.min_score = min_score  # Use provided min score
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Use 'transcriptome' or 'mirna_seed'")
 
     def analyze_sequences(self, sequences: dict[str, str]) -> list[dict[str, Any]]:
         """
@@ -200,8 +106,11 @@ class BwaAnalyzer:
         Returns:
             List of alignment dictionaries
         """
+        # Prepare sequences based on mode
+        analysis_sequences = self._prepare_sequences_for_analysis(sequences)
+
         results = []
-        temp_fasta_path = create_temp_fasta(sequences)
+        temp_fasta_path = create_temp_fasta(analysis_sequences)
 
         try:
             # Get absolute path to bwa-mem2 executable
@@ -209,22 +118,11 @@ class BwaAnalyzer:
             if not bwa_path:
                 raise FileNotFoundError("BWA-MEM2 executable not found in PATH")
 
-            cmd = [
-                bwa_path,
-                "mem",
-                "-a",
-                "-k",
-                str(self.seed_length),
-                "-T",
-                str(self.min_score),
-                "-v",
-                "1",
-                self.index_prefix,
-                temp_fasta_path,
-            ]
+            # Configure BWA parameters based on mode
+            cmd = self._build_bwa_command(bwa_path, temp_fasta_path)
 
             _validate_command_args(cmd)
-            logger.info(f"Running BWA-MEM2: {' '.join(cmd)}")
+            logger.info(f"Running BWA-MEM2 ({self.mode} mode): {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=None, check=True)  # nosec B603
             results = self._parse_sam_output(result.stdout, sequences)
             results = self._filter_and_rank(results)
@@ -239,7 +137,71 @@ class BwaAnalyzer:
 
         return results[: self.max_hits]
 
-    def _parse_sam_output(self, sam_output: str, sequences: dict[str, str]) -> list[dict[str, Any]]:
+    def _prepare_sequences_for_analysis(self, sequences: dict[str, str]) -> dict[str, str]:
+        """Prepare sequences for analysis based on mode."""
+        if self.mode == "mirna_seed":
+            # Extract seed region (positions 2-8, 1-based) from siRNA sequences
+            prepared = {}
+            for name, seq in sequences.items():
+                if len(seq) >= self.seed_end:
+                    seed_seq = seq[self.seed_start - 1 : self.seed_end]  # Convert to 0-based indexing
+                    prepared[name] = seed_seq
+                    logger.debug(f"Extracted seed region for {name}: {seed_seq} (from {seq})")
+                else:
+                    logger.warning(f"Sequence {name} too short for seed extraction: {seq}")
+                    prepared[name] = seq  # Use full sequence if too short
+            return prepared
+        # For transcriptome mode, use full sequences
+        return sequences
+
+    def _build_bwa_command(self, bwa_path: str, temp_fasta_path: str) -> list[str]:
+        """Build BWA command based on analysis mode."""
+        base_cmd = [
+            bwa_path,
+            "mem",
+            "-a",  # Output all alignments
+            "-v",
+            "1",  # Verbosity level
+        ]
+
+        if self.mode == "mirna_seed":
+            # For miRNA seed analysis: more permissive parameters
+            cmd = base_cmd + [
+                "-k",
+                str(self.seed_length),  # Seed length
+                "-T",
+                str(self.min_score),  # Minimum score
+                "-w",
+                "3",  # Band width (smaller for short sequences)
+                "-A",
+                "1",  # Matching score
+                "-B",
+                "1",  # Mismatch penalty
+                "-O",
+                "1,1",  # Gap open penalties
+                "-E",
+                "1,1",  # Gap extension penalties
+                self.index_prefix,
+                temp_fasta_path,
+            ]
+        elif self.mode == "transcriptome":
+            # For transcriptome analysis: standard parameters
+            cmd = base_cmd + [
+                "-k",
+                str(self.seed_length),  # Seed length
+                "-T",
+                str(self.min_score),  # Minimum score
+                "-w",
+                "100",  # Band width (larger for long targets)
+                self.index_prefix,
+                temp_fasta_path,
+            ]
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+        return cmd
+
+    def _parse_sam_output(self, sam_output: str, original_sequences: dict[str, str]) -> list[dict[str, Any]]:
         """Parse SAM output from BWA-MEM2."""
         results = []
 
@@ -284,7 +246,7 @@ class BwaAnalyzer:
 
             result = {
                 "qname": qname,
-                "qseq": sequences.get(qname, ""),
+                "qseq": original_sequences.get(qname, ""),  # Use original sequence
                 "rname": rname,
                 "coord": coord,
                 "strand": strand,
@@ -370,14 +332,14 @@ class OffTargetAnalysisManager:
         sequences: Union[dict[str, str], str, Path],
         output_prefix: str,
     ) -> tuple[str, str]:
-        """Analyze miRNA off-targets using Bowtie."""
+        """Analyze miRNA off-targets using BWA-MEM2 in miRNA seed mode."""
         if not self.mirna_index:
             raise ValueError("miRNA index not provided")
 
         if isinstance(sequences, (str, Path)):
             sequences = parse_fasta_file(str(sequences))
 
-        analyzer = BowtieAnalyzer(self.mirna_index)
+        analyzer = BwaAnalyzer(self.mirna_index, mode="mirna_seed")
         results = analyzer.analyze_sequences(sequences)
 
         tsv_path = f"{output_prefix}_mirna_hits.tsv"
@@ -391,14 +353,14 @@ class OffTargetAnalysisManager:
         sequences: Union[dict[str, str], str, Path],
         output_prefix: str,
     ) -> tuple[str, str]:
-        """Analyze transcriptome off-targets using BWA-MEM2."""
+        """Analyze transcriptome off-targets using BWA-MEM2 in transcriptome mode."""
         if not self.transcriptome_index:
             raise ValueError("Transcriptome index not provided")
 
         if isinstance(sequences, (str, Path)):
             sequences = parse_fasta_file(str(sequences))
 
-        analyzer = BwaAnalyzer(self.transcriptome_index)
+        analyzer = BwaAnalyzer(self.transcriptome_index, mode="transcriptome")
         results = analyzer.analyze_sequences(sequences)
 
         tsv_path = f"{output_prefix}_transcriptome_hits.tsv"
@@ -419,11 +381,11 @@ class OffTargetAnalysisManager:
         }
 
         if self.mirna_index:
-            mirna_analyzer: BowtieAnalyzer = BowtieAnalyzer(self.mirna_index)
+            mirna_analyzer = BwaAnalyzer(self.mirna_index, mode="mirna_seed")
             results["mirna_hits"] = mirna_analyzer.analyze_sequences(sequences)
 
         if self.transcriptome_index:
-            transcriptome_analyzer = BwaAnalyzer(self.transcriptome_index)
+            transcriptome_analyzer = BwaAnalyzer(self.transcriptome_index, mode="transcriptome")
             results["transcriptome_hits"] = transcriptome_analyzer.analyze_sequences(sequences)
 
         return results
@@ -432,12 +394,13 @@ class OffTargetAnalysisManager:
         """Write miRNA analysis results."""
         # Write TSV
         with Path(tsv_path).open("w") as f:
-            f.write("qname\tqseq\trname\tcoord\tstrand\tmismatches\tseed_mismatches\tscore\n")
+            f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
             for result in results:
                 f.write(
                     f"{result['qname']}\t{result['qseq']}\t{result['rname']}\t"
-                    f"{result['coord']}\t{result['strand']}\t{result['mismatches']}\t"
-                    f"{result['seed_mismatches']}\t{result['score']}\n"
+                    f"{result['coord']}\t{result['strand']}\t{result['cigar']}\t"
+                    f"{result['mapq']}\t{result.get('as_score', 'NA')}\t{result['nm']}\t"
+                    f"{result['seed_mismatches']}\t{result['offtarget_score']}\n"
                 )
 
         # Write JSON
@@ -448,9 +411,7 @@ class OffTargetAnalysisManager:
         """Write transcriptome analysis results."""
         # Write TSV
         with Path(tsv_path).open("w") as f:
-            f.write(
-                "qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\t" "seed_mismatches\tofftarget_score\n"
-            )
+            f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
             for result in results:
                 f.write(
                     f"{result['qname']}\t{result['qseq']}\t{result['rname']}\t"
@@ -505,37 +466,8 @@ def validate_and_write_sequences(
         return 0, len(sequences), [str(e)]
 
 
-def build_bowtie_index(fasta_file: str, index_prefix: str) -> str:
-    """Build Bowtie index for miRNA analysis."""
-    logger.info(f"Building Bowtie index from {fasta_file} with prefix {index_prefix}")
-
-    if not Path(fasta_file).exists():
-        raise FileNotFoundError(f"Input FASTA file not found: {fasta_file}")
-
-    Path(index_prefix).parent.mkdir(parents=True, exist_ok=True)
-
-    # Get absolute path to bowtie-build executable
-    bowtie_build_path = _get_executable_path("bowtie-build")
-    if not bowtie_build_path:
-        raise FileNotFoundError("bowtie-build executable not found in PATH")
-
-    cmd = [bowtie_build_path, fasta_file, index_prefix]
-    _validate_command_args(cmd)
-
-    try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=3600)  # nosec B603
-        logger.info(f"Bowtie index built successfully: {index_prefix}")
-        return index_prefix
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Bowtie index build failed: {e.stderr}")
-        raise
-    except subprocess.TimeoutExpired:
-        logger.error("Bowtie index build timed out")
-        raise
-
-
 def build_bwa_index(fasta_file: str, index_prefix: str) -> str:
-    """Build BWA-MEM2 index for transcriptome analysis."""
+    """Build BWA-MEM2 index for both transcriptome and miRNA analysis."""
     logger.info(f"Building BWA-MEM2 index from {fasta_file} with prefix {index_prefix}")
 
     if not Path(fasta_file).exists():
@@ -605,13 +537,11 @@ def check_tool_availability(tool: str) -> bool:
         return False
 
 
-def validate_index_files(index_prefix: str, tool: str) -> bool:
+def validate_index_files(index_prefix: str, tool: str = "bwa") -> bool:
     """Validate that index files exist for given tool."""
     index_path = Path(index_prefix)
 
-    if tool == "bowtie":
-        required_extensions = [".1.ebwt", ".2.ebwt", ".3.ebwt", ".4.ebwt", ".rev.1.ebwt", ".rev.2.ebwt"]
-    elif tool == "bwa":
+    if tool in ("bwa", "bwa-mem2"):
         required_extensions = [".amb", ".ann", ".bwt.2bit.64", ".pac"]
     else:
         logger.warning(f"Unknown tool for index validation: {tool}")
@@ -695,6 +625,7 @@ def run_comprehensive_offtarget_analysis(
     sequences_file: str,
     index_path: str,
     output_prefix: str,
+    mode: str = "transcriptome",
     bwa_k: int = 12,
     bwa_T: int = 15,
     max_hits: int = 10000,
@@ -708,6 +639,7 @@ def run_comprehensive_offtarget_analysis(
         # Use BWA analyzer for comprehensive analysis
         analyzer = BwaAnalyzer(
             index_prefix=index_path,
+            mode=mode,
             seed_length=bwa_k,
             min_score=bwa_T,
             max_hits=max_hits,
@@ -724,9 +656,7 @@ def run_comprehensive_offtarget_analysis(
 
         # Write TSV
         with Path(tsv_path).open("w") as f:
-            f.write(
-                "qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\t" "seed_mismatches\tofftarget_score\n"
-            )
+            f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
             for result in results:
                 f.write(
                     f"{result['qname']}\t{result['qseq']}\t{result['rname']}\t"
@@ -744,6 +674,7 @@ def run_comprehensive_offtarget_analysis(
             f.write(f"Species: {species}\n")
             f.write(f"Total sequences analyzed: {len(sequences)}\n")
             f.write(f"Total off-target hits: {len(results)}\n")
+            f.write(f"Analysis mode: {mode}\n")
             f.write(f"Analysis parameters: bwa_k={bwa_k}, bwa_T={bwa_T}, max_hits={max_hits}\n")
             f.write(f"Seed region: {seed_start}-{seed_end}\n")
             f.write("Analysis completed successfully\n")
@@ -760,13 +691,11 @@ def run_comprehensive_offtarget_analysis(
 # Export all main functions and classes
 __all__ = [
     # Core classes
-    "BowtieAnalyzer",
     "BwaAnalyzer",
     "OffTargetAnalysisManager",
     # Utility functions
     "create_temp_fasta",
     "validate_and_write_sequences",
-    "build_bowtie_index",
     "build_bwa_index",
     "validate_sirna_sequences",
     "parse_fasta_file",

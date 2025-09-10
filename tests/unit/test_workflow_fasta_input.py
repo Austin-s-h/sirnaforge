@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.workflow import run_sirna_workflow
@@ -33,6 +34,9 @@ class DummyCandidate(SiRNACandidate):
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
     # Prepare input FASTA
     fasta = tmp_path / "test_input.fasta"
@@ -80,6 +84,9 @@ async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 async def test_empty_fasta_triggers_design_error(tmp_path, monkeypatch):
     # Create empty FASTA
     fasta = tmp_path / "empty.fasta"
@@ -96,6 +103,9 @@ async def test_empty_fasta_triggers_design_error(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 async def test_invalid_sequence_in_fasta_raises(tmp_path):
     # Prepare FASTA with invalid characters
     fasta = tmp_path / "bad.fasta"
@@ -107,6 +117,9 @@ async def test_invalid_sequence_in_fasta_raises(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 async def test_single_sequence_workflow_success(tmp_path, monkeypatch):
     # Single valid FASTA sequence
     fasta = tmp_path / "single.fasta"

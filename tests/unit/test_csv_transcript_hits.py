@@ -1,9 +1,14 @@
 import csv
 
+import pytest
+
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.models.sirna import DesignParameters
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 def test_csv_contains_transcript_hit_columns(tmp_path):
     """Design from a FASTA with two identical transcripts, save CSV, and assert columns/values."""
 

@@ -70,7 +70,7 @@ workflow SIRNAFORGE_OFFTARGET {
 
     // Parse genome FASTAs (for building indices)
     if (params.genome_fastas) {
-        ch_fasta_genomes = Channel.fromList(params.genome_fastas.split(','))
+        ch_fasta_genomes = Channel.from(params.genome_fastas.split(','))
             .map { entry ->
                 def (species, fasta_path) = entry.split(':')
                 [species.trim(), file(fasta_path.trim(), checkIfExists: true), 'fasta']
@@ -80,7 +80,7 @@ workflow SIRNAFORGE_OFFTARGET {
 
     // Parse pre-built indices
     if (params.genome_indices) {
-        ch_index_genomes = Channel.fromList(params.genome_indices.split(','))
+        ch_index_genomes = Channel.from(params.genome_indices.split(','))
             .map { entry ->
                 def (species, index_path) = entry.split(':')
                 [species.trim(), index_path.trim(), 'index']
@@ -90,7 +90,7 @@ workflow SIRNAFORGE_OFFTARGET {
 
     // If no genomes specified, use default species list with discovery
     if (!params.genome_fastas && !params.genome_indices) {
-        ch_genomes = Channel.fromList(params.genome_species.split(','))
+        ch_genomes = Channel.from(params.genome_species.split(','))
             .map { species -> [species.trim(), null, 'discover'] }
     }
 

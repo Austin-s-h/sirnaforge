@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+
 from sirnaforge.data.gene_search import (
     DatabaseType,
     GeneInfo,
@@ -13,6 +14,9 @@ from sirnaforge.data.gene_search import (
 )
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestGeneSearchModels:
     """Test gene search data models."""
 
@@ -64,6 +68,9 @@ class TestGeneSearchModels:
         assert failed_result.success is False
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestGeneSearcher:
     """Test GeneSearcher functionality."""
 
@@ -168,6 +175,9 @@ class TestGeneSearcher:
             mock_search.assert_called_once()
 
 
+@pytest.mark.unit
+@pytest.mark.local_python
+@pytest.mark.ci
 class TestDatabaseSpecificMethods:
     """Test database-specific search methods."""
 
