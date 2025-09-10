@@ -3,6 +3,24 @@ Nextflow Configuration Management
 
 This module handles configuration for Nextflow workflows, including
 Docker settings, resource management, and parameter validation.
+
+Simple Usage Examples:
+
+    # Auto-configure based on environment (easiest)
+    config = NextflowConfig.auto_configure()
+
+    # Production settings
+    config = NextflowConfig.for_production()
+
+    # Testing settings
+    config = NextflowConfig.for_testing()
+
+    # Custom configuration
+    config = NextflowConfig(
+        profile="docker",
+        docker_image="my-image:latest",
+        max_cpus=16
+    )
 """
 
 import os
@@ -267,6 +285,44 @@ process {{
         except (FileNotFoundError, OSError):
             return False
 
+    def _is_singularity_available(self) -> bool:
+        """Check if Singularity is available."""
+        try:
+            singularity_path = _get_executable_path("singularity")
+            if not singularity_path:
+                return False
+            cmd = [singularity_path, "--version"]
+            _validate_command_args(cmd)
+            subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def _is_conda_available(self) -> bool:
+        """Check if Conda or uv is available for environment management."""
+        # First check for uv (preferred for this project)
+        try:
+            uv_path = _get_executable_path("uv")
+            if uv_path:
+                cmd = [uv_path, "--version"]
+                _validate_command_args(cmd)
+                subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Fallback to conda
+        try:
+            conda_path = _get_executable_path("conda")
+            if not conda_path:
+                return False
+            cmd = [conda_path, "--version"]
+            _validate_command_args(cmd)
+            subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
     def get_execution_profile(self) -> str:
         """
         Get the appropriate execution profile based on available tools and environment.
@@ -275,33 +331,57 @@ process {{
         1. Environment variables (SIRNAFORGE_USE_LOCAL_EXECUTION)
         2. Whether we're running inside a Docker container (for testing)
         3. Whether Docker is available for Nextflow execution
-        4. The requested profile
+        4. Availability of Singularity or Conda as fallbacks
+        5. The requested profile
 
         Returns:
             Recommended execution profile
         """
+        recommended_profile: Optional[str] = None
+
         # Check for explicit environment variable to force local execution
         if os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes"):
             logger.info("SIRNAFORGE_USE_LOCAL_EXECUTION set, using local execution profile")
-            return "local"
+            recommended_profile = "local"
 
         # If we're running inside a Docker container (e.g., for testing),
         # we might not have access to Docker daemon, so use local execution
-        if self.is_running_in_docker():
+        if recommended_profile is None and self.is_running_in_docker():
             logger.info("Running inside Docker container, using local execution profile")
-            return "local"
+            recommended_profile = "local"
 
         # If Docker profile is requested, check if Docker is available
-        if self.profile == "docker":
+        if recommended_profile is None and self.profile == "docker":
             if self.validate_docker_available():
                 logger.debug("Using Docker profile for Nextflow execution")
-                return "docker"
-            logger.warning("Docker requested but not available, falling back to local")
-            return "local"
+                recommended_profile = "docker"
+            else:
+                logger.warning("Docker requested but not available, falling back to alternatives")
 
-        # Use the requested profile as-is
-        logger.debug(f"Using requested profile: {self.profile}")
-        return self.profile
+        # Check for alternative container runtimes
+        if recommended_profile is None:
+            if self._is_singularity_available():
+                logger.info("Using Singularity profile as Docker alternative")
+                recommended_profile = "singularity"
+            elif self._is_conda_available():
+                logger.info("Using Conda profile as container alternative")
+                recommended_profile = "conda"
+
+        # Fallback to local if no container runtime available and a container profile was requested
+        if recommended_profile is None:
+            if self.profile in ["docker", "singularity", "conda"]:
+                logger.warning(f"Requested profile '{self.profile}' not available, falling back to local")
+                recommended_profile = "local"
+            else:
+                supported_profiles = ["local", "docker", "singularity", "conda", "test"]
+                if self.profile not in supported_profiles:
+                    raise ValueError(
+                        f"Requested profile '{self.profile}' is not supported. Supported: {supported_profiles}"
+                    )
+                logger.debug(f"Using requested profile: {self.profile}")
+                recommended_profile = self.profile
+
+        return recommended_profile
 
     def get_environment_info(self) -> EnvironmentInfo:
         """
@@ -342,13 +422,14 @@ process {{
         Create a configuration optimized for testing.
 
         This automatically detects if we're running in Docker and adjusts accordingly.
+        Uses uv/conda for environment management when available.
 
         Returns:
             NextflowConfig instance with test-friendly settings
         """
         # For testing, use test profile by default, but allow environment override
         instance = cls(
-            profile="test",  # Use test profile which runs locally with conda
+            profile="test",  # Use test profile which runs locally with uv/conda
             max_cpus=2,
             max_memory="6.GB",
             max_time="6.h",
@@ -385,4 +466,27 @@ process {{
 
         # Auto-detect and adjust profile (will return "test,docker" if Docker is available)
         instance.profile = instance.get_execution_profile()
+        return instance
+
+    @classmethod
+    def auto_configure(cls, **kwargs: Any) -> "NextflowConfig":
+        """
+        Auto-configure Nextflow settings based on environment detection.
+
+        This method automatically detects available tools and selects the best profile.
+
+        Args:
+            **kwargs: Additional configuration parameters to override defaults
+
+        Returns:
+            NextflowConfig instance with auto-detected settings
+        """
+        # Start with default production settings
+        instance = cls.for_production(**kwargs)
+
+        # Auto-detect the best profile
+        detected_profile = instance.get_execution_profile()
+        instance.profile = detected_profile
+
+        logger.info(f"Auto-configured Nextflow with profile: {detected_profile}")
         return instance

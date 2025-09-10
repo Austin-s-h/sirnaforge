@@ -54,9 +54,9 @@ class NextflowRunner:
         Initialize Nextflow runner.
 
         Args:
-            config: NextflowConfig instance, creates default if None
+            config: NextflowConfig instance, creates auto-configured if None
         """
-        self.config = config or NextflowConfig.for_production()
+        self.config = config or NextflowConfig.auto_configure()
         self.workflow_dir = self._get_workflow_dir()
 
     def _get_workflow_dir(self) -> Path:
@@ -76,6 +76,71 @@ class NextflowRunner:
         if not main_nf.exists():
             raise FileNotFoundError(f"Main workflow not found at {main_nf}")
         return main_nf
+
+    async def run(
+        self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        """
+        Simple method to run Nextflow workflow with auto-validation and defaults.
+
+        Args:
+            input_file: Path to input FASTA file
+            output_dir: Output directory for results
+            genome_species: List of genome species (defaults to ["human", "rat", "rhesus"])
+            **kwargs: Additional parameters passed to run_offtarget_analysis
+
+        Returns:
+            Dictionary containing execution results and metadata
+
+        Raises:
+            NextflowExecutionError: If workflow execution fails
+        """
+        # Auto-validate installation
+        validation = self.validate_installation()
+        if not validation.get("nextflow", False):
+            raise NextflowExecutionError("Nextflow is not available. Please install Nextflow.")
+        if not validation.get("workflow_files", False):
+            raise NextflowExecutionError("Nextflow workflow files not found.")
+
+        # Set defaults
+        genome_species = genome_species or ["human", "rat", "rhesus"]
+
+        # Run the analysis
+        return await self.run_offtarget_analysis(
+            input_file=input_file, output_dir=output_dir, genome_species=genome_species, **kwargs
+        )
+
+    def run_sync(
+        self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        """
+        Synchronous version of run() for simpler usage without async/await.
+
+        Args:
+            input_file: Path to input FASTA file
+            output_dir: Output directory for results
+            genome_species: List of genome species (defaults to ["human", "rat", "rhesus"])
+            **kwargs: Additional parameters passed to run_offtarget_analysis
+
+        Returns:
+            Dictionary containing execution results and metadata
+        """
+        # Auto-validate installation
+        validation = self.validate_installation()
+        if not validation.get("nextflow", False):
+            raise NextflowExecutionError("Nextflow is not available. Please install Nextflow.")
+        if not validation.get("workflow_files", False):
+            raise NextflowExecutionError("Nextflow workflow files not found.")
+
+        # Set defaults
+        genome_species = genome_species or ["human", "rat", "rhesus"]
+
+        # Run synchronously
+        return asyncio.run(
+            self.run_offtarget_analysis(
+                input_file=input_file, output_dir=output_dir, genome_species=genome_species, **kwargs
+            )
+        )
 
     async def run_offtarget_analysis(
         self,
@@ -307,6 +372,34 @@ class NextflowRunner:
         # Check Docker if using Docker profile
         tools["docker"] = self.config.validate_docker_available()
 
+        # Check uv/conda for environment management
+        try:
+            uv_path = _get_executable_path("uv")
+            if uv_path:
+                cmd = [uv_path, "--version"]
+                _validate_command_args(cmd)
+                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                tools["uv"] = True
+                logger.debug(f"uv version: {result.stdout.decode()}")
+            else:
+                tools["uv"] = False
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            tools["uv"] = False
+
+        # Check conda as fallback
+        try:
+            conda_path = _get_executable_path("conda")
+            if conda_path:
+                cmd = [conda_path, "--version"]
+                _validate_command_args(cmd)
+                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                tools["conda"] = True
+                logger.debug(f"Conda version: {result.stdout.decode()}")
+            else:
+                tools["conda"] = False
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            tools["conda"] = False
+
         # Check workflow files
         tools["workflow_files"] = self.workflow_dir.exists() and (self.workflow_dir / "main.nf").exists()
 
@@ -321,6 +414,20 @@ class NextflowRunner:
             NextflowRunner with test configuration
         """
         return cls(NextflowConfig.for_testing())
+
+    @classmethod
+    def create(cls, **config_kwargs: Any) -> "NextflowRunner":
+        """
+        Create a NextflowRunner with auto-configured settings.
+
+        Args:
+            **config_kwargs: Configuration parameters for NextflowConfig
+
+        Returns:
+            NextflowRunner with auto-configured NextflowConfig
+        """
+        config = NextflowConfig.auto_configure(**config_kwargs)
+        return cls(config)
 
 
 class NextflowExecutionError(Exception):
