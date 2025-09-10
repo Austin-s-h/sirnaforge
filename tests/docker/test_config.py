@@ -74,6 +74,16 @@ TEST_PROFILES = {
         max_fail=1,
         timeout=120,
     ),
+    "smoke": TestProfile(
+        name="smoke",
+        description="Ultra-minimal smoke tests for CI/CD - toy data only",
+        pytest_args=["-q", "-n", "1", "-m", "smoke", "--maxfail=1"],
+        docker_cpus=0.5,
+        docker_memory="256m",
+        docker_memory_swap="512m",
+        max_fail=1,
+        timeout=60,
+    ),
 }
 
 
@@ -114,7 +124,12 @@ def get_docker_run_command(profile: TestProfile, image_name: str = "sirnaforge:l
 
 
 # Quick access functions
-def lightweight_profile() -> TestProfile:
+def smoke_profile() -> TestProfile:
+    """Get smoke profile for CI/CD."""
+    return get_profile("smoke")
+
+
+def minimal_profile() -> TestProfile:
     """Get lightweight profile for development."""
     return get_profile("lightweight")
 

@@ -88,3 +88,4 @@ work/
 
 # Documentation
 docs/_build/
+nxf-tmp.*

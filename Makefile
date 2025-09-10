@@ -25,6 +25,7 @@ help: ## Show available commands
 	@echo "  test-integration   Integration tests (Docker + Nextflow)"
 	@echo "  docker-test        Docker tests (development)"
 	@echo "  docker-test-fast   Fast Docker tests (minimal resources)"
+	@echo "  docker-test-smoke  Ultra-minimal smoke tests for CI/CD (fastest)"
 	@echo "  docker-test-full   Full Docker tests (high resources)"
 	@echo ""
 	@echo "🔧 CODE QUALITY"
@@ -163,6 +164,14 @@ docker-test-lightweight: ## Run only lightweight Docker tests
 		--memory-swap=2g \
 		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
 		uv run --group dev pytest -q -n 1 -m "lightweight or docker" --maxfail=3
+
+docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest)
+	docker run --rm \
+		--cpus=0.5 \
+		--memory=256m \
+		--memory-swap=512m \
+		-v $$(pwd):/workspace -w /workspace $(DOCKER_IMAGE):latest \
+		uv run --group dev pytest -q -n 1 -m "smoke" --maxfail=1 --tb=short
 
 docker-test-full: ## Run all tests in Docker (high resources, for CI)
 	docker run --rm \
