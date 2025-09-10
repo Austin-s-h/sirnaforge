@@ -3,6 +3,25 @@ Nextflow Pipeline Runner
 
 This module provides a Python interface to execute Nextflow workflows
 for siRNA off-target analysis with proper Docker integration.
+
+Simple Usage Examples:
+
+    # Auto-configured runner (easiest)
+    runner = NextflowRunner.create()
+    result = runner.run_sync(
+        input_file=Path("candidates.fasta"),
+        output_dir=Path("results")
+    )
+
+    # Local Docker testing (uses local image built by 'make docker')
+    runner = NextflowRunner.for_local_docker_testing()
+    result = runner.run_sync(...)
+
+    # Async version
+    result = await runner.run(
+        input_file=Path("candidates.fasta"),
+        output_dir=Path("results")
+    )
 """
 
 import asyncio
@@ -410,10 +429,14 @@ class NextflowRunner:
         """
         Create a runner configured for testing.
 
+        This uses the test configuration which automatically detects
+        if we're running in Docker and adjusts accordingly.
+
         Returns:
-            NextflowRunner with test configuration
+            NextflowRunner configured for testing
         """
-        return cls(NextflowConfig.for_testing())
+        config = NextflowConfig.for_testing()
+        return cls(config)
 
     @classmethod
     def create(cls, **config_kwargs: Any) -> "NextflowRunner":

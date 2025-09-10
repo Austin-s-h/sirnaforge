@@ -15,12 +15,8 @@ Simple Usage Examples:
     # Testing settings
     config = NextflowConfig.for_testing()
 
-    # Custom configuration
-    config = NextflowConfig(
-        profile="docker",
-        docker_image="my-image:latest",
-        max_cpus=16
-    )
+    # Local Docker testing (uses local image built by 'make docker')
+    config = NextflowConfig.for_local_docker_testing()
 """
 
 import os
@@ -446,27 +442,26 @@ process {{
         return instance
 
     @classmethod
-    def for_production(cls, docker_image: Optional[str] = None) -> "NextflowConfig":
+    def for_production(cls, **kwargs: Any) -> "NextflowConfig":
         """
         Create a configuration optimized for production use.
 
+        This uses Docker by default for reproducible execution with full resources.
+
         Args:
-            docker_image: Override default Docker image
+            **kwargs: Additional configuration parameters to override defaults
 
         Returns:
             NextflowConfig instance with production settings
         """
-        instance = cls(
-            docker_image=docker_image or "ghcr.io/austin-s-h/sirnaforge:latest",
+        return cls(
+            docker_image="ghcr.io/austin-s-h/sirnaforge:latest",
             profile="docker",
             max_cpus=16,
             max_memory="128.GB",
             max_time="240.h",
+            **kwargs,
         )
-
-        # Auto-detect and adjust profile (will return "test,docker" if Docker is available)
-        instance.profile = instance.get_execution_profile()
-        return instance
 
     @classmethod
     def auto_configure(cls, **kwargs: Any) -> "NextflowConfig":

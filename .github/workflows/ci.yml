@@ -224,7 +224,7 @@ jobs:
         cache-suffix: docs
 
     - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group docs
+      run: uv pip install --system -r pyproject.toml --editable . --group dev
 
     - name: 🏗️ Build documentation
       run: |
