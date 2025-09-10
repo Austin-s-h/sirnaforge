@@ -22,6 +22,8 @@
 
 ```
 
+## Commands
+
 ### `search`
 ```bash
 
