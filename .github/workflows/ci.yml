@@ -124,7 +124,7 @@ jobs:
     - name: 🧪 Run tests with pytest
       env:
         SIRNAFORGE_USE_LOCAL_EXECUTION: true
-      run: pytest --cov=sirnaforge --cov-report=xml
+      run: pytest --cov=sirnaforge --cov-report=xml -m "not docker and not nextflow and not local_nextflow and not integration"
 
     - name: 📊 Upload coverage to Codecov
       uses: codecov/codecov-action@v3
