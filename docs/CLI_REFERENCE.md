@@ -1,10 +1,10 @@
-# 🧬 siRNAforge CLI Reference
+# siRNAforge CLI Reference
 
 ```bash
 [1m                                                                                                                        [0m
 [1m [0m[1;33mUsage: [0m[1msirnaforge [OPTIONS] COMMAND [ARGS]...[0m[1m                                                                         [0m[1m [0m
 [1m                                                                                                                        [0m
- 🧬 siRNAforge - Comprehensive siRNA design toolkit for gene silencing                                                  
+ siRNAforge - siRNA design toolkit for gene silencing                                                  
                                                                                                                         
 [2m╭─[0m[2m Options [0m[2m───────────────────────────────────────────────────────────────────────────────────────────────────────────[0m[2m─╮[0m
 [2m│[0m [1;36m-[0m[1;36m-install[0m[1;36m-completion[0m          Install completion for the current shell.                                              [2m│[0m
