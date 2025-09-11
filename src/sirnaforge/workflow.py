@@ -544,7 +544,7 @@ class SiRNAWorkflow:
                     "orf_gc_content",
                 ]
             )
-            # Set correct dtypes to match schema
+            # Set correct dtypes to match schema - using Any types for nullable fields
             empty_df = empty_df.astype(
                 {
                     "transcript_id": str,
@@ -552,13 +552,13 @@ class SiRNAWorkflow:
                     "gc_content": float,
                     "orfs_found": "Int64",
                     "has_valid_orf": bool,
-                    "longest_orf_start": "Int64",
-                    "longest_orf_end": "Int64",
-                    "longest_orf_length": "Int64",
-                    "longest_orf_frame": "Int64",
-                    "start_codon": str,
-                    "stop_codon": str,
-                    "orf_gc_content": float,
+                    "longest_orf_start": 'object',
+                    "longest_orf_end": 'object',
+                    "longest_orf_length": 'object',
+                    "longest_orf_frame": 'object',
+                    "start_codon": 'object',
+                    "stop_codon": 'object',
+                    "orf_gc_content": 'object',
                 }
             )
             validated_df = ORFValidationSchema.validate(empty_df)
