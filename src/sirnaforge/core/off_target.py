@@ -495,6 +495,35 @@ def build_bwa_index(fasta_file: str, index_prefix: str) -> str:
         raise
 
 
+def build_bowtie_index(fasta_file: str, index_prefix: str) -> str:
+    """Build Bowtie index for miRNA analysis."""
+    logger.info(f"Building Bowtie index from {fasta_file} with prefix {index_prefix}")
+
+    if not Path(fasta_file).exists():
+        raise FileNotFoundError(f"Input FASTA file not found: {fasta_file}")
+
+    Path(index_prefix).parent.mkdir(parents=True, exist_ok=True)
+
+    # Get absolute path to bowtie-build executable
+    bowtie_path = _get_executable_path("bowtie-build")
+    if not bowtie_path:
+        raise FileNotFoundError("bowtie-build executable not found in PATH")
+
+    cmd = [bowtie_path, fasta_file, index_prefix]
+    _validate_command_args(cmd)
+
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=3600)  # nosec B603
+        logger.info(f"Bowtie index built successfully: {index_prefix}")
+        return index_prefix
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Bowtie index build failed: {e.stderr}")
+        raise
+    except subprocess.TimeoutExpired:
+        logger.error("Bowtie index build timed out")
+        raise
+
+
 def validate_sirna_sequences(
     sequences: dict[str, str], expected_length: int = 21
 ) -> tuple[dict[str, str], dict[str, str], list[str]]:

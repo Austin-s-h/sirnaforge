@@ -88,5 +88,6 @@ work/
 
 # Documentation
 docs/_build/
+
 nextflow_work/
 nxf-tmp.*

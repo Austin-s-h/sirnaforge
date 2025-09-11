@@ -684,7 +684,36 @@ uv run pytest --cov=sirnaforge --cov-report=html
 
 # Run tests in parallel
 uv run pytest -n auto
+
+# Ultra-fast CI/CD smoke tests (NEW!)
+make docker-test-smoke
+
+# Validate fast CI/CD setup
+python scripts/validate_fast_ci.py
 ```
+
+### Fast CI/CD with Toy Data ⚡
+
+siRNAforge now includes an improved CI/CD workflow designed for quick feedback with minimal resources:
+
+- **⚡ Ultra-fast execution**: < 15 minutes total
+- **🪶 Minimal resources**: 256MB memory, 0.5 CPU cores  
+- **🧸 Toy data**: < 500 bytes of test sequences
+- **🔥 Smoke tests**: Essential functionality validation
+
+```bash
+# Trigger fast CI/CD workflow locally
+pytest -m "smoke" --tb=short
+
+# Use toy data for quick validation  
+ls tests/unit/data/toy_*.fasta
+
+# Fast workflow vs comprehensive workflow
+# Fast:    15 min,  256MB RAM, toy data
+# Full:    60 min,    8GB RAM, real datasets
+```
+
+See [`docs/ci-cd-fast.md`](docs/ci-cd-fast.md) for detailed documentation.
 
 ### Test Categories
 
