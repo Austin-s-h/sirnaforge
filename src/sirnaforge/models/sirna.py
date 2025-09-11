@@ -6,6 +6,11 @@ from typing import Any, Callable, Optional, TypeVar
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from sirnaforge.models.schemas import SiRNACandidateSchema
+from sirnaforge.utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 # mypy-friendly typed alias for pydantic's untyped decorator factory
 F = TypeVar("F", bound=Callable[..., Any])
 FieldValidatorFactory = Callable[..., Callable[[F], F]]
@@ -173,7 +178,11 @@ class DesignResult(BaseModel):
     tool_versions: dict[str, str] = Field(default_factory=dict, description="Tool versions used")
 
     def save_csv(self, filepath: str) -> None:
-        """Save results to CSV file."""
+        """Save results to CSV file with schema validation.
+
+        The DataFrame will be validated against SiRNACandidateSchema before saving.
+        Validation failures will be logged and bubble up as exceptions.
+        """
         df_data = []
         for candidate in self.candidates:
             row = {
@@ -194,7 +203,14 @@ class DesignResult(BaseModel):
             df_data.append(row)
 
         df = pd.DataFrame(df_data)
-        df.to_csv(filepath, index=False)
+
+        # Validate DataFrame against schema - let failures bubble up
+        logger.debug(f"Validating siRNA candidates DataFrame with {len(df)} rows")
+        validated_df = SiRNACandidateSchema.validate(df)
+        logger.info(f"siRNA candidates schema validation passed for {len(validated_df)} candidates")
+
+        # Save validated DataFrame
+        validated_df.to_csv(filepath, index=False)
 
     def get_summary(self) -> dict[str, Any]:
         """Get summary statistics."""
