@@ -1,7 +1,12 @@
 """Modern CLI for siRNAforge using Typer and Rich."""
 
-import asyncio
+# Configure environment for ASCII compatibility before importing typer/rich
 import os
+os.environ.setdefault('FORCE_COLOR', '0')
+os.environ.setdefault('NO_COLOR', '1')
+os.environ.setdefault('TERM', 'dumb')
+
+import asyncio
 from pathlib import Path
 from typing import Callable, Optional, TypeVar
 
@@ -11,6 +16,21 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
+
+# Monkey patch Rich's console detection to force ASCII
+try:
+    import rich.console
+    # Override the Rich console's is_terminal property to force ASCII mode
+    original_init = rich.console.Console.__init__
+    
+    def patched_init(self, *args, **kwargs):
+        kwargs['legacy_windows'] = True
+        kwargs['force_terminal'] = False
+        original_init(self, *args, **kwargs)
+    
+    rich.console.Console.__init__ = patched_init
+except Exception:
+    pass
 
 from sirnaforge import __author__, __version__
 from sirnaforge.core.design import SiRNADesigner
@@ -22,10 +42,11 @@ from sirnaforge.workflow import run_sirna_workflow
 
 app = typer.Typer(
     name="sirnaforge",
-    help="🧬 siRNAforge - Comprehensive siRNA design toolkit for gene silencing",
+    help="siRNAforge - siRNA design toolkit for gene silencing",
     rich_markup_mode="rich",
 )
-console = Console()
+# Configure console to use ASCII box characters for better compatibility
+console = Console(force_terminal=False, legacy_windows=True)
 
 # mypy-friendly alias for Typer command decorator
 T = TypeVar("T", bound=Callable[..., object])
@@ -122,7 +143,7 @@ def search(  # noqa: PLR0912
         help="Enable verbose output",
     ),
 ) -> None:
-    """🔍 Search for gene transcripts and retrieve sequences."""
+    """Search for gene transcripts and retrieve sequences."""
 
     try:
         # imports moved to top
@@ -362,7 +383,7 @@ def workflow(
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
     ),
 ) -> None:
-    """🧬 Run complete siRNA design workflow from gene query to off-target analysis."""
+    """Run complete siRNA design workflow from gene query to off-target analysis."""
 
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
@@ -544,7 +565,7 @@ def design(
         help="Enable verbose output",
     ),
 ) -> None:
-    """🎯 Design siRNA candidates from transcript sequences."""
+    """Design siRNA candidates from transcript sequences."""
 
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
@@ -654,7 +675,7 @@ def validate(
         dir_okay=False,
     ),
 ) -> None:
-    """🔍 Validate input FASTA file format and content."""
+    """Validate input FASTA file format and content."""
 
     try:
         with console.status("Validating FASTA file..."):
@@ -704,7 +725,7 @@ def validate(
 
 @app_command()
 def version() -> None:
-    """📦 Show version information."""
+    """Show version information."""
 
     try:
         # Prefer Docker build-time APP_VERSION when the image is built with a VERSION arg
@@ -725,7 +746,7 @@ def version() -> None:
 
 @app_command()
 def config() -> None:
-    """⚙️  Show default configuration parameters."""
+    """Show default configuration parameters."""
 
     default_params = DesignParameters()
 
