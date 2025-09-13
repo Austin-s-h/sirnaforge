@@ -1,6 +1,12 @@
 # Enhanced Data Validation System
+-----
 
-siRNAforge now includes a comprehensive validation system that integrates Pydantic models and Pandera schemas to ensure data integrity throughout the siRNA design pipeline.
+- What it does: Keeps your inputs, intermediate data, and outputs sane using Pydantic + Pandera.
+- How to use: Pick a preset (development, production, performance) and pass `ValidationConfig` into your `WorkflowConfig`.
+- When it runs: At INPUT, TRANSCRIPT_RETRIEVAL, DESIGN, and OUTPUT stages with configurable strictness.
+- Why it helps: Fewer silent errors, clearer failures, and actionable reports.
+
+siRNAforge includes a comprehensive validation system that integrates Pydantic models and Pandera schemas to ensure data integrity throughout the siRNA design pipeline.
 
 ## Overview
 
@@ -42,7 +48,7 @@ from sirnaforge.validation import ValidationPresets
 # Development: More lenient, collect all errors
 dev_config = ValidationPresets.development()
 
-# Production: Strict validation, fail fast  
+# Production: Strict validation, fail fast
 prod_config = ValidationPresets.production()
 
 # Performance: Minimal validation for speed
@@ -56,7 +62,7 @@ perf_config = ValidationPresets.performance()
 - Best for production and critical analyses
 - Ensures highest data quality
 
-### WARNING  
+### WARNING
 - Validation errors logged as warnings
 - Workflow continues execution
 - Good for development and exploratory analysis
@@ -72,7 +78,7 @@ The system validates data at key pipeline stages:
 
 ### INPUT
 - Design parameter consistency
-- Filter criteria validation  
+- Filter criteria validation
 - Scoring weight normalization
 - Cross-system constraint checking
 
@@ -137,7 +143,7 @@ config = ValidationConfig(
     default_level=ValidationLevel.WARNING,
     stage_levels={
         ValidationStage.INPUT: ValidationLevel.STRICT,    # Critical inputs
-        ValidationStage.OUTPUT: ValidationLevel.STRICT,   # Critical outputs  
+        ValidationStage.OUTPUT: ValidationLevel.STRICT,   # Critical outputs
         ValidationStage.DESIGN: ValidationLevel.WARNING,  # Allow warnings
     }
 )

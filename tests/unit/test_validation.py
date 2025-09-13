@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
+import pydantic_core
+import pytest
 
 from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware, ValidationUtils
@@ -79,22 +81,18 @@ class TestValidationUtils:
 
     def test_validate_candidate_consistency_mismatched_lengths(self):
         """Test candidate consistency validation with mismatched sequence lengths."""
-        candidate = SiRNACandidate(
-            id="test_1",
-            transcript_id="ENST123",
-            position=100,
-            guide_sequence="ATCGATCGATCGATCGATCGA",  # 21 nt
-            passenger_sequence="TCGATCGATCGATCGATCGAT123",  # 24 nt
-            gc_content=50.0,
-            length=21,
-            asymmetry_score=0.5,
-            composite_score=75.0,
-        )
-        result = ValidationUtils.validate_candidate_consistency(candidate)
-        # Different guide/passenger lengths are allowed but should produce a warning
-        assert result.is_valid
-        assert len(result.warnings) > 0
-        assert "different lengths" in result.warnings[0]
+        with pytest.raises(pydantic_core._pydantic_core.ValidationError, match="at most 23 characters"):
+            _ = SiRNACandidate(
+                id="test_1",
+                transcript_id="ENST123",
+                position=100,
+                guide_sequence="ATCGATCGATCGATCGATCGA",  # 21 nt
+                passenger_sequence="TCGATCGATCGATCGATCGAT123",  # 24 nt
+                gc_content=50.0,
+                length=21,
+                asymmetry_score=0.5,
+                composite_score=75.0,
+            )
 
 
 class TestValidationConfig:

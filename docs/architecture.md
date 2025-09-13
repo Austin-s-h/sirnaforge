@@ -1,6 +1,14 @@
 # siRNAforge Architecture
 
-This document describes the architecture and design principles of siRNAforge.
+Short version (TL;DR)
+---------------------
+
+- What it is: A layered Python toolkit for end-to-end siRNA design.
+- How it’s organized: CLI → Workflow → Core → Models → Data → Pipeline, with shared Utils/Validation.
+- How data flows: Gene query → transcripts → design → scores → ranked output.
+- How to extend: plug in new scorers, data providers, and output writers via small interfaces.
+
+Use this page as a map. Skim the diagrams and the “Architectural Layers” section first; dive into details only as needed.
 
 ## Overview
 
@@ -66,8 +74,6 @@ sequenceDiagram
     CLI->>User: formatted_output + files
 </div>
 ```
-
-## Package Structure
 
 ## Package Structure
 

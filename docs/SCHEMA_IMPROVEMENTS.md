@@ -1,73 +1,125 @@
-# Pandera Schema Modernization
+# Pandera DataFrameModel Implementation Guide
 
-This document describes the improvements made to siRNAforge's pandera schemas to align with current best practices for Pandera 0.26.1.
+A practical guide for implementing type-safe data validation in bioinformatics workflows using modern Pandera patterns.
 
-## Summary of Changes
+## Why Use DataFrameModel?
 
-### 1. Modern Import Patterns
-- **Before**: Used deprecated `import pandera as pa` with warnings
-- **After**: Using recommended `import pandera.pandas as pa` to eliminate deprecation warnings
+### Key Benefits
+- **Type Safety**: IDE autocomplete and early error detection
+- **Self-Documenting**: Schema serves as living documentation
+- **Validation**: Automatic data integrity checks with custom validators
+- **Maintainability**: Class-based approach is cleaner than dictionary definitions
 
-### 2. Class-Based Schema Models
-- **Before**: Used legacy `DataFrameSchema` with dictionary definitions
-- **After**: Modern `DataFrameModel` classes with type annotations for better IDE support and maintainability
-
-### 3. Improved Type Safety
-- **Before**: Basic column type definitions
-- **After**: Typed `Series[dtype]` annotations with proper nullable field handling
-
-### 4. Enhanced Validation
-- **Before**: Basic regex and range checks
-- **After**: Custom `@pa.dataframe_check` validators for bioinformatics-specific logic:
-  - Nucleotide sequence validation (supports both DNA and RNA)
-  - siRNA length range validation (19-23 nucleotides)
-  - Comprehensive documentation with field descriptions
-
-### 5. Better Error Reporting
-- **Before**: Generic validation errors
-- **After**: Detailed schema metadata with descriptions and titles for clearer debugging
-
-### 6. Flexible Nullable Field Handling
-- **Before**: Inconsistent nullable type handling
-- **After**: Proper `object` types for nullable fields with configuration options
-
-## Schema Files Modified
-
-### `src/sirnaforge/models/schemas.py`
-- Complete rewrite using modern pandera patterns
-- Three main schemas: `SiRNACandidateSchema`, `ORFValidationSchema`, `OffTargetHitsSchema`
-- Custom validation functions for biological data integrity
-
-### `src/sirnaforge/workflow.py`
-- Updated empty DataFrame type handling to match new schema expectations
-- Minimal changes to maintain backward compatibility
-
-## Benefits
-
-1. **Eliminated deprecation warnings** - Code is future-proof for Pandera updates
-2. **Improved type safety** - Better IDE support and early error detection
-3. **Enhanced documentation** - Clear field descriptions and validation rules
-4. **Better error messages** - More informative validation failures
-5. **Biological validation** - Domain-specific checks for siRNA and genomic data
-6. **Maintainability** - Cleaner, more readable schema definitions
-
-## Usage Examples
-
+### Modern vs Legacy Patterns
 ```python
-import pandas as pd
-from sirnaforge.models.schemas import SiRNACandidateSchema
+# ❌ Legacy (deprecated warnings)
+import pandera as pa
+schema = pa.DataFrameSchema({"col": pa.Column(str)})
 
-# Validate siRNA candidate data
-df = pd.DataFrame({...})  # Your data
-validated_df = SiRNACandidateSchema.validate(df)
+# ✅ Modern (recommended)
+import pandera.pandas as pa
+class MySchema(pa.DataFrameModel):
+  col: pa.Series[str]
 ```
 
-## Testing
+## Implementation Example: Protein Analysis Workflow
 
-New comprehensive test suite in `tests/unit/test_schemas.py` validates:
-- Valid data acceptance
-- Invalid data rejection 
-- Nullable field handling
-- Bioinformatics-specific constraints
+### 1. Define Your Schema
 
-All existing tests continue to pass, ensuring backward compatibility.
+```python
+import pandera.pandas as pa
+from pandera import Field, dataframe_check
+import pandas as pd
+
+class ProteinAnalysisSchema(pa.DataFrameModel):
+  """Schema for protein sequence analysis results."""
+
+  # Required fields with validation
+  protein_id: pa.Series[str] = Field(description="Unique protein identifier")
+  sequence: pa.Series[str] = Field(min_length=10, description="Amino acid sequence")
+  molecular_weight: pa.Series[float] = Field(gt=0, description="Molecular weight in Da")
+
+  # Optional fields (nullable)
+  expression_level: pa.Series[object] = Field(nullable=True, description="Expression level")
+
+  class Config:
+    title = "Protein Analysis Results"
+    description = "Validated protein sequence data with computed properties"
+
+  @dataframe_check
+  def valid_amino_acids(cls, df: pd.DataFrame) -> bool:
+    """Ensure sequences contain only valid amino acids."""
+    valid_aa = set("ACDEFGHIKLMNPQRSTVWY")
+    return df["sequence"].str.upper().apply(
+      lambda seq: all(aa in valid_aa for aa in seq)
+    ).all()
+
+  @dataframe_check
+  def reasonable_mw_range(cls, df: pd.DataFrame) -> bool:
+    """Molecular weight should be realistic for proteins."""
+    return df["molecular_weight"].between(1000, 500000).all()
+```
+
+### 2. Use in Your Workflow
+
+```python
+def process_protein_data(input_file: str) -> pd.DataFrame:
+  """Process and validate protein analysis data."""
+
+  # Load raw data
+  df = pd.read_csv(input_file)
+
+  # Validate with schema
+  try:
+    validated_df = ProteinAnalysisSchema.validate(df)
+    print(f"✅ Validated {len(validated_df)} protein records")
+    return validated_df
+  except pa.errors.SchemaError as e:
+    print(f"❌ Validation failed: {e}")
+    raise
+
+# Usage
+results = process_protein_data("protein_results.csv")
+```
+
+### 3. Handle Empty DataFrames
+
+```python
+def create_empty_result() -> pd.DataFrame:
+  """Create empty DataFrame matching schema."""
+  return pd.DataFrame({
+    "protein_id": pd.Series([], dtype="object"),
+    "sequence": pd.Series([], dtype="object"),
+    "molecular_weight": pd.Series([], dtype="float64"),
+    "expression_level": pd.Series([], dtype="object")
+  })
+```
+
+## Best Practices
+
+1. **Start Simple**: Begin with basic types, add validators incrementally
+2. **Document Everything**: Use `Field(description=...)` for all columns
+3. **Test Edge Cases**: Include tests for empty data, nulls, and boundary values
+4. **Custom Validators**: Use `@dataframe_check` for domain-specific validation
+5. **Nullable Handling**: Use `object` dtype for nullable string/mixed columns
+
+## Quick Start Template
+
+```python
+import pandera.pandas as pa
+from pandera import Field
+
+class YourWorkflowSchema(pa.DataFrameModel):
+  # Required fields
+  id: pa.Series[str] = Field(description="Unique identifier")
+  value: pa.Series[float] = Field(gt=0, description="Measured value")
+
+  # Optional fields
+  notes: pa.Series[object] = Field(nullable=True, description="Optional notes")
+
+  class Config:
+    title = "Your Workflow Results"
+    description = "Description of your data"
+```
+
+Replace field names and types with your workflow's specific requirements.

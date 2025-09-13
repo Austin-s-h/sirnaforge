@@ -21,6 +21,7 @@ Comprehensive siRNA design toolkit for gene silencing with multi-species off-tar
    CLI_REFERENCE
    USAGE_EXAMPLES
    gene_search
+   VALIDATION_GUIDE
    tutorials/index
 
 .. toctree::
@@ -44,6 +45,7 @@ Comprehensive siRNA design toolkit for gene silencing with multi-species off-tar
    :numbered:
 
    development
+   SCHEMA_IMPROVEMENTS
    changelog
 
 .. toctree::

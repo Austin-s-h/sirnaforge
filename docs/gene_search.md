@@ -1,8 +1,13 @@
 # Gene Search Functionality
 
-The siRNAforge toolkit includes comprehensive gene search functionality that allows you to retrieve transcript sequences from multiple genomic databases.ene Search Functionality 🧬
+TL;DR
+-----
 
-The siRNA Design Toolkit includes comprehensive gene search functionality that allows you to retrieve transcript sequences from multiple genomic databases.
+- Retrieve transcript sequences (FASTA + metadata) from Ensembl today; RefSeq and GENCODE are planned.
+- Use `sirnaforge search <QUERY>` from the CLI or the Python API for programmatic use.
+- Output plays nicely with the `sirnaforge design` step and the full `sirnaforge workflow`.
+
+The siRNAforge toolkit includes comprehensive gene search functionality to retrieve transcript sequences and metadata from multiple genomic databases.
 
 ## Features
 
@@ -18,19 +23,19 @@ The siRNA Design Toolkit includes comprehensive gene search functionality that a
 
 ```bash
 # Search for a gene and save sequences
-uv run sirna search TP53 -o tp53_transcripts.fasta
+uv run sirnaforge search TP53 -o tp53_transcripts.fasta
 
 # Search specific database
-uv run sirna search BRCA1 -d ensembl -o brca1_ensembl.fasta
+uv run sirnaforge search BRCA1 -d ensembl -o brca1_ensembl.fasta
 
 # Search all databases
-uv run sirna search MYC --all -o myc_all_databases.fasta
+uv run sirnaforge search MYC --all -o myc_all_databases.fasta
 
 # Get metadata only (no sequences)
-uv run sirna search EGFR --no-sequence
+uv run sirnaforge search EGFR --no-sequence
 
 # Use a local FASTA as input for the full workflow (skip gene search)
-uv run sirna workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
+uv run sirnaforge workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
 ```
 
 ### Python API Usage
@@ -38,7 +43,7 @@ uv run sirna workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_out
 #### Synchronous API
 
 ```python
-from sirna_design.data.gene_search import search_gene_sync, DatabaseType
+from sirnaforge.data.gene_search import search_gene_sync, DatabaseType
 
 # Simple gene search
 result = search_gene_sync("TP53", database=DatabaseType.ENSEMBL)
@@ -53,7 +58,7 @@ if result.success:
 
 ```python
 import asyncio
-from sirna_design.data.gene_search import GeneSearcher, DatabaseType
+from sirnaforge.data.gene_search import GeneSearcher, DatabaseType
 
 async def search_genes():
     searcher = GeneSearcher()
@@ -125,9 +130,9 @@ class TranscriptInfo(BaseModel):
 ### 1. Design siRNAs from Gene Search
 
 ```python
-from sirna_design.data.gene_search import search_gene_sync
-from sirna_design.core.design import SiRNADesigner
-from sirna_design.models.sirna import DesignParameters
+from sirnaforge.data.gene_search import search_gene_sync, GeneSearcher
+from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.models.sirna import DesignParameters
 
 # Search for gene
 result = search_gene_sync("TP53")
@@ -147,7 +152,7 @@ if result.success:
 ### 2. Compare Databases
 
 ```python
-from sirna_design.data.gene_search import search_multiple_databases_sync
+from sirnaforge.data.gene_search import search_multiple_databases_sync
 
 # Compare gene across databases
 results = search_multiple_databases_sync("BRCA1")
@@ -202,7 +207,7 @@ The gene search functionality integrates seamlessly with the siRNA design pipeli
 
 ```bash
 # Complete pipeline: search → design → analyze
-sirna search TP53 -o tp53.fasta
+sirnaforge search TP53 -o tp53.fasta
 sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
 ```
 
