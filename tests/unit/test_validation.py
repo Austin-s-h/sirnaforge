@@ -57,11 +57,11 @@ class TestValidationUtils:
 
     def test_validate_parameter_consistency_invalid_gc_range(self):
         """Test parameter consistency validation with invalid GC range."""
-        filters = FilterCriteria(gc_min=60.0, gc_max=40.0)  # Invalid: min > max
-        params = DesignParameters(filters=filters)
-        result = ValidationUtils.validate_parameter_consistency(params)
-        assert not result.is_valid
-        assert "gc_min cannot be greater than gc_max" in result.errors[0]
+        # Model-level validation should raise before any utility checks
+        with pytest.raises(
+            pydantic_core._pydantic_core.ValidationError, match="gc_max must be greater than or equal to gc_min"
+        ):
+            _ = FilterCriteria(gc_min=60.0, gc_max=40.0)
 
     def test_validate_candidate_consistency_valid(self):
         """Test candidate consistency validation with valid candidate."""
