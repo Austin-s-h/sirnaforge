@@ -1,5 +1,4 @@
 # Enhanced Data Validation System
------
 
 - What it does: Keeps your inputs, intermediate data, and outputs sane using Pydantic + Pandera.
 - How to use: Pick a preset (development, production, performance) and pass `ValidationConfig` into your `WorkflowConfig`.
