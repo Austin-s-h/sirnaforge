@@ -5,8 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 from sirnaforge.data.base import (
-    BaseEnsemblClient,
-    DatabaseType,
+    AbstractDatabaseClient,
     SequenceType,
     SequenceUtils,
     TranscriptInfo,
@@ -50,12 +49,17 @@ class SequenceAnalysis(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
 
-class ORFAnalyzer(BaseEnsemblClient):
+class ORFAnalyzer:
     """Analyze ORFs in transcript sequences and validate sequence types."""
 
-    def __init__(self, timeout: int = 30):
-        """Initialize ORF analyzer."""
-        super().__init__(timeout=timeout)
+    def __init__(self, database_client: Optional[AbstractDatabaseClient] = None):
+        """
+        Initialize ORF analyzer.
+
+        Args:
+            database_client: Optional database client for retrieving additional sequence types
+        """
+        self.database_client = database_client
 
         # Genetic code (standard)
         self.start_codons = {"ATG"}
@@ -188,9 +192,26 @@ class ORFAnalyzer(BaseEnsemblClient):
 
         return protein
 
-    async def get_sequence_from_ensembl(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
-        """Retrieve specific sequence type from Ensembl using inherited method."""
-        return await self.get_sequence(transcript_id, sequence_type)
+    async def get_additional_sequence(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
+        """
+        Retrieve specific sequence type using the database client if available.
+
+        Args:
+            transcript_id: Transcript identifier
+            sequence_type: Type of sequence to retrieve
+
+        Returns:
+            Sequence string or None if not available or client not provided
+        """
+        if not self.database_client:
+            logger.debug(f"No database client available to retrieve {sequence_type} for {transcript_id}")
+            return None
+
+        try:
+            return await self.database_client.get_sequence(transcript_id, sequence_type)
+        except Exception as e:
+            logger.warning(f"Failed to retrieve {sequence_type} for {transcript_id}: {e}")
+            return None
 
     async def analyze_transcript(self, transcript: TranscriptInfo) -> SequenceAnalysis:
         """Perform complete ORF analysis of a transcript."""
@@ -207,24 +228,20 @@ class ORFAnalyzer(BaseEnsemblClient):
         longest_orf = orfs[0] if orfs else None
         has_valid_orf = longest_orf is not None and longest_orf.is_complete
 
-        # Try to get CDS and protein sequences from Ensembl for comparison
+        # Try to get CDS and protein sequences for comparison (database-agnostic)
         cds_sequence = None
         protein_sequence = None
 
-        if transcript.database == DatabaseType.ENSEMBL:
-            try:
-                cds_sequence = await self.get_sequence_from_ensembl(transcript.transcript_id, SequenceType.CDS)
-                protein_sequence = await self.get_sequence_from_ensembl(transcript.transcript_id, SequenceType.PROTEIN)
+        if self.database_client:
+            cds_sequence = await self.get_additional_sequence(transcript.transcript_id, SequenceType.CDS)
+            protein_sequence = await self.get_additional_sequence(transcript.transcript_id, SequenceType.PROTEIN)
 
-                if cds_sequence:
-                    logger.info(f"Retrieved CDS sequence for {transcript.transcript_id} (length: {len(cds_sequence)})")
-                if protein_sequence:
-                    logger.info(
-                        f"Retrieved protein sequence for {transcript.transcript_id} (length: {len(protein_sequence)})"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Could not retrieve additional sequences for {transcript.transcript_id}: {e}")
+            if cds_sequence:
+                logger.info(f"Retrieved CDS sequence for {transcript.transcript_id} (length: {len(cds_sequence)})")
+            if protein_sequence:
+                logger.info(
+                    f"Retrieved protein sequence for {transcript.transcript_id} (length: {len(protein_sequence)})"
+                )
 
         # Determine sequence type based on analysis
         sequence_type = self._determine_sequence_type(transcript, cds_sequence, orfs)
@@ -331,13 +348,48 @@ class ORFAnalyzer(BaseEnsemblClient):
 
 
 # Convenience functions
-async def analyze_transcript_orfs(transcript: TranscriptInfo) -> SequenceAnalysis:
-    """Analyze ORFs in a single transcript."""
-    analyzer = ORFAnalyzer()
+def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None) -> ORFAnalyzer:
+    """
+    Create an ORF analyzer with optional database client.
+
+    Args:
+        database_client: Optional database client for retrieving additional sequence types
+
+    Returns:
+        ORFAnalyzer instance
+    """
+    return ORFAnalyzer(database_client=database_client)
+
+
+async def analyze_transcript_orfs(
+    transcript: TranscriptInfo, database_client: Optional[AbstractDatabaseClient] = None
+) -> SequenceAnalysis:
+    """
+    Analyze ORFs in a single transcript.
+
+    Args:
+        transcript: Transcript to analyze
+        database_client: Optional database client for additional sequence retrieval
+
+    Returns:
+        SequenceAnalysis result
+    """
+    analyzer = create_orf_analyzer(database_client)
     return await analyzer.analyze_transcript(transcript)
 
 
-async def analyze_multiple_transcript_orfs(transcripts: list[TranscriptInfo]) -> dict[str, SequenceAnalysis]:
-    """Analyze ORFs in multiple transcripts."""
-    analyzer = ORFAnalyzer()
+async def analyze_multiple_transcript_orfs(
+    transcripts: list[TranscriptInfo], database_client: Optional[AbstractDatabaseClient] = None
+) -> dict[str, SequenceAnalysis]:
+    """
+    Analyze ORFs in multiple transcripts.
+
+    Args:
+        transcripts: List of transcripts to analyze
+        database_client: Optional database client for additional sequence retrieval
+
+    Returns:
+        Dictionary mapping transcript IDs to SequenceAnalysis results
+    """
+    analyzer = create_orf_analyzer(database_client)
     return await analyzer.analyze_transcripts(transcripts)

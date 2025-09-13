@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 from rich.console import Console
 from rich.progress import Progress
 
@@ -26,9 +27,11 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.models.schemas import ORFValidationSchema
 from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
 logger = get_logger(__name__)
 console = Console()
@@ -47,6 +50,7 @@ class WorkflowConfig:
         top_n_for_offtarget: int = 10,
         nextflow_config: Optional[dict] = None,
         genome_species: Optional[list[str]] = None,
+        validation_config: Optional[ValidationConfig] = None,
         log_file: Optional[str] = None,
     ):
         self.output_dir = Path(output_dir)
@@ -58,6 +62,7 @@ class WorkflowConfig:
         self.top_n_for_offtarget = top_n_for_offtarget
         self.nextflow_config = nextflow_config or {}
         self.genome_species = genome_species or ["human", "rat", "rhesus"]
+        self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
 
         # Create output structure
@@ -66,6 +71,7 @@ class WorkflowConfig:
         (self.output_dir / "orf_reports").mkdir(exist_ok=True)
         (self.output_dir / "sirnaforge").mkdir(exist_ok=True)
         (self.output_dir / "off_target").mkdir(exist_ok=True)
+        (self.output_dir / "validation").mkdir(exist_ok=True)
 
 
 class SiRNAWorkflow:
@@ -75,6 +81,7 @@ class SiRNAWorkflow:
         self.config = config
         self.gene_searcher = GeneSearcher()
         self.orf_analyzer = ORFAnalyzer()
+        self.validation = ValidationMiddleware(config.validation_config)
         self.sirnaforgeer = SiRNADesigner(config.design_params)
         self.results: dict = {}
 
@@ -85,6 +92,12 @@ class SiRNAWorkflow:
         console.print(f"Output Directory: [blue]{self.config.output_dir}[/blue]")
 
         start_time = time.time()
+
+        # Validate input parameters first
+        console.print("🔍 [cyan]Validating input parameters...[/cyan]")
+        param_validation = self.validation.validate_input_parameters(self.config.design_params)
+        if not param_validation.overall_result.is_valid:
+            console.print("❌ [red]Input parameter validation failed[/red]")
 
         with Progress() as progress:
             main_task = progress.add_task("[cyan]Overall Progress", total=5)
@@ -135,6 +148,10 @@ class SiRNAWorkflow:
         with summary_file.open("w") as f:
             json.dump(final_results, f, indent=2, default=str)
 
+        # Save validation report
+        validation_report_file = self.config.output_dir / "validation" / "validation_report.json"
+        self.validation.save_validation_report(validation_report_file)
+
         # Save a small manifest that records invocation parameters and environment pointers
         manifest = {
             "gene_query": self.config.gene_query,
@@ -144,6 +161,7 @@ class SiRNAWorkflow:
             "start_time": start_time,
             "end_time": time.time(),
             "tool_versions": final_results.get("design_summary", {}).get("tool_versions", {}),
+            "validation_summary": self.validation._generate_summary(),
             "log_file": self.config.log_file,  # Effective log file path if configured
         }
 
@@ -188,6 +206,12 @@ class SiRNAWorkflow:
             progress.advance(task)
 
             console.print(f"📄 Loaded {len(transcripts)} sequences from FASTA: {self.config.input_fasta}")
+            
+            # Validate transcript data
+            transcript_validation = self.validation.validate_transcripts(transcripts)
+            if transcript_validation.summary_stats.get("total_warnings", 0) > 0:
+                console.print(f"⚠️  {transcript_validation.summary_stats['total_warnings']} validation warnings found")
+            
             return transcripts
 
         # Otherwise perform a gene search
@@ -221,6 +245,12 @@ class SiRNAWorkflow:
         progress.advance(task)
 
         console.print(f"📄 Retrieved {len(protein_transcripts)} protein-coding transcripts")
+        
+        # Validate transcript data
+        transcript_validation = self.validation.validate_transcripts(protein_transcripts)
+        if transcript_validation.summary_stats.get("total_warnings", 0) > 0:
+            console.print(f"⚠️  {transcript_validation.summary_stats['total_warnings']} validation warnings found")
+        
         return protein_transcripts
 
     async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict:
@@ -266,6 +296,11 @@ class SiRNAWorkflow:
         # Run siRNA design
         design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
         progress.advance(task)
+
+        # Validate design results
+        design_validation = self.validation.validate_design_results(design_result)
+        if design_validation.summary_stats.get("total_warnings", 0) > 0:
+            console.print(f"⚠️  {design_validation.summary_stats['total_warnings']} design validation warnings")
 
         # Save design results
         results_file = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_sirna_results.csv"
@@ -520,24 +555,101 @@ class SiRNAWorkflow:
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
     def _generate_orf_report(self, orf_results: dict, report_file: Path) -> None:
-        """Generate ORF validation report."""
-        with report_file.open("w") as f:
-            f.write(f"ORF Validation Report for {self.config.gene_query}\n")
-            f.write("=" * 60 + "\n\n")
+        """Generate ORF validation report in tab-delimited format with schema validation."""
+        # Handle empty results case
+        if not orf_results:
+            logger.warning("No ORF results to report - creating empty report file")
+            report_file.parent.mkdir(parents=True, exist_ok=True)
+            # Create empty DataFrame with required columns for schema validation
+            empty_df = pd.DataFrame(
+                columns=[
+                    "transcript_id",
+                    "sequence_length",
+                    "gc_content",
+                    "orfs_found",
+                    "has_valid_orf",
+                    "longest_orf_start",
+                    "longest_orf_end",
+                    "longest_orf_length",
+                    "longest_orf_frame",
+                    "start_codon",
+                    "stop_codon",
+                    "orf_gc_content",
+                ]
+            )
+            # Set correct dtypes to match schema - using Any types for nullable fields
+            empty_df = empty_df.astype(
+                {
+                    "transcript_id": str,
+                    "sequence_length": "Int64",
+                    "gc_content": float,
+                    "orfs_found": "Int64",
+                    "has_valid_orf": bool,
+                    "longest_orf_start": 'object',
+                    "longest_orf_end": 'object',
+                    "longest_orf_length": 'object',
+                    "longest_orf_frame": 'object',
+                    "start_codon": 'object',
+                    "stop_codon": 'object',
+                    "orf_gc_content": 'object',
+                }
+            )
+            validated_df = ORFValidationSchema.validate(empty_df)
+            validated_df.to_csv(report_file, sep="\t", index=False)
+            return
 
-            valid_count = sum(1 for r in orf_results.values() if r.has_valid_orf)
-            f.write(f"Summary: {valid_count}/{len(orf_results)} transcripts have valid ORFs\n\n")
+        # Prepare data for DataFrame
+        rows = []
+        for transcript_id, analysis in orf_results.items():
+            row_data = {
+                "transcript_id": transcript_id,
+                "sequence_length": analysis.sequence_length,
+                "gc_content": analysis.gc_content,
+                "orfs_found": len(analysis.orfs),
+                "has_valid_orf": analysis.has_valid_orf,
+            }
 
-            for transcript_id, analysis in orf_results.items():
-                f.write(f"Transcript: {transcript_id}\n")
-                f.write(f"  Sequence Length: {analysis.sequence_length} bp\n")
-                f.write(f"  GC Content: {analysis.gc_content:.1f}%\n")
-                f.write(f"  ORFs Found: {len(analysis.orfs)}\n")
-                f.write(f"  Valid ORF: {'✓' if analysis.has_valid_orf else '✗'}\n")
-                if analysis.longest_orf:
-                    orf = analysis.longest_orf
-                    f.write(f"  Longest ORF: {orf.start_pos}-{orf.end_pos} ({orf.length} bp)\n")
-                f.write("\n")
+            if analysis.longest_orf:
+                orf = analysis.longest_orf
+                row_data.update(
+                    {
+                        "longest_orf_start": orf.start_pos,
+                        "longest_orf_end": orf.end_pos,
+                        "longest_orf_length": orf.length,
+                        "longest_orf_frame": orf.reading_frame,
+                        "start_codon": orf.start_codon,
+                        "stop_codon": orf.stop_codon,
+                        "orf_gc_content": orf.gc_content,
+                    }
+                )
+            else:
+                row_data.update(
+                    {
+                        "longest_orf_start": None,
+                        "longest_orf_end": None,
+                        "longest_orf_length": None,
+                        "longest_orf_frame": None,
+                        "start_codon": None,
+                        "stop_codon": None,
+                        "orf_gc_content": None,
+                    }
+                )
+            rows.append(row_data)
+
+        # Create DataFrame and validate with pandera - let failures bubble up
+        df = pd.DataFrame(rows)
+        logger.debug(f"Validating ORF report DataFrame with {len(df)} rows")
+        
+        # Validate DataFrame with our validation middleware
+        orf_validation = self.validation.validate_dataframe_output(df, "orf_validation")
+        if not orf_validation.overall_result.is_valid:
+            logger.warning(f"ORF DataFrame validation issues: {len(orf_validation.overall_result.errors)} errors")
+        
+        validated_df = ORFValidationSchema.validate(df)
+        logger.info(f"ORF report schema validation passed for {len(validated_df)} transcripts")
+
+        # Write validated DataFrame to file
+        validated_df.to_csv(report_file, sep="\t", index=False)
 
     def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:
         """Generate siRNA candidate summary report."""

@@ -2,13 +2,14 @@
 
 # Configure environment for ASCII compatibility before importing typer/rich
 import os
-os.environ.setdefault('FORCE_COLOR', '0')
-os.environ.setdefault('NO_COLOR', '1')
-os.environ.setdefault('TERM', 'dumb')
+
+os.environ.setdefault("FORCE_COLOR", "0")
+os.environ.setdefault("NO_COLOR", "1")
+os.environ.setdefault("TERM", "dumb")
 
 import asyncio
 from pathlib import Path
-from typing import Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 import typer
 from Bio import SeqIO
@@ -20,22 +21,28 @@ from rich.table import Table
 # Monkey patch Rich's console detection to force ASCII
 try:
     import rich.console
+
     # Override the Rich console's is_terminal property to force ASCII mode
     original_init = rich.console.Console.__init__
-    
-    def patched_init(self, *args, **kwargs):
-        kwargs['legacy_windows'] = True
-        kwargs['force_terminal'] = False
+
+    def patched_init(self: "rich.console.Console", *args: Any, **kwargs: Any) -> None:
+        kwargs["legacy_windows"] = True
+        kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
-    
-    rich.console.Console.__init__ = patched_init
+
+    rich.console.Console.__init__ = patched_init  # noqa
 except Exception:
     pass
 
 from sirnaforge import __author__, __version__
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType
-from sirnaforge.data.gene_search import GeneSearcher, search_gene_sync, search_multiple_databases_sync
+from sirnaforge.data.gene_search import (
+    GeneSearcher,
+    search_gene_sync,
+    search_gene_with_fallback_sync,
+    search_multiple_databases_sync,
+)
 from sirnaforge.models.sirna import DesignParameters, FilterCriteria
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
@@ -110,6 +117,11 @@ def search(  # noqa: PLR0912
         "-a",
         help="Search all databases",
     ),
+    fallback: bool = typer.Option(
+        True,
+        "--fallback/--no-fallback",
+        help="Enable automatic fallback to other databases if access is blocked",
+    ),
     no_sequence: bool = typer.Option(
         False,
         "--no-sequence",
@@ -161,6 +173,7 @@ def search(  # noqa: PLR0912
                 f"🧬 [bold blue]Gene Search[/bold blue]\n"
                 f"Query: [cyan]{query}[/cyan]\n"
                 f"Database: [yellow]{database}[/yellow]\n"
+                f"Fallback: [green]{'enabled' if fallback else 'disabled'}[/green]\n"
                 f"Output: [cyan]{output}[/cyan]\n"
                 f"Types: [green]{transcript_types}[/green]\n"
                 f"Exclude: [red]{exclude_types}[/red]",
@@ -182,6 +195,9 @@ def search(  # noqa: PLR0912
                 results = search_multiple_databases_sync(
                     query=query, databases=list(DatabaseType), include_sequence=not no_sequence
                 )
+            elif fallback:
+                progress.add_task("Searching with fallback...", total=None)
+                results = [search_gene_with_fallback_sync(query=query, include_sequence=not no_sequence)]
             else:
                 progress.add_task(f"Searching {database}...", total=None)
                 results = [search_gene_sync(query=query, database=db_type, include_sequence=not no_sequence)]

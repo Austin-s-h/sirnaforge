@@ -7,11 +7,15 @@ from typing import Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from sirnaforge.data.base import (
-    BaseEnsemblClient,
+    AbstractDatabaseClient,
+    DatabaseAccessError,
     DatabaseType,
+    EnsemblClient,
     FastaUtils,
+    GencodeClient,
     GeneInfo,
-    SequenceType,
+    GeneNotFoundError,
+    RefSeqClient,
     TranscriptInfo,
     get_database_display_name,
 )
@@ -28,6 +32,7 @@ class GeneSearchResult(BaseModel):
     gene_info: Optional[GeneInfo] = None
     transcripts: list[TranscriptInfo] = Field(default_factory=list)
     error: Optional[str] = None
+    is_access_error: bool = False  # True if error was due to access/network issues
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -37,31 +42,83 @@ class GeneSearchResult(BaseModel):
         return self.gene_info is not None and len(self.transcripts) > 0
 
 
-class GeneSearcher(BaseEnsemblClient):
-    """Search genes and retrieve sequences from genomic databases."""
+class GeneSearcher:
+    """Search genes and retrieve sequences from genomic databases using multiple clients."""
 
-    def __init__(self, preferred_db: DatabaseType = DatabaseType.ENSEMBL, timeout: int = 30, max_retries: int = 3):
+    def __init__(self, timeout: int = 30, max_retries: int = 3):
         """
-        Initialize gene searcher.
+        Initialize gene searcher with database clients.
 
         Args:
-            preferred_db: Preferred database for searches
             timeout: Request timeout in seconds
             max_retries: Maximum retry attempts
         """
-        super().__init__(timeout=timeout)
-        self.preferred_db = preferred_db
+        self.timeout = timeout
         self.max_retries = max_retries
 
-        # Database-specific configurations
-        self.db_configs = {
-            DatabaseType.ENSEMBL: {"base_url": "https://rest.ensembl.org", "species": "homo_sapiens"},
-            DatabaseType.REFSEQ: {
-                "base_url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
-                "database": "nucleotide",
-            },
-            DatabaseType.GENCODE: {"base_url": "https://www.gencodegenes.org", "version": "44"},
+        # Initialize database clients
+        self.clients: dict[DatabaseType, AbstractDatabaseClient] = {
+            DatabaseType.ENSEMBL: EnsemblClient(timeout=timeout),
+            DatabaseType.REFSEQ: RefSeqClient(timeout=timeout),
+            DatabaseType.GENCODE: GencodeClient(timeout=timeout),
         }
+
+    def get_client(self, database: DatabaseType) -> AbstractDatabaseClient:
+        """Get the client for a specific database."""
+        return self.clients[database]
+
+    async def search_gene_with_fallback(self, query: str, include_sequence: bool = True) -> GeneSearchResult:
+        """
+        Search for a gene with automatic fallback to other databases.
+
+        Tries databases in order: Ensembl -> RefSeq -> GENCODE
+        Falls back to next database only if access is blocked (not if gene is not found).
+
+        Args:
+            query: Gene ID, gene name, or transcript ID
+            include_sequence: Whether to fetch transcript sequences
+
+        Returns:
+            GeneSearchResult from the first accessible database
+        """
+        databases_to_try = [DatabaseType.ENSEMBL, DatabaseType.REFSEQ, DatabaseType.GENCODE]
+
+        for db in databases_to_try:
+            logger.info(f"Searching for '{query}' in {get_database_display_name(db)}")
+
+            try:
+                result = await self.search_gene(query, db, include_sequence)
+                if result.success:
+                    logger.info(f"Successfully found '{query}' in {get_database_display_name(db)}")
+                    return result
+                if result.is_access_error:
+                    # Access error - try next database
+                    logger.warning(f"Access blocked to {get_database_display_name(db)}: {result.error}")
+                    continue
+                if result.error and "not yet implemented" in result.error:
+                    # Implementation missing - try next database
+                    logger.info(f"{get_database_display_name(db)} search not implemented, trying next database")
+                    continue
+                # Gene not found in this database, but database is accessible
+                # Continue to next database to see if gene exists there
+                logger.info(f"Gene '{query}' not found in {get_database_display_name(db)}, trying next database")
+                continue
+
+            except DatabaseAccessError as e:
+                logger.warning(f"Access blocked to {get_database_display_name(db)}: {e}")
+                # Try next database
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error searching {get_database_display_name(db)}: {e}")
+                # Try next database
+                continue
+
+        # If we get here, all databases failed or gene not found anywhere
+        return GeneSearchResult(
+            query=query,
+            database=DatabaseType.ENSEMBL,  # Default to first attempted
+            error=f"Gene '{query}' not found in any accessible database",
+        )
 
     async def search_gene(
         self, query: str, database: Optional[DatabaseType] = None, include_sequence: bool = True
@@ -71,28 +128,31 @@ class GeneSearcher(BaseEnsemblClient):
 
         Args:
             query: Gene ID, gene name, or transcript ID
-            database: Database to search (defaults to preferred_db)
+            database: Database to search (defaults to Ensembl)
             include_sequence: Whether to fetch transcript sequences
 
         Returns:
             GeneSearchResult with gene info and transcripts
         """
-        db = database or self.preferred_db
+        db = database or DatabaseType.ENSEMBL
 
         logger.info(f"Searching for '{query}' in {get_database_display_name(db)}")
 
         try:
-            if db == DatabaseType.ENSEMBL:
-                return await self._search_ensembl(query, include_sequence)
-            if db == DatabaseType.REFSEQ:
-                return await self._search_refseq(query, include_sequence)
-            if db == DatabaseType.GENCODE:
-                return await self._search_gencode(query, include_sequence)
-            raise ValueError(f"Unsupported database: {db}")
+            client = self.get_client(db)
+            gene_info, transcripts = await client.search_gene(query, include_sequence)
 
+            return GeneSearchResult(query=query, database=db, gene_info=gene_info, transcripts=transcripts)
+
+        except DatabaseAccessError as e:
+            logger.warning(f"Access error for '{query}' in {get_database_display_name(db)}: {e}")
+            return GeneSearchResult(query=query, database=db, error=str(e), is_access_error=True)
+        except GeneNotFoundError as e:
+            logger.info(f"Gene '{query}' not found in {get_database_display_name(db)}")
+            return GeneSearchResult(query=query, database=db, error=str(e), is_access_error=False)
         except Exception as e:
             logger.error(f"Search failed for '{query}' in {get_database_display_name(db)}: {e}")
-            return GeneSearchResult(query=query, database=db, error=str(e))
+            return GeneSearchResult(query=query, database=db, error=str(e), is_access_error=False)
 
     async def search_multiple_databases(
         self, query: str, databases: Optional[list[DatabaseType]] = None, include_sequence: bool = True
@@ -129,98 +189,6 @@ class GeneSearcher(BaseEnsemblClient):
                 )
 
         return processed_results
-
-    async def _search_ensembl(self, query: str, include_sequence: bool) -> GeneSearchResult:
-        """Search Ensembl database."""
-        # First, try to resolve the query to a gene
-        gene_info = await self._ensembl_lookup_gene(query)
-
-        if not gene_info:
-            return GeneSearchResult(query=query, database=DatabaseType.ENSEMBL, error=f"Gene not found: {query}")
-
-        # Get all transcripts for the gene
-        transcripts = await self._ensembl_get_transcripts(gene_info.gene_id, include_sequence)
-
-        return GeneSearchResult(
-            query=query, database=DatabaseType.ENSEMBL, gene_info=gene_info, transcripts=transcripts
-        )
-
-    async def _ensembl_lookup_gene(self, query: str) -> Optional[GeneInfo]:
-        """Look up gene information in Ensembl using inherited method."""
-        data = await self.lookup_gene(query)
-
-        if not data:
-            return None
-
-        return GeneInfo(
-            gene_id=data.get("id", query),
-            gene_name=data.get("display_name"),
-            gene_type=data.get("biotype"),
-            chromosome=data.get("seq_region_name"),
-            start=data.get("start"),
-            end=data.get("end"),
-            strand=data.get("strand"),
-            description=data.get("description"),
-            database=DatabaseType.ENSEMBL,
-        )
-
-    async def _ensembl_get_transcripts(self, gene_id: str, include_sequence: bool) -> list[TranscriptInfo]:
-        """Get all transcripts for a gene from Ensembl using inherited lookup method."""
-        transcripts: list[TranscriptInfo] = []
-
-        try:
-            # Get transcript list with expansion
-            data = await self.lookup_gene(gene_id, expand=True)
-
-            if not data:
-                logger.error(f"Failed to get transcript data for {gene_id}")
-                return transcripts
-
-            transcript_data = data.get("Transcript", [])
-
-            for transcript in transcript_data:
-                transcript_id = transcript.get("id")
-                if not transcript_id:
-                    continue
-
-                sequence = None
-                if include_sequence:
-                    sequence = await self._ensembl_get_sequence(transcript_id)
-
-                transcripts.append(
-                    TranscriptInfo(
-                        transcript_id=transcript_id,
-                        transcript_name=transcript.get("display_name"),
-                        transcript_type=transcript.get("biotype"),
-                        gene_id=gene_id,
-                        gene_name=data.get("display_name"),
-                        sequence=sequence,
-                        length=len(sequence) if sequence else None,
-                        database=DatabaseType.ENSEMBL,
-                        is_canonical=transcript.get("is_canonical", False),
-                    )
-                )
-
-        except Exception as e:
-            logger.error(f"Failed to get transcripts for {gene_id}: {e}")
-
-        return transcripts
-
-    async def _ensembl_get_sequence(self, transcript_id: str) -> Optional[str]:
-        """Get transcript sequence from Ensembl using inherited method."""
-        return await self.get_sequence(transcript_id, SequenceType.CDNA)
-
-    async def _search_refseq(self, query: str, include_sequence: bool) -> GeneSearchResult:  # noqa: ARG002
-        """Search RefSeq database via NCBI E-utilities."""
-        # This is a placeholder - would implement NCBI E-utilities API calls
-        # include_sequence parameter kept for interface consistency
-        return GeneSearchResult(query=query, database=DatabaseType.REFSEQ, error="RefSeq search not yet implemented")
-
-    async def _search_gencode(self, query: str, include_sequence: bool) -> GeneSearchResult:  # noqa: ARG002
-        """Search GENCODE database."""
-        # This is a placeholder - would implement GENCODE API calls
-        # include_sequence parameter kept for interface consistency
-        return GeneSearchResult(query=query, database=DatabaseType.GENCODE, error="GENCODE search not yet implemented")
 
     def save_transcripts_fasta(
         self, transcripts: list[TranscriptInfo], output_path: Union[str, Path], include_metadata: bool = True
@@ -270,6 +238,12 @@ def search_gene_sync(
     """Synchronous wrapper for gene search."""
     searcher = GeneSearcher()
     return asyncio.run(searcher.search_gene(query, database, include_sequence))
+
+
+def search_gene_with_fallback_sync(query: str, include_sequence: bool = True) -> GeneSearchResult:
+    """Synchronous wrapper for gene search with fallback."""
+    searcher = GeneSearcher()
+    return asyncio.run(searcher.search_gene_with_fallback(query, include_sequence))
 
 
 def search_multiple_databases_sync(
