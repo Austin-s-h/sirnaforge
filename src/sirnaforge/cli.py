@@ -30,7 +30,7 @@ try:
         kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
 
-    rich.console.Console.__init__ = patched_init  # noqa
+    rich.console.Console.__init__ = patched_init  # type: ignore
 except Exception:
     pass
 

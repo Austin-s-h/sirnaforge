@@ -206,12 +206,12 @@ class SiRNAWorkflow:
             progress.advance(task)
 
             console.print(f"📄 Loaded {len(transcripts)} sequences from FASTA: {self.config.input_fasta}")
-            
+
             # Validate transcript data
             transcript_validation = self.validation.validate_transcripts(transcripts)
             if transcript_validation.summary_stats.get("total_warnings", 0) > 0:
                 console.print(f"⚠️  {transcript_validation.summary_stats['total_warnings']} validation warnings found")
-            
+
             return transcripts
 
         # Otherwise perform a gene search
@@ -245,12 +245,12 @@ class SiRNAWorkflow:
         progress.advance(task)
 
         console.print(f"📄 Retrieved {len(protein_transcripts)} protein-coding transcripts")
-        
+
         # Validate transcript data
         transcript_validation = self.validation.validate_transcripts(protein_transcripts)
         if transcript_validation.summary_stats.get("total_warnings", 0) > 0:
             console.print(f"⚠️  {transcript_validation.summary_stats['total_warnings']} validation warnings found")
-        
+
         return protein_transcripts
 
     async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict:
@@ -585,13 +585,13 @@ class SiRNAWorkflow:
                     "gc_content": float,
                     "orfs_found": "Int64",
                     "has_valid_orf": bool,
-                    "longest_orf_start": 'object',
-                    "longest_orf_end": 'object',
-                    "longest_orf_length": 'object',
-                    "longest_orf_frame": 'object',
-                    "start_codon": 'object',
-                    "stop_codon": 'object',
-                    "orf_gc_content": 'object',
+                    "longest_orf_start": "object",
+                    "longest_orf_end": "object",
+                    "longest_orf_length": "object",
+                    "longest_orf_frame": "object",
+                    "start_codon": "object",
+                    "stop_codon": "object",
+                    "orf_gc_content": "object",
                 }
             )
             validated_df = ORFValidationSchema.validate(empty_df)
@@ -639,12 +639,12 @@ class SiRNAWorkflow:
         # Create DataFrame and validate with pandera - let failures bubble up
         df = pd.DataFrame(rows)
         logger.debug(f"Validating ORF report DataFrame with {len(df)} rows")
-        
+
         # Validate DataFrame with our validation middleware
         orf_validation = self.validation.validate_dataframe_output(df, "orf_validation")
         if not orf_validation.overall_result.is_valid:
             logger.warning(f"ORF DataFrame validation issues: {len(orf_validation.overall_result.errors)} errors")
-        
+
         validated_df = ORFValidationSchema.validate(df)
         logger.info(f"ORF report schema validation passed for {len(validated_df)} transcripts")
 

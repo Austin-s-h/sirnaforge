@@ -10,12 +10,18 @@ Use schemas: MySchema.validate(df) - validation errors provide detailed feedback
 """
 
 import re
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import pandas as pd
 import pandera.pandas as pa
 from pandera.pandas import DataFrameModel, Field
 from pandera.typing.pandas import Series
+
+# Typed alias for pandera's dataframe_check decorator to satisfy mypy
+F = TypeVar("F", bound=Callable[..., Any])
+# Ignore mypy type issues for this assignment; pandera's dataframe_check has an incompatible
+# callable signature that is difficult to express to mypy here.
+dataframe_check_typed: Callable[[F], F] = pa.dataframe_check  # type: ignore
 
 
 # Custom validation functions for bioinformatics data
@@ -99,16 +105,14 @@ class SiRNACandidateSchema(DataFrameModel):
     # Quality control
     passes_filters: Series[bool] = Field(description="Whether candidate passes quality filters")
 
-    @pa.dataframe_check
+    @dataframe_check_typed
     def check_sequence_lengths(cls, df: pd.DataFrame) -> bool:
         """Validate siRNA sequence lengths are in acceptable range."""
         guide_lengths = df["guide_sequence"].str.len()
         passenger_lengths = df["passenger_sequence"].str.len()
-        return bool(
-            guide_lengths.between(19, 23).all() and passenger_lengths.between(19, 23).all()
-        )
+        return bool(guide_lengths.between(19, 23).all() and passenger_lengths.between(19, 23).all())
 
-    @pa.dataframe_check
+    @dataframe_check_typed
     def check_nucleotide_sequences(cls, df: pd.DataFrame) -> bool:
         """Validate sequences contain only valid nucleotide bases (DNA or RNA)."""
         guide_valid = df["guide_sequence"].str.match(r"^[ATCGU]+$").all()

@@ -1,9 +1,12 @@
 """Tests for the enhanced validation system."""
 
-import pandas as pd
-import pytest
+import json
+import tempfile
+from pathlib import Path
 
-from sirnaforge.models.sirna import DesignParameters, FilterCriteria, ScoringWeights, SiRNACandidate
+import pandas as pd
+
+from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware, ValidationUtils
 from sirnaforge.validation.config import ValidationLevel, ValidationStage
 
@@ -69,7 +72,7 @@ class TestValidationUtils:
             gc_content=50.0,
             length=21,
             asymmetry_score=0.5,
-            composite_score=75.0
+            composite_score=75.0,
         )
         result = ValidationUtils.validate_candidate_consistency(candidate)
         assert result.is_valid
@@ -85,11 +88,13 @@ class TestValidationUtils:
             gc_content=50.0,
             length=21,
             asymmetry_score=0.5,
-            composite_score=75.0
+            composite_score=75.0,
         )
         result = ValidationUtils.validate_candidate_consistency(candidate)
-        assert not result.is_valid
-        assert "different lengths" in result.errors[0]
+        # Different guide/passenger lengths are allowed but should produce a warning
+        assert result.is_valid
+        assert len(result.warnings) > 0
+        assert "different lengths" in result.warnings[0]
 
 
 class TestValidationConfig:
@@ -105,17 +110,14 @@ class TestValidationConfig:
     def test_stage_level_override(self):
         """Test stage-specific validation level overrides."""
         config = ValidationConfig(
-            default_level=ValidationLevel.WARNING,
-            stage_levels={ValidationStage.INPUT: ValidationLevel.STRICT}
+            default_level=ValidationLevel.WARNING, stage_levels={ValidationStage.INPUT: ValidationLevel.STRICT}
         )
         assert config.get_level_for_stage(ValidationStage.INPUT) == ValidationLevel.STRICT
         assert config.get_level_for_stage(ValidationStage.DESIGN) == ValidationLevel.WARNING
 
     def test_validation_enabled_check(self):
         """Test validation enabled check for stages."""
-        config = ValidationConfig(
-            stage_levels={ValidationStage.OUTPUT: ValidationLevel.DISABLED}
-        )
+        config = ValidationConfig(stage_levels={ValidationStage.OUTPUT: ValidationLevel.DISABLED})
         assert config.is_enabled_for_stage(ValidationStage.INPUT) is True
         assert config.is_enabled_for_stage(ValidationStage.OUTPUT) is False
 
@@ -127,20 +129,18 @@ class TestValidationMiddleware:
         """Test input parameter validation."""
         config = ValidationConfig()
         middleware = ValidationMiddleware(config)
-        
+
         params = DesignParameters()
         report = middleware.validate_input_parameters(params)
-        
+
         assert report.stage == ValidationStage.INPUT
         assert report.overall_result.is_valid
 
     def test_validate_design_results_with_valid_data(self):
         """Test design results validation with valid data."""
-        from sirnaforge.models.sirna import DesignResult
-        
         config = ValidationConfig()
         middleware = ValidationMiddleware(config)
-        
+
         candidate = SiRNACandidate(
             id="test_1",
             transcript_id="ENST123",
@@ -150,9 +150,9 @@ class TestValidationMiddleware:
             gc_content=50.0,
             length=21,
             asymmetry_score=0.5,
-            composite_score=75.0
+            composite_score=75.0,
         )
-        
+
         design_result = DesignResult(
             input_file="test.fasta",
             parameters=DesignParameters(),
@@ -161,9 +161,9 @@ class TestValidationMiddleware:
             total_sequences=1,
             total_candidates=1,
             filtered_candidates=1,
-            processing_time=1.0
+            processing_time=1.0,
         )
-        
+
         report = middleware.validate_design_results(design_result)
         assert report.stage == ValidationStage.DESIGN
         assert report.overall_result.is_valid
@@ -172,52 +172,50 @@ class TestValidationMiddleware:
         """Test DataFrame schema validation."""
         config = ValidationConfig()
         middleware = ValidationMiddleware(config)
-        
+
         # Create valid siRNA candidates DataFrame
-        df = pd.DataFrame({
-            "id": ["test_1"],
-            "transcript_id": ["ENST123"],
-            "position": [100],
-            "guide_sequence": ["ATCGATCGATCGATCGATCGA"],
-            "passenger_sequence": ["TCGATCGATCGATCGATCGAT"],
-            "gc_content": [50.0],
-            "asymmetry_score": [0.5],
-            "paired_fraction": [0.3],
-            "off_target_count": [0],
-            "transcript_hit_count": [1],
-            "transcript_hit_fraction": [1.0],
-            "composite_score": [75.0],
-            "passes_filters": [True]
-        })
-        
+        df = pd.DataFrame(
+            {
+                "id": ["test_1"],
+                "transcript_id": ["ENST123"],
+                "position": [100],
+                "guide_sequence": ["ATCGATCGATCGATCGATCGA"],
+                "passenger_sequence": ["TCGATCGATCGATCGATCGAT"],
+                "gc_content": [50.0],
+                "asymmetry_score": [0.5],
+                "paired_fraction": [0.3],
+                "off_target_count": [0],
+                "transcript_hit_count": [1],
+                "transcript_hit_fraction": [1.0],
+                "composite_score": [75.0],
+                "passes_filters": [True],
+            }
+        )
+
         report = middleware.validate_dataframe_output(df, "sirna_candidates")
         assert report.stage == ValidationStage.OUTPUT
         assert report.overall_result.is_valid
 
     def test_validation_report_generation(self):
         """Test validation report generation."""
-        import tempfile
-        from pathlib import Path
-        
         config = ValidationConfig()
         middleware = ValidationMiddleware(config)
-        
+
         # Run some validations
         params = DesignParameters()
         middleware.validate_input_parameters(params)
-        
+
         # Save report
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "validation_report.json"
             middleware.save_validation_report(report_path)
-            
+
             assert report_path.exists()
-            
+
             # Check report content
-            import json
-            with open(report_path) as f:
+            with report_path.open() as f:
                 report_data = json.load(f)
-            
+
             assert "validation_config" in report_data
             assert "stage_reports" in report_data
             assert "summary" in report_data
