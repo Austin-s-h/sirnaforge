@@ -16,7 +16,7 @@ By the end of this tutorial, you will:
 - Basic familiarity with command-line interfaces
 - Understanding of siRNA biology (helpful but not required)
 
-## Tutorial Steps
+## Installation and Setup
 
 ### Step 1: Verify Your Installation
 
@@ -41,9 +41,20 @@ uv run sirnaforge version
 
 If you see this output, you're ready to proceed!
 
+## Basic Workflow
+
 ### Step 2: Your First siRNA Design
 
 Let's design siRNAs for the well-known tumor suppressor gene TP53:
+
+```bash
+# Create a directory for our tutorial
+mkdir sirnaforge_tutorial
+cd sirnaforge_tutorial
+
+# Run complete workflow for TP53
+uv run sirnaforge workflow TP53 --output-dir tp53_analysis --verbose
+```
 
 **Expected Structure:**
 ```
@@ -60,24 +71,8 @@ tp53_analysis/
 │   ├── workflow_stream.log         # Console output
 │   └── workflow_summary.json       # High-level summary
 └── orf_reports/
-    └── TP53_orf_validation.txt     # ORF analysis results
+  └── TP53_orf_validation.txt     # ORF analysis results
 ```
-# Create a directory for our tutorial
-mkdir sirnaforge_tutorial
-cd sirnaforge_tutorial
-
-# Run complete workflow for TP53
-uv run sirnaforge workflow TP53 --output-dir tp53_analysis --verbose
-```
-
-```bash
-# View top 10 FASTA entries for top candidates
-# Inspect top candidates from the PASS CSV
-head -n 5 tp53_analysis/sirnaforge/TP53_pass.csv
-```
-4. Designs siRNA candidates across all transcripts
-5. Scores candidates using multiple algorithms
-6. Ranks and selects top candidates
 
 ### Step 3: Explore the Results
 
@@ -86,21 +81,6 @@ After the workflow completes, examine the output structure:
 ```bash
 # Inspect top rows of passing candidates CSV (header + 5 rows)
 head -6 tp53_analysis/sirnaforge/TP53_pass.csv
-```
-**Expected Structure:**
-```
-tp53_analysis/
-├── transcripts/
-│   ├── TP53_transcripts.fasta      # All retrieved transcripts
-│   ├── TP53_canonical.fasta        # Canonical isoform only
-│   └── temp_for_design.fasta       # Transcripts used for design
-├── sirna_design/
-│   ├── TP53_all.csv                # All designed candidates
-│   ├── TP53_pass.csv               # Passing candidates only
-│   ├── TP53_top_candidates.tsv     # Top 20 candidates
-│   └── TP53_design_summary.json    # Design metadata
-└── orf_reports/
-    └── TP53_orf_validation.txt     # ORF analysis results
 ```
 
 ### Step 4: Examine Top Candidates
@@ -114,24 +94,13 @@ head -11 tp53_analysis/sirna_design/TP53_top_candidates.tsv
 
 **Key Columns to Note:**
 - `sirna_id`: Unique identifier
-```bash
-# Compare number of passing candidates
-wcl_pass_a=$(($(wc -l < tp53_analysis/sirnaforge/TP53_pass.csv)-1))
-wcl_pass_b=$(($(wc -l < tp53_strict/sirnaforge/TP53_pass.csv)-1))
-echo "PASS count (analysis): $wcl_pass_a"
-echo "PASS count (strict):   $wcl_pass_b"
 
-# Compare average GC content in PASS sets (CSV; gc_content column)
-awk -F',' 'NR>1 {sum+=$6; n++} END {if(n>0) printf("Average GC: %.2f%%\n", sum/n); else print "No rows"}' \
-  tp53_analysis/sirnaforge/TP53_pass.csv
-
-awk -F',' 'NR>1 {sum+=$6; n++} END {if(n>0) printf("Average GC: %.2f%%\n", sum/n); else print "No rows"}' \
-  tp53_strict/sirnaforge/TP53_pass.csv
-```
 ```bash
 # Sort by composite score to see the best candidates
 sort -k7 -nr tp53_analysis/sirna_design/TP53_top_candidates.tsv | head -5
 ```
+
+### Step 5: Interpret the Scores
 
 **Interpreting Scores:**
 - **Composite Score (7-10)**: Higher is better; combines all factors
@@ -139,6 +108,8 @@ sort -k7 -nr tp53_analysis/sirna_design/TP53_top_candidates.tsv | head -5
 - **GC Content (35-60%)**: Optimal range 40-55% for balance of stability and accessibility
 - **Asymmetry Score (0.65-1.0)**: Higher values indicate better guide strand selection into RISC
 - **MFE (-2 to -8 kcal/mol)**: Moderate stability preferred for effective RISC processing
+
+## Advanced Techniques
 
 ### Step 6: Customize Parameters
 
@@ -156,16 +127,18 @@ uv run sirnaforge workflow TP53 \
 
 **Compare Results:**
 ```bash
-# Compare number of candidates
-wc -l tp53_analysis/sirna_design/TP53_top_candidates.tsv
-wc -l tp53_strict/sirna_design/TP53_top_candidates.tsv
+# Compare number of passing candidates
+wcl_pass_a=$(($(wc -l < tp53_analysis/sirnaforge/TP53_pass.csv)-1))
+wcl_pass_b=$(($(wc -l < tp53_strict/sirnaforge/TP53_pass.csv)-1))
+echo "PASS count (analysis): $wcl_pass_a"
+echo "PASS count (strict):   $wcl_pass_b"
 
-# Compare average GC content
-awk -F'\t' 'NR>1 {sum+=$6; count++} END {print "Average GC:", sum/count"%"}' \
-  tp53_analysis/sirna_design/TP53_top_candidates.tsv
+# Compare average GC content in PASS sets (CSV; gc_content column)
+awk -F',' 'NR>1 {sum+=$6; n++} END {if(n>0) printf("Average GC: %.2f%%\n", sum/n); else print "No rows"}' \
+  tp53_analysis/sirnaforge/TP53_pass.csv
 
-awk -F'\t' 'NR>1 {sum+=$6; count++} END {print "Average GC:", sum/count"%"}' \
-  tp53_strict/sirna_design/TP53_top_candidates.tsv
+awk -F',' 'NR>1 {sum+=$6; n++} END {if(n>0) printf("Average GC: %.2f%%\n", sum/n); else print "No rows"}' \
+  tp53_strict/sirnaforge/TP53_pass.csv
 ```
 
 ### Step 7: Step-by-Step Workflow
@@ -218,14 +191,14 @@ Process multiple genes systematically:
 genes=("TP53" "BRCA1" "BRCA2" "EGFR" "MYC")
 
 for gene in "${genes[@]}"; do
-    echo "🧬 Processing $gene..."
-    uv run sirnaforge workflow "$gene" \
-      --output-dir "batch_${gene}" \
-      --gc-min 35 \
-      --gc-max 50 \
-      --top-n 20 \
-      --verbose
-    echo "✅ $gene completed"
+  echo "🧬 Processing $gene..."
+  uv run sirnaforge workflow "$gene" \
+    --output-dir "batch_${gene}" \
+    --gc-min 35 \
+    --gc-max 50 \
+    --top-n 20 \
+    --verbose
+  echo "✅ $gene completed"
 done
 
 # Make it executable and run
