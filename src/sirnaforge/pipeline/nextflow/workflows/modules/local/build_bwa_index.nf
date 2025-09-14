@@ -30,7 +30,7 @@ index_prefix = build_bwa_index(
     index_prefix='${species}_index'
 )
 
-print(f'Built BWA index for {species}: {index_prefix}')
+print(f'Built BWA index for ${species}: {index_prefix}')
 "
 
     cat <<-END_VERSIONS > versions.yml

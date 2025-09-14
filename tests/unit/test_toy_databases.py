@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sirnaforge.core.off_target import build_bowtie_index, build_bwa_index
+from sirnaforge.core.off_target import build_bwa_index
 from sirnaforge.data.base import FastaUtils
 
 
@@ -71,26 +71,25 @@ def test_toy_transcriptome_bwa_index_building():
 
 @pytest.mark.smoke
 @pytest.mark.skipif(
-    not Path("/usr/bin/bowtie-build").exists() and not Path("/usr/local/bin/bowtie-build").exists(),
-    reason="Bowtie not available",
+    not Path("/usr/bin/bwa-mem2").exists() and not Path("/usr/local/bin/bwa-mem2").exists(),
+    reason="BWA-MEM2 not available",
 )
-def test_toy_mirna_bowtie_index_building():
-    """Test that Bowtie index can be built from toy miRNA database."""
+def test_toy_mirna_bwa_index_building():
+    """Test that BWA-MEM2 index can be built from toy miRNA database."""
     toy_db_path = Path(__file__).parent / "data" / "toy_mirna_db.fasta"
 
     with tempfile.TemporaryDirectory() as temp_dir:
         index_prefix = str(Path(temp_dir) / "toy_mirna")
 
         # Should not crash
-        result_prefix = build_bowtie_index(str(toy_db_path), index_prefix)
+        result_prefix = build_bwa_index(str(toy_db_path), index_prefix)
         assert result_prefix == index_prefix
 
-        # Check that index files were created
-        index_files = [
-            f"{index_prefix}.{ext}" for ext in ["1.ebwt", "2.ebwt", "3.ebwt", "4.ebwt", "rev.1.ebwt", "rev.2.ebwt"]
-        ]
-        for index_file in index_files:
-            assert Path(index_file).exists(), f"Bowtie index file should exist: {index_file}"
+        # Check that BWA-MEM2 index files were created
+        index_extensions = ["0123", "amb", "ann", "bwt.2bit.64", "pac"]
+        for ext in index_extensions:
+            index_file = f"{index_prefix}.{ext}"
+            assert Path(index_file).exists(), f"BWA-MEM2 index file should exist: {index_file}"
 
 
 @pytest.mark.smoke
