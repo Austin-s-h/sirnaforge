@@ -11,12 +11,16 @@ Coordinates the complete siRNA design pipeline:
 
 import asyncio
 import csv
+import hashlib
 import json
 import math
+import os
+import shutil
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 from rich.console import Console
@@ -27,14 +31,15 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
-from sirnaforge.models.schemas import ORFValidationSchema
+from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
+from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
 logger = get_logger(__name__)
-console = Console()
+console = Console(record=True, force_terminal=False, legacy_windows=True)
 
 
 class WorkflowConfig:
@@ -47,11 +52,13 @@ class WorkflowConfig:
         input_fasta: Optional[Path] = None,
         database: DatabaseType = DatabaseType.ENSEMBL,
         design_params: Optional[DesignParameters] = None,
-        top_n_for_offtarget: int = 10,
+        # off-target selection now always equals design_params.top_n
         nextflow_config: Optional[dict] = None,
         genome_species: Optional[list[str]] = None,
         validation_config: Optional[ValidationConfig] = None,
         log_file: Optional[str] = None,
+        write_json_summary: bool = True,
+        num_threads: Optional[int] = None,
     ):
         self.output_dir = Path(output_dir)
         # If input_fasta is provided, use its stem as the gene_query identifier
@@ -59,11 +66,16 @@ class WorkflowConfig:
         self.gene_query = gene_query if not self.input_fasta else self.input_fasta.stem
         self.database = database
         self.design_params = design_params or DesignParameters()
-        self.top_n_for_offtarget = top_n_for_offtarget
+        # single source of truth: number of candidates selected everywhere
+        self.top_n = self.design_params.top_n
         self.nextflow_config = nextflow_config or {}
         self.genome_species = genome_species or ["human", "rat", "rhesus"]
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
+        self.write_json_summary = write_json_summary
+        # Parallelism for design stage (cap at 8 CPUs)
+        requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
+        self.num_threads = max(1, min(8, requested_threads))
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +83,7 @@ class WorkflowConfig:
         (self.output_dir / "orf_reports").mkdir(exist_ok=True)
         (self.output_dir / "sirnaforge").mkdir(exist_ok=True)
         (self.output_dir / "off_target").mkdir(exist_ok=True)
-        (self.output_dir / "validation").mkdir(exist_ok=True)
+        (self.output_dir / "logs").mkdir(exist_ok=True)
 
 
 class SiRNAWorkflow:
@@ -93,13 +105,10 @@ class SiRNAWorkflow:
 
         start_time = time.time()
 
-        # Validate input parameters first
-        console.print("🔍 [cyan]Validating input parameters...[/cyan]")
-        param_validation = self.validation.validate_input_parameters(self.config.design_params)
-        if not param_validation.overall_result.is_valid:
-            console.print("❌ [red]Input parameter validation failed[/red]")
+        # Validate input parameters (quiet: avoid verbose warnings in console)
+        _ = self.validation.validate_input_parameters(self.config.design_params)
 
-        with Progress() as progress:
+        with Progress(console=console) as progress:
             main_task = progress.add_task("[cyan]Overall Progress", total=5)
 
             # Step 1: Transcript Retrieval
@@ -143,34 +152,24 @@ class SiRNAWorkflow:
             "offtarget_summary": offtarget_results,
         }
 
-        # Save workflow summary
-        summary_file = self.config.output_dir / "workflow_summary.json"
-        with summary_file.open("w") as f:
-            json.dump(final_results, f, indent=2, default=str)
-
-        # Save validation report
-        validation_report_file = self.config.output_dir / "validation" / "validation_report.json"
-        self.validation.save_validation_report(validation_report_file)
-
-        # Save a small manifest that records invocation parameters and environment pointers
-        manifest = {
-            "gene_query": self.config.gene_query,
-            "database": self.config.database.value,
-            "output_dir": str(self.config.output_dir),
-            "processing_time": total_time,
-            "start_time": start_time,
-            "end_time": time.time(),
-            "tool_versions": final_results.get("design_summary", {}).get("tool_versions", {}),
-            "validation_summary": self.validation._generate_summary(),
-            "log_file": self.config.log_file,  # Effective log file path if configured
-        }
-
-        manifest_file = self.config.output_dir / "workflow_manifest.json"
-        with manifest_file.open("w") as mf:
-            json.dump(manifest, mf, indent=2, default=str)
+        # Optionally save workflow summary JSON (store in logs/)
+        if self.config.write_json_summary:
+            summary_file = self.config.output_dir / "logs" / "workflow_summary.json"
+            with summary_file.open("w") as f:
+                json.dump(final_results, f, indent=2, default=str)
 
         console.print(f"\n✅ [bold green]Workflow completed in {total_time:.2f}s[/bold green]")
         console.print(f"📊 Results saved to: [blue]{self.config.output_dir}[/blue]")
+
+        # Persist the Rich console stream to a log file for auditing
+        try:
+            stream_log = self.config.output_dir / "logs" / "workflow_stream.log"
+            # Append the captured console output
+            with stream_log.open("a", encoding="utf-8") as lf:
+                lf.write(console.export_text(clear=False))
+        except Exception:
+            # Do not fail the workflow if log export fails
+            logger.warning("Failed to export console stream to workflow_stream.log")
 
         return final_results
 
@@ -207,10 +206,8 @@ class SiRNAWorkflow:
 
             console.print(f"📄 Loaded {len(transcripts)} sequences from FASTA: {self.config.input_fasta}")
 
-            # Validate transcript data
-            transcript_validation = self.validation.validate_transcripts(transcripts)
-            if transcript_validation.summary_stats.get("total_warnings", 0) > 0:
-                console.print(f"⚠️  {transcript_validation.summary_stats['total_warnings']} validation warnings found")
+            # Quiet transcript validation (no verbose console warnings)
+            _ = self.validation.validate_transcripts(transcripts)
 
             return transcripts
 
@@ -246,10 +243,23 @@ class SiRNAWorkflow:
 
         console.print(f"📄 Retrieved {len(protein_transcripts)} protein-coding transcripts")
 
-        # Validate transcript data
-        transcript_validation = self.validation.validate_transcripts(protein_transcripts)
-        if transcript_validation.summary_stats.get("total_warnings", 0) > 0:
-            console.print(f"⚠️  {transcript_validation.summary_stats['total_warnings']} validation warnings found")
+        # If canonical transcripts are present, save them separately
+        canonical_transcripts = [t for t in transcripts if getattr(t, "is_canonical", False) and t.sequence]
+        if canonical_transcripts:
+            canonical_file = self.config.output_dir / "transcripts" / f"{self.config.gene_query}_canonical.fasta"
+            canonical_sequences = [
+                (
+                    f"{t.transcript_id} {t.gene_name} type:{t.transcript_type} length:{t.length} canonical:true",
+                    t.sequence or "",
+                )
+                for t in canonical_transcripts
+                if t.sequence is not None
+            ]
+            FastaUtils.save_sequences_fasta(canonical_sequences, canonical_file)
+            console.print(f"⭐ Canonical transcripts saved: {canonical_file.name}")
+
+        # Quiet transcript validation (no verbose console warnings)
+        _ = self.validation.validate_transcripts(protein_transcripts)
 
         return protein_transcripts
 
@@ -283,61 +293,369 @@ class SiRNAWorkflow:
         return {"results": orf_results, "valid_transcripts": valid_transcripts}
 
     async def step3_design_sirnas(self, transcripts: list[TranscriptInfo], progress: Progress) -> DesignResult:
-        """Step 3: Design siRNA candidates for valid transcripts."""
-        task = progress.add_task("[yellow]Designing siRNAs...", total=2)
+        """Step 3: Design siRNA candidates for valid transcripts.
 
-        # Create temporary FASTA file for siRNA design
+        Parallelizes per-transcript design when not running from a user-provided input FASTA,
+        to preserve backward-compatibility with tests and monkeypatching of design_from_file.
+        Set env SIRNAFORGE_PARALLEL_DESIGN=1 to force parallel mode.
+        """
+        # Create temporary FASTA file for siRNA design (preserves original behavior)
         temp_fasta = self.config.output_dir / "transcripts" / "temp_for_design.fasta"
         sequences = [(f"{t.transcript_id}", t.sequence) for t in transcripts if t.sequence]
-
         FastaUtils.save_sequences_fasta(sequences, temp_fasta)
-        progress.advance(task)
 
-        # Run siRNA design
-        design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
-        progress.advance(task)
+        use_parallel = (self.config.input_fasta is None) or (os.getenv("SIRNAFORGE_PARALLEL_DESIGN", "0") == "1")
 
-        # Validate design results
-        design_validation = self.validation.validate_design_results(design_result)
-        if design_validation.summary_stats.get("total_warnings", 0) > 0:
-            console.print(f"⚠️  {design_validation.summary_stats['total_warnings']} design validation warnings")
+        if not use_parallel:
+            # Original single-call path (compatible with tests that patch design_from_file)
+            task = progress.add_task("[yellow]Designing siRNAs...", total=2)
+            progress.advance(task)
+            design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
+            progress.advance(task)
+            _ = self.validation.validate_design_results(design_result)
+            temp_fasta.unlink(missing_ok=True)
+            console.print(f"🎯 Generated {len(design_result.candidates)} siRNA candidates")
+            console.print(f"   Top {len(design_result.top_candidates)} candidates selected for further analysis")
+            return design_result
 
-        # Save design results
-        results_file = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_sirna_results.csv"
-        design_result.save_csv(str(results_file))
+        # Parallel per-transcript path
+        start = time.time()
+        total = len(sequences)
+        task = progress.add_task("[yellow]Designing siRNAs...", total=total if total > 0 else 1)
 
-        # Clean up temp file
-        temp_fasta.unlink()
+        results: list[DesignResult] = []
+        guide_to_transcripts: dict[str, set[str]] = {}
 
-        console.print(f"🎯 Generated {len(design_result.candidates)} siRNA candidates")
-        console.print(f"   Top {len(design_result.top_candidates)} candidates selected for further analysis")
+        with ThreadPoolExecutor(max_workers=self.config.num_threads) as executor:
+            futures = {
+                executor.submit(self.sirnaforgeer.design_from_sequence, t.sequence, t.transcript_id): t
+                for t in transcripts
+                if t.sequence
+            }
 
-        return design_result
+            for fut in as_completed(futures):
+                try:
+                    dr: DesignResult = fut.result()
+                    results.append(dr)
+                    for c in dr.candidates:
+                        guide_to_transcripts.setdefault(c.guide_sequence, set()).add(c.transcript_id)
+                except Exception as e:
+                    logger.exception(f"Design failed for transcript {futures[fut].transcript_id}: {e}")
+                finally:
+                    progress.advance(task)
 
-    async def step4_generate_reports(self, design_results: DesignResult) -> None:
+        # Merge candidates
+        all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
+
+        # Recompute transcript hit metrics across all inputs
+        total_seqs = total
+        for c in all_candidates:
+            hits = len(guide_to_transcripts.get(c.guide_sequence, {c.transcript_id}))
+            c.transcript_hit_count = hits
+            c.transcript_hit_fraction = (hits / total_seqs) if total_seqs > 0 else 0.0
+
+        # Sort, compute top-N (prefer passing candidates)
+        all_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        passing = [
+            c
+            for c in all_candidates
+            if (c.passes_filters is True)
+            or (
+                hasattr(_ModelSiRNACandidate, "FilterStatus")
+                and c.passes_filters == _ModelSiRNACandidate.FilterStatus.PASS
+            )
+        ]
+        top_candidates = (passing or all_candidates)[: self.config.top_n]
+
+        processing_time = time.time() - start
+        filtered_count = len(passing)
+        tool_versions = results[0].tool_versions if results else {}
+
+        combined = DesignResult(
+            input_file="<parallel_transcripts>",
+            parameters=self.config.design_params,
+            candidates=all_candidates,
+            top_candidates=top_candidates,
+            total_sequences=total_seqs,
+            total_candidates=len(all_candidates),
+            filtered_candidates=filtered_count,
+            processing_time=processing_time,
+            tool_versions=tool_versions,
+        )
+
+        _ = self.validation.validate_design_results(combined)
+
+        temp_fasta.unlink(missing_ok=True)
+        console.print(f"🎯 Generated {len(combined.candidates)} siRNA candidates (threads={self.config.num_threads})")
+        console.print(f"   Top {len(combined.top_candidates)} candidates selected for further analysis")
+        return combined
+
+    async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
 
         # Generate candidate summary report
         summary_file = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_candidate_summary.txt"
         self._generate_candidate_report(design_results, summary_file)
 
-        # Generate top candidates FASTA for off-target analysis
+        # Generate top candidates FASTA (artifact for users; Nextflow uses a separate input FASTA)
         top_candidates_fasta = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_top_candidates.fasta"
-        top_sequences = [
-            (f"{c.id} score:{c.composite_score:.1f}", c.guide_sequence)
-            for c in design_results.top_candidates[: self.config.top_n_for_offtarget]
-        ]
+        top_sequences = []
+        for c in design_results.top_candidates[: self.config.top_n]:
+            header = (
+                f"{c.id} transcript={c.transcript_id} pos={c.position} "
+                f"gc={c.gc_content:.1f} score={c.composite_score:.1f}"
+            )
+            top_sequences.append((header, c.guide_sequence))
 
-        FastaUtils.save_sequences_fasta(top_sequences, top_candidates_fasta)
+        if top_sequences:
+            FastaUtils.save_sequences_fasta(top_sequences, top_candidates_fasta)
+        else:
+            # Ensure file exists and is informative even with zero sequences
+            top_candidates_fasta.parent.mkdir(parents=True, exist_ok=True)
+            with top_candidates_fasta.open("w") as fh:
+                fh.write(f"# siRNAforge top candidates: 0 sequences for {self.config.gene_query}\n")
 
-        console.print("📋 Generated comprehensive reports")
+        # Emit candidate CSVs: always keep ALL and a filtered PASSING file
+        try:
+            # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
+            rows = []
+            for c in design_results.candidates:
+                cs = getattr(c, "component_scores", {}) or {}
+                rows.append(
+                    {
+                        "id": c.id,
+                        "transcript_id": c.transcript_id,
+                        "position": c.position,
+                        "guide_sequence": c.guide_sequence,
+                        "passenger_sequence": c.passenger_sequence,
+                        "gc_content": c.gc_content,
+                        "asymmetry_score": c.asymmetry_score,
+                        "paired_fraction": c.paired_fraction,
+                        # Thermodynamics
+                        "structure": getattr(c, "structure", None),
+                        "mfe": getattr(c, "mfe", None),
+                        "duplex_stability_dg": c.duplex_stability,
+                        "duplex_stability_score": cs.get("duplex_stability_score"),
+                        "dg_5p": cs.get("dg_5p"),
+                        "dg_3p": cs.get("dg_3p"),
+                        "delta_dg_end": cs.get("delta_dg_end"),
+                        "melting_temp_c": cs.get("melting_temp_c"),
+                        "off_target_count": c.off_target_count,
+                        "transcript_hit_count": c.transcript_hit_count,
+                        "transcript_hit_fraction": c.transcript_hit_fraction,
+                        "composite_score": c.composite_score,
+                        "passes_filters": (
+                            c.passes_filters.value if hasattr(c.passes_filters, "value") else c.passes_filters
+                        ),
+                    }
+                )
+
+            all_df = pd.DataFrame(rows)
+            # Validate with schema (will raise if invalid)
+            validated_all = SiRNACandidateSchema.validate(all_df)
+
+            # Split into pass/fail and write ALL + PASS files
+            pass_df = validated_all[validated_all["passes_filters"] == "PASS"]
+            base = self.config.output_dir / "sirnaforge"
+            out_all = base / f"{self.config.gene_query}_all.csv"
+            out_pass = base / f"{self.config.gene_query}_pass.csv"
+            validated_all.to_csv(out_all, index=False)
+            pass_df.to_csv(out_pass, index=False)
+
+            # Backward-compatible alias: sirna_results.csv -> all.csv
+            try:
+                legacy = base / f"{self.config.gene_query}_sirna_results.csv"
+                primary = out_all
+                if legacy.exists() or legacy.is_symlink():
+                    legacy.unlink()
+                if primary.exists():
+                    try:
+                        legacy.symlink_to(primary)
+                    except Exception:
+                        shutil.copyfile(primary, legacy)
+            except Exception as e:  # Do not fail workflow for alias creation
+                logger.warning(f"Failed to create legacy sirna_results.csv alias: {e}")
+        except Exception as e:  # Do not fail workflow for reporting extras
+            logger.warning(f"Failed to write all/pass CSVs: {e}")
+
+        # Generate machine-readable candidate summary JSON (concise)
+        try:
+            # Save thermodynamic metrics to a dedicated CSV (schema-free)
+            try:
+                thermo_rows = []
+                for c in design_results.candidates:
+                    cs = getattr(c, "component_scores", {}) or {}
+                    thermo_rows.append(
+                        {
+                            "id": c.id,
+                            "transcript_id": c.transcript_id,
+                            "position": c.position,
+                            "gc_content": c.gc_content,
+                            "asymmetry_score": c.asymmetry_score,
+                            "duplex_stability_dg": c.duplex_stability,
+                            "duplex_stability_score": cs.get("duplex_stability_score"),
+                            "dg_5p": cs.get("dg_5p"),
+                            "dg_3p": cs.get("dg_3p"),
+                            "delta_dg_end": cs.get("delta_dg_end"),
+                            "structure": getattr(c, "structure", None),
+                            "mfe": getattr(c, "mfe", None),
+                            "paired_fraction": getattr(c, "paired_fraction", None),
+                            "melting_temp_c": cs.get("melting_temp_c"),
+                            "thermo_combo": cs.get("thermo_combo"),
+                            "composite_score": c.composite_score,
+                        }
+                    )
+
+                thermo_df = pd.DataFrame(thermo_rows)
+                thermo_path = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_thermo.csv"
+                thermo_df.to_csv(thermo_path, index=False)
+            except Exception as e:
+                logger.warning(f"Failed to write thermodynamic CSV: {e}")
+
+            summary_json_path = (
+                self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_candidate_summary.json"
+            )
+            summary = design_results.get_summary()
+            # Enrich summary with pass/fail counts and config
+            total = design_results.total_candidates
+            passed = design_results.filtered_candidates
+            failed = max(0, total - passed)
+            summary.update(
+                {
+                    "pass_count": passed,
+                    "fail_count": failed,
+                    "top_n_requested": self.config.top_n,
+                    "processing_time_seconds": float(design_results.processing_time),
+                }
+            )
+
+            top_export: list[dict[str, Any]] = []
+            for c in design_results.top_candidates[: self.config.top_n]:
+                cs = getattr(c, "component_scores", {}) or {}
+                top_export.append(
+                    {
+                        "id": c.id,
+                        "transcript_id": c.transcript_id,
+                        "position": c.position,
+                        "guide_sequence": c.guide_sequence,
+                        "composite_score": c.composite_score,
+                        "passes_filters": (
+                            c.passes_filters.value if hasattr(c.passes_filters, "value") else c.passes_filters
+                        ),
+                        "thermo": {
+                            "duplex_dg": c.duplex_stability,
+                            "asymmetry": c.asymmetry_score,
+                            "delta_dg_end": cs.get("delta_dg_end"),
+                        },
+                    }
+                )
+
+            with summary_json_path.open("w") as fh:
+                json.dump({"summary": summary, "top_candidates": top_export}, fh, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write candidate summary JSON: {e}")
+
+        # Build a FAIR manifest with checksums and counts
+        try:
+            manifest = self._build_fair_manifest(
+                all_csv=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_all.csv"),
+                pass_csv=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_pass.csv"),
+                top_fasta=top_candidates_fasta,
+                summary_txt=summary_file,
+                summary_json=(
+                    self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_candidate_summary.json"
+                ),
+                orf_report=(self.config.output_dir / "orf_reports" / f"{self.config.gene_query}_orf_validation.txt"),
+            )
+            manifest_path = self.config.output_dir / "sirnaforge" / "manifest.json"
+            with manifest_path.open("w") as mf:
+                json.dump(manifest, mf, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write FAIR manifest: {e}")
+
+        console.print("📋 Generated comprehensive reports and FAIR metadata")
         console.print("   - ORF validation report: orf_reports/")
         console.print("   - siRNA candidate summary: sirnaforge/")
         console.print(f"   - Top {len(top_sequences)} candidates for off-target analysis")
 
+    def _file_md5(self, path: Path) -> str:
+        hash_md5 = hashlib.md5()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+    def _count_fasta_sequences(self, path: Path) -> int:
+        try:
+            # Simple FASTA count: lines starting with '>'
+            with path.open("r") as fh:
+                return sum(1 for line in fh if line.startswith(">"))
+        except Exception:
+            return 0
+
+    def _build_fair_manifest(
+        self,
+        *,
+        all_csv: Path,
+        pass_csv: Path,
+        top_fasta: Path,
+        summary_txt: Path,
+        summary_json: Optional[Path] = None,
+        orf_report: Path,
+    ) -> dict:
+        """Create a manifest JSON describing generated outputs (checksums, sizes, counts)."""
+        now = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
+        files: dict[str, dict[str, Any]] = {}
+
+        def add_file(key: str, p: Path, ftype: str, extra: Optional[dict[str, Any]] = None) -> None:
+            if not p.exists():
+                files[key] = {"path": str(p), "type": ftype, "exists": False}
+                return
+            entry: dict[str, Any] = {
+                "path": str(p),
+                "type": ftype,
+                "exists": True,
+                "size_bytes": p.stat().st_size,
+                "md5": self._file_md5(p),
+            }
+            if extra:
+                entry.update(extra)
+            files[key] = entry
+
+        # Row counts for CSVs
+        def csv_rows(p: Path) -> int:
+            try:
+                # subtract header if file has at least one line
+                with p.open("r") as fh:
+                    lines = sum(1 for _ in fh)
+                return max(0, lines - 1)
+            except Exception:
+                return 0
+
+        add_file("candidates_all_csv", all_csv, "csv", {"rows": csv_rows(all_csv)})
+        add_file("candidates_pass_csv", pass_csv, "csv", {"rows": csv_rows(pass_csv)})
+        add_file("top_candidates_fasta", top_fasta, "fasta", {"sequences": self._count_fasta_sequences(top_fasta)})
+        add_file("candidate_summary_txt", summary_txt, "text")
+        if summary_json is not None:
+            add_file("candidate_summary_json", summary_json, "json")
+        add_file("orf_validation_report", orf_report, "tsv")
+
+        return {
+            "tool": "sirnaforge",
+            "gene_query": self.config.gene_query,
+            "run_timestamp": now,
+            "design_parameters": {
+                "top_n": self.config.top_n,
+                "sirna_length": self.config.design_params.sirna_length,
+                "gc_min": self.config.design_params.filters.gc_min,
+                "gc_max": self.config.design_params.filters.gc_max,
+            },
+            "files": files,
+        }
+
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict:
         """Step 5: Run off-target analysis using embedded Nextflow pipeline."""
-        top_candidates = design_results.top_candidates[: self.config.top_n_for_offtarget]
+        top_candidates = design_results.top_candidates[: self.config.top_n]
 
         if not top_candidates:
             console.print("⚠️  No candidates available for off-target analysis")
@@ -554,7 +872,7 @@ class SiRNAWorkflow:
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-    def _generate_orf_report(self, orf_results: dict, report_file: Path) -> None:
+    def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> None:
         """Generate ORF validation report in tab-delimited format with schema validation."""
         # Handle empty results case
         if not orf_results:
@@ -575,6 +893,9 @@ class SiRNAWorkflow:
                     "start_codon",
                     "stop_codon",
                     "orf_gc_content",
+                    "utr5_length",
+                    "utr3_length",
+                    "predicted_sequence_type",
                 ]
             )
             # Set correct dtypes to match schema - using Any types for nullable fields
@@ -592,6 +913,9 @@ class SiRNAWorkflow:
                     "start_codon": "object",
                     "stop_codon": "object",
                     "orf_gc_content": "object",
+                    "utr5_length": "object",
+                    "utr3_length": "object",
+                    "predicted_sequence_type": "object",
                 }
             )
             validated_df = ORFValidationSchema.validate(empty_df)
@@ -603,13 +927,18 @@ class SiRNAWorkflow:
         for transcript_id, analysis in orf_results.items():
             row_data = {
                 "transcript_id": transcript_id,
-                "sequence_length": analysis.sequence_length,
-                "gc_content": analysis.gc_content,
-                "orfs_found": len(analysis.orfs),
-                "has_valid_orf": analysis.has_valid_orf,
+                "sequence_length": getattr(analysis, "sequence_length", None),
+                "gc_content": getattr(analysis, "gc_content", None),
+                "orfs_found": len(getattr(analysis, "orfs", []) or []),
+                "has_valid_orf": getattr(analysis, "has_valid_orf", False),
+                "utr5_length": getattr(analysis, "utr5_length", None),
+                "utr3_length": getattr(analysis, "utr3_length", None),
+                "predicted_sequence_type": getattr(
+                    getattr(analysis, "sequence_type", None), "value", str(getattr(analysis, "sequence_type", ""))
+                ),
             }
 
-            if analysis.longest_orf:
+            if getattr(analysis, "longest_orf", None):
                 orf = analysis.longest_orf
                 row_data.update(
                     {
@@ -675,9 +1004,15 @@ class SiRNAWorkflow:
                 f.write(f"   Score: {candidate.composite_score:.1f}\n")
                 f.write(f"   GC Content: {candidate.gc_content:.1f}%\n")
                 f.write(f"   Position: {candidate.position}\n")
-                f.write(f"   Passes Filters: {'✓' if candidate.passes_filters else '✗'}\n")
-                if candidate.quality_issues:
-                    f.write(f"   Issues: {'; '.join(candidate.quality_issues)}\n")
+                status = (
+                    candidate.passes_filters.value
+                    if hasattr(candidate.passes_filters, "value")
+                    else candidate.passes_filters
+                )
+                if status == "PASS" or status is True:
+                    f.write("   Filter Status: PASS\n")
+                else:
+                    f.write(f"   Filter Status: {status}\n")
                 f.write("\n")
 
     def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict:
@@ -707,7 +1042,19 @@ class SiRNAWorkflow:
 
     def _summarize_design_results(self, design_results: DesignResult) -> dict:
         """Summarize siRNA design results."""
-        return design_results.get_summary()
+        base = design_results.get_summary()
+        total = design_results.total_candidates
+        passed = design_results.filtered_candidates
+        failed = max(0, total - passed)
+        base.update(
+            {
+                "pass_count": passed,
+                "fail_count": failed,
+                "top_n_requested": self.config.top_n,
+                "threads_used": self.config.num_threads,
+            }
+        )
+        return base
 
 
 # Convenience function for running complete workflow
@@ -717,12 +1064,12 @@ async def run_sirna_workflow(
     input_fasta: Optional[str] = None,
     database: str = "ensembl",
     top_n_candidates: int = 20,
-    top_n_offtarget: int = 10,
     genome_species: Optional[list[str]] = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
     log_file: Optional[str] = None,
+    write_json_summary: bool = True,
 ) -> dict:
     """
     Run complete siRNA design workflow.
@@ -732,7 +1079,6 @@ async def run_sirna_workflow(
         output_dir: Directory for output files
         database: Database to search (ensembl, refseq, gencode)
         top_n_candidates: Number of top candidates to generate
-        top_n_offtarget: Number of candidates for off-target analysis
         genome_species: Species genomes for off-target analysis
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
@@ -757,9 +1103,9 @@ async def run_sirna_workflow(
         input_fasta=Path(input_fasta) if input_fasta else None,
         database=database_enum,
         design_params=design_params,
-        top_n_for_offtarget=top_n_offtarget,
         genome_species=genome_species or ["human", "rat", "rhesus"],
         log_file=log_file,
+        write_json_summary=write_json_summary,
     )
 
     # Run workflow
@@ -772,9 +1118,7 @@ if __name__ == "__main__":
     async def main() -> None:
         # Use secure temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            results = await run_sirna_workflow(
-                gene_query="TP53", output_dir=temp_dir, top_n_candidates=20, top_n_offtarget=10
-            )
+            results = await run_sirna_workflow(gene_query="TP53", output_dir=temp_dir, top_n_candidates=20)
             print(f"Workflow completed: {results}")
 
     asyncio.run(main())

@@ -21,7 +21,7 @@ from pandera.typing.pandas import Series
 F = TypeVar("F", bound=Callable[..., Any])
 # Ignore mypy type issues for this assignment; pandera's dataframe_check has an incompatible
 # callable signature that is difficult to express to mypy here.
-dataframe_check_typed: Callable[[F], F] = pa.dataframe_check  # type: ignore
+dataframe_check_typed: Callable[[F], F] = pa.dataframe_check
 
 
 # Custom validation functions for bioinformatics data
@@ -90,6 +90,18 @@ class SiRNACandidateSchema(DataFrameModel):
         ge=0.0, le=1.0, description="Fraction of paired bases in secondary structure"
     )
 
+    # Thermodynamic details (nullable if backend not available)
+    structure: Series[Any] = Field(description="Predicted secondary structure (dot-bracket)", nullable=True)
+    mfe: Series[float] = Field(description="Minimum free energy of guide structure", nullable=True)
+    duplex_stability_dg: Series[float] = Field(description="Guide:passenger duplex stability ΔG", nullable=True)
+    duplex_stability_score: Series[float] = Field(
+        ge=0.0, le=1.0, description="Normalized duplex stability score [0-1]", nullable=True
+    )
+    dg_5p: Series[float] = Field(description="5' end duplex ΔG (positions 1-7)", nullable=True)
+    dg_3p: Series[float] = Field(description="3' end duplex ΔG (positions 15-21)", nullable=True)
+    delta_dg_end: Series[float] = Field(description="ΔΔG = dg_5p - dg_3p", nullable=True)
+    melting_temp_c: Series[float] = Field(description="Estimated duplex melting temperature (°C)", nullable=True)
+
     # Off-target analysis results
     off_target_count: Series[int] = Field(ge=0, description="Number of potential off-targets")
 
@@ -102,8 +114,21 @@ class SiRNACandidateSchema(DataFrameModel):
     # Scoring results
     composite_score: Series[float] = Field(ge=0.0, le=100.0, description="Final composite score")
 
-    # Quality control
-    passes_filters: Series[bool] = Field(description="Whether candidate passes quality filters")
+    # Quality control: allow legacy booleans or new status strings
+    passes_filters: Series[Any] = Field(description="Filter status: True/False (legacy) or PASS/reason code (new)")
+
+    @dataframe_check_typed
+    def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
+        """Ensure passes_filters contains allowed values: bool or allowed status strings."""
+        allowed = {"PASS", "GC_OUT_OF_RANGE", "POLY_RUNS", "EXCESS_PAIRING", "LOW_ASYMMETRY"}
+        series = df["passes_filters"]
+
+        def _ok(v: Any) -> bool:
+            if isinstance(v, bool):
+                return True
+            return isinstance(v, str) and v in allowed
+
+        return bool(series.map(_ok).all())
 
     @dataframe_check_typed
     def check_sequence_lengths(cls, df: pd.DataFrame) -> bool:
@@ -155,6 +180,10 @@ class ORFValidationSchema(DataFrameModel):
 
     # ORF-specific GC content
     orf_gc_content: Series[Any] = Field(description="GC content of longest ORF", nullable=True)
+
+    # UTR/CDS characterization can be present in outputs but is not required by schema.
+    # We intentionally omit these from the schema so tests with legacy columns still pass,
+    # while Config.strict=False allows extra columns like utr5_length, utr3_length, etc.
 
 
 class OffTargetHitsSchema(DataFrameModel):

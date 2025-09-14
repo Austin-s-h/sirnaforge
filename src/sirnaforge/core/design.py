@@ -2,12 +2,14 @@
 
 import math
 import time
+from typing import Optional, Union
 
 from Bio import SeqIO
 from Bio.Seq import Seq
 
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
+from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
 
 class SiRNADesigner:
@@ -26,7 +28,7 @@ class SiRNADesigner:
         if not sequences:
             raise ValueError(f"No sequences found in {input_file}")
 
-        all_candidates = []
+        all_candidates: list[SiRNACandidate] = []
         # Map guide_sequence -> set of transcript_ids where it appears
         guide_to_transcripts: dict[str, set[str]] = {}
 
@@ -53,8 +55,14 @@ class SiRNADesigner:
         # Sort by composite score (descending)
         all_candidates.sort(key=lambda x: x.composite_score, reverse=True)
 
-        # Get top candidates
-        top_candidates = all_candidates[: self.parameters.top_n]
+        # Get top candidates only from those passing filters; fallback to all if none pass
+        passing = [
+            c
+            for c in all_candidates
+            if (c.passes_filters is True)
+            or (hasattr(_ModelCandidate, "FilterStatus") and c.passes_filters == _ModelCandidate.FilterStatus.PASS)
+        ]
+        top_candidates = (passing or all_candidates)[: self.parameters.top_n]
 
         processing_time = time.time() - start_time
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
@@ -71,7 +79,17 @@ class SiRNADesigner:
             top_candidates=top_candidates,
             total_sequences=len(sequences),
             total_candidates=len(all_candidates),
-            filtered_candidates=len([c for c in all_candidates if c.passes_filters]),
+            filtered_candidates=len(
+                [
+                    c
+                    for c in all_candidates
+                    if (c.passes_filters is True)
+                    or (
+                        hasattr(_ModelCandidate, "FilterStatus")
+                        and c.passes_filters == _ModelCandidate.FilterStatus.PASS
+                    )
+                ]
+            ),
             processing_time=processing_time,
             tool_versions=self._get_tool_versions(),
         )
@@ -94,8 +112,14 @@ class SiRNADesigner:
         # Sort by composite score (descending)
         scored_candidates.sort(key=lambda x: x.composite_score, reverse=True)
 
-        # Get top candidates
-        top_candidates = scored_candidates[: self.parameters.top_n]
+        # Get top candidates only from those passing filters; fallback to all if none pass
+        passing = [
+            c
+            for c in scored_candidates
+            if (c.passes_filters is True)
+            or (hasattr(_ModelCandidate, "FilterStatus") and c.passes_filters == _ModelCandidate.FilterStatus.PASS)
+        ]
+        top_candidates = (passing or scored_candidates)[: self.parameters.top_n]
 
         processing_time = time.time() - start_time
         # For single-sequence runs, transcript hit metrics are trivial (hits=1, fraction=1.0)
@@ -109,7 +133,17 @@ class SiRNADesigner:
             top_candidates=top_candidates,
             total_sequences=1,
             total_candidates=len(scored_candidates),
-            filtered_candidates=len([c for c in scored_candidates if c.passes_filters]),
+            filtered_candidates=len(
+                [
+                    c
+                    for c in scored_candidates
+                    if (c.passes_filters is True)
+                    or (
+                        hasattr(_ModelCandidate, "FilterStatus")
+                        and c.passes_filters == _ModelCandidate.FilterStatus.PASS
+                    )
+                ]
+            ),
             processing_time=processing_time,
             tool_versions=self._get_tool_versions(),
         )
@@ -156,22 +190,22 @@ class SiRNADesigner:
 
         for candidate in candidates:
             issues = []
-            passes = True
+            status: Union[bool, _ModelCandidate.FilterStatus] = True
 
             # GC content filter
             if not (filters.gc_min <= candidate.gc_content <= filters.gc_max):
                 issues.append(
                     f"GC content {candidate.gc_content:.1f}% outside range {filters.gc_min}-{filters.gc_max}%"
                 )
-                passes = False
+                status = _ModelCandidate.FilterStatus.GC_OUT_OF_RANGE
 
             # Poly run filter (no runs of 4+ identical nucleotides)
             if self._has_poly_runs(candidate.guide_sequence, filters.max_poly_runs):
                 issues.append(f"Contains runs of >{filters.max_poly_runs} identical nucleotides")
-                passes = False
+                status = _ModelCandidate.FilterStatus.POLY_RUNS
 
             # Update candidate with filter results
-            candidate.passes_filters = passes
+            candidate.passes_filters = status
             candidate.quality_issues = issues
 
             filtered.append(candidate)
@@ -180,19 +214,54 @@ class SiRNADesigner:
 
     def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
         """Score candidates using composite scoring algorithm."""
-        weights = self.parameters.scoring
+        _ = self.parameters.scoring  # retained for potential future use; current scoring uses fixed weights
 
         for candidate in candidates:
             # Calculate component scores
-            asym_score = self._calculate_asymmetry_score(candidate)
+            # Thermodynamic end stabilities and asymmetry
+            dg5: float = float("nan")
+            dg3: float = float("nan")
+            try:
+                calc = ThermodynamicCalculator()
+                dg5, dg3, asym_score = calc.calculate_asymmetry_score(candidate)
+            except Exception:
+                # Fallback if ViennaRNA or calculation not available
+                asym_score = self._calculate_asymmetry_score(candidate)
+                dg5, dg3 = float("nan"), float("nan")
+            # Thermodynamic duplex stability (ΔG) and score normalization
+            dg_score, duplex_dg = self._calculate_duplex_score(candidate)
+            candidate.duplex_stability = duplex_dg
             gc_score = self._calculate_gc_score(candidate.gc_content)
             access_score = self._calculate_accessibility_score(candidate)
             ot_score = self._calculate_off_target_score(candidate)
             empirical_score = self._calculate_empirical_score(candidate)
 
+            # Optional melting temperature estimation (rough)
+            tm_c = float("nan")
+            try:
+                if "calc" in locals():
+                    tm_c = calc.calculate_melting_temperature(candidate.guide_sequence, candidate.passenger_sequence)
+                else:
+                    calc2 = ThermodynamicCalculator()
+                    tm_c = calc2.calculate_melting_temperature(candidate.guide_sequence, candidate.passenger_sequence)
+            except Exception:
+                tm_c = float("nan")
+
             # Store component scores
+            # TODO: The composite_score needs to have basic weighting applied with truth data
+            # Combine thermodynamic components: favor asymmetry with contribution from duplex stability
+            thermo_combo = 0.7 * asym_score + 0.3 * dg_score
+
             candidate.component_scores = {
                 "asymmetry": asym_score,
+                # store as float; if missing, use NaN to satisfy type expectations
+                "duplex_stability_dg": float(duplex_dg) if duplex_dg is not None else float("nan"),
+                "duplex_stability_score": dg_score,
+                "thermo_combo": thermo_combo,
+                "dg_5p": float(dg5),
+                "dg_3p": float(dg3),
+                "delta_dg_end": float(dg5 - dg3) if (not math.isnan(dg5) and not math.isnan(dg3)) else float("nan"),
+                "melting_temp_c": float(tm_c),
                 "gc_content": gc_score,
                 "accessibility": access_score,
                 "off_target": ot_score,
@@ -200,19 +269,39 @@ class SiRNADesigner:
             }
 
             # Calculate composite score
-            composite = (
-                weights.asymmetry * asym_score
-                + weights.gc_content * gc_score
-                + weights.accessibility * access_score
-                + weights.off_target * ot_score
-                + weights.empirical * empirical_score
-            )
+            # New weighting: 90% thermodynamics, 10% for the rest (averaged)
+            other_avg = (gc_score + access_score + ot_score + empirical_score) / 4.0
+            composite = 0.9 * thermo_combo + 0.1 * other_avg
 
             # Normalize to 0-100 scale
             candidate.composite_score = composite * 100
             candidate.asymmetry_score = asym_score
 
         return candidates
+
+    def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, Optional[float]]:
+        """Compute duplex stability ΔG and a normalized score in [0,1].
+
+        Mapping: dg in [-40, -5] kcal/mol -> score in [1, 0]. Clamp outside this range.
+        On failure or missing backend, returns (asymmetry_score, None) as a fallback.
+        """
+        try:
+            calc = ThermodynamicCalculator()
+            dg = calc.calculate_duplex_stability(candidate.guide_sequence, candidate.passenger_sequence)
+            # Normalize: more negative is better
+            # Clamp dg to [-40, -5]
+            lo, hi = -40.0, -5.0
+            dg_clamped = max(lo, min(hi, dg))
+            score = (-(dg_clamped) - 5.0) / (40.0 - 5.0)
+            score = max(0.0, min(1.0, score))
+            return score, float(dg)
+        except Exception:
+            # Fallback: use asymmetry as proxy if duplex calc not available
+            try:
+                asym = self._calculate_asymmetry_score(candidate)
+            except Exception:
+                asym = 0.5
+            return asym, None
 
     def _calculate_gc_content(self, sequence: str) -> float:
         """Calculate GC content percentage."""
@@ -280,6 +369,17 @@ class SiRNADesigner:
             candidate.paired_fraction = paired_fraction
 
             # Accessibility score: 1 - paired_fraction
+            # Flag excessive pairing per filter threshold
+            try:
+                if (
+                    hasattr(_ModelCandidate, "FilterStatus")
+                    and paired_fraction is not None
+                    and paired_fraction > self.parameters.filters.max_paired_fraction
+                    and candidate.passes_filters is True
+                ):
+                    candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
+            except Exception:
+                pass
             return 1.0 - paired_fraction
 
         except ImportError:
@@ -288,7 +388,18 @@ class SiRNADesigner:
             at_content = (guide.count("A") + guide.count("T") + guide.count("U")) / len(guide)
 
             # Moderate AT content suggests better accessibility
-            return 1.0 - abs(at_content - 0.5) * 2.0
+            paired_fraction = abs(at_content - 0.5) * 2.0  # heuristic inverse
+            candidate.paired_fraction = paired_fraction
+            try:
+                if (
+                    hasattr(_ModelCandidate, "FilterStatus")
+                    and paired_fraction > self.parameters.filters.max_paired_fraction
+                    and candidate.passes_filters is True
+                ):
+                    candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
+            except Exception:
+                pass
+            return 1.0 - paired_fraction
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
         """Calculate off-target score using simplified analysis."""
@@ -326,7 +437,18 @@ class SiRNADesigner:
         if len(guide) >= 19 and guide[18] == "C":
             score -= 0.1
 
-        return max(0.0, min(1.0, score))
+        result = max(0.0, min(1.0, score))
+        # Enforce minimal asymmetry threshold as a filter
+        try:
+            if (
+                hasattr(_ModelCandidate, "FilterStatus")
+                and result < self.parameters.filters.min_asymmetry_score
+                and candidate.passes_filters is True
+            ):
+                candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
+        except Exception:
+            pass
+        return result
 
     def _get_tool_versions(self) -> dict[str, str]:
         """Get versions of tools used (placeholder)."""

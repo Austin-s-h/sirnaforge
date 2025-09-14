@@ -181,7 +181,7 @@ uv run sirnaforge design input.fasta $FAST -o fast_results.tsv
 # Analyze against human, rat, and rhesus genomes
 uv run sirnaforge workflow TP53 \
   --genome-species "human,rat,rhesus" \
-  --offtarget-n 15
+    --top-n 15
 ```
 
 ### Extended Species Panel
@@ -189,7 +189,7 @@ uv run sirnaforge workflow TP53 \
 # Include additional model organisms
 uv run sirnaforge workflow BRCA1 \
   --genome-species "human,mouse,rat,rhesus,dog" \
-  --offtarget-n 20 \
+  --top-n 20 \
   --verbose
 ```
 
@@ -198,7 +198,7 @@ uv run sirnaforge workflow BRCA1 \
 # Focus on specific species
 uv run sirnaforge workflow EGFR \
   --genome-species "human,mouse" \
-  --offtarget-n 25
+  --top-n 25
 ```
 
 ## File Validation Examples
@@ -286,7 +286,6 @@ echo "1. Running complete workflow..."
 uv run sirnaforge workflow "$GENE" \
     --output-dir "$OUTPUT_DIR" \
     --top-n 30 \
-    --offtarget-n 15 \
     --verbose
 
 # Generate summary

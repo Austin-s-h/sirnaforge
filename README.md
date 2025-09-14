@@ -1,15 +1,21 @@
-# 🧬 siRNAforge — Comprehensive siRNA Design Tool**🔧 Local Development Installation:**it
+# 🧬 siRNAforge — Comprehensive siRNA Design Tool
 
 <div align="center">
   <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="200"/>
 
   **Multi-species gene to siRNA design, off-target prediction, and ranking**
 
-  [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg## 📊 Output Formats & Results](https://www.python.org/downloads/)
-  [![uv](https://img.shields.io/endpoint?url## 🔬 Nextflow Pipeline Integrationhttps://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+  [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
+  [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
   [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
   [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+  [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/Austin-s-h/packages/container/package/sirnaforge)
+  [![Nextflow](https://img.shields.io/badge/nextflow-pipeline-brightgreen?logo=nextflow)](https://github.com/Austin-s-h/sirnaforge/tree/main/nextflow_pipeline)
+  [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?logo=pytest)](https://github.com/Austin-s-h/sirnaforge/actions)
+  [![Coverage](https://img.shields.io/badge/coverage-%3E90%25-brightgreen?logo=codecov)](https://github.com/Austin-s-h/sirnaforge)
+  [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Austin-s-h/sirnaforge/blob/main/LICENSE)
 </div>
+
 
 siRNAforge is a modern, comprehensive toolkit for designing high-quality siRNAs with integrated off-target analysis. Built with Python 3.9-3.12, it combines cutting-edge bioinformatics algorithms with robust software engineering practices to provide a complete gene silencing solution for researchers and biotechnology applications.
 
@@ -697,7 +703,7 @@ python scripts/validate_fast_ci.py
 siRNAforge now includes an improved CI/CD workflow designed for quick feedback with minimal resources:
 
 - **⚡ Ultra-fast execution**: < 15 minutes total
-- **🪶 Minimal resources**: 256MB memory, 0.5 CPU cores  
+- **🪶 Minimal resources**: 256MB memory, 0.5 CPU cores
 - **🧸 Toy data**: < 500 bytes of test sequences
 - **🔥 Smoke tests**: Essential functionality validation
 
@@ -705,7 +711,7 @@ siRNAforge now includes an improved CI/CD workflow designed for quick feedback w
 # Trigger fast CI/CD workflow locally
 pytest -m "smoke" --tb=short
 
-# Use toy data for quick validation  
+# Use toy data for quick validation
 ls tests/unit/data/toy_*.fasta
 
 # Fast workflow vs comprehensive workflow

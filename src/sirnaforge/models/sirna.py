@@ -1,7 +1,7 @@
 """Pydantic models for siRNA design data structures."""
 
 from enum import Enum
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar, Union
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
@@ -132,7 +132,17 @@ class SiRNACandidate(BaseModel):
     composite_score: float = Field(ge=0, le=100, description="Final composite score")
 
     # Quality flags
-    passes_filters: bool = Field(default=True, description="Passes all quality filters")
+    class FilterStatus(str, Enum):
+        PASS = "PASS"
+        GC_OUT_OF_RANGE = "GC_OUT_OF_RANGE"
+        POLY_RUNS = "POLY_RUNS"
+        EXCESS_PAIRING = "EXCESS_PAIRING"
+        LOW_ASYMMETRY = "LOW_ASYMMETRY"
+
+    # Either True (passed) or one of the FilterStatus reasons (failed)
+    passes_filters: Union[bool, FilterStatus] = Field(
+        default=True, description="True if passed all filters, otherwise a failure reason"
+    )
     quality_issues: list[str] = Field(default_factory=list, description="List of quality concerns")
 
     @field_validator_typed("guide_sequence", "passenger_sequence")
@@ -185,6 +195,7 @@ class DesignResult(BaseModel):
         """
         df_data = []
         for candidate in self.candidates:
+            cs = candidate.component_scores or {}
             row = {
                 "id": candidate.id,
                 "transcript_id": candidate.transcript_id,
@@ -193,12 +204,25 @@ class DesignResult(BaseModel):
                 "passenger_sequence": candidate.passenger_sequence,
                 "gc_content": candidate.gc_content,
                 "asymmetry_score": candidate.asymmetry_score,
+                # Thermodynamics and structure
+                "structure": getattr(candidate, "structure", None),
+                "mfe": getattr(candidate, "mfe", None),
                 "paired_fraction": candidate.paired_fraction,
+                "duplex_stability_dg": candidate.duplex_stability,
+                "duplex_stability_score": cs.get("duplex_stability_score"),
+                "dg_5p": cs.get("dg_5p"),
+                "dg_3p": cs.get("dg_3p"),
+                "delta_dg_end": cs.get("delta_dg_end"),
+                "melting_temp_c": cs.get("melting_temp_c"),
                 "off_target_count": candidate.off_target_count,
                 "transcript_hit_count": candidate.transcript_hit_count,
                 "transcript_hit_fraction": candidate.transcript_hit_fraction,
                 "composite_score": candidate.composite_score,
-                "passes_filters": candidate.passes_filters,
+                "passes_filters": (
+                    candidate.passes_filters.value
+                    if hasattr(candidate.passes_filters, "value")
+                    else candidate.passes_filters
+                ),
             }
             df_data.append(row)
 

@@ -49,7 +49,6 @@ uv run sirnaforge workflow \
     --output-dir "$OUTPUT_DIR" \
     --genome-species "$GENOME_SPECIES" \
     --top-n 20 \
-    --offtarget-n 10 \
     --verbose
 
 echo ""

@@ -30,7 +30,7 @@ try:
         kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
 
-    rich.console.Console.__init__ = patched_init  # type: ignore
+    rich.console.Console.__init__ = patched_init
 except Exception:
     pass
 
@@ -352,13 +352,7 @@ def workflow(
         "--top-n",
         "-n",
         min=1,
-        help="Number of top siRNA candidates to generate",
-    ),
-    top_n_offtarget: int = typer.Option(
-        10,
-        "--offtarget-n",
-        min=1,
-        help="Number of top candidates for off-target analysis",
+        help="Number of top siRNA candidates to select (also used for off-target analysis)",
     ),
     genome_species: str = typer.Option(
         "human,rat,rhesus",
@@ -398,6 +392,11 @@ def workflow(
         "--log-file",
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
     ),
+    json_summary: bool = typer.Option(
+        True,
+        "--json-summary/--no-json-summary",
+        help="Write logs/workflow_summary.json (disable to skip JSON output)",
+    ),
 ) -> None:
     """Run complete siRNA design workflow from gene query to off-target analysis."""
 
@@ -416,8 +415,7 @@ def workflow(
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top Candidates: [yellow]{top_n_candidates}[/yellow]\n"
-            f"Off-target Analysis: [yellow]{top_n_offtarget}[/yellow] candidates\n"
+            f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
             f"Genome Species: [green]{', '.join(species_list)}[/green]",
             title="Workflow Configuration",
         )
@@ -443,12 +441,12 @@ def workflow(
                     output_dir=str(output_dir),
                     database=database,
                     top_n_candidates=top_n_candidates,
-                    top_n_offtarget=top_n_offtarget,
                     genome_species=species_list,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,
                     log_file=effective_log,
+                    write_json_summary=json_summary,
                 )
             )
 
@@ -492,7 +490,9 @@ def workflow(
         console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
         console.print("   • siRNA candidates: [blue]sirnaforge/sirna_candidates.tsv[/blue]")
         console.print("   • Off-target results: [blue]off_target/results/[/blue]")
-        console.print("   • Workflow summary: [blue]workflow_summary.json[/blue]")
+        console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
+        if json_summary:
+            console.print("   • Workflow summary: [blue]workflow_summary.json[/blue]")
 
         if offtarget_summary.get("method") == "nextflow":
             console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
