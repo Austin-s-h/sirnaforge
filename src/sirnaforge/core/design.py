@@ -217,7 +217,6 @@ class SiRNADesigner:
 
     def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
         """Score candidates using composite scoring algorithm."""
-        _ = self.parameters.scoring  # retained for potential future use; current scoring uses fixed weights
 
         for candidate in candidates:
             # Calculate component scores
@@ -271,10 +270,18 @@ class SiRNADesigner:
                 "empirical": empirical_score,
             }
 
-            # Calculate composite score
-            # New weighting: 90% thermodynamics, 10% for the rest (averaged)
-            other_avg = (gc_score + access_score + ot_score + empirical_score) / 4.0
-            composite = 0.9 * thermo_combo + 0.1 * other_avg
+            # Calculate composite score using configurable weights from parameters
+            # Access the configured scoring weights
+            weights = self.parameters.scoring
+
+            # Apply the configured weights to each component
+            composite = (
+                weights.asymmetry * asym_score
+                + weights.gc_content * gc_score
+                + weights.accessibility * access_score
+                + weights.off_target * ot_score
+                + weights.empirical * empirical_score
+            )
 
             # Normalize to 0-100 scale
             candidate.composite_score = composite * 100

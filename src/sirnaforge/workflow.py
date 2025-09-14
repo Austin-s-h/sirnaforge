@@ -443,7 +443,10 @@ class SiRNAWorkflow:
                 # Rough estimate: aim for batches with ~2000 candidates each
                 # (1000bp transcript ≈ 980 candidates for 21nt siRNAs)
                 target_candidates_per_batch = 2000
-                batch_size = max(1, int(target_candidates_per_batch / max(1, avg_length - 20)))
+                # Subtract siRNA length from transcript length when estimating candidates
+                # (default siRNA length is 21nt, but use configured value)
+                sirna_length = self.config.design_params.sirna_length
+                batch_size = max(1, int(target_candidates_per_batch / max(1, avg_length - sirna_length + 1)))
                 # Cap batch size to avoid memory issues
                 batch_size = min(batch_size, 20)
 

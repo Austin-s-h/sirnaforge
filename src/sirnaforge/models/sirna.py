@@ -20,16 +20,23 @@ field_validator_typed: FieldValidatorFactory = field_validator
 class FilterCriteria(BaseModel):
     """Quality filters for siRNA candidate selection based on thermodynamic and empirical criteria."""
 
+    # GC content filters (updated to match documentation: optimal 35-60%)
     gc_min: float = Field(
-        default=30.0, ge=0, le=100, description="Minimum GC content % (balance stability/accessibility)"
+        default=35.0, ge=0, le=100, description="Minimum GC content % (balance stability/accessibility)"
     )
-    gc_max: float = Field(default=52.0, ge=0, le=100, description="Maximum GC content % (prevent over-stabilization)")
+    gc_max: float = Field(default=60.0, ge=0, le=100, description="Maximum GC content % (prevent over-stabilization)")
+
+    # Sequence composition filters
     max_poly_runs: int = Field(
         default=3, ge=1, description="Max consecutive identical nucleotides (avoid synthesis issues)"
     )
+
+    # Secondary structure filters
     max_paired_fraction: float = Field(
         default=0.6, ge=0, le=1, description="Max secondary structure pairing (prevent rigid structures)"
     )
+
+    # Thermodynamic asymmetry filters
     min_asymmetry_score: float = Field(
         default=0.65,
         ge=0.3,
@@ -38,6 +45,39 @@ class FilterCriteria(BaseModel):
             "Minimum thermodynamic asymmetry score for guide strand selection into RISC. "
             "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading."
         ),
+    )
+
+    # Minimum Free Energy filters (optimal: -2 to -8 kcal/mol)
+    mfe_min: Optional[float] = Field(
+        default=-8.0, description="Minimum MFE threshold in kcal/mol (more negative = too stable)"
+    )
+    mfe_max: Optional[float] = Field(
+        default=-2.0, description="Maximum MFE threshold in kcal/mol (less negative = too unstable)"
+    )
+
+    # Duplex stability filters (optimal: -15 to -25 kcal/mol)
+    duplex_stability_min: Optional[float] = Field(
+        default=-25.0, description="Minimum duplex ΔG threshold in kcal/mol (more negative = too stable)"
+    )
+    duplex_stability_max: Optional[float] = Field(
+        default=-15.0, description="Maximum duplex ΔG threshold in kcal/mol (less negative = too unstable)"
+    )
+
+    # Melting temperature filters (optimal: 60-78°C for human cells)
+    melting_temp_min: Optional[float] = Field(default=60.0, description="Minimum melting temperature in °C")
+    melting_temp_max: Optional[float] = Field(default=78.0, description="Maximum melting temperature in °C")
+
+    # End asymmetry filters (optimal: +2 to +6 kcal/mol)
+    delta_dg_end_min: Optional[float] = Field(
+        default=2.0, description="Minimum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
+    )
+    delta_dg_end_max: Optional[float] = Field(
+        default=6.0, description="Maximum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
+    )
+
+    # Off-target filters
+    max_off_target_count: Optional[int] = Field(
+        default=3, ge=0, description="Maximum allowed off-target sites (goal: ≤3)"
     )
 
     @field_validator_typed("gc_max")
@@ -139,7 +179,7 @@ class SiRNACandidate(BaseModel):
     # Secondary structure
     structure: Optional[str] = Field(default=None, description="RNA secondary structure (dot-bracket notation)")
     mfe: Optional[float] = Field(default=None, description="Minimum free energy in kcal/mol (optimal: -2 to -8)")
-    paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.8)")
+    paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.6)")
 
     # Off-target analysis
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")

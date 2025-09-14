@@ -10,6 +10,10 @@ from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+# Constants derived from model definitions to avoid duplication
+SIRNA_MIN_LENGTH = 19  # From SiRNACandidate.length field constraints
+SIRNA_MAX_LENGTH = 23  # From SiRNACandidate.length field constraints
+
 
 class ValidationResult:
     """Container for validation results."""
@@ -255,11 +259,11 @@ class ValidationUtils:
         """Cross-validate Pydantic model constraints with Pandera schema constraints."""
         result = ValidationResult()
 
-        # Check siRNA length constraints match between Pydantic and Pandera
-        pydantic_min_length = 19  # From SiRNACandidate model
-        pydantic_max_length = 23
-        pandera_min_length = 19  # From schema validation
-        pandera_max_length = 23
+        # Check siRNA length constraints using constants derived from model definitions
+        pydantic_min_length = SIRNA_MIN_LENGTH
+        pydantic_max_length = SIRNA_MAX_LENGTH
+        pandera_min_length = SIRNA_MIN_LENGTH  # From SiRNACandidateSchema.check_sequence_lengths
+        pandera_max_length = SIRNA_MAX_LENGTH
 
         if pydantic_min_length != pandera_min_length:
             result.add_error("Pydantic and Pandera minimum length constraints don't match")
