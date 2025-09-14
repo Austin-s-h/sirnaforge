@@ -15,7 +15,6 @@ import hashlib
 import json
 import math
 import os
-import shutil
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -73,9 +72,9 @@ class WorkflowConfig:
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
-        # Parallelism for design stage (cap at 8 CPUs)
+        # Parallelism for design stage (cap at 4 CPUs for better efficiency)
         requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
-        self.num_threads = max(1, min(8, requested_threads))
+        self.num_threads = max(1, min(4, requested_threads))
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -139,6 +138,32 @@ class SiRNAWorkflow:
         total_time = time.time() - start_time
 
         # Compile final results
+        # Serialize authoritative design parameters into the workflow summary.
+        dp = self.config.design_params
+        design_parameters = {
+            "top_n": dp.top_n,
+            "sirna_length": dp.sirna_length,
+            "filters": {
+                "gc_min": dp.filters.gc_min,
+                "gc_max": dp.filters.gc_max,
+                "max_poly_runs": dp.filters.max_poly_runs,
+                "max_paired_fraction": dp.filters.max_paired_fraction,
+                "min_asymmetry_score": dp.filters.min_asymmetry_score,
+            },
+            "scoring": {
+                "asymmetry": dp.scoring.asymmetry,
+                "gc_content": dp.scoring.gc_content,
+                "accessibility": dp.scoring.accessibility,
+                "off_target": dp.scoring.off_target,
+                "empirical": dp.scoring.empirical,
+            },
+            "avoid_snps": dp.avoid_snps,
+            "check_off_targets": dp.check_off_targets,
+            "predict_structure": dp.predict_structure,
+            "snp_file": dp.snp_file,
+            "genome_index": dp.genome_index,
+        }
+
         final_results = {
             "workflow_config": {
                 "gene_query": self.config.gene_query,
@@ -149,6 +174,7 @@ class SiRNAWorkflow:
             "transcript_summary": self._summarize_transcripts(transcripts),
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
+            "design_parameters": design_parameters,
             "offtarget_summary": offtarget_results,
         }
 
@@ -326,23 +352,27 @@ class SiRNAWorkflow:
         results: list[DesignResult] = []
         guide_to_transcripts: dict[str, set[str]] = {}
 
+        # Batch transcripts for more efficient threading
+        transcript_batches = self._batch_transcripts(transcripts)
+
         with ThreadPoolExecutor(max_workers=self.config.num_threads) as executor:
-            futures = {
-                executor.submit(self.sirnaforgeer.design_from_sequence, t.sequence, t.transcript_id): t
-                for t in transcripts
-                if t.sequence
-            }
+            futures = {executor.submit(self._process_transcript_batch, batch): batch for batch in transcript_batches}
 
             for fut in as_completed(futures):
                 try:
-                    dr: DesignResult = fut.result()
-                    results.append(dr)
-                    for c in dr.candidates:
-                        guide_to_transcripts.setdefault(c.guide_sequence, set()).add(c.transcript_id)
+                    batch_results, batch_guide_mapping = fut.result()
+                    results.extend(batch_results)
+                    # Merge guide-to-transcript mappings
+                    for guide_seq, transcript_set in batch_guide_mapping.items():
+                        guide_to_transcripts.setdefault(guide_seq, set()).update(transcript_set)
+                    # Advance progress by the number of transcripts in this batch
+                    batch = futures[fut]
+                    progress.advance(task, len(batch))
                 except Exception as e:
-                    logger.exception(f"Design failed for transcript {futures[fut].transcript_id}: {e}")
-                finally:
-                    progress.advance(task)
+                    batch = futures[fut]
+                    batch_transcript_ids = [t.transcript_id for t in batch]
+                    logger.exception(f"Design failed for transcript batch {batch_transcript_ids}: {e}")
+                    progress.advance(task, len(batch))
 
         # Merge candidates
         all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
@@ -390,30 +420,77 @@ class SiRNAWorkflow:
         console.print(f"   Top {len(combined.top_candidates)} candidates selected for further analysis")
         return combined
 
+    def _batch_transcripts(
+        self, transcripts: list[TranscriptInfo], batch_size: Optional[int] = None
+    ) -> list[list[TranscriptInfo]]:
+        """Group transcripts into batches for more efficient threading.
+
+        Args:
+            transcripts: List of transcripts to batch
+            batch_size: Number of transcripts per batch. If None, automatically calculated
+                       based on transcript lengths to aim for ~2 seconds of work per batch.
+
+        Returns:
+            List of transcript batches
+        """
+        if batch_size is None:
+            # Estimate batch size based on transcript lengths
+            total_length = sum(len(t.sequence or "") for t in transcripts)
+            if total_length == 0 or len(transcripts) == 0:
+                batch_size = 1
+            else:
+                avg_length = total_length / len(transcripts)
+                # Rough estimate: aim for batches with ~2000 candidates each
+                # (1000bp transcript ≈ 980 candidates for 21nt siRNAs)
+                target_candidates_per_batch = 2000
+                batch_size = max(1, int(target_candidates_per_batch / max(1, avg_length - 20)))
+                # Cap batch size to avoid memory issues
+                batch_size = min(batch_size, 20)
+
+        batches = []
+        for i in range(0, len(transcripts), batch_size):
+            batch = transcripts[i : i + batch_size]
+            if batch:  # Only add non-empty batches
+                batches.append(batch)
+
+        return batches
+
+    def _process_transcript_batch(self, batch: list[TranscriptInfo]) -> tuple[list[DesignResult], dict[str, set[str]]]:
+        """Process a batch of transcripts and return results plus guide-to-transcript mapping.
+
+        Args:
+            batch: List of transcripts to process
+
+        Returns:
+            Tuple of (design_results, guide_to_transcripts_mapping)
+        """
+        results: list[DesignResult] = []
+        guide_to_transcripts: dict[str, set[str]] = {}
+
+        for transcript in batch:
+            if not transcript.sequence:
+                continue
+
+            try:
+                dr = self.sirnaforgeer.design_from_sequence(transcript.sequence, transcript.transcript_id)
+                results.append(dr)
+
+                # Build guide-to-transcript mapping for this batch
+                for c in dr.candidates:
+                    guide_to_transcripts.setdefault(c.guide_sequence, set()).add(c.transcript_id)
+
+            except Exception as e:
+                logger.exception(f"Design failed for transcript {transcript.transcript_id}: {e}")
+                continue
+
+        return results, guide_to_transcripts
+
     async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
 
-        # Generate candidate summary report
-        summary_file = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_candidate_summary.txt"
-        self._generate_candidate_report(design_results, summary_file)
-
-        # Generate top candidates FASTA (artifact for users; Nextflow uses a separate input FASTA)
-        top_candidates_fasta = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_top_candidates.fasta"
-        top_sequences = []
-        for c in design_results.top_candidates[: self.config.top_n]:
-            header = (
-                f"{c.id} transcript={c.transcript_id} pos={c.position} "
-                f"gc={c.gc_content:.1f} score={c.composite_score:.1f}"
-            )
-            top_sequences.append((header, c.guide_sequence))
-
-        if top_sequences:
-            FastaUtils.save_sequences_fasta(top_sequences, top_candidates_fasta)
-        else:
-            # Ensure file exists and is informative even with zero sequences
-            top_candidates_fasta.parent.mkdir(parents=True, exist_ok=True)
-            with top_candidates_fasta.open("w") as fh:
-                fh.write(f"# siRNAforge top candidates: 0 sequences for {self.config.gene_query}\n")
+        # No user-facing top-candidates FASTA or text/json summaries are produced anymore.
+        # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
+        # prepares its own internal FASTA input under off_target/.
 
         # Emit candidate CSVs: always keep ALL and a filtered PASSING file
         try:
@@ -454,117 +531,72 @@ class SiRNAWorkflow:
             # Validate with schema (will raise if invalid)
             validated_all = SiRNACandidateSchema.validate(all_df)
 
-            # Split into pass/fail and write ALL + PASS files
-            pass_df = validated_all[validated_all["passes_filters"] == "PASS"]
+            # Note: design parameters are not appended as per-row columns anymore
+            # to avoid cluttering the candidate CSVs. Full parameters are included
+            # in the `workflow_summary.json` under the key `design_parameters`.
+
+            # Normalize passes_filters values so legacy booleans are treated as 'PASS'/'FAIL'
+            def _normalize_pass(v: Any) -> str:
+                """Normalize various legacy pass values into 'PASS' or 'FAIL'.
+
+                Accepts booleans, numeric 0/1, and common strings. For unknown
+                values we fall back to truthiness (truthy -> 'PASS', falsy -> 'FAIL').
+                Always returns a string to satisfy static typing checks.
+                """
+                result: str
+                try:
+                    # Handle booleans and numeric 0/1
+                    if v is True or (isinstance(v, (int, float)) and v == 1):
+                        result = "PASS"
+                    elif v is False or (isinstance(v, (int, float)) and v == 0):
+                        result = "FAIL"
+                    elif isinstance(v, str):
+                        vs = v.strip().upper()
+                        if vs in {"PASS", "TRUE", "YES"}:
+                            result = "PASS"
+                        elif vs in {"FAIL", "FALSE", "NO"}:
+                            result = "FAIL"
+                        else:
+                            # Unknown string: return uppercased form
+                            result = vs
+                    else:
+                        # Fallback: use truthiness
+                        result = "PASS" if bool(v) else "FAIL"
+                except Exception:
+                    # On unexpected errors, fail-safe to 'FAIL'
+                    result = "FAIL"
+
+                return result
+
+            validated_all["passes_filters"] = validated_all["passes_filters"].apply(_normalize_pass)
+
+            # Split into pass/fail and write ALL + PASS files (append later too for consistency)
+            pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
             base = self.config.output_dir / "sirnaforge"
             out_all = base / f"{self.config.gene_query}_all.csv"
             out_pass = base / f"{self.config.gene_query}_pass.csv"
             validated_all.to_csv(out_all, index=False)
             pass_df.to_csv(out_pass, index=False)
 
-            # Backward-compatible alias: sirna_results.csv -> all.csv
+            # Generate FASTA file for passing candidates
             try:
-                legacy = base / f"{self.config.gene_query}_sirna_results.csv"
-                primary = out_all
-                if legacy.exists() or legacy.is_symlink():
-                    legacy.unlink()
-                if primary.exists():
-                    try:
-                        legacy.symlink_to(primary)
-                    except Exception:
-                        shutil.copyfile(primary, legacy)
-            except Exception as e:  # Do not fail workflow for alias creation
-                logger.warning(f"Failed to create legacy sirna_results.csv alias: {e}")
+                out_pass_fasta = base / f"{self.config.gene_query}_pass.fasta"
+                self._write_pass_candidates_fasta(pass_df, out_pass_fasta)
+            except Exception as e:
+                logger.warning(f"Failed to write PASS candidates FASTA: {e}")
+
         except Exception as e:  # Do not fail workflow for reporting extras
             logger.warning(f"Failed to write all/pass CSVs: {e}")
 
         # Generate machine-readable candidate summary JSON (concise)
-        try:
-            # Save thermodynamic metrics to a dedicated CSV (schema-free)
-            try:
-                thermo_rows = []
-                for c in design_results.candidates:
-                    cs = getattr(c, "component_scores", {}) or {}
-                    thermo_rows.append(
-                        {
-                            "id": c.id,
-                            "transcript_id": c.transcript_id,
-                            "position": c.position,
-                            "gc_content": c.gc_content,
-                            "asymmetry_score": c.asymmetry_score,
-                            "duplex_stability_dg": c.duplex_stability,
-                            "duplex_stability_score": cs.get("duplex_stability_score"),
-                            "dg_5p": cs.get("dg_5p"),
-                            "dg_3p": cs.get("dg_3p"),
-                            "delta_dg_end": cs.get("delta_dg_end"),
-                            "structure": getattr(c, "structure", None),
-                            "mfe": getattr(c, "mfe", None),
-                            "paired_fraction": getattr(c, "paired_fraction", None),
-                            "melting_temp_c": cs.get("melting_temp_c"),
-                            "thermo_combo": cs.get("thermo_combo"),
-                            "composite_score": c.composite_score,
-                        }
-                    )
-
-                thermo_df = pd.DataFrame(thermo_rows)
-                thermo_path = self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_thermo.csv"
-                thermo_df.to_csv(thermo_path, index=False)
-            except Exception as e:
-                logger.warning(f"Failed to write thermodynamic CSV: {e}")
-
-            summary_json_path = (
-                self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_candidate_summary.json"
-            )
-            summary = design_results.get_summary()
-            # Enrich summary with pass/fail counts and config
-            total = design_results.total_candidates
-            passed = design_results.filtered_candidates
-            failed = max(0, total - passed)
-            summary.update(
-                {
-                    "pass_count": passed,
-                    "fail_count": failed,
-                    "top_n_requested": self.config.top_n,
-                    "processing_time_seconds": float(design_results.processing_time),
-                }
-            )
-
-            top_export: list[dict[str, Any]] = []
-            for c in design_results.top_candidates[: self.config.top_n]:
-                cs = getattr(c, "component_scores", {}) or {}
-                top_export.append(
-                    {
-                        "id": c.id,
-                        "transcript_id": c.transcript_id,
-                        "position": c.position,
-                        "guide_sequence": c.guide_sequence,
-                        "composite_score": c.composite_score,
-                        "passes_filters": (
-                            c.passes_filters.value if hasattr(c.passes_filters, "value") else c.passes_filters
-                        ),
-                        "thermo": {
-                            "duplex_dg": c.duplex_stability,
-                            "asymmetry": c.asymmetry_score,
-                            "delta_dg_end": cs.get("delta_dg_end"),
-                        },
-                    }
-                )
-
-            with summary_json_path.open("w") as fh:
-                json.dump({"summary": summary, "top_candidates": top_export}, fh, indent=2)
-        except Exception as e:
-            logger.warning(f"Failed to write candidate summary JSON: {e}")
+        # No separate thermodynamic CSV or candidate summary JSON is written anymore.
 
         # Build a FAIR manifest with checksums and counts
         try:
             manifest = self._build_fair_manifest(
                 all_csv=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_all.csv"),
                 pass_csv=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_pass.csv"),
-                top_fasta=top_candidates_fasta,
-                summary_txt=summary_file,
-                summary_json=(
-                    self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_candidate_summary.json"
-                ),
+                pass_fasta=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_pass.fasta"),
                 orf_report=(self.config.output_dir / "orf_reports" / f"{self.config.gene_query}_orf_validation.txt"),
             )
             manifest_path = self.config.output_dir / "sirnaforge" / "manifest.json"
@@ -575,8 +607,31 @@ class SiRNAWorkflow:
 
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         console.print("   - ORF validation report: orf_reports/")
-        console.print("   - siRNA candidate summary: sirnaforge/")
-        console.print(f"   - Top {len(top_sequences)} candidates for off-target analysis")
+        console.print("   - siRNA candidate CSVs: sirnaforge/ (<gene>_all.csv, <gene>_pass.csv)")
+        console.print("   - siRNA candidate FASTA: sirnaforge/ (<gene>_pass.fasta)")
+
+    def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
+        """Write passing candidates to FASTA format with simple headers.
+
+        Args:
+            pass_df: DataFrame containing passing candidates
+            output_path: Path to write the FASTA file
+        """
+        try:
+            sequences = []
+            for _, row in pass_df.iterrows():
+                # Create simple header with candidate ID and score
+                header = f"{row['id']} score={row['composite_score']:.1f}"
+                sequence = str(row["guide_sequence"])
+                sequences.append((header, sequence))
+
+            # Use FastaUtils to write the sequences
+            FastaUtils.save_sequences_fasta(sequences, output_path)
+            logger.info(f"Saved {len(sequences)} passing candidates to FASTA: {output_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to write PASS candidates FASTA: {e}")
+            raise
 
     def _file_md5(self, path: Path) -> str:
         hash_md5 = hashlib.md5()
@@ -598,9 +653,7 @@ class SiRNAWorkflow:
         *,
         all_csv: Path,
         pass_csv: Path,
-        top_fasta: Path,
-        summary_txt: Path,
-        summary_json: Optional[Path] = None,
+        pass_fasta: Path,
         orf_report: Path,
     ) -> dict:
         """Create a manifest JSON describing generated outputs (checksums, sizes, counts)."""
@@ -634,10 +687,7 @@ class SiRNAWorkflow:
 
         add_file("candidates_all_csv", all_csv, "csv", {"rows": csv_rows(all_csv)})
         add_file("candidates_pass_csv", pass_csv, "csv", {"rows": csv_rows(pass_csv)})
-        add_file("top_candidates_fasta", top_fasta, "fasta", {"sequences": self._count_fasta_sequences(top_fasta)})
-        add_file("candidate_summary_txt", summary_txt, "text")
-        if summary_json is not None:
-            add_file("candidate_summary_json", summary_json, "json")
+        add_file("candidates_pass_fasta", pass_fasta, "fasta", {"sequences": self._count_fasta_sequences(pass_fasta)})
         add_file("orf_validation_report", orf_report, "tsv")
 
         return {
@@ -664,13 +714,20 @@ class SiRNAWorkflow:
         # Prepare input files
         input_fasta = await self._prepare_offtarget_input(top_candidates)
 
-        # Try Nextflow pipeline first, fall back to basic analysis
+        # If user disabled off-target checking via design parameters, skip entirely
+        if not getattr(self.config.design_params, "check_off_targets", True):
+            console.print("⚠️  Off-target analysis skipped by user request")
+            return {"status": "skipped", "reason": "user_disabled"}
+
+        # Try Nextflow pipeline first. We do NOT run the simplistic sequence-based fallback
+        # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
+        # so downstream steps/users can see the explicit reason.
         try:
             return await self._run_nextflow_offtarget_analysis(top_candidates, input_fasta)
         except Exception as e:
             console.print(f"⚠️  Nextflow execution failed: {e}")
             logger.exception("Nextflow pipeline execution error")
-            return await self._basic_offtarget_analysis(top_candidates)
+            return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
         """Prepare FASTA input file for off-target analysis."""
@@ -686,7 +743,8 @@ class SiRNAWorkflow:
 
         # Validate installation
         if not self._validate_nextflow_environment(runner):
-            return await self._basic_offtarget_analysis(candidates)
+            # Do not fall back to basic analysis here; report skipped instead
+            return {"status": "skipped", "reason": "nextflow_unavailable"}
 
         # Execute pipeline
         console.print("🚀 Running embedded Nextflow off-target analysis...")
@@ -718,10 +776,10 @@ class SiRNAWorkflow:
         """Validate Nextflow installation and workflow files."""
         validation = runner.validate_installation()
         if not validation["nextflow"]:
-            console.print("⚠️  Nextflow not available, using basic analysis")
+            console.print("⚠️  Nextflow not available; off-target analysis will be skipped")
             return False
         if not validation["workflow_files"]:
-            console.print("⚠️  Nextflow workflows not found, using basic analysis")
+            console.print("⚠️  Nextflow workflows not found; off-target analysis will be skipped")
             return False
         return True
 
@@ -980,40 +1038,11 @@ class SiRNAWorkflow:
         # Write validated DataFrame to file
         validated_df.to_csv(report_file, sep="\t", index=False)
 
-    def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:
-        """Generate siRNA candidate summary report."""
+    def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:  # noqa: ARG002
+        """Deprecated: summary report disabled (kept for backward API compatibility)."""
+        report_file.parent.mkdir(parents=True, exist_ok=True)
         with report_file.open("w") as f:
-            f.write(f"siRNAforge Results for {self.config.gene_query}\n")
-            f.write("=" * 60 + "\n\n")
-
-            summary = design_results.get_summary()
-            f.write("SUMMARY\n")
-            f.write(f"  Input Sequences: {summary['input_sequences']}\n")
-            f.write(f"  Total Candidates: {summary['total_candidates']}\n")
-            f.write(f"  Filtered Candidates: {summary['filtered_candidates']}\n")
-            f.write(f"  Top Candidates: {summary['top_candidates']}\n")
-            f.write(f"  Best Score: {summary['best_score']:.1f}\n")
-            f.write(f"  Processing Time: {summary['processing_time']}\n\n")
-
-            f.write("TOP 10 CANDIDATES\n")
-            f.write("-" * 40 + "\n")
-
-            for i, candidate in enumerate(design_results.top_candidates[:10], 1):
-                f.write(f"{i}. {candidate.id}\n")
-                f.write(f"   Guide Sequence: {candidate.guide_sequence}\n")
-                f.write(f"   Score: {candidate.composite_score:.1f}\n")
-                f.write(f"   GC Content: {candidate.gc_content:.1f}%\n")
-                f.write(f"   Position: {candidate.position}\n")
-                status = (
-                    candidate.passes_filters.value
-                    if hasattr(candidate.passes_filters, "value")
-                    else candidate.passes_filters
-                )
-                if status == "PASS" or status is True:
-                    f.write("   Filter Status: PASS\n")
-                else:
-                    f.write(f"   Filter Status: {status}\n")
-                f.write("\n")
+            f.write("# Candidate summary report generation disabled.\n")
 
     def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict:
         """Summarize transcript retrieval results."""

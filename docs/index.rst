@@ -21,6 +21,7 @@ Comprehensive siRNA design toolkit for gene silencing with multi-species off-tar
    CLI_REFERENCE
    USAGE_EXAMPLES
    gene_search
+   THERMODYNAMIC_GUIDE
    VALIDATION_GUIDE
    tutorials/index
 
@@ -109,11 +110,11 @@ Quick Navigation
 Features
 --------
 
-🎯 **Algorithm-driven design** - Comprehensive siRNA design with thermodynamic analysis
+🎯 **Algorithm-driven design** - Comprehensive siRNA design with thermodynamic asymmetry analysis
 
 🔍 **Off-target analysis** - Integrated genome-wide off-target prediction
 
-📊 **Rich scoring system** - Multi-component scoring with customizable weights
+📊 **Rich scoring system** - Multi-component scoring with research-backed thermodynamic asymmetry
 
 🧪 **Secondary structure** - RNA folding prediction using ViennaRNA
 

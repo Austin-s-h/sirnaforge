@@ -12,6 +12,24 @@ Glossary
    Thermodynamics
       The study of energy changes in RNA folding and hybridization, crucial for predicting siRNA stability and effectiveness.
 
+   Thermodynamic Asymmetry
+      The stability difference between the 5' and 3' ends of an siRNA duplex. Proper asymmetry (less stable 5' end on guide strand) promotes correct guide strand selection into RISC. Based on research by Khvorova et al. (2003) and others showing this is critical for siRNA functionality.
+
+   Asymmetry Score
+      A numerical measure (0-1) of thermodynamic asymmetry in siRNA duplexes. Higher scores indicate better asymmetry for guide strand incorporation into RISC. Calculated from the free energy difference between duplex ends.
+
+   Paired Fraction
+      The fraction of nucleotides in the siRNA guide strand that are paired with the passenger strand in the predicted secondary structure. Values of 0.5-0.7 are optimal for effective RISC loading.
+
+   MFE
+      Minimum Free Energy. The free energy of the most stable RNA secondary structure. Optimal values for siRNA are -2 to -8 kcal/mol for effective RISC processing.
+
+   Duplex Stability
+      The total free energy change (ΔG) for siRNA duplex formation, measured in kcal/mol. Optimal range is -15 to -25 kcal/mol for balanced stability and RISC loading.
+
+   Delta DG End
+      The difference in stability between the 3' and 5' ends of the siRNA duplex (ΔG₃' - ΔG₅'). Positive values (+2 to +6 kcal/mol) indicate proper asymmetry for guide strand selection.
+
    RISC
       RNA-Induced Silencing Complex. The protein complex that incorporates siRNA and uses it to cleave complementary mRNA.
 

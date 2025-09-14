@@ -68,10 +68,13 @@ my_first_analysis/
 ├── transcripts/
 │   ├── TP53_transcripts.fasta      # Retrieved transcripts
 │   └── TP53_canonical.fasta        # Canonical isoform
-├── sirna_design/
-│   ├── TP53_sirna_candidates.tsv   # All designed siRNAs
-│   ├── TP53_top_candidates.tsv     # Top-ranked siRNAs
-│   └── TP53_design_summary.json    # Design parameters & stats
+├── sirnaforge/
+│   ├── TP53_all.csv                # All designed siRNAs (with thermo fields)
+│   ├── TP53_pass.csv               # Passing candidates only
+│   └── manifest.json               # FAIR metadata for generated files
+├── logs/
+│   ├── workflow_stream.log         # Console log stream
+│   └── workflow_summary.json       # High-level results summary
 └── orf_reports/
     └── TP53_orf_validation.txt     # ORF analysis results
 ```
@@ -128,26 +131,31 @@ uv run sirnaforge design tp53_transcripts.fasta -o tp53_results.tsv
 
 ## Understanding the Output
 
-### siRNA Results Table
+### siRNA Results Tables
 
-The main results file (`*_sirna_candidates.tsv`) contains:
+Two CSVs are produced in `sirnaforge/`:
 
-| Column | Description |
-|--------|-------------|
-| `sirna_id` | Unique siRNA identifier |
-| `guide_sequence` | Guide (antisense) strand sequence |
-| `passenger_sequence` | Passenger (sense) strand sequence |
-| `position` | Position on transcript |
-| `gc_content` | GC content percentage |
-| `composite_score` | Overall quality score |
-| `thermodynamic_score` | Folding energy score |
-| `off_target_score` | Off-target prediction score |
+- `*_all.csv`: All designed candidates (includes pass/fail) with thermodynamic and structural fields
+- `*_pass.csv`: Subset of candidates that pass all filters
+
+Key columns include:
+
+- `id`, `transcript_id`, `position`
+- `guide_sequence`, `passenger_sequence`, `gc_content`, `asymmetry_score`
+- `structure`, `mfe`, `paired_fraction` (if structure prediction enabled)
+- `duplex_stability_dg`, `dg_5p`, `dg_3p`, `delta_dg_end`, `melting_temp_c`
+- `transcript_hit_count`, `transcript_hit_fraction`, `off_target_count`
+- `composite_score`, `passes_filters`
 
 ### Quality Scores
 
-- **Composite Score**: Overall siRNA quality (higher = better)
-- **Thermodynamic Score**: RNA folding favorability
-- **Off-target Score**: Specificity prediction (higher = more specific)
+- Composite Score: Overall siRNA quality (higher = better)
+- Thermodynamic metrics: ΔG, end-region ΔGs, asymmetry, MFE, approximate Tm
+  - **Asymmetry Score**: Critical for guide strand selection (see {doc}`tutorials/custom_scoring` for details)
+  - **GC Content**: Optimal 35-60% (ideally 40-55%) for stability/accessibility balance
+  - **MFE**: Moderate values (-2 to -8 kcal/mol) preferred for effective RISC processing
+  - **End Stability**: Positive delta_dg_end (+2 to +6 kcal/mol) promotes correct strand orientation
+- Off-target metrics: Counts/scores added after off-target analysis when available
 
 ## Common Parameters
 

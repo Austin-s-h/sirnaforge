@@ -69,6 +69,8 @@ make docs-cli && make docs-examples
 
 - [Full CLI Reference](CLI_REFERENCE.md)
 - [Usage Examples](USAGE_EXAMPLES.md)
+- [Thermodynamic Metrics Guide](THERMODYNAMIC_GUIDE.md)
+- [Thermodynamic Asymmetry Scoring](tutorials/custom_scoring.md)
 - [Main README](README.md)
 
 ---

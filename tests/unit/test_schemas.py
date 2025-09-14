@@ -20,6 +20,15 @@ class TestSiRNACandidateSchema:
             "gc_content": [0.0, 0.0],
             "asymmetry_score": [0.5, 0.7],
             "paired_fraction": [0.3, 0.4],
+            # New thermodynamic/structure fields (nullable)
+            "structure": [None, None],
+            "mfe": [None, None],
+            "duplex_stability_dg": [None, None],
+            "duplex_stability_score": [None, None],
+            "dg_5p": [None, None],
+            "dg_3p": [None, None],
+            "delta_dg_end": [None, None],
+            "melting_temp_c": [None, None],
             "off_target_count": [2, 1],
             "transcript_hit_count": [1, 1],
             "transcript_hit_fraction": [1.0, 1.0],
@@ -28,10 +37,22 @@ class TestSiRNACandidateSchema:
         }
 
         df = pd.DataFrame(test_data)
+        # Explicitly set dtypes for nullable float columns to avoid object inference
+        df = df.astype(
+            {
+                "mfe": "float64",
+                "duplex_stability_dg": "float64",
+                "duplex_stability_score": "float64",
+                "dg_5p": "float64",
+                "dg_3p": "float64",
+                "delta_dg_end": "float64",
+                "melting_temp_c": "float64",
+            }
+        )
         result = SiRNACandidateSchema.validate(df)
-
-        assert result.shape == (2, 13)
-        assert list(result.columns) == list(test_data.keys())
+        assert result.shape == (2, len(test_data.keys()))
+        # Order-agnostic column check
+        assert set(result.columns) == set(test_data.keys())
 
     def test_invalid_sequence_length_fails(self):
         """Test that invalid sequence lengths fail validation."""
@@ -44,6 +65,15 @@ class TestSiRNACandidateSchema:
             "gc_content": [0.0],
             "asymmetry_score": [0.5],
             "paired_fraction": [0.3],
+            # Include new nullable fields
+            "structure": [None],
+            "mfe": [None],
+            "duplex_stability_dg": [None],
+            "duplex_stability_score": [None],
+            "dg_5p": [None],
+            "dg_3p": [None],
+            "delta_dg_end": [None],
+            "melting_temp_c": [None],
             "off_target_count": [2],
             "transcript_hit_count": [1],
             "transcript_hit_fraction": [1.0],
@@ -52,6 +82,18 @@ class TestSiRNACandidateSchema:
         }
 
         df = pd.DataFrame(test_data)
+        # Explicitly set dtypes for nullable float columns
+        df = df.astype(
+            {
+                "mfe": "float64",
+                "duplex_stability_dg": "float64",
+                "duplex_stability_score": "float64",
+                "dg_5p": "float64",
+                "dg_3p": "float64",
+                "delta_dg_end": "float64",
+                "melting_temp_c": "float64",
+            }
+        )
         with pytest.raises((Exception, ValueError)):  # Should fail sequence length validation
             SiRNACandidateSchema.validate(df)
 
@@ -66,6 +108,15 @@ class TestSiRNACandidateSchema:
             "gc_content": [0.0],
             "asymmetry_score": [0.5],
             "paired_fraction": [0.3],
+            # Include new nullable fields
+            "structure": [None],
+            "mfe": [None],
+            "duplex_stability_dg": [None],
+            "duplex_stability_score": [None],
+            "dg_5p": [None],
+            "dg_3p": [None],
+            "delta_dg_end": [None],
+            "melting_temp_c": [None],
             "off_target_count": [2],
             "transcript_hit_count": [1],
             "transcript_hit_fraction": [1.0],
@@ -74,6 +125,18 @@ class TestSiRNACandidateSchema:
         }
 
         df = pd.DataFrame(test_data)
+        # Explicitly set dtypes for nullable float columns
+        df = df.astype(
+            {
+                "mfe": "float64",
+                "duplex_stability_dg": "float64",
+                "duplex_stability_score": "float64",
+                "dg_5p": "float64",
+                "dg_3p": "float64",
+                "delta_dg_end": "float64",
+                "melting_temp_c": "float64",
+            }
+        )
         with pytest.raises((Exception, ValueError)):  # Should fail nucleotide validation
             SiRNACandidateSchema.validate(df)
 

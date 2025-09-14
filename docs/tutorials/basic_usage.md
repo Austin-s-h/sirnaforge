@@ -45,7 +45,23 @@ If you see this output, you're ready to proceed!
 
 Let's design siRNAs for the well-known tumor suppressor gene TP53:
 
-```bash
+**Expected Structure:**
+```
+tp53_analysis/
+├── transcripts/
+│   ├── TP53_transcripts.fasta      # All retrieved transcripts
+│   ├── TP53_canonical.fasta        # Canonical isoform only
+│   └── temp_for_design.fasta       # Transcripts used for design
+├── sirnaforge/
+│   ├── TP53_all.csv                # All designed candidates
+│   ├── TP53_pass.csv               # Passing candidates only
+│   └── manifest.json               # FAIR metadata
+├── logs/
+│   ├── workflow_stream.log         # Console output
+│   └── workflow_summary.json       # High-level summary
+└── orf_reports/
+    └── TP53_orf_validation.txt     # ORF analysis results
+```
 # Create a directory for our tutorial
 mkdir sirnaforge_tutorial
 cd sirnaforge_tutorial
@@ -54,10 +70,11 @@ cd sirnaforge_tutorial
 uv run sirnaforge workflow TP53 --output-dir tp53_analysis --verbose
 ```
 
-**What's happening:**
-1. siRNAforge searches for TP53 transcripts in Ensembl
-2. Retrieves canonical and alternative transcript sequences
-3. Validates open reading frames
+```bash
+# View top 10 FASTA entries for top candidates
+# Inspect top candidates from the PASS CSV
+head -n 5 tp53_analysis/sirnaforge/TP53_pass.csv
+```
 4. Designs siRNA candidates across all transcripts
 5. Scores candidates using multiple algorithms
 6. Ranks and selects top candidates
@@ -67,9 +84,9 @@ uv run sirnaforge workflow TP53 --output-dir tp53_analysis --verbose
 After the workflow completes, examine the output structure:
 
 ```bash
-ls -la tp53_analysis/
+# Inspect top rows of passing candidates CSV (header + 5 rows)
+head -6 tp53_analysis/sirnaforge/TP53_pass.csv
 ```
-
 **Expected Structure:**
 ```
 tp53_analysis/
@@ -78,7 +95,8 @@ tp53_analysis/
 │   ├── TP53_canonical.fasta        # Canonical isoform only
 │   └── temp_for_design.fasta       # Transcripts used for design
 ├── sirna_design/
-│   ├── TP53_sirna_candidates.tsv   # All designed candidates
+│   ├── TP53_all.csv                # All designed candidates
+│   ├── TP53_pass.csv               # Passing candidates only
 │   ├── TP53_top_candidates.tsv     # Top 20 candidates
 │   └── TP53_design_summary.json    # Design metadata
 └── orf_reports/
@@ -96,18 +114,20 @@ head -11 tp53_analysis/sirna_design/TP53_top_candidates.tsv
 
 **Key Columns to Note:**
 - `sirna_id`: Unique identifier
-- `guide_sequence`: The antisense strand (21 nt)
-- `passenger_sequence`: The sense strand (21 nt)
-- `position`: Location on transcript
-- `gc_content`: GC percentage
-- `composite_score`: Overall quality score
-- `thermodynamic_score`: RNA folding favorability
-- `off_target_score`: Specificity prediction
+```bash
+# Compare number of passing candidates
+wcl_pass_a=$(($(wc -l < tp53_analysis/sirnaforge/TP53_pass.csv)-1))
+wcl_pass_b=$(($(wc -l < tp53_strict/sirnaforge/TP53_pass.csv)-1))
+echo "PASS count (analysis): $wcl_pass_a"
+echo "PASS count (strict):   $wcl_pass_b"
 
-### Step 5: Understand the Scoring
+# Compare average GC content in PASS sets (CSV; gc_content column)
+awk -F',' 'NR>1 {sum+=$6; n++} END {if(n>0) printf("Average GC: %.2f%%\n", sum/n); else print "No rows"}' \
+  tp53_analysis/sirnaforge/TP53_pass.csv
 
-Let's examine what makes a good siRNA candidate:
-
+awk -F',' 'NR>1 {sum+=$6; n++} END {if(n>0) printf("Average GC: %.2f%%\n", sum/n); else print "No rows"}' \
+  tp53_strict/sirnaforge/TP53_pass.csv
+```
 ```bash
 # Sort by composite score to see the best candidates
 sort -k7 -nr tp53_analysis/sirna_design/TP53_top_candidates.tsv | head -5
@@ -115,8 +135,10 @@ sort -k7 -nr tp53_analysis/sirna_design/TP53_top_candidates.tsv | head -5
 
 **Interpreting Scores:**
 - **Composite Score (7-10)**: Higher is better; combines all factors
-- **Thermodynamic Score (0-1)**: Measures RNA folding favorability
-- **GC Content (30-52%)**: Balanced GC content for stability and activity
+- **Thermodynamic Score (0-1)**: Measures RNA folding favorability and asymmetry (see {doc}`custom_scoring` for detailed explanation of thermodynamic asymmetry)
+- **GC Content (35-60%)**: Optimal range 40-55% for balance of stability and accessibility
+- **Asymmetry Score (0.65-1.0)**: Higher values indicate better guide strand selection into RISC
+- **MFE (-2 to -8 kcal/mol)**: Moderate stability preferred for effective RISC processing
 
 ### Step 6: Customize Parameters
 

@@ -142,7 +142,7 @@ if result.success:
     searcher = GeneSearcher()
     searcher.save_transcripts_fasta(result.transcripts, "tp53.fasta")
 
-    # Design siRNAs
+    # Design siRNAs with thermodynamic analysis
     designer = SiRNADesigner(DesignParameters())
     sirna_results = designer.design_from_file("tp53.fasta")
 

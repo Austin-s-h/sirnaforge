@@ -24,7 +24,14 @@ class FilterCriteria(BaseModel):
     gc_max: float = Field(default=52.0, ge=0, le=100, description="Maximum GC content percentage")
     max_poly_runs: int = Field(default=3, ge=1, description="Maximum consecutive identical nucleotides")
     max_paired_fraction: float = Field(default=0.6, ge=0, le=1, description="Maximum secondary structure pairing")
-    min_asymmetry_score: float = Field(default=0.0, ge=0, le=1, description="Minimum thermodynamic asymmetry")
+    min_asymmetry_score: float = Field(
+        default=0.65,
+        ge=0.3,
+        le=1,
+        description=(
+            "RNA strands that have a high asymmetry are generally more effective. Since we desire to have our guide strand's 5' end thermodynamically less stable than its 3' end, we want higher asymmetry scores which can range between 0.65 to 0.85"
+        ),
+    )
 
     @field_validator_typed("gc_max")
     @classmethod
@@ -187,6 +194,14 @@ class DesignResult(BaseModel):
     processing_time: float = Field(ge=0, description="Processing time in seconds")
     tool_versions: dict[str, str] = Field(default_factory=dict, description="Tool versions used")
 
+    def get_rowwise_design_params(self) -> dict[str, Any]:
+        # Removed: row-wise design parameter mapping is deprecated. Design
+        # parameters are stored in workflow metadata (`workflow_summary.json`) to
+        # avoid duplicating identical columns across every candidate row.
+        raise AttributeError(
+            "get_rowwise_design_params has been removed; design parameters are stored in workflow_summary.json"
+        )
+
     def save_csv(self, filepath: str) -> None:
         """Save results to CSV file with schema validation.
 
@@ -233,7 +248,10 @@ class DesignResult(BaseModel):
         validated_df = SiRNACandidateSchema.validate(df)
         logger.info(f"siRNA candidates schema validation passed for {len(validated_df)} candidates")
 
-        # Save validated DataFrame
+        # Note: do not append design parameters as per-row columns to the candidates CSV.
+        # Full design parameters are available in workflow metadata (`workflow_summary.json`).
+
+        # Save validated DataFrame (with appended params if available)
         validated_df.to_csv(filepath, index=False)
 
     def get_summary(self) -> dict[str, Any]:

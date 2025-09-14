@@ -21,7 +21,10 @@ EXAMPLE_CONFIGS = {
             "gc_min": 30.0,
             "gc_max": 52.0,
         },
-        "expected_outputs": ["sirna_candidates.tsv"],
+        "expected_outputs": [
+            "sirnaforge/*_all.csv",
+            "sirnaforge/*_pass.csv",
+        ],
         "timeout": 60,
     },
     "gene_targeting": {
@@ -30,14 +33,13 @@ EXAMPLE_CONFIGS = {
         "database": "ensembl",
         "parameters": {
             "top_n_candidates": 10,
-            "top_n_offtarget": 5,
             "genome_species": ["human"],
             "gc_min": 35.0,
             "gc_max": 50.0,
         },
         "expected_outputs": [
             "transcripts/TP53_transcripts.fasta",
-            "sirnaforge/sirna_candidates.tsv",
+            "sirnaforge/*_all.csv",
             "off_target/results/",
         ],
         "timeout": 300,
@@ -47,13 +49,12 @@ EXAMPLE_CONFIGS = {
         "input_file": str(TEST_DATA_DIR / "sample_transcripts.fasta"),
         "parameters": {
             "top_n_candidates": 3,
-            "top_n_offtarget": 2,
             "genome_species": ["human", "mouse", "rat"],
             "gc_min": 40.0,
             "gc_max": 60.0,
         },
         "expected_outputs": [
-            "sirnaforge/sirna_candidates.tsv",
+            "sirnaforge/*_all.csv",
             "off_target/results/",
         ],
         "timeout": 600,
@@ -67,7 +68,7 @@ EXAMPLE_CONFIGS = {
             "gc_min": 30.0,
             "gc_max": 70.0,
         },
-        "expected_outputs": ["sirnaforge/sirna_candidates.tsv"],
+        "expected_outputs": ["sirnaforge/*_all.csv"],
         "timeout": 1200,
     },
     "custom_scoring": {
@@ -82,7 +83,7 @@ EXAMPLE_CONFIGS = {
                 "gc_content": 0.1,
             },
         },
-        "expected_outputs": ["sirnaforge/sirna_candidates.tsv"],
+        "expected_outputs": ["sirnaforge/*_all.csv"],
         "timeout": 120,
     },
     "validation_only": {
@@ -146,8 +147,8 @@ DOCKER_CONFIGS = {
         "commands": ["sirnaforge workflow TP53 --output-dir /tmp/test_output --top-n 3 --genome-species human"],
         "timeout": 600,
         "expected_files": [
-            "/tmp/test_output/sirnaforge/sirna_candidates.tsv",
-            "/tmp/test_output/workflow_summary.json",
+            "/tmp/test_output/sirnaforge/*_all.csv",
+            "/tmp/test_output/logs/workflow_summary.json",
         ],
     },
     "tool_validation": {
@@ -206,8 +207,8 @@ QUICK_TESTS = {
     },
     "design_test": {
         "description": "Quick siRNA design test",
-        "commands": ["sirnaforge design examples/sample_transcripts.fasta --output /tmp/quick_test.tsv --top-n 3"],
+        "commands": ["sirnaforge design examples/sample_transcripts.fasta --output /tmp/quick_test.csv --top-n 3"],
         "timeout": 60,
-        "cleanup": ["/tmp/quick_test.tsv"],
+        "cleanup": ["/tmp/quick_test.csv"],
     },
 }

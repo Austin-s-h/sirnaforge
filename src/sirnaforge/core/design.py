@@ -149,9 +149,10 @@ class SiRNADesigner:
         )
 
     def _enumerate_candidates(self, sequence: str, transcript_id: str) -> list[SiRNACandidate]:
-        """Enumerate all possible siRNA candidates using sliding window."""
+        """Enumerate all possible siRNA candidates using sliding window with early filtering."""
         candidates = []
         sirna_length = self.parameters.sirna_length
+        filters = self.parameters.filters
 
         # Slide window across sequence
         for i in range(len(sequence) - sirna_length + 1):
@@ -161,11 +162,23 @@ class SiRNADesigner:
             guide_seq = str(Seq(target_seq).reverse_complement())
             passenger_seq = target_seq
 
-            # Create candidate ID
-            candidate_id = f"{transcript_id}_{i + 1}_{i + sirna_length}"
-
-            # Calculate basic properties
+            # Early filtering for computational efficiency
             gc_content = self._calculate_gc_content(guide_seq)
+            if not (filters.gc_min <= gc_content <= filters.gc_max):
+                continue
+
+            # Early filtering: check for poly runs before creating candidate object
+            if self._has_poly_runs(guide_seq, filters.max_poly_runs):
+                continue
+
+            # Create candidate ID with project moniker and sanitized transcript id
+            # Format: SIRNAF_<TRANSCRIPT>_<start>_<end>
+            # Sanitize transcript_id: keep alphanumerics and underscore, replace others with '-'
+            safe_tid = "".join([c if (c.isalnum() or c == "_") else "-" for c in transcript_id])
+            # Truncate long transcript ids to keep IDs short while retaining uniqueness
+            if len(safe_tid) > 24:
+                safe_tid = safe_tid[:24]
+            candidate_id = f"SIRNAF_{safe_tid}_{i + 1}_{i + sirna_length}"
 
             candidate = SiRNACandidate(
                 id=candidate_id,
@@ -184,25 +197,15 @@ class SiRNADesigner:
         return candidates
 
     def _apply_filters(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
-        """Apply hard filters as specified in the algorithm."""
-        filters = self.parameters.filters
+        """Apply remaining filters (early GC and poly-run filtering already done in enumeration)."""
         filtered = []
 
         for candidate in candidates:
-            issues = []
+            issues: list[str] = []
             status: Union[bool, _ModelCandidate.FilterStatus] = True
 
-            # GC content filter
-            if not (filters.gc_min <= candidate.gc_content <= filters.gc_max):
-                issues.append(
-                    f"GC content {candidate.gc_content:.1f}% outside range {filters.gc_min}-{filters.gc_max}%"
-                )
-                status = _ModelCandidate.FilterStatus.GC_OUT_OF_RANGE
-
-            # Poly run filter (no runs of 4+ identical nucleotides)
-            if self._has_poly_runs(candidate.guide_sequence, filters.max_poly_runs):
-                issues.append(f"Contains runs of >{filters.max_poly_runs} identical nucleotides")
-                status = _ModelCandidate.FilterStatus.POLY_RUNS
+            # Note: GC content and poly-run filtering already done in _enumerate_candidates
+            # This is mainly for any additional filters or post-processing
 
             # Update candidate with filter results
             candidate.passes_filters = status

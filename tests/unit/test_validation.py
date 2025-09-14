@@ -182,11 +182,31 @@ class TestValidationMiddleware:
                 "gc_content": [50.0],
                 "asymmetry_score": [0.5],
                 "paired_fraction": [0.3],
+                "structure": [None],
+                "mfe": [None],
+                "duplex_stability_dg": [None],
+                "duplex_stability_score": [None],
+                "dg_5p": [None],
+                "dg_3p": [None],
+                "delta_dg_end": [None],
+                "melting_temp_c": [None],
                 "off_target_count": [0],
                 "transcript_hit_count": [1],
                 "transcript_hit_fraction": [1.0],
                 "composite_score": [75.0],
                 "passes_filters": [True],
+            }
+        )
+        # Set dtypes for nullable float columns
+        df = df.astype(
+            {
+                "mfe": "float64",
+                "duplex_stability_dg": "float64",
+                "duplex_stability_score": "float64",
+                "dg_5p": "float64",
+                "dg_3p": "float64",
+                "delta_dg_end": "float64",
+                "melting_temp_c": "float64",
             }
         )
 

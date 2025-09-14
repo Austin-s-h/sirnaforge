@@ -490,11 +490,12 @@ def workflow(
         console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
         console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
-        console.print("   • siRNA candidates: [blue]sirnaforge/sirna_candidates.tsv[/blue]")
+        console.print(f"   • siRNA candidates (ALL): [blue]sirnaforge/{gene_query}_all.csv[/blue]")
+        console.print(f"   • siRNA candidates (PASS): [blue]sirnaforge/{gene_query}_pass.csv[/blue]")
         console.print("   • Off-target results: [blue]off_target/results/[/blue]")
         console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
         if json_summary:
-            console.print("   • Workflow summary: [blue]workflow_summary.json[/blue]")
+            console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
 
         if offtarget_summary.get("method") == "nextflow":
             console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")

@@ -11,7 +11,8 @@ def test_shared_guides(tmp_path):
     """Two identical transcripts -> each guide should hit both transcripts."""
 
     fasta = tmp_path / "shared.fa"
-    seq = "A" * 50
+    # Use a sequence with balanced GC content (40%) to pass filters
+    seq = "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"
     fasta.write_text(f">tx1\n{seq}\n>tx2\n{seq}\n")
 
     params = DesignParameters(sirna_length=21, top_n=5)
@@ -33,8 +34,9 @@ def test_unique_guides(tmp_path):
     """Two different transcripts -> typical guide should hit only one transcript."""
 
     fasta = tmp_path / "unique.fa"
-    seq1 = "A" * 50
-    seq2 = "C" * 50
+    # Use sequences with balanced GC content but different sequences
+    seq1 = "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"
+    seq2 = "CGTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT"
     fasta.write_text(f">tx1\n{seq1}\n>tx2\n{seq2}\n")
 
     params = DesignParameters(sirna_length=21, top_n=5)

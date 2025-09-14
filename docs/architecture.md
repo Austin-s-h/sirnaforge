@@ -211,11 +211,30 @@ class DesignParameters:
 ##### `thermodynamics.py` - RNA Structure Analysis
 ```python
 class ThermodynamicsCalculator:
-    """ViennaRNA integration for structure prediction"""
+    """ViennaRNA integration for structure prediction and asymmetry scoring"""
+
+class ThermodynamicAsymmetryScorer:
+    """Calculate thermodynamic asymmetry for guide strand selection"""
 
 class SecondaryStructure:
     """RNA secondary structure representation"""
 ```
+
+**Thermodynamic Asymmetry Implementation:**
+
+The thermodynamic asymmetry scoring is a critical component that predicts guide strand selection into RISC (RNA-induced silencing complex). This implementation is based on research showing that siRNAs with less stable 5' ends on the guide strand are more effectively incorporated into RISC.
+
+**Key Research Foundation:**
+- Khvorova A et al. (2003): Demonstrated thermodynamic asymmetry importance for RISC incorporation
+- Naito Y et al. (2009): Established thermodynamic stability as a major determinant of siRNA efficiency
+- Amarzguioui M and Prydz H (2004): Identified asymmetry as critical for distinguishing target genes
+- Ichihara M et al. (2017): Comprehensive principles including thermodynamic asymmetry for efficacy prediction
+
+**Algorithm Components:**
+1. **5' End Stability Analysis**: Calculates free energy of duplex 5' terminus (positions 1-4)
+2. **3' End Stability Analysis**: Calculates free energy of duplex 3' terminus (positions -4 to -1)
+3. **Asymmetry Ratio Calculation**: Measures stability difference (ΔG₃' - ΔG₅')
+4. **Strand Bias Prediction**: Predicts likelihood of correct guide strand selection
 
 ##### `off_target.py` - Specificity Analysis
 ```python

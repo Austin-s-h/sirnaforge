@@ -39,7 +39,6 @@ async def run_complete_example() -> None:
             output_dir=str(output_dir),
             database="ensembl",
             top_n_candidates=20,
-            top_n_offtarget=10,
             genome_species=["human", "rat", "rhesus"],
             gc_min=30.0,
             gc_max=52.0,
@@ -68,16 +67,17 @@ async def run_complete_example() -> None:
         print("📁 Key Output Files:")
         print("-" * 20)
         print(f"• Transcripts: {output_dir}/transcripts/{gene_query}_transcripts.fasta")
-        print(f"• siRNA candidates: {output_dir}/sirnaforge/sirna_candidates.tsv")
+        print(f"• siRNA (ALL): {output_dir}/sirnaforge/{gene_query}_all.csv")
+        print(f"• siRNA (PASS): {output_dir}/sirnaforge/{gene_query}_pass.csv")
         print(f"• Off-target results: {output_dir}/off_target/results/")
-        print(f"• Workflow summary: {output_dir}/workflow_summary.json")
+        print(f"• Workflow summary: {output_dir}/logs/workflow_summary.json")
 
         if offtarget_summary.get("method") == "nextflow":
             print(f"• Full off-target report: {output_dir}/off_target/results/offtarget_report.html")
 
         print()
         print("🎯 Next steps:")
-        print("1. Review siRNA candidates in the TSV file")
+        print("1. Review siRNA candidates in the CSV files (ALL and PASS)")
         print("2. Examine off-target analysis results")
         print("3. Select top candidates for experimental validation")
         print("4. Consider additional specificity testing if needed")

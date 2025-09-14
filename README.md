@@ -53,6 +53,29 @@ docker run -v $(pwd):/workspace -w /workspace \
   sirnaforge workflow BRCA1 --gc-min 40 --gc-max 60 --sirna-length 21 --top-n 50
 ```
 
+**🐍 Conda Environment (Alternative - Local Development):**
+```bash
+# Install micromamba (recommended - fastest), Mambaforge, or Miniconda
+# micromamba (fastest option):
+curl -LsSf https://micro.mamba.pm/install.sh | bash
+
+# Or Mambaforge:
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Mambaforge-$(uname)-$(uname -m).sh"
+bash Mambaforge-$(uname)-$(uname -m).sh
+
+# Create siRNAforge development environment
+make conda-env
+
+# Activate the environment
+micromamba activate sirnaforge-dev  # or conda activate sirnaforge-dev
+
+# Install Python dependencies
+make install-dev
+
+# Run tests to verify installation
+make test
+```
+
 **� Local Development Installation:**
 ```bash
 # Install uv (lightning-fast Python package manager)
@@ -81,8 +104,12 @@ The Docker image includes all bioinformatics dependencies via conda environment 
 
 **For local development without Docker:**
 ```bash
-# Install bioinformatics tools via micromamba
-curl -L micro.mamba.pm/install.sh | bash
+# Option 1: Use conda environment (includes all tools)
+make conda-env
+micromamba activate sirnaforge-dev  # or conda activate sirnaforge-dev
+
+# Option 2: Install bioinformatics tools via micromamba
+curl -LsSf https://micro.mamba.pm/install.sh | bash
 micromamba env create -f docker/environment-nextflow.yml
 micromamba activate sirnaforge-env
 ```
@@ -544,6 +571,29 @@ uv sync --group lint        # Pre-commit, mypy, ruff, black
 # Production deployment (minimal dependencies)
 uv sync --no-dev
 ```
+
+### Conda Environment Management
+
+For local development with bioinformatics tools, siRNAforge provides conda environment management:
+
+```bash
+# Create complete development environment
+make conda-env
+
+# Update existing environment with new dependencies
+make conda-env-update
+
+# Remove environment (cleanup)
+make conda-env-clean
+
+# Activate environment for development
+conda activate sirnaforge-dev
+
+# Deactivate when done
+conda deactivate
+```
+
+The conda environment includes all bioinformatics tools (BWA-MEM2, SAMtools, ViennaRNA, etc.) plus Python development dependencies, providing a complete local development setup without Docker.
 
 ### Quality Assurance & Testing
 
