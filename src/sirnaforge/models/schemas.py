@@ -10,7 +10,7 @@ Use schemas: MySchema.validate(df) - validation errors provide detailed feedback
 """
 
 import re
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 import pandas as pd
 import pandera.pandas as pa
@@ -19,9 +19,8 @@ from pandera.typing.pandas import Series
 
 # Typed alias for pandera's dataframe_check decorator to satisfy mypy
 F = TypeVar("F", bound=Callable[..., Any])
-# Ignore mypy type issues for this assignment; pandera's dataframe_check has an incompatible
-# callable signature that is difficult to express to mypy here.
-dataframe_check_typed: Callable[[F], F] = pa.dataframe_check
+# Pandera's dataframe_check has a complex decorator signature; cast for mypy.
+dataframe_check_typed = cast(Callable[[F], F], pa.dataframe_check)
 
 
 # Custom validation functions for bioinformatics data

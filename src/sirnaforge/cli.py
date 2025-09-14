@@ -9,7 +9,7 @@ os.environ.setdefault("TERM", "dumb")
 
 import asyncio
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 import typer
 from Bio import SeqIO
@@ -30,7 +30,9 @@ try:
         kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
 
-    rich.console.Console.__init__ = patched_init
+    # mypy: the following monkey-patch assigns to a method intentionally
+    if not TYPE_CHECKING:
+        rich.console.Console.__init__ = patched_init
 except Exception:
     pass
 
