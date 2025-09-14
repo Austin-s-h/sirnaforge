@@ -2,16 +2,17 @@
 
 This guide covers development setup, contribution guidelines, and best practices for siRNAforge development.
 
+> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation and usage.
+
 ## Development Environment Setup
 
 ### Prerequisites
 
-- Python 3.9-3.12
-- Git
-- [uv](https://github.com/astral-sh/uv) (recommended)
+You'll need the same prerequisites as regular installation, plus development tools:
+- Python 3.9-3.12, Git, uv (see [Getting Started](getting_started.md))
 - Make (optional, for convenience commands)
 
-### Quick Setup
+### Developer Installation
 
 ```bash
 # Clone the repository
@@ -21,18 +22,18 @@ cd sirnaforge
 # One-command development setup
 make install-dev
 
-# Verify installation
+# Verify development environment
 uv run pytest
 uv run sirnaforge --help
 ```
 
-### Manual Setup
+### Manual Development Setup
 
 ```bash
-# Create virtual environment and install dependencies
+# Install with development dependencies
 uv sync --group dev
 
-# Install pre-commit hooks
+# Install pre-commit hooks for code quality
 uv run pre-commit install
 
 # Verify installation

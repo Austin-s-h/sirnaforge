@@ -6,64 +6,39 @@ Welcome to siRNAforge — **Comprehensive siRNA design toolkit for gene silencin
 Comprehensive siRNA design toolkit for gene silencing with multi-species off-target analysis.
 
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 1
    :caption: 🚀 Getting Started:
-   :numbered:
 
    getting_started
    QUICK_REFERENCE
 
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 1
    :caption: 📖 User Guides:
-   :numbered:
 
    CLI_REFERENCE
    USAGE_EXAMPLES
    gene_search
    THERMODYNAMIC_GUIDE
-   VALIDATION_GUIDE
    tutorials/index
 
 .. toctree::
-   :maxdepth: 3
-   :caption: 🏗️ Architecture & API:
-   :numbered:
+   :maxdepth: 1
+   :caption: 🔧 Technical:
 
    architecture
    api_reference
-
-.. toctree::
-   :maxdepth: 2
-   :caption: 🚀 Deployment:
-   :numbered:
-
    deployment
-
-.. toctree::
-   :maxdepth: 2
-   :caption: 🛠️ Development:
-   :numbered:
-
    development
-   SCHEMA_IMPROVEMENTS
-   changelog
 
 .. toctree::
    :maxdepth: 1
    :caption: 📚 Reference:
    :hidden:
 
-   sitemap
+   changelog
    glossary
-
-.. toctree::
-   :maxdepth: 1
-   :caption: 📖 Additional Resources:
-   :hidden:
-
-   README
-   examples/USAGE_EXAMPLES
+   sitemap
 
 Quick Navigation
 ================

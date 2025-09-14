@@ -1,6 +1,8 @@
 # Deployment Guide
 
-This document describes deployment strategies for siRNAforge, with a focus on the comprehensive Docker image that includes all dependencies.
+Production deployment strategies for siRNAforge, focusing on Docker and scalable infrastructure.
+
+> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation. This guide covers production deployment.
 
 ## Overview
 
@@ -51,20 +53,15 @@ docker run -v $(pwd):/workspace -w /workspace sirnaforge:latest \
 - ✅ **Easy CI/CD integration** - Perfect for automated pipelines
 - ✅ **Cloud-ready** - Works with AWS Batch, Kubernetes, etc.
 
-### 🖥️ Local Development (Alternative)
+### 🖥️ Local Installation (Alternative)
 
-For local development without Docker:
+For local development without Docker, see [Getting Started](getting_started.md) for basic installation, then add bioinformatics tools:
 
 ```bash
-# 1. Install core Python dependencies
-uv sync
-
-# 2. Install bioinformatics tools via micromamba
+# 1. Basic installation (see Getting Started guide)
+# 2. Add bioinformatics tools via micromamba
 micromamba env create -f environment.yml
 micromamba activate nextflow
-
-# 3. Usage
-uv run sirnaforge workflow TP53 --output-dir results
 ```
 
 ## Production Deployment

@@ -73,7 +73,7 @@ setup_environment() {
     echo "  conda activate sirnaforge-dev"
     echo ""
     print_info "To verify installation:"
-    echo "  sirnaforge --version"
+    echo "  sirnaforge version"
     echo "  sirnaforge config"
     echo ""
     print_info "To run tests:"
