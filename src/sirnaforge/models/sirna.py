@@ -18,18 +18,25 @@ field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class FilterCriteria(BaseModel):
-    """Criteria for filtering siRNA candidates."""
+    """Quality filters for siRNA candidate selection based on thermodynamic and empirical criteria."""
 
-    gc_min: float = Field(default=30.0, ge=0, le=100, description="Minimum GC content percentage")
-    gc_max: float = Field(default=52.0, ge=0, le=100, description="Maximum GC content percentage")
-    max_poly_runs: int = Field(default=3, ge=1, description="Maximum consecutive identical nucleotides")
-    max_paired_fraction: float = Field(default=0.6, ge=0, le=1, description="Maximum secondary structure pairing")
+    gc_min: float = Field(
+        default=30.0, ge=0, le=100, description="Minimum GC content % (balance stability/accessibility)"
+    )
+    gc_max: float = Field(default=52.0, ge=0, le=100, description="Maximum GC content % (prevent over-stabilization)")
+    max_poly_runs: int = Field(
+        default=3, ge=1, description="Max consecutive identical nucleotides (avoid synthesis issues)"
+    )
+    max_paired_fraction: float = Field(
+        default=0.6, ge=0, le=1, description="Max secondary structure pairing (prevent rigid structures)"
+    )
     min_asymmetry_score: float = Field(
         default=0.65,
         ge=0.3,
         le=1,
         description=(
-            "RNA strands that have a high asymmetry are generally more effective. Since we desire to have our guide strand's 5' end thermodynamically less stable than its 3' end, we want higher asymmetry scores which can range between 0.65 to 0.85"
+            "Minimum thermodynamic asymmetry score for guide strand selection into RISC. "
+            "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading."
         ),
     )
 
@@ -42,13 +49,21 @@ class FilterCriteria(BaseModel):
 
 
 class ScoringWeights(BaseModel):
-    """Weights for composite scoring components."""
+    """Relative weights for composite siRNA scoring components."""
 
-    asymmetry: float = Field(default=0.25, ge=0, le=1, description="Thermodynamic asymmetry weight")
-    gc_content: float = Field(default=0.20, ge=0, le=1, description="GC content optimization weight")
-    accessibility: float = Field(default=0.25, ge=0, le=1, description="Target accessibility weight")
-    off_target: float = Field(default=0.20, ge=0, le=1, description="Off-target avoidance weight")
-    empirical: float = Field(default=0.10, ge=0, le=1, description="Empirical rules weight")
+    asymmetry: float = Field(
+        default=0.25, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+    )
+    gc_content: float = Field(
+        default=0.20, ge=0, le=1, description="GC content optimization weight (stability balance)"
+    )
+    accessibility: float = Field(
+        default=0.25, ge=0, le=1, description="Target accessibility weight (secondary structure)"
+    )
+    off_target: float = Field(default=0.20, ge=0, le=1, description="Off-target avoidance weight (specificity)")
+    empirical: float = Field(
+        default=0.10, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+    )
 
     @field_validator_typed("empirical")
     @classmethod
@@ -60,86 +75,92 @@ class ScoringWeights(BaseModel):
 
 
 class DesignParameters(BaseModel):
-    """Complete parameters for siRNA design."""
+    """Complete configuration parameters for siRNA design workflow."""
 
     model_config = ConfigDict(extra="forbid")
 
     # Basic parameters
-    sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA length in nucleotides")
-    top_n: int = Field(default=50, ge=1, le=1000, description="Number of top candidates to return")
+    sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
+    top_n: int = Field(default=50, ge=1, le=1000, description="Number of top-scoring candidates to return")
 
     # Filtering criteria
-    filters: FilterCriteria = Field(default_factory=FilterCriteria)
+    filters: FilterCriteria = Field(default_factory=FilterCriteria, description="Quality control filters")
 
     # Scoring weights
-    scoring: ScoringWeights = Field(default_factory=ScoringWeights)
+    scoring: ScoringWeights = Field(default_factory=ScoringWeights, description="Component score weights")
 
     # Optional analysis parameters
-    avoid_snps: bool = Field(default=True, description="Avoid known SNP positions")
-    check_off_targets: bool = Field(default=True, description="Perform off-target analysis")
-    predict_structure: bool = Field(default=True, description="Predict secondary structures")
+    avoid_snps: bool = Field(default=True, description="Exclude regions with known SNPs")
+    check_off_targets: bool = Field(default=True, description="Perform genome-wide off-target analysis")
+    predict_structure: bool = Field(default=True, description="Calculate RNA secondary structures")
 
     # File paths (optional)
     # TODO: review snp incorporation feature
-    snp_file: Optional[str] = Field(default=None, description="Path to SNP VCF file")
+    snp_file: Optional[str] = Field(default=None, description="Path to SNP VCF file for avoidance")
     # Review genome index passing / FASTA selection
-    genome_index: Optional[str] = Field(default=None, description="Path to genome index for off-targets")
+    genome_index: Optional[str] = Field(default=None, description="Path to BWA genome index for off-target search")
 
 
 class SequenceType(str, Enum):
-    """Types of input sequences."""
+    """Categories of input sequence types for siRNA design."""
 
-    TRANSCRIPT = "transcript"
-    GENOMIC = "genomic"
-    CDS = "cds"
-    UTR = "utr"
+    TRANSCRIPT = "transcript"  # Full transcript sequence (mRNA)
+    GENOMIC = "genomic"  # Genomic DNA sequence
+    CDS = "cds"  # Protein-coding sequence only
+    UTR = "utr"  # Untranslated region sequence
 
 
 class SiRNACandidate(BaseModel):
-    """Individual siRNA candidate with all computed properties."""
+    """Individual siRNA candidate with computed thermodynamic and efficacy properties."""
 
     model_config = ConfigDict(extra="forbid")
 
     # Identity
-    id: str = Field(description="Unique identifier for this candidate")
-    transcript_id: str = Field(description="Source transcript identifier")
-    position: int = Field(ge=1, description="1-based position in transcript")
+    id: str = Field(description="Unique siRNA candidate identifier")
+    transcript_id: str = Field(description="Source transcript ID (e.g., ENST00000123456)")
+    position: int = Field(ge=1, description="1-based start position in transcript")
 
     # Sequences
-    guide_sequence: str = Field(min_length=19, max_length=23, description="Guide (antisense) sequence")
-    passenger_sequence: str = Field(min_length=19, max_length=23, description="Passenger (sense) sequence")
+    guide_sequence: str = Field(min_length=19, max_length=23, description="Guide strand (antisense, loaded into RISC)")
+    passenger_sequence: str = Field(
+        min_length=19, max_length=23, description="Passenger strand (sense, typically degraded)"
+    )
 
     # Basic properties
-    gc_content: float = Field(ge=0, le=100, description="GC content percentage")
-    length: int = Field(ge=19, le=23, description="Sequence length")
+    gc_content: float = Field(ge=0, le=100, description="GC content % (optimal: 35-60%)")
+    length: int = Field(ge=19, le=23, description="siRNA duplex length in nucleotides")
 
     # Thermodynamic properties
-    asymmetry_score: float = Field(ge=0, le=1, description="Thermodynamic asymmetry score")
-    duplex_stability: Optional[float] = Field(default=None, description="Duplex stability (ΔG)")
+    asymmetry_score: float = Field(
+        ge=0, le=1, description="Thermodynamic asymmetry score for RISC loading (optimal: ≥0.65)"
+    )
+    duplex_stability: Optional[float] = Field(default=None, description="Duplex formation ΔG in kcal/mol")
 
     # Secondary structure
-    structure: Optional[str] = Field(default=None, description="Predicted secondary structure")
-    mfe: Optional[float] = Field(default=None, description="Minimum free energy")
-    paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases")
+    structure: Optional[str] = Field(default=None, description="RNA secondary structure (dot-bracket notation)")
+    mfe: Optional[float] = Field(default=None, description="Minimum free energy in kcal/mol (optimal: -2 to -8)")
+    paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.8)")
 
     # Off-target analysis
-    off_target_count: int = Field(default=0, ge=0, description="Number of potential off-targets")
-    off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score")
+    off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
+    off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
 
     # Transcript hit metrics (how many input transcripts this guide hits)
     transcript_hit_count: int = Field(
-        default=1, ge=0, description="Number of input transcripts that contain this guide sequence"
+        default=1, ge=0, description="Number of input transcripts containing this guide sequence"
     )
     transcript_hit_fraction: float = Field(
-        default=1.0, ge=0, le=1, description="Fraction of input transcripts hit by this guide sequence"
+        default=1.0, ge=0, le=1, description="Fraction of input transcripts targeted by this guide (1.0 = all)"
     )
 
     # Composite scoring
-    component_scores: dict[str, float] = Field(default_factory=dict, description="Individual component scores")
-    composite_score: float = Field(ge=0, le=100, description="Final composite score")
+    component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
+    composite_score: float = Field(ge=0, le=100, description="Overall siRNA quality score (higher is better)")
 
     # Quality flags
     class FilterStatus(str, Enum):
+        """Filter status codes for quality control."""
+
         PASS = "PASS"
         GC_OUT_OF_RANGE = "GC_OUT_OF_RANGE"
         POLY_RUNS = "POLY_RUNS"
@@ -148,9 +169,9 @@ class SiRNACandidate(BaseModel):
 
     # Either True (passed) or one of the FilterStatus reasons (failed)
     passes_filters: Union[bool, FilterStatus] = Field(
-        default=True, description="True if passed all filters, otherwise a failure reason"
+        default=True, description="PASS if all filters passed, otherwise specific failure reason"
     )
-    quality_issues: list[str] = Field(default_factory=list, description="List of quality concerns")
+    quality_issues: list[str] = Field(default_factory=list, description="List of detected quality concerns")
 
     @field_validator_typed("guide_sequence", "passenger_sequence")
     @classmethod
@@ -168,45 +189,48 @@ class SiRNACandidate(BaseModel):
         return v
 
     def to_fasta(self) -> str:
-        """Return FASTA format representation."""
+        """Return FASTA format representation of the guide sequence.
+
+        Returns:
+            FASTA-formatted string with candidate ID as header and guide sequence.
+        """
         return f">{self.id}\n{self.guide_sequence}\n"
 
 
 class DesignResult(BaseModel):
-    """Complete results from siRNA design process."""
+    """Complete results from siRNA design workflow with metadata and statistics."""
 
     model_config = ConfigDict(extra="forbid")
 
     # Input information
-    input_file: str = Field(description="Path to input FASTA file")
-    parameters: DesignParameters = Field(description="Parameters used for design")
+    input_file: str = Field(description="Path to input FASTA file processed")
+    parameters: DesignParameters = Field(description="Design parameters used for this run")
 
     # Results
-    candidates: list[SiRNACandidate] = Field(description="All siRNA candidates")
-    top_candidates: list[SiRNACandidate] = Field(description="Top-scoring candidates")
+    candidates: list[SiRNACandidate] = Field(description="All generated siRNA candidates")
+    top_candidates: list[SiRNACandidate] = Field(description="Top-scoring candidates (filtered and ranked)")
 
     # Summary statistics
     total_sequences: int = Field(ge=0, description="Number of input sequences processed")
-    total_candidates: int = Field(ge=0, description="Total candidates generated")
-    filtered_candidates: int = Field(ge=0, description="Candidates passing filters")
+    total_candidates: int = Field(ge=0, description="Total siRNA candidates generated")
+    filtered_candidates: int = Field(ge=0, description="Candidates passing quality filters")
 
     # Processing metadata
-    processing_time: float = Field(ge=0, description="Processing time in seconds")
-    tool_versions: dict[str, str] = Field(default_factory=dict, description="Tool versions used")
-
-    def get_rowwise_design_params(self) -> dict[str, Any]:
-        # Removed: row-wise design parameter mapping is deprecated. Design
-        # parameters are stored in workflow metadata (`workflow_summary.json`) to
-        # avoid duplicating identical columns across every candidate row.
-        raise AttributeError(
-            "get_rowwise_design_params has been removed; design parameters are stored in workflow_summary.json"
-        )
+    processing_time: float = Field(ge=0, description="Total processing time in seconds")
+    tool_versions: dict[str, str] = Field(default_factory=dict, description="Software versions used in analysis")
 
     def save_csv(self, filepath: str) -> None:
-        """Save results to CSV file with schema validation.
+        """Save siRNA candidates to CSV file with comprehensive validation.
 
-        The DataFrame will be validated against SiRNACandidateSchema before saving.
-        Validation failures will be logged and bubble up as exceptions.
+        Exports all candidates to CSV format with full thermodynamic metrics.
+        The DataFrame is validated against SiRNACandidateSchema before saving
+        to ensure data integrity and proper column types.
+
+        Args:
+            filepath: Output CSV file path
+
+        Raises:
+            pandera.errors.SchemaError: If data validation fails
         """
         df_data = []
         for candidate in self.candidates:
@@ -255,7 +279,12 @@ class DesignResult(BaseModel):
         validated_df.to_csv(filepath, index=False)
 
     def get_summary(self) -> dict[str, Any]:
-        """Get summary statistics."""
+        """Generate summary statistics for the design results.
+
+        Returns:
+            Dictionary containing key metrics including sequence counts,
+            processing time, best score, and tool versions used.
+        """
         return {
             "input_sequences": self.total_sequences,
             "total_candidates": self.total_candidates,
