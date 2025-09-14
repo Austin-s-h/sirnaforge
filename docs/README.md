@@ -36,7 +36,6 @@ Complete documentation for siRNAforge — Comprehensive siRNA design toolkit for
 
 - **[API Reference](api_reference.rst)** - Python API documentation
 - **[Tutorials](tutorials/index.md)** - Step-by-step guides
-- **[Content Structure](CONTENT_STRUCTURE.md)** - Documentation organization
 
 ---
 

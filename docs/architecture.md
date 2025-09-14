@@ -93,21 +93,23 @@ graph TB
 
         subgraph "Data Models"
             G[sirna.py<br/>Pydantic Models]
+            H[schemas.py<br/>Pandera Schemas]
         end
 
         subgraph "Data Access"
-            H[gene_search.py<br/>Gene/Transcript Search]
-            I[orf_analysis.py<br/>ORF Analysis]
-            J[base.py<br/>Base Classes]
+            I[gene_search.py<br/>Gene/Transcript Search]
+            J[orf_analysis.py<br/>ORF Analysis]
+            K[base.py<br/>Base Classes]
         end
 
         subgraph "Pipeline Integration"
-            K[nextflow/<br/>Pipeline Modules]
+            L[nextflow/<br/>Pipeline Modules]
+            M[resources/<br/>Resource Mgmt]
         end
 
-        subgraph "Utilities"
-            L[validation.py<br/>Input Validation]
-            M[config.py<br/>Configuration]
+        subgraph "Utilities & Validation"
+            N[utils/<br/>Logging Utils]
+            O[validation/<br/>Validation System]
         end
     end
 
@@ -115,24 +117,25 @@ graph TB
     C --> D
     C --> E
     C --> F
-    C --> H
     C --> I
+    C --> J
 
     D --> G
     E --> G
     F --> G
-    H --> G
     I --> G
+    J --> G
 
-    C --> K
+    C --> L
 
     style D fill:#e8f5e8
     style E fill:#e8f5e8
     style F fill:#e8f5e8
     style G fill:#fff3e0
-    style H fill:#f3e5f5
+    style H fill:#fff3e0
     style I fill:#f3e5f5
     style J fill:#f3e5f5
+    style K fill:#f3e5f5
 </div>
 ```
 
@@ -149,7 +152,8 @@ src/sirnaforge/
 │   └── off_target.py  # Off-target prediction algorithms
 │
 ├── models/             # Data models and validation
-│   └── sirna.py       # Pydantic models for siRNA data
+│   ├── sirna.py       # Pydantic models for siRNA data
+│   └── schemas.py     # Pandera validation schemas
 │
 ├── data/               # Data access and external APIs
 │   ├── base.py        # Base classes for data providers
@@ -157,7 +161,16 @@ src/sirnaforge/
 │   └── orf_analysis.py # Open reading frame analysis
 │
 ├── pipeline/           # Pipeline and workflow integration
-│   └── __init__.py    # Nextflow pipeline interfaces
+│   ├── nextflow/      # Nextflow workflow configs and runners
+│   └── resources/     # Resource management
+│
+├── utils/              # Shared utilities
+│   └── logging_utils.py # Logging configuration
+│
+└── validation/         # Data validation and QC
+    ├── config.py      # Validation configuration
+    ├── middleware.py  # Validation middleware
+    └── utils.py       # Validation utilities
 ```
 
 ## Architectural Layers
@@ -262,19 +275,31 @@ class SiRNACandidate(BaseModel):
     guide_sequence: str
     passenger_sequence: str
     position: int
-    scores: ScoringResult
-
-class ScoringResult(BaseModel):
-    """Comprehensive scoring information"""
     composite_score: float
-    thermodynamic_score: float
-    off_target_score: float
+    asymmetry_score: float
+    gc_content: float
 
 class DesignParameters(BaseModel):
     """Design configuration with validation"""
     sirna_length: int = Field(ge=19, le=23)
     gc_min: float = Field(ge=0, le=100)
     gc_max: float = Field(ge=0, le=100)
+    top_n: int = Field(ge=1)
+
+class FilterCriteria(BaseModel):
+    """Quality filters for candidate selection"""
+    gc_min: float = 30.0
+    gc_max: float = 52.0
+    max_poly_runs: int = 3
+    min_asymmetry_score: float = 0.65
+
+class ScoringWeights(BaseModel):
+    """Relative weights for composite scoring"""
+    asymmetry: float = 0.25
+    gc_content: float = 0.20
+    accessibility: float = 0.25
+    off_target: float = 0.20
+    empirical: float = 0.10
 ```
 
 ### 5. Data Layer (`data/`)
@@ -290,11 +315,17 @@ class DesignParameters(BaseModel):
 class GeneSearcher:
     """Multi-database gene search"""
 
-class EnsemblAdapter:
+class GeneSearchResult:
+    """Complete gene search result"""
+
+class EnsemblClient(AbstractDatabaseClient):
     """Ensembl REST API integration"""
 
-class RefSeqAdapter:
-    """RefSeq/NCBI integration (planned)"""
+class RefSeqClient(AbstractDatabaseClient):
+    """RefSeq/NCBI integration"""
+
+class GencodeClient(AbstractDatabaseClient):
+    """GENCODE database integration"""
 ```
 
 ##### `orf_analysis.py` - Sequence Analysis
@@ -303,7 +334,47 @@ class ORFAnalyzer:
     """Open reading frame validation"""
 ```
 
-### 6. Pipeline Layer (`pipeline/`)
+### 6. Validation Layer (`validation/`)
+
+**Purpose**: Data validation and quality control
+
+**Pattern**: Middleware/Decorator
+
+**Technologies**: [Pandera](https://pandera.readthedocs.io/) for schema validation
+
+#### Validation Components:
+
+##### `config.py` - Validation Configuration
+```python
+class ValidationConfig(BaseModel):
+    """Configuration for validation system"""
+
+class ValidationLevel(str, Enum):
+    """Validation strictness levels"""
+    STRICT = "strict"
+    WARNING = "warning"
+    DISABLED = "disabled"
+
+class ValidationStage(str, Enum):
+    """Pipeline stages for validation"""
+    INPUT = "input"
+    DESIGN = "design"
+    OUTPUT = "output"
+```
+
+##### `utils.py` - Validation Utilities
+```python
+class ValidationResult:
+    """Container for validation results"""
+
+def validate_sirna_candidates(df: pd.DataFrame) -> ValidationResult:
+    """Validate siRNA candidate data"""
+
+def validate_fasta_sequences(sequences: list) -> ValidationResult:
+    """Validate FASTA sequence data"""
+```
+
+### 7. Pipeline Layer (`pipeline/`)
 
 **Purpose**: External pipeline integration
 
@@ -314,6 +385,23 @@ class ORFAnalyzer:
 - Docker container management
 - Batch processing coordination
 - Resource management
+
+#### Pipeline Components:
+
+##### `nextflow/` - Workflow Management
+```python
+class NextflowConfig:
+    """Nextflow execution configuration"""
+
+class NextflowRunner:
+    """Nextflow workflow execution"""
+```
+
+##### `resources/` - Resource Management
+```python
+class ResourceManager:
+    """Compute resource allocation and monitoring"""
+```
 
 ## Design Principles
 
@@ -342,19 +430,24 @@ Each layer has distinct responsibilities:
 
 ### 3. Dependency Injection
 
-Components are loosely coupled through dependency injection:
+Components use constructor injection and composition patterns:
 
 ```python
 class SiRNADesigner:
-    def __init__(
-        self,
-        thermodynamics_calculator: ThermodynamicsCalculator,
-        off_target_predictor: OffTargetPredictor,
-        parameters: DesignParameters
-    ):
-        self.thermo_calc = thermodynamics_calculator
-        self.off_target = off_target_predictor
-        self.params = parameters
+    def __init__(self, parameters: DesignParameters) -> None:
+        """Initialize designer with configuration parameters."""
+        self.parameters = parameters
+        # Components are instantiated as needed
+        # ThermodynamicCalculator() instantiated when required
+
+class GeneSearcher:
+    def __init__(self, timeout: int = 30, max_retries: int = 3):
+        """Initialize with configurable database clients."""
+        self.clients: dict[DatabaseType, AbstractDatabaseClient] = {
+            DatabaseType.ENSEMBL: EnsemblClient(timeout=timeout),
+            DatabaseType.REFSEQ: RefSeqClient(timeout=timeout),
+            DatabaseType.GENCODE: GencodeClient(timeout=timeout),
+        }
 ```
 
 ### 4. Error Handling
@@ -377,16 +470,14 @@ class ValidationException(SiRNAForgeException):
 Centralized configuration with environment support:
 
 ```python
-class Config(BaseModel):
-    """Global configuration with environment variable support"""
+class WorkflowConfig(BaseModel):
+    """Workflow-specific configuration"""
 
-    # Database settings
-    ensembl_base_url: str = "https://rest.ensembl.org"
-    request_timeout: int = 30
+class ValidationConfig(BaseModel):
+    """Validation configuration with environment variable support"""
 
-    # Algorithm settings
-    default_sirna_length: int = 21
-    default_candidates: int = 10
+class NextflowConfig(BaseModel):
+    """Nextflow execution parameters"""
 
     class Config:
         env_prefix = "SIRNAFORGE_"
@@ -424,38 +515,49 @@ graph LR
 
 ### 1. Custom Scoring Functions
 
+The current implementation uses fixed scoring within `SiRNADesigner._score_candidates()`. Custom scoring can be implemented by:
+
 ```python
-class CustomScorer(BaseScorer):
-    def calculate_score(self, candidate: SiRNACandidate) -> float:
+class CustomSiRNADesigner(SiRNADesigner):
+    def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+        """Override with custom scoring logic"""
+        for candidate in candidates:
+            candidate.composite_score = self._custom_score(candidate)
+        return candidates
+
+    def _custom_score(self, candidate: SiRNACandidate) -> float:
         # Custom scoring logic
         return score
-
-# Register with the design engine
-designer.register_scorer("custom", CustomScorer())
 ```
 
 ### 2. Additional Data Sources
 
+Extend the database client system:
+
 ```python
-class CustomDataProvider(BaseDataProvider):
-    async def search_gene(self, query: str) -> SearchResult:
+class CustomDatabaseClient(AbstractDatabaseClient):
+    async def search_gene(self, query: str) -> GeneSearchResult:
         # Custom gene search logic
         return result
 
 # Register with the searcher
-searcher.register_provider("custom", CustomDataProvider())
+searcher = GeneSearcher()
+searcher.clients[DatabaseType.CUSTOM] = CustomDatabaseClient()
 ```
 
-### 3. New Output Formats
+### 3. New Validation Rules
+
+Extend the validation system:
 
 ```python
-class CustomOutputWriter(BaseOutputWriter):
-    def write_results(self, results: DesignResults, path: Path) -> None:
-        # Custom output format
-        pass
+class CustomValidationRules:
+    def validate_custom_criteria(self, candidates: pd.DataFrame) -> ValidationResult:
+        # Custom validation logic
+        return result
 
-# Register with the workflow
-workflow.register_output_writer("custom", CustomOutputWriter())
+# Use with validation middleware
+from sirnaforge.validation.middleware import ValidationMiddleware
+validator = ValidationMiddleware(custom_rules=CustomValidationRules())
 ```
 
 ## Performance Considerations
