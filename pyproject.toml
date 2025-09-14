@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sirnaforge"
-version = "0.1.1"
+version = "0.1.2"
 description = "siRNAforge - Multi-species gene to siRNA design, off-target prediction, and ranking. Comprehensive siRNA design toolkit for gene silencing"
 authors = [
     {name = "Austin S. Hovland.", email = "austin@sansterbioanalytics.com"}
@@ -40,6 +40,7 @@ dependencies = [
     "aiohttp>=3.12.0",
     "httpx>=0.28.0",
     "nextflow>=25.04.0",
+    "pandera>=0.26.0",
 ]
 
 [dependency-groups]

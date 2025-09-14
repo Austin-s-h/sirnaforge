@@ -224,7 +224,7 @@ def test_nextflow_config_generation():
 
         # Test profile selection
         profile = config.get_execution_profile()
-        assert profile in ["docker", "local", "test"]
+        assert profile in ["docker", "local", "test", "conda", "singularity"]
 
         # Test argument generation
         with tempfile.NamedTemporaryFile(suffix=".fasta") as tf:

@@ -20,8 +20,8 @@ class TestDesignParameters:
         params = DesignParameters()
         assert params.sirna_length == 21
         assert params.top_n == 50
-        assert params.filters.gc_min == 30.0
-        assert params.filters.gc_max == 52.0
+        assert params.filters.gc_min == 35.0
+        assert params.filters.gc_max == 60.0
 
     def test_custom_parameters(self):
         """Test custom parameter values."""

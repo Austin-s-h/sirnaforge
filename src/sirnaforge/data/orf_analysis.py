@@ -5,8 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 from sirnaforge.data.base import (
-    BaseEnsemblClient,
-    DatabaseType,
+    AbstractDatabaseClient,
     SequenceType,
     SequenceUtils,
     TranscriptInfo,
@@ -46,16 +45,29 @@ class SequenceAnalysis(BaseModel):
     has_valid_orf: bool = False
     cds_sequence: Optional[str] = None
     protein_sequence: Optional[str] = None
+    # Rudimentary UTR/CDS characterization
+    cds_start: Optional[int] = None  # 0-based start index within transcript sequence
+    cds_end: Optional[int] = None  # 0-based end index (exclusive)
+    utr5_length: Optional[int] = None
+    utr3_length: Optional[int] = None
+    sequence_region: Optional[str] = (
+        None  # e.g., cds_only, cds_with_utr5, cds_with_utr3, cds_with_utr5_and_utr3, no_cds
+    )
 
     model_config = ConfigDict(use_enum_values=True)
 
 
-class ORFAnalyzer(BaseEnsemblClient):
+class ORFAnalyzer:
     """Analyze ORFs in transcript sequences and validate sequence types."""
 
-    def __init__(self, timeout: int = 30):
-        """Initialize ORF analyzer."""
-        super().__init__(timeout=timeout)
+    def __init__(self, database_client: Optional[AbstractDatabaseClient] = None):
+        """
+        Initialize ORF analyzer.
+
+        Args:
+            database_client: Optional database client for retrieving additional sequence types
+        """
+        self.database_client = database_client
 
         # Genetic code (standard)
         self.start_codons = {"ATG"}
@@ -188,11 +200,28 @@ class ORFAnalyzer(BaseEnsemblClient):
 
         return protein
 
-    async def get_sequence_from_ensembl(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
-        """Retrieve specific sequence type from Ensembl using inherited method."""
-        return await self.get_sequence(transcript_id, sequence_type)
+    async def get_additional_sequence(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
+        """
+        Retrieve specific sequence type using the database client if available.
 
-    async def analyze_transcript(self, transcript: TranscriptInfo) -> SequenceAnalysis:
+        Args:
+            transcript_id: Transcript identifier
+            sequence_type: Type of sequence to retrieve
+
+        Returns:
+            Sequence string or None if not available or client not provided
+        """
+        if not self.database_client:
+            logger.debug(f"No database client available to retrieve {sequence_type} for {transcript_id}")
+            return None
+
+        try:
+            return await self.database_client.get_sequence(transcript_id, sequence_type)
+        except Exception as e:
+            logger.warning(f"Failed to retrieve {sequence_type} for {transcript_id}: {e}")
+            return None
+
+    async def analyze_transcript(self, transcript: TranscriptInfo) -> SequenceAnalysis:  # noqa: PLR0912
         """Perform complete ORF analysis of a transcript."""
         if not transcript.sequence:
             raise ValueError(f"No sequence available for transcript {transcript.transcript_id}")
@@ -207,27 +236,56 @@ class ORFAnalyzer(BaseEnsemblClient):
         longest_orf = orfs[0] if orfs else None
         has_valid_orf = longest_orf is not None and longest_orf.is_complete
 
-        # Try to get CDS and protein sequences from Ensembl for comparison
+        # Try to get CDS and protein sequences for comparison (database-agnostic)
         cds_sequence = None
         protein_sequence = None
 
-        if transcript.database == DatabaseType.ENSEMBL:
-            try:
-                cds_sequence = await self.get_sequence_from_ensembl(transcript.transcript_id, SequenceType.CDS)
-                protein_sequence = await self.get_sequence_from_ensembl(transcript.transcript_id, SequenceType.PROTEIN)
+        if self.database_client:
+            cds_sequence = await self.get_additional_sequence(transcript.transcript_id, SequenceType.CDS)
+            protein_sequence = await self.get_additional_sequence(transcript.transcript_id, SequenceType.PROTEIN)
 
-                if cds_sequence:
-                    logger.info(f"Retrieved CDS sequence for {transcript.transcript_id} (length: {len(cds_sequence)})")
-                if protein_sequence:
-                    logger.info(
-                        f"Retrieved protein sequence for {transcript.transcript_id} (length: {len(protein_sequence)})"
-                    )
+            if cds_sequence:
+                logger.info(f"Retrieved CDS sequence for {transcript.transcript_id} (length: {len(cds_sequence)})")
+            if protein_sequence:
+                logger.info(
+                    f"Retrieved protein sequence for {transcript.transcript_id} (length: {len(protein_sequence)})"
+                )
 
-            except Exception as e:
-                logger.warning(f"Could not retrieve additional sequences for {transcript.transcript_id}: {e}")
+        # Compute CDS/UTR characterization quickly using CDS match if available, else longest ORF
+        cds_start: Optional[int] = None
+        cds_end: Optional[int] = None
+        utr5_length: Optional[int] = None
+        utr3_length: Optional[int] = None
+        if transcript.sequence:
+            seq_len = len(transcript.sequence)
+            if cds_sequence and cds_sequence in transcript.sequence:
+                cds_start = transcript.sequence.find(cds_sequence)
+                cds_end = cds_start + len(cds_sequence)
+            elif orfs and orfs[0].is_complete:
+                # Use longest complete ORF as CDS proxy
+                cds_start = orfs[0].start_pos
+                cds_end = orfs[0].end_pos
+            if cds_start is not None and cds_end is not None:
+                utr5_length = max(0, cds_start)
+                utr3_length = max(0, seq_len - cds_end)
 
-        # Determine sequence type based on analysis
-        sequence_type = self._determine_sequence_type(transcript, cds_sequence, orfs)
+        # Determine sequence type based on analysis and characterization
+        sequence_type = self._determine_sequence_type(transcript, cds_sequence, cds_start, cds_end)
+
+        # Classify region composition
+        if cds_start is None or cds_end is None:
+            sequence_region = "no_cds"
+        else:
+            has_utr5 = (utr5_length or 0) > 0
+            has_utr3 = (utr3_length or 0) > 0
+            if not has_utr5 and not has_utr3:
+                sequence_region = "cds_only"
+            elif has_utr5 and has_utr3:
+                sequence_region = "cds_with_utr5_and_utr3"
+            elif has_utr5:
+                sequence_region = "cds_with_utr5"
+            else:
+                sequence_region = "cds_with_utr3"
 
         analysis = SequenceAnalysis(
             transcript_id=transcript.transcript_id,
@@ -239,6 +297,11 @@ class ORFAnalyzer(BaseEnsemblClient):
             has_valid_orf=has_valid_orf,
             cds_sequence=cds_sequence,
             protein_sequence=protein_sequence,
+            cds_start=cds_start,
+            cds_end=cds_end,
+            utr5_length=utr5_length,
+            utr3_length=utr3_length,
+            sequence_region=sequence_region,
         )
 
         # Log analysis results
@@ -247,25 +310,25 @@ class ORFAnalyzer(BaseEnsemblClient):
         return analysis
 
     def _determine_sequence_type(
-        self, transcript: TranscriptInfo, cds_sequence: Optional[str], orfs: list[ORFInfo]
+        self,
+        transcript: TranscriptInfo,
+        cds_sequence: Optional[str],
+        cds_start: Optional[int],
+        cds_end: Optional[int],
     ) -> SequenceType:
         """Determine what type of sequence we're dealing with."""
-
-        # If we have a CDS sequence and it matches our sequence, we have CDS
-        if cds_sequence and cds_sequence == transcript.sequence:
+        # If we have a CDS sequence and it matches our sequence exactly, it's CDS
+        if cds_sequence and transcript.sequence and cds_sequence == transcript.sequence:
             return SequenceType.CDS
-
-        # If we have a CDS sequence and our sequence is longer, likely cDNA
-        if cds_sequence and transcript.sequence and len(transcript.sequence) > len(cds_sequence):
+        # If CDS is a proper substring of the transcript, it's cDNA (contains UTRs)
+        if cds_sequence and transcript.sequence and cds_sequence in transcript.sequence:
             return SequenceType.CDNA
-
-        # If we have good ORFs and the sequence starts with ATG, likely CDS or cDNA
-        if orfs and transcript.sequence and transcript.sequence.startswith("ATG"):
-            # Compare the length of the first ORF sequence with the transcript sequence
-            orf_sequence = orfs[0].sequence if hasattr(orfs[0], "sequence") else str(orfs[0])
-            return SequenceType.CDS if len(orf_sequence) == len(transcript.sequence) else SequenceType.CDNA
-
-        # Default assumption for Ensembl transcript sequences
+        # If we inferred CDS from ORF and it spans the entire sequence, consider it CDS
+        if transcript.sequence and cds_start is not None and cds_end is not None:
+            if cds_start == 0 and cds_end == len(transcript.sequence):
+                return SequenceType.CDS
+            return SequenceType.CDNA
+        # Default assumption
         return SequenceType.CDNA
 
     def _log_analysis_results(self, analysis: SequenceAnalysis) -> None:
@@ -290,6 +353,13 @@ class ORFAnalyzer(BaseEnsemblClient):
             logger.info(f"  ORF GC Content: {orf.gc_content:.1f}%")
         else:
             logger.warning(f"No valid ORFs found in {analysis.transcript_id}")
+
+        # UTR/CDS summary
+        if analysis.cds_start is not None and analysis.cds_end is not None:
+            logger.info(
+                f"CDS region: {analysis.cds_start}-{analysis.cds_end} | 5'UTR={analysis.utr5_length or 0} nt, 3'UTR={analysis.utr3_length or 0} nt"
+            )
+            logger.info(f"Region composition: {analysis.sequence_region}")
 
         if analysis.cds_sequence:
             logger.info(f"CDS Length: {len(analysis.cds_sequence)} bp")
@@ -331,13 +401,48 @@ class ORFAnalyzer(BaseEnsemblClient):
 
 
 # Convenience functions
-async def analyze_transcript_orfs(transcript: TranscriptInfo) -> SequenceAnalysis:
-    """Analyze ORFs in a single transcript."""
-    analyzer = ORFAnalyzer()
+def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None) -> ORFAnalyzer:
+    """
+    Create an ORF analyzer with optional database client.
+
+    Args:
+        database_client: Optional database client for retrieving additional sequence types
+
+    Returns:
+        ORFAnalyzer instance
+    """
+    return ORFAnalyzer(database_client=database_client)
+
+
+async def analyze_transcript_orfs(
+    transcript: TranscriptInfo, database_client: Optional[AbstractDatabaseClient] = None
+) -> SequenceAnalysis:
+    """
+    Analyze ORFs in a single transcript.
+
+    Args:
+        transcript: Transcript to analyze
+        database_client: Optional database client for additional sequence retrieval
+
+    Returns:
+        SequenceAnalysis result
+    """
+    analyzer = create_orf_analyzer(database_client)
     return await analyzer.analyze_transcript(transcript)
 
 
-async def analyze_multiple_transcript_orfs(transcripts: list[TranscriptInfo]) -> dict[str, SequenceAnalysis]:
-    """Analyze ORFs in multiple transcripts."""
-    analyzer = ORFAnalyzer()
+async def analyze_multiple_transcript_orfs(
+    transcripts: list[TranscriptInfo], database_client: Optional[AbstractDatabaseClient] = None
+) -> dict[str, SequenceAnalysis]:
+    """
+    Analyze ORFs in multiple transcripts.
+
+    Args:
+        transcripts: List of transcripts to analyze
+        database_client: Optional database client for additional sequence retrieval
+
+    Returns:
+        Dictionary mapping transcript IDs to SequenceAnalysis results
+    """
+    analyzer = create_orf_analyzer(database_client)
     return await analyzer.analyze_transcripts(transcripts)

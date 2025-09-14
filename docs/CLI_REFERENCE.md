@@ -1,10 +1,10 @@
 # siRNAforge CLI Reference
 
 ```bash
-Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...                                                                         
-                                                                                                                       
- siRNAforge - siRNA design toolkit for gene silencing                                                                  
-                                                                                                                       
+Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
+
+ siRNAforge - siRNA design toolkit for gene silencing
+
 ┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ --install-completion          Install completion for the current shell.                                             │
 │ --show-completion             Show completion for the current shell, to copy it or customize the installation.      │
@@ -25,11 +25,11 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 
 ### `search`
 ```bash
-                                                                                                                       
- Usage: sirnaforge search [OPTIONS] QUERY                                                                              
-                                                                                                                       
- Search for gene transcripts and retrieve sequences.                                                                   
-                                                                                                                       
+
+ Usage: sirnaforge search [OPTIONS] QUERY
+
+ Search for gene transcripts and retrieve sequences.
+
 ┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ *    query      TEXT  Gene ID, gene name, or transcript ID to search for [required]                                 │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -55,11 +55,11 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 
 ### `workflow`
 ```bash
-                                                                                                                       
- Usage: sirnaforge workflow [OPTIONS] GENE_QUERY                                                                       
-                                                                                                                       
- Run complete siRNA design workflow from gene query to off-target analysis.                                            
-                                                                                                                       
+
+ Usage: sirnaforge workflow [OPTIONS] GENE_QUERY
+
+ Run complete siRNA design workflow from gene query to off-target analysis.
+
 ┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ *    gene_query      TEXT  Gene name or ID to analyze [required]                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -71,8 +71,7 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 │ --database           -d                            TEXT  Database to search (ensembl, refseq, gencode)              │
 │                                                          [default: ensembl]                                         │
 │ --top-n              -n                            INTEGER RANGE [1<=x]  Number of top siRNA candidates to generate │
-│                                                          [default: 20]                                              │
-│ --offtarget-n                                      INTEGER RANGE [1<=x]  Number of top candidates for off-target   │
+│                                                          [default: 20]
 │                                                          analysis [default: 10]                                     │
 │ --genome-species                                   TEXT  Comma-separated list of genome species for off-target      │
 │                                                          analysis [default: human,rat,rhesus]                       │
@@ -91,11 +90,11 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 
 ### `design`
 ```bash
-                                                                                                                       
- Usage: sirnaforge design [OPTIONS] INPUT_FILE                                                                         
-                                                                                                                       
- Design siRNA candidates from transcript sequences.                                                                    
-                                                                                                                       
+
+ Usage: sirnaforge design [OPTIONS] INPUT_FILE
+
+ Design siRNA candidates from transcript sequences.
+
 ┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ *    input_file      PATH  Input FASTA file containing transcript sequences [required]                              │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -123,11 +122,11 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 
 ### `validate`
 ```bash
-                                                                                                                       
- Usage: sirnaforge validate [OPTIONS] INPUT_FILE                                                                       
-                                                                                                                       
- Validate input FASTA file format and content.                                                                         
-                                                                                                                       
+
+ Usage: sirnaforge validate [OPTIONS] INPUT_FILE
+
+ Validate input FASTA file format and content.
+
 ┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ *    input_file      PATH  FASTA file to validate [required]                                                        │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -138,11 +137,11 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 
 ### `version`
 ```bash
-                                                                                                                       
- Usage: sirnaforge version [OPTIONS]                                                                                   
-                                                                                                                       
- Show version information.                                                                                             
-                                                                                                                       
+
+ Usage: sirnaforge version [OPTIONS]
+
+ Show version information.
+
 ┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ --help          Show this message and exit.                                                                         │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -150,11 +149,11 @@ Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
 
 ### `config`
 ```bash
-                                                                                                                       
- Usage: sirnaforge config [OPTIONS]                                                                                    
-                                                                                                                       
- Show default configuration parameters.                                                                                
-                                                                                                                       
+
+ Usage: sirnaforge config [OPTIONS]
+
+ Show default configuration parameters.
+
 ┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ --help          Show this message and exit.                                                                         │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

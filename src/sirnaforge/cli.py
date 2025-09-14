@@ -2,13 +2,14 @@
 
 # Configure environment for ASCII compatibility before importing typer/rich
 import os
-os.environ.setdefault('FORCE_COLOR', '0')
-os.environ.setdefault('NO_COLOR', '1')
-os.environ.setdefault('TERM', 'dumb')
+
+os.environ.setdefault("FORCE_COLOR", "0")
+os.environ.setdefault("NO_COLOR", "1")
+os.environ.setdefault("TERM", "dumb")
 
 import asyncio
 from pathlib import Path
-from typing import Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 import typer
 from Bio import SeqIO
@@ -20,22 +21,30 @@ from rich.table import Table
 # Monkey patch Rich's console detection to force ASCII
 try:
     import rich.console
+
     # Override the Rich console's is_terminal property to force ASCII mode
     original_init = rich.console.Console.__init__
-    
-    def patched_init(self, *args, **kwargs):
-        kwargs['legacy_windows'] = True
-        kwargs['force_terminal'] = False
+
+    def patched_init(self: "rich.console.Console", *args: Any, **kwargs: Any) -> None:
+        kwargs["legacy_windows"] = True
+        kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
-    
-    rich.console.Console.__init__ = patched_init
+
+    # mypy: the following monkey-patch assigns to a method intentionally
+    if not TYPE_CHECKING:
+        rich.console.Console.__init__ = patched_init
 except Exception:
     pass
 
 from sirnaforge import __author__, __version__
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType
-from sirnaforge.data.gene_search import GeneSearcher, search_gene_sync, search_multiple_databases_sync
+from sirnaforge.data.gene_search import (
+    GeneSearcher,
+    search_gene_sync,
+    search_gene_with_fallback_sync,
+    search_multiple_databases_sync,
+)
 from sirnaforge.models.sirna import DesignParameters, FilterCriteria
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
@@ -110,6 +119,11 @@ def search(  # noqa: PLR0912
         "-a",
         help="Search all databases",
     ),
+    fallback: bool = typer.Option(
+        True,
+        "--fallback/--no-fallback",
+        help="Enable automatic fallback to other databases if access is blocked",
+    ),
     no_sequence: bool = typer.Option(
         False,
         "--no-sequence",
@@ -161,6 +175,7 @@ def search(  # noqa: PLR0912
                 f"🧬 [bold blue]Gene Search[/bold blue]\n"
                 f"Query: [cyan]{query}[/cyan]\n"
                 f"Database: [yellow]{database}[/yellow]\n"
+                f"Fallback: [green]{'enabled' if fallback else 'disabled'}[/green]\n"
                 f"Output: [cyan]{output}[/cyan]\n"
                 f"Types: [green]{transcript_types}[/green]\n"
                 f"Exclude: [red]{exclude_types}[/red]",
@@ -182,6 +197,9 @@ def search(  # noqa: PLR0912
                 results = search_multiple_databases_sync(
                     query=query, databases=list(DatabaseType), include_sequence=not no_sequence
                 )
+            elif fallback:
+                progress.add_task("Searching with fallback...", total=None)
+                results = [search_gene_with_fallback_sync(query=query, include_sequence=not no_sequence)]
             else:
                 progress.add_task(f"Searching {database}...", total=None)
                 results = [search_gene_sync(query=query, database=db_type, include_sequence=not no_sequence)]
@@ -336,13 +354,7 @@ def workflow(
         "--top-n",
         "-n",
         min=1,
-        help="Number of top siRNA candidates to generate",
-    ),
-    top_n_offtarget: int = typer.Option(
-        10,
-        "--offtarget-n",
-        min=1,
-        help="Number of top candidates for off-target analysis",
+        help="Number of top siRNA candidates to select (also used for off-target analysis)",
     ),
     genome_species: str = typer.Option(
         "human,rat,rhesus",
@@ -382,6 +394,11 @@ def workflow(
         "--log-file",
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
     ),
+    json_summary: bool = typer.Option(
+        True,
+        "--json-summary/--no-json-summary",
+        help="Write logs/workflow_summary.json (disable to skip JSON output)",
+    ),
 ) -> None:
     """Run complete siRNA design workflow from gene query to off-target analysis."""
 
@@ -400,8 +417,7 @@ def workflow(
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top Candidates: [yellow]{top_n_candidates}[/yellow]\n"
-            f"Off-target Analysis: [yellow]{top_n_offtarget}[/yellow] candidates\n"
+            f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
             f"Genome Species: [green]{', '.join(species_list)}[/green]",
             title="Workflow Configuration",
         )
@@ -427,12 +443,12 @@ def workflow(
                     output_dir=str(output_dir),
                     database=database,
                     top_n_candidates=top_n_candidates,
-                    top_n_offtarget=top_n_offtarget,
                     genome_species=species_list,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,
                     log_file=effective_log,
+                    write_json_summary=json_summary,
                 )
             )
 
@@ -474,9 +490,12 @@ def workflow(
         console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
         console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
-        console.print("   • siRNA candidates: [blue]sirnaforge/sirna_candidates.tsv[/blue]")
+        console.print(f"   • siRNA candidates (ALL): [blue]sirnaforge/{gene_query}_all.csv[/blue]")
+        console.print(f"   • siRNA candidates (PASS): [blue]sirnaforge/{gene_query}_pass.csv[/blue]")
         console.print("   • Off-target results: [blue]off_target/results/[/blue]")
-        console.print("   • Workflow summary: [blue]workflow_summary.json[/blue]")
+        console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
+        if json_summary:
+            console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
 
         if offtarget_summary.get("method") == "nextflow":
             console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")

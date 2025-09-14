@@ -13,7 +13,8 @@ def test_csv_contains_transcript_hit_columns(tmp_path):
     """Design from a FASTA with two identical transcripts, save CSV, and assert columns/values."""
 
     fasta = tmp_path / "test.fa"
-    seq = "A" * 50
+    # Use a sequence with balanced GC content (40%) to pass filters
+    seq = "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"
     fasta.write_text(f">tx1\n{seq}\n>tx2\n{seq}\n")
 
     params = DesignParameters(sirna_length=21, top_n=5)

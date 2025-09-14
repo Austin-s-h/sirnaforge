@@ -1,552 +1,400 @@
 # 🧬 siRNAforge Usage Examples
 
-Comprehensive examples demonstrating real-world usage patterns for siRNAforge — Comprehensive siRNA design toolkit for gene silencing.
+Comprehensive real-world examples for advanced siRNAforge usage patterns.
 
-## Quick Start Examples
+> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation and first analysis.
 
-### Complete Workflow (Recommended)
+## Production Workflows
+
+### High-Quality Research Design
 ```bash
-# End-to-end analysis for a single gene
-uv run sirnaforge workflow TP53 --output-dir tp53_analysis
+# Comprehensive analysis with strict quality control
+uv run sirnaforge workflow TP53 \
+  --output-dir tp53_publication \
+  --top-n 50 \
+  --gc-min 35 --gc-max 55 \
+  --max-poly-runs 2 \
+  --verbose
+```
 
-# With custom parameters
-uv run sirnaforge workflow BRCA1 \
-  --output-dir brca1_results \
+### Clinical Screening Pipeline
+```bash
+# Multi-gene analysis for therapeutic targets
+genes=("TP53" "BRCA1" "EGFR" "KRAS" "PIK3CA")
+for gene in "${genes[@]}"; do
+    uv run sirnaforge workflow "$gene" \
+        --output-dir "clinical_screen/$gene" \
+        --top-n 30 \
+        --gc-min 40 --gc-max 60 \
+        --genome-species "human,mouse" \
+        --verbose
+done
+```
+
+## Advanced Gene Search Scenarios
+
+### Multi-Database Search Strategy
+```bash
+# Comprehensive search across all databases
+uv run sirnaforge search RARE_GENE --all --verbose
+
+# Species-specific searches
+uv run sirnaforge search BRCA1 --database ensembl --species homo_sapiens
+uv run sirnaforge search BRCA1 --database ensembl --species mus_musculus
+
+# Transcript type filtering for lncRNA analysis
+uv run sirnaforge search HOTAIR \
+  --types "lncRNA,antisense" \
+  --database ensembl \
+  --verbose
+```
+
+### Custom Transcript Handling
+```bash
+# Working with your own transcript sequences
+# 1. Validate format first
+uv run sirnaforge validate custom_transcripts.fasta
+
+# 2. Design with custom sequences
+uv run sirnaforge design custom_transcripts.fasta \
   --top-n 30 \
   --gc-min 35 --gc-max 55 \
-  --verbose
+  --output custom_sirnas.csv
 ```
 
-### Step-by-Step Workflow
+## Specialized Design Workflows
+
+### Publication-Quality Analysis
 ```bash
-# 1. Search for gene transcripts
-uv run sirnaforge search TP53 -o tp53_transcripts.fasta
-
-# 2. Validate the input
-uv run sirnaforge validate tp53_transcripts.fasta
-
-# 3. Design siRNA candidates
-uv run sirnaforge design tp53_transcripts.fasta \
-  -o tp53_sirnas.tsv \
-  -n 20
-```
-
-## Gene Search Examples
-
-### Basic Searches
-```bash
-# Simple gene search
-uv run sirnaforge search TP53
-
-# Search with custom output
-uv run sirnaforge search BRCA1 -o brca1_sequences.fasta
-
-# Verbose output for debugging
-uv run sirnaforge search EGFR --verbose
-```
-
-### Advanced Searches
-```bash
-# Search multiple databases
-uv run sirnaforge search MYC --all --verbose
-
-# Only canonical isoforms
-uv run sirnaforge search KRAS --canonical-only
-
-# Specific transcript types
-uv run sirnaforge search PIK3CA \
-  --types "protein_coding,lncRNA,miRNA" \
-  --verbose
-
-# Metadata only (no sequences)
-uv run sirnaforge search AKT1 --no-sequence
-```
-
-### Database-Specific Searches
-```bash
-# Ensembl (default)
-uv run sirnaforge search TP53 --database ensembl
-
-# RefSeq
-uv run sirnaforge search BRCA1 --database refseq
-
-# GENCODE
-uv run sirnaforge search EGFR --database gencode
-```
-
-## siRNA Design Examples
-
-### Basic Design
-```bash
-# Design from FASTA file
-uv run sirnaforge design transcripts.fasta
-
-# Custom number of candidates
-uv run sirnaforge design transcripts.fasta -n 50
-
-# Custom output file
-uv run sirnaforge design transcripts.fasta -o my_sirnas.tsv
-```
-
-### High-Quality Design
-```bash
-# Strict parameters for high-quality siRNAs
-uv run sirnaforge design transcripts.fasta \
-  --gc-min 35 --gc-max 50 \
+# Research-grade parameters with comprehensive validation
+uv run sirnaforge workflow GENE_OF_INTEREST \
+  --output-dir publication_analysis \
+  --top-n 50 \
+  --gc-min 35 --gc-max 55 \
   --max-poly-runs 2 \
-  --top-n 30 \
+  --length 21 \
+  --genome-species "human,mouse,rat" \
   --verbose
+
+# Generate summary report
+echo "Analysis completed for publication dataset" > analysis_notes.txt
+cat publication_analysis/logs/workflow_summary.json >> analysis_notes.txt
 ```
 
-### Fast Design (Large Datasets)
+### High-Throughput Screening
 ```bash
-# Skip computationally expensive steps
-uv run sirnaforge design large_transcripts.fasta \
+# Fast screening with relaxed parameters
+uv run sirnaforge design large_gene_set.fasta \
   --skip-structure \
-  --skip-off-targets \
-  --top-n 10
+  --top-n 10 \
+  --gc-min 25 --gc-max 70 \
+  --max-poly-runs 4 \
+  --output screening_results.csv
 ```
 
-### Design with Off-Target Analysis
+### Species-Specific Off-Target Analysis
 ```bash
-# Include genome index for off-target screening
-uv run sirnaforge design transcripts.fasta \
-  --genome-index /path/to/human_genome.idx \
-  --top-n 20 \
+# Multi-species safety screening
+uv run sirnaforge workflow THERAPEUTIC_TARGET \
+  --output-dir safety_analysis \
+  --genome-species "human,macaque,mouse" \
+  --top-n 25 \
   --verbose
 ```
 
-### Avoiding SNPs
+### Difficult Targets (Low GC, High Structure)
 ```bash
-# Exclude regions with common SNPs
-uv run sirnaforge design transcripts.fasta \
-  --snp-file common_variants.vcf \
+# Relaxed parameters for challenging sequences
+uv run sirnaforge design difficult_targets.fasta \
+  --gc-min 20 --gc-max 75 \
+  --max-poly-runs 5 \
+  --skip-structure \
+  --top-n 40 \
   --verbose
 ```
+## Batch Processing & Automation
 
-## Advanced Workflow Examples
-
-### Multi-Gene Analysis
+### Batch Gene Analysis
 ```bash
 #!/bin/bash
-# Batch process multiple genes
+# Process multiple genes with consistent parameters
 
-genes=("TP53" "BRCA1" "EGFR" "MYC" "KRAS")
+genes=("TP53" "BRCA1" "EGFR" "MYC" "KRAS" "PIK3CA")
+output_base="batch_analysis_$(date +%Y%m%d)"
 
 for gene in "${genes[@]}"; do
     echo "🧬 Processing $gene..."
     uv run sirnaforge workflow "$gene" \
-      --output-dir "analysis_${gene}" \
-      --top-n 25 \
-      --verbose
-    echo "✅ $gene complete"
+        --output-dir "${output_base}/${gene}" \
+        --top-n 25 \
+        --gc-min 35 --gc-max 55 \
+        --verbose
+    echo "✅ $gene completed"
 done
+
+# Generate batch summary
+echo "Batch analysis completed: $(date)" > "${output_base}/batch_summary.txt"
 ```
 
-### High-Throughput Analysis
+### Parameter Set Comparisons
 ```bash
-# Process many genes from a list
-while IFS= read -r gene; do
-    echo "Processing $gene..."
-    uv run sirnaforge workflow "$gene" \
-      --output-dir "batch_analysis/${gene}" \
-      --top-n 15 \
-      --gc-min 30 --gc-max 60
-done < gene_list.txt
+# Compare different stringency levels
+GENE="TP53"
+
+# High stringency
+uv run sirnaforge workflow $GENE \
+  --output-dir "${GENE}_high_stringency" \
+  --gc-min 40 --gc-max 50 \
+  --max-poly-runs 2 \
+  --top-n 20
+
+# Medium stringency
+uv run sirnaforge workflow $GENE \
+  --output-dir "${GENE}_medium_stringency" \
+  --gc-min 35 --gc-max 60 \
+  --max-poly-runs 3 \
+  --top-n 30
+
+# Low stringency (more candidates)
+uv run sirnaforge workflow $GENE \
+  --output-dir "${GENE}_low_stringency" \
+  --gc-min 25 --gc-max 70 \
+  --max-poly-runs 4 \
+  --top-n 50
 ```
 
-### Custom Parameter Sets
+### Automated Quality Assessment
 ```bash
-# Define parameter sets for different use cases
+#!/bin/bash
+# Automated pipeline with quality checks
 
-# Strict parameters
-STRICT="--gc-min 35 --gc-max 50 --max-poly-runs 2"
+GENE=$1
+OUTPUT_DIR="analysis_${GENE}_$(date +%Y%m%d)"
 
-# Relaxed parameters
-RELAXED="--gc-min 25 --gc-max 65 --max-poly-runs 4"
+echo "🔍 Starting analysis for $GENE"
 
-# Fast parameters
-FAST="--skip-structure --skip-off-targets --top-n 5"
-
-# Use parameter sets
-uv run sirnaforge design input.fasta $STRICT -o strict_results.tsv
-uv run sirnaforge design input.fasta $RELAXED -o relaxed_results.tsv
-uv run sirnaforge design input.fasta $FAST -o fast_results.tsv
-```
-
-## Multi-Species Off-Target Analysis
-
-### Basic Multi-Species
-```bash
-# Analyze against human, rat, and rhesus genomes
-uv run sirnaforge workflow TP53 \
-  --genome-species "human,rat,rhesus" \
-  --offtarget-n 15
-```
-
-### Extended Species Panel
-```bash
-# Include additional model organisms
-uv run sirnaforge workflow BRCA1 \
-  --genome-species "human,mouse,rat,rhesus,dog" \
-  --offtarget-n 20 \
+# Run workflow
+uv run sirnaforge workflow $GENE \
+  --output-dir $OUTPUT_DIR \
+  --top-n 30 \
   --verbose
+
+# Check results quality
+PASS_COUNT=$(tail -n +2 "$OUTPUT_DIR/sirnaforge/${GENE}_pass.csv" | wc -l)
+ALL_COUNT=$(tail -n +2 "$OUTPUT_DIR/sirnaforge/${GENE}_all.csv" | wc -l)
+
+echo "📊 Quality Report:"
+echo "  - Total candidates: $ALL_COUNT"
+echo "  - Passing filters: $PASS_COUNT"
+echo "  - Pass rate: $(( PASS_COUNT * 100 / ALL_COUNT ))%"
+
+if [ $PASS_COUNT -lt 5 ]; then
+    echo "⚠️  Warning: Low number of passing candidates"
+    echo "💡 Consider relaxing parameters or checking input quality"
+fi
 ```
 
-### Species-Specific Analysis
-```bash
-# Focus on specific species
-uv run sirnaforge workflow EGFR \
-  --genome-species "human,mouse" \
-  --offtarget-n 25
-```
-
-## File Validation Examples
-
-### Basic Validation
-```bash
-# Check a single file
-uv run sirnaforge validate input.fasta
-
-# Validate before processing
-uv run sirnaforge validate transcripts.fasta && \
-uv run sirnaforge design transcripts.fasta
-```
-
-### Batch Validation
-```bash
-# Validate multiple files
-for file in *.fasta; do
-    echo "Validating $file..."
-    if uv run sirnaforge validate "$file"; then
-        echo "✅ $file is valid"
-    else
-        echo "❌ $file has issues"
-    fi
-done
-```
-
-## Configuration and Version Examples
-
-### Check Configuration
-```bash
-# View current settings
-uv run sirnaforge config
-
-# Save configuration for reference
-uv run sirnaforge config > my_sirnaforge_config.txt
-
-# Check version
-uv run sirnaforge version
-```
-
-## Integration Examples
+## Integration & Automation
 
 ### Makefile Integration
 ```makefile
-# Add to your Makefile
+# Project Makefile with siRNAforge targets
 GENE ?= TP53
 OUTPUT_DIR = analysis_$(shell date +%Y%m%d)
 
-sirna-analysis:
+.PHONY: sirna-design sirna-batch sirna-qc
+
+sirna-design:
+	@echo "🧬 Designing siRNAs for $(GENE)"
 	uv run sirnaforge workflow $(GENE) \
-		--output-dir $(OUTPUT_DIR) \
-		--top-n 20 \
+		--output-dir $(OUTPUT_DIR)/$(GENE) \
+		--top-n 25 \
 		--verbose
 
 sirna-batch:
-	@for gene in TP53 BRCA1 EGFR; do \
+	@for gene in TP53 BRCA1 EGFR MYC KRAS; do \
 		echo "Processing $$gene..."; \
-		uv run sirnaforge workflow "$$gene" \
-			--output-dir "$(OUTPUT_DIR)/$$gene"; \
+		$(MAKE) sirna-design GENE=$$gene; \
 	done
+
+sirna-qc:
+	@echo "📊 Generating QC report"
+	@find $(OUTPUT_DIR) -name "*_pass.csv" -exec wc -l {} + > qc_summary.txt
 ```
 
-### Shell Script Integration
-```bash
-#!/bin/bash
-# comprehensive_analysis.sh
-
-set -euo pipefail
-
-GENE=${1:-"TP53"}
-OUTPUT_BASE="sirna_analysis_$(date +%Y%m%d)"
-OUTPUT_DIR="$OUTPUT_BASE/$GENE"
-
-echo "🧬 siRNAforge Analysis Pipeline"
-echo "Gene: $GENE"
-echo "Output: $OUTPUT_DIR"
-echo "=========================="
-
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
-
-# Run analysis
-echo "1. Running complete workflow..."
-uv run sirnaforge workflow "$GENE" \
-    --output-dir "$OUTPUT_DIR" \
-    --top-n 30 \
-    --offtarget-n 15 \
-    --verbose
-
-# Generate summary
-echo "2. Generating summary..."
-echo "Gene: $GENE" > "$OUTPUT_DIR/summary.txt"
-echo "Date: $(date)" >> "$OUTPUT_DIR/summary.txt"
-echo "siRNAforge version: $(uv run sirnaforge version)" >> "$OUTPUT_DIR/summary.txt"
-
-echo "✅ Analysis complete!"
-echo "Results available in: $OUTPUT_DIR"
-```
-
-### Python Integration
+### Python API Integration
 ```python
 #!/usr/bin/env python3
 """
-Python wrapper for siRNAforge workflows
+Advanced siRNAforge automation with Python
 """
-
 import subprocess
-import sys
+import json
+import pandas as pd
 from pathlib import Path
 
-def run_sirnaforge_workflow(gene: str, output_dir: str = None, **kwargs):
-    """Run siRNAforge workflow from Python"""
+def run_sirnaforge_workflow(gene, output_dir, **kwargs):
+    """Run siRNAforge workflow with custom parameters"""
+    cmd = [
+        "uv", "run", "sirnaforge", "workflow", gene,
+        "--output-dir", str(output_dir)
+    ]
 
-    cmd = ["uv", "run", "sirnaforge", "workflow", gene]
-
-    if output_dir:
-        cmd.extend(["--output-dir", output_dir])
-
-    # Add additional parameters
+    # Add optional parameters
     for key, value in kwargs.items():
         cmd.extend([f"--{key.replace('_', '-')}", str(value)])
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        print(f"✅ Workflow completed for {gene}")
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Workflow failed for {gene}: {e.stderr}")
-        return None
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.returncode == 0
 
-# Usage example
-if __name__ == "__main__":
-    genes = ["TP53", "BRCA1", "EGFR"]
+def analyze_results(output_dir, gene):
+    """Analyze siRNAforge results"""
+    pass_file = output_dir / "sirnaforge" / f"{gene}_pass.csv"
+    all_file = output_dir / "sirnaforge" / f"{gene}_all.csv"
 
-    for gene in genes:
-        output = run_sirnaforge_workflow(
-            gene=gene,
-            output_dir=f"python_analysis_{gene}",
-            top_n=25,
-            gc_min=35,
-            gc_max=55,
-            verbose=True
-        )
+    if pass_file.exists() and all_file.exists():
+        pass_df = pd.read_csv(pass_file)
+        all_df = pd.read_csv(all_file)
 
-        if output:
-            print(f"Analysis for {gene} completed successfully")
+        return {
+            "gene": gene,
+            "total_candidates": len(all_df),
+            "passing_candidates": len(pass_df),
+            "pass_rate": len(pass_df) / len(all_df) * 100,
+            "mean_asymmetry": pass_df['asymmetry_score'].mean(),
+            "mean_gc": pass_df['gc_content'].mean()
+        }
+    return None
+
+# Example usage
+genes = ["TP53", "BRCA1", "EGFR"]
+results = []
+
+for gene in genes:
+    output_dir = Path(f"analysis_{gene}")
+
+    # Run analysis
+    success = run_sirnaforge_workflow(
+        gene, output_dir,
+        top_n=30,
+        gc_min=35,
+        gc_max=55,
+        verbose=True
+    )
+
+    if success:
+        analysis = analyze_results(output_dir, gene)
+        if analysis:
+            results.append(analysis)
+
+# Generate summary report
+summary_df = pd.DataFrame(results)
+summary_df.to_csv("batch_analysis_summary.csv", index=False)
+print("📊 Analysis completed. Summary saved to batch_analysis_summary.csv")
 ```
 
-## Performance Optimization Examples
+## Troubleshooting & Optimization
 
-### Large Dataset Processing
+### Performance Optimization
 ```bash
-# Split large FASTA files for parallel processing
-split -l 2000 large_transcripts.fasta batch_
+# For large datasets - skip expensive computations
+uv run sirnaforge design large_input.fasta \
+  --skip-structure \
+  --skip-off-targets \
+  --top-n 10 \
+  --output fast_results.csv
 
-# Process batches in parallel
-for batch in batch_*; do
-    (
-        echo "Processing $batch..."
-        uv run sirnaforge design "$batch" \
-          --skip-structure \
-          --top-n 5 \
-          -o "${batch}_results.tsv"
-    ) &
-done
-wait
-
-# Combine results
-cat batch_*_results.tsv > combined_results.tsv
+# Memory-efficient processing
+uv run sirnaforge workflow GENE \
+  --output-dir results \
+  --top-n 15 \
+  --max-poly-runs 3
 ```
 
-### Memory-Efficient Processing
+### Debugging Failed Analyses
 ```bash
-# For very large datasets, process one at a time
-find . -name "*.fasta" -type f | while read -r file; do
-    echo "Processing $file..."
-    uv run sirnaforge design "$file" \
-      --skip-structure \
-      --skip-off-targets \
-      --top-n 3 \
-      -o "${file%.fasta}_results.tsv"
-done
+# Verbose mode for troubleshooting
+uv run sirnaforge workflow PROBLEMATIC_GENE \
+  --output-dir debug_output \
+  --verbose 2>&1 | tee debug.log
+
+# Check intermediate files
+uv run sirnaforge search PROBLEMATIC_GENE \
+  --output debug_transcripts.fasta \
+  --verbose
+
+# Validate input quality
+uv run sirnaforge validate debug_transcripts.fasta
 ```
 
-## Error Handling Examples
-
-### Robust Processing
+### Quality Control Scripts
 ```bash
 #!/bin/bash
-# Robust processing with error handling
+# qc_analysis.sh - Quality control for siRNAforge results
 
-process_gene() {
-    local gene=$1
-    local max_retries=3
-    local attempt=1
+analysis_dir=$1
+if [ -z "$analysis_dir" ]; then
+    echo "Usage: $0 <analysis_directory>"
+    exit 1
+fi
 
-    while [ $attempt -le $max_retries ]; do
-        echo "Attempt $attempt for $gene..."
+echo "🔍 Quality Control Report for $analysis_dir"
+echo "=============================================="
 
-        if uv run sirnaforge workflow "$gene" \
-            --output-dir "analysis_$gene" \
-            --verbose 2>"error_$gene.log"; then
-            echo "✅ $gene completed successfully"
-            return 0
-        else
-            echo "❌ $gene failed (attempt $attempt)"
-            ((attempt++))
-            sleep 5
+# Count total and passing candidates
+for csv_file in "$analysis_dir"/sirnaforge/*_all.csv; do
+    if [ -f "$csv_file" ]; then
+        gene=$(basename "$csv_file" _all.csv)
+        total=$(tail -n +2 "$csv_file" | wc -l)
+        pass_file="$analysis_dir/sirnaforge/${gene}_pass.csv"
+
+        if [ -f "$pass_file" ]; then
+            passing=$(tail -n +2 "$pass_file" | wc -l)
+            pass_rate=$(( passing * 100 / total ))
+            echo "📊 $gene: $passing/$total candidates pass filters ($pass_rate%)"
         fi
-    done
-
-    echo "❌ $gene failed after $max_retries attempts"
-    return 1
-}
-
-# Process genes with error handling
-genes=("TP53" "BRCA1" "EGFR")
-for gene in "${genes[@]}"; do
-    process_gene "$gene"
-done
-```
-
-### Validation Pipeline
-```bash
-#!/bin/bash
-# Complete validation pipeline
-
-validate_and_process() {
-    local input_file=$1
-    local output_prefix=${input_file%.fasta}
-
-    echo "🔍 Validating $input_file..."
-    if ! uv run sirnaforge validate "$input_file"; then
-        echo "❌ Validation failed for $input_file"
-        return 1
     fi
-
-    echo "🎯 Processing $input_file..."
-    if uv run sirnaforge design "$input_file" \
-        -o "${output_prefix}_sirnas.tsv" \
-        --verbose; then
-        echo "✅ Successfully processed $input_file"
-        return 0
-    else
-        echo "❌ Processing failed for $input_file"
-        return 1
-    fi
-}
-
-# Process all FASTA files
-for fasta_file in *.fasta; do
-    validate_and_process "$fasta_file"
 done
+
+# Check for common issues
+echo ""
+echo "🔧 Diagnostic Checks:"
+if [ -f "$analysis_dir/logs/workflow_summary.json" ]; then
+    echo "✅ Workflow completed successfully"
+else
+    echo "❌ No workflow summary found - check for errors"
+fi
+
+# Size checks
+echo "📁 Output sizes:"
+du -sh "$analysis_dir"/* 2>/dev/null | head -5
 ```
 
-## Quality Control Examples
+## Best Practices Summary
 
-### Comprehensive QC Pipeline
+### Parameter Selection Guidelines
 ```bash
-#!/bin/bash
-# Quality control pipeline
+# Research/Publication quality
+--gc-min 35 --gc-max 55 --max-poly-runs 2 --top-n 30
 
-run_qc_pipeline() {
-    local gene=$1
-    local output_dir="qc_${gene}_$(date +%Y%m%d)"
+# High-throughput screening
+--gc-min 25 --gc-max 70 --max-poly-runs 4 --top-n 15
 
-    mkdir -p "$output_dir"
+# Difficult targets
+--gc-min 20 --gc-max 75 --skip-structure --top-n 50
 
-    echo "🧬 QC Pipeline for $gene"
-    echo "======================="
-
-    # 1. Search and validate
-    echo "1. Searching for transcripts..."
-    uv run sirnaforge search "$gene" \
-        -o "$output_dir/${gene}_transcripts.fasta" \
-        --verbose
-
-    echo "2. Validating sequences..."
-    uv run sirnaforge validate "$output_dir/${gene}_transcripts.fasta"
-
-    # 2. Design with multiple parameter sets
-    echo "3. Designing with strict parameters..."
-    uv run sirnaforge design "$output_dir/${gene}_transcripts.fasta" \
-        --gc-min 35 --gc-max 50 \
-        --max-poly-runs 2 \
-        --top-n 50 \
-        -o "$output_dir/${gene}_strict.tsv"
-
-    echo "4. Designing with relaxed parameters..."
-    uv run sirnaforge design "$output_dir/${gene}_transcripts.fasta" \
-        --gc-min 25 --gc-max 65 \
-        --max-poly-runs 4 \
-        --top-n 50 \
-        -o "$output_dir/${gene}_relaxed.tsv"
-
-    # 3. Generate summary
-    echo "5. Generating QC summary..."
-    {
-        echo "QC Summary for $gene"
-        echo "===================="
-        echo "Date: $(date)"
-        echo "siRNAforge version: $(uv run sirnaforge version)"
-        echo ""
-        echo "Files generated:"
-        ls -la "$output_dir"
-        echo ""
-        echo "Strict parameters results:"
-        wc -l "$output_dir/${gene}_strict.tsv"
-        echo ""
-        echo "Relaxed parameters results:"
-        wc -l "$output_dir/${gene}_relaxed.tsv"
-    } > "$output_dir/qc_summary.txt"
-
-    echo "✅ QC complete for $gene. Results in $output_dir"
-}
-
-# Run QC for multiple genes
-for gene in TP53 BRCA1 EGFR; do
-    run_qc_pipeline "$gene"
-done
+# Quick testing
+--top-n 5 --skip-structure --skip-off-targets
 ```
 
----
+### Workflow Recommendations
+1. **Start simple**: Use `workflow` command for most use cases
+2. **Validate inputs**: Always run `validate` on custom FASTA files
+3. **Check results**: Review pass rates and quality metrics
+4. **Iterate parameters**: Adjust stringency based on results
+5. **Document settings**: Save configurations for reproducibility
 
-## Tips and Best Practices
-
-### 🎯 **Design Quality**
-- Use `--gc-min 35 --gc-max 50` for high-quality siRNAs
-- Set `--max-poly-runs 2` to avoid off-targets
-- Include `--verbose` for detailed progress information
-
-### 🚀 **Performance**
-- Use `--skip-structure --skip-off-targets` for large datasets
-- Process files in batches for very large analyses
-- Consider `--top-n 5` for initial screening
-
-### 🔍 **Troubleshooting**
-- Always run `validate` before `design`
-- Check `config` if results seem unexpected
-- Use `--verbose` to diagnose issues
-- Try different databases if search fails
-
-### 📁 **File Management**
-- Use descriptive output directory names with dates
-- Keep parameter sets consistent across analyses
-- Archive results with metadata files
-
----
-
-*For more examples and use cases, see the [examples directory](examples/USAGE_EXAMPLES.md) and the [CLI Reference](CLI_REFERENCE.md).*
+> **More Resources:**
+> - [CLI Reference](CLI_REFERENCE.md) - Complete parameter documentation
+> - [Custom Scoring Guide](tutorials/custom_scoring.md) - Advanced thermodynamic principles
+> - [Development Guide](development.md) - Contributing and extending siRNAforge

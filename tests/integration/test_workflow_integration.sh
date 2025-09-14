@@ -49,7 +49,6 @@ uv run sirnaforge workflow \
     --output-dir "$OUTPUT_DIR" \
     --genome-species "$GENOME_SPECIES" \
     --top-n 20 \
-    --offtarget-n 10 \
     --verbose
 
 echo ""
@@ -65,7 +64,7 @@ fi
 # Count output files
 TRANSCRIPT_FILES=$(find "$OUTPUT_DIR/transcripts" -name "*.fasta" 2>/dev/null | wc -l)
 ORF_REPORTS=$(find "$OUTPUT_DIR/orf_reports" -name "*.txt" 2>/dev/null | wc -l)
-SIRNA_RESULTS=$(find "$OUTPUT_DIR/sirna_design" -name "*.csv" 2>/dev/null | wc -l)
+SIRNA_RESULTS=$(find "$OUTPUT_DIR/sirnaforge" -name "*.csv" 2>/dev/null | wc -l)
 OFFTARGET_FILES=$(find "$OUTPUT_DIR/off_target" -name "*.tsv" 2>/dev/null | wc -l)
 
 echo "Results Summary:"
@@ -77,8 +76,8 @@ echo "  🚫 Off-target files: $OFFTARGET_FILES"
 # Show file sizes
 echo ""
 echo "File Details:"
-if [ -f "$OUTPUT_DIR/workflow_summary.json" ]; then
-    echo "  📊 Workflow summary: $(wc -c < "$OUTPUT_DIR/workflow_summary.json") bytes"
+if [ -f "$OUTPUT_DIR/logs/workflow_summary.json" ]; then
+    echo "  📊 Workflow summary: $(wc -c < "$OUTPUT_DIR/logs/workflow_summary.json") bytes"
 fi
 
 if [ -d "$OUTPUT_DIR/transcripts" ]; then
@@ -90,8 +89,8 @@ if [ -d "$OUTPUT_DIR/transcripts" ]; then
     done
 fi
 
-if [ -d "$OUTPUT_DIR/sirna_design" ]; then
-    for file in "$OUTPUT_DIR/sirna_design"/*.csv; do
+if [ -d "$OUTPUT_DIR/sirnaforge" ]; then
+    for file in "$OUTPUT_DIR/sirnaforge"/*.csv; do
         if [ -f "$file" ]; then
             candidates=$(tail -n +2 "$file" 2>/dev/null | wc -l || echo "0")
             echo "  🎯 $(basename "$file"): $candidates candidates"
@@ -141,12 +140,12 @@ else
 fi
 
 # Test Nextflow integration if available
-if [ "$SKIP_NEXTFLOW" = false ] && [ -f "$OUTPUT_DIR/sirna_design/${GENE_QUERY}_top_candidates.fasta" ]; then
+if [ "$SKIP_NEXTFLOW" = false ] && [ -f "$OUTPUT_DIR/off_target/input_candidates.fasta" ]; then
     echo ""
     echo "🚀 Step 4: Testing Nextflow integration..."
     echo "-----------------------------------------"
 
-    CANDIDATES_FASTA="$OUTPUT_DIR/sirna_design/${GENE_QUERY}_top_candidates.fasta"
+    CANDIDATES_FASTA="$OUTPUT_DIR/off_target/input_candidates.fasta"
     NEXTFLOW_OUTPUT="$OUTPUT_DIR/nextflow_test"
 
     # Check if nextflow pipeline exists

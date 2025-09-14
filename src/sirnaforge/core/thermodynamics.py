@@ -1,15 +1,9 @@
 """Thermodynamic calculations for siRNA design using ViennaRNA."""
 
+import RNA
 from Bio.Seq import Seq
 
 from sirnaforge.models.sirna import SiRNACandidate
-
-try:
-    import RNA  # ViennaRNA Python bindings
-
-    VIENNA_AVAILABLE = True
-except ImportError:
-    VIENNA_AVAILABLE = False
 
 
 class ThermodynamicCalculator:
@@ -24,33 +18,24 @@ class ThermodynamicCalculator:
         """
         self.temperature = temperature
 
-        if VIENNA_AVAILABLE:
-            # Set ViennaRNA temperature
-            RNA.cvar.temperature = temperature
-            self.model_details = RNA.md()
-            self.model_details.temperature = temperature
-        else:
-            self.model_details = None
+        # Set ViennaRNA temperature
+        RNA.cvar.temperature = temperature
+        self.model_details = RNA.md()
+        self.model_details.temperature = temperature
 
     def calculate_duplex_stability(self, guide: str, passenger: str) -> float:
         """Calculate duplex stability (deltaG) using ViennaRNA."""
         if len(guide) != len(passenger):
+            # TODO: convert to warning and generate opposite sequence from the guide strand
             raise ValueError("Guide and passenger sequences must be same length")
+        # Create duplex string for ViennaRNA
+        duplex_seq = guide + "&" + str(Seq(passenger).reverse_complement())
 
-        if not VIENNA_AVAILABLE:
-            return self._fallback_duplex_stability(guide, passenger)
+        # Calculate duplex MFE (removed RNA.OPTION_EVAL_ONLY to fix segfault)
+        fc = RNA.fold_compound(duplex_seq, self.model_details)
+        mfe_structure, mfe = fc.mfe()
 
-        try:
-            # Create duplex string for ViennaRNA
-            duplex_seq = guide + "&" + str(Seq(passenger).reverse_complement())
-
-            # Calculate duplex MFE (removed RNA.OPTION_EVAL_ONLY to fix segfault)
-            fc = RNA.fold_compound(duplex_seq, self.model_details)
-            mfe_structure, mfe = fc.mfe()
-
-            return float(mfe)
-        except Exception:
-            return self._fallback_duplex_stability(guide, passenger)
+        return float(mfe)
 
     def calculate_asymmetry_score(self, candidate: SiRNACandidate) -> tuple[float, float, float]:
         """
@@ -93,77 +78,53 @@ class ThermodynamicCalculator:
         Returns:
             Tuple of (average_unpaired_probability, mfe)
         """
-        if not VIENNA_AVAILABLE:
-            return self._fallback_accessibility(target_sequence, start_pos, sirna_length)
+        # Create fold compound for target sequence
+        fc = RNA.fold_compound(target_sequence, self.model_details)
 
-        try:
-            # Create fold compound for target sequence
-            fc = RNA.fold_compound(target_sequence, self.model_details)
+        # Calculate MFE structure
+        mfe_structure, mfe = fc.mfe()
 
-            # Calculate MFE structure
-            mfe_structure, mfe = fc.mfe()
+        # Calculate partition function and base pair probabilities
+        fc.pf()
 
-            # Calculate partition function and base pair probabilities
-            fc.pf()
+        # Get unpaired probabilities for target site
+        unpaired_probs = []
 
-            # Get unpaired probabilities for target site
-            unpaired_probs = []
+        for i in range(start_pos, min(start_pos + sirna_length, len(target_sequence))):
+            # Get probability that position i is unpaired
+            prob = fc.pr_unpaired(i + 1)  # ViennaRNA uses 1-based indexing
+            unpaired_probs.append(prob)
 
-            for i in range(start_pos, min(start_pos + sirna_length, len(target_sequence))):
-                # Get probability that position i is unpaired
-                prob = fc.pr_unpaired(i + 1)  # ViennaRNA uses 1-based indexing
-                unpaired_probs.append(prob)
+        avg_unpaired = sum(unpaired_probs) / len(unpaired_probs) if unpaired_probs else 0.0
 
-            avg_unpaired = sum(unpaired_probs) / len(unpaired_probs) if unpaired_probs else 0.0
-
-            return avg_unpaired, mfe
-
-        except Exception:
-            return self._fallback_accessibility(target_sequence, start_pos, sirna_length)
+        return avg_unpaired, mfe
 
     def _calculate_end_stability(self, guide_end: str, passenger_end: str) -> float:
         """Calculate stability of duplex end using ViennaRNA."""
         if not guide_end or not passenger_end:
             return 0.0
+        # Create duplex for the end region
+        duplex_seq = guide_end + "&" + str(Seq(passenger_end).reverse_complement())
+        fc = RNA.fold_compound(duplex_seq, self.model_details)
+        _, mfe = fc.mfe()
 
-        if not VIENNA_AVAILABLE:
-            return self._fallback_end_stability(guide_end, passenger_end)
-
-        try:
-            # Create duplex for the end region
-            duplex_seq = guide_end + "&" + str(Seq(passenger_end).reverse_complement())
-
-            # Removed RNA.OPTION_EVAL_ONLY to fix segfault
-            fc = RNA.fold_compound(duplex_seq, self.model_details)
-            _, mfe = fc.mfe()
-
-            return float(mfe)
-
-        except Exception:
-            return self._fallback_end_stability(guide_end, passenger_end)
+        return float(mfe)
 
     def calculate_melting_temperature(self, guide: str, passenger: str) -> float:
         """Calculate melting temperature using ViennaRNA thermodynamics."""
-        if not VIENNA_AVAILABLE:
-            return self._fallback_melting_temp(guide)
+        # Calculate duplex stability
+        dg = self.calculate_duplex_stability(guide, passenger)
 
-        try:
-            # Calculate duplex stability
-            dg = self.calculate_duplex_stability(guide, passenger)
+        # Simplified Tm estimation: Tm = dH/dS (assumes dH ≈ -dG for rough estimate)
+        # More accurate would require separate enthalpy calculation
+        # This is a rough approximation
+        if dg >= 0:
+            return 25.0  # Low melting temp for unstable duplexes
 
-            # Simplified Tm estimation: Tm = dH/dS (assumes dH ≈ -dG for rough estimate)
-            # More accurate would require separate enthalpy calculation
-            # This is a rough approximation
-            if dg >= 0:
-                return 25.0  # Low melting temp for unstable duplexes
+        # Rough conversion: more negative dG → higher Tm
+        tm = 37.0 + (-dg * 2.0)  # Empirical scaling factor
 
-            # Rough conversion: more negative dG → higher Tm
-            tm = 37.0 + (-dg * 2.0)  # Empirical scaling factor
-
-            return max(0.0, tm)
-
-        except Exception:
-            return self._fallback_melting_temp(guide)
+        return max(0.0, tm)
 
     def is_thermodynamically_favorable(self, candidate: SiRNACandidate, threshold: float = 0.5) -> bool:
         """Check if candidate meets thermodynamic asymmetry threshold."""
@@ -177,57 +138,51 @@ class ThermodynamicCalculator:
         Returns:
             Tuple of (structure, mfe, paired_fraction)
         """
-        if not VIENNA_AVAILABLE:
-            return self._fallback_structure(sequence)
 
-        try:
-            fc = RNA.fold_compound(sequence, self.model_details)
-            structure, mfe = fc.mfe()
+        fc = RNA.fold_compound(sequence, self.model_details)
+        structure, mfe = fc.mfe()
 
-            # Calculate paired fraction
-            paired_bases = structure.count("(") + structure.count(")")
-            paired_fraction = paired_bases / len(structure) if structure else 0.0
+        # Calculate paired fraction
+        paired_bases = structure.count("(") + structure.count(")")
+        paired_fraction = paired_bases / len(structure) if structure else 0.0
 
-            return structure, mfe, paired_fraction
-
-        except Exception:
-            return self._fallback_structure(sequence)
-
-    # Fallback methods for when ViennaRNA is not available
-    def _fallback_duplex_stability(self, guide: str, passenger: str) -> float:  # noqa: ARG002
-        """Fallback duplex stability calculation."""
-        # Simple approximation based on GC content
-        # Note: passenger parameter kept for interface consistency
-        gc_content = (guide.count("G") + guide.count("C")) / len(guide)
-        return -2.0 * gc_content * len(guide)
-
-    def _fallback_end_stability(self, guide_end: str, passenger_end: str) -> float:  # noqa: ARG002
-        """Fallback end stability calculation."""
-        # Note: passenger_end parameter kept for interface consistency
-        if not guide_end:
-            return 0.0
-        gc_content = (guide_end.count("G") + guide_end.count("C")) / len(guide_end)
-        return -2.0 * gc_content * len(guide_end)
-
-    def _fallback_accessibility(self, target_sequence: str, start_pos: int, sirna_length: int) -> tuple[float, float]:
-        """Fallback accessibility calculation."""
-        target_site = target_sequence[start_pos : start_pos + sirna_length]
-        at_content = (target_site.count("A") + target_site.count("T") + target_site.count("U")) / len(target_site)
-        # Higher AT content suggests better accessibility
-        accessibility = 0.5 + (at_content - 0.5) * 0.5
-        return max(0.0, min(1.0, accessibility)), -5.0
-
-    def _fallback_melting_temp(self, guide: str) -> float:
-        """Fallback melting temperature calculation."""
-        at_count = guide.count("A") + guide.count("T") + guide.count("U")
-        gc_count = guide.count("G") + guide.count("C")
-        return 2 * at_count + 4 * gc_count
-
-    def _fallback_structure(self, sequence: str) -> tuple[str, float, float]:
-        """Fallback structure prediction."""
-        # Return a simple dot-bracket structure
-        length = len(sequence)
-        structure = "." * length
-        mfe = -length * 0.5  # Rough estimate
-        paired_fraction = 0.0
         return structure, mfe, paired_fraction
+
+    # # Fallback methods for when ViennaRNA is not available
+    # def _fallback_duplex_stability(self, guide: str, passenger: str) -> float:  # noqa: ARG002
+    #     """Fallback duplex stability calculation."""
+    #     # Simple approximation based on GC content
+    #     # Note: passenger parameter kept for interface consistency
+    #     gc_content = (guide.count("G") + guide.count("C")) / len(guide)
+    #     return -2.0 * gc_content * len(guide)
+
+    # def _fallback_end_stability(self, guide_end: str, passenger_end: str) -> float:  # noqa: ARG002
+    #     """Fallback end stability calculation."""
+    #     # Note: passenger_end parameter kept for interface consistency
+    #     if not guide_end:
+    #         return 0.0
+    #     gc_content = (guide_end.count("G") + guide_end.count("C")) / len(guide_end)
+    #     return -2.0 * gc_content * len(guide_end)
+
+    # def _fallback_accessibility(self, target_sequence: str, start_pos: int, sirna_length: int) -> tuple[float, float]:
+    #     """Fallback accessibility calculation."""
+    #     target_site = target_sequence[start_pos : start_pos + sirna_length]
+    #     at_content = (target_site.count("A") + target_site.count("T") + target_site.count("U")) / len(target_site)
+    #     # Higher AT content suggests better accessibility
+    #     accessibility = 0.5 + (at_content - 0.5) * 0.5
+    #     return max(0.0, min(1.0, accessibility)), -5.0
+
+    # def _fallback_melting_temp(self, guide: str) -> float:
+    #     """Fallback melting temperature calculation."""
+    #     at_count = guide.count("A") + guide.count("T") + guide.count("U")
+    #     gc_count = guide.count("G") + guide.count("C")
+    #     return 2 * at_count + 4 * gc_count
+
+    # def _fallback_structure(self, sequence: str) -> tuple[str, float, float]:
+    #     """Fallback structure prediction."""
+    #     # Return a simple dot-bracket structure
+    #     length = len(sequence)
+    #     structure = "." * length
+    #     mfe = -length * 0.5  # Rough estimate
+    #     paired_fraction = 0.0
+    #     return structure, mfe, paired_fraction

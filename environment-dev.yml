@@ -1,0 +1,82 @@
+# siRNAforge Local Development Environment
+# This environment includes both bioinformatics tools and Python dependencies
+# for complete local development without Docker
+
+name: sirnaforge-dev
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  # Python runtime
+  - python=3.11
+
+  # Core bioinformatics tools (from Docker environment)
+  - openjdk >=17,<25
+  - nextflow >=25.04.0
+  - bwa-mem2 >=2.2.1
+  - samtools >=1.19.2
+  - viennarna >=2.7.0
+  - awscli >=2.0
+  - curl
+  - wget
+  - jq
+  - pigz
+  - htslib
+  - pysam
+
+  # Python scientific stack
+  - numpy >=1.26.0
+  - pandas >=2.3.0
+  - matplotlib >=3.7.0
+  - seaborn >=0.12.0
+  - jupyter >=1.0.0
+  - plotly >=5.15.0
+
+  # Python bioinformatics and data libraries
+  - biopython >=1.84
+  - requests >=2.32.0
+  - aiohttp >=3.12.0
+  - httpx >=0.28.0
+
+  # Python development and CLI tools
+  - click >=8.0.0
+  - rich >=14.0.0
+  - typer >=0.17.0
+  - pydantic >=2.11.0
+  - pandera >=0.26.0
+
+  # Development tools
+  - pytest >=8.0
+  - pytest-cov >=6.0
+  - pytest-mock >=3.15
+  - pytest-asyncio >=1.1.0
+  - pytest-xdist >=3.8
+  - ruff >=0.12.0
+  - mypy >=1.10
+  - pre-commit >=3.8
+  - codespell >=2.4.0
+  - bandit[toml] >=1.7.0
+  - safety >=3.0.0,<4.0.0
+
+  # Documentation tools
+  - sphinx >=7.3.0
+  - sphinx-rtd-theme >=2.0.0
+  - myst-parser >=2.0.0
+  - sphinx-autodoc-typehints >=2.0.0
+  - linkify-it-py >=2.0.3
+  - sphinx-autobuild >=2024.9.19
+  - sphinx-design >=0.6.0
+  - sphinxcontrib-mermaid >=1.0.0
+
+  # Type stubs for better development experience
+  - types-requests >=2.32.0
+  - pandas-stubs >=2.1.0
+
+  # Additional utilities
+  - git
+  - htop
+  - tree
+  - tmux
+  - vim
+  - nano

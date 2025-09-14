@@ -17,6 +17,11 @@ help: ## Show available commands
 	@echo "  install-dev     Install with development dependencies"
 	@echo "  install-pipeline Pipeline tools (included in main deps)"
 	@echo ""
+	@echo "🐍 ENVIRONMENT MANAGEMENT"
+	@echo "  conda-env           Create conda environment for local development"
+	@echo "  conda-env-update    Update existing conda environment"
+	@echo "  conda-env-clean     Remove conda environment"
+	@echo ""
 	@echo "🧪 TESTING (3 Groups)"
 	@echo "  test-unit           Unit tests (fast, Python-only)"
 	@echo "  test-local-python   Local Python development tests"
@@ -68,6 +73,62 @@ install-dev: ## Install with development dependencies (default)
 install-pipeline: ## Pipeline tools are now in main dependencies
 	uv sync
 	@echo "✅ Pipeline tools available (included in main dependencies)!"
+
+# Environment Management
+conda-env: ## Create conda environment for local development
+	@echo "🐍 Setting up conda environment..."
+	@if command -v micromamba >/dev/null 2>&1; then \
+		micromamba env create -f environment-dev.yml; \
+		echo "✅ Conda environment created with micromamba!"; \
+		echo "🔄 Activate with: micromamba activate sirnaforge-dev"; \
+	elif command -v mamba >/dev/null 2>&1; then \
+		mamba env create -f environment-dev.yml; \
+		echo "✅ Conda environment created with mamba!"; \
+		echo "🔄 Activate with: conda activate sirnaforge-dev"; \
+	elif command -v conda >/dev/null 2>&1; then \
+		conda env create -f environment-dev.yml; \
+		echo "✅ Conda environment created with conda!"; \
+		echo "🔄 Activate with: conda activate sirnaforge-dev"; \
+	else \
+		echo "❌ Neither conda, mamba, nor micromamba found."; \
+		echo "Please install one of:"; \
+		echo "  • micromamba (recommended): https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html"; \
+		echo "  • Mambaforge: https://mamba.readthedocs.io/en/latest/installation.html"; \
+		echo "  • Miniconda: https://docs.conda.io/en/latest/miniconda.html"; \
+		exit 1; \
+	fi
+
+conda-env-update: ## Update existing conda environment
+	@echo "🔄 Updating conda environment..."
+	@if command -v micromamba >/dev/null 2>&1; then \
+		micromamba env update -f environment-dev.yml; \
+		echo "✅ Conda environment updated with micromamba!"; \
+	elif command -v mamba >/dev/null 2>&1; then \
+		mamba env update -f environment-dev.yml; \
+		echo "✅ Conda environment updated with mamba!"; \
+	elif command -v conda >/dev/null 2>&1; then \
+		conda env update -f environment-dev.yml; \
+		echo "✅ Conda environment updated with conda!"; \
+	else \
+		echo "❌ Neither conda, mamba, nor micromamba found."; \
+		exit 1; \
+	fi
+
+conda-env-clean: ## Remove conda environment
+	@echo "🧹 Removing conda environment..."
+	@if command -v micromamba >/dev/null 2>&1; then \
+		micromamba env remove -n sirnaforge-dev; \
+		echo "✅ Conda environment removed!"; \
+	elif command -v mamba >/dev/null 2>&1; then \
+		mamba env remove -n sirnaforge-dev; \
+		echo "✅ Conda environment removed!"; \
+	elif command -v conda >/dev/null 2>&1; then \
+		conda env remove -n sirnaforge-dev; \
+		echo "✅ Conda environment removed!"; \
+	else \
+		echo "❌ Neither conda, mamba, nor micromamba found."; \
+		exit 1; \
+	fi
 
 # Development & Testing
 test: ## Run all tests

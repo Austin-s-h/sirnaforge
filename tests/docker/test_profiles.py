@@ -31,7 +31,8 @@ class DockerTestProfile:
                 result = subprocess.run(
                     [tool, "--version"] if tool != "nextflow" else [tool, "-version"],
                     capture_output=True,
-                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                     check=False,  # We handle the return code manually
                 )

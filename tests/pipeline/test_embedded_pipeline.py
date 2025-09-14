@@ -247,7 +247,7 @@ class TestPipelineIntegration:
 
         # Test execution profile selection
         profile = config.get_execution_profile()
-        assert profile in ["docker", "local", "test"]
+        assert profile in ["docker", "local", "test", "conda", "singularity"]
 
     @pytest.mark.integration
     @pytest.mark.docker
