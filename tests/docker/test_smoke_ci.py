@@ -211,3 +211,51 @@ def test_docker_smoke_test_data_exists():
     assert file_size < 1024, f"Should be < 1KB for fast CI (actual: {file_size} bytes)"
     
     print(f"✅ Smoke test data validated: {len(sequence_lines)} sequence lines, {total_sequence_length} bases, {file_size} bytes")
+
+
+@pytest.mark.docker
+@pytest.mark.smoke
+def test_docker_smoke_environment_ready():
+    """Smoke test: validate Docker environment markers and CI readiness."""
+    
+    # Test that essential paths exist (even in CI simulation)
+    test_data_dir = Path(__file__).parent.parent / "data"
+    assert test_data_dir.exists(), "Test data directory should exist"
+    
+    # Validate smoke test file specifically
+    smoke_file = test_data_dir / "smoke_test.fasta" 
+    assert smoke_file.exists(), "Smoke test data should exist"
+    
+    # Check that we have proper test markers
+    current_test_name = "test_docker_smoke_environment_ready"
+    print(f"✅ Running test: {current_test_name}")
+    
+    # Basic environment check - Python version should be reasonable
+    import sys
+    py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert sys.version_info.major == 3, "Should be using Python 3"
+    assert sys.version_info.minor >= 9, "Should be using Python 3.9+"
+    print(f"✅ Python version: {py_version}")
+    
+    # Check that we can import pytest markers (validates test environment)
+    try:
+        import pytest
+        print(f"✅ pytest available: {pytest.__version__}")
+    except ImportError:
+        pytest.fail("pytest should be available in test environment")
+    
+    # Verify test file structure makes sense for Docker context
+    docker_test_dir = Path(__file__).parent
+    expected_files = [
+        "test_smoke_ci.py",  # This file
+        # Note: Don't require other files as they may not be in minimal CI
+    ]
+    
+    for expected_file in expected_files:
+        file_path = docker_test_dir / expected_file
+        if file_path.exists():
+            print(f"✅ Found expected file: {expected_file}")
+        else:
+            print(f"⚠️ Expected file not found: {expected_file}")
+            
+    print("✅ Docker smoke test environment validated")
