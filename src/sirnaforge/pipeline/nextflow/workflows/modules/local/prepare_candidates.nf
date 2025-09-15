@@ -3,9 +3,6 @@ process PREPARE_CANDIDATES {
     label 'process_low'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6':
-        'community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6' }"
 
     input:
     tuple val(meta), path(candidates_fasta)
@@ -20,8 +17,6 @@ process PREPARE_CANDIDATES {
     script:
     """
     python3 -c "
-import sys
-sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.core.off_target import validate_and_write_sequences
 
 # Validate siRNA candidates

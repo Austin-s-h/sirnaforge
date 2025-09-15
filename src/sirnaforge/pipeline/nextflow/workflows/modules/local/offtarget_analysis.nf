@@ -3,9 +3,6 @@ process OFFTARGET_ANALYSIS {
     label 'process_medium'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f':
-        'community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f' }"
 
     input:
     tuple val(candidate_meta), path(candidate_fasta), val(species), val(index_path), val(index_type)
@@ -26,28 +23,27 @@ process OFFTARGET_ANALYSIS {
     def candidate_id = candidate_meta.id
     """
     python3 -c "
-import sys
-sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import run_bwa_alignment_analysis
-import os
+from sirnaforge.core.off_target import run_comprehensive_offtarget_analysis
 
-print(f'Running ${index_type} analysis for candidate ${candidate_id} against ${species}')
+print(f'Running comprehensive off-target analysis for candidate ${candidate_id} against ${species} (${index_type} index)')
 print(f'Using index path: ${index_path}')
 
-# Run analysis
-result_dir = run_bwa_alignment_analysis(
-    candidates_file='${candidate_fasta}',
-    index_prefix='${index_path}',
+# Run comprehensive analysis
+tsv_file, json_file, summary_file = run_comprehensive_offtarget_analysis(
     species='${species}',
-    output_dir='.',
-    max_hits=${max_hits},
+    sequences_file='${candidate_fasta}',
+    index_path='${index_path}',
+    output_prefix='${candidate_id}_${species}_${index_type}',
+    mode='transcriptome',  # Can be 'transcriptome' or 'mirna_seed'
     bwa_k=${bwa_k},
     bwa_T=${bwa_T},
+    max_hits=${max_hits},
     seed_start=${seed_start},
     seed_end=${seed_end}
 )
 
 print(f'Analysis completed for ${candidate_id}-${species}-${index_type}')
+print(f'Results: TSV={tsv_file}, JSON={json_file}, Summary={summary_file}')
 "
 
     cat <<-END_VERSIONS > versions.yml

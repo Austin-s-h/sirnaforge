@@ -3,9 +3,6 @@ process SPLIT_CANDIDATES {
     label 'process_low'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6':
-        'community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6' }"
 
     input:
     tuple val(meta), path(candidates_fasta)
@@ -21,13 +18,11 @@ process SPLIT_CANDIDATES {
     script:
     """
     python3 -c "
-import sys
-sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import parse_fasta_sequences
+from sirnaforge.core.off_target import parse_fasta_file
 from pathlib import Path
 
 # Parse candidates
-sequences = parse_fasta_sequences('${candidates_fasta}')
+sequences = parse_fasta_file('${candidates_fasta}')
 
 # Split into individual files
 candidate_files = []

@@ -4,9 +4,6 @@ process AGGREGATE_RESULTS {
     publishDir "${params.outdir}/aggregated", mode: params.publish_dir_mode
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f':
-        'community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f' }"
 
     input:
     path analysis_files
@@ -26,11 +23,10 @@ process AGGREGATE_RESULTS {
     script:
     """
     python3 -c "
-import sys
-sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import aggregate_offtarget_results
 from pathlib import Path
 import glob
+import pandas as pd
+import json
 
 # Collect all analysis and summary files
 analysis_files = glob.glob('*_analysis.tsv')

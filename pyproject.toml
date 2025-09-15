@@ -91,6 +91,14 @@ path = "src/sirnaforge/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sirnaforge"]
+artifacts = [
+    "src/sirnaforge/pipeline/nextflow/workflows/**/*.nf",
+    "src/sirnaforge/pipeline/nextflow/workflows/**/*.config",
+    "src/sirnaforge/pipeline/nextflow/workflows/**/*.yml",
+    "src/sirnaforge/pipeline/nextflow/workflows/**/*.yaml",
+    "src/sirnaforge/pipeline/resources/**/*.yaml",
+    "src/sirnaforge/pipeline/resources/**/*.yml",
+]
 
 [tool.hatch.build.targets.sdist]
 exclude = [

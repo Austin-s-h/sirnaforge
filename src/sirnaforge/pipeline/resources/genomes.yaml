@@ -8,21 +8,21 @@
 # Option 1: Use public S3 references (requires --download_indexes true)
 human:
   index_prefix: s3://ngi-igenomes/igenomes/Homo_sapiens/NCBI/GRCh38/Sequence/WholeGenomeFasta/
-  container: biocontainers/bwa-mem2:v2.2.1_cv1
+  container: ghcr.io/austin-s-h/sirnaforge:latest
 
 rat:
   index_prefix: s3://ngi-igenomes/igenomes/Rattus_norvegicus/NCBI/Rnor_6.0/Sequence/WholeGenomeFasta/
-  container: biocontainers/bwa-mem2:v2.2.1_cv1
+  container: ghcr.io/austin-s-h/sirnaforge:latest
 
 rhesus:
   index_prefix: s3://ngi-igenomes/igenomes/Macaca_mulatta/NCBI/Mmul_10/Sequence/WholeGenomeFasta/
-  container: biocontainers/bwa-mem2:v2.2.1_cv1
+  container: ghcr.io/austin-s-h/sirnaforge:latest
 
 # Option 2: If you want to use local indices (uncomment and modify paths)
 # human:
 #   index_prefix: /path/to/your/human/genome/index
-#   container: biocontainers/bwa-mem2:v2.2.1_cv1
+#   container: ghcr.io/austin-s-h/sirnaforge:latest
 #
 # rat:
 #   index_prefix: /path/to/your/rat/genome/index
-#   container: biocontainers/bwa-mem2:v2.2.1_cv1
+#   container: ghcr.io/austin-s-h/sirnaforge:latest

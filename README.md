@@ -102,18 +102,6 @@ The Docker image includes all bioinformatics dependencies via conda environment 
 - ✅ **AWS CLI** (≥2.0) - Automated genome reference downloads
 - ✅ **Java 17** - Nextflow runtime environment
 
-**For local development without Docker:**
-```bash
-# Option 1: Use conda environment (includes all tools)
-make conda-env
-micromamba activate sirnaforge-dev  # or conda activate sirnaforge-dev
-
-# Option 2: Install bioinformatics tools via micromamba
-curl -LsSf https://micro.mamba.pm/install.sh | bash
-micromamba env create -f docker/environment-nextflow.yml
-micromamba activate sirnaforge-env
-```
-
 ### Usage Examples
 
 **🎯 Complete Workflow (Gene Query to Results):**
@@ -153,88 +141,6 @@ uv run sirnaforge config
 # Show detailed help for any command
 uv run sirnaforge --help
 uv run sirnaforge workflow --help
-```
-
-### Python API
-
-**🔧 Programmatic Access for Custom Workflows:**
-```python
-import asyncio
-from pathlib import Path
-from sirnaforge.workflow import run_sirna_workflow
-from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.models.sirna import DesignParameters, FilterCriteria
-from sirnaforge.data.gene_search import search_gene_sync
-
-# Complete async workflow with custom parameters
-async def design_sirnas_custom():
-    results = await run_sirna_workflow(
-        gene_query="TP53",
-        output_dir="results",
-        database="ensembl",
-        top_n_candidates=50,
-        top_n_offtarget=15,
-        genome_species=["human", "rat", "rhesus"],
-        gc_min=40.0,
-        gc_max=60.0,
-        sirna_length=21,
-    )
-    return results
-
-# Run the workflow
-results = asyncio.run(design_sirnas_custom())
-print(f"✅ Designed {len(results.get('top_candidates', []))} siRNA candidates")
-
-# Individual component usage for custom pipelines
-def custom_design_pipeline():
-    # 1. Search for gene transcripts
-    transcripts = search_gene_sync(
-        gene_query="BRCA1",
-        database="ensembl",
-        output_file="transcripts.fasta"
-    )
-
-    # 2. Configure design parameters
-    design_params = DesignParameters(
-        sirna_length=21,
-        filters=FilterCriteria(
-            gc_min=40,
-            gc_max=60,
-            avoid_patterns=["AAAA", "TTTT", "GGGG", "CCCC"]
-        )
-    )
-
-    # 3. Initialize designer and generate candidates
-    designer = SiRNADesigner(design_params)
-    design_results = designer.design_from_file("transcripts.fasta")
-
-    # 4. Process results
-    for candidate in design_results.top_candidates[:10]:
-        print(f"Candidate {candidate.id}:")
-        print(f"  Guide: {candidate.guide_sequence}")
-        print(f"  Score: {candidate.composite_score:.2f}")
-        print(f"  GC%: {candidate.gc_content:.1f}")
-        print(f"  Transcripts: {len(candidate.transcript_ids)}")
-        print()
-
-    return design_results
-
-# Example: Batch processing multiple genes
-async def batch_design_genes(genes: list[str]):
-    results = {}
-    for gene in genes:
-        print(f"Processing {gene}...")
-        gene_results = await run_sirna_workflow(
-            gene_query=gene,
-            output_dir=f"results_{gene.lower()}",
-            top_n_candidates=20
-        )
-        results[gene] = gene_results
-    return results
-
-# Process multiple cancer-related genes
-cancer_genes = ["TP53", "BRCA1", "BRCA2", "EGFR", "MYC"]
-batch_results = asyncio.run(batch_design_genes(cancer_genes))
 ```
 
 ## 🏗️ Architecture & Workflow

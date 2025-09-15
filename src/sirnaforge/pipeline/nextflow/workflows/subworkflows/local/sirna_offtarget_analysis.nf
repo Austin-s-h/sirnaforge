@@ -8,7 +8,6 @@
 include { PREPARE_CANDIDATES  } from '../../modules/local/prepare_candidates'
 include { SPLIT_CANDIDATES    } from '../../modules/local/split_candidates'
 include { BUILD_BWA_INDEX     } from '../../modules/local/build_bwa_index'
-include { BUILD_BOWTIE_INDEX  } from '../../modules/local/build_bowtie_index'
 include { OFFTARGET_ANALYSIS  } from '../../modules/local/offtarget_analysis'
 include { AGGREGATE_RESULTS   } from '../../modules/local/aggregate_results'
 
@@ -44,7 +43,8 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
 
     // Build BWA indices for FASTA files
     genomes
-        .filter { species, path, type -> type == 'fasta' }
+        .filter { species, _path, type -> type == 'fasta' }
+        .map { species, path, _type -> [species, path] }
         .set { ch_genome_fastas }
 
     BUILD_BWA_INDEX(ch_genome_fastas)
@@ -59,22 +59,10 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         .set { ch_built_bwa_indices }
     ch_genome_indices = ch_genome_indices.mix(ch_built_bwa_indices)
 
-    // Also build Bowtie indices
-    BUILD_BOWTIE_INDEX(ch_genome_fastas)
-    ch_versions = ch_versions.mix(BUILD_BOWTIE_INDEX.out.versions)
-
-    BUILD_BOWTIE_INDEX.out.index
-        .map { species, index_files ->
-            def index_prefix = index_files[0].toString().replaceAll(/\.[^.]+$/, '')
-            [species, index_prefix, 'bowtie']
-        }
-        .set { ch_built_bowtie_indices }
-    ch_genome_indices = ch_genome_indices.mix(ch_built_bowtie_indices)
-
     // Use existing indices
     genomes
-        .filter { species, path, type -> type == 'index' }
-        .map { species, index_path, type -> [species, index_path, 'bwa'] }
+        .filter { species, _path, type -> type == 'index' }
+        .map { species, index_path, _type -> [species, index_path, 'bwa'] }
         .set { ch_existing_indices }
     ch_genome_indices = ch_genome_indices.mix(ch_existing_indices)
 
@@ -114,7 +102,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Collect all analysis results
     //
     OFFTARGET_ANALYSIS.out.results
-        .map { candidate_meta, species, analysis_type, analysis_file, summary_file ->
+        .map { candidate_meta, species, _analysis_type, analysis_file, summary_file ->
             [analysis_file, summary_file]
         }
         .collect()
@@ -124,7 +112,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Extract species list for aggregation
     //
     ch_genome_indices
-        .map { species, index_path, index_type -> species }
+        .map { species, _index_path, _index_type -> species }
         .unique()
         .collect()
         .map { species_list -> species_list.join(',') }

@@ -1,11 +1,8 @@
 process RESOLVE_INDICES {
-    tag "$genome_species"
+    tag "resolve"
     label 'process_low'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_pyyaml:4ec8e5b31fe18bb4':
-        'community.wave.seqera.io/library/python_pyyaml:4ec8e5b31fe18bb4' }"
 
     input:
     val genome_species
@@ -23,9 +20,6 @@ process RESOLVE_INDICES {
     script:
     """
     python3 -c "
-import sys
-sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import resolve_genome_indices
 import json
 
 # Resolve genome indices
