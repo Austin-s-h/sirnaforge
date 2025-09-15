@@ -336,7 +336,7 @@ class TestPipelineIntegration:
             "--bwa_T": "15",
             "--seed_start": "2",
             "--seed_end": "8",
-            "-profile": "docker",
+            "-profile": "smoke",  # Use smoke profile for resource-constrained environments
             "-with-docker": config.docker_image,
         }
 

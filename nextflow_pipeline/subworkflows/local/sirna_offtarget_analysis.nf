@@ -8,7 +8,6 @@
 include { PREPARE_CANDIDATES  } from '../../modules/local/prepare_candidates'
 include { SPLIT_CANDIDATES    } from '../../modules/local/split_candidates'
 include { BUILD_BWA_INDEX     } from '../../modules/local/build_bwa_index'
-include { BUILD_BOWTIE_INDEX  } from '../../modules/local/build_bowtie_index'
 include { OFFTARGET_ANALYSIS  } from '../../modules/local/offtarget_analysis'
 include { AGGREGATE_RESULTS   } from '../../modules/local/aggregate_results'
 
@@ -45,6 +44,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Build BWA indices for FASTA files
     genomes
         .filter { species, path, type -> type == 'fasta' }
+        .map { species, path, type -> [species, path] }
         .set { ch_genome_fastas }
 
     BUILD_BWA_INDEX(ch_genome_fastas)
@@ -58,18 +58,6 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         }
         .set { ch_built_bwa_indices }
     ch_genome_indices = ch_genome_indices.mix(ch_built_bwa_indices)
-
-    // Also build Bowtie indices
-    BUILD_BOWTIE_INDEX(ch_genome_fastas)
-    ch_versions = ch_versions.mix(BUILD_BOWTIE_INDEX.out.versions)
-
-    BUILD_BOWTIE_INDEX.out.index
-        .map { species, index_files ->
-            def index_prefix = index_files[0].toString().replaceAll(/\.[^.]+$/, '')
-            [species, index_prefix, 'bowtie']
-        }
-        .set { ch_built_bowtie_indices }
-    ch_genome_indices = ch_genome_indices.mix(ch_built_bowtie_indices)
 
     // Use existing indices
     genomes
