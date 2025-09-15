@@ -1,0 +1,8 @@
+>smoke_test_seq_minimal Minimal valid sequence for CI smoke tests
+AUGCUGAUCGACUACGAUGCUGAUCGACUAC
+
+>smoke_test_seq_short Short RNA sequence for fast testing  
+AUGAAACGCCUGAUCGACUACGAUGCUG
+
+>smoke_test_seq_gc_balanced GC-balanced sequence for validation
+AUGCGCGCUGAUCGACUAUGCCGCGCGC
