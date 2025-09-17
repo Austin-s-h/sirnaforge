@@ -2,6 +2,7 @@
 
 This module provides comprehensive off-target analysis functionality for siRNA design,
 including both miRNA seed match analysis and transcriptome off-target detection.
+Uses BWA-MEM2 for both short and long sequence alignments.
 Optimized for both standalone use and parallelized Nextflow workflows.
 """
 
@@ -52,7 +53,7 @@ def _validate_command_args(cmd: list[str]) -> None:
 
 
 class BwaAnalyzer:
-    """BWA-MEM2 based analyzer for both transcriptome and miRNA off-target search."""
+    """BWA-MEM2 based analyzer for both transcriptome and miRNA seed off-target search."""
 
     def __init__(
         self,
@@ -311,7 +312,7 @@ class BwaAnalyzer:
 
 
 class OffTargetAnalysisManager:
-    """Manager class for comprehensive off-target analysis."""
+    """Manager class for comprehensive off-target analysis using BWA-MEM2."""
 
     def __init__(
         self,
@@ -467,7 +468,7 @@ def validate_and_write_sequences(
 
 
 def build_bwa_index(fasta_file: str, index_prefix: str) -> str:
-    """Build BWA-MEM2 index for both transcriptome and miRNA analysis."""
+    """Build BWA-MEM2 index for both transcriptome and miRNA off-target analysis."""
     logger.info(f"Building BWA-MEM2 index from {fasta_file} with prefix {index_prefix}")
 
     if not Path(fasta_file).exists():
@@ -492,35 +493,6 @@ def build_bwa_index(fasta_file: str, index_prefix: str) -> str:
         raise
     except subprocess.TimeoutExpired:
         logger.error("BWA-MEM2 index build timed out")
-        raise
-
-
-def build_bowtie_index(fasta_file: str, index_prefix: str) -> str:
-    """Build Bowtie index for miRNA analysis."""
-    logger.info(f"Building Bowtie index from {fasta_file} with prefix {index_prefix}")
-
-    if not Path(fasta_file).exists():
-        raise FileNotFoundError(f"Input FASTA file not found: {fasta_file}")
-
-    Path(index_prefix).parent.mkdir(parents=True, exist_ok=True)
-
-    # Get absolute path to bowtie-build executable
-    bowtie_path = _get_executable_path("bowtie-build")
-    if not bowtie_path:
-        raise FileNotFoundError("bowtie-build executable not found in PATH")
-
-    cmd = [bowtie_path, fasta_file, index_prefix]
-    _validate_command_args(cmd)
-
-    try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=3600)  # nosec B603
-        logger.info(f"Bowtie index built successfully: {index_prefix}")
-        return index_prefix
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Bowtie index build failed: {e.stderr}")
-        raise
-    except subprocess.TimeoutExpired:
-        logger.error("Bowtie index build timed out")
         raise
 
 

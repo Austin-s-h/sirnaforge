@@ -107,8 +107,8 @@ CMD ["bash", "-c", "echo '🧬 siRNAforge Comprehensive Environment' && echo 'Av
 
 # Metadata
 LABEL org.opencontainers.image.title="siRNAforge"
-LABEL org.opencontainers.image.description="siRNAforge - Multi-species gene to siRNA design, off-target prediction, and ranking. Comprehensive siRNA design toolkit for gene silencings."
+LABEL org.opencontainers.image.description="siRNAforge - Multi-species gene to siRNA design, off-target prediction, and ranking. Comprehensive siRNA design toolkit for gene silencing."
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.authors="Austin S. Hovland"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.source="https://github.com/example/sirnaforge"
+LABEL org.opencontainers.image.source="https://github.com/Austin-s-h/sirnaforge"

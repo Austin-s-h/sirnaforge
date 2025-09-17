@@ -1,0 +1,562 @@
+name: 🚀 Release siRNAforge
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+              description: 'Release version (e.g., v0.1.0)'
+              required: true
+              type: string
+            prerelease:
+              description: 'Mark as pre-release'
+              required: false
+              default: true
+              type: boolean
+            push_images:
+              description: 'Push Docker images to registries'
+              required: false
+              default: true
+              type: boolean
+            publish_pypi:
+              description: 'Publish package to PyPI (requires Trusted Publisher configured)'
+              required: false
+              default: false
+              type: boolean
+            publish_testpypi:
+              description: 'Publish package to TestPyPI (for validation)'
+              required: false
+              default: false
+              type: boolean
+            deploy_docs_release:
+              description: 'Build & deploy docs as part of release'
+              required: false
+              default: true
+              type: boolean
+
+env:
+  PYTHON_VERSION: "3.11"
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  validate-release:
+    name: 🔍 Validate Release Input
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.content }}
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🔍 Validate version format
+      id: version
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        VERSION=${VERSION#v}  # Remove 'v' prefix if present
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+        if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+          echo "❌ Invalid version format: $VERSION"
+          echo "Expected format: X.Y.Z or X.Y.Z-suffix"
+          exit 1
+        fi
+        echo "✅ Version format valid: $VERSION"
+
+    - name: 🔍 Check if version already exists
+      run: |
+        VERSION="v${{ steps.version.outputs.version }}"
+        if git ls-remote --tags origin | grep -q "refs/tags/$VERSION$"; then
+          echo "❌ Tag $VERSION already exists"
+          exit 1
+        fi
+        echo "✅ Version $VERSION is available"
+
+    - name: 📋 Prepare changelog excerpt
+      id: changelog
+      run: |
+        if [ -f CHANGELOG.md ]; then
+          VERSION="${{ steps.version.outputs.version }}"
+          # Extract changelog section for this version
+          SECTION=$(sed -n "/## \[${VERSION}\]/,/## \[/p" CHANGELOG.md | sed '$d')
+          if [ -n "$SECTION" ]; then
+            echo "content<<EOF" >> $GITHUB_OUTPUT
+            echo "$SECTION" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "content=No specific changelog entry found for version $VERSION." >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "content=No changelog available." >> $GITHUB_OUTPUT
+        fi
+
+  # Call the main CI workflow to ensure quality
+  run-ci:
+    name: 🧪 Run Main CI Pipeline
+    needs: validate-release
+    uses: ./.github/workflows/ci.yml
+
+  # Build Python distribution artifacts once (reusable by PyPI/TestPyPI)
+  build-artifacts:
+    name: 📦 Build Python Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [validate-release, run-ci]
+    if: needs.run-ci.result == 'success'
+    outputs:
+      version: ${{ needs.validate-release.outputs.version }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: ⚡ Install uv CLI
+        uses: astral-sh/setup-uv@v6
+        with:
+          activate-environment: false
+          enable-cache: true
+          cache-suffix: build-dist
+      - name: 🔧 Build (sdist + wheel)
+        run: |
+          uv build
+          ls -lh dist/
+      - name: 🔍 Verify metadata (twine check)
+        run: |
+          uv run --group dev python -m pip install --upgrade twine
+          uv run --group dev twine check dist/*
+      - name: 📤 Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist-${{ needs.validate-release.outputs.version }}
+          path: dist/
+          retention-days: 7
+
+  # Build and test Docker images only after CI passes
+  build-docker:
+    name: 🐳 Build & Test Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [validate-release, run-ci]
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🔐 Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 🏗️ Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: 📋 Generate Docker metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository }}
+        tags: |
+          type=raw,value=${{ needs.validate-release.outputs.version }}
+          type=raw,value=latest,enable={{is_default_branch}}
+        labels: |
+          org.opencontainers.image.title=siRNAforge
+          org.opencontainers.image.description=siRNA design and analysis toolkit
+          org.opencontainers.image.version=${{ needs.validate-release.outputs.version }}
+          org.opencontainers.image.url=https://github.com/${{ github.repository }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+    - name: 🐳 Build Docker image (don't push yet)
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./docker/Dockerfile
+        push: false
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        outputs: type=docker,dest=/tmp/sirnaforge-image.tar
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: 🧪 Test Docker image functionality
+      run: |
+        # Load the built image
+        docker load --input /tmp/sirnaforge-image.tar
+
+        IMAGE_TAG="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+
+        echo "🧪 Testing basic CLI functionality..."
+        docker run --rm "$IMAGE_TAG" sirnaforge --help
+
+        echo "🧪 Testing version command..."
+        VERSION_OUTPUT=$(docker run --rm "$IMAGE_TAG" sirnaforge version)
+        echo "Version output: $VERSION_OUTPUT"
+
+        echo "🧪 Testing workflow command structure..."
+        docker run --rm "$IMAGE_TAG" sirnaforge workflow --help
+
+        echo "✅ Docker image tests passed!"
+
+    - name: 📤 Upload Docker image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-image-${{ needs.validate-release.outputs.version }}
+        path: /tmp/sirnaforge-image.tar
+        retention-days: 1
+
+  # Run Docker-based integration tests
+  test-docker-integration:
+    name: 🧪 Docker Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [validate-release, build-docker]
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: ⚡ Install uv CLI
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: docker-test
+
+    - name: 📦 Install test dependencies
+      run: uv sync --group dev
+
+    - name: 📥 Download Docker image
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image-${{ needs.validate-release.outputs.version }}
+        path: /tmp/
+
+    - name: 🐳 Load and test Docker image
+      run: |
+        # Load the image
+        docker load --input /tmp/sirnaforge-image.tar
+
+        # Set environment variable for tests
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+
+        # Run Docker integration tests
+        uv run --group dev pytest tests/docker/ -v --tb=short -m docker --maxfail=3
+
+  # Create GitHub release only after all tests pass
+  create-release:
+    name: 🏷️ Create GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [validate-release, run-ci, test-docker-integration]
+    outputs:
+      release-id: ${{ steps.create.outputs.id }}
+      release-url: ${{ steps.create.outputs.html_url }}
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🏷️ Create Git tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        VERSION="v${{ needs.validate-release.outputs.version }}"
+        git tag -a "$VERSION" -m "Release $VERSION"
+        git push origin "$VERSION"
+
+        echo "✅ Created and pushed tag: $VERSION"
+
+    - name: 🚀 Create GitHub Release
+      id: create
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.validate-release.outputs.version }}
+        release_name: siRNAforge v${{ needs.validate-release.outputs.version }}
+        body: |
+          # 🧬 siRNAforge v${{ needs.validate-release.outputs.version }}
+
+          ${{ needs.validate-release.outputs.changelog }}
+
+          ## 📦 Installation
+
+          ### Docker (Recommended)
+          ```bash
+          docker pull ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}
+          ```
+
+          ### Python Package
+          ```bash
+          pip install sirnaforge==${{ needs.validate-release.outputs.version }}
+          ```
+
+          ## 🚀 Quick Start
+          ```bash
+          # Using Docker
+          docker run --rm -v $(pwd):/workspace \
+            ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }} \
+            sirnaforge workflow TP53 --output-dir results
+          ```
+
+          ## 🔗 Links
+          - [Documentation](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }})
+          - [Source Code](https://github.com/${{ github.repository }})
+          - [Docker Image](${{ env.REGISTRY }}/${{ github.repository }})
+        prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+        draft: false
+
+  # Optional: Publish to PyPI using Trusted Publishing (OIDC) if enabled
+  publish-pypi:
+    name: 📦 Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [validate-release, run-ci, create-release, build-artifacts]
+    if: ${{ github.event.inputs.publish_pypi == 'true' && needs.run-ci.result == 'success' && needs.create-release.result == 'success' }}
+    permissions:
+      id-token: write  # Required for PyPI trusted publisher
+      contents: read
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      - name: � Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist-${{ needs.validate-release.outputs.version }}
+          path: dist/
+
+      - name: 🚀 Publish to PyPI (Trusted Publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+          verbose: true
+          skip-existing: true
+          # repository-url: https://test.pypi.org/legacy/  # Uncomment to test against TestPyPI first
+
+      - name: ✅ Publish summary
+        run: |
+          echo "Published version v${{ needs.validate-release.outputs.version }} to PyPI (if not existing)."
+
+  # Optional: Build and deploy docs for the release
+  build-release-docs:
+    name: 📚 Build Release Docs
+    runs-on: ubuntu-latest
+    needs: [validate-release, run-ci]
+    if: ${{ github.event.inputs.deploy_docs_release == 'true' && needs.run-ci.result == 'success' }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: ⚡ Install uv CLI
+        uses: astral-sh/setup-uv@v6
+        with:
+          activate-environment: false
+          enable-cache: true
+          cache-suffix: docs-release
+      - name: 📦 Install dependencies
+        run: uv sync --group dev
+      - name: 🏗️ Build documentation (release)
+        run: |
+          export SIRNAFORGE_RELEASE_VERSION=${{ needs.validate-release.outputs.version }}
+          uv run --group dev sphinx-build -b html docs docs/_build/html
+          touch docs/_build/html/.nojekyll
+      - name: 📤 Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-docs-${{ needs.validate-release.outputs.version }}
+          path: docs/_build/html
+          retention-days: 7
+
+  deploy-release-docs:
+    name: 🚀 Deploy Release Docs
+    runs-on: ubuntu-latest
+    needs: [build-release-docs]
+    if: ${{ github.event.inputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: 📥 Download docs artifact
+        uses: actions/download-artifact@v4
+        with:
+          # Reconstruct artifact name using input version (same value used earlier)
+          name: release-docs-${{ github.event.inputs.version }}
+          path: docs/_build/html
+      - name: 📤 Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+      - name: 🚀 Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Publish Docker images only after release is created
+  publish-docker:
+    name: 🐳 Publish Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [validate-release, create-release]
+    if: github.event.inputs.push_images == 'true'
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🔐 Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 📥 Download Docker image
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image-${{ needs.validate-release.outputs.version }}
+        path: /tmp/
+
+    - name: 🐳 Load and push Docker image
+      run: |
+        # Load the image
+        docker load --input /tmp/sirnaforge-image.tar
+
+        # Push version-specific tag
+        VERSION_TAG="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+        docker push "$VERSION_TAG"
+
+        # Push latest tag if this is not a prerelease
+        if [ "${{ github.event.inputs.prerelease }}" != "true" ]; then
+          LATEST_TAG="${{ env.REGISTRY }}/${{ github.repository }}:latest"
+          docker tag "$VERSION_TAG" "$LATEST_TAG"
+          docker push "$LATEST_TAG"
+          echo "✅ Pushed both version and latest tags"
+        else
+          echo "✅ Pushed version tag only (prerelease)"
+        fi
+
+    - name: 🔐 Generate artifact attestation
+      uses: actions/attest-build-provenance@v1
+      continue-on-error: true
+      with:
+        subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+        push-to-registry: true
+
+  # Final integration test with published images
+  final-integration-test:
+    name: 🧪 Final Integration Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [validate-release, create-release, publish-docker]
+    if: always() && needs.create-release.result == 'success'
+
+    steps:
+    - name: 🐳 Test published Docker image
+      run: |
+        VERSION="${{ needs.validate-release.outputs.version }}"
+        IMAGE_TAG="${{ env.REGISTRY }}/${{ github.repository }}:${VERSION}"
+
+        echo "🐳 Testing published image from ${{ env.REGISTRY }}..."
+        docker pull "$IMAGE_TAG"
+
+        echo "🧪 Testing CLI functionality..."
+        docker run --rm "$IMAGE_TAG" sirnaforge --help
+
+        echo "🧪 Testing version command..."
+        docker run --rm "$IMAGE_TAG" sirnaforge version
+
+        echo "✅ Published image works correctly!"
+
+  # Summary and cleanup
+  finalize-release:
+    name: ✅ Release Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
+    if: always() && needs.create-release.result == 'success'
+
+    steps:
+    - name: 🧹 Cleanup artifacts
+      uses: geekyeggo/delete-artifact@v2
+      with:
+        name: docker-image-${{ needs.validate-release.outputs.version }}
+
+    - name: 📊 Release Summary
+      run: |
+        VERSION="${{ needs.validate-release.outputs.version }}"
+        REPO_LOWER="${{ github.repository }}"
+
+        echo "# 🎉 Release v${VERSION} Complete!"
+        echo ""
+        echo "## 📦 Published Artifacts:"
+        echo "- ✅ GitHub Release: ${{ needs.create-release.outputs.release-url }}"
+        if [ "${{ github.event.inputs.publish_pypi }}" = "true" ]; then
+          echo "- 📦 PyPI Package: sirnaforge v${VERSION} (check https://pypi.org/project/sirnaforge/)";
+        else
+          echo "- 📦 PyPI Package: Skipped (publish_pypi=false)";
+        fi
+        if [ "${{ github.event.inputs.publish_testpypi }}" = "true" ]; then
+          echo "- 🧪 TestPyPI Package: sirnaforge v${VERSION} (https://test.pypi.org/project/sirnaforge/)";
+        else
+          echo "- 🧪 TestPyPI Package: Skipped (publish_testpypi=false)";
+        fi
+        if [ "${{ github.event.inputs.deploy_docs_release }}" = "true" ]; then
+          echo "- 📚 Release Docs: Deployed (Pages)";
+        else
+          echo "- 📚 Release Docs: Skipped (deploy_docs_release=false)";
+        fi
+
+        if [ "${{ github.event.inputs.push_images }}" = "true" ]; then
+          echo "- 🐳 Docker Images:"
+          echo "  - \`${{ env.REGISTRY }}/${REPO_LOWER}:${VERSION}\`"
+          if [ "${{ github.event.inputs.prerelease }}" != "true" ]; then
+            echo "  - \`${{ env.REGISTRY }}/${REPO_LOWER}:latest\`"
+          fi
+        else
+          echo "- 🐳 Docker Images: Skipped (push_images=false)"
+        fi
+
+        echo ""
+        echo "## 🚀 Quick Test:"
+        echo "\`\`\`bash"
+        echo "docker run --rm ${{ env.REGISTRY }}/${REPO_LOWER}:${VERSION} sirnaforge --help"
+        echo "\`\`\`"
+        echo ""
+        echo "## 🎯 Next Steps:"
+        echo "1. Test the release with sample workflows"
+        echo "2. Monitor for any issues"
+        echo "3. Update documentation if needed"
+        echo "4. Celebrate! 🎉"
+
+    - name: 📧 Notify on failure
+      if: failure()
+      run: |
+        echo "❌ Release process failed. Check the logs above for details."
+        echo "The release may have been partially created - please verify manually."
+        echo ""
+        echo "🔍 Common issues:"
+        echo "- Docker build failures"
+        echo "- Test failures in integration phase"
+        echo "- Registry authentication issues"
+        echo "- Tag already exists"

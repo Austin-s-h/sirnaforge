@@ -154,7 +154,10 @@ test-local-nextflow: ## Run tests for local Nextflow development (includes pipel
 	uv run --group dev pytest -v -m "local_nextflow"
 
 test-ci: ## Run tests optimized for CI environment
-	uv run --group dev pytest -v -m "ci"
+	# Generate JUnit XML and coverage artifacts for GitHub Actions
+	uv run --group dev pytest -m "ci" \
+		--junitxml=pytest-report.xml \
+		--cov=sirnaforge --cov-report=term-missing --cov-report=xml:coverage.xml -v
 
 # Code Quality
 lint: ## Run all linting tools

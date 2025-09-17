@@ -1,76 +1,55 @@
-name: 🧬 siRNA Design Toolkit CI/CD
+name: siRNA Design Toolkit CI/CD
 
 on:
   push:
     branches: [ master, dev ]
   pull_request:
     branches: [ master ]
-  release:
-    types: [ published ]
+  workflow_call:
+    outputs:
+      ci-success:
+        description: "Main CI workflow completed successfully"
+        value: ${{ jobs.final-status.outputs.success }}
 
 env:
   PYTHON_VERSION: "3.11"
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
+  packages: read
 
 jobs:
-  lint:
-    name: 🔎 Lint & Typecheck
+  lint-and-security:
+    name: Lint & Security Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🐍 Set up Python 3.11
-      uses: actions/setup-python@v4
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: ⚡ Install uv CLI
+    - name: Install uv CLI
       uses: astral-sh/setup-uv@v6
       with:
         activate-environment: false
-        python-version: '3.11'
         enable-cache: true
         cache-suffix: lint
 
-    - name: Cache pip
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-3.11-${{ hashFiles('**/pyproject.toml','**/uv.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-3.11-
-          ${{ runner.os }}-pip-
+    - name: Install dependencies
+      run: uv sync --group dev
 
-    - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group dev
+    - name: Lint & format check (Make target)
+      run: make lint
 
-    - name: 🔍 Lint with ruff
-      run: ruff check src tests
+    - name: Security checks (Make target)
+      run: make security
 
-    - name: 🎨 Check formatting with ruff
-      run: ruff format --check src tests
-
-    - name: 🔬 Type check with mypy
-      run: mypy src
-
-    - name: 🛡️ Security scan with bandit
-      run: |
-        bandit -r src/ -f json -o bandit-report.json || true
-        bandit -r src/ -f txt || echo "Bandit found security issues - check bandit-report.json"
-
-    - name: 🔐 Security check with safety
-      run: |
-        # Try safety check, create empty report if it fails due to dependency issues
-        safety check --json --output safety-report.json || echo '{"report": [], "vulnerabilities": []}' > safety-report.json
-        safety check || echo "Safety found vulnerabilities - check safety-report.json"
-
-    - name: 📤 Upload security reports
+    - name: Upload security reports
       uses: actions/upload-artifact@v4
       if: always()
       with:
@@ -80,165 +59,114 @@ jobs:
           safety-report.json
         retention-days: 30
 
-    - name: 📚 Validate documentation build
-      run: |
-        uv run --group dev sphinx-build -W -b html docs docs/_build/html
-        echo "✅ Documentation builds without warnings"
-
-  test:
-    name: 🧪 Test Suite
+  test-matrix:
+    name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12"]
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🐍 Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: ⚡ Install uv CLI
+    - name: Install uv CLI
       uses: astral-sh/setup-uv@v6
       with:
         activate-environment: false
-        python-version: ${{ matrix.python-version }}
         enable-cache: true
-        cache-suffix: ${{ matrix.python-version }}
+        cache-suffix: test-${{ matrix.python-version }}
 
-    - name: Cache pip
-      uses: actions/cache@v4
+    - name: Install dependencies
+      run: uv sync --group dev
+
+    - name: Run tests (Make target)
+      run: make test-ci
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
       with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml','**/uv.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-${{ matrix.python-version }}-
-          ${{ runner.os }}-pip-
+        name: test-results-py${{ matrix.python-version }}-${{ github.sha }}
+        path: |
+          pytest-report.xml
+          coverage.xml
+        retention-days: 30
 
-    - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group dev
-
-    - name: 🧪 Run tests with pytest
-      run: pytest --cov=sirnaforge --cov-report=xml -m "not docker and not nextflow and not local_nextflow and not integration"
-
-    - name: 📊 Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      if: matrix.python-version == '3.11'
-
-  build:
-    name: 📦 Build Package
+  build-package:
+    name: Build Package
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    timeout-minutes: 10
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🐍 Set up Python
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: ⚡ Install uv CLI
+    - name: Install uv CLI
       uses: astral-sh/setup-uv@v6
       with:
         activate-environment: false
         enable-cache: true
         cache-suffix: build
 
-    - name: 🧰 Install build dependencies
+    - name: Install dependencies
+      run: uv sync --group dev
+
+    - name: Build package (Make target)
+      run: make build
+
+    - name: Verify installation
       run: |
-        uv pip install --system build twine
-        uv pip install --system -r pyproject.toml --editable . --group dev
+        # Test basic import and CLI functionality
+        uv run sirnaforge version
+        uv run sirnaforge --help
 
-    - name: 🏗️ Build package
-      run: python -m build
-
-    - name: 🔍 Check package integrity
-      run: python -m twine check dist/*
-
-    - name: 🧪 Test package installation
-      run: |
-        python -m pip install dist/*.whl
-        sirnaforge --help
-
-    - name: 📤 Upload build artifacts
+    - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: python-package-${{ github.sha }}
         path: dist/
-        retention-days: 30
+        retention-days: 7
 
-  publish:
-    name: 🚀 Publish Package
+  final-status:
+    name: CI Status Summary
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'release' && github.event.action == 'published'
-    environment:
-      name: pypi
-      url: https://pypi.org/p/sirnaforge
-    permissions:
-      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    needs: [lint-and-security, test-matrix, build-package]
+    if: always()
+    outputs:
+      success: ${{ steps.status.outputs.success }}
 
     steps:
-    - name: 📥 Download build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: python-package-${{ github.sha }}
-        path: dist/
-
-    - name: 🚀 Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-
-  deploy-docs:
-    name: 📚 Deploy Documentation
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/master' || (github.event_name == 'release' && github.event.action == 'published')
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: ⚡ Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docs
-
-    - name: 📦 Install dependencies
-      run: uv pip install --system -r pyproject.toml --editable . --group dev
-
-    - name: 🏗️ Build documentation
+    - name: Check status
+      id: status
       run: |
-        make docs
-        touch docs/_build/html/.nojekyll
+        echo "Checking job statuses..."
 
-    - name: Setup Pages
-      uses: actions/configure-pages@v5
+        LINT_STATUS="${{ needs.lint-and-security.result }}"
+        TEST_STATUS="${{ needs.test-matrix.result }}"
+        BUILD_STATUS="${{ needs.build-package.result }}"
 
-    - name: 📤 Upload Pages artifact
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: docs/_build/html
+        echo "Lint & Security: $LINT_STATUS"
+        echo "Tests: $TEST_STATUS"
+        echo "Build: $BUILD_STATUS"
 
-    - name: 🚀 Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+        if [[ "$LINT_STATUS" == "success" && "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" ]]; then
+          echo "All CI jobs passed!"
+          echo "success=true" >> $GITHUB_OUTPUT
+        else
+          echo "Some CI jobs failed!"
+          echo "success=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
