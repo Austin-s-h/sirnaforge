@@ -130,7 +130,7 @@ jobs:
     - name: Verify installation
       run: |
         # Test basic import and CLI functionality
-        uv run sirnaforge --version
+        uv run sirnaforge version
         uv run sirnaforge --help
         # Quick validation that core modules import correctly
         uv run python -c "

@@ -45,5 +45,5 @@ jobs:
 
     - name: Verify CLI works
       run: |
-        uv run sirnaforge --version
+        uv run sirnaforge version
         uv run sirnaforge --help
