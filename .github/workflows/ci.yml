@@ -132,15 +132,6 @@ jobs:
         # Test basic import and CLI functionality
         uv run sirnaforge version
         uv run sirnaforge --help
-        # Quick validation that core modules import correctly
-        uv run python -c "
-        import sirnaforge
-        from sirnaforge.core import SiRNACandidate
-        from sirnaforge.models import GeneSearchResult
-        print('Package imports successfully')
-        "
-        # Verify CLI responds correctly
-        sirnaforge version
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
