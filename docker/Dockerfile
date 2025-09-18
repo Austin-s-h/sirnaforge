@@ -111,4 +111,4 @@ LABEL org.opencontainers.image.description="siRNAforge - Multi-species gene to s
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.authors="Austin S. Hovland"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.source="https://github.com/Austin-s-h/sirnaforge"
+LABEL org.opencontainers.image.source="https://github.com/austin-s-h/sirnaforge"

@@ -201,6 +201,7 @@ class SiRNACandidate(BaseModel):
     class FilterStatus(str, Enum):
         """Filter status codes for quality control."""
 
+        # PASS is a domain status label, NOT a password. Bandit B105 false positive. # nosec B105
         PASS = "PASS"
         GC_OUT_OF_RANGE = "GC_OUT_OF_RANGE"
         POLY_RUNS = "POLY_RUNS"

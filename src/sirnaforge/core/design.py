@@ -388,7 +388,8 @@ class SiRNADesigner:
                     and candidate.passes_filters is True
                 ):
                     candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
-            except Exception:
+            except (AttributeError, ValueError, TypeError):  # nosec B110 acceptable narrow handling
+                # Ignore unexpected attribute/value issues; filtering status remains unchanged.
                 pass
             return 1.0 - paired_fraction
 
@@ -407,7 +408,7 @@ class SiRNADesigner:
                     and candidate.passes_filters is True
                 ):
                     candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
-            except Exception:
+            except (AttributeError, ValueError, TypeError):  # nosec B110
                 pass
             return 1.0 - paired_fraction
 
@@ -456,7 +457,7 @@ class SiRNADesigner:
                 and candidate.passes_filters is True
             ):
                 candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
-        except Exception:
+        except (AttributeError, ValueError, TypeError):  # nosec B110
             pass
         return result
 

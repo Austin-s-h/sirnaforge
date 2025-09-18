@@ -636,12 +636,13 @@ class SiRNAWorkflow:
             logger.error(f"Failed to write PASS candidates FASTA: {e}")
             raise
 
-    def _file_md5(self, path: Path) -> str:
-        hash_md5 = hashlib.md5()
+    def _file_hash_sha256(self, path: Path) -> str:
+        """Return SHA-256 hash of a file for integrity (non-security) tracking."""
+        h = hashlib.sha256()
         with path.open("rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+                h.update(chunk)
+        return h.hexdigest()
 
     def _count_fasta_sequences(self, path: Path) -> int:
         try:
@@ -672,7 +673,7 @@ class SiRNAWorkflow:
                 "type": ftype,
                 "exists": True,
                 "size_bytes": p.stat().st_size,
-                "md5": self._file_md5(p),
+                "sha256": self._file_hash_sha256(p),
             }
             if extra:
                 entry.update(extra)
