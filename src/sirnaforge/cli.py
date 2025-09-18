@@ -18,22 +18,23 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-# Monkey patch Rich's console detection to force ASCII
+# Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
 try:
     import rich.console
 
-    # Override the Rich console's is_terminal property to force ASCII mode
     original_init = rich.console.Console.__init__
 
-    def patched_init(self: "rich.console.Console", *args: Any, **kwargs: Any) -> None:
+    def patched_init(self: "rich.console.Console", *args: Any, **kwargs: Any) -> None:  # noqa: D401
+        # Force simplified terminal capabilities for deterministic CI output.
         kwargs["legacy_windows"] = True
         kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
 
-    # mypy: the following monkey-patch assigns to a method intentionally
-    if not TYPE_CHECKING:
-        rich.console.Console.__init__ = patched_init
-except Exception:
+    if not TYPE_CHECKING:  # Avoid confusing type checkers
+        rich.console.Console.__init__ = patched_init  # type: ignore[attr-defined]
+except (ImportError, AttributeError):  # Narrow exceptions
+    # Silently ignore—output formatting will just be richer if available.
+    # nosec B110 - acceptable silent fallback; not security relevant
     pass
 
 from sirnaforge import __author__, __version__

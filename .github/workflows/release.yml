@@ -130,9 +130,7 @@ jobs:
           uv build
           ls -lh dist/
       - name: 🔍 Verify metadata (twine check)
-        run: |
-          uv run --group dev python -m pip install --upgrade twine
-          uv run --group dev twine check dist/*
+        run: uv run --with twine twine check dist/*
       - name: 📤 Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -392,25 +390,25 @@ jobs:
   deploy-release-docs:
     name: 🚀 Deploy Release Docs
     runs-on: ubuntu-latest
-    needs: [build-release-docs]
+    needs: [validate-release, build-release-docs]
     if: ${{ github.event.inputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
     permissions:
       pages: write
       id-token: write
     steps:
-      - name: 📥 Download docs artifact
-        uses: actions/download-artifact@v4
-        with:
-          # Reconstruct artifact name using input version (same value used earlier)
-          name: release-docs-${{ github.event.inputs.version }}
-          path: docs/_build/html
-      - name: 📤 Upload pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/_build/html
-      - name: 🚀 Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+    - name: 📥 Download docs artifact
+      uses: actions/download-artifact@v4
+      with:
+        # Use normalized version (without leading 'v') from validate-release to match upload name
+        name: release-docs-${{ needs.validate-release.outputs.version }}
+        path: docs/_build/html
+    - name: 📤 Upload pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/_build/html
+    - name: 🚀 Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
 
   # Publish Docker images only after release is created
   publish-docker:

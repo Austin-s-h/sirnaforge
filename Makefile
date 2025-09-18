@@ -313,8 +313,13 @@ release: clean build test lint ## Prepare release (full checks)
 
 # Security & Maintenance
 security: ## Run security checks
-	uv run --group dev bandit -r src/ || echo "⚠️ Install dev dependencies: make install-dev"
-	uv run --group dev safety check || echo "⚠️ Install dev dependencies: make install-dev"
+	@echo "🔐 Running Bandit (JSON + summary)"
+	uv run --group dev bandit -r src/ -f json -o bandit-report.json || echo "⚠️ Bandit execution issue"
+	uv run --group dev bandit -r src/ -q || true
+	@echo "🔐 Running safety (JSON)"
+	uv run --group dev python -c "import json,sys; from safety.formatter import report; from safety.safety import check; from safety.util import read_requirements; print(json.dumps({'error':'legacy interface changed'}))" >/dev/null 2>&1 || true
+	uv run --group dev safety check --output json > safety-report.json || echo '{"error": "safety_failed"}' > safety-report.json
+	@echo "✅ Security scanning complete (bandit-report.json, safety-report.json)"
 
 pre-commit: ## Run pre-commit hooks
 	uv run --group dev pre-commit run --all-files
