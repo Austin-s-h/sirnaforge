@@ -228,6 +228,7 @@ jobs:
         uv sync --group dev
 
         echo "🧪 Running Docker smoke tests (critical functionality)..."
+        # The Makefile now automatically handles UV cache mounting based on environment
         make docker-test-smoke
 
         echo "✅ Docker image tests passed!"

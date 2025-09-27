@@ -7,6 +7,16 @@
 DOCKER_IMAGE = sirnaforge
 VERSION = $(shell uv run --group dev python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
 
+# Conditional UV cache mounting - only mount if not in CI and cache dir is accessible
+UV_CACHE_MOUNT = $(shell \
+	if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then \
+		echo ""; \
+	elif [ -d "$$(uv cache dir 2>/dev/null)" ] && [ -w "$$(uv cache dir 2>/dev/null)" ]; then \
+		echo "-v $$(uv cache dir):/home/sirnauser/.cache/uv"; \
+	else \
+		echo ""; \
+	fi)
+
 # Default target
 help: ## Show available commands
 	@echo "🧬 siRNAforge Development Commands"
@@ -203,13 +213,13 @@ docker: ## Build Docker image
 docker-run: GENE ?= TP53
 docker-run: ## Run workflow in Docker (usage: make docker-run GENE=<gene>)
 	docker run -v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest \
 		sirnaforge workflow $(GENE) --output-dir docker_results
 
 docker-dev: ## Interactive Docker development shell
 	docker run -it -v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest bash
 
 docker-test: ## Run tests in Docker (resource-limited for development)
@@ -218,7 +228,7 @@ docker-test: ## Run tests in Docker (resource-limited for development)
 		--memory=4g \
 		--memory-swap=6g \
 		-v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 --maxfail=5"
 
@@ -228,7 +238,7 @@ docker-test-fast: ## Run smoke + basic integration tests (combines both test typ
 		--memory=2g \
 		--memory-swap=3g \
 		-v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and not slow' --maxfail=3"
 
@@ -238,7 +248,7 @@ docker-test-lightweight: ## Run only lightweight Docker tests
 		--memory=1g \
 		--memory-swap=2g \
 		-v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'lightweight or docker' --maxfail=3"
 
@@ -248,7 +258,7 @@ docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST A
 		--memory=256m \
 		--memory-swap=512m \
 		-v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and smoke' --maxfail=1 --tb=short"
@@ -259,7 +269,7 @@ docker-test-full: ## Run all tests in Docker (high resources, for CI)
 		--memory=8g \
 		--memory-swap=12g \
 		-v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest \
 		uv run --group dev pytest -v -n 2
 
@@ -273,7 +283,7 @@ docker-test-integration: ## Run integration tests only (complex workflows that m
 		--memory=2g \
 		--memory-swap=3g \
 		-v $$(pwd):/workspace -w /workspace \
-		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
+		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 -m 'docker and (docker_integration or (not smoke))' --maxfail=5 --tb=short"
 
