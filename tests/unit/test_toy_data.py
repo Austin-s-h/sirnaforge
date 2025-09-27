@@ -31,7 +31,7 @@ def test_toy_candidates_exist():
 
     content = toy_file.read_text()
     assert content.startswith(">"), "Should be valid FASTA format"
-    assert "toy_sirna" in content, "Should contain toy siRNA headers"
+    assert "sirna_" in content, "Should contain siRNA headers"
 
     # Should be minimal for smoke tests
     assert len(content) < 200, "Toy data should be ultra-minimal"

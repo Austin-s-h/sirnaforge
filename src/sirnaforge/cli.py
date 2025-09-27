@@ -18,6 +18,8 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+
 # Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
 try:
     import rich.console
@@ -792,6 +794,43 @@ def config() -> None:
     console.print(f"  Accessibility: {scoring.accessibility}")
     console.print(f"  Off-target: {scoring.off_target}")
     console.print(f"  Empirical: {scoring.empirical}")
+
+
+@app_command()
+def cache(
+    clear: bool = typer.Option(False, "--clear", help="Clear all cached miRNA databases"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without actually deleting"),
+    info: bool = typer.Option(False, "--info", help="Show cache information"),
+) -> None:
+    """Manage miRNA database cache."""
+    if not any([clear, dry_run, info]):
+        console.print("❓ [yellow]No action specified. Use --clear, --dry-run, or --info[/yellow]")
+        console.print("   Example: sirnaforge cache --info")
+        return
+
+    manager = MiRNADatabaseManager()
+
+    if info or dry_run:
+        cache_info = manager.cache_info()
+        console.print("📊 [bold blue]Cache Information:[/bold blue]")
+        console.print(f"  Directory: [cyan]{cache_info['cache_directory']}[/cyan]")
+        console.print(f"  Files: [green]{cache_info['total_files']}[/green]")
+        console.print(f"  Size: [yellow]{cache_info['total_size_mb']:.2f} MB[/yellow]")
+        console.print(f"  TTL: [magenta]{cache_info['cache_ttl_days']} days[/magenta]")
+
+    if dry_run:
+        result = manager.clear_cache(confirm=False)
+        console.print("\n🔍 [bold yellow]Clear Preview:[/bold yellow]")
+        console.print(f"  Files to delete: [red]{result['files_deleted']}[/red]")
+        console.print(f"  Size to free: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
+        console.print(f"  Status: [dim]{result['status']}[/dim]")
+
+    elif clear:
+        result = manager.clear_cache(confirm=True)
+        console.print("🧹 [bold green]Cache Cleared:[/bold green]")
+        console.print(f"  Files deleted: [red]{result['files_deleted']}[/red]")
+        console.print(f"  Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
+        console.print(f"  Status: [green]{result['status']}[/green]")
 
 
 if __name__ == "__main__":

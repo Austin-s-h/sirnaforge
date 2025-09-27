@@ -4,10 +4,10 @@
 
 ## Quick Reference
 
-**Package Manager:** `uv` (fast Python package management)  
-**Python:** 3.9-3.12 with `src/` source layout  
-**Build Tool:** `make` commands for all workflows  
-**Testing:** Multiple test categories with pytest  
+**Package Manager:** `uv` (fast Python package management)
+**Python:** 3.9-3.12 with `src/` source layout
+**Build Tool:** `make` commands for all workflows
+**Testing:** Multiple test categories with pytest
 **Packaging:** Modern `pyproject.toml` with hatchling
 
 ## Essential Commands
@@ -20,7 +20,7 @@ uv sync --dev  # Install all dependencies - NEVER CANCEL, timeout 180s
 ### Development Cycle (FAST)
 ```bash
 make lint                    # Code quality (3-5s)
-make test-local-python      # Fastest tests (12-15s) 
+make test-local-python      # Fastest tests (12-15s)
 make test-unit              # Unit tests (30-35s)
 make check                  # Lint + fast tests (35-40s)
 ```
@@ -38,7 +38,7 @@ make clean                  # Clean artifacts before building
 ```
 src/sirnaforge/          # Main package (modern src/ layout)
 ├── cli.py              # CLI entry point
-├── core/               # Core algorithms  
+├── core/               # Core algorithms
 ├── models/             # Data models
 └── workflow.py         # Main workflows
 
@@ -48,7 +48,7 @@ tests/
 └── pipeline/           # Nextflow pipeline tests
 
 pyproject.toml          # Modern Python packaging config
-Makefile               # All development workflows  
+Makefile               # All development workflows
 uv.lock                # Dependency lock file
 ```
 
@@ -57,12 +57,12 @@ uv.lock                # Dependency lock file
 ### Fast Commands (< 5 seconds)
 ```bash
 make lint                   # Code quality (ruff, mypy)
-make format                 # Auto-format code  
+make format                 # Auto-format code
 make version                # Show version
 make clean                  # Clean artifacts
 ```
 
-### Development Commands (10-40 seconds)  
+### Development Commands (10-40 seconds)
 ```bash
 make test-local-python      # Fastest tests (12-15s)
 make test-unit              # Unit tests (30-35s)
@@ -83,7 +83,7 @@ make docker                 # Build Docker image (10-20 min)
 ### Key uv Commands
 ```bash
 uv sync --dev               # Install dev dependencies (first run: 60-120s)
-uv sync --no-dev           # Production dependencies only  
+uv sync --no-dev           # Production dependencies only
 uv add package_name        # Add new dependency
 uv run command             # Run command in virtual environment
 uv build                   # Build package (currently fails - use version check)
@@ -107,13 +107,13 @@ src/sirnaforge/
 ├── __init__.py          # Version and package info
 ├── cli.py              # Typer-based CLI entry point
 ├── core/               # Core siRNA algorithms
-├── models/             # Pydantic data models  
+├── models/             # Pydantic data models
 ├── workflow.py         # Main workflow orchestration
 └── utils/              # Helper functions
 ```
 
-### Build System  
-- **Backend:** `hatchling` (modern, simple)  
+### Build System
+- **Backend:** `hatchling` (modern, simple)
 - **Build fails:** Nextflow symlinks break tar packaging
 - **Alternative:** `uv run sirnaforge version` to verify functionality
 
@@ -124,7 +124,7 @@ src/sirnaforge/
 - **Speed:** 30-35 seconds (31 tests)
 - **Use for:** Core algorithm development
 
-### 2. Local Python (`make test-local-python`) 
+### 2. Local Python (`make test-local-python`)
 - **Purpose:** Python-only integration tests
 - **Speed:** 12-15 seconds (30 tests) - FASTEST
 - **Use for:** Development iteration
@@ -150,7 +150,7 @@ src/sirnaforge/
 
 ### ❌ Requires Docker
 - Nextflow pipeline execution
-- BWA-MEM2 alignment  
+- BWA-MEM2 alignment
 - SAMtools processing
 - ViennaRNA folding
 - Full off-target analysis
@@ -165,13 +165,13 @@ make docker-run GENE=TP53   # Run workflow in container
 
 ### Development Workflow
 1. **Setup:** `uv sync --dev` (one-time, 60-120s)
-2. **Iterate:** `make test-local-python` (12s validation)  
+2. **Iterate:** `make test-local-python` (12s validation)
 3. **Quality:** `make lint` (3s) before any commit
 4. **Validate:** `make check` (35s) before push
 
-### Timeout Guidelines  
+### Timeout Guidelines
 - `uv sync --dev`: 180+ seconds (NEVER cancel)
-- `make test-*`: 60+ seconds  
+- `make test-*`: 60+ seconds
 - `make lint`: 30+ seconds
 - CLI commands: 30+ seconds
 
@@ -183,7 +183,7 @@ uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv
 
 ### Common Gotchas
 - **Build failure:** Use `uv run sirnaforge version` instead of `make build`
-- **Test failures:** 1 Docker integration failure is normal  
+- **Test failures:** 1 Docker integration failure is normal
 - **SSL warnings:** Normal in docs builds, can ignore
 - **Network timeouts:** Use `--input-fasta` with local files
 
