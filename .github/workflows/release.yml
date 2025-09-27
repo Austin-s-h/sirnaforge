@@ -206,13 +206,6 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: ⚡ Install uv CLI for make commands
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docker-build-test
-
     - name: 🧪 Test Docker image functionality using make
       run: |
         # Load the built image
@@ -224,11 +217,9 @@ jobs:
 
         echo "🧪 Tagged image: $REGISTRY_IMAGE -> sirnaforge:latest"
 
-        echo "🧪 Installing test dependencies..."
-        uv sync --group dev
-
         echo "🧪 Running Docker smoke tests (critical functionality)..."
-        # The Makefile now automatically handles UV cache mounting based on environment
+        # The Docker container uses its own conda environment with all bioinformatics tools
+        # The Makefile automatically handles UV cache mounting based on environment
         make docker-test-smoke
 
         echo "✅ Docker image tests passed!"
