@@ -1,25 +1,19 @@
-# siRNAforge CLI Reference
+# CLI Reference
+
+## Commands Overview
 
 ```bash
-Usage: sirnaforge [OPTIONS] COMMAND [ARGS]...
-
- siRNAforge - siRNA design toolkit for gene silencing
-
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --install-completion          Install completion for the current shell.                                             │
-│ --show-completion             Show completion for the current shell, to copy it or customize the installation.      │
-│ --help                        Show this message and exit.                                                           │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌─ Commands ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ search     Search for gene transcripts and retrieve sequences.                                                      │
-│ workflow   Run complete siRNA design workflow from gene query to off-target analysis.                               │
-│ design     Design siRNA candidates from transcript sequences.                                                       │
-│ validate   Validate input FASTA file format and content.                                                            │
-│ version    Show version information.                                                                                │
-│ config     Show default configuration parameters.                                                                   │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-
+sirnaforge [command] [options]
 ```
+
+| Command | Description |
+|---------|-------------|
+| `workflow` | Complete gene → siRNA pipeline |
+| `search` | Find gene transcripts |
+| `design` | Generate siRNA candidates |
+| `validate` | Check FASTA format |
+| `version` | Show version |
+| `config` | Show settings |
 
 ## Commands
 

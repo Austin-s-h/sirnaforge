@@ -1,27 +1,23 @@
-# 🧪 siRNAforge Testing Guide
+# Testing Guide
 
-Complete guide for running tests correctly with the Make-based workflow system.
+Tiered testing approach for different development phases and resources.
 
-## Quick Reference Card
+## Quick Commands
 
-### ⚡ Development Testing (Python-only)
+### Development (Python-only)
 ```bash
-make test-local-python       # Fastest validation (3-4s, 30 tests)
-make test-unit              # Unit tests (30-35s, 31 tests)
-make lint                   # Code quality check (3-5s)
-make check                  # Combined lint + fast tests
+make test-local-python  # Fast validation (12-15s)
+make test-unit          # Unit tests (30-35s)
+make lint               # Code quality (3-5s)
+make check              # Lint + fast tests
 ```
 
-### 🐳 Container Testing (Full environment)
+### Docker (Full environment)
 ```bash
-make docker-test-smoke      # CI/CD minimal (256MB RAM)
-make docker-test-fast       # Development (2GB RAM)
-make docker-test-full       # Comprehensive (8GB RAM)
+make docker-test-smoke  # CI minimal (256MB RAM)
+make docker-test-fast   # Development (2GB RAM)
+make docker-test-full   # Comprehensive (8GB RAM)
 ```
-
-## Testing Strategy Overview
-
-siRNAforge uses a **tiered testing approach** optimized for different development phases and resource constraints.
 
 ### Test Categories
 

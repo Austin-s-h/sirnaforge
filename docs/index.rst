@@ -1,48 +1,46 @@
 siRNAforge Documentation
 ========================
 
-Welcome to siRNAforge — **Comprehensive siRNA design toolkit for gene silencing.**
-
-Comprehensive siRNA design toolkit for gene silencing with multi-species off-target analysis.
+**Comprehensive siRNA design toolkit for gene silencing with multi-species off-target analysis.**
 
 .. toctree::
    :maxdepth: 1
-   :caption: 🚀 Getting Started:
+   :caption: 🚀 Getting Started
 
    getting_started
-   QUICK_REFERENCE
+   quick_reference
 
 .. toctree::
    :maxdepth: 1
-   :caption: 📖 User Guides:
+   :caption: 📖 User Guides
 
-   CLI_REFERENCE
-   USAGE_EXAMPLES
+   cli_reference
+   usage_examples
    gene_search
-   THERMODYNAMIC_GUIDE
+   thermodynamic_guide
    tutorials/index
 
 .. toctree::
    :maxdepth: 1
-   :caption: 🔧 Technical:
+   :caption: 🔧 Development
 
    architecture
-   api_reference
    deployment
    development
-   TESTING_GUIDE
+   testing_guide
+   docker_test_categories
 
 .. toctree::
    :maxdepth: 1
-   :caption: 📚 Reference:
-   :hidden:
+   :caption: 📚 Reference
 
+   api_reference
    changelog
    glossary
    sitemap
 
-Quick Navigation
-================
+Quick Start
+===========
 
 .. grid:: 2
    :gutter: 3
@@ -51,69 +49,31 @@ Quick Navigation
       :link: getting_started
       :link-type: doc
 
-      Start here for installation and your first siRNA design workflow
+      Installation and first workflow
 
    .. grid-item-card:: 📋 Quick Reference
-      :link: QUICK_REFERENCE
+      :link: quick_reference
       :link-type: doc
 
-      Essential commands and common usage patterns
+      Essential commands and patterns
 
    .. grid-item-card:: 🧬 CLI Reference
-      :link: CLI_REFERENCE
+      :link: cli_reference
       :link-type: doc
 
-      Complete command-line interface documentation
+      Complete command documentation
 
-   .. grid-item-card:: 🔬 API Documentation
-      :link: api_reference
-      :link-type: doc
-
-      Python API reference for programmatic access
-
-   .. grid-item-card:: 📚 Tutorials
+   .. grid-item-card::  Tutorials
       :link: tutorials/index
       :link-type: doc
 
-      Step-by-step guides and advanced workflows
+      Step-by-step guides
 
-   .. grid-item-card:: 🏗️ Architecture
-      :link: architecture
-      :link-type: doc
+Key Features
+============
 
-      System design and technical implementation
-
-Features
---------
-
-🎯 **Algorithm-driven design** - Comprehensive siRNA design with thermodynamic asymmetry analysis
-
-🔍 **Off-target analysis** - Integrated genome-wide off-target prediction
-
-📊 **Rich scoring system** - Multi-component scoring with research-backed thermodynamic asymmetry
-
-🧪 **Secondary structure** - RNA folding prediction using ViennaRNA
-
-🐳 **Containerized** - Docker support for reproducible environments
-
-🔬 **Pipeline ready** - Nextflow integration for scalable analysis
-
-Search & Reference
-==================
-
-.. hlist::
-   :columns: 3
-
-   * :ref:`genindex` - General Index
-   * :ref:`modindex` - Module Index
-   * :ref:`search` - Search Documentation
-   * :doc:`sitemap` - Complete Site Map
-   * :doc:`glossary` - Terms & Definitions
-   * :doc:`CLI_REFERENCE` - CLI Commands
-   * :doc:`api_reference` - API Reference
-   * :doc:`changelog` - Version History
-   * :doc:`tutorials/index` - All Tutorials
-
-.. todo::
-
-   Add comprehensive glossary of siRNA terminology and methodology references.
+* **Algorithm-driven design** - Thermodynamic asymmetry analysis
+* **Off-target analysis** - Genome-wide prediction
+* **Rich scoring** - Multi-component research-backed metrics
+* **Structure prediction** - ViennaRNA integration
+* **Containerized** - Docker and Nextflow support
