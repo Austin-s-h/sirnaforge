@@ -17,6 +17,6 @@ This tutorial is under development and will cover:
 For now, refer to:
 - {doc}`basic_usage` for fundamental concepts
 - {doc}`python_api` for programmatic control
-- {doc}`../USAGE_EXAMPLES` for current advanced examples
+- {doc}`../usage_examples` for current advanced examples
 
 This tutorial will be completed in a future release.
