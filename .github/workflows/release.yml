@@ -174,8 +174,8 @@ jobs:
           org.opencontainers.image.title=siRNAforge
           org.opencontainers.image.description=siRNA design and analysis toolkit
           org.opencontainers.image.version=${{ needs.validate-release.outputs.version }}
-          org.opencontainers.image.url=https://github.com/${{ github.repository }}
-          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}
 
     - name: 🐳 Build Docker image (don't push yet)
       id: build
@@ -190,22 +190,26 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: 🧪 Test Docker image functionality
+    - name: ⚡ Install uv CLI for make commands
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: docker-build-test
+
+    - name: 🧪 Test Docker image functionality using make
       run: |
         # Load the built image
         docker load --input /tmp/sirnaforge-image.tar
 
-        IMAGE_TAG="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+        # Set environment variable for make docker test commands
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
 
-        echo "🧪 Testing basic CLI functionality..."
-        docker run --rm "$IMAGE_TAG" sirnaforge --help
+        echo "🧪 Installing test dependencies..."
+        uv sync --group dev
 
-        echo "🧪 Testing version command..."
-        VERSION_OUTPUT=$(docker run --rm "$IMAGE_TAG" sirnaforge version)
-        echo "Version output: $VERSION_OUTPUT"
-
-        echo "🧪 Testing workflow command structure..."
-        docker run --rm "$IMAGE_TAG" sirnaforge workflow --help
+        echo "🧪 Running Docker smoke tests (critical functionality)..."
+        make docker-test-smoke
 
         echo "✅ Docker image tests passed!"
 
