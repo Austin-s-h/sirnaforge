@@ -30,10 +30,11 @@ help: ## Show available commands
 	@echo "  test               Full test suite (60s+, some failures OK)"
 	@echo ""
 	@echo "🐳 DOCKER TESTING (Resource-Aware)"
-	@echo "  docker-test-smoke  Ultra-minimal (256MB RAM, <30s)"
-	@echo "  docker-test-fast   Fast tests (2GB RAM, 1-2 min)"
-	@echo "  docker-test        Standard tests (4GB RAM, 2-5 min)"
-	@echo "  docker-test-full   Comprehensive (8GB RAM, 5-10 min)"
+	@echo "  docker-test-smoke        Ultra-minimal smoke tests (256MB RAM, <30s) - MUST PASS"
+	@echo "  docker-test-integration  Integration validation (2GB RAM, 1-2 min) - Can fail in pre-release"
+	@echo "  docker-test-fast         Fast tests (2GB RAM, 1-2 min) - smoke + basic integration"
+	@echo "  docker-test              Standard tests (4GB RAM, 2-5 min) - all tests"
+	@echo "  docker-test-full         Comprehensive (8GB RAM, 5-10 min) - full CI suite"
 	@echo ""
 	@echo "🔧 CODE QUALITY"
 	@echo "  lint               Run all linting tools"
@@ -221,7 +222,7 @@ docker-test: ## Run tests in Docker (resource-limited for development)
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 --maxfail=5"
 
-docker-test-fast: ## Run fast tests only in Docker (minimal resources)
+docker-test-fast: ## Run smoke + basic integration tests (combines both test types)
 	docker run --rm \
 		--cpus=1 \
 		--memory=2g \
@@ -229,7 +230,7 @@ docker-test-fast: ## Run fast tests only in Docker (minimal resources)
 		-v $$(pwd):/workspace -w /workspace \
 		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
 		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'not slow' --maxfail=3"
+		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and not slow' --maxfail=3"
 
 docker-test-lightweight: ## Run only lightweight Docker tests
 	docker run --rm \
@@ -241,7 +242,7 @@ docker-test-lightweight: ## Run only lightweight Docker tests
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'lightweight or docker' --maxfail=3"
 
-docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest)
+docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST ALWAYS PASS
 	docker run --rm \
 		--cpus=0.5 \
 		--memory=256m \
@@ -250,7 +251,7 @@ docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest)
 		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
 		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'smoke' --maxfail=1 --tb=short"
+		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and smoke' --maxfail=1 --tb=short"
 
 docker-test-full: ## Run all tests in Docker (high resources, for CI)
 	docker run --rm \
@@ -262,15 +263,19 @@ docker-test-full: ## Run all tests in Docker (high resources, for CI)
 		$(DOCKER_IMAGE):latest \
 		uv run --group dev pytest -v -n 2
 
-docker-test-integration: ## Run integration tests in Docker (full workflow)
+docker-test-categories: ## Test the new smoke/integration categorization
+	@echo "🧪 Testing Docker test categorization for CI/CD workflow..."
+	./scripts/test_docker_categories.sh
+
+docker-test-integration: ## Run integration tests only (complex workflows that may fail in pre-release)
 	docker run --rm \
 		--cpus=2 \
-		--memory=4g \
-		--memory-swap=6g \
+		--memory=2g \
+		--memory-swap=3g \
 		-v $$(pwd):/workspace -w /workspace \
 		-v $$(uv cache dir):/home/sirnauser/.cache/uv \
 		$(DOCKER_IMAGE):latest \
-		uv run --group dev pytest -v -m "integration" --maxfail=3
+		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 -m 'docker and (docker_integration or (not smoke))' --maxfail=5 --tb=short"
 
 # Documentation
 docs: ## Build documentation

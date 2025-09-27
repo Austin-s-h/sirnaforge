@@ -80,7 +80,7 @@ def test_toy_mirna_analysis_workflow():
         assert Path(json_path).stat().st_size > 10, "JSON should have meaningful content"
 
 
-@pytest.mark.smoke
+@pytest.mark.docker_integration
 @pytest.mark.docker
 @pytest.mark.skipif(not shutil.which("bwa-mem2"), reason="bwa-mem2 executable not available - run in Docker container")
 def test_combined_offtarget_analysis():

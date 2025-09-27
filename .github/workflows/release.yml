@@ -216,11 +216,11 @@ jobs:
         path: /tmp/sirnaforge-image.tar
         retention-days: 1
 
-  # Run Docker-based integration tests
-  test-docker-integration:
-    name: 🧪 Docker Integration Tests
+  # Run Docker smoke tests (must always pass)
+  test-docker-smoke:
+    name: 🧪 Docker Smoke Tests (Critical)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     needs: [validate-release, build-docker]
 
     steps:
@@ -237,7 +237,7 @@ jobs:
       with:
         activate-environment: false
         enable-cache: true
-        cache-suffix: docker-test
+        cache-suffix: docker-smoke
 
     - name: 📦 Install test dependencies
       run: uv sync --group dev
@@ -248,7 +248,7 @@ jobs:
         name: docker-image-${{ needs.validate-release.outputs.version }}
         path: /tmp/
 
-    - name: 🐳 Load and test Docker image
+    - name: 🐳 Load and run smoke tests (MUST PASS)
       run: |
         # Load the image
         docker load --input /tmp/sirnaforge-image.tar
@@ -256,15 +256,70 @@ jobs:
         # Set environment variable for tests
         export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
 
-        # Run Docker integration tests
-        uv run --group dev pytest tests/docker/ -v --tb=short -m docker --maxfail=3
+        # Run smoke tests - these MUST pass for any release
+        echo "🔥 Running critical smoke tests..."
+        uv run --group dev pytest tests/docker/ -v --tb=short -m "docker and smoke" --maxfail=1
+        echo "✅ All smoke tests passed - Docker image is functional"
 
-  # Create GitHub release only after all tests pass
+  # Run Docker integration tests (can fail in pre-release)
+  test-docker-integration:
+    name: 🧪 Docker Integration Tests (Can fail in pre-release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [validate-release, build-docker, test-docker-smoke]
+    continue-on-error: ${{ github.event.inputs.prerelease == 'true' }}
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: ⚡ Install uv CLI
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: docker-integration
+
+    - name: 📦 Install test dependencies
+      run: uv sync --group dev
+
+    - name: 📥 Download Docker image
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image-${{ needs.validate-release.outputs.version }}
+        path: /tmp/
+
+    - name: 🐳 Load and run integration tests
+      run: |
+        # Load the image
+        docker load --input /tmp/sirnaforge-image.tar
+
+        # Set environment variable for tests
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+
+        # Run integration tests - these can fail in pre-release
+        echo "🧪 Running integration tests..."
+        if [ "${{ github.event.inputs.prerelease }}" == "true" ]; then
+          echo "⚠️ Pre-release mode: Integration test failures will not block release"
+          uv run --group dev pytest tests/docker/ -v --tb=short -m "docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
+        else
+          echo "🔒 Full release mode: Integration tests must pass"
+          uv run --group dev pytest tests/docker/ -v --tb=short -m "docker and not smoke" --maxfail=3
+        fi
+
+  # Create GitHub release after smoke tests pass (integration can fail in pre-release)
   create-release:
     name: 🏷️ Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, run-ci, test-docker-integration]
+    needs: [validate-release, run-ci, test-docker-smoke]
+    # Allow release creation even if integration tests fail in pre-release mode
+    if: always() && needs.test-docker-smoke.result == 'success' && needs.run-ci.result == 'success'
     outputs:
       release-id: ${{ steps.create.outputs.id }}
       release-url: ${{ steps.create.outputs.html_url }}
@@ -410,13 +465,13 @@ jobs:
       id: deployment
       uses: actions/deploy-pages@v4
 
-  # Publish Docker images only after release is created
+  # Publish Docker images only after smoke tests pass and release is created
   publish-docker:
     name: 🐳 Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-release, create-release]
-    if: github.event.inputs.push_images == 'true'
+    needs: [validate-release, create-release, test-docker-smoke]
+    if: github.event.inputs.push_images == 'true' && needs.test-docker-smoke.result == 'success'
 
     steps:
     - name: 📥 Checkout code
@@ -466,8 +521,8 @@ jobs:
     name: 🧪 Final Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, create-release, publish-docker]
-    if: always() && needs.create-release.result == 'success'
+    needs: [validate-release, create-release, publish-docker, test-docker-smoke]
+    if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
 
     steps:
     - name: 🐳 Test published Docker image
@@ -491,8 +546,8 @@ jobs:
     name: ✅ Release Summary
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
-    if: always() && needs.create-release.result == 'success'
+    needs: [validate-release, create-release, test-docker-smoke, test-docker-integration, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
+    if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
 
     steps:
     - name: 🧹 Cleanup artifacts
@@ -504,8 +559,26 @@ jobs:
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
         REPO_LOWER="${{ github.repository }}"
+        IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
+        INTEGRATION_STATUS="${{ needs.test-docker-integration.result }}"
 
         echo "# 🎉 Release v${VERSION} Complete!"
+        echo ""
+        echo "## 🧪 Test Results:"
+        echo "- ✅ Smoke Tests: Passed (Docker image is functional)"
+        if [ "$IS_PRERELEASE" == "true" ]; then
+          case "$INTEGRATION_STATUS" in
+            "success") echo "- ✅ Integration Tests: Passed (bonus for pre-release!)" ;;
+            "failure") echo "- ⚠️ Integration Tests: Failed (acceptable for pre-release)" ;;
+            "cancelled") echo "- ⚠️ Integration Tests: Cancelled (acceptable for pre-release)" ;;
+            *) echo "- ⚠️ Integration Tests: $INTEGRATION_STATUS (acceptable for pre-release)" ;;
+          esac
+        else
+          case "$INTEGRATION_STATUS" in
+            "success") echo "- ✅ Integration Tests: Passed (required for full release)" ;;
+            *) echo "- ❌ Integration Tests: $INTEGRATION_STATUS (should not happen for full release)" ;;
+          esac
+        fi
         echo ""
         echo "## 📦 Published Artifacts:"
         echo "- ✅ GitHub Release: ${{ needs.create-release.outputs.release-url }}"

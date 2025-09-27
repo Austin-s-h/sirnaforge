@@ -286,7 +286,8 @@ markers = [
     "unit: marks tests as unit tests",
     "ci: marks tests as continuous integration tests",
     "lightweight: marks tests as lightweight and fast",
-    "smoke: marks tests as ultra-minimal smoke tests for CI/CD",
+    "smoke: marks tests as ultra-minimal smoke tests for CI/CD - MUST always pass",
+    "docker_integration: marks tests as Docker integration tests - can fail in pre-release",
     # Environment-specific markers
     "local_python: Local development tests - Python environment only",
     "local_nextflow: Local development tests - includes Nextflow workflows",
