@@ -162,11 +162,27 @@ jobs:
     - name: 🏗️ Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: 📋 Generate Docker metadata
+    - name: � Prepare repository variables (lowercase for Docker)
+      id: repo
+      run: |
+        # Convert repository to lowercase for Docker compatibility
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+        REPO_NAME_LOWER=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+
+        echo "repository=$REPO_LOWER" >> $GITHUB_OUTPUT
+        echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
+        echo "name=$REPO_NAME_LOWER" >> $GITHUB_OUTPUT
+
+        echo "📝 Repository variables:"
+        echo "  Original: ${{ github.repository }}"
+        echo "  Lowercase: $REPO_LOWER"
+
+    - name: �📋 Generate Docker metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ github.repository }}
+        images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}
         tags: |
           type=raw,value=${{ needs.validate-release.outputs.version }}
           type=raw,value=latest,enable={{is_default_branch}}
@@ -174,8 +190,8 @@ jobs:
           org.opencontainers.image.title=siRNAforge
           org.opencontainers.image.description=siRNA design and analysis toolkit
           org.opencontainers.image.version=${{ needs.validate-release.outputs.version }}
-          org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}
-          org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}
+          org.opencontainers.image.url=https://github.com/${{ steps.repo.outputs.owner }}/${{ steps.repo.outputs.name }}
+          org.opencontainers.image.source=https://github.com/${{ steps.repo.outputs.owner }}/${{ steps.repo.outputs.name }}
 
     - name: 🐳 Build Docker image (don't push yet)
       id: build
@@ -202,8 +218,11 @@ jobs:
         # Load the built image
         docker load --input /tmp/sirnaforge-image.tar
 
-        # Set environment variable for make docker test commands
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+        # Tag the image to match what the Makefile expects (sirnaforge:latest)
+        REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}:${{ needs.validate-release.outputs.version }}"
+        docker tag "$REGISTRY_IMAGE" sirnaforge:latest
+
+        echo "🧪 Tagged image: $REGISTRY_IMAGE -> sirnaforge:latest"
 
         echo "🧪 Installing test dependencies..."
         uv sync --group dev
