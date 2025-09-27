@@ -395,6 +395,6 @@ du -sh "$analysis_dir"/* 2>/dev/null | head -5
 5. **Document settings**: Save configurations for reproducibility
 
 > **More Resources:**
-> - [CLI Reference](CLI_REFERENCE.md) - Complete parameter documentation
+> - [CLI Reference](cli_reference.md) - Complete parameter documentation
 > - [Custom Scoring Guide](tutorials/custom_scoring.md) - Advanced thermodynamic principles
 > - [Development Guide](development.md) - Contributing and extending siRNAforge

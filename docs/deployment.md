@@ -1,26 +1,19 @@
 # Deployment Guide
 
-Production deployment strategies for siRNAforge, focusing on Docker and scalable infrastructure.
+Production deployment options for siRNAforge.
 
-> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation. This guide covers production deployment.
+## Docker (Recommended)
 
-## Overview
+Complete environment with all dependencies included.
 
-siRNAforge offers multiple deployment options, but the **recommended approach is Docker** for its simplicity and consistency. The comprehensive Docker image includes all dependencies: Python environment, bioinformatics tools (BWA-MEM2, SAMtools, ViennaRNA), Nextflow, and AWS CLI.
-
-## Dependencies Overview
-
-### Core Dependencies (Always Included)
-- Python packages for siRNA design, scoring, and basic analysis
-- Managed automatically via `pyproject.toml` and `uv.lock`
-
-### Additional Tools (Required for Full Pipeline)
-- **Nextflow** (≥25.04.0) - Modern workflow management system
-- **BWA-MEM2** - Fast sequence alignment for off-target analysis
-- **SAMtools** - BAM/SAM file processing
-- **ViennaRNA** - RNA folding prediction
-- **AWS CLI** - S3 genome index downloads (optional)
-- **Java 17+** - Required for Nextflow 25+
+### Dependencies Included
+- Python packages (siRNA design, scoring)
+- Nextflow ≥25.04.0 (workflow management)
+- BWA-MEM2 (sequence alignment)
+- SAMtools (BAM/SAM processing)
+- ViennaRNA (RNA folding)
+- AWS CLI (S3 downloads)
+- Java 17+ (Nextflow requirement)
 
 ## Deployment Options
 

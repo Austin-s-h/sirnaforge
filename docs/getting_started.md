@@ -1,17 +1,13 @@
-# Getting Started with siRNAforge
+# Getting Started
 
-Welcome to siRNAforge! This guide will get you from installation to your first siRNA analysis in minutes.
+Get from installation to your first siRNA analysis in minutes.
 
 ## Installation
 
-### Prerequisites
-- Python 3.9-3.12
-- Git
-
-### Quick Installation
+**Prerequisites:** Python 3.9-3.12, Git
 
 ```bash
-# Install uv (fast Python package manager)
+# Install uv package manager
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and setup
@@ -20,42 +16,40 @@ cd sirnaforge
 make install-dev
 ```
 
-> **Need different installation options?** See [Deployment Guide](deployment.md) for Docker, pip, or production setups.
+**Alternative:** Docker, pip, production setups → [Deployment Guide](deployment.md)
 
 ## Your First Analysis
 
-### 1. Verify Installation
+## First Analysis
+
+### Verify Installation
 ```bash
 uv run sirnaforge --help
 uv run sirnaforge version
 ```
 
-### 2. Complete Workflow (Recommended)
+### Complete Workflow
 ```bash
 # End-to-end analysis for TP53
 uv run sirnaforge workflow TP53 --output-dir my_first_analysis
 ```
 
-This single command will:
-1. **Search** for TP53 transcripts from Ensembl
-2. **Design** siRNA candidates
-3. **Score** them using thermodynamic asymmetry
-4. **Rank** and filter the best candidates
-5. **Generate** comprehensive results
+**What this does:**
+1. Search TP53 transcripts from Ensembl
+2. Design siRNA candidates
+3. Score using thermodynamic asymmetry
+4. Rank and filter best candidates
+5. Generate results
 
-### 3. Explore Results
+### Results Structure
 ```
 my_first_analysis/
 ├── sirnaforge/
-│   ├── TP53_pass.csv        # Best candidates (CSV format)
+│   ├── TP53_pass.csv        # Best candidates for lab use
 │   └── TP53_all.csv         # All candidates with scores
-├── transcripts/
-│   └── TP53_transcripts.fasta
-└── logs/
-    └── workflow_summary.json # Analysis summary
+├── transcripts/TP53_transcripts.fasta
+└── logs/workflow_summary.json
 ```
-
-> **Want to customize parameters?** See our [Quick Reference](QUICK_REFERENCE.md) for common options or [Usage Examples](USAGE_EXAMPLES.md) for comprehensive examples.
 
 ## Understanding Your Results
 
@@ -67,33 +61,31 @@ my_first_analysis/
 | `*_all.csv` | Complete candidate list with detailed scores | Analysis and custom filtering |
 | `workflow_summary.json` | High-level analysis statistics | QC and reporting |
 
-### siRNA Quality Indicators
+## Quality Indicators
 
-Look for these in your results:
-- **asymmetry_score**: ≥0.65 (optimal thermodynamic asymmetry)
-- **gc_content**: 35-60% (balanced stability)
-- **melting_temp**: 55-65°C (effective silencing range)
+**Key metrics:**
+- `asymmetry_score` ≥0.65 (optimal)
+- `gc_content` 35-60% (balanced)
+- `melting_temp` 55-65°C (effective)
 
-### Step-by-Step Workflow (Alternative)
-
-For more control over the process:
+## Step-by-Step Alternative
 
 ```bash
-# 1. Search for transcripts
+# 1. Search transcripts
 uv run sirnaforge search TP53 -o transcripts.fasta
 
 # 2. Design candidates
 uv run sirnaforge design transcripts.fasta -o results.csv
 
-# 3. Validate quality
+# 3. Validate input
 uv run sirnaforge validate transcripts.fasta
 ```
 
 ## Next Steps
 
-- **📖 [Quick Reference](QUICK_REFERENCE.md)** - Essential commands and parameters
-- **🔬 [Usage Examples](USAGE_EXAMPLES.md)** - Comprehensive real-world examples
-- **⚙️ [CLI Reference](CLI_REFERENCE.md)** - Complete parameter documentation
+- **📖 [Quick Reference](quick_reference.md)** - Essential commands and parameters
+- **🔬 [Usage Examples](usage_examples.md)** - Comprehensive real-world examples
+- **⚙️ [CLI Reference](cli_reference.md)** - Complete parameter documentation
 - **🧬 [Custom Scoring Guide](tutorials/custom_scoring.md)** - Advanced thermodynamic principles
 
 ## Troubleshooting
