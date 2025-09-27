@@ -16,7 +16,7 @@ You'll need the same prerequisites as regular installation, plus development too
 
 ```bash
 # Clone the repository
-git clone https://github.com/Austin-s-h/sirnaforge
+git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 
 # One-command development setup

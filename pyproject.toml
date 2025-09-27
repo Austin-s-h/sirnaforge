@@ -74,11 +74,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Austin-s-h/sirnaforge"
+Homepage = "https://github.com/austin-s-h/sirnaforge"
 Documentation = "https://austin-s-h.github.io/sirnaforge"
-Repository = "https://github.com/Austin-s-h/sirnaforge"
-Issues = "https://github.com/Austin-s-h/sirnaforge/issues"
-Changelog = "https://github.com/Austin-s-h/sirnaforge/blob/main/CHANGELOG.md"
+Repository = "https://github.com/austin-s-h/sirnaforge"
+Issues = "https://github.com/austin-s-h/sirnaforge/issues"
+Changelog = "https://github.com/austin-s-h/sirnaforge/blob/main/CHANGELOG.md"
 
 [project.scripts]
 sirnaforge = "sirnaforge.cli:app"
