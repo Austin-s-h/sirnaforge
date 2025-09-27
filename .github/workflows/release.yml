@@ -339,7 +339,8 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Set environment variable for tests
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${REPO_LOWER}:${{ needs.validate-release.outputs.version }}"
 
         # Run smoke tests - these MUST pass for any release
         echo "🔥 Running critical smoke tests..."
@@ -385,7 +386,8 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Set environment variable for tests
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${REPO_LOWER}:${{ needs.validate-release.outputs.version }}"
 
         # Run integration tests - these can fail in pre-release
         echo "🧪 Running integration tests..."
