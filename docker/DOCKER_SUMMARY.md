@@ -21,7 +21,7 @@
 
 #### Quick Start (Recommended)
 ```bash
-# Build Docker image (✅ Verified working - version 0.1.2)
+# Build Docker image (✅ Verified working - version 0.2.0)
 make docker
 
 # Test basic functionality
@@ -36,15 +36,15 @@ docker run -v $(pwd):/workspace -w /workspace sirnaforge:latest \
 #### ✅ Verified Docker Commands
 ```bash
 # Version check (✅ Working)
-docker run --rm sirnaforge:0.1.2 sirnaforge version
+docker run --rm sirnaforge:0.2.0 sirnaforge version
 
 # Basic design workflow (✅ Working - tested with sample data)
-docker run --rm -v $(pwd)/examples:/data sirnaforge:0.1.2 \
+docker run --rm -v $(pwd)/examples:/data sirnaforge:0.2.0 \
     sirnaforge design /data/sample_transcripts.fasta \
     -o /tmp/test_output.tsv --top-n 5 --skip-structure --skip-off-targets
 
 # Interactive development shell
-docker run -it -v $(pwd):/workspace -w /workspace sirnaforge:0.1.2 bash
+docker run -it -v $(pwd):/workspace -w /workspace sirnaforge:0.2.0 bash
 ```
 
 #### Production Deployments
@@ -76,15 +76,15 @@ make docker-test-full      # 8GB RAM - comprehensive validation
 #### Manual Verification
 ```bash
 # Quick health check (✅ Verified working)
-docker run --rm sirnaforge:0.1.2 sirnaforge version
+docker run --rm sirnaforge:0.2.0 sirnaforge version
 
 # Workflow test with sample data
-docker run --rm -v $(pwd)/examples:/data sirnaforge:0.1.2 \
+docker run --rm -v $(pwd)/examples:/data sirnaforge:0.2.0 \
   sirnaforge design /data/sample_transcripts.fasta \
   -o /tmp/results.tsv --top-n 5 --skip-structure --skip-off-targets
 
 # Verify all bioinformatics tools
-docker run --rm sirnaforge:0.1.2 bash -c "
+docker run --rm sirnaforge:0.2.0 bash -c "
   sirnaforge version && nextflow -version &&
   bwa-mem2 version && samtools --version && RNAfold --version"
 ```

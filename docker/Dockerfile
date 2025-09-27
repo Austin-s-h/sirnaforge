@@ -98,6 +98,12 @@ ENV VIRTUAL_ENV="/opt/conda"
 # does not attempt to create runtime directories under /usr/local/bin.
 RUN mkdir -p /home/sirnauser/.nextflow && chown -R sirnauser:sirnauser /home/sirnauser/.nextflow
 
+# Copy and setup entrypoint script
+COPY --chown=sirnauser:sirnauser docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+USER root
+RUN chmod +x /usr/local/bin/entrypoint.sh
+USER sirnauser
+
 # Health check - verify all major components
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD sirnaforge version && \
@@ -106,8 +112,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
         samtools --version && \
         RNAfold --version || exit 1
 
-# Default command - show available tools
-CMD ["bash", "-c", "echo '🧬 siRNAforge Comprehensive Environment' && echo 'Available tools:' && echo '- sirnaforge: '$(sirnaforge --help) && echo '- nextflow: '$(nextflow -version | head -n1) && echo '- bwa-mem2: '$(bwa-mem2 version | head -n1) && echo '- samtools: '$(samtools --version | head -n1) && echo '- ViennaRNA: '$(RNAfold --version | head -n1) && echo 'Usage: docker run -v \$(pwd):/workspace -w /workspace <image> sirnaforge workflow <gene>'"]
+# Set entrypoint and default command
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD []
 
 # Metadata
 LABEL org.opencontainers.image.title="siRNAforge"

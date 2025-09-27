@@ -91,8 +91,8 @@ make test
 ### 1. Build Docker Image
 ```bash
 make docker
-# Expected: ~19 minutes first time, creates sirnaforge:0.1.2
-# ✅ Success: "Docker image built: sirnaforge:0.1.2"
+# Expected: ~19 minutes first time, creates sirnaforge:0.2.0
+# ✅ Success: "Docker image built: sirnaforge:0.2.0"
 # Image size: ~2GB (includes all bioinformatics tools)
 ```
 
@@ -138,18 +138,18 @@ make docker-test-full
 #### Basic Functionality
 ```bash
 # Version check (✅ Verified working)
-docker run --rm sirnaforge:0.1.2 sirnaforge version
-# Expected output: Version info box with 0.1.2
+docker run --rm sirnaforge:0.2.0 sirnaforge version
+# Expected output: Version info box with 0.2.0
 
 # Help system
-docker run --rm sirnaforge:0.1.2 sirnaforge --help
-docker run --rm sirnaforge:0.1.2 sirnaforge design --help
+docker run --rm sirnaforge:0.2.0 sirnaforge --help
+docker run --rm sirnaforge:0.2.0 sirnaforge design --help
 ```
 
 #### Workflow Testing
 ```bash
 # Test with sample data (✅ Verified working)
-docker run --rm -v $(pwd)/examples:/data sirnaforge:0.1.2 \
+docker run --rm -v $(pwd)/examples:/data sirnaforge:0.2.0 \
   sirnaforge design /data/sample_transcripts.fasta \
   -o /tmp/results.tsv --top-n 5 --skip-structure --skip-off-targets
 
@@ -209,7 +209,7 @@ make install-dev
 ```bash
 # Issue: Docker tests fail with "No such option"
 # Solution: Check CLI syntax with --help
-docker run --rm sirnaforge:0.1.2 sirnaforge design --help
+docker run --rm sirnaforge:0.2.0 sirnaforge design --help
 
 # Issue: Resource exhaustion in Docker tests
 # Solution: Use appropriate test level for your system
@@ -265,7 +265,7 @@ uv run sirnaforge version
 uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.tsv
 
 # Docker environment verification
-docker run --rm sirnaforge:0.1.2 sirnaforge version
+docker run --rm sirnaforge:0.2.0 sirnaforge version
 ```
 
 **📋 For Docker operations and deployment:** See the Docker documentation in the `docker/` directory
