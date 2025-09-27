@@ -8,11 +8,11 @@ Quick Access by Category
 
 🚀 **Getting Started**
    - :doc:`getting_started` - Installation & Setup
-   - :doc:`QUICK_REFERENCE` - Essential Commands
+   - :doc:`quick_reference` - Essential Commands
 
 📖 **User Documentation**
-   - :doc:`CLI_REFERENCE` - Complete CLI Reference
-   - :doc:`USAGE_EXAMPLES` - Real-world Examples
+   - :doc:`cli_reference` - Complete CLI Reference
+   - :doc:`usage_examples` - Real-world Examples
    - :doc:`gene_search` - Gene Search Guide
    - :doc:`tutorials/index` - Step-by-step Tutorials
 
