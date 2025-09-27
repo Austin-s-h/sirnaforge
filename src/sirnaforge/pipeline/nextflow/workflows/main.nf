@@ -4,7 +4,7 @@
     sirnaforge/pipeline/nextflow/workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     siRNA Off-Target Analysis Pipeline - Embedded in Python Package
-    Github: https://github.com/Austin-s-h/sirnaforge
+    Github: https://github.com/austin-s-h/sirnaforge
 ----------------------------------------------------------------------------------------
 */
 

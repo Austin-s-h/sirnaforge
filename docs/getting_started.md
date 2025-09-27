@@ -15,7 +15,7 @@ Welcome to siRNAforge! This guide will get you from installation to your first s
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and setup
-git clone https://github.com/Austin-s-h/sirnaforge
+git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 make install-dev
 ```

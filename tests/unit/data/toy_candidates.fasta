@@ -1,4 +1,6 @@
->toy_sirna_1
-GCAUGCUGAUCCGCAUGCU
->toy_sirna_2
-CUGAUCCGCAUGCUGAUCC
+>sirna_perfect_match_1
+GTAGTCGATCAGCATCGTAGT
+>sirna_perfect_match_2
+GTAGTCGATCAGGCGTTTCAT
+>sirna_test_mismatch
+GTAGTCGATCAGCTTCGTAGA

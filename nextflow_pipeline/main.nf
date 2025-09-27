@@ -4,7 +4,7 @@
     sirnaforge/nextflow_pipeline
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     siRNA Off-Target Analysis Pipeline
-    Github: https://github.com/Austin-s-h/sirnaforge
+    Github: https://github.com/austin-s-h/sirnaforge
 ----------------------------------------------------------------------------------------
 */
 

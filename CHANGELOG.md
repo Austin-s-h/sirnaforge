@@ -53,5 +53,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pipeline**: Nextflow integration for scalability
 - **Documentation**: Sphinx with MyST parser, Read the Docs theme
 
-[Unreleased]: https://github.com/Austin-s-h/sirnaforge/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Austin-s-h/sirnaforge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/austin-s-h/sirnaforge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/austin-s-h/sirnaforge/releases/tag/v0.1.0

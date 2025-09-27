@@ -89,6 +89,10 @@ WORKDIR /home/sirnauser
 ENV PATH="/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:$PATH"
 ENV JAVA_HOME="/opt/conda/lib/jvm"
 ENV NXF_HOME="/home/sirnauser/.nextflow"
+# Configure uv to use the existing conda environment instead of creating its own venv
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_PYTHON="/opt/conda/bin/python"
+ENV VIRTUAL_ENV="/opt/conda"
 
 # Ensure Nextflow home is created and writable by the non-root user so Nextflow
 # does not attempt to create runtime directories under /usr/local/bin.

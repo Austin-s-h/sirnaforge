@@ -87,9 +87,10 @@ class BwaAnalyzer:
 
         # Configure parameters based on mode
         if mode == "mirna_seed":
-            # For miRNA seed analysis: short query vs short target
-            self.seed_length = min(seed_length, 7)  # Limit seed length for short sequences
-            self.min_score = max(min_score, 10)  # Lower threshold for seed matches
+            # For miRNA seed analysis: short query (6-8bp) vs short target (~22bp)
+            # Need very permissive parameters for ultra-short sequences
+            self.seed_length = min(seed_length, 6)  # Max 6bp seed for 6-8bp queries
+            self.min_score = 6  # Very low threshold - allow imperfect matches
         elif mode == "transcriptome":
             # For transcriptome analysis: short query vs long target
             self.seed_length = seed_length  # Use provided seed length
@@ -166,22 +167,24 @@ class BwaAnalyzer:
         ]
 
         if self.mode == "mirna_seed":
-            # For miRNA seed analysis: more permissive parameters
+            # For miRNA seed analysis: ultra-permissive parameters for 6-8bp vs ~22bp
             cmd = base_cmd + [
                 "-k",
-                str(self.seed_length),  # Seed length
+                str(self.seed_length),  # Seed length (max 6bp)
                 "-T",
-                str(self.min_score),  # Minimum score
+                str(self.min_score),  # Minimum score (6)
                 "-w",
-                "3",  # Band width (smaller for short sequences)
+                "2",  # Narrow band width for short sequences
                 "-A",
-                "1",  # Matching score
+                "2",  # Higher matching score to reward matches
                 "-B",
-                "1",  # Mismatch penalty
+                "1",  # Low mismatch penalty
                 "-O",
-                "1,1",  # Gap open penalties
+                "1,1",  # Low gap open penalties
                 "-E",
-                "1,1",  # Gap extension penalties
+                "1,1",  # Low gap extension penalties
+                "-L",
+                "8,8",  # Clipping penalty for ultra-short reads
                 self.index_prefix,
                 temp_fasta_path,
             ]

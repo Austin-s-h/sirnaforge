@@ -4,16 +4,16 @@
   <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="200"/>
 
   **Multi-species gene to siRNA design, off-target prediction, and ranking**
-
+  [![🚀 Release siRNAforge](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml)
   [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
   [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
   [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
   [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
   [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/Austin-s-h/packages/container/package/sirnaforge)
-  [![Nextflow](https://img.shields.io/badge/nextflow-pipeline-brightgreen?logo=nextflow)](https://github.com/Austin-s-h/sirnaforge/tree/main/nextflow_pipeline)
-  [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?logo=pytest)](https://github.com/Austin-s-h/sirnaforge/actions)
-  [![Coverage](https://img.shields.io/badge/coverage-%3E90%25-brightgreen?logo=codecov)](https://github.com/Austin-s-h/sirnaforge)
-  [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Austin-s-h/sirnaforge/blob/main/LICENSE)
+  [![Nextflow](https://img.shields.io/badge/nextflow-pipeline-brightgreen?logo=nextflow)](https://github.com/austin-s-h/sirnaforge/tree/main/nextflow_pipeline)
+  [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?logo=pytest)](https://github.com/austin-s-h/sirnaforge/actions)
+  [![Coverage](https://img.shields.io/badge/coverage-%3E90%25-brightgreen?logo=codecov)](https://github.com/austin-s-h/sirnaforge)
+  [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/austin-s-h/sirnaforge/blob/main/LICENSE)
 </div>
 
 
@@ -82,7 +82,7 @@ make test
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and setup with development dependencies
-git clone https://github.com/Austin-s-h/sirnaforge
+git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 make install-dev
 
@@ -551,7 +551,7 @@ siRNAforge leverages `uv` for lightning-fast dependency management and developme
 
 ```bash
 # Complete development setup (recommended)
-git clone https://github.com/Austin-s-h/sirnaforge
+git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 make install-dev  # Installs all dev dependencies
 
