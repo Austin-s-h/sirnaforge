@@ -731,93 +731,18 @@ jobs:
 
         echo "✅ Published image works correctly!"
 
-  # Summary and cleanup
+  # Final confirmation
   finalize-release:
-    name: ✅ Release Summary
+    name: ✅ Release Complete
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     needs: [validate-release, create-release, test-docker-smoke, test-docker-integration, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
     if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
 
     steps:
-    - name: 🧹 Cleanup artifacts
-      uses: geekyeggo/delete-artifact@v2
-      with:
-        name: docker-image-${{ needs.validate-release.outputs.version }}
-
-    - name: 📊 Release Summary
+    - name: 🎉 Release Status
       run: |
-        VERSION="${{ needs.validate-release.outputs.version }}"
-        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-        IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
-        INTEGRATION_STATUS="${{ needs.test-docker-integration.result }}"
-
-        echo "# 🎉 Release v${VERSION} Complete!"
-        echo ""
-        echo "## 🧪 Test Results:"
-        echo "- ✅ Smoke Tests: Passed (Docker image is functional)"
-        if [ "$IS_PRERELEASE" == "true" ]; then
-          case "$INTEGRATION_STATUS" in
-            "success") echo "- ✅ Integration Tests: Passed (bonus for pre-release!)" ;;
-            "failure") echo "- ⚠️ Integration Tests: Failed (acceptable for pre-release)" ;;
-            "cancelled") echo "- ⚠️ Integration Tests: Cancelled (acceptable for pre-release)" ;;
-            *) echo "- ⚠️ Integration Tests: $INTEGRATION_STATUS (acceptable for pre-release)" ;;
-          esac
-        else
-          case "$INTEGRATION_STATUS" in
-            "success") echo "- ✅ Integration Tests: Passed (required for full release)" ;;
-            *) echo "- ❌ Integration Tests: $INTEGRATION_STATUS (should not happen for full release)" ;;
-          esac
-        fi
-        echo ""
-        echo "## 📦 Published Artifacts:"
-        echo "- ✅ GitHub Release: ${{ needs.create-release.outputs.release-url }}"
-        if [ "${{ github.event.inputs.publish_pypi }}" = "true" ]; then
-          echo "- 📦 PyPI Package: sirnaforge v${VERSION} (check https://pypi.org/project/sirnaforge/)";
-        else
-          echo "- 📦 PyPI Package: Skipped (publish_pypi=false)";
-        fi
-        if [ "${{ github.event.inputs.publish_testpypi }}" = "true" ]; then
-          echo "- 🧪 TestPyPI Package: sirnaforge v${VERSION} (https://test.pypi.org/project/sirnaforge/)";
-        else
-          echo "- 🧪 TestPyPI Package: Skipped (publish_testpypi=false)";
-        fi
-        if [ "${{ github.event.inputs.deploy_docs_release }}" = "true" ]; then
-          echo "- 📚 Release Docs: Deployed (Pages)";
-        else
-          echo "- 📚 Release Docs: Skipped (deploy_docs_release=false)";
-        fi
-
-        if [ "${{ github.event.inputs.push_images }}" = "true" ]; then
-          echo "- 🐳 Docker Images:"
-          echo "  - \`${{ env.REGISTRY }}/${REPO_LOWER}:${VERSION}\`"
-          if [ "${{ github.event.inputs.prerelease }}" != "true" ]; then
-            echo "  - \`${{ env.REGISTRY }}/${REPO_LOWER}:latest\`"
-          fi
-        else
-          echo "- 🐳 Docker Images: Skipped (push_images=false)"
-        fi
-
-        echo ""
-        echo "## 🚀 Quick Test:"
-        echo "\`\`\`bash"
-        echo "docker run --rm ${{ env.REGISTRY }}/${REPO_LOWER}:${VERSION} sirnaforge --help"
-        echo "\`\`\`"
-        echo ""
-        echo "## 🎯 Next Steps:"
-        echo "1. Test the release with sample workflows"
-        echo "2. Monitor for any issues"
-        echo "3. Update documentation if needed"
-        echo "4. Celebrate! 🎉"
-
-    - name: 📧 Notify on failure
-      if: failure()
-      run: |
-        echo "❌ Release process failed. Check the logs above for details."
-        echo "The release may have been partially created - please verify manually."
-        echo ""
-        echo "🔍 Common issues:"
-        echo "- Docker build failures"
-        echo "- Test failures in integration phase"
-        echo "- Registry authentication issues"
-        echo "- Tag already exists"
+        echo "✅ Release v${{ needs.validate-release.outputs.version }} completed successfully"
+        echo "📦 GitHub Release: ${{ needs.create-release.outputs.release-url }}"
+        echo "� Repository: ${{ github.repository }}"
+        echo "🏷️ Tag: v${{ needs.validate-release.outputs.version }}"
