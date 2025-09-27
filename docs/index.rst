@@ -30,6 +30,7 @@ Comprehensive siRNA design toolkit for gene silencing with multi-species off-tar
    api_reference
    deployment
    development
+   TESTING_GUIDE
 
 .. toctree::
    :maxdepth: 1

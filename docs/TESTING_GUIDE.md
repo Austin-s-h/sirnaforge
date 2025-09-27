@@ -272,6 +272,6 @@ uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.tsv
 docker run --rm sirnaforge:0.1.2 sirnaforge version
 ```
 
-**📋 For Docker operations and deployment:** See [`docker/DOCKER_SUMMARY.md`](../docker/DOCKER_SUMMARY.md)
+**📋 For Docker operations and deployment:** See the Docker documentation in the `docker/` directory
 
 This guide focuses on testing workflows across development phases and CI/CD environments.
