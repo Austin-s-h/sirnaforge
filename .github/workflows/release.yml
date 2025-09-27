@@ -79,7 +79,7 @@ jobs:
         fi
         echo "✅ Version $VERSION is available"
 
-    - name: � Gather project statistics
+    - name: 📊 Gather project statistics
       id: stats
       run: |
         # Count code files and tests
@@ -102,7 +102,7 @@ jobs:
         echo "docker_size=$DOCKER_SIZE" >> $GITHUB_OUTPUT
         echo "cli_commands=$CLI_COMMANDS" >> $GITHUB_OUTPUT
 
-    - name: �📋 Generate comprehensive release notes
+    - name: 📋 Generate comprehensive release notes
       id: changelog
       run: |
         VERSION="${{ steps.version.outputs.version }}"
@@ -232,7 +232,7 @@ jobs:
     - name: 🏗️ Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: � Prepare repository variables (lowercase for Docker)
+    - name: 📝 Prepare repository variables (lowercase for Docker)
       id: repo
       run: |
         # Convert repository to lowercase for Docker compatibility
@@ -248,7 +248,7 @@ jobs:
         echo "  Original: ${{ github.repository }}"
         echo "  Lowercase: $REPO_LOWER"
 
-    - name: �📋 Generate Docker metadata
+    - name: 📋 Generate Docker metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
@@ -462,7 +462,7 @@ jobs:
           sirnaforge --help
           ```
 
-          ### � Development Installation
+          ### 🛠️ Development Installation
           ```bash
           # Clone repository
           git clone https://github.com/${{ github.repository }}.git
@@ -517,7 +517,7 @@ jobs:
           ## 🔧 Key Features in v${{ needs.validate-release.outputs.version }}
 
           - 🎯 **Smart siRNA Design** - Thermodynamic scoring with 90% duplex binding weight
-          - � **Off-target Analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes
+          - 🔬 **Off-target Analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes
           - 🧪 **ViennaRNA Integration** - Secondary structure prediction for accuracy
           - 📊 **Pandera Data Schemas** - Type-safe output validation and formatting
           - ⚡ **uv Package Manager** - 10-100x faster than pip for dependencies
@@ -533,7 +533,7 @@ jobs:
           - ✅ **Integration Tests** (2GB RAM) - End-to-end workflow validation
           - ✅ **Code Quality** - Ruff, MyPy, Black formatting with 90%+ coverage
 
-          ## �🔗 Resources & Links
+          ## 🔗 Resources & Links
 
           ### 📚 Documentation & Guides
           - 📖 [**Full Documentation**](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}) - Complete user guide
@@ -577,7 +577,7 @@ jobs:
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
-      - name: � Download dist artifacts
+      - name: 📥 Download dist artifacts
         uses: actions/download-artifact@v4
         with:
           name: python-dist-${{ needs.validate-release.outputs.version }}
@@ -682,12 +682,13 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Push version-specific tag
-        VERSION_TAG="${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}"
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        VERSION_TAG="${{ env.REGISTRY }}/${REPO_LOWER}:${{ needs.validate-release.outputs.version }}"
         docker push "$VERSION_TAG"
 
         # Push latest tag if this is not a prerelease
         if [ "${{ github.event.inputs.prerelease }}" != "true" ]; then
-          LATEST_TAG="${{ env.REGISTRY }}/${{ github.repository }}:latest"
+          LATEST_TAG="${{ env.REGISTRY }}/${REPO_LOWER}:latest"
           docker tag "$VERSION_TAG" "$LATEST_TAG"
           docker push "$LATEST_TAG"
           echo "✅ Pushed both version and latest tags"
@@ -699,7 +700,7 @@ jobs:
       uses: actions/attest-build-provenance@v1
       continue-on-error: true
       with:
-        subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+        subject-name: ${{ env.REGISTRY }}/${REPO_LOWER}
         push-to-registry: true
 
   # Final integration test with published images
@@ -714,7 +715,8 @@ jobs:
     - name: 🐳 Test published Docker image
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
-        IMAGE_TAG="${{ env.REGISTRY }}/${{ github.repository }}:${VERSION}"
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        IMAGE_TAG="${{ env.REGISTRY }}/${REPO_LOWER}:${VERSION}"
 
         echo "🐳 Testing published image from ${{ env.REGISTRY }}..."
         docker pull "$IMAGE_TAG"
@@ -744,7 +746,7 @@ jobs:
     - name: 📊 Release Summary
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
-        REPO_LOWER="${{ github.repository }}"
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
         IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
         INTEGRATION_STATUS="${{ needs.test-docker-integration.result }}"
 
