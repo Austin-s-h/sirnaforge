@@ -23,7 +23,7 @@ cd sirnaforge
 make install-dev
 
 # Verify development environment
-uv run pytest
+make test-local-python
 uv run sirnaforge --help
 ```
 
@@ -37,7 +37,7 @@ uv sync --group dev
 uv run pre-commit install
 
 # Verify installation
-uv run pytest -x
+uv run pytest -m "local_python"
 ```
 
 ## Development Workflow
@@ -51,27 +51,28 @@ git checkout -b feature/my-new-feature
 # Make your changes
 # ... edit files ...
 
-# Run tests continuously during development
-uv run pytest tests/unit/ --watch
+# Run focused suites during development
+make test-unit
+make test-local-python
 
-# Run specific test files
+# Run specific test files when debugging
 uv run pytest tests/unit/test_design.py -v
 ```
 
 ### 2. Quality Checks
 
 ```bash
-# Format code
+# Format code (ruff fmt + lint fixes)
 make format
 
-# Run all quality checks
+# Run all quality checks (ruff + mypy)
 make lint
 
 # Run tests with coverage
 make test-cov
 
 # Full quality check
-make check  # Equivalent to: lint + test
+make check  # Runs lint-fix then test-fast
 ```
 
 ### 3. Testing
@@ -109,19 +110,16 @@ bash tests/integration/test_workflow_integration.sh
 ### 4. Documentation
 
 ```bash
+# Build HTML documentation
+make docs
+
 # Generate CLI documentation
 make docs-cli
 
-# Generate usage examples
-make docs-examples
+# Live-reload docs during editing
+make docs-dev
 
-# Build complete documentation
-make docs-full
-
-# Build Sphinx documentation (when available)
-make docs
-
-# Serve documentation locally
+# Serve built documentation locally
 make docs-serve
 ```
 
@@ -131,21 +129,21 @@ make docs-serve
 
 We use several tools to maintain code quality:
 
-#### Black (Code Formatting)
+#### Ruff Formatter
 ```bash
-# Format all code
-uv run black src tests
+# Format codebase (same engine as `make format`)
+uv run ruff format src tests
 
-# Check formatting without changes
-uv run black --check src tests
+# Check formatting without modifying files
+uv run ruff format --check src tests
 ```
 
 #### Ruff (Linting and Import Sorting)
 ```bash
-# Lint code and fix automatically
+# Lint code and apply fixes
 uv run ruff check --fix src tests
 
-# Check without fixing
+# Lint without changing files (used by `make lint`)
 uv run ruff check src tests
 ```
 
@@ -501,10 +499,10 @@ pip install dist/sirnaforge-0.2.0-py3-none-any.whl
 
 ```bash
 # Build documentation
-make docs-full
+make docs
 
-# Deploy to GitHub Pages (if configured)
-make docs-deploy
+# Publish (copy `docs/_build/html` to hosting of choice)
+# Deployment is handled via CI workflows (see .github/workflows)
 ```
 
 ## Getting Help

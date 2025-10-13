@@ -9,6 +9,8 @@ Coordinates the complete siRNA design pipeline:
 5. Off-target analysis with Nextflow pipeline
 """
 
+from __future__ import annotations
+
 import asyncio
 import csv
 import hashlib
@@ -19,7 +21,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 from rich.console import Console
@@ -35,6 +37,7 @@ from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriter
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
 logger = get_logger(__name__)
@@ -48,21 +51,25 @@ class WorkflowConfig:
         self,
         output_dir: Path,
         gene_query: str,
-        input_fasta: Optional[Path] = None,
+        input_fasta: Path | None = None,
         database: DatabaseType = DatabaseType.ENSEMBL,
-        design_params: Optional[DesignParameters] = None,
+        design_params: DesignParameters | None = None,
         # off-target selection now always equals design_params.top_n
-        nextflow_config: Optional[dict] = None,
-        genome_species: Optional[list[str]] = None,
-        validation_config: Optional[ValidationConfig] = None,
-        log_file: Optional[str] = None,
+        nextflow_config: dict | None = None,
+        genome_species: list[str] | None = None,
+        validation_config: ValidationConfig | None = None,
+        log_file: str | None = None,
         write_json_summary: bool = True,
-        num_threads: Optional[int] = None,
+        num_threads: int | None = None,
+        input_source: InputSource | None = None,
     ):
         self.output_dir = Path(output_dir)
+        self.input_source = input_source
+
+        resolved_input = input_source.local_path if input_source else (Path(input_fasta) if input_fasta else None)
+        self.input_fasta = resolved_input
         # If input_fasta is provided, use its stem as the gene_query identifier
-        self.input_fasta = Path(input_fasta) if input_fasta else None
-        self.gene_query = gene_query if not self.input_fasta else self.input_fasta.stem
+        self.gene_query = gene_query if resolved_input is None else resolved_input.stem
         self.database = database
         self.design_params = design_params or DesignParameters()
         # single source of truth: number of candidates selected everywhere
@@ -204,6 +211,10 @@ class SiRNAWorkflow:
         task = progress.add_task("[yellow]Fetching transcripts...", total=3)
         # If an input FASTA was provided, read sequences directly and create TranscriptInfo objects
         if self.config.input_fasta:
+            if self.config.input_source:
+                origin = self.config.input_source
+                prefix = "🌐 Downloaded" if origin.downloaded else "📂 Local"
+                console.print(f"{prefix} input FASTA: [blue]{origin.original}[/blue]")
             sequences = FastaUtils.read_fasta(self.config.input_fasta)
             progress.advance(task)
 
@@ -421,7 +432,7 @@ class SiRNAWorkflow:
         return combined
 
     def _batch_transcripts(
-        self, transcripts: list[TranscriptInfo], batch_size: Optional[int] = None
+        self, transcripts: list[TranscriptInfo], batch_size: int | None = None
     ) -> list[list[TranscriptInfo]]:
         """Group transcripts into batches for more efficient threading.
 
@@ -664,7 +675,7 @@ class SiRNAWorkflow:
         now = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
         files: dict[str, dict[str, Any]] = {}
 
-        def add_file(key: str, p: Path, ftype: str, extra: Optional[dict[str, Any]] = None) -> None:
+        def add_file(key: str, p: Path, ftype: str, extra: dict[str, Any] | None = None) -> None:
             if not p.exists():
                 files[key] = {"path": str(p), "type": ftype, "exists": False}
                 return
@@ -1094,14 +1105,14 @@ class SiRNAWorkflow:
 async def run_sirna_workflow(
     gene_query: str,
     output_dir: str,
-    input_fasta: Optional[str] = None,
+    input_fasta: str | None = None,
     database: str = "ensembl",
     top_n_candidates: int = 20,
-    genome_species: Optional[list[str]] = None,
+    genome_species: list[str] | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
     write_json_summary: bool = True,
 ) -> dict:
     """
@@ -1130,15 +1141,26 @@ async def run_sirna_workflow(
     design_params = DesignParameters(top_n=top_n_candidates, sirna_length=sirna_length, filters=filter_criteria)
     database_enum = DatabaseType(database.lower())
 
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    resolved_input: InputSource | None = None
+    input_path: Path | None = None
+    if input_fasta:
+        inputs_dir = output_path / "inputs"
+        resolved_input = resolve_input_source(input_fasta, inputs_dir)
+        input_path = resolved_input.local_path
+
     config = WorkflowConfig(
-        output_dir=Path(output_dir),
+        output_dir=output_path,
         gene_query=gene_query,
-        input_fasta=Path(input_fasta) if input_fasta else None,
+        input_fasta=input_path,
         database=database_enum,
         design_params=design_params,
         genome_species=genome_species or ["human", "rat", "rhesus"],
         log_file=log_file,
         write_json_summary=write_json_summary,
+        input_source=resolved_input,
     )
 
     # Run workflow
@@ -1149,7 +1171,6 @@ async def run_sirna_workflow(
 if __name__ == "__main__":
     # Example usage
     async def main() -> None:
-        # Use secure temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
             results = await run_sirna_workflow(gene_query="TP53", output_dir=temp_dir, top_n_candidates=20)
             print(f"Workflow completed: {results}")

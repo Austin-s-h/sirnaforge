@@ -1,0 +1,53 @@
+# Ignore git and editor/IDE files
+.git
+.gitignore
+.vscode/
+.idea/
+
+# Python artifacts and virtual envs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+venv/
+env/
+.venv/*
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Nextflow/work pipeline outputs and previews
+work/
+nextflow_results/
+preview_results/
+test_results/
+
+# Examples and local outputs
+examples/output/
+my_first_analysis/
+workflow_output/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large data files you don't want in the context
+*.fasta
+*.fa
+*.fq
+*.fastq
+*.vcf
+*.bam
+*.sam
+*.bam.bai
+*.bn*
+
+# Dockerfile and other dev files are intentionally included

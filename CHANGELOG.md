@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### ✨ New Features
-- Features to be added
+- Remote FASTA inputs for the workflow via `--input-fasta`, including automatic download and hashing
 
 ### 🔧 Improvements
 - Changes in existing functionality and enhancements
@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bug fixes and issue resolutions
 
 ### 📚 Documentation
-- Documentation updates and improvements
+- Documented remote FASTA usage in README and CLI/gene search guides
 
 ### 🧪 Testing
-- Testing improvements and new test coverage
+- Added resolver unit tests covering local paths, HTTP downloads, and unsupported schemes
 
 ### 📦 Dependencies
 - Dependency updates and changes

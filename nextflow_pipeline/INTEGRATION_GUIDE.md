@@ -16,7 +16,7 @@ The pipeline uses the following functions from the `__all__` export list in `off
 
 2. **`run_mirna_analysis_for_nextflow`**
    - **Used in**: `modules/local/mirna_offtarget_analysis.nf` (optional module)
-   - **Purpose**: Specialized miRNA off-target analysis using Bowtie
+   - **Purpose**: Specialized miRNA off-target analysis using BWA-MEM2 seed-mode parameters
    - **Output**: miRNA-specific TSV, JSON, and summary files
 
 3. **`run_transcriptome_analysis_for_nextflow`**
@@ -28,12 +28,7 @@ The pipeline uses the following functions from the `__all__` export list in `off
 
 4. **`build_bwa_index`**
    - **Used in**: `modules/local/build_bwa_index.nf`
-   - **Purpose**: Build BWA-MEM2 indices from FASTA files
-   - **Parameters**: fasta_file, index_prefix
-
-5. **`build_bowtie_index`**
-   - **Used in**: `modules/local/build_bowtie_index.nf`
-   - **Purpose**: Build Bowtie indices from FASTA files
+   - **Purpose**: Build BWA-MEM2 indices from FASTA files (shared by transcriptome and miRNA seed modes)
    - **Parameters**: fasta_file, index_prefix
 
 ### Utility Functions
@@ -72,7 +67,7 @@ The pipeline uses the following functions from the `__all__` export list in `off
 
 #### `modules/local/mirna_offtarget_analysis.nf` (Optional)
 - Specialized module using `run_mirna_analysis_for_nextflow`
-- Uses Bowtie for miRNA seed-match analysis
+- Uses BWA-MEM2 with ultra-short read parameters for miRNA seed-match analysis
 - Outputs: `_mirna_hits.tsv`, `_mirna_hits.json`, `_mirna_summary.txt`
 
 #### `modules/local/transcriptome_offtarget_analysis.nf` (Optional)
@@ -87,10 +82,10 @@ The pipeline uses the following functions from the `__all__` export list in `off
 - Ensures all candidates meet length and composition requirements
 - Generates validation reports
 
-#### `modules/local/build_bwa_index.nf` and `modules/local/build_bowtie_index.nf`
-- Use `build_bwa_index` and `build_bowtie_index` respectively
-- Build genome indices when FASTA files are provided instead of pre-built indices
-- Support both human, mouse, and custom genome references
+#### `modules/local/build_bwa_index.nf`
+- Uses `build_bwa_index`
+- Builds genome indices when FASTA files are provided instead of pre-built indices
+- Supports human, mouse, and custom genome references for both transcriptome and miRNA analysis
 
 #### `modules/local/aggregate_results.nf`
 - Aggregates results from all candidate-genome combinations
@@ -117,32 +112,3 @@ The entrypoint functions generate consistent output patterns:
 - **Comprehensive analysis**: `{output_prefix}.tsv`, `{output_prefix}.json`, `{output_prefix}_summary.txt`
 - **miRNA analysis**: `{output_prefix}_mirna_hits.tsv`, `{output_prefix}_mirna_hits.json`, `{output_prefix}_mirna_summary.txt`
 - **Transcriptome analysis**: `{output_prefix}_transcriptome_hits.tsv`, `{output_prefix}_transcriptome_hits.json`, `{output_prefix}_transcriptome_summary.txt`
-
-## Error Handling
-
-All entrypoint functions include error handling that:
-- Returns empty strings for failed TSV/JSON outputs
-- Creates `{output_prefix}_error.txt` files with error messages
-- Allows the pipeline to continue processing other candidates/genomes
-
-## Extensibility
-
-The modular design allows for:
-- Adding new analysis types by creating new modules that use different entrypoint functions
-- Switching between comprehensive, miRNA-specific, or transcriptome-specific analysis
-- Custom genome references and index types
-- Pipeline customization without modifying core analysis logic
-
-## Usage Example
-
-```bash
-nextflow run main.nf \
-    --input candidates.fasta \
-    --outdir results \
-    --genome_species human \
-    --max_hits 100 \
-    --bwa_k 12 \
-    --bwa_T 15
-```
-
-This will use the `run_comprehensive_offtarget_analysis` function for each candidate against the human genome reference.

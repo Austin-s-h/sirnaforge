@@ -332,13 +332,10 @@ def search(  # noqa: PLR0912
 @app_command()
 def workflow(
     gene_query: str = typer.Argument(..., help="Gene name or ID to analyze"),
-    input_fasta: Optional[Path] = typer.Option(
+    input_fasta: Optional[str] = typer.Option(
         None,
         "--input-fasta",
-        help="Path to an input FASTA file to use instead of performing a gene search",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
+        help="Local path or remote URI to an input FASTA file (http/https/ftp)",
     ),
     output_dir: Path = typer.Option(
         Path("sirna_workflow_output"),
@@ -412,10 +409,14 @@ def workflow(
     # Parse genome species
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
 
+    input_descriptor = gene_query
+    if input_fasta:
+        input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
+
     console.print(
         Panel.fit(
             f"🧬 [bold blue]Complete siRNA Workflow[/bold blue]\n"
-            f"Gene Query: [cyan]{gene_query if not input_fasta else input_fasta.name}[/cyan]\n"
+            f"Gene Query: [cyan]{input_descriptor}[/cyan]\n"
             f"Database: [yellow]{database}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
@@ -442,7 +443,7 @@ def workflow(
             results = asyncio.run(
                 run_sirna_workflow(
                     gene_query=gene_query,
-                    input_fasta=str(input_fasta) if input_fasta else None,
+                    input_fasta=input_fasta,
                     output_dir=str(output_dir),
                     database=database,
                     top_n_candidates=top_n_candidates,
@@ -456,7 +457,7 @@ def workflow(
             )
 
             progress.remove_task(task)
-
+        # TODO: simplify the printing and console logging summaries
         # Display results summary
         console.print("\n✅ [bold green]Workflow completed successfully![/bold green]")
 

@@ -22,6 +22,10 @@ class TestProfile:
     timeout: Optional[int] = None
 
 
+# Prevent pytest from treating the dataclass as a test container.
+TestProfile.__test__ = False
+
+
 # Predefined test profiles
 TEST_PROFILES = {
     "lightweight": TestProfile(

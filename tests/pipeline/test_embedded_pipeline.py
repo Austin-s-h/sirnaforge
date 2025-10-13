@@ -319,7 +319,8 @@ class TestPipelineIntegration:
         """Configure Nextflow for Docker execution."""
         config = NextflowConfig.for_testing()
         config.profile = "docker"
-        # Use a container that has BWA-MEM2 but not Bowtie to avoid memory issues
+        # Use the published container with BWA-MEM2 preinstalled for deterministic results
+        # TODO: use installed package version
         config.docker_image = "ghcr.io/austin-s-h/sirnaforge:latest"
         return config
 
