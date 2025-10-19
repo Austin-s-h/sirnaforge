@@ -834,5 +834,186 @@ def cache(
         console.print(f"  Status: [green]{result['status']}[/green]")
 
 
+# Create sequences subcommand group
+sequences_app = typer.Typer(help="Manage siRNA sequences and metadata")
+app.add_typer(sequences_app, name="sequences")
+
+
+@sequences_app.command("show")
+def sequences_show(
+    input_file: Path = typer.Argument(
+        ...,
+        help="FASTA file to display",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    sequence_id: Optional[str] = typer.Option(
+        None,
+        "--id",
+        help="Show only this sequence ID",
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        "-f",
+        help="Output format (table, json, fasta)",
+    ),
+) -> None:
+    """Show sequences with their metadata from FASTA file."""
+    import json as json_module
+    
+    from sirnaforge.modifications import parse_header
+    
+    try:
+        records = list(SeqIO.parse(input_file, "fasta"))
+        
+        if not records:
+            console.print("❌ [red]No sequences found in file[/red]")
+            raise typer.Exit(1)
+        
+        # Filter by ID if specified
+        if sequence_id:
+            records = [r for r in records if r.id == sequence_id]
+            if not records:
+                console.print(f"❌ [red]Sequence ID '{sequence_id}' not found[/red]")
+                raise typer.Exit(1)
+        
+        if format == "json":
+            # Output as JSON
+            output_data = []
+            for record in records:
+                metadata = parse_header(record)
+                # Convert to JSON-serializable format
+                metadata_json = {}
+                for key, value in metadata.items():
+                    if hasattr(value, "model_dump"):
+                        # Pydantic model
+                        metadata_json[key] = value.model_dump(mode="json")
+                    elif hasattr(value, "value"):
+                        # Enum
+                        metadata_json[key] = value.value
+                    elif isinstance(value, list):
+                        # List of objects (e.g., chemical modifications)
+                        metadata_json[key] = [
+                            item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                            for item in value
+                        ]
+                    else:
+                        metadata_json[key] = value
+                output_data.append(metadata_json)
+            
+            console.print(json_module.dumps(output_data, indent=2))
+        
+        elif format == "fasta":
+            # Output as FASTA
+            for record in records:
+                console.print(f">{record.description}")
+                console.print(str(record.seq))
+        
+        else:  # table format
+            table = Table(title=f"📋 Sequences from {input_file.name}")
+            table.add_column("ID", style="cyan")
+            table.add_column("Sequence", style="green")
+            table.add_column("Length", style="yellow")
+            table.add_column("Target", style="blue")
+            table.add_column("Role", style="magenta")
+            table.add_column("Modifications", style="white")
+            
+            for record in records:
+                metadata = parse_header(record)
+                
+                # Format modifications
+                mods_str = ""
+                if "chem_mods" in metadata and metadata["chem_mods"]:
+                    mods_list = [
+                        f"{mod.type}({len(mod.positions)})"
+                        for mod in metadata["chem_mods"]
+                    ]
+                    mods_str = ", ".join(mods_list)
+                
+                table.add_row(
+                    metadata["id"],
+                    str(record.seq)[:30] + "..." if len(record.seq) > 30 else str(record.seq),
+                    str(len(record.seq)),
+                    metadata.get("target_gene", ""),
+                    metadata.get("strand_role", "").value if metadata.get("strand_role") else "",
+                    mods_str,
+                )
+            
+            console.print(table)
+            console.print(f"\n📊 Total sequences: {len(records)}")
+    
+    except Exception as e:
+        console.print(f"❌ [red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
+@sequences_app.command("annotate")
+def sequences_annotate(
+    input_fasta: Path = typer.Argument(
+        ...,
+        help="Input FASTA file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    metadata_json: Path = typer.Argument(
+        ...,
+        help="JSON file with metadata",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    output: Path = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output FASTA file (default: <input>_annotated.fasta)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+) -> None:
+    """Merge metadata from JSON into FASTA headers."""
+    from sirnaforge.modifications import merge_metadata_into_fasta
+    
+    try:
+        # Determine output path
+        if output is None:
+            output = input_fasta.parent / f"{input_fasta.stem}_annotated.fasta"
+        
+        console.print(
+            Panel.fit(
+                f"🧬 [bold blue]Annotate Sequences[/bold blue]\n"
+                f"Input FASTA: [cyan]{input_fasta}[/cyan]\n"
+                f"Metadata JSON: [yellow]{metadata_json}[/yellow]\n"
+                f"Output: [green]{output}[/green]",
+                title="Configuration",
+            )
+        )
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Merging metadata into FASTA...", total=None)
+            updated_count = merge_metadata_into_fasta(input_fasta, metadata_json, output)
+        
+        console.print(f"\n✅ [green]Success![/green]")
+        console.print(f"   Updated {updated_count} sequences with metadata")
+        console.print(f"   Output saved to: [cyan]{output}[/cyan]")
+    
+    except Exception as e:
+        console.print(f"❌ [red]Error:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()
