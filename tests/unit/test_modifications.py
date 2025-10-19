@@ -5,6 +5,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
 from pydantic import ValidationError
 
 from sirnaforge.models.modifications import (
@@ -157,12 +160,18 @@ class TestParsingFunctions:
 
     def test_parse_chem_mods(self):
         """Test parsing ChemMods string."""
-        mods = parse_chem_mods("2OMe(1,4,6,11)|2F()")
+        mods = parse_chem_mods("2OMe(1,4,6,11)+2F()")
         assert len(mods) == 2
         assert mods[0].type == "2OMe"
         assert mods[0].positions == [1, 4, 6, 11]
         assert mods[1].type == "2F"
         assert mods[1].positions == []
+
+    def test_parse_chem_mods_pipe_compatibility(self):
+        """Ensure legacy pipe delimiter is still supported."""
+        mods = parse_chem_mods("2OMe(1,4,6)|2F()")
+        assert len(mods) == 2
+        assert {mod.type for mod in mods} == {"2OMe", "2F"}
 
     def test_parse_provenance(self):
         """Test parsing Provenance string."""
@@ -174,9 +183,6 @@ class TestParsingFunctions:
 
     def test_parse_header_basic(self):
         """Test parsing basic FASTA header."""
-        from Bio.Seq import Seq
-        from Bio.SeqRecord import SeqRecord
-
         record = SeqRecord(
             Seq("AUCGAUCGAUCGAUCGAUCGA"),
             id="test_001",
@@ -191,9 +197,6 @@ class TestParsingFunctions:
 
     def test_parse_header_with_modifications(self):
         """Test parsing header with chemical modifications."""
-        from Bio.Seq import Seq
-        from Bio.SeqRecord import SeqRecord
-
         record = SeqRecord(
             Seq("AUCGAUCGAUCGAUCGAUCGA"),
             id="test_002",
@@ -268,12 +271,12 @@ class TestMetadataLoading:
             assert count == 1
 
             # Verify output
-            from Bio import SeqIO
-
             records = list(SeqIO.parse(output_path, "fasta"))
             assert len(records) == 1
             assert "Target=TTR" in records[0].description
+            assert "Role=guide" in records[0].description
             assert "ChemMods=2OMe(1,4,6)" in records[0].description
+            assert "|" not in records[0].description
         finally:
             Path(fasta_path).unlink()
             Path(json_path).unlink()
@@ -397,9 +400,7 @@ class TestPydanticJSONSerialization:
                     ChemicalModification(type="2OMe", positions=[1, 3, 5]),
                     ChemicalModification(type="2F", positions=[2, 4]),
                 ],
-                provenance=Provenance(
-                    source_type=SourceType.PATENT, identifier="TEST123", url="https://example.com"
-                ),
+                provenance=Provenance(source_type=SourceType.PATENT, identifier="TEST123", url="https://example.com"),
                 confirmation_status=ConfirmationStatus.CONFIRMED,
                 notes="Test data",
             )

@@ -10,6 +10,7 @@ This script demonstrates how to:
 For complete documentation, see: docs/modification_annotation_spec.md
 """
 
+import json
 from pathlib import Path
 
 from sirnaforge.models.modifications import (
@@ -107,7 +108,7 @@ def example_merge_metadata():
 
     # Create simple FASTA file
     fasta_path = Path("/tmp/example_sequences.fasta")
-    with open(fasta_path, "w") as f:
+    with fasta_path.open("w", encoding="utf-8") as f:
         f.write(">patisiran_ttr_guide\n")
         f.write("AUGGAAUACUCUUGGUUAC\n")
 
@@ -133,9 +134,7 @@ def example_merge_metadata():
         }
     }
 
-    import json
-
-    with open(json_path, "w") as f:
+    with json_path.open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
     # Merge metadata into FASTA
@@ -147,7 +146,7 @@ def example_merge_metadata():
 
     # Show result
     print("\nAnnotated FASTA content:")
-    with open(output_path) as f:
+    with output_path.open(encoding="utf-8") as f:
         print(f.read())
 
 
@@ -161,9 +160,7 @@ def example_common_modifications():
         "Alternate 2'-OMe": ChemicalModification(type="2OMe", positions=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21]),
         "End-capping PS": ChemicalModification(type="PS", positions=[1, 2, 20, 21]),
         "Seed region 2F": ChemicalModification(type="2F", positions=[2, 3, 4, 5, 6, 7, 8]),
-        "Full 2'-OMe": ChemicalModification(
-            type="2OMe", positions=list(range(1, 22))
-        ),  # All positions for 21-mer
+        "Full 2'-OMe": ChemicalModification(type="2OMe", positions=list(range(1, 22))),  # All positions for 21-mer
     }
 
     print("\nCommon modification patterns:")
@@ -184,7 +181,7 @@ def main():
     metadata_dict = example_create_metadata()
     print()
 
-    json_path = example_save_and_load_json(metadata_dict)
+    example_save_and_load_json(metadata_dict)
     print()
 
     example_merge_metadata()

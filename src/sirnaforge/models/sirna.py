@@ -1,13 +1,17 @@
 """Pydantic models for siRNA design data structures."""
 
 from enum import Enum
-from typing import Any, Callable, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from sirnaforge.models.modifications import StrandRole
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    from sirnaforge.models.modifications import StrandMetadata
 
 logger = get_logger(__name__)
 
@@ -215,12 +219,11 @@ class SiRNACandidate(BaseModel):
     quality_issues: list[str] = Field(default_factory=list, description="List of detected quality concerns")
 
     # Optional chemical modification metadata
-    # Import done inline to avoid circular dependencies
-    guide_metadata: Optional[Any] = Field(
+    guide_metadata: Optional["StrandMetadata"] = Field(
         default=None,
         description="Optional StrandMetadata for guide strand with chemical modifications",
     )
-    passenger_metadata: Optional[Any] = Field(
+    passenger_metadata: Optional["StrandMetadata"] = Field(
         default=None,
         description="Optional StrandMetadata for passenger strand with chemical modifications",
     )
@@ -250,13 +253,7 @@ class SiRNACandidate(BaseModel):
             FASTA-formatted string with candidate ID as header and guide sequence.
         """
         if include_metadata and self.guide_metadata:
-            # Use the metadata's FASTA header generation
-            from sirnaforge.models.modifications import StrandRole
-            
-            header = self.guide_metadata.to_fasta_header(
-                target_gene=self.transcript_id,
-                strand_role=StrandRole.GUIDE
-            )
+            header = self.guide_metadata.to_fasta_header(target_gene=self.transcript_id, strand_role=StrandRole.GUIDE)
             # Extract just the header content after '>'
             header_content = header[1:] if header.startswith(">") else header
             return f">{header_content}\n{self.guide_sequence}\n"

@@ -4,10 +4,18 @@ This module provides structured representations for chemical modifications,
 overhangs, and provenance metadata associated with siRNA strands.
 """
 
+from collections.abc import Iterable
 from enum import Enum
-from typing import Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+F = TypeVar("F", bound=Callable[..., Any])
+FieldValidatorFactory = Callable[..., Callable[[F], F]]
+ModelValidatorFactory = Callable[..., Callable[[F], F]]
+
+field_validator_typed: FieldValidatorFactory = field_validator
+model_validator_typed: ModelValidatorFactory = model_validator
 
 
 class ConfirmationStatus(str, Enum):
@@ -63,7 +71,7 @@ class ChemicalModification(BaseModel):
         description="1-based positions in the sequence where this modification occurs",
     )
 
-    @field_validator("type")
+    @field_validator_typed("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
         """Validate modification type is not empty."""
@@ -71,7 +79,7 @@ class ChemicalModification(BaseModel):
             raise ValueError("Modification type cannot be empty")
         return v.strip()
 
-    @field_validator("positions")
+    @field_validator_typed("positions")
     @classmethod
     def validate_positions(cls, v: list[int]) -> list[int]:
         """Validate positions are positive integers."""
@@ -125,7 +133,7 @@ class StrandMetadata(BaseModel):
         description="Experimental confirmation status",
     )
 
-    @field_validator("sequence")
+    @field_validator_typed("sequence")
     @classmethod
     def validate_sequence(cls, v: str) -> str:
         """Validate sequence contains only valid nucleotides."""
@@ -133,18 +141,17 @@ class StrandMetadata(BaseModel):
             raise ValueError("Sequence cannot be empty")
         valid_bases = set("ATCGUatcgu")
         if not all(c in valid_bases for c in v):
-            raise ValueError(f"Sequence contains invalid characters. Valid: A, T, C, G, U")
+            raise ValueError("Sequence contains invalid characters. Valid: A, T, C, G, U")
         return v.upper()
 
-    @model_validator(mode="after")
+    @model_validator_typed(mode="after")
     def validate_modification_positions(self) -> "StrandMetadata":
         """Validate that modification positions don't exceed sequence length."""
         seq_len = len(self.sequence)
         for mod in self.chem_mods:
             if mod.positions and max(mod.positions) > seq_len:
                 raise ValueError(
-                    f"Modification {mod.type} has position {max(mod.positions)} "
-                    f"but sequence length is only {seq_len}"
+                    f"Modification {mod.type} has position {max(mod.positions)} but sequence length is only {seq_len}"
                 )
         return self
 
@@ -159,29 +166,57 @@ class StrandMetadata(BaseModel):
             FASTA header string with key-value pairs
         """
         parts = [f">{self.id}"]
-        
+
         if target_gene:
             parts.append(f"Target={target_gene}")
-        
+
         if strand_role:
             parts.append(f"Role={strand_role.value}")
-        
+
         parts.append(f"Confirmed={self.confirmation_status.value}")
-        
+
         if self.overhang:
             parts.append(f"Overhang={self.overhang}")
-        
+
         if self.chem_mods:
-            mods_str = "|".join(mod.to_header_string() for mod in self.chem_mods)
+            mods_str = "+".join(mod.to_header_string() for mod in self.chem_mods)
             parts.append(f"ChemMods={mods_str}")
-        
+
         if self.provenance:
             parts.append(f"Provenance={self.provenance.to_header_string()}")
             if self.provenance.url:
                 parts.append(f"URL={self.provenance.url}")
-        
-        # Join with semicolons and space for readability
-        return " ".join([parts[0]] + ["; ".join(parts[1:])])
+
+        if len(parts) == 1:
+            return parts[0]
+
+        metadata_segment = "; ".join(parts[1:])
+        return f"{parts[0]} {metadata_segment}"
+
+    # Convenience mapping-style access for backward compatibility with dict usage
+    def __getitem__(self, item: str) -> Any:
+        fields = type(self).model_fields
+        if item in fields:
+            return getattr(self, item)
+        raise KeyError(item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        try:
+            return self[item]
+        except KeyError:
+            return default
+
+    def __contains__(self, item: object) -> bool:
+        if not isinstance(item, str):
+            return False
+        return item in type(self).model_fields
+
+    def keys(self) -> Iterable[str]:
+        return tuple(type(self).model_fields.keys())
+
+    def items(self) -> Iterable[tuple[str, Any]]:
+        field_names = tuple(type(self).model_fields.keys())
+        return ((key, getattr(self, key)) for key in field_names)
 
 
 class SequenceRecord(BaseModel):
@@ -200,8 +235,5 @@ class SequenceRecord(BaseModel):
         Returns:
             Multi-line FASTA string with header and sequence
         """
-        header = self.metadata.to_fasta_header(
-            target_gene=self.target_gene,
-            strand_role=self.strand_role
-        )
+        header = self.metadata.to_fasta_header(target_gene=self.target_gene, strand_role=self.strand_role)
         return f"{header}\n{self.metadata.sequence}\n"

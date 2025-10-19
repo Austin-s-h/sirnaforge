@@ -12,15 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🔧 Improvements
 - Changes in existing functionality and enhancements
+- Standardized chemical modification headers to use `+` separators while retaining backward compatibility with legacy `|` inputs
+- CLI `sequences show` output now shares reusable helpers, supports JSON/FASTA/table views with cleaner error handling, and preserves strand role metadata
+- `sequences annotate` automatically infers an output path and surfaces richer progress feedback when merging strand metadata
 
 ### 🐛 Bug Fixes
 - Bug fixes and issue resolutions
+- Fixed JSON metadata loading regression that attempted to subscript `StrandMetadata` instances and dropped target/role annotations when rebuilding FASTA headers
+- Resolved mypy typing issues around optional FASTA descriptions and CLI output handling
 
 ### 📚 Documentation
 - Documented remote FASTA usage in README and CLI/gene search guides
 
 ### 🧪 Testing
 - Added resolver unit tests covering local paths, HTTP downloads, and unsupported schemes
+- Extended modification metadata tests to cover `+` delimiters, FASTA merge output, and legacy compatibility paths
 
 ### 📦 Dependencies
 - Dependency updates and changes
