@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from sirnaforge.models.modifications import (
     ChemicalModification,
@@ -21,6 +22,7 @@ from sirnaforge.modifications import (
     parse_chem_mods,
     parse_header,
     parse_provenance,
+    save_metadata_json,
 )
 
 
@@ -276,3 +278,249 @@ class TestMetadataLoading:
             Path(fasta_path).unlink()
             Path(json_path).unlink()
             Path(output_path).unlink()
+
+
+@pytest.mark.unit
+@pytest.mark.local_python
+class TestPydanticValidation:
+    """Test Pydantic validation features."""
+
+    def test_invalid_modification_type(self):
+        """Test that empty modification type raises ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            ChemicalModification(type="", positions=[1, 2, 3])
+        assert "Modification type cannot be empty" in str(exc_info.value)
+
+    def test_invalid_positions(self):
+        """Test that positions must be >= 1."""
+        with pytest.raises(ValidationError) as exc_info:
+            ChemicalModification(type="2OMe", positions=[1, 0, -1])
+        assert "All positions must be >= 1" in str(exc_info.value)
+
+    def test_duplicate_positions_removed(self):
+        """Test that duplicate positions are removed and sorted."""
+        mod = ChemicalModification(type="2OMe", positions=[5, 1, 3, 1, 5, 2])
+        assert mod.positions == [1, 2, 3, 5]
+
+    def test_invalid_sequence(self):
+        """Test that invalid sequence characters raise ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            StrandMetadata(
+                id="test",
+                sequence="AUCGXYZ",  # Invalid characters
+            )
+        assert "invalid characters" in str(exc_info.value).lower()
+
+    def test_empty_sequence(self):
+        """Test that empty sequence raises ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            StrandMetadata(id="test", sequence="")
+        assert "cannot be empty" in str(exc_info.value).lower()
+
+    def test_modification_position_exceeds_sequence_length(self):
+        """Test that modification positions beyond sequence length raise error."""
+        with pytest.raises(ValidationError) as exc_info:
+            StrandMetadata(
+                id="test",
+                sequence="AUCG",  # Length 4
+                chem_mods=[ChemicalModification(type="2OMe", positions=[1, 2, 5])],  # Position 5 > 4
+            )
+        assert "position" in str(exc_info.value).lower()
+        assert "sequence length" in str(exc_info.value).lower()
+
+    def test_sequence_case_normalization(self):
+        """Test that sequence is normalized to uppercase."""
+        metadata = StrandMetadata(id="test", sequence="aucgaucg")
+        assert metadata.sequence == "AUCGAUCG"
+
+    def test_modification_type_whitespace_stripped(self):
+        """Test that modification type has whitespace stripped."""
+        mod = ChemicalModification(type="  2OMe  ", positions=[1, 2])
+        assert mod.type == "2OMe"
+
+
+@pytest.mark.unit
+@pytest.mark.local_python
+class TestPydanticJSONSerialization:
+    """Test Pydantic JSON serialization and deserialization."""
+
+    def test_load_metadata_with_validation(self):
+        """Test that load_metadata validates data using Pydantic."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            # Valid data
+            json_data = {
+                "test_guide": {
+                    "id": "test_guide",
+                    "sequence": "AUCGAUCG",
+                    "chem_mods": [{"type": "2OMe", "positions": [1, 3, 5]}],
+                }
+            }
+            json.dump(json_data, f)
+            json_path = f.name
+
+        try:
+            metadata = load_metadata(json_path)
+            assert isinstance(metadata["test_guide"], StrandMetadata)
+            assert metadata["test_guide"].sequence == "AUCGAUCG"
+            assert len(metadata["test_guide"].chem_mods) == 1
+        finally:
+            Path(json_path).unlink()
+
+    def test_load_metadata_invalid_data(self):
+        """Test that load_metadata raises ValidationError for invalid data."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            # Invalid data - modification position exceeds sequence length
+            json_data = {
+                "test_guide": {
+                    "id": "test_guide",
+                    "sequence": "AUCG",  # Length 4
+                    "chem_mods": [{"type": "2OMe", "positions": [1, 10]}],  # Position 10 > 4
+                }
+            }
+            json.dump(json_data, f)
+            json_path = f.name
+
+        try:
+            with pytest.raises(ValidationError):
+                load_metadata(json_path)
+        finally:
+            Path(json_path).unlink()
+
+    def test_save_and_load_roundtrip(self):
+        """Test that save and load operations preserve data."""
+        original_metadata = {
+            "test_guide": StrandMetadata(
+                id="test_guide",
+                sequence="AUCGAUCGAUCG",
+                overhang="dTdT",
+                chem_mods=[
+                    ChemicalModification(type="2OMe", positions=[1, 3, 5]),
+                    ChemicalModification(type="2F", positions=[2, 4]),
+                ],
+                provenance=Provenance(
+                    source_type=SourceType.PATENT, identifier="TEST123", url="https://example.com"
+                ),
+                confirmation_status=ConfirmationStatus.CONFIRMED,
+                notes="Test data",
+            )
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json_path = Path(f.name)
+
+        try:
+            # Save
+            save_metadata_json(original_metadata, json_path)
+
+            # Load
+            loaded_metadata = load_metadata(json_path)
+
+            # Verify
+            assert "test_guide" in loaded_metadata
+            loaded = loaded_metadata["test_guide"]
+            original = original_metadata["test_guide"]
+
+            assert loaded.id == original.id
+            assert loaded.sequence == original.sequence
+            assert loaded.overhang == original.overhang
+            assert len(loaded.chem_mods) == len(original.chem_mods)
+            assert loaded.chem_mods[0].type == original.chem_mods[0].type
+            assert loaded.chem_mods[0].positions == original.chem_mods[0].positions
+            assert loaded.provenance.source_type == original.provenance.source_type
+            assert loaded.confirmation_status == original.confirmation_status
+            assert loaded.notes == original.notes
+        finally:
+            json_path.unlink()
+
+    def test_model_dump_excludes_none(self):
+        """Test that model_dump with exclude_none=True works correctly."""
+        metadata = StrandMetadata(
+            id="test",
+            sequence="AUCG",
+            # overhang, notes, provenance are None
+        )
+
+        dumped = metadata.model_dump(mode="json", exclude_none=True)
+        assert "overhang" not in dumped
+        assert "notes" not in dumped
+        assert "provenance" not in dumped
+        assert "id" in dumped
+        assert "sequence" in dumped
+
+
+@pytest.mark.unit
+@pytest.mark.local_python
+class TestEdgeCases:
+    """Test edge cases and error handling."""
+
+    def test_empty_chem_mods_list(self):
+        """Test strand with no chemical modifications."""
+        metadata = StrandMetadata(id="test", sequence="AUCG", chem_mods=[])
+        assert metadata.chem_mods == []
+        header = metadata.to_fasta_header()
+        assert "ChemMods" not in header
+
+    def test_modification_with_no_positions(self):
+        """Test modification annotation without specific positions."""
+        mod = ChemicalModification(type="2OMe", positions=[])
+        assert mod.to_header_string() == "2OMe()"
+
+    def test_very_long_sequence(self):
+        """Test handling of long sequences."""
+        long_seq = "AUCG" * 100  # 400 nucleotides
+        metadata = StrandMetadata(
+            id="long_test",
+            sequence=long_seq,
+            chem_mods=[ChemicalModification(type="2OMe", positions=[1, 200, 400])],
+        )
+        assert len(metadata.sequence) == 400
+        assert max(metadata.chem_mods[0].positions) == 400
+
+    def test_many_modifications(self):
+        """Test strand with multiple modification types."""
+        mods = [
+            ChemicalModification(type="2OMe", positions=[1, 3, 5, 7, 9]),
+            ChemicalModification(type="2F", positions=[2, 4, 6, 8]),
+            ChemicalModification(type="PS", positions=[1, 2, 20, 21]),
+            ChemicalModification(type="LNA", positions=[10, 11, 12]),
+        ]
+        metadata = StrandMetadata(
+            id="multi_mod",
+            sequence="AUCGAUCGAUCGAUCGAUCGA",  # 21 nt
+            chem_mods=mods,
+        )
+        assert len(metadata.chem_mods) == 4
+        header = metadata.to_fasta_header()
+        assert "2OMe" in header
+        assert "2F" in header
+        assert "PS" in header
+        assert "LNA" in header
+
+    def test_load_empty_json_file(self):
+        """Test loading from empty JSON file."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({}, f)
+            json_path = f.name
+
+        try:
+            metadata = load_metadata(json_path)
+            assert metadata == {}
+        finally:
+            Path(json_path).unlink()
+
+    def test_load_nonexistent_file(self):
+        """Test loading from non-existent file."""
+        metadata = load_metadata("/tmp/nonexistent_file_12345.json")
+        assert metadata == {}
+
+    def test_unicode_in_notes(self):
+        """Test handling of Unicode characters in notes."""
+        metadata = StrandMetadata(
+            id="test",
+            sequence="AUCG",
+            notes="Special characters: α β γ δ ε — • ™",
+        )
+        assert "α" in metadata.notes
+        # Test serialization
+        dumped = metadata.model_dump(mode="json")
+        assert "α" in dumped["notes"]

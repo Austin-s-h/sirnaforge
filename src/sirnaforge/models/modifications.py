@@ -7,7 +7,7 @@ overhangs, and provenance metadata associated with siRNA strands.
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ConfirmationStatus(str, Enum):
@@ -63,6 +63,23 @@ class ChemicalModification(BaseModel):
         description="1-based positions in the sequence where this modification occurs",
     )
 
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        """Validate modification type is not empty."""
+        if not v or not v.strip():
+            raise ValueError("Modification type cannot be empty")
+        return v.strip()
+
+    @field_validator("positions")
+    @classmethod
+    def validate_positions(cls, v: list[int]) -> list[int]:
+        """Validate positions are positive integers."""
+        if any(p < 1 for p in v):
+            raise ValueError("All positions must be >= 1 (1-based indexing)")
+        # Remove duplicates and sort
+        return sorted(set(v))
+
     def to_header_string(self) -> str:
         """Convert modification to FASTA header format.
 
@@ -70,7 +87,7 @@ class ChemicalModification(BaseModel):
             Formatted string like "2OMe(1,4,6,11,13,16,19)" or "2F()" for no positions
         """
         if self.positions:
-            pos_str = ",".join(str(p) for p in sorted(self.positions))
+            pos_str = ",".join(str(p) for p in self.positions)
             return f"{self.type}({pos_str})"
         return f"{self.type}()"
 
@@ -107,6 +124,29 @@ class StrandMetadata(BaseModel):
         default=ConfirmationStatus.PENDING,
         description="Experimental confirmation status",
     )
+
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, v: str) -> str:
+        """Validate sequence contains only valid nucleotides."""
+        if not v:
+            raise ValueError("Sequence cannot be empty")
+        valid_bases = set("ATCGUatcgu")
+        if not all(c in valid_bases for c in v):
+            raise ValueError(f"Sequence contains invalid characters. Valid: A, T, C, G, U")
+        return v.upper()
+
+    @model_validator(mode="after")
+    def validate_modification_positions(self) -> "StrandMetadata":
+        """Validate that modification positions don't exceed sequence length."""
+        seq_len = len(self.sequence)
+        for mod in self.chem_mods:
+            if mod.positions and max(mod.positions) > seq_len:
+                raise ValueError(
+                    f"Modification {mod.type} has position {max(mod.positions)} "
+                    f"but sequence length is only {seq_len}"
+                )
+        return self
 
     def to_fasta_header(self, target_gene: Optional[str] = None, strand_role: Optional[StrandRole] = None) -> str:
         """Generate FASTA header with embedded metadata.
