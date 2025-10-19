@@ -25,6 +25,7 @@ siRNAforge is a modern, comprehensive toolkit for designing high-quality siRNAs 
 - 🔍 **Multi-species off-target analysis** - BWA-MEM2 alignment (transcriptome + miRNA seed modes) across human, rat, rhesus genomes
 - 📊 **Advanced scoring system** - Composite scoring with seed-region specificity and secondary structure prediction
 - 🧪 **ViennaRNA integration** - Secondary structure prediction for enhanced design accuracy
+- 🧬 **Chemical modifications metadata** - Track 2'-O-methyl, 2'-fluoro, PS linkages, overhangs, and provenance
 - 🔬 **Nextflow pipeline integration** - Scalable, containerized workflow execution with automatic parallelization
 - 🐍 **Modern Python architecture** - Type-safe code with Pydantic models, async/await support, and rich CLI
 - ⚡ **Lightning-fast dependency management** - Built with `uv` for sub-second installs and virtual environment management
@@ -764,8 +765,99 @@ make docs-dev
 - `docs/_build/html/` - Complete Sphinx HTML documentation (via `make docs`)
 - `docs/CLI_REFERENCE.md` - Auto-generated CLI help (via `make docs-cli`)
 - `docs/api_reference.rst` - Python API reference source
+- `docs/modification_annotation_spec.md` - Chemical modifications metadata specification
 
 > 📖 See [docs/getting_started.md](docs/getting_started.md) for detailed tutorials and [docs/deployment.md](docs/deployment.md) for deployment guides.
+
+### Chemical Modifications Metadata
+
+siRNAforge supports structured annotation of chemical modifications, overhangs, and provenance information for siRNA sequences. This enables systematic tracking of modifications like 2'-O-methyl, 2'-fluoro, and phosphorothioate linkages.
+
+**Quick Example:**
+```bash
+# Create metadata JSON file
+cat > metadata.json << 'EOF'
+{
+  "patisiran_ttr_guide": {
+    "id": "patisiran_ttr_guide",
+    "sequence": "AUGGAAUACUCUUGGUUAC",
+    "target_gene": "TTR",
+    "strand_role": "guide",
+    "overhang": "dTdT",
+    "chem_mods": [
+      {
+        "type": "2OMe",
+        "positions": [1, 4, 6, 11, 13, 16, 19]
+      }
+    ],
+    "provenance": {
+      "source_type": "patent",
+      "identifier": "US10060921B2",
+      "url": "https://patents.google.com/patent/US10060921B2"
+    },
+    "confirmation_status": "confirmed"
+  }
+}
+EOF
+
+# Annotate FASTA with metadata
+sirnaforge sequences annotate sequences.fasta metadata.json -o annotated.fasta
+
+# View sequences with metadata
+sirnaforge sequences show annotated.fasta
+sirnaforge sequences show annotated.fasta --format json
+```
+
+**Features:**
+- 🧪 **Chemical Modifications** - Annotate 2'-O-methyl, 2'-fluoro, PS linkages, LNA, etc.
+- 📍 **Position Tracking** - 1-based position numbering for each modification
+- 🔗 **Overhang Support** - DNA (dTdT) or RNA (UU) overhangs
+- 📚 **Provenance** - Track sources (patents, publications, clinical trials)
+- ✅ **Confirmation Status** - Mark validated vs. predicted sequences
+- 🗂️ **FASTA Headers** - Standardized key-value encoding in headers
+- 📄 **JSON Sidecars** - Separate metadata files for easy curation
+
+**Common Modification Types:**
+- `2OMe` - 2'-O-methyl (nuclease resistance)
+- `2F` - 2'-fluoro (enhanced stability)
+- `PS` - Phosphorothioate (nuclease resistance)
+- `LNA` - Locked Nucleic Acid (enhanced binding)
+- `MOE` - 2'-O-methoxyethyl (improved pharmacokinetics)
+
+**Python API:**
+```python
+from sirnaforge.models.modifications import (
+    StrandMetadata,
+    ChemicalModification,
+    Provenance,
+    SourceType
+)
+
+# Create metadata
+metadata = StrandMetadata(
+    id="my_sirna_guide",
+    sequence="AUCGAUCGAUCGAUCGAUCGA",
+    overhang="dTdT",
+    chem_mods=[
+        ChemicalModification(type="2OMe", positions=[1, 4, 6, 11])
+    ],
+    provenance=Provenance(
+        source_type=SourceType.PUBLICATION,
+        identifier="PMID12345678"
+    )
+)
+
+# Generate FASTA with metadata
+from sirnaforge.models.modifications import SequenceRecord, StrandRole
+record = SequenceRecord(
+    target_gene="BRCA1",
+    strand_role=StrandRole.GUIDE,
+    metadata=metadata
+)
+print(record.to_fasta())
+```
+
+📖 See [docs/modification_annotation_spec.md](docs/modification_annotation_spec.md) for complete specification, API reference, and examples.
 
 ## 🤝 Contributing
 
