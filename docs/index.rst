@@ -18,6 +18,7 @@ siRNAforge Documentation
    usage_examples
    gene_search
    thermodynamic_guide
+   modification_integration_guide
    tutorials/index
 
 .. toctree::
@@ -29,12 +30,14 @@ siRNAforge Documentation
    development
    testing_guide
    docker_test_categories
+   chemical_modification_review
 
 .. toctree::
    :maxdepth: 1
    :caption: 📚 Reference
 
    api_reference
+   modification_annotation_spec
    changelog
    glossary
    sitemap
