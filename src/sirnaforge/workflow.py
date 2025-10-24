@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
@@ -37,6 +38,7 @@ from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriter
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
@@ -499,6 +501,27 @@ class SiRNAWorkflow:
 
         return results, guide_to_transcripts
 
+    def _apply_modifications_to_results(self, design_results: DesignResult) -> None:
+        """Apply chemical modification patterns to all candidates in design results.
+
+        Args:
+            design_results: DesignResult containing candidates to modify
+        """
+
+        pattern = self.config.design_params.modification_pattern
+        overhang = self.config.design_params.default_overhang
+
+        # Apply modifications to all candidates
+        for candidate in design_results.candidates:
+            apply_modifications_to_candidate(
+                candidate,
+                pattern_name=pattern,
+                overhang=overhang,
+                target_gene=self.config.gene_query,
+            )
+
+        console.print(f"✨ Applied {pattern} modification pattern with {overhang} overhangs to all candidates")
+
     async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
 
@@ -506,12 +529,21 @@ class SiRNAWorkflow:
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
 
+        # Apply chemical modifications if enabled
+        if self.config.design_params.apply_modifications:
+            self._apply_modifications_to_results(design_results)
+
         # Emit candidate CSVs: always keep ALL and a filtered PASSING file
         try:
+            # Import modification summary helper
             # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
             rows = []
             for c in design_results.candidates:
                 cs = getattr(c, "component_scores", {}) or {}
+
+                # Get modification summary if modifications were applied
+                mod_summary = get_modification_summary(c) if c.guide_metadata else {}
+
                 rows.append(
                     {
                         "id": c.id,
@@ -538,6 +570,11 @@ class SiRNAWorkflow:
                         "passes_filters": (
                             c.passes_filters.value if hasattr(c.passes_filters, "value") else c.passes_filters
                         ),
+                        # Chemical modifications
+                        "guide_overhang": mod_summary.get("guide_overhang", ""),
+                        "guide_modifications": mod_summary.get("guide_modifications", ""),
+                        "passenger_overhang": mod_summary.get("passenger_overhang", ""),
+                        "passenger_modifications": mod_summary.get("passenger_modifications", ""),
                     }
                 )
 
@@ -945,8 +982,12 @@ class SiRNAWorkflow:
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-    def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> None:
-        """Generate ORF validation report in tab-delimited format with schema validation."""
+    def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
+        """Generate ORF validation report in tab-delimited format with schema validation.
+
+        Returns:
+            Validated DataFrame conforming to ORFValidationSchema
+        """
         # Handle empty results case
         if not orf_results:
             logger.warning("No ORF results to report - creating empty report file")
@@ -993,7 +1034,7 @@ class SiRNAWorkflow:
             )
             validated_df = ORFValidationSchema.validate(empty_df)
             validated_df.to_csv(report_file, sep="\t", index=False)
-            return
+            return validated_df
 
         # Prepare data for DataFrame
         rows = []
@@ -1047,11 +1088,14 @@ class SiRNAWorkflow:
         if not orf_validation.overall_result.is_valid:
             logger.warning(f"ORF DataFrame validation issues: {len(orf_validation.overall_result.errors)} errors")
 
+        # Runtime validation with Pandera schema
         validated_df = ORFValidationSchema.validate(df)
         logger.info(f"ORF report schema validation passed for {len(validated_df)} transcripts")
 
         # Write validated DataFrame to file
         validated_df.to_csv(report_file, sep="\t", index=False)
+
+        return validated_df
 
     def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:  # noqa: ARG002
         """Deprecated: summary report disabled (kept for backward API compatibility)."""
@@ -1112,6 +1156,8 @@ async def run_sirna_workflow(
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
+    modification_pattern: str = "standard_2ome",
+    overhang: str = "dTdT",
     log_file: str | None = None,
     write_json_summary: bool = True,
 ) -> dict:
@@ -1137,8 +1183,15 @@ async def run_sirna_workflow(
         gc_max=gc_max,
     )
 
-    # Configure workflow
-    design_params = DesignParameters(top_n=top_n_candidates, sirna_length=sirna_length, filters=filter_criteria)
+    # Configure workflow with modification parameters
+    design_params = DesignParameters(
+        top_n=top_n_candidates,
+        sirna_length=sirna_length,
+        filters=filter_criteria,
+        apply_modifications=modification_pattern.lower() != "none",
+        modification_pattern=modification_pattern,
+        default_overhang=overhang,
+    )
     database_enum = DatabaseType(database.lower())
 
     output_path = Path(output_dir)

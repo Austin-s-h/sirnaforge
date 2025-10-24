@@ -1,0 +1,36 @@
+{
+  "pattern_name": "standard_2ome",
+  "description": "Standard 2'-O-methyl pattern for balanced stability and cost",
+  "reference": "Industry standard pattern based on Alnylam and other leading companies",
+  "guide_modifications": {
+    "2OMe": {
+      "positions": [1, 3, 5, 7, 9, 11, 13, 15, 17, 19],
+      "strategy": "alternating",
+      "rationale": "Alternating 2'-O-methyl modifications provide nuclease resistance while maintaining RISC loading"
+    }
+  },
+  "passenger_modifications": {
+    "2OMe": {
+      "positions": [2, 4, 6, 8, 10, 12, 14, 16, 18, 20],
+      "strategy": "alternating_offset",
+      "rationale": "Offset pattern on passenger strand complements guide strand pattern"
+    }
+  },
+  "overhang": {
+    "guide_3prime": "dTdT",
+    "passenger_3prime": "dTdT",
+    "rationale": "DNA overhangs (dTdT) are cost-effective and provide stability"
+  },
+  "estimated_properties": {
+    "serum_stability_half_life_hours": 24,
+    "relative_synthesis_cost": 1.5,
+    "nuclease_resistance": "moderate-high",
+    "risc_loading_efficiency": "high"
+  },
+  "notes": [
+    "This pattern works well for most applications",
+    "Good balance between stability and cost",
+    "Compatible with standard synthesis platforms",
+    "Recommended for initial in vitro studies"
+  ]
+}

@@ -7,38 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### ✨ New Features
-- Remote FASTA inputs for the workflow via `--input-fasta`, including automatic download and hashing
-
-### 🔧 Improvements
-- Changes in existing functionality and enhancements
-- Standardized chemical modification headers to use `+` separators while retaining backward compatibility with legacy `|` inputs
-- CLI `sequences show` output now shares reusable helpers, supports JSON/FASTA/table views with cleaner error handling, and preserves strand role metadata
-- `sequences annotate` automatically infers an output path and surfaces richer progress feedback when merging strand metadata
-
-### 🐛 Bug Fixes
-- Bug fixes and issue resolutions
-- Fixed JSON metadata loading regression that attempted to subscript `StrandMetadata` instances and dropped target/role annotations when rebuilding FASTA headers
-- Resolved mypy typing issues around optional FASTA descriptions and CLI output handling
-
-### 📚 Documentation
-- Documented remote FASTA usage in README and CLI/gene search guides
-
-### 🧪 Testing
-- Added resolver unit tests covering local paths, HTTP downloads, and unsupported schemes
-- Extended modification metadata tests to cover `+` delimiters, FASTA merge output, and legacy compatibility paths
-
-### 📦 Dependencies
-- Dependency updates and changes
-
-### 🚨 Breaking Changes
-- Breaking changes that require user action
-
-### 🔒 Security
-- Security updates and vulnerability fixes
-
----
-
 ## Release Template
 When preparing a new release, copy this template and replace `[X.Y.Z]` with the actual version:
 
@@ -63,6 +31,56 @@ When preparing a new release, copy this template and replace `[X.Y.Z]` with the 
 - New tests added
 - Test coverage improvements
 ```
+
+---
+
+## [0.2.1] - 2025-10-24
+
+### ✨ New Features
+- **Chemical Modification System**: Comprehensive infrastructure for siRNA chemical modifications
+  - Default modification patterns automatically applied to designed siRNAs (standard_2ome, minimal_terminal, maximal_stability)
+  - New `--modifications` and `--overhang` CLI flags for workflow and design commands
+  - FDA-approved Patisiran (Onpattro) pattern included in example library
+- **Modification Metadata Models**: Pydantic models for StrandMetadata, ChemicalModification, Provenance tracking
+- **FASTA Annotation System**: Merge modification metadata into FASTA headers with full roundtrip support
+- **Remote FASTA Inputs**: Workflow supports `--input-fasta` with automatic HTTP download and caching
+- **Enhanced Pandera Schemas**: Runtime DataFrame validation with @pa.check_types decorators, automatic addition of modification columns
+
+### 🔧 Improvements
+- Modification columns (guide/passenger overhangs and modifications) now included in CSV outputs
+- CLI `sequences show` command with JSON/FASTA/table output formats
+- CLI `sequences annotate` command for merging metadata into FASTA files
+- Standardized `+` separators in modification headers (backward compatible with `|`)
+- Resource resolver for flexible input handling (local files, HTTP URLs)
+- Improved type safety with Pandera schema validation on DesignResult.save_csv() and _generate_orf_report()
+
+### 🐛 Bug Fixes
+- Fixed JSON metadata loading regression with StrandMetadata subscripting
+- Resolved mypy typing issues for optional FASTA descriptions
+- Fixed CLI output handling for modification metadata
+
+### 📚 Documentation
+- **Chemical Modification Review** (551 lines): Comprehensive analysis and integration guide
+- **Modification Integration Guide** (543 lines): Developer documentation with code examples
+- **Modification Annotation Spec** (381 lines): Complete FASTA header specification
+- **Example Patterns Library**: 4 production-ready modification patterns with usage guide
+- Updated README with chemical modifications feature documentation
+- Remote FASTA usage documented in CLI and gene search guides
+
+### 🧪 Testing
+- **18 new tests** for chemical modifications (100% passing):
+  - 11 integration tests for workflow roundtrip validation
+  - 7 tests validating example pattern files
+- Added resource resolver unit tests (local paths, HTTP downloads, schemes)
+- Extended modification metadata tests for delimiter compatibility
+- All 164 tests passing with enhanced Pandera validation
+
+### 📦 Dependencies
+- No new runtime dependencies added (uses existing Pydantic, Pandera, httpx)
+
+### ⚡ Performance
+- Removed Bowtie indexing (standardized on BWA-MEM2)
+- Streamlined off-target analysis pipeline configuration
 
 ---
 

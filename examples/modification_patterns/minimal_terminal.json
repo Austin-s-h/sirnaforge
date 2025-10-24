@@ -1,0 +1,36 @@
+{
+  "pattern_name": "minimal_terminal",
+  "description": "Minimal modifications for cost-sensitive applications",
+  "reference": "Cost-optimized pattern for in vitro screening",
+  "guide_modifications": {
+    "2OMe": {
+      "positions": [19, 20, 21],
+      "strategy": "terminal_3prime",
+      "rationale": "3' terminal modifications protect against 3' exonuclease degradation"
+    }
+  },
+  "passenger_modifications": {
+    "2OMe": {
+      "positions": [1, 2],
+      "strategy": "terminal_5prime",
+      "rationale": "5' terminal modifications on passenger strand reduce off-target effects"
+    }
+  },
+  "overhang": {
+    "guide_3prime": "dTdT",
+    "passenger_3prime": "dTdT",
+    "rationale": "Standard DNA overhangs"
+  },
+  "estimated_properties": {
+    "serum_stability_half_life_hours": 6,
+    "relative_synthesis_cost": 1.1,
+    "nuclease_resistance": "low-moderate",
+    "risc_loading_efficiency": "high"
+  },
+  "notes": [
+    "Suitable for in vitro screening where cost is primary concern",
+    "Limited serum stability - not recommended for in vivo",
+    "Fast degradation may actually be beneficial for transient knockdown",
+    "Good starting point for optimization studies"
+  ]
+}

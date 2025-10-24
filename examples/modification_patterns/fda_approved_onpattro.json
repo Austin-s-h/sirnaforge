@@ -1,0 +1,94 @@
+{
+  "drug_name": "Patisiran (Onpattro)",
+  "fda_approval_date": "2018-08-10",
+  "indication": "Hereditary transthyretin-mediated (hATTR) amyloidosis",
+  "target_gene": "TTR",
+  "target_transcript": "NM_000371",
+  "patent": "US10060921B2",
+  "patent_url": "https://patents.google.com/patent/US10060921B2",
+  
+  "sequences": {
+    "patisiran_ttr_guide": {
+      "id": "patisiran_ttr_guide",
+      "sequence": "AUGGAAUACUCUUGGUUAC",
+      "target_gene": "TTR",
+      "strand_role": "guide",
+      "overhang": "dTdT",
+      "chem_mods": [
+        {
+          "type": "2OMe",
+          "positions": [1, 4, 6, 11, 13, 16, 19],
+          "notes": "2'-O-methyl ribose modifications"
+        }
+      ],
+      "provenance": {
+        "source_type": "patent",
+        "identifier": "US10060921B2",
+        "url": "https://patents.google.com/patent/US10060921B2"
+      },
+      "confirmation_status": "confirmed",
+      "notes": "FDA-approved guide strand sequence from Patisiran (Onpattro). First FDA-approved RNAi therapeutic (2018)."
+    },
+    "patisiran_ttr_passenger": {
+      "id": "patisiran_ttr_passenger",
+      "sequence": "GUAACCAAGAGUAUUCCAU",
+      "target_gene": "TTR",
+      "strand_role": "passenger",
+      "overhang": "dTdT",
+      "chem_mods": [
+        {
+          "type": "2OMe",
+          "positions": [3, 8, 10, 15],
+          "notes": "Limited modifications on passenger strand"
+        }
+      ],
+      "provenance": {
+        "source_type": "patent",
+        "identifier": "US10060921B2",
+        "url": "https://patents.google.com/patent/US10060921B2"
+      },
+      "confirmation_status": "confirmed",
+      "notes": "Passenger strand complementary to guide. Designed to be preferentially degraded."
+    }
+  },
+  
+  "clinical_data": {
+    "efficacy": "Significant reduction in serum TTR levels",
+    "safety": "Generally well tolerated with manageable infusion-related reactions",
+    "delivery": "Lipid nanoparticle (LNP) formulation",
+    "dosing": "0.3 mg/kg every 3 weeks via IV infusion",
+    "target_tissue": "Liver (hepatocytes)"
+  },
+  
+  "modification_rationale": {
+    "guide_pattern": "Strategic 2'-O-methyl modifications at positions 1,4,6,11,13,16,19 provide optimal balance of stability and RISC loading efficiency",
+    "passenger_pattern": "Limited modifications on passenger strand reduce its activity and promote degradation",
+    "overhang": "dTdT DNA overhangs provide nuclease resistance and are compatible with LNP delivery",
+    "overall_strategy": "Pattern optimized through extensive medicinal chemistry to achieve therapeutic efficacy with acceptable safety profile"
+  },
+  
+  "references": [
+    {
+      "type": "publication",
+      "title": "An RNAi therapeutic targeting transthyretin in hereditary transthyretin amyloidosis",
+      "journal": "New England Journal of Medicine",
+      "year": 2018,
+      "pubmed_id": "30145929",
+      "doi": "10.1056/NEJMoa1716153"
+    },
+    {
+      "type": "patent",
+      "identifier": "US10060921B2",
+      "title": "Methods and compositions for treating transthyretin (TTR) related ocular amyloidosis",
+      "url": "https://patents.google.com/patent/US10060921B2"
+    }
+  ],
+  
+  "notes": [
+    "First FDA-approved RNAi therapeutic - landmark achievement",
+    "Modification pattern validated in clinical trials",
+    "Demonstrates feasibility of siRNA therapeutics",
+    "Pattern can serve as template for other liver-targeted siRNAs",
+    "Requires specialized LNP delivery system for in vivo efficacy"
+  ]
+}
