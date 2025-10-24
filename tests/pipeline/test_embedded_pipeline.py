@@ -230,9 +230,15 @@ class TestPipelineIntegration:
         assert "6.GB" in test_config.max_memory
         assert "128.GB" in prod_config.max_memory
 
-        # Test config profile depends on environment (local if SIRNAFORGE_USE_LOCAL_EXECUTION is set)
+        # Test config profile depends on environment
+        # Inside Docker container: uses 'local' profile
+        # With SIRNAFORGE_USE_LOCAL_EXECUTION: uses 'local' profile
+        # Otherwise: uses 'test' profile
+        is_in_docker = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
         expected_test_profile = (
-            "local" if os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes") else "test"
+            "local"
+            if is_in_docker or os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes")
+            else "test"
         )
         assert test_config.profile == expected_test_profile
         assert prod_config.profile == "docker"

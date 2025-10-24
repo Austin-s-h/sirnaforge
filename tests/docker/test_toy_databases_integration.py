@@ -94,11 +94,14 @@ def test_combined_offtarget_analysis(tmp_path: Path):
     # Test combined analysis
     sequences = FastaUtils.parse_fasta_to_dict(candidate_file)
 
-    # TODO: review the output / save a copy with a flag for inspection if needed
-    results = manager.analyze_combined_off_targets(sequences)
+    # Test both transcriptome and miRNA analysis
+    transcriptome_tsv, transcriptome_json = manager.analyze_transcriptome_off_targets(
+        sequences, tmp_path / "combined_test"
+    )
+    mirna_tsv, mirna_json = manager.analyze_mirna_off_targets(sequences, tmp_path / "combined_test")
 
-    # Should have both transcriptome and miRNA results
-    assert "transcriptome_hits" in results
-    assert "mirna_hits" in results
-    assert isinstance(results["transcriptome_hits"], list)
-    assert isinstance(results["mirna_hits"], list)
+    # Verify output files were created
+    assert transcriptome_tsv.exists()
+    assert transcriptome_json.exists()
+    assert mirna_tsv.exists()
+    assert mirna_json.exists()
