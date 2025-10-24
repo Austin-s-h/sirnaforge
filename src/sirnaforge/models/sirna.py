@@ -135,6 +135,20 @@ class DesignParameters(BaseModel):
     check_off_targets: bool = Field(default=True, description="Perform genome-wide off-target analysis")
     predict_structure: bool = Field(default=True, description="Calculate RNA secondary structures")
 
+    # Chemical modification parameters
+    apply_modifications: bool = Field(
+        default=True,
+        description="Automatically apply chemical modification patterns to designed siRNAs"
+    )
+    modification_pattern: str = Field(
+        default="standard_2ome",
+        description="Modification pattern to apply (standard_2ome, minimal_terminal, maximal_stability, none)"
+    )
+    default_overhang: str = Field(
+        default="dTdT",
+        description="Default overhang sequence (dTdT for DNA, UU for RNA)"
+    )
+
     # File paths (optional)
     # TODO: review snp incorporation feature
     snp_file: Optional[str] = Field(default=None, description="Path to SNP VCF file for avoidance")
@@ -292,9 +306,16 @@ class DesignResult(BaseModel):
         Raises:
             pandera.errors.SchemaError: If data validation fails
         """
+        # Import modification summary helper
+        from sirnaforge.utils.modification_patterns import get_modification_summary
+        
         df_data = []
         for candidate in self.candidates:
             cs = candidate.component_scores or {}
+            
+            # Get modification summary if modifications were applied
+            mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
+            
             row = {
                 "id": candidate.id,
                 "transcript_id": candidate.transcript_id,
@@ -322,6 +343,11 @@ class DesignResult(BaseModel):
                     if hasattr(candidate.passes_filters, "value")
                     else candidate.passes_filters
                 ),
+                # Chemical modifications
+                "guide_overhang": mod_summary.get("guide_overhang", ""),
+                "guide_modifications": mod_summary.get("guide_modifications", ""),
+                "passenger_overhang": mod_summary.get("passenger_overhang", ""),
+                "passenger_modifications": mod_summary.get("passenger_modifications", ""),
             }
             df_data.append(row)
 

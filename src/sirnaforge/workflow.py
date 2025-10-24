@@ -499,6 +499,30 @@ class SiRNAWorkflow:
 
         return results, guide_to_transcripts
 
+    def _apply_modifications_to_results(self, design_results: DesignResult) -> None:
+        """Apply chemical modification patterns to all candidates in design results.
+        
+        Args:
+            design_results: DesignResult containing candidates to modify
+        """
+        from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
+        
+        pattern = self.config.design_params.modification_pattern
+        overhang = self.config.design_params.default_overhang
+        
+        # Apply modifications to all candidates
+        for candidate in design_results.candidates:
+            apply_modifications_to_candidate(
+                candidate,
+                pattern_name=pattern,
+                overhang=overhang,
+                target_gene=self.config.gene_query,
+            )
+        
+        console.print(
+            f"✨ Applied {pattern} modification pattern with {overhang} overhangs to all candidates"
+        )
+
     async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
 
@@ -506,12 +530,23 @@ class SiRNAWorkflow:
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
 
+        # Apply chemical modifications if enabled
+        if self.config.design_params.apply_modifications:
+            self._apply_modifications_to_results(design_results)
+
         # Emit candidate CSVs: always keep ALL and a filtered PASSING file
         try:
+            # Import modification summary helper
+            from sirnaforge.utils.modification_patterns import get_modification_summary
+            
             # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
             rows = []
             for c in design_results.candidates:
                 cs = getattr(c, "component_scores", {}) or {}
+                
+                # Get modification summary if modifications were applied
+                mod_summary = get_modification_summary(c) if c.guide_metadata else {}
+                
                 rows.append(
                     {
                         "id": c.id,
@@ -538,6 +573,11 @@ class SiRNAWorkflow:
                         "passes_filters": (
                             c.passes_filters.value if hasattr(c.passes_filters, "value") else c.passes_filters
                         ),
+                        # Chemical modifications
+                        "guide_overhang": mod_summary.get("guide_overhang", ""),
+                        "guide_modifications": mod_summary.get("guide_modifications", ""),
+                        "passenger_overhang": mod_summary.get("passenger_overhang", ""),
+                        "passenger_modifications": mod_summary.get("passenger_modifications", ""),
                     }
                 )
 
@@ -1112,6 +1152,8 @@ async def run_sirna_workflow(
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
+    modification_pattern: str = "standard_2ome",
+    overhang: str = "dTdT",
     log_file: str | None = None,
     write_json_summary: bool = True,
 ) -> dict:
@@ -1137,8 +1179,15 @@ async def run_sirna_workflow(
         gc_max=gc_max,
     )
 
-    # Configure workflow
-    design_params = DesignParameters(top_n=top_n_candidates, sirna_length=sirna_length, filters=filter_criteria)
+    # Configure workflow with modification parameters
+    design_params = DesignParameters(
+        top_n=top_n_candidates,
+        sirna_length=sirna_length,
+        filters=filter_criteria,
+        apply_modifications=modification_pattern.lower() != "none",
+        modification_pattern=modification_pattern,
+        default_overhang=overhang,
+    )
     database_enum = DatabaseType(database.lower())
 
     output_path = Path(output_dir)

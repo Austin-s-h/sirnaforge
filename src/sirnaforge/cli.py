@@ -387,6 +387,17 @@ def workflow(
         max=23,
         help="siRNA length in nucleotides",
     ),
+    modification_pattern: str = typer.Option(
+        "standard_2ome",
+        "--modifications",
+        "-m",
+        help="Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)",
+    ),
+    overhang: str = typer.Option(
+        "dTdT",
+        "--overhang",
+        help="Overhang sequence (dTdT for DNA, UU for RNA)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -426,7 +437,9 @@ def workflow(
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
             f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
-            f"Genome Species: [green]{', '.join(species_list)}[/green]",
+            f"Genome Species: [green]{', '.join(species_list)}[/green]\n"
+            f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
+            f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
         )
     )
@@ -455,6 +468,8 @@ def workflow(
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,
+                    modification_pattern=modification_pattern,
+                    overhang=overhang,
                     log_file=effective_log,
                     write_json_summary=json_summary,
                 )
@@ -585,6 +600,17 @@ def design(
         "--skip-off-targets",
         help="Skip off-target analysis (faster)",
     ),
+    modification_pattern: str = typer.Option(
+        "standard_2ome",
+        "--modifications",
+        "-m",
+        help="Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)",
+    ),
+    overhang: str = typer.Option(
+        "dTdT",
+        "--overhang",
+        help="Overhang sequence (dTdT for DNA, UU for RNA)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -613,6 +639,9 @@ def design(
         check_off_targets=not skip_off_targets,
         genome_index=str(genome_index) if genome_index else None,
         snp_file=str(snp_file) if snp_file else None,
+        apply_modifications=modification_pattern.lower() != "none",
+        modification_pattern=modification_pattern,
+        default_overhang=overhang,
     )
 
     console.print(
@@ -622,7 +651,9 @@ def design(
             f"Output: [cyan]{output}[/cyan]\n"
             f"Length: [yellow]{length}[/yellow] nt\n"
             f"GC range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top candidates: [yellow]{top_n}[/yellow]",
+            f"Top candidates: [yellow]{top_n}[/yellow]\n"
+            f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
+            f"Overhang: [magenta]{overhang}[/magenta]",
             title="Configuration",
         )
     )
@@ -640,6 +671,18 @@ def design(
 
             progress.update(task1, description="Designing siRNAs...")
             result = designer.design_from_file(str(input_file))
+
+            # Apply chemical modifications if enabled
+            if parameters.apply_modifications:
+                from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
+                
+                progress.update(task1, description="Applying modifications...")
+                for candidate in result.candidates:
+                    apply_modifications_to_candidate(
+                        candidate,
+                        pattern_name=parameters.modification_pattern,
+                        overhang=parameters.default_overhang,
+                    )
 
             progress.update(task1, description="Saving results...")
             result.save_csv(str(output))
