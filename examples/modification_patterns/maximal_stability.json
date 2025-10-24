@@ -1,0 +1,62 @@
+{
+  "pattern_name": "maximal_stability",
+  "description": "Maximum stability pattern for in vivo applications",
+  "reference": "Based on FDA-approved siRNA therapeutics (Onpattro, Givlaari)",
+  "guide_modifications": {
+    "2OMe": {
+      "positions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+      "strategy": "all_positions",
+      "rationale": "Complete 2'-O-methyl modification provides maximum nuclease resistance"
+    },
+    "PS": {
+      "positions": "dinucleotides",
+      "internucleotide_linkages": [[1, 2], [2, 3], [19, 20], [20, 21]],
+      "rationale": "Phosphorothioate linkages at terminal dinucleotides provide additional stability"
+    }
+  },
+  "passenger_modifications": {
+    "2OMe": {
+      "positions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+      "strategy": "all_positions",
+      "rationale": "Complete modification prevents passenger strand activity"
+    },
+    "PS": {
+      "positions": "dinucleotides",
+      "internucleotide_linkages": [[1, 2], [2, 3]],
+      "rationale": "5' terminal PS linkages reduce passenger strand loading"
+    }
+  },
+  "overhang": {
+    "guide_3prime": "dTdT",
+    "passenger_3prime": "dTdT",
+    "rationale": "DNA overhangs with PS modifications if needed"
+  },
+  "estimated_properties": {
+    "serum_stability_half_life_hours": 72,
+    "relative_synthesis_cost": 3.0,
+    "nuclease_resistance": "very-high",
+    "risc_loading_efficiency": "high",
+    "recommended_for": "in_vivo, therapeutic_development"
+  },
+  "notes": [
+    "Pattern similar to FDA-approved therapeutic siRNAs",
+    "Suitable for in vivo efficacy and toxicology studies",
+    "Higher cost justified for therapeutic development",
+    "May require lipid nanoparticle or GalNAc delivery",
+    "Consult with synthesis provider for feasibility"
+  ],
+  "fda_approved_examples": [
+    {
+      "drug_name": "Patisiran (Onpattro)",
+      "target": "TTR",
+      "approval_year": 2018,
+      "indication": "Hereditary transthyretin amyloidosis"
+    },
+    {
+      "drug_name": "Givosiran (Givlaari)",
+      "target": "ALAS1",
+      "approval_year": 2019,
+      "indication": "Acute hepatic porphyria"
+    }
+  ]
+}
