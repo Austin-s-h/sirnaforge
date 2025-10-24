@@ -57,7 +57,7 @@ class BwaAnalyzer:
 
     def __init__(
         self,
-        index_prefix: str,
+        index_prefix: Union[str, Path],
         mode: str = "transcriptome",  # "transcriptome" or "mirna_seed"
         seed_length: int = 12,
         min_score: int = 15,
@@ -77,7 +77,7 @@ class BwaAnalyzer:
             seed_start: Seed region start (1-based)
             seed_end: Seed region end (1-based)
         """
-        self.index_prefix = index_prefix
+        self.index_prefix = str(index_prefix)
         self.mode = mode
         self.seed_length = seed_length
         self.min_score = min_score
@@ -322,32 +322,33 @@ class OffTargetAnalysisManager:
         species: str,
         transcriptome_path: Optional[Union[str, Path]] = None,
         mirna_path: Optional[Union[str, Path]] = None,
-        transcriptome_index: Optional[str] = None,
-        mirna_index: Optional[str] = None,
+        transcriptome_index: Optional[Union[str, Path]] = None,
+        mirna_index: Optional[Union[str, Path]] = None,
     ):
         self.species = species
-        self.transcriptome_path = transcriptome_path
-        self.mirna_path = mirna_path
-        self.transcriptome_index = transcriptome_index
-        self.mirna_index = mirna_index
+        self.transcriptome_path = Path(transcriptome_path) if transcriptome_path is not None else None
+        self.mirna_path = Path(mirna_path) if mirna_path is not None else None
+        self.transcriptome_index = Path(transcriptome_index) if transcriptome_index is not None else None
+        self.mirna_index = Path(mirna_index) if mirna_index is not None else None
 
     def analyze_mirna_off_targets(
         self,
         sequences: Union[dict[str, str], str, Path],
-        output_prefix: str,
-    ) -> tuple[str, str]:
+        output_prefix: Union[str, Path],
+    ) -> tuple[Path, Path]:
         """Analyze miRNA off-targets using BWA-MEM2 in miRNA seed mode."""
         if not self.mirna_index:
             raise ValueError("miRNA index not provided")
 
         if isinstance(sequences, (str, Path)):
-            sequences = parse_fasta_file(str(sequences))
+            sequences = parse_fasta_file(sequences)
 
         analyzer = BwaAnalyzer(self.mirna_index, mode="mirna_seed")
         results = analyzer.analyze_sequences(sequences)
 
-        tsv_path = f"{output_prefix}_mirna_hits.tsv"
-        json_path = f"{output_prefix}_mirna_hits.json"
+        output_path = Path(output_prefix)
+        tsv_path = output_path.parent / f"{output_path.name}_mirna_hits.tsv"
+        json_path = output_path.parent / f"{output_path.name}_mirna_hits.json"
 
         self._write_mirna_results(results, tsv_path, json_path)
         return tsv_path, json_path
@@ -355,20 +356,21 @@ class OffTargetAnalysisManager:
     def analyze_transcriptome_off_targets(
         self,
         sequences: Union[dict[str, str], str, Path],
-        output_prefix: str,
-    ) -> tuple[str, str]:
+        output_prefix: Union[str, Path],
+    ) -> tuple[Path, Path]:
         """Analyze transcriptome off-targets using BWA-MEM2 in transcriptome mode."""
         if not self.transcriptome_index:
             raise ValueError("Transcriptome index not provided")
 
         if isinstance(sequences, (str, Path)):
-            sequences = parse_fasta_file(str(sequences))
+            sequences = parse_fasta_file(sequences)
 
         analyzer = BwaAnalyzer(self.transcriptome_index, mode="transcriptome")
         results = analyzer.analyze_sequences(sequences)
 
-        tsv_path = f"{output_prefix}_transcriptome_hits.tsv"
-        json_path = f"{output_prefix}_transcriptome_hits.json"
+        output_path = Path(output_prefix)
+        tsv_path = output_path.parent / f"{output_path.name}_transcriptome_hits.tsv"
+        json_path = output_path.parent / f"{output_path.name}_transcriptome_hits.json"
 
         self._write_transcriptome_results(results, tsv_path, json_path)
         return tsv_path, json_path
@@ -394,7 +396,9 @@ class OffTargetAnalysisManager:
 
         return results
 
-    def _write_mirna_results(self, results: list[dict[str, Any]], tsv_path: str, json_path: str) -> None:
+    def _write_mirna_results(
+        self, results: list[dict[str, Any]], tsv_path: Union[str, Path], json_path: Union[str, Path]
+    ) -> None:
         """Write miRNA analysis results."""
         # Write TSV
         with Path(tsv_path).open("w") as f:
@@ -411,7 +415,9 @@ class OffTargetAnalysisManager:
         with Path(json_path).open("w") as f:
             json.dump(results, f, indent=2)
 
-    def _write_transcriptome_results(self, results: list[dict[str, Any]], tsv_path: str, json_path: str) -> None:
+    def _write_transcriptome_results(
+        self, results: list[dict[str, Any]], tsv_path: Union[str, Path], json_path: Union[str, Path]
+    ) -> None:
         """Write transcriptome analysis results."""
         # Write TSV
         with Path(tsv_path).open("w") as f:
@@ -470,27 +476,30 @@ def validate_and_write_sequences(
         return 0, len(sequences), [str(e)]
 
 
-def build_bwa_index(fasta_file: str, index_prefix: str) -> str:
+def build_bwa_index(fasta_file: Union[str, Path], index_prefix: Union[str, Path]) -> Path:
     """Build BWA-MEM2 index for both transcriptome and miRNA off-target analysis."""
-    logger.info(f"Building BWA-MEM2 index from {fasta_file} with prefix {index_prefix}")
+    fasta_path = Path(fasta_file)
+    index_prefix_path = Path(index_prefix)
 
-    if not Path(fasta_file).exists():
-        raise FileNotFoundError(f"Input FASTA file not found: {fasta_file}")
+    logger.info(f"Building BWA-MEM2 index from {fasta_path} with prefix {index_prefix_path}")
 
-    Path(index_prefix).parent.mkdir(parents=True, exist_ok=True)
+    if not fasta_path.exists():
+        raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
+
+    index_prefix_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get absolute path to bwa-mem2 executable
     bwa_path = _get_executable_path("bwa-mem2")
     if not bwa_path:
         raise FileNotFoundError("bwa-mem2 executable not found in PATH")
 
-    cmd = [bwa_path, "index", "-p", index_prefix, fasta_file]
+    cmd = [bwa_path, "index", "-p", str(index_prefix_path), str(fasta_path)]
     _validate_command_args(cmd)
 
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)  # nosec B603
-        logger.info(f"BWA-MEM2 index built successfully: {index_prefix}")
-        return index_prefix
+        logger.info(f"BWA-MEM2 index built successfully: {index_prefix_path}")
+        return index_prefix_path
     except subprocess.CalledProcessError as e:
         logger.error(f"BWA-MEM2 index build failed: {e.stderr}")
         raise
@@ -515,7 +524,7 @@ def validate_sirna_sequences(
         return {}, sequences, [str(e)]
 
 
-def parse_fasta_file(fasta_file: str) -> dict[str, str]:
+def parse_fasta_file(fasta_file: Union[str, Path]) -> dict[str, str]:
     """Parse FASTA file using existing FastaUtils."""
     return FastaUtils.parse_fasta_to_dict(fasta_file)
 
@@ -541,7 +550,7 @@ def check_tool_availability(tool: str) -> bool:
         return False
 
 
-def validate_index_files(index_prefix: str, tool: str = "bwa") -> bool:
+def validate_index_files(index_prefix: Union[str, Path], tool: str = "bwa") -> bool:
     """Validate that index files exist for given tool."""
     index_path = Path(index_prefix)
 
@@ -567,68 +576,70 @@ def validate_index_files(index_prefix: str, tool: str = "bwa") -> bool:
 def run_mirna_analysis_for_nextflow(
     species: str,
     sequences_file: str,
-    mirna_index: str,
-    output_prefix: str,
+    mirna_index: Union[str, Path],
+    output_prefix: Union[str, Path],
 ) -> tuple[str, str, str]:
     """Nextflow-compatible function for miRNA analysis."""
     manager = OffTargetAnalysisManager(species=species, mirna_index=mirna_index)
+    output_root = Path(output_prefix)
 
     try:
-        tsv_path, json_path = manager.analyze_mirna_off_targets(sequences_file, output_prefix)
+        tsv_path, json_path = manager.analyze_mirna_off_targets(sequences_file, output_root)
 
         # Create summary
-        summary_path = f"{output_prefix}_mirna_summary.txt"
-        with Path(summary_path).open("w") as f:
-            with Path(json_path).open() as jf:
+        summary_path = output_root.parent / f"{output_root.name}_mirna_summary.txt"
+        with summary_path.open("w") as f:
+            with json_path.open() as jf:
                 results = json.load(jf)
             f.write(f"Species: {species}\n")
             f.write(f"Total miRNA hits: {len(results)}\n")
             f.write("Analysis completed successfully\n")
 
-        return tsv_path, json_path, summary_path
+        return str(tsv_path), str(json_path), str(summary_path)
 
     except Exception as e:
-        error_summary = f"{output_prefix}_mirna_error.txt"
-        with Path(error_summary).open("w") as f:
+        error_summary = output_root.parent / f"{output_root.name}_mirna_error.txt"
+        with error_summary.open("w") as f:
             f.write(f"miRNA analysis failed: {str(e)}\n")
-        return "", "", error_summary
+        return "", "", str(error_summary)
 
 
 def run_transcriptome_analysis_for_nextflow(
     species: str,
     sequences_file: str,
-    transcriptome_index: str,
-    output_prefix: str,
+    transcriptome_index: Union[str, Path],
+    output_prefix: Union[str, Path],
 ) -> tuple[str, str, str]:
     """Nextflow-compatible function for transcriptome analysis."""
     manager = OffTargetAnalysisManager(species=species, transcriptome_index=transcriptome_index)
+    output_root = Path(output_prefix)
 
     try:
-        tsv_path, json_path = manager.analyze_transcriptome_off_targets(sequences_file, output_prefix)
+        tsv_path, json_path = manager.analyze_transcriptome_off_targets(sequences_file, output_root)
 
         # Create summary
-        summary_path = f"{output_prefix}_transcriptome_summary.txt"
-        with Path(summary_path).open("w") as f:
-            with Path(json_path).open() as jf:
+        summary_path = output_root.parent / f"{output_root.name}_transcriptome_summary.txt"
+        with summary_path.open("w") as f:
+            with json_path.open() as jf:
                 results = json.load(jf)
             f.write(f"Species: {species}\n")
             f.write(f"Total transcriptome hits: {len(results)}\n")
             f.write("Analysis completed successfully\n")
 
-        return tsv_path, json_path, summary_path
+        return str(tsv_path), str(json_path), str(summary_path)
 
     except Exception as e:
-        error_summary = f"{output_prefix}_transcriptome_error.txt"
-        with Path(error_summary).open("w") as f:
+        error_summary = output_root.parent / f"{output_root.name}_transcriptome_error.txt"
+        with error_summary.open("w") as f:
             f.write(f"Transcriptome analysis failed: {str(e)}\n")
-        return "", "", error_summary
+        return "", "", str(error_summary)
 
 
 def run_comprehensive_offtarget_analysis(
     species: str,
     sequences_file: str,
     index_path: str,
-    output_prefix: str,
+    output_prefix: Union[str, Path],
     mode: str = "transcriptome",
     bwa_k: int = 12,
     bwa_T: int = 15,
@@ -637,6 +648,8 @@ def run_comprehensive_offtarget_analysis(
     seed_end: int = 8,
 ) -> tuple[str, str, str]:
     """Run comprehensive off-target analysis for Nextflow integration."""
+    output_root = Path(output_prefix)
+
     try:
         sequences = parse_fasta_file(sequences_file)
 
@@ -654,12 +667,12 @@ def run_comprehensive_offtarget_analysis(
         results = analyzer.analyze_sequences(sequences)
 
         # Write results
-        tsv_path = f"{output_prefix}.tsv"
-        json_path = f"{output_prefix}.json"
-        summary_path = f"{output_prefix}_summary.txt"
+        tsv_path = output_root.parent / f"{output_root.name}.tsv"
+        json_path = output_root.parent / f"{output_root.name}.json"
+        summary_path = output_root.parent / f"{output_root.name}_summary.txt"
 
         # Write TSV
-        with Path(tsv_path).open("w") as f:
+        with tsv_path.open("w") as f:
             f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
             for result in results:
                 f.write(
@@ -670,11 +683,11 @@ def run_comprehensive_offtarget_analysis(
                 )
 
         # Write JSON
-        with Path(json_path).open("w") as f:
+        with json_path.open("w") as f:
             json.dump(results, f, indent=2)
 
         # Write summary
-        with Path(summary_path).open("w") as f:
+        with summary_path.open("w") as f:
             f.write(f"Species: {species}\n")
             f.write(f"Total sequences analyzed: {len(sequences)}\n")
             f.write(f"Total off-target hits: {len(results)}\n")
@@ -683,13 +696,13 @@ def run_comprehensive_offtarget_analysis(
             f.write(f"Seed region: {seed_start}-{seed_end}\n")
             f.write("Analysis completed successfully\n")
 
-        return tsv_path, json_path, summary_path
+        return str(tsv_path), str(json_path), str(summary_path)
 
     except Exception as e:
-        error_summary = f"{output_prefix}_error.txt"
-        with Path(error_summary).open("w") as f:
+        error_summary = output_root.parent / f"{output_root.name}_error.txt"
+        with error_summary.open("w") as f:
             f.write(f"Comprehensive off-target analysis failed: {str(e)}\n")
-        return "", "", error_summary
+        return "", "", str(error_summary)
 
 
 # Export all main functions and classes

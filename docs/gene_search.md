@@ -34,8 +34,9 @@ uv run sirnaforge search MYC --all -o myc_all_databases.fasta
 # Get metadata only (no sequences)
 uv run sirnaforge search EGFR --no-sequence
 
-# Use a local FASTA as input for the full workflow (skip gene search)
+# Use a FASTA from disk or a remote URL as input for the full workflow (skip gene search)
 uv run sirnaforge workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
+uv run sirnaforge workflow TP53 --input-fasta https://example.org/transcripts.fasta -o sirna_output
 ```
 
 ### Python API Usage

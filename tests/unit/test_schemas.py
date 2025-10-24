@@ -50,9 +50,19 @@ class TestSiRNACandidateSchema:
             }
         )
         result = SiRNACandidateSchema.validate(df)
-        assert result.shape == (2, len(test_data.keys()))
-        # Order-agnostic column check
-        assert set(result.columns) == set(test_data.keys())
+        # Schema adds missing modification columns (4 columns)
+        expected_cols = (
+            len(test_data.keys()) + 4
+        )  # guide_overhang, guide_modifications, passenger_overhang, passenger_modifications
+        assert result.shape == (2, expected_cols)
+        # Order-agnostic column check - now includes modification columns
+        expected_columns = set(test_data.keys()) | {
+            "guide_overhang",
+            "guide_modifications",
+            "passenger_overhang",
+            "passenger_modifications",
+        }
+        assert set(result.columns) == expected_columns
 
     def test_invalid_sequence_length_fails(self):
         """Test that invalid sequence lengths fail validation."""

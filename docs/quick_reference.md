@@ -27,12 +27,12 @@ uv run sirnaforge design transcripts.fasta -o results.csv
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
-| `--gc-min/max` | 30-52% | GC content range |
-| `--length` | 21 | siRNA length |
-| `--top-n` | 10-20 | Number of candidates |
-| `--output-dir` | - | Output directory |
-| `--output` | stdout | Output file for individual commands |
-| `--verbose` | false | Detailed progress information |
+| `--gc-min` / `--gc-max` | 30 % / 52 % | GC content window |
+| `--length` (`design`) / `--length` (`workflow`) | 21 | Candidate length in nt |
+| `--top-n` | 10 (`design`), 20 (`workflow`) | Number of candidates retained |
+| `--output-dir` | varies (`sirna_workflow_output`) | Output directory for workflows |
+| `--output` | `sirna_results.tsv` | Output path for single-step commands |
+| `--verbose` | `false` | Emit detailed progress messages |
 
 ## 🎯 Common Usage Patterns
 
@@ -58,7 +58,7 @@ sirnaforge workflow GENE --length 19 --gc-min 40 --max-poly-runs 2
 - Melting Temperature: 55-65°C
 - End Stability (ΔΔG): +2 to +6 kcal/mol
 
-## � More Information
+## ℹ️ More Information
 
 > **Need examples?** See [Usage Examples](usage_examples.md)
 > **Full parameters?** See [CLI Reference](cli_reference.md)

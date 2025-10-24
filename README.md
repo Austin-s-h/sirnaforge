@@ -22,9 +22,10 @@ siRNAforge is a modern, comprehensive toolkit for designing high-quality siRNAs 
 ## ✨ Key Features
 
 - 🎯 **Algorithm-driven design** - Comprehensive siRNA design with multi-component thermodynamic scoring
-- 🔍 **Multi-species off-target analysis** - BWA-MEM2 and Bowtie alignment across human, rat, rhesus genomes
+- 🔍 **Multi-species off-target analysis** - BWA-MEM2 alignment (transcriptome + miRNA seed modes) across human, rat, rhesus genomes
 - 📊 **Advanced scoring system** - Composite scoring with seed-region specificity and secondary structure prediction
 - 🧪 **ViennaRNA integration** - Secondary structure prediction for enhanced design accuracy
+- 🧬 **Chemical modifications metadata** - Track 2'-O-methyl, 2'-fluoro, PS linkages, overhangs, and provenance
 - 🔬 **Nextflow pipeline integration** - Scalable, containerized workflow execution with automatic parallelization
 - 🐍 **Modern Python architecture** - Type-safe code with Pydantic models, async/await support, and rich CLI
 - ⚡ **Lightning-fast dependency management** - Built with `uv` for sub-second installs and virtual environment management
@@ -73,10 +74,10 @@ micromamba activate sirnaforge-dev  # or conda activate sirnaforge-dev
 make install-dev
 
 # Run tests to verify installation
-make test
+make test-local-python
 ```
 
-**� Local Development Installation:**
+**🖥️ Local Development Installation:**
 ```bash
 # Install uv (lightning-fast Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -86,8 +87,8 @@ git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 make install-dev
 
-# Run tests to verify installation
-make test
+# Run sanity checks to verify installation
+make test-local-python
 ```
 
 ### Essential Dependencies for Off-target Analysis
@@ -95,8 +96,7 @@ make test
 The Docker image includes all bioinformatics dependencies via conda environment (`docker/environment-nextflow.yml`):
 
 - ✅ **Nextflow** (≥25.04.0) - Workflow orchestration and parallelization
-- ✅ **BWA-MEM2** (≥2.2.1) - High-performance genome alignment
-- ✅ **Bowtie** (≥1.3.1) - miRNA seed-region analysis
+- ✅ **BWA-MEM2** (≥2.2.1) - High-performance genome alignment (transcriptome + miRNA seed analysis)
 - ✅ **SAMtools** (≥1.19.2) - SAM/BAM file processing and indexing
 - ✅ **ViennaRNA** (≥2.7.0) - RNA secondary structure prediction
 - ✅ **AWS CLI** (≥2.0) - Automated genome reference downloads
@@ -129,11 +129,16 @@ uv run sirnaforge workflow BRCA1 \
   --top-n 50 \
   --output-dir brca1_analysis
 
-# Workflow from pre-existing FASTA file
+# Workflow from a pre-existing FASTA file (local path or remote URL)
 uv run sirnaforge workflow --input-fasta transcripts.fasta \
   --output-dir custom_analysis \
   --offtarget-n 25 \
   custom_gene_name
+
+# Remote FASTA example
+uv run sirnaforge workflow --input-fasta https://example.org/transcripts.fasta \
+  --output-dir remote_input_run \
+  remote_dataset
 ```
 
 **🔍 Individual Component Usage:**
@@ -245,9 +250,9 @@ batch_results = asyncio.run(batch_design_genes(cancer_genes))
 Gene Query → Transcript Search → ORF Validation → siRNA Design → Off-target Analysis → Ranked Results
      ↓              ↓                ↓               ↓               ↓                    ↓
 Multi-database   Canonical       Coding Frame   Thermodynamic   Multi-species BWA    Scored & Filtered
-Gene Search      Isoform         Validation     + Structure     Alignment +          siRNA Candidates
-(Ensembl/        Selection                      Scoring         Bowtie miRNA         with Off-target
-RefSeq/GENCODE)                                                Analysis             Predictions
+Gene Search      Isoform         Validation     + Structure     Alignment (seed &    siRNA Candidates
+(Ensembl/        Selection                      Scoring         transcriptome)       with Off-target
+RefSeq/GENCODE)                                                                    Predictions
 ```
 
 ### Core Components
@@ -273,10 +278,8 @@ RefSeq/GENCODE)                                                Analysis         
 - **Composite scoring**: Weighted combination of all scoring components
 - **Transcript consolidation**: Deduplicates guide sequences across multiple transcript isoforms
 
-**🔍 Off-target Analysis** (`sirnaforge.core.off_target`)
-- **Dual-engine approach**:
-  - **BWA-MEM2**: Sensitive genome-wide alignment for transcriptome off-targets
-  - **Bowtie**: High-specificity miRNA seed-region analysis (positions 2-8)
+- **🔍 Off-target Analysis** (`sirnaforge.core.off_target`)
+  - **Adaptive BWA-MEM2 modes**: Sensitive genome-wide alignment plus ultra-short miRNA seed analysis using tuned parameters
 - **Multi-species support**: Human, rat, rhesus macaque genome analysis
 - **Advanced scoring**: Position-weighted mismatch penalties with seed-region emphasis
 - **Scalable processing**: Batch candidate analysis with parallel execution
@@ -302,7 +305,7 @@ sirnaforge/
 ├── 📦 src/sirnaforge/              # Main package (modern src-layout)
 │   ├── 🎯 core/                   # Core algorithms and analysis engines
 │   │   ├── design.py              # siRNA design, scoring, and candidate generation
-│   │   ├── off_target.py          # BWA-MEM2/Bowtie off-target analysis
+│   │   ├── off_target.py          # BWA-MEM2 off-target analysis (transcriptome + miRNA seed)
 │   │   └── thermodynamics.py     # ViennaRNA integration & structure prediction
 │   ├── 📊 models/                 # Type-safe Pydantic data models
 │   │   ├── sirna.py              # siRNA candidates, parameters, results
@@ -339,51 +342,7 @@ sirnaforge/
     ├── pyproject.toml            # Python packaging and tool configuration
     ├── Makefile                  # Development workflow automation
     └── uv.lock                   # Reproducible dependency resolution
-```
-
-### Repository Structure
-
-```
-sirnaforge/
-├── 📦 src/sirnaforge/              # Main package (modern src-layout)
-│   ├── 🎯 core/                   # Core algorithms
-│   │   ├── design.py              # siRNA design and scoring
-│   │   ├── off_target.py          # Off-target analysis
-│   │   └── scoring.py             # Scoring algorithms
-│   ├── 📊 models/                 # Pydantic data models
-│   │   ├── sirna.py              # siRNA candidate models
-│   │   └── transcript.py         # Transcript models
-│   ├── 💾 data/                   # Data access layer
-│   │   ├── gene_search.py        # Multi-database gene search
-│   │   ├── orf_analysis.py       # ORF validation
-│   │   └── base.py               # Common data utilities
-│   ├── 🔧 pipeline/               # Nextflow integration
-│   ├── 🛠️ utils/                  # Helper utilities
-│   ├── 📟 cli.py                  # Rich CLI interface
-│   └── workflow.py               # Orchestration logic
-├── 🧪 tests/                      # Comprehensive test suite
-│   ├── unit/                     # Unit tests
-│   ├── integration/              # Integration tests
-│   └── pipeline/                 # Pipeline tests
-├── 🌊 nextflow_pipeline/          # Nextflow workflow
-│   ├── main.nf                   # Main workflow
-│   ├── nextflow.config           # Configuration
-│   ├── genomes.yaml             # Genome specifications
-│   └── modules/local/           # Process modules
-├── 🐳 docker/                     # Containerization
-│   ├── Dockerfile               # Multi-stage build
-│   └── environment-nextflow.yml # Conda environment
-├── 📚 docs/                       # Documentation
-├── 📋 examples/                   # Usage examples
-├── ⚙️ pyproject.toml              # Modern Python packaging
-├── 🔧 Makefile                    # Development commands
-    └── uv.lock                   # Reproducible dependency resolution
-```
-
 ## 📊 Output Formats & Results
-```
-
-## � Output Formats & Results
 
 siRNAforge generates comprehensive, structured outputs for downstream analysis and experimental validation:
 
@@ -494,7 +453,7 @@ Top 5 Candidates:
 - Score distributions support quality control assessment
 - Multi-species comparisons enable cross-species research applications
 
-## �🔬 Nextflow Pipeline Integration
+## 🔬 Nextflow Pipeline Integration
 
 The integrated Nextflow pipeline provides scalable, containerized off-target analysis:
 
@@ -556,11 +515,12 @@ cd sirnaforge
 make install-dev  # Installs all dev dependencies
 
 # Core development commands
-make test         # Full test suite with coverage
-make lint         # Code quality checks (mypy, ruff, black)
-make test-fast    # Quick tests (unit tests only)
-make docs-build   # Generate documentation
-make docker-build # Build container locally
+make test-local-python  # Fastest Python-only tests (markers=local_python)
+make test-fast          # Quick pytest suite excluding slow markers
+make lint               # Ruff (lint + format --check) and mypy
+make check              # lint-fix + test-fast for pre-commit parity
+make docs               # Build Sphinx documentation
+make docker             # Build the production Docker image
 
 # Selective dependency installation
 uv sync --group analysis    # Jupyter, plotting, pandas extras
@@ -713,7 +673,7 @@ docker run -it --rm -v $(pwd):/data \
 
 ```bash
 # Build production image
-make docker-build
+make docker
 
 # Build with specific Python version
 docker build --build-arg PYTHON_VERSION=3.11 \
@@ -726,27 +686,31 @@ The Docker image uses micromamba with `docker/environment-nextflow.yml` for cons
 
 ### Running Tests
 
-```bash
-# Run complete test suite
-make test
+| Command | Under the hood | When to use | Notes |
+|---------|----------------|-------------|-------|
+| `make test-local-python` | `uv run --group dev pytest -v -m "local_python"` | Fastest feedback loop during development | Python-only markers, no Docker/Nextflow required |
+| `make test-unit` | `uv run --group dev pytest -v -m "unit"` | Validate core algorithms | Includes ~30 tests (~30s) |
+| `make test-fast` | `uv run --group dev pytest -v -m "not slow"` | Pre-commit or PR checks | Skips slow/integration markers |
+| `make test` | `uv run --group dev pytest -v` | Full Python suite | May include slow and docker-marked tests; expect >60s |
+| `make test-ci` | `uv run --group dev pytest -m "ci" --junitxml=pytest-report.xml --cov=sirnaforge --cov-report=term-missing --cov-report=xml:coverage.xml -v` | CI pipelines needing artifacts | Produces coverage + JUnit reports |
+| `make test-cov` | `uv run --group dev pytest --cov=sirnaforge --cov-report=html --cov-report=term-missing` | Local coverage runs | Outputs HTML coverage in `htmlcov/` |
+| `make lint` | Ruff lint + Ruff format check + MyPy | Quick code-quality gate | No automatic fixes |
+| `make check` | `make lint-fix` + `make test-fast` | Pre-commit parity | Applies Ruff fixes before running fast pytest subset |
 
-# Specific test categories
-uv run pytest tests/unit/           # Unit tests
-uv run pytest tests/integration/    # Integration tests
-uv run pytest tests/pipeline/       # Pipeline tests
+Docker-powered tiers share the same pytest markers but execute inside the published image:
 
-# With coverage reporting
-uv run pytest --cov=sirnaforge --cov-report=html
+| Command | Container invocation | Resource profile | Purpose |
+|---------|----------------------|------------------|---------|
+| `make docker-test-smoke` | `docker run … python -m pytest -q -n 1 -m 'docker and smoke'` | 0.5 CPU / 256 MB | Minimal CI smoke (MUST PASS) |
+| `make docker-test-fast` | `docker run … python -m pytest -q -n 1 -m 'docker and not slow'` | 1 CPU / 2 GB | Dev-friendly docker coverage |
+| `make docker-test` | `docker run … python -m pytest -v -n 1 -m 'docker and (docker_integration or (not smoke))'` | 2 CPUs / 4 GB | Standard docker regression |
+| `make docker-test-full` | `docker run … uv run --group dev pytest -v -n 2` | 4 CPUs / 8 GB | Release-grade validation |
 
-# Run tests in parallel
-uv run pytest -n auto
+> ℹ️ Run `make install-dev` once to install development dependencies and pre-commit hooks before using these targets. The full matrix of commands, filters, and expected runtimes lives in [`docs/testing_guide.md`](docs/testing_guide.md).
 
-# Ultra-fast CI/CD smoke tests (NEW!)
-make docker-test-smoke
+#### Docker smoke snapshot
 
-# Validate fast CI/CD setup
-python scripts/validate_fast_ci.py
-```
+For a quick environment sanity check, `make docker-test-smoke` exercises the published container image with toy data in ~40 seconds (0.5 CPU, 256 MB). A passing run prints **9 passed** with no failures; any remaining pytest collection warnings are tracked in the test suite and should disappear once the dataclass fix in this branch lands.
 
 ### Fast CI/CD with Toy Data ⚡
 
@@ -792,21 +756,108 @@ make docs
 # Generate CLI reference
 make docs-cli
 
-# Generate usage examples
-make docs-examples
-
-# Build complete documentation set
-make docs-full
+# Live-reload docs during editing
+make docs-dev
 ```
 
 ### Generated Documentation
 
-- `docs/_build/html/` - Complete Sphinx HTML documentation
-- `docs/CLI_REFERENCE.md` - Auto-generated CLI help
-- `docs/examples/USAGE_EXAMPLES.md` - Usage examples
-- `docs/api_reference.rst` - Python API documentation
+- `docs/_build/html/` - Complete Sphinx HTML documentation (via `make docs`)
+- `docs/CLI_REFERENCE.md` - Auto-generated CLI help (via `make docs-cli`)
+- `docs/api_reference.rst` - Python API reference source
+- `docs/modification_annotation_spec.md` - Chemical modifications metadata specification
 
 > 📖 See [docs/getting_started.md](docs/getting_started.md) for detailed tutorials and [docs/deployment.md](docs/deployment.md) for deployment guides.
+
+### Chemical Modifications Metadata
+
+siRNAforge supports structured annotation of chemical modifications, overhangs, and provenance information for siRNA sequences. This enables systematic tracking of modifications like 2'-O-methyl, 2'-fluoro, and phosphorothioate linkages.
+
+**Quick Example:**
+```bash
+# Create metadata JSON file
+cat > metadata.json << 'EOF'
+{
+  "patisiran_ttr_guide": {
+    "id": "patisiran_ttr_guide",
+    "sequence": "AUGGAAUACUCUUGGUUAC",
+    "target_gene": "TTR",
+    "strand_role": "guide",
+    "overhang": "dTdT",
+    "chem_mods": [
+      {
+        "type": "2OMe",
+        "positions": [1, 4, 6, 11, 13, 16, 19]
+      }
+    ],
+    "provenance": {
+      "source_type": "patent",
+      "identifier": "US10060921B2",
+      "url": "https://patents.google.com/patent/US10060921B2"
+    },
+    "confirmation_status": "confirmed"
+  }
+}
+EOF
+
+# Annotate FASTA with metadata
+sirnaforge sequences annotate sequences.fasta metadata.json -o annotated.fasta
+
+# View sequences with metadata
+sirnaforge sequences show annotated.fasta
+sirnaforge sequences show annotated.fasta --format json
+```
+
+**Features:**
+- 🧪 **Chemical Modifications** - Annotate 2'-O-methyl, 2'-fluoro, PS linkages, LNA, etc.
+- 📍 **Position Tracking** - 1-based position numbering for each modification
+- 🔗 **Overhang Support** - DNA (dTdT) or RNA (UU) overhangs
+- 📚 **Provenance** - Track sources (patents, publications, clinical trials)
+- ✅ **Confirmation Status** - Mark validated vs. predicted sequences
+- 🗂️ **FASTA Headers** - Standardized key-value encoding in headers
+- 📄 **JSON Sidecars** - Separate metadata files for easy curation
+
+**Common Modification Types:**
+- `2OMe` - 2'-O-methyl (nuclease resistance)
+- `2F` - 2'-fluoro (enhanced stability)
+- `PS` - Phosphorothioate (nuclease resistance)
+- `LNA` - Locked Nucleic Acid (enhanced binding)
+- `MOE` - 2'-O-methoxyethyl (improved pharmacokinetics)
+
+**Python API:**
+```python
+from sirnaforge.models.modifications import (
+    StrandMetadata,
+    ChemicalModification,
+    Provenance,
+    SourceType
+)
+
+# Create metadata
+metadata = StrandMetadata(
+    id="my_sirna_guide",
+    sequence="AUCGAUCGAUCGAUCGAUCGA",
+    overhang="dTdT",
+    chem_mods=[
+        ChemicalModification(type="2OMe", positions=[1, 4, 6, 11])
+    ],
+    provenance=Provenance(
+        source_type=SourceType.PUBLICATION,
+        identifier="PMID12345678"
+    )
+)
+
+# Generate FASTA with metadata
+from sirnaforge.models.modifications import SequenceRecord, StrandRole
+record = SequenceRecord(
+    target_gene="BRCA1",
+    strand_role=StrandRole.GUIDE,
+    metadata=metadata
+)
+print(record.to_fasta())
+```
+
+📖 See [docs/modification_annotation_spec.md](docs/modification_annotation_spec.md) for complete specification, API reference, and examples.
 
 ## 🤝 Contributing
 
@@ -828,7 +879,8 @@ We welcome contributions to siRNAforge! Here's how to get started:
 # Ensure code quality
 make lint           # Check code style and types
 make format         # Auto-format code
-make test          # Run test suite
+make test-local-python  # Fast sanity suite
+make check              # Auto-fix lint + fast pytest
 
 # Commit and push
 git add .
@@ -869,10 +921,3 @@ siRNAforge builds upon excellent open-source tools and libraries:
 - **Modern Python Stack** - uv, Typer, Rich for developer experience
 
 > **Note**: Much of the code in this repository was developed with assistance from AI agents, but all code has been reviewed, tested, and validated by human developers.
-
----
-
-<div align="center">
-  <strong>siRNAforge — Comprehensive siRNA design toolkit for gene silencing</strong><br>
-  Professional siRNA design for the modern researcher
-</div>

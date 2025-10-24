@@ -73,12 +73,13 @@ async def _test_orf_analysis():
             logger.info(f"  Protein Length: {len(analysis.protein_sequence)} aa")
 
 
+@pytest.mark.asyncio
 @pytest.mark.unit
 @pytest.mark.local_python
 @pytest.mark.ci
-def test_orf_analysis():
-    """Synchronous pytest-compatible wrapper that runs the async ORF analysis test."""
-    asyncio.run(_test_orf_analysis())
+async def test_orf_analysis():
+    """Run ORF analysis using pytest's asyncio event loop to avoid coroutine warnings."""
+    await _test_orf_analysis()
 
 
 if __name__ == "__main__":

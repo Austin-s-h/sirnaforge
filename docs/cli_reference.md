@@ -58,8 +58,8 @@ sirnaforge [command] [options]
 │ *    gene_query      TEXT  Gene name or ID to analyze [required]                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --input-fasta                                      PATH  Path to an input FASTA file to use instead of performing   │
-│                                                          a gene search                                               │
+│ --input-fasta                                      TEXT  Local FASTA path or remote URI (http/https/ftp) to use     │
+│                                                          instead of performing a gene search                         │
 │ --output-dir         -o                            PATH  Output directory for all workflow results                  │
 │                                                          [default: sirna_workflow_output]                           │
 │ --database           -d                            TEXT  Database to search (ensembl, refseq, gencode)              │
