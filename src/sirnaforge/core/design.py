@@ -1,12 +1,15 @@
 """Core siRNA design algorithms and functionality."""
 
 import math
+import sys
 import time
 from typing import Optional, Union
 
+import Bio
 from Bio import SeqIO
 from Bio.Seq import Seq
 
+from sirnaforge import __version__
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
@@ -462,9 +465,16 @@ class SiRNADesigner:
         return result
 
     def _get_tool_versions(self) -> dict[str, str]:
-        """Get versions of tools used (placeholder)."""
+        """Get versions of tools used in the analysis."""
+        try:
+            biopython_version = Bio.__version__
+        except AttributeError:
+            biopython_version = "unknown"
+
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+
         return {
-            "python": "3.11.5",
-            "biopython": "1.81",
-            "sirnaforge": "0.1.0",
+            "python": python_version,
+            "biopython": biopython_version,
+            "sirnaforge": __version__,
         }

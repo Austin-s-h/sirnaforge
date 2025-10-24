@@ -116,6 +116,9 @@ class SiRNACandidateSchema(DataFrameModel):
 
         description = "siRNA candidate validation schema"
         title = "SiRNA Design Results"
+        # Allow DataFrames without modification columns (add as empty/null)
+        add_missing_columns = True
+        strict = False  # Don't reject DataFrames missing modification columns
 
     # Identity fields
     id: Series[str] = Field(description="Unique siRNA candidate identifier")
@@ -166,10 +169,39 @@ class SiRNACandidateSchema(DataFrameModel):
     # Quality control: allow legacy booleans or new status strings
     passes_filters: Series[Any] = Field(description="Filter result: PASS or failure reason (GC_OUT_OF_RANGE, etc.)")
 
+    # Chemical modification columns (optional, nullable)
+    # Using add_missing_columns to auto-add with null values
+    guide_overhang: Series[str] = Field(
+        description="Guide strand 3' overhang sequence (e.g., dTdT, UU)",
+        nullable=True,
+        coerce=True,
+    )
+    guide_modifications: Series[str] = Field(
+        description="Guide strand modification summary",
+        nullable=True,
+        coerce=True,
+    )
+    passenger_overhang: Series[str] = Field(
+        description="Passenger strand 3' overhang sequence",
+        nullable=True,
+        coerce=True,
+    )
+    passenger_modifications: Series[str] = Field(
+        description="Passenger strand modification summary",
+        nullable=True,
+        coerce=True,
+    )
+
     @dataframe_check_typed
     def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
-        """Ensure passes_filters contains allowed values: bool or allowed status strings."""
-        allowed = {"PASS", "GC_OUT_OF_RANGE", "POLY_RUNS", "EXCESS_PAIRING", "LOW_ASYMMETRY"}
+        """Ensure passes_filters contains allowed filter status values."""
+        allowed = {
+            "PASS",
+            "GC_OUT_OF_RANGE",
+            "POLY_RUNS",
+            "EXCESS_PAIRING",
+            "LOW_ASYMMETRY",
+        }
         series = df["passes_filters"]
 
         def _ok(v: Any) -> bool:
@@ -181,14 +213,14 @@ class SiRNACandidateSchema(DataFrameModel):
 
     @dataframe_check_typed
     def check_sequence_lengths(cls, df: pd.DataFrame) -> bool:
-        """Validate siRNA sequence lengths are in acceptable range."""
+        """Validate siRNA sequences are in functional range (19-23 nt)."""
         guide_lengths = df["guide_sequence"].str.len()
         passenger_lengths = df["passenger_sequence"].str.len()
         return bool(guide_lengths.between(19, 23).all() and passenger_lengths.between(19, 23).all())
 
     @dataframe_check_typed
     def check_nucleotide_sequences(cls, df: pd.DataFrame) -> bool:
-        """Validate sequences contain only valid nucleotide bases (DNA or RNA)."""
+        """Validate sequences contain only valid RNA/DNA bases."""
         guide_valid = df["guide_sequence"].str.match(r"^[ATCGU]+$").all()
         passenger_valid = df["passenger_sequence"].str.match(r"^[ATCGU]+$").all()
         return bool(guide_valid and passenger_valid)
@@ -278,3 +310,37 @@ class OffTargetHitsSchema(DataFrameModel):
 
     # Target sequence with alignment (nullable)
     target_sequence: Series[Any] = Field(description="Aligned target sequence with mismatch notation", nullable=True)
+
+
+class ModificationSummarySchema(DataFrameModel):
+    """Validation schema for chemical modification summary data.
+
+    Validates modification summary dictionaries returned by get_modification_summary()
+    when converted to DataFrame format. Used for validating modification-enhanced
+    siRNA candidate outputs.
+    """
+
+    class Config(SchemaConfig):
+        """Schema configuration."""
+
+        description = "Chemical modification summary schema"
+        title = "Modification Summary"
+        strict = False  # Allow extra fields
+
+    guide_overhang: Series[str] = Field(description="Guide strand 3' overhang (e.g., dTdT, UU)")
+    guide_modifications: Series[str] = Field(description="Guide modifications (e.g., 2OMe(11)+PS(2))")
+    passenger_overhang: Series[str] = Field(description="Passenger strand 3' overhang")
+    passenger_modifications: Series[str] = Field(description="Passenger modifications")
+
+    @dataframe_check_typed
+    def check_modification_format(cls, df: pd.DataFrame) -> bool:
+        """Validate modification summary format."""
+        # Valid formats: "none", "", "2OMe(11)", "2OMe(11)+PS(2)"
+        for col in ["guide_modifications", "passenger_modifications"]:
+            if col in df.columns:
+                series = df[col]
+                # Empty strings and "none" are valid
+                valid_pattern = r"^(none|)$|^([A-Z0-9]+\(\d+\)(\+[A-Z0-9]+\(\d+\))*)$"
+                if not series.str.match(valid_pattern, na=False).all():
+                    return False
+        return True

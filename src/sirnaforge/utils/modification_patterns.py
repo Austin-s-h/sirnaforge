@@ -5,7 +5,7 @@ candidates during the design workflow, enabling automated annotation of chemical
 modifications for downstream synthesis and analysis.
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sirnaforge.models.modifications import (
     ChemicalModification,
@@ -14,7 +14,9 @@ from sirnaforge.models.modifications import (
     SourceType,
     StrandMetadata,
 )
-from sirnaforge.models.sirna import SiRNACandidate
+
+if TYPE_CHECKING:
+    from sirnaforge.models.sirna import SiRNACandidate
 
 
 def apply_standard_2ome_pattern(sequence: str) -> list[ChemicalModification]:
@@ -107,11 +109,11 @@ def get_modification_pattern(pattern_name: str, sequence: str) -> list[ChemicalM
 
 
 def apply_modifications_to_candidate(
-    candidate: SiRNACandidate,
+    candidate: "SiRNACandidate",
     pattern_name: str = "standard_2ome",
     overhang: str = "dTdT",
     target_gene: Optional[str] = None,
-) -> SiRNACandidate:
+) -> "SiRNACandidate":
     """Apply chemical modifications to a siRNA candidate.
 
     This function annotates both guide and passenger strands with the specified
@@ -166,7 +168,7 @@ def apply_modifications_to_candidate(
     return candidate
 
 
-def get_modification_summary(candidate: SiRNACandidate) -> dict[str, str]:
+def get_modification_summary(candidate: "SiRNACandidate") -> dict[str, str]:
     """Get a summary of modifications for a candidate.
 
     Args:

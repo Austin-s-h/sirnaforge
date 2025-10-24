@@ -1,11 +1,12 @@
 """Test example modification pattern files."""
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from sirnaforge.models.modifications import ChemicalModification, StrandMetadata
+from sirnaforge.models.modifications import StrandMetadata
 from sirnaforge.modifications import load_metadata
 
 
@@ -90,7 +91,6 @@ class TestExamplePatternFiles:
         assert len(sequences) >= 1
 
         # Create temporary file with sequences in expected format
-        import tempfile
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             json.dump(sequences, tmp)

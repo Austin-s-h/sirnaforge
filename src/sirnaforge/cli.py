@@ -674,8 +674,8 @@ def design(
 
             # Apply chemical modifications if enabled
             if parameters.apply_modifications:
-                from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
-                
+                from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate  # noqa: PLC0415
+
                 progress.update(task1, description="Applying modifications...")
                 for candidate in result.candidates:
                     apply_modifications_to_candidate(

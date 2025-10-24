@@ -4,11 +4,14 @@ from enum import Enum
 from typing import Any, Callable, Optional, TypeVar, Union
 
 import pandas as pd
+import pandera as pa
+from pandera.typing import DataFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.modification_patterns import get_modification_summary
 
 logger = get_logger(__name__)
 
@@ -137,17 +140,13 @@ class DesignParameters(BaseModel):
 
     # Chemical modification parameters
     apply_modifications: bool = Field(
-        default=True,
-        description="Automatically apply chemical modification patterns to designed siRNAs"
+        default=True, description="Automatically apply chemical modification patterns to designed siRNAs"
     )
     modification_pattern: str = Field(
         default="standard_2ome",
-        description="Modification pattern to apply (standard_2ome, minimal_terminal, maximal_stability, none)"
+        description="Modification pattern to apply (standard_2ome, minimal_terminal, maximal_stability, none)",
     )
-    default_overhang: str = Field(
-        default="dTdT",
-        description="Default overhang sequence (dTdT for DNA, UU for RNA)"
-    )
+    default_overhang: str = Field(default="dTdT", description="Default overhang sequence (dTdT for DNA, UU for RNA)")
 
     # File paths (optional)
     # TODO: review snp incorporation feature
@@ -293,7 +292,8 @@ class DesignResult(BaseModel):
     processing_time: float = Field(ge=0, description="Total processing time in seconds")
     tool_versions: dict[str, str] = Field(default_factory=dict, description="Software versions used in analysis")
 
-    def save_csv(self, filepath: str) -> None:
+    @pa.check_types
+    def save_csv(self, filepath: str) -> DataFrame[SiRNACandidateSchema]:
         """Save siRNA candidates to CSV file with comprehensive validation.
 
         Exports all candidates to CSV format with full thermodynamic metrics.
@@ -303,19 +303,19 @@ class DesignResult(BaseModel):
         Args:
             filepath: Output CSV file path
 
+        Returns:
+            Validated DataFrame conforming to SiRNACandidateSchema
+
         Raises:
             pandera.errors.SchemaError: If data validation fails
         """
-        # Import modification summary helper
-        from sirnaforge.utils.modification_patterns import get_modification_summary
-        
         df_data = []
         for candidate in self.candidates:
             cs = candidate.component_scores or {}
-            
+
             # Get modification summary if modifications were applied
             mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
-            
+
             row = {
                 "id": candidate.id,
                 "transcript_id": candidate.transcript_id,
@@ -363,6 +363,8 @@ class DesignResult(BaseModel):
 
         # Save validated DataFrame (with appended params if available)
         validated_df.to_csv(filepath, index=False)
+
+        return validated_df
 
     def get_summary(self) -> dict[str, Any]:
         """Generate summary statistics for the design results.

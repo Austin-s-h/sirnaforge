@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
@@ -37,6 +38,7 @@ from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriter
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
@@ -501,15 +503,14 @@ class SiRNAWorkflow:
 
     def _apply_modifications_to_results(self, design_results: DesignResult) -> None:
         """Apply chemical modification patterns to all candidates in design results.
-        
+
         Args:
             design_results: DesignResult containing candidates to modify
         """
-        from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
-        
+
         pattern = self.config.design_params.modification_pattern
         overhang = self.config.design_params.default_overhang
-        
+
         # Apply modifications to all candidates
         for candidate in design_results.candidates:
             apply_modifications_to_candidate(
@@ -518,10 +519,8 @@ class SiRNAWorkflow:
                 overhang=overhang,
                 target_gene=self.config.gene_query,
             )
-        
-        console.print(
-            f"✨ Applied {pattern} modification pattern with {overhang} overhangs to all candidates"
-        )
+
+        console.print(f"✨ Applied {pattern} modification pattern with {overhang} overhangs to all candidates")
 
     async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
@@ -537,16 +536,14 @@ class SiRNAWorkflow:
         # Emit candidate CSVs: always keep ALL and a filtered PASSING file
         try:
             # Import modification summary helper
-            from sirnaforge.utils.modification_patterns import get_modification_summary
-            
             # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
             rows = []
             for c in design_results.candidates:
                 cs = getattr(c, "component_scores", {}) or {}
-                
+
                 # Get modification summary if modifications were applied
                 mod_summary = get_modification_summary(c) if c.guide_metadata else {}
-                
+
                 rows.append(
                     {
                         "id": c.id,
@@ -985,8 +982,12 @@ class SiRNAWorkflow:
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-    def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> None:
-        """Generate ORF validation report in tab-delimited format with schema validation."""
+    def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
+        """Generate ORF validation report in tab-delimited format with schema validation.
+
+        Returns:
+            Validated DataFrame conforming to ORFValidationSchema
+        """
         # Handle empty results case
         if not orf_results:
             logger.warning("No ORF results to report - creating empty report file")
@@ -1033,7 +1034,7 @@ class SiRNAWorkflow:
             )
             validated_df = ORFValidationSchema.validate(empty_df)
             validated_df.to_csv(report_file, sep="\t", index=False)
-            return
+            return validated_df
 
         # Prepare data for DataFrame
         rows = []
@@ -1087,11 +1088,14 @@ class SiRNAWorkflow:
         if not orf_validation.overall_result.is_valid:
             logger.warning(f"ORF DataFrame validation issues: {len(orf_validation.overall_result.errors)} errors")
 
+        # Runtime validation with Pandera schema
         validated_df = ORFValidationSchema.validate(df)
         logger.info(f"ORF report schema validation passed for {len(validated_df)} transcripts")
 
         # Write validated DataFrame to file
         validated_df.to_csv(report_file, sep="\t", index=False)
+
+        return validated_df
 
     def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:  # noqa: ARG002
         """Deprecated: summary report disabled (kept for backward API compatibility)."""

@@ -18,7 +18,6 @@ from sirnaforge.models.modifications import (
     ChemicalModification,
     ConfirmationStatus,
     Provenance,
-    SequenceRecord,
     SourceType,
     StrandMetadata,
     StrandRole,
