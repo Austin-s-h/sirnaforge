@@ -15,10 +15,18 @@ import html
 import json
 import logging
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional, Union
+
+from .species_registry import (
+    CANONICAL_SPECIES_ALIAS_MAP,
+    CANONICAL_SPECIES_REGISTRY,
+    MIRGENEDB_ALIAS_MAP,
+    MIRGENEDB_SPECIES_TABLE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +71,32 @@ class CacheMetadata:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _build_mirgenedb_sources() -> dict[str, DatabaseSource]:
+    """Construct MirGeneDB source map from the slug-based metadata table."""
+
+    sources: dict[str, DatabaseSource] = {}
+    base_url = "https://www.mirgenedb.org/fasta/{slug}?mat=1"
+
+    for slug, metadata in MIRGENEDB_SPECIES_TABLE.items():
+        scientific_name = metadata.get("scientific_name", slug)
+        taxonomy_id = metadata.get("taxonomy_id")
+        common_name = metadata.get("common_name")
+        description = f"MirGeneDB high-confidence miRNAs ({scientific_name}, NCBI:{taxonomy_id})"
+        if common_name and common_name.lower() not in scientific_name.lower():
+            description = f"{description} [{common_name}]"
+
+        sources[slug] = DatabaseSource(
+            name="mirgenedb",
+            url=base_url.format(slug=slug),
+            species=slug,
+            format="fasta",
+            compressed=False,
+            description=description,
+        )
+
+    return sources
 
 
 class MiRNADatabaseManager:
@@ -148,32 +182,7 @@ class MiRNADatabaseManager:
                 description="miRBase hairpin precursor miRNA sequences (Rattus norvegicus - rno)",
             ),
         },
-        "mirgenedb": {
-            "human": DatabaseSource(
-                name="mirgenedb",
-                url="https://mirgenedb.org/fasta/9606?mat=1&ha=1",
-                species="human",
-                format="fasta",
-                compressed=False,
-                description="MirGeneDB high-confidence miRNAs (Homo sapiens, NCBI:9606)",
-            ),
-            "mouse": DatabaseSource(
-                name="mirgenedb",
-                url="https://mirgenedb.org/fasta/10090?mat=1&ha=1",
-                species="mouse",
-                format="fasta",
-                compressed=False,
-                description="MirGeneDB high-confidence miRNAs (Mus musculus, NCBI:10090)",
-            ),
-            "rat": DatabaseSource(
-                name="mirgenedb",
-                url="https://mirgenedb.org/fasta/10116?mat=1&ha=1",
-                species="rat",
-                format="fasta",
-                compressed=False,
-                description="MirGeneDB high-confidence miRNAs (Rattus norvegicus, NCBI:10116)",
-            ),
-        },
+        "mirgenedb": _build_mirgenedb_sources(),
         "targetscan": {
             "human": DatabaseSource(
                 name="targetscan",
@@ -185,6 +194,219 @@ class MiRNADatabaseManager:
             )
         },
     }
+
+    @classmethod
+    def get_available_sources(cls) -> list[str]:
+        """Return sorted list of supported database sources."""
+
+        return sorted(cls.SOURCES.keys())
+
+    @classmethod
+    def get_all_species(cls) -> list[str]:
+        """Return sorted list of all species across sources."""
+
+        species: set[str] = set()
+        for species_map in cls.SOURCES.values():
+            species.update(species_map.keys())
+        return sorted(species)
+
+    @classmethod
+    def get_species_for_source(cls, source_name: str) -> list[str]:
+        """Return sorted list of species supported by a given source."""
+
+        return sorted(cls.SOURCES.get(source_name, {}).keys())
+
+    @classmethod
+    def get_species_aliases(cls, source_name: str) -> dict[str, list[str]]:
+        """Return mapping of canonical species identifiers to their known aliases."""
+
+        if source_name != "mirgenedb":
+            return {species: [species] for species in cls.SOURCES.get(source_name, {})}
+
+        aliases: dict[str, list[str]] = {}
+        for slug, metadata in MIRGENEDB_SPECIES_TABLE.items():
+            alias_values = metadata.get("aliases", [])
+            aliases[slug] = sorted({slug, *[alias.lower() for alias in alias_values]})
+        return aliases
+
+    @classmethod
+    def get_canonical_species(cls) -> list[str]:
+        """Return sorted list of canonical species keys."""
+
+        return sorted(CANONICAL_SPECIES_REGISTRY.keys())
+
+    @classmethod
+    def canonicalize_species_name(cls, species: str) -> Optional[str]:
+        """Normalize a raw species identifier to a canonical key."""
+
+        if not species:
+            return None
+        return CANONICAL_SPECIES_ALIAS_MAP.get(species.lower())
+
+    @classmethod
+    def canonicalize_species_list(cls, species_list: Sequence[str]) -> list[str]:
+        """Normalize a list of species identifiers to canonical keys, preserving order."""
+
+        canonical: list[str] = []
+        unknown: list[str] = []
+
+        for raw_value in species_list:
+            key = cls.canonicalize_species_name(raw_value)
+            if key is None:
+                unknown.append(raw_value)
+                continue
+            if key not in canonical:
+                canonical.append(key)
+
+        if unknown:
+            raise ValueError(f"Unsupported species: {', '.join(unknown)}")
+
+        return canonical
+
+    @classmethod
+    def get_genome_species_for_canonical(cls, canonical_species: Sequence[str]) -> list[str]:
+        """Return genome species identifiers for canonical species keys."""
+
+        genome_species: list[str] = []
+        for key in canonical_species:
+            registry_entry = CANONICAL_SPECIES_REGISTRY.get(key)
+            if not registry_entry:
+                raise ValueError(f"Unknown canonical species '{key}'")
+            genome_name = registry_entry.get("genome")
+            if genome_name and genome_name not in genome_species:
+                genome_species.append(genome_name)
+        return genome_species
+
+    @classmethod
+    def get_mirna_slugs_for_canonical(cls, canonical_species: Sequence[str], source_name: str) -> list[str]:
+        """Return normalized miRNA identifiers for canonical species."""
+
+        slugs: list[str] = []
+        for key in canonical_species:
+            registry_entry = CANONICAL_SPECIES_REGISTRY.get(key)
+            if not registry_entry:
+                raise ValueError(f"Unknown canonical species '{key}'")
+
+            if source_name == "mirgenedb":
+                candidate = registry_entry.get("mirgenedb_slug")
+                if not candidate:
+                    raise ValueError(f"Canonical species '{key}' missing MirGeneDB slug mapping")
+            else:
+                candidate = registry_entry.get("genome")
+                if not candidate:
+                    raise ValueError(f"Canonical species '{key}' missing genome mapping")
+
+            normalized = cls.normalize_species(source_name, candidate)
+            if normalized is None:
+                normalized = candidate
+
+            if not cls.is_supported_species(source_name, normalized):
+                raise ValueError(f"Species '{normalized}' not available for source '{source_name}'")
+            if normalized not in slugs:
+                slugs.append(normalized)
+
+        return slugs
+
+    @classmethod
+    def get_supported_canonical_species_for_source(cls, source_name: str) -> list[str]:
+        """Return canonical species supported by a given source."""
+
+        supported: list[str] = []
+        if source_name == "mirgenedb":
+            for canonical_name, registry_entry in CANONICAL_SPECIES_REGISTRY.items():
+                slug = registry_entry.get("mirgenedb_slug")
+                if slug and slug in cls.SOURCES.get(source_name, {}):
+                    supported.append(canonical_name)
+        else:
+            available_species = cls.SOURCES.get(source_name, {})
+            for canonical_name, registry_entry in CANONICAL_SPECIES_REGISTRY.items():
+                genome_name = registry_entry.get("genome")
+                if genome_name and genome_name in available_species:
+                    supported.append(canonical_name)
+
+        return sorted(supported)
+
+    @classmethod
+    def resolve_species_selection(
+        cls,
+        requested_species: Sequence[str],
+        source_name: str,
+        mirna_overrides: Optional[Sequence[str]] = None,
+    ) -> dict[str, list[str]]:
+        """Resolve canonical, genome, and miRNA identifiers for the requested species."""
+
+        canonical_species = cls.canonicalize_species_list(requested_species)
+        genome_species = cls.get_genome_species_for_canonical(canonical_species)
+
+        if mirna_overrides:
+            overridden: list[str] = []
+            unknown: list[str] = []
+            for raw_value in mirna_overrides:
+                normalized = cls.normalize_species(source_name, raw_value)
+                if normalized is None:
+                    unknown.append(raw_value)
+                    continue
+                if not cls.is_supported_species(source_name, normalized):
+                    unknown.append(raw_value)
+                    continue
+                if normalized not in overridden:
+                    overridden.append(normalized)
+
+            if unknown:
+                raise ValueError(f"Unsupported miRNA species for source '{source_name}': {', '.join(unknown)}")
+            mirna_species = overridden
+        else:
+            mirna_species = cls.get_mirna_slugs_for_canonical(canonical_species, source_name)
+
+        return {
+            "canonical": canonical_species,
+            "genome": genome_species,
+            "mirna": mirna_species,
+        }
+
+    @classmethod
+    def _normalize_mirgenedb_species(cls, species: str) -> Optional[str]:
+        if not species:
+            return None
+        return MIRGENEDB_ALIAS_MAP.get(species.lower())
+
+    @classmethod
+    def normalize_species(cls, source_name: str, species: str) -> Optional[str]:
+        """Normalize user-provided species identifiers to canonical keys."""
+
+        if source_name == "mirgenedb":
+            return cls._normalize_mirgenedb_species(species)
+        return species
+
+    @classmethod
+    def get_source_configuration(cls, source_name: str, species: str) -> Optional[DatabaseSource]:
+        """Retrieve the DatabaseSource configuration for a given source/species."""
+
+        canonical_species = cls.normalize_species(source_name, species)
+        if canonical_species is None:
+            return None
+        return cls.SOURCES.get(source_name, {}).get(canonical_species)
+
+    @classmethod
+    def is_supported_source(cls, source_name: str) -> bool:
+        """Check if a source is supported."""
+
+        return source_name in cls.SOURCES
+
+    @classmethod
+    def is_supported_species(cls, source_name: str, species: str) -> bool:
+        """Check if a species is supported for the given source."""
+
+        canonical_species = cls.normalize_species(source_name, species)
+        if canonical_species is None:
+            return False
+        return canonical_species in cls.SOURCES.get(source_name, {})
+
+    @classmethod
+    def get_mirgenedb_species_metadata(cls) -> dict[str, dict[str, Any]]:
+        """Expose the MirGeneDB species metadata table."""
+
+        return {key: dict(value) for key, value in MIRGENEDB_SPECIES_TABLE.items()}
 
     def __init__(self, cache_dir: Optional[Union[str, Path]] = None, cache_ttl_days: int = 30):
         """Initialize the miRNA database manager.
@@ -246,6 +468,11 @@ class MiRNADatabaseManager:
         if not cache_file.exists():
             return False
 
+        # Reject zero-byte cache entries up front
+        if cache_file.stat().st_size == 0:
+            logger.warning("Cache file %s is empty; marking as invalid", cache_file)
+            return False
+
         # Check TTL
         downloaded_at = datetime.fromisoformat(meta.downloaded_at)
         if datetime.now() - downloaded_at > self.cache_ttl:
@@ -263,7 +490,15 @@ class MiRNADatabaseManager:
         try:
             logger.info(f"📥 Downloading {source.name} ({source.species}): {source.url}")
 
-            with urllib.request.urlopen(source.url, timeout=300) as response:
+            request = urllib.request.Request(
+                source.url,
+                headers={
+                    "User-Agent": "sirnaforge/1.0 (+https://github.com/austin-s-h/sirnaforge)",
+                    "Accept": "text/plain,application/octet-stream",
+                },
+            )
+
+            with urllib.request.urlopen(request, timeout=300) as response:
                 data = response.read()
 
             if source.compressed and source.url.endswith(".gz"):
@@ -283,6 +518,10 @@ class MiRNADatabaseManager:
             # Fix HTML entities (e.g., &gt; -> >, <br> -> newlines)
             content = html.unescape(content)
             content = content.replace("<br>", "\n").replace("<BR>", "\n")
+
+            if not content.strip():
+                logger.error("Received empty response from %s", source.url)
+                return None
 
             logger.info(f"✅ Downloaded {len(content):,} characters")
             return content
@@ -331,7 +570,11 @@ class MiRNADatabaseManager:
                 # Sequence line for a matching header
                 filtered_lines.append(line)
 
-        logger.info(f"Filtered to {len([line for line in filtered_lines if line.startswith('>')])} {species} sequences")
+        filtered_count = len([line for line in filtered_lines if line.startswith(">")])
+        if filtered_count == 0:
+            logger.error("No sequences found for species '%s' after filtering", species)
+
+        logger.info(f"Filtered to {filtered_count} {species} sequences")
         return "\n".join(filtered_lines)
 
     def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Optional[Path]:
@@ -347,12 +590,16 @@ class MiRNADatabaseManager:
         Returns:
             Path to cached FASTA file, or None if failed
         """
-        # Get source configuration
-        if source_name not in self.SOURCES or species not in self.SOURCES[source_name]:
+        normalized_species = self.normalize_species(source_name, species)
+        if normalized_species is None:
+            logger.error("Unknown species '%s' for source '%s'", species, source_name)
+            return None
+
+        if source_name not in self.SOURCES or normalized_species not in self.SOURCES[source_name]:
             logger.error(f"Unknown source/species combination: {source_name}/{species}")
             return None
 
-        source = self.SOURCES[source_name][species]
+        source = self.SOURCES[source_name][normalized_species]
         cache_key = source.cache_key()
         cache_file = self.cache_dir / f"{cache_key}.fa"
 
@@ -361,21 +608,61 @@ class MiRNADatabaseManager:
             logger.info(f"✅ Using cached {source.name} ({source.species}): {cache_file}")
             return cache_file
 
+        def cleanup_cache() -> None:
+            if cache_file.exists():
+                cache_file.unlink(missing_ok=True)
+            if cache_key in self.metadata:
+                del self.metadata[cache_key]
+                self._save_metadata()
+
         # Download and process
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
 
-        content = self._download_file(source)
+        content: Optional[str] = self._download_file(source)
+        failure = False
+
         if content is None:
+            failure = True
+        elif not content:
+            logger.error("Downloaded content for %s/%s is empty", source_name, normalized_species)
+            failure = True
+        else:
+            if source_name.startswith("mirbase"):
+                logger.info(f"🔄 Filtering for {normalized_species}...")
+                content = self._filter_species_sequences(content, normalized_species)
+                if not content.strip():
+                    logger.error(
+                        "Filtered miRBase content for %s/%s produced no sequences; discarding cache update",
+                        source_name,
+                        normalized_species,
+                    )
+                    failure = True
+            if not failure and not content.strip():
+                logger.error(
+                    "Downloaded content for %s/%s is empty after normalization",
+                    source_name,
+                    normalized_species,
+                )
+                failure = True
+
+        if failure:
+            cleanup_cache()
             return None
 
-        # Filter for species if this is a multi-species database
-        if source_name.startswith("mirbase"):
-            logger.info(f"🔄 Filtering for {species}...")
-            content = self._filter_species_sequences(content, species)
+        assert content is not None
 
         # Save to cache
         with cache_file.open("w", encoding="utf-8") as f:
             f.write(content)
+
+        if cache_file.stat().st_size == 0:
+            logger.error(
+                "Downloaded content for %s/%s is empty; removing cache file",
+                source_name,
+                normalized_species,
+            )
+            cleanup_cache()
+            return None
 
         # Update metadata
         checksum = self._compute_file_checksum(cache_file)
@@ -390,6 +677,13 @@ class MiRNADatabaseManager:
         logger.info(f"✅ Cached {source.name} ({source.species}): {cache_file} ({cache_file.stat().st_size:,} bytes)")
         return cache_file
 
+    def _canonical_species_for_sources(self, sources: list[str], species: str) -> str:
+        for source_name in sources:
+            normalized = self.normalize_species(source_name, species)
+            if normalized:
+                return normalized
+        return species
+
     def get_combined_database(
         self, sources: list[str], species: str, output_name: Optional[str] = None
     ) -> Optional[Path]:
@@ -403,8 +697,10 @@ class MiRNADatabaseManager:
         Returns:
             Path to combined FASTA file
         """
+        canonical_species = self._canonical_species_for_sources(sources, species)
+
         if output_name is None:
-            output_name = f"combined_{species}_{'_'.join(sources)}.fa"
+            output_name = f"combined_{canonical_species}_{'_'.join(sources)}.fa"
 
         combined_file = self.cache_dir / output_name
 
@@ -424,8 +720,8 @@ class MiRNADatabaseManager:
                 logger.info(f"✅ Using existing combined database: {combined_file}")
                 return combined_file
 
-        # Combine databases
-        logger.info(f"🔄 Combining {len(sources)} databases for {species}...")
+            # Combine databases
+            logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
 
         seen_sequences = set()
         total_sequences = 0
@@ -546,17 +842,20 @@ class MiRNADatabaseManager:
 
 def _create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
+    sources = MiRNADatabaseManager.get_available_sources()
+    species_choices = MiRNADatabaseManager.get_all_species()
+
     parser = argparse.ArgumentParser(description="miRNA Database Manager")
     parser.add_argument(
         "--source",
-        choices=["mirbase", "mirbase_high_conf", "mirbase_hairpin", "mirgenedb", "targetscan"],
+        choices=sources,
         help="Database source",
     )
-    parser.add_argument("--species", choices=["human", "mouse", "rat"], help="Target species")
+    parser.add_argument("--species", choices=species_choices, help="Target species")
     parser.add_argument(
         "--combine",
         nargs="+",
-        choices=["mirbase", "mirbase_high_conf", "mirbase_hairpin", "mirgenedb", "targetscan"],
+        choices=sources,
         help="Combine multiple sources",
     )
     parser.add_argument("--list", action="store_true", help="List available databases")

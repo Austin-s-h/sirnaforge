@@ -49,12 +49,73 @@ class TestMiRNADatabaseManager:
 
         # Should have at least mirbase
         assert "mirbase" in sources or "mirbase_high_conf" in sources
+        assert "mirgenedb" in sources
 
         # Each source should have species mappings
         for _source_name, species_dict in sources.items():
             assert isinstance(species_dict, dict)
             for _species, source in species_dict.items():
                 assert hasattr(source, "description")
+
+    @pytest.mark.unit
+    @pytest.mark.local_python
+    def test_available_sources_helpers(self):
+        """Helper methods should expose supported sources and species."""
+        sources = MiRNADatabaseManager.get_available_sources()
+        assert "mirgenedb" in sources
+        assert "mirbase" in sources
+        mirgenedb_species = MiRNADatabaseManager.get_species_for_source("mirgenedb")
+        assert "hsa" in mirgenedb_species
+        assert "mmu" in mirgenedb_species
+        assert "dre" in mirgenedb_species
+        assert MiRNADatabaseManager.normalize_species("mirgenedb", "human") == "hsa"
+
+        all_species = MiRNADatabaseManager.get_all_species()
+        assert "human" in all_species
+        assert "rat" in all_species
+        assert MiRNADatabaseManager.normalize_species("mirgenedb", "mosquito") == "aga"
+
+    @pytest.mark.unit
+    @pytest.mark.local_python
+    def test_mirgenedb_source_metadata(self):
+        """MirGeneDB helper should expose taxonomy metadata and build URLs."""
+        metadata = MiRNADatabaseManager.get_mirgenedb_species_metadata()
+        assert metadata["hsa"]["taxonomy_id"] == "9606"
+        assert "scientific_name" in metadata["dre"]
+
+        source = MiRNADatabaseManager.get_source_configuration("mirgenedb", "human")
+        assert source is not None
+        assert source.species == "hsa"
+        assert source.url.startswith("https://www.mirgenedb.org/fasta/hsa")
+
+    @pytest.mark.unit
+    @pytest.mark.local_python
+    def test_canonical_species_resolution(self):
+        """Canonical species registry should map aliases to genome and miRNA identifiers."""
+        resolution = MiRNADatabaseManager.resolve_species_selection(
+            ["Human", "mmu", "Chicken"],
+            "mirgenedb",
+        )
+        assert resolution["canonical"] == ["human", "mouse", "chicken"]
+        assert resolution["genome"] == ["human", "mouse", "chicken"]
+        assert resolution["mirna"] == ["hsa", "mmu", "chi"]
+
+        override = MiRNADatabaseManager.resolve_species_selection(
+            ["human"],
+            "mirgenedb",
+            mirna_overrides=["HSA", "human"],
+        )
+        assert override["mirna"] == ["hsa"]
+
+        with pytest.raises(ValueError):
+            MiRNADatabaseManager.resolve_species_selection(["unicorn"], "mirgenedb")
+
+    @pytest.mark.unit
+    @pytest.mark.local_python
+    def test_species_validation_helpers(self):
+        """Validation helpers should confirm supported and unsupported selections."""
+        assert MiRNADatabaseManager.is_supported_species("mirgenedb", "human") is True
+        assert MiRNADatabaseManager.is_supported_species("mirgenedb", "unicorn") is False
 
     @pytest.mark.unit
     @pytest.mark.local_python

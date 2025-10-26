@@ -360,10 +360,27 @@ def workflow(
         min=1,
         help="Number of top siRNA candidates to select (also used for off-target analysis)",
     ),
-    genome_species: str = typer.Option(
-        "human,rat,rhesus",
+    species: str = typer.Option(
+        "human,mouse,rhesus,rat,chicken",
+        "--species",
         "--genome-species",
-        help="Comma-separated list of genome species for off-target analysis",
+        help=(
+            "Comma-separated canonical species identifiers (genome+miRNA). "
+            "Supported values include human, mouse, rhesus, rat, chicken"
+        ),
+    ),
+    mirna_db: str = typer.Option(
+        "mirgenedb",
+        "--mirna-db",
+        help="miRNA reference database to use for seed analysis",
+    ),
+    mirna_species: Optional[str] = typer.Option(
+        None,
+        "--mirna-species",
+        help=(
+            "Optional comma-separated override for miRNA species identifiers. "
+            "Defaults to mapping the --species selections"
+        ),
     ),
     gc_min: float = typer.Option(
         30.0,
@@ -421,8 +438,45 @@ def workflow(
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
 
-    # Parse genome species
-    species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
+    source_normalized = mirna_db.lower()
+    if not MiRNADatabaseManager.is_supported_source(source_normalized):
+        valid_sources = ", ".join(MiRNADatabaseManager.get_available_sources())
+        console.print(f"❌ Error: unknown miRNA database '{mirna_db}'. Supported sources: {valid_sources}", style="red")
+        raise typer.Exit(1)
+
+    requested_species = [token.strip() for token in species.split(",") if token.strip()]
+    if not requested_species:
+        console.print("❌ Error: at least one species must be provided", style="red")
+        raise typer.Exit(1)
+
+    mirna_overrides = None
+    if mirna_species:
+        mirna_overrides = [token.strip() for token in mirna_species.split(",") if token.strip()]
+        if not mirna_overrides:
+            console.print("❌ Error: --mirna-species override must contain at least one value", style="red")
+            raise typer.Exit(1)
+
+    try:
+        species_resolution = MiRNADatabaseManager.resolve_species_selection(
+            requested_species,
+            source_normalized,
+            mirna_overrides=mirna_overrides,
+        )
+    except ValueError as exc:
+        supported = MiRNADatabaseManager.get_supported_canonical_species_for_source(source_normalized)
+        console.print(
+            f"❌ Error: {exc}. Supported canonical species: {', '.join(supported)}",
+            style="red",
+        )
+        raise typer.Exit(1)
+
+    canonical_species = species_resolution["canonical"]
+    species_list = species_resolution["genome"]
+    mirna_species_list = species_resolution["mirna"]
+
+    if not mirna_species_list:
+        console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
+        raise typer.Exit(1)
 
     input_descriptor = gene_query
     if input_fasta:
@@ -437,7 +491,9 @@ def workflow(
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
             f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
+            f"Species: [green]{', '.join(canonical_species)}[/green]\n"
             f"Genome Species: [green]{', '.join(species_list)}[/green]\n"
+            f"miRNA Reference ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
@@ -465,6 +521,8 @@ def workflow(
                     database=database,
                     top_n_candidates=top_n_candidates,
                     genome_species=species_list,
+                    mirna_database=source_normalized,
+                    mirna_species=mirna_species_list,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,

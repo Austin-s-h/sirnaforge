@@ -19,6 +19,7 @@ import math
 import os
 import tempfile
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,8 @@ class WorkflowConfig:
         # off-target selection now always equals design_params.top_n
         nextflow_config: dict | None = None,
         genome_species: list[str] | None = None,
+        mirna_database: str = "mirgenedb",
+        mirna_species: Sequence[str] | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
@@ -76,14 +79,21 @@ class WorkflowConfig:
         self.design_params = design_params or DesignParameters()
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
-        self.nextflow_config = nextflow_config or {}
-        self.genome_species = genome_species or ["human", "rat", "rhesus"]
+        self.nextflow_config = dict(nextflow_config) if nextflow_config else {}
+        default_genomes = genome_species or ["human", "rat", "rhesus"]
+        self.genome_species = list(dict.fromkeys(default_genomes))
+        self.mirna_database = mirna_database
+        self.mirna_species = list(dict.fromkeys(mirna_species)) if mirna_species else []
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
         # Parallelism for design stage (cap at 4 CPUs for better efficiency)
         requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
         self.num_threads = max(1, min(4, requested_threads))
+
+        if self.mirna_database and self.mirna_species:
+            self.nextflow_config.setdefault("mirna_db", self.mirna_database)
+            self.nextflow_config.setdefault("mirna_species", ",".join(self.mirna_species))
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -179,6 +189,10 @@ class SiRNAWorkflow:
                 "database": self.config.database.value,
                 "output_dir": str(self.config.output_dir),
                 "processing_time": total_time,
+                "mirna_reference": {
+                    "database": self.config.mirna_database,
+                    "species": self.config.mirna_species,
+                },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
             "orf_summary": self._summarize_orf_results(orf_results),
@@ -1153,6 +1167,8 @@ async def run_sirna_workflow(
     database: str = "ensembl",
     top_n_candidates: int = 20,
     genome_species: list[str] | None = None,
+    mirna_database: str = "mirgenedb",
+    mirna_species: Sequence[str] | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
@@ -1170,6 +1186,8 @@ async def run_sirna_workflow(
         database: Database to search (ensembl, refseq, gencode)
         top_n_candidates: Number of top candidates to generate
         genome_species: Species genomes for off-target analysis
+        mirna_database: miRNA reference database identifier
+        mirna_species: miRNA reference species identifiers
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
@@ -1211,6 +1229,8 @@ async def run_sirna_workflow(
         database=database_enum,
         design_params=design_params,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        mirna_database=mirna_database,
+        mirna_species=mirna_species,
         log_file=log_file,
         write_json_summary=write_json_summary,
         input_source=resolved_input,
