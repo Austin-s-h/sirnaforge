@@ -445,6 +445,12 @@ class DesignResult(BaseModel):
 
         df = pd.DataFrame(df_data)
 
+        # Convert nullable integer columns to pandas Int64 dtype for proper None handling
+        nullable_int_cols = ["seed_7mer_hits", "seed_8mer_hits"]
+        for col in nullable_int_cols:
+            if col in df.columns:
+                df[col] = df[col].astype("Int64")
+
         # Validate DataFrame against schema - let failures bubble up
         logger.debug(f"Validating siRNA candidates DataFrame with {len(df)} rows")
         validated_df = SiRNACandidateSchema.validate(df)

@@ -177,15 +177,13 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
-    seed_7mer_hits: Series[int] = Field(
+    seed_7mer_hits: Series[pd.Int64Dtype] = Field(
         description="Number of 7mer seed matches in off-target analysis",
         nullable=True,
-        coerce=True,
     )
-    seed_8mer_hits: Series[int] = Field(
+    seed_8mer_hits: Series[pd.Int64Dtype] = Field(
         description="Number of 8mer seed matches in off-target analysis",
         nullable=True,
-        coerce=True,
     )
     seed_hits_weighted: Series[float] = Field(
         description="Weighted seed hits by 3' UTR abundance (if expression data provided)",

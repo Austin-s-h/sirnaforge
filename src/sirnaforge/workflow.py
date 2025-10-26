@@ -610,6 +610,13 @@ class SiRNAWorkflow:
                 )
 
             all_df = pd.DataFrame(rows)
+
+            # Convert nullable integer columns to pandas Int64 dtype for proper None handling
+            nullable_int_cols = ["seed_7mer_hits", "seed_8mer_hits"]
+            for col in nullable_int_cols:
+                if col in all_df.columns:
+                    all_df[col] = all_df[col].astype("Int64")
+
             # Validate with schema (will raise if invalid)
             validated_all = SiRNACandidateSchema.validate(all_df)
 
