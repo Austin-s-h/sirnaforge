@@ -156,43 +156,43 @@ class SiRNACandidateSchema(DataFrameModel):
     off_target_count: Series[int] = Field(ge=0, description="Number of potential off-target sites (goal: ≤3)")
 
     # miRNA-specific columns (populated when design_mode == "mirna")
-    # Using Any type for nullable integer columns to avoid coercion issues with None
-    guide_pos1_base: Series[Any] = Field(
+    # Using object type for nullable columns to avoid coercion issues with None
+    guide_pos1_base: Series[object] = Field(
         description="Nucleotide at guide position 1 (for Argonaute selection)",
         nullable=True,
         coerce=True,
     )
-    pos1_pairing_state: Series[Any] = Field(
+    pos1_pairing_state: Series[object] = Field(
         description="Pairing state at position 1: perfect, wobble, or mismatch",
         nullable=True,
         coerce=True,
     )
-    seed_class: Series[Any] = Field(
+    seed_class: Series[object] = Field(
         description="Seed match class: 6mer, 7mer-m8, 7mer-a1, or 8mer",
         nullable=True,
         coerce=True,
     )
-    supp_13_16_score: Series[Any] = Field(
+    supp_13_16_score: Series[object] = Field(
         description="3' supplementary pairing score (positions 13-16)",
         nullable=True,
         coerce=True,
     )
-    seed_7mer_hits: Series[Any] = Field(
+    seed_7mer_hits: Series[object] = Field(
         description="Number of 7mer seed matches in off-target analysis",
         nullable=True,
         coerce=True,
     )
-    seed_8mer_hits: Series[Any] = Field(
+    seed_8mer_hits: Series[object] = Field(
         description="Number of 8mer seed matches in off-target analysis",
         nullable=True,
         coerce=True,
     )
-    seed_hits_weighted: Series[Any] = Field(
+    seed_hits_weighted: Series[object] = Field(
         description="Weighted seed hits by 3' UTR abundance (if expression data provided)",
         nullable=True,
         coerce=True,
     )
-    off_target_seed_risk_class: Series[Any] = Field(
+    off_target_seed_risk_class: Series[object] = Field(
         description="Off-target risk classification: low, medium, high",
         nullable=True,
         coerce=True,
