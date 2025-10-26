@@ -717,9 +717,12 @@ def design(  # noqa: PLR0912
             console=console,
         ) as progress:
             # Import here to avoid slow startup
+            from sirnaforge.core.design import MiRNADesigner  # noqa: PLC0415
 
             task1 = progress.add_task("Loading sequences...", total=None)
-            designer = SiRNADesigner(parameters)
+
+            # Select designer based on design mode
+            designer = MiRNADesigner(parameters) if mode_enum == DesignMode.MIRNA else SiRNADesigner(parameters)
 
             progress.update(task1, description="Designing siRNAs...")
             result = designer.design_from_file(str(input_file))

@@ -28,7 +28,7 @@ from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
-from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
 from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
@@ -102,7 +102,14 @@ class SiRNAWorkflow:
         self.gene_searcher = GeneSearcher()
         self.orf_analyzer = ORFAnalyzer()
         self.validation = ValidationMiddleware(config.validation_config)
-        self.sirnaforgeer = SiRNADesigner(config.design_params)
+
+        # Select designer based on design mode
+        self.sirnaforgeer: SiRNADesigner
+        if config.design_params.design_mode == DesignMode.MIRNA:
+            self.sirnaforgeer = MiRNADesigner(config.design_params)
+        else:
+            self.sirnaforgeer = SiRNADesigner(config.design_params)
+
         self.results: dict = {}
 
     async def run_complete_workflow(self) -> dict:
