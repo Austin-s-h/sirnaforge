@@ -2,11 +2,6 @@ process PREPARE_CANDIDATES {
     tag "$meta.id"
     label 'process_low'
 
-    conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6':
-        'community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6' }"
-
     input:
     tuple val(meta), path(candidates_fasta)
 
@@ -22,26 +17,16 @@ process PREPARE_CANDIDATES {
     python3 -c "
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import validate_and_write_sequences
+from sirnaforge.pipeline.nextflow_cli import prepare_candidates_cli
 
 # Validate siRNA candidates
-total, valid, errors = validate_and_write_sequences(
-    input_file='${candidates_fasta}',
-    output_file='validated_candidates.fasta',
+result = prepare_candidates_cli(
+    input_fasta='${candidates_fasta}',
+    output_fasta='validated_candidates.fasta',
     expected_length=21
 )
 
-# Write validation report
-with open('validation_report.txt', 'w') as f:
-    f.write(f'Total candidates: {total}\\n')
-    f.write(f'Valid candidates: {valid}\\n')
-    f.write(f'Invalid candidates: {total - valid}\\n')
-    if errors:
-        f.write('\\nErrors:\\n')
-        for error in errors:
-            f.write(f'  {error}\\n')
-
-print(f'Validated {valid} out of {total} candidates')
+print(f'Validated {result[\"valid\"]} out of {result[\"total\"]} candidates')
 "
 
     cat <<-END_VERSIONS > versions.yml

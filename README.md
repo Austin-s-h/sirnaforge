@@ -160,87 +160,6 @@ uv run sirnaforge --help
 uv run sirnaforge workflow --help
 ```
 
-### Python API
-
-**🔧 Programmatic Access for Custom Workflows:**
-```python
-import asyncio
-from pathlib import Path
-from sirnaforge.workflow import run_sirna_workflow
-from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.models.sirna import DesignParameters, FilterCriteria
-from sirnaforge.data.gene_search import search_gene_sync
-
-# Complete async workflow with custom parameters
-async def design_sirnas_custom():
-    results = await run_sirna_workflow(
-        gene_query="TP53",
-        output_dir="results",
-        database="ensembl",
-        top_n_candidates=50,
-        top_n_offtarget=15,
-        genome_species=["human", "rat", "rhesus"],
-        gc_min=40.0,
-        gc_max=60.0,
-        sirna_length=21,
-    )
-    return results
-
-# Run the workflow
-results = asyncio.run(design_sirnas_custom())
-print(f"✅ Designed {len(results.get('top_candidates', []))} siRNA candidates")
-
-# Individual component usage for custom pipelines
-def custom_design_pipeline():
-    # 1. Search for gene transcripts
-    transcripts = search_gene_sync(
-        gene_query="BRCA1",
-        database="ensembl",
-        output_file="transcripts.fasta"
-    )
-
-    # 2. Configure design parameters
-    design_params = DesignParameters(
-        sirna_length=21,
-        filters=FilterCriteria(
-            gc_min=40,
-            gc_max=60,
-            avoid_patterns=["AAAA", "TTTT", "GGGG", "CCCC"]
-        )
-    )
-
-    # 3. Initialize designer and generate candidates
-    designer = SiRNADesigner(design_params)
-    design_results = designer.design_from_file("transcripts.fasta")
-
-    # 4. Process results
-    for candidate in design_results.top_candidates[:10]:
-        print(f"Candidate {candidate.id}:")
-        print(f"  Guide: {candidate.guide_sequence}")
-        print(f"  Score: {candidate.composite_score:.2f}")
-        print(f"  GC%: {candidate.gc_content:.1f}")
-        print(f"  Transcripts: {len(candidate.transcript_ids)}")
-        print()
-
-    return design_results
-
-# Example: Batch processing multiple genes
-async def batch_design_genes(genes: list[str]):
-    results = {}
-    for gene in genes:
-        print(f"Processing {gene}...")
-        gene_results = await run_sirna_workflow(
-            gene_query=gene,
-            output_dir=f"results_{gene.lower()}",
-            top_n_candidates=20
-        )
-        results[gene] = gene_results
-    return results
-
-# Process multiple cancer-related genes
-cancer_genes = ["TP53", "BRCA1", "BRCA2", "EGFR", "MYC"]
-batch_results = asyncio.run(batch_design_genes(cancer_genes))
-```
 
 ## 🏗️ Architecture & Workflow
 
@@ -342,6 +261,8 @@ sirnaforge/
     ├── pyproject.toml            # Python packaging and tool configuration
     ├── Makefile                  # Development workflow automation
     └── uv.lock                   # Reproducible dependency resolution
+```
+
 ## 📊 Output Formats & Results
 
 siRNAforge generates comprehensive, structured outputs for downstream analysis and experimental validation:
@@ -436,73 +357,7 @@ Top 5 Candidates:
 }
 ```
 
-### Integration with Analysis Tools
-
-**🔬 For Laboratory Validation:**
-- FASTA files can be directly submitted to oligonucleotide synthesis providers
-- CSV files import into Excel/R/Python for further analysis
-- Candidate rankings support experimental prioritization
-
-**🖥️ For Computational Analysis:**
-- JSON outputs enable programmatic result processing
-- Structured CSV format supports statistical analysis and machine learning
-- Off-target data facilitates safety assessment and regulatory compliance
-
-**📊 For Visualization and Reporting:**
-- Summary reports provide publication-ready candidate lists
-- Score distributions support quality control assessment
-- Multi-species comparisons enable cross-species research applications
-
-## 🔬 Nextflow Pipeline Integration
-
-The integrated Nextflow pipeline provides scalable, containerized off-target analysis:
-
-### Pipeline Features
-
-- **Multi-Species Analysis** - Human, rat, rhesus macaque genomes
-- **Parallel Processing** - Each siRNA candidate processed independently
-- **Auto Index Management** - Downloads and builds BWA indices on demand
-- **Cloud Ready** - AWS Batch, Kubernetes, SLURM support
-- **Comprehensive Results** - TSV, JSON, and HTML outputs
-
-### Usage Examples
-
-```bash
-# Standalone pipeline execution
-nextflow run nextflow_pipeline/main.nf \
-  --input candidates.fasta \
-  --genome_species "human,rat,rhesus" \
-  --outdir results
-
-# With custom genome indices
-nextflow run nextflow_pipeline/main.nf \
-  --input candidates.fasta \
-  --genome_indices "human:/path/to/human/index" \
-  --profile docker
-
-# Using S3-hosted indices
-nextflow run nextflow_pipeline/main.nf \
-  --input candidates.fasta \
-  --download_indexes true \
-  --profile aws
-```
-
-### Pipeline Output Structure
-
-```
-results/
-├── aggregated/                    # Final combined results
-│   ├── combined_mirna_analysis.tsv
-│   ├── combined_transcriptome_analysis.tsv
-│   ├── combined_summary.json
-│   └── analysis_report.html
-└── individual_results/            # Per-candidate results
-    ├── candidate_0001/
-    ├── candidate_0002/
-    └── ...
-```
-
-## 🛠️ Development & Quality Assurance
+## 🛠️ Development
 
 ### Modern Development Environment with uv
 
@@ -555,44 +410,6 @@ conda deactivate
 
 The conda environment includes all bioinformatics tools (BWA-MEM2, SAMtools, ViennaRNA, etc.) plus Python development dependencies, providing a complete local development setup without Docker.
 
-### Quality Assurance & Testing
-
-**🧪 Comprehensive Test Suite:**
-```bash
-# Run all tests with coverage reporting
-make test
-# Output: >95% code coverage across all modules
-
-# Fast development testing (unit tests only)
-make test-fast
-
-# Integration tests (includes external APIs)
-uv run pytest tests/integration/ -v
-
-# Pipeline tests (requires Docker/Nextflow)
-uv run pytest tests/pipeline/ -v
-
-# Specific test categories
-uv run pytest tests/unit/test_design.py::test_scoring_algorithm -v
-```
-
-**🔍 Code Quality Tools:**
-```bash
-# Type checking with mypy (strict mode)
-uv run mypy src/
-# Result: Success: no issues found in 20 source files
-
-# Code formatting with black
-uv run black src tests
-make format
-
-# Linting with ruff (fast Python linter)
-uv run ruff check src tests
-make lint
-
-# All quality checks together
-make lint  # Includes ruff, black, mypy, nextflow lint
-```
 
 ### Available Dependency Groups
 
@@ -612,44 +429,6 @@ make lint  # Includes ruff, black, mypy, nextflow lint
 - **Testing**: Comprehensive pytest suite with >90% coverage
 - **CI/CD**: GitHub Actions with multi-Python testing
 - **Security**: Bandit + Safety dependency scanning
-
-## ⚡ Performance & System Requirements
-
-### Performance Benchmarks
-
-**🧬 siRNA Design Performance:**
-- **Small genes** (1-5 transcripts): ~2-5 seconds
-- **Medium genes** (5-20 transcripts): ~10-30 seconds
-- **Large genes** (20+ transcripts): ~1-2 minutes
-- **Batch processing** (10 genes): ~5-15 minutes
-
-**🔍 Off-target Analysis Performance:**
-- **Per candidate** (single species): ~30-60 seconds
-- **Multi-species** (3 genomes): ~2-5 minutes per candidate
-- **Batch analysis** (50 candidates): ~1-3 hours (parallelized)
-
-### System Requirements
-
-**🔧 Minimum Requirements:**
-- **CPU**: 2 cores, 2.0 GHz
-- **RAM**: 4 GB (8 GB recommended for off-target analysis)
-- **Storage**: 2 GB free space (+ 50 GB for genome indices)
-- **Network**: Internet connection for gene searches and genome downloads
-
-**⚡ Recommended Configuration:**
-- **CPU**: 8+ cores, 3.0 GHz (for parallel Nextflow execution)
-- **RAM**: 16-32 GB (for large-scale off-target analysis)
-- **Storage**: SSD with 100+ GB (for genome indices and temporary files)
-- **Network**: High-bandwidth connection for S3 genome downloads
-
-**🐳 Docker Resource Allocation:**
-```bash
-# Recommended Docker settings
-docker run --cpus="4" --memory="8g" \
-  -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow TP53 --genome-species human,rat,rhesus
-```
 
 ## 🐳 Docker Usage
 
@@ -707,40 +486,6 @@ Docker-powered tiers share the same pytest markers but execute inside the publis
 | `make docker-test-full` | `docker run … uv run --group dev pytest -v -n 2` | 4 CPUs / 8 GB | Release-grade validation |
 
 > ℹ️ Run `make install-dev` once to install development dependencies and pre-commit hooks before using these targets. The full matrix of commands, filters, and expected runtimes lives in [`docs/testing_guide.md`](docs/testing_guide.md).
-
-#### Docker smoke snapshot
-
-For a quick environment sanity check, `make docker-test-smoke` exercises the published container image with toy data in ~40 seconds (0.5 CPU, 256 MB). A passing run prints **9 passed** with no failures; any remaining pytest collection warnings are tracked in the test suite and should disappear once the dataclass fix in this branch lands.
-
-### Fast CI/CD with Toy Data ⚡
-
-siRNAforge now includes an improved CI/CD workflow designed for quick feedback with minimal resources:
-
-- **⚡ Ultra-fast execution**: < 15 minutes total
-- **🪶 Minimal resources**: 256MB memory, 0.5 CPU cores
-- **🧸 Toy data**: < 500 bytes of test sequences
-- **🔥 Smoke tests**: Essential functionality validation
-
-```bash
-# Trigger fast CI/CD workflow locally
-pytest -m "smoke" --tb=short
-
-# Use toy data for quick validation
-ls tests/unit/data/toy_*.fasta
-
-# Fast workflow vs comprehensive workflow
-# Fast:    15 min,  256MB RAM, toy data
-# Full:    60 min,    8GB RAM, real datasets
-```
-
-See [`docs/ci-cd-fast.md`](docs/ci-cd-fast.md) for detailed documentation.
-
-### Test Categories
-
-- **Unit Tests** - Core algorithm validation
-- **Integration Tests** - Component interaction testing
-- **Pipeline Tests** - Nextflow workflow validation
-- **Docker Tests** - Container functionality testing
 
 ## 📚 Documentation
 

@@ -2,11 +2,6 @@ process RESOLVE_INDICES {
     tag "$genome_species"
     label 'process_low'
 
-    conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_pyyaml:4ec8e5b31fe18bb4':
-        'community.wave.seqera.io/library/python_pyyaml:4ec8e5b31fe18bb4' }"
-
     input:
     val genome_species
     path genome_config

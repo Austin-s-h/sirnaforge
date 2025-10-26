@@ -2,11 +2,6 @@ process OFFTARGET_ANALYSIS {
     tag "${candidate_meta.id}-$species-$index_type"
     label 'process_medium'
 
-    conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f':
-        'community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f' }"
-
     input:
     tuple val(candidate_meta), path(candidate_fasta), val(species), val(index_path), val(index_type)
     val max_hits
@@ -28,17 +23,17 @@ process OFFTARGET_ANALYSIS {
     python3 -c "
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import run_bwa_alignment_analysis
-import os
+from sirnaforge.pipeline.nextflow_cli import run_offtarget_analysis_cli
 
 print(f'Running ${index_type} analysis for candidate ${candidate_id} against ${species}')
 print(f'Using index path: ${index_path}')
 
 # Run analysis
-result_dir = run_bwa_alignment_analysis(
-    candidates_file='${candidate_fasta}',
-    index_prefix='${index_path}',
+result = run_offtarget_analysis_cli(
+    candidate_fasta='${candidate_fasta}',
+    candidate_id='${candidate_id}',
     species='${species}',
+    index_prefix='${index_path}',
     output_dir='.',
     max_hits=${max_hits},
     bwa_k=${bwa_k},

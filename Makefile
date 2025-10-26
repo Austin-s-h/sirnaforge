@@ -233,6 +233,7 @@ docker-dev: ## Interactive Docker development shell
 		$(DOCKER_IMAGE):latest bash
 
 docker-test: docker-ensure-image ## Run tests in Docker (4GB memory for Nextflow compatibility)
+	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
 	docker run --rm \
 		--cpus=2 \
 		--memory=4g \
@@ -240,10 +241,13 @@ docker-test: docker-ensure-image ## Run tests in Docker (4GB memory for Nextflow
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
+		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
+		-e NXF_WORK=/workspace/.nextflow_work \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 --maxfail=5"
 
 docker-test-fast: docker-ensure-image ## Run smoke + basic integration tests (combines both test types)
+	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
 	docker run --rm \
 		--cpus=1 \
 		--memory=2g \
@@ -251,10 +255,13 @@ docker-test-fast: docker-ensure-image ## Run smoke + basic integration tests (co
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
+		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
+		-e NXF_WORK=/workspace/.nextflow_work \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and not slow' --maxfail=3"
 
 docker-test-lightweight: docker-ensure-image ## Run only lightweight Docker tests
+	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
 	docker run --rm \
 		--cpus=1 \
 		--memory=1g \
@@ -262,10 +269,13 @@ docker-test-lightweight: docker-ensure-image ## Run only lightweight Docker test
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
+		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
+		-e NXF_WORK=/workspace/.nextflow_work \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'lightweight or docker' --maxfail=3"
 
 docker-test-smoke: docker-ensure-image ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST ALWAYS PASS
+	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
 	docker run --rm \
 		--cpus=0.5 \
 		--memory=256m \
@@ -273,10 +283,13 @@ docker-test-smoke: docker-ensure-image ## Run ultra-minimal smoke tests for CI/C
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
+		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
+		-e NXF_WORK=/workspace/.nextflow_work \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and smoke' --maxfail=1 --tb=short"
 
 docker-test-full: docker-ensure-image ## Run all tests in Docker (4GB memory for Nextflow compatibility)
+	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
 	docker run --rm \
 		--cpus=4 \
 		--memory=4g \
@@ -284,6 +297,8 @@ docker-test-full: docker-ensure-image ## Run all tests in Docker (4GB memory for
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
+		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
+		-e NXF_WORK=/workspace/.nextflow_work \
 		$(DOCKER_IMAGE):latest \
 		uv run --group dev pytest -v -n 2
 
@@ -292,6 +307,7 @@ docker-test-categories: ## Test the new smoke/integration categorization
 	./scripts/test_docker_categories.sh
 
 docker-test-integration: docker-ensure-image ## Run integration tests only (complex workflows that may fail in pre-release)
+	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
 	docker run --rm \
 		--cpus=2 \
 		--memory=4g \
@@ -299,6 +315,8 @@ docker-test-integration: docker-ensure-image ## Run integration tests only (comp
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
 		-e UV_LINK_MODE=copy \
+		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
+		-e NXF_WORK=/workspace/.nextflow_work \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 -m 'docker and (docker_integration or (not smoke))' --maxfail=5 --tb=short"
 

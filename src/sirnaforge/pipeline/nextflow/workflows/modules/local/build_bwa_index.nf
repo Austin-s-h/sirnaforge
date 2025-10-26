@@ -2,11 +2,6 @@ process BUILD_BWA_INDEX {
     tag "$species"
     label 'process_high'
 
-    conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'quay.io/biocontainers/bwa-mem2:2.2.1--he513fc3_0':
-        'biocontainers/bwa-mem2:2.2.1--he513fc3_0' }"
-
     input:
     tuple val(species), path(genome_fasta)
 
@@ -22,15 +17,16 @@ process BUILD_BWA_INDEX {
     python3 -c "
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import build_bwa_index
+from sirnaforge.pipeline.nextflow_cli import build_bwa_index_cli
 
 # Build BWA index
-index_prefix = build_bwa_index(
+result = build_bwa_index_cli(
     fasta_file='${genome_fasta}',
-    index_prefix='${species}_index'
+    species='${species}',
+    output_dir='.'
 )
 
-print(f'Built BWA index for ${species}: {index_prefix}')
+print(f'Built BWA index for ${species}: {result[\"index_prefix\"]}')
 "
 
     cat <<-END_VERSIONS > versions.yml

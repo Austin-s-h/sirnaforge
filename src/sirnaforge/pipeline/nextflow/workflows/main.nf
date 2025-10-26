@@ -36,12 +36,20 @@ workflow SIRNAFORGE_OFFTARGET {
         ===============================================
         input                : ${params.input}
         outdir               : ${params.outdir}
+
+        GENOME ANALYSIS (OPTIONAL - Resource Intensive)
+        genome_fastas        : ${params.genome_fastas ?: 'Not provided (miRNA-only mode)'}
+        genome_indices       : ${params.genome_indices ?: 'Not provided'}
         genome_species       : ${params.genome_species}
+
+        ANALYSIS PARAMETERS
         max_hits             : ${params.max_hits}
         bwa_k                : ${params.bwa_k}
         bwa_T                : ${params.bwa_T}
         seed_start           : ${params.seed_start}
         seed_end             : ${params.seed_end}
+
+        RESOURCES
         max_memory           : ${params.max_memory}
         """
         .stripIndent()
@@ -67,6 +75,8 @@ workflow SIRNAFORGE_OFFTARGET {
     ])
 
     // Genome configurations: parse both FASTAs and indices
+    // NOTE: Genome/transcriptome analysis is OPTIONAL (resource-intensive: 8-60GB RAM)
+    // If not provided, only lightweight miRNA seed match analysis will run
     ch_genomes = Channel.empty()
 
     // Parse genome FASTAs (for building indices)
@@ -77,6 +87,7 @@ workflow SIRNAFORGE_OFFTARGET {
                 [species.trim(), file(fasta_path.trim(), checkIfExists: true), 'fasta']
             }
         ch_genomes = ch_genomes.mix(ch_fasta_genomes)
+        log.info "Genome FASTAs provided - enabling resource-intensive off-target analysis"
     }
 
     // Parse pre-built indices
@@ -87,12 +98,14 @@ workflow SIRNAFORGE_OFFTARGET {
                 [species.trim(), index_path.trim(), 'index']
             }
         ch_genomes = ch_genomes.mix(ch_index_genomes)
+        log.info "Genome indices provided - enabling resource-intensive off-target analysis"
     }
 
-    // If no genomes specified, use default species list with discovery
+    // If no genomes specified, only lightweight miRNA analysis will run
     if (!params.genome_fastas && !params.genome_indices) {
-        ch_genomes = Channel.from(params.genome_species.split(','))
-            .map { species -> [species.trim(), null, 'discover'] }
+        log.info "No genome FASTAs or indices provided"
+        log.info "Genome/transcriptome off-target analysis: DISABLED"
+        log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
     }
 
     //
@@ -109,6 +122,7 @@ workflow SIRNAFORGE_OFFTARGET {
     )
 
     emit:
+    mirna_results        = SIRNA_OFFTARGET_ANALYSIS.out.mirna_results
     individual_results   = SIRNA_OFFTARGET_ANALYSIS.out.individual_results
     combined_analyses    = SIRNA_OFFTARGET_ANALYSIS.out.combined_analyses
     combined_summary     = SIRNA_OFFTARGET_ANALYSIS.out.combined_summary
