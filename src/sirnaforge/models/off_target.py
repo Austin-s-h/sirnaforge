@@ -10,6 +10,7 @@ serialization to JSON/TSV formats.
 """
 
 import re
+from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -32,29 +33,27 @@ class AnalysisMode(str, Enum):
     TRANSCRIPTOME = "transcriptome"
 
 
-class OffTargetHit(BaseModel):
-    """Single off-target alignment hit from BWA analysis.
+# Base classes for shared functionality
+class BaseAlignmentHit(BaseModel, ABC):
+    """Base class for alignment hits with common fields and validators.
 
-    Represents one potential off-target binding site identified by
-    sequence alignment against a reference genome or transcriptome.
+    This abstract base class contains all shared fields and validation logic
+    for both off-target and miRNA alignment hits.
     """
 
     model_config = {"frozen": False, "validate_assignment": True}
 
-    # Query information
+    # Query information (common to all hits)
     qname: str = Field(description="Query siRNA sequence identifier")
     qseq: str = Field(description="Query sequence (siRNA candidate)")
 
-    # Target information
-    rname: str = Field(description="Reference sequence identifier (chromosome, transcript, etc.)")
+    # Alignment details (common to all hits)
     coord: int = Field(ge=0, description="Alignment coordinate (0-based)")
     strand: AlignmentStrand = Field(description="Strand orientation")
-
-    # Alignment details
     cigar: str = Field(description="CIGAR string describing alignment")
     mapq: int = Field(ge=0, le=255, description="Mapping quality (0-255)")
 
-    # Scoring
+    # Scoring (common to all hits)
     as_score: Optional[int] = Field(default=None, description="Alignment score (AS tag)")
     nm: int = Field(ge=0, description="Edit distance / number of mismatches")
     seed_mismatches: int = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
@@ -82,6 +81,33 @@ class OffTargetHit(BaseModel):
             raise ValueError(f"Invalid CIGAR string format: {v}")
         return v
 
+    @abstractmethod
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for TSV/JSON serialization."""
+        pass
+
+    def to_tsv_row(self) -> str:
+        """Convert to TSV row format."""
+        d = self.to_dict()
+        return "\t".join(str(d[k]) for k in d)
+
+    @classmethod
+    @abstractmethod
+    def tsv_header(cls) -> str:
+        """Get TSV header line."""
+        pass
+
+
+class OffTargetHit(BaseAlignmentHit):
+    """Single off-target alignment hit from BWA analysis.
+
+    Represents one potential off-target binding site identified by
+    sequence alignment against a reference genome or transcriptome.
+    """
+
+    # Target information (specific to genome/transcriptome hits)
+    rname: str = Field(description="Reference sequence identifier (chromosome, transcript, etc.)")
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for TSV/JSON serialization."""
         return {
@@ -98,57 +124,23 @@ class OffTargetHit(BaseModel):
             "offtarget_score": self.offtarget_score,
         }
 
-    def to_tsv_row(self) -> str:
-        """Convert to TSV row format."""
-        d = self.to_dict()
-        return "\t".join(str(d[k]) for k in d)
-
     @classmethod
     def tsv_header(cls) -> str:
         """Get TSV header line."""
         return "qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
 
 
-class MiRNAHit(BaseModel):
+class MiRNAHit(BaseAlignmentHit):
     """Single miRNA seed match hit from BWA analysis.
 
     Represents a potential miRNA-like seed match identified by
     alignment against miRNA databases.
     """
 
-    model_config = {"frozen": False, "validate_assignment": True}
-
-    # Query information
-    qname: str = Field(description="Query siRNA sequence identifier")
-    qseq: str = Field(description="Query sequence (siRNA candidate)")
-
-    # miRNA information
+    # miRNA-specific information
     species: str = Field(description="Species of miRNA database")
     database: str = Field(description="miRNA database name (mirgenedb, mirbase, etc.)")
     mirna_id: str = Field(description="miRNA identifier (e.g., hsa-miR-21-5p)")
-
-    # Alignment details
-    coord: int = Field(ge=0, description="Alignment coordinate in miRNA sequence")
-    strand: AlignmentStrand = Field(description="Strand orientation")
-    cigar: str = Field(description="CIGAR string describing alignment")
-    mapq: int = Field(ge=0, le=255, description="Mapping quality (0-255)")
-
-    # Scoring
-    as_score: Optional[int] = Field(default=None, description="Alignment score (AS tag)")
-    nm: int = Field(ge=0, description="Edit distance / number of mismatches")
-    seed_mismatches: int = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
-    offtarget_score: float = Field(ge=0.0, description="Off-target penalty score")
-
-    @field_validator("qseq")
-    @classmethod
-    def validate_sequence(cls, v: str) -> str:
-        """Ensure sequence contains only valid nucleotide characters."""
-        if not v:
-            raise ValueError("Query sequence cannot be empty")
-        valid_chars = set("ATCGUN-")
-        if not set(v.upper()).issubset(valid_chars):
-            raise ValueError(f"Invalid nucleotide characters in sequence: {v}")
-        return v.upper()
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for TSV/JSON serialization."""
@@ -168,11 +160,6 @@ class MiRNAHit(BaseModel):
             "offtarget_score": self.offtarget_score,
         }
 
-    def to_tsv_row(self) -> str:
-        """Convert to TSV row format."""
-        d = self.to_dict()
-        return "\t".join(str(d[k]) for k in d)
-
     @classmethod
     def tsv_header(cls) -> str:
         """Get TSV header line."""
@@ -182,39 +169,37 @@ class MiRNAHit(BaseModel):
         )
 
 
-class AnalysisSummary(BaseModel):
-    """Summary statistics for a single candidate's off-target analysis."""
+class BaseSummary(BaseModel):
+    """Base class for analysis summary statistics with common metadata fields."""
 
     model_config = {"frozen": False}
 
     candidate_id: str = Field(description="Candidate identifier")
+    total_sequences: int = Field(ge=0, description="Number of sequences analyzed")
+    total_hits: int = Field(ge=0, description="Total hits found")
+
+    # Common metadata
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Analysis timestamp")
+    status: str = Field(default="completed", description="Analysis status")
+
+
+class AnalysisSummary(BaseSummary):
+    """Summary statistics for a single candidate's off-target analysis."""
+
     species: str = Field(description="Target species analyzed")
     mode: AnalysisMode = Field(description="Analysis mode used")
-
-    total_sequences: int = Field(ge=0, description="Number of sequences analyzed")
-    total_hits: int = Field(ge=0, description="Total off-target hits found")
 
     # Alignment statistics
     mean_mapq: Optional[float] = Field(default=None, ge=0.0, le=255.0, description="Mean mapping quality")
     mean_mismatches: Optional[float] = Field(default=None, ge=0.0, description="Mean number of mismatches")
     mean_seed_mismatches: Optional[float] = Field(default=None, ge=0.0, description="Mean seed region mismatches")
 
-    # Analysis metadata
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Analysis timestamp")
-    status: str = Field(default="completed", description="Analysis status")
 
-
-class MiRNASummary(BaseModel):
+class MiRNASummary(BaseSummary):
     """Summary statistics for miRNA seed match analysis."""
 
-    model_config = {"frozen": False}
-
-    candidate_id: str = Field(description="Candidate identifier")
     mirna_database: str = Field(description="miRNA database used")
     species_analyzed: list[str] = Field(description="List of species analyzed")
-
-    total_sequences: int = Field(ge=0, description="Number of sequences analyzed")
-    total_hits: int = Field(ge=0, description="Total miRNA seed matches")
     hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
 
     # Analysis parameters
@@ -223,48 +208,37 @@ class MiRNASummary(BaseModel):
         description="Analysis parameters",
     )
 
-    # Metadata
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Analysis timestamp")
-    status: str = Field(default="completed", description="Analysis status")
 
-
-class AggregatedOffTargetSummary(BaseModel):
-    """Summary of aggregated off-target results across multiple candidates and genomes."""
+class BaseAggregatedSummary(BaseModel):
+    """Base class for aggregated analysis summaries with common fields."""
 
     model_config = {"frozen": False}
 
-    total_results: int = Field(ge=0, description="Total off-target hits aggregated")
     species_analyzed: list[str] = Field(description="List of species analyzed")
     analysis_files_processed: int = Field(ge=0, description="Number of analysis files processed")
 
-    # File paths
+    # Common file paths
     combined_tsv: Optional[Path] = Field(default=None, description="Path to combined TSV file")
     combined_json: Optional[Path] = Field(default=None, description="Path to combined JSON file")
     summary_file: Optional[Path] = Field(default=None, description="Path to summary file")
 
-    # Metadata
+    # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Aggregation timestamp")
 
 
-class AggregatedMiRNASummary(BaseModel):
-    """Summary of aggregated miRNA results across multiple candidates."""
+class AggregatedOffTargetSummary(BaseAggregatedSummary):
+    """Summary of aggregated off-target results across multiple candidates and genomes."""
 
-    model_config = {"frozen": False}
+    total_results: int = Field(ge=0, description="Total off-target hits aggregated")
+
+
+class AggregatedMiRNASummary(BaseAggregatedSummary):
+    """Summary of aggregated miRNA results across multiple candidates."""
 
     total_mirna_hits: int = Field(ge=0, description="Total miRNA seed matches")
     mirna_database: str = Field(description="miRNA database used")
-    species_analyzed: list[str] = Field(description="List of species analyzed")
 
     hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
     hits_per_candidate: dict[str, int] = Field(default_factory=dict, description="Hit counts by candidate")
 
-    analysis_files_processed: int = Field(ge=0, description="Number of analysis files processed")
     total_candidates: int = Field(ge=0, description="Total candidates analyzed")
-
-    # File paths
-    combined_tsv: Optional[Path] = Field(default=None, description="Path to combined TSV file")
-    combined_json: Optional[Path] = Field(default=None, description="Path to combined JSON file")
-    summary_file: Optional[Path] = Field(default=None, description="Path to summary file")
-
-    # Metadata
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Aggregation timestamp")
