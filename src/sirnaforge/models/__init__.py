@@ -10,18 +10,22 @@ from .modifications import (
     StrandRole,
 )
 from .sirna import (
+    DesignMode,
     DesignParameters,
     DesignResult,
     FilterCriteria,
+    MiRNADesignConfig,
     ScoringWeights,
     SequenceType,
     SiRNACandidate,
 )
 
 __all__ = [
+    "DesignMode",
     "DesignParameters",
     "DesignResult",
     "FilterCriteria",
+    "MiRNADesignConfig",
     "ScoringWeights",
     "SequenceType",
     "SiRNACandidate",

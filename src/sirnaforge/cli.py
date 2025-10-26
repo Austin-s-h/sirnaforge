@@ -51,7 +51,7 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
-from sirnaforge.models.sirna import DesignParameters, FilterCriteria
+from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
@@ -353,6 +353,11 @@ def workflow(
         "-d",
         help="Database to search (ensembl, refseq, gencode)",
     ),
+    design_mode: str = typer.Option(
+        "sirna",
+        "--design-mode",
+        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
+    ),
     top_n_candidates: int = typer.Option(
         20,
         "--top-n",
@@ -421,6 +426,25 @@ def workflow(
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
 
+    # Validate and parse design mode
+    try:
+        mode_enum = DesignMode(design_mode.lower())
+    except ValueError:
+        console.print(f"❌ Error: Invalid design mode '{design_mode}'. Choose 'sirna' or 'mirna'", style="red")
+        raise typer.Exit(1)
+
+    # Apply miRNA mode defaults if specified
+    if mode_enum == DesignMode.MIRNA:
+        mirna_config = MiRNADesignConfig()
+        # Override defaults with miRNA presets if user didn't explicitly specify
+        if gc_min == 30.0 and gc_max == 52.0:  # User didn't override GC range
+            gc_min = mirna_config.gc_min
+            gc_max = mirna_config.gc_max
+        if overhang == "dTdT":  # User didn't override overhang
+            overhang = mirna_config.overhang
+        if modification_pattern == "standard_2ome":  # User didn't override modifications
+            modification_pattern = mirna_config.modifications
+
     # Parse genome species
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
 
@@ -431,6 +455,7 @@ def workflow(
     console.print(
         Panel.fit(
             f"🧬 [bold blue]Complete siRNA Workflow[/bold blue]\n"
+            f"Design Mode: [cyan]{mode_enum.value}[/cyan]\n"
             f"Gene Query: [cyan]{input_descriptor}[/cyan]\n"
             f"Database: [yellow]{database}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
@@ -463,6 +488,7 @@ def workflow(
                     input_fasta=input_fasta,
                     output_dir=str(output_dir),
                     database=database,
+                    design_mode=design_mode,
                     top_n_candidates=top_n_candidates,
                     genome_species=species_list,
                     gc_min=gc_min,
@@ -531,7 +557,7 @@ def workflow(
 
 
 @app_command()
-def design(
+def design(  # noqa: PLR0912
     input_file: Path = typer.Argument(
         ...,
         help="Input FASTA file containing transcript sequences",
@@ -544,6 +570,11 @@ def design(
         "--output",
         "-o",
         help="Output file for siRNA candidates",
+    ),
+    design_mode: str = typer.Option(
+        "sirna",
+        "--design-mode",
+        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
     ),
     length: int = typer.Option(
         21,
@@ -624,6 +655,25 @@ def design(
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
 
+    # Validate and parse design mode
+    try:
+        mode_enum = DesignMode(design_mode.lower())
+    except ValueError:
+        console.print(f"❌ Error: Invalid design mode '{design_mode}'. Choose 'sirna' or 'mirna'", style="red")
+        raise typer.Exit(1)
+
+    # Apply miRNA mode defaults if specified
+    if mode_enum == DesignMode.MIRNA:
+        mirna_config = MiRNADesignConfig()
+        # Override defaults with miRNA presets if user didn't explicitly specify
+        if gc_min == 30.0 and gc_max == 52.0:  # User didn't override GC range
+            gc_min = mirna_config.gc_min
+            gc_max = mirna_config.gc_max
+        if overhang == "dTdT":  # User didn't override overhang
+            overhang = mirna_config.overhang
+        if modification_pattern == "standard_2ome":  # User didn't override modifications
+            modification_pattern = mirna_config.modifications
+
     # Create parameters
     filters = FilterCriteria(
         gc_min=gc_min,
@@ -632,6 +682,7 @@ def design(
     )
 
     parameters = DesignParameters(
+        design_mode=mode_enum,
         sirna_length=length,
         top_n=top_n,
         filters=filters,
@@ -647,6 +698,7 @@ def design(
     console.print(
         Panel.fit(
             f"🧬 [bold blue]siRNAforge Toolkit[/bold blue]\n"
+            f"Design Mode: [cyan]{mode_enum.value}[/cyan]\n"
             f"Input: [cyan]{input_file}[/cyan]\n"
             f"Output: [cyan]{output}[/cyan]\n"
             f"Length: [yellow]{length}[/yellow] nt\n"

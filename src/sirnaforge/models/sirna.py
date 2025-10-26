@@ -118,10 +118,68 @@ class ScoringWeights(BaseModel):
         return v
 
 
+class DesignMode(str, Enum):
+    """Design mode for siRNA/miRNA-biogenesis-aware workflows."""
+
+    SIRNA = "sirna"  # Standard siRNA design mode
+    MIRNA = "mirna"  # miRNA-biogenesis-aware design mode
+
+
+class MiRNADesignConfig(BaseModel):
+    """Configuration preset for miRNA-biogenesis-aware siRNA design.
+
+    This config encapsulates thresholds, defaults, and scoring weights
+    optimized for miRNA-like processing (Drosha/Dicer recognition,
+    Argonaute loading preferences, seed-based off-target analysis).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Conservative thermodynamic thresholds for miRNA mode
+    gc_min: float = Field(default=30.0, ge=0, le=100, description="Minimum GC content % for miRNA mode")
+    gc_max: float = Field(default=52.0, ge=0, le=100, description="Maximum GC content % for miRNA mode")
+    asymmetry_min: float = Field(default=0.65, ge=0, le=1, description="Minimum asymmetry score for Argonaute loading")
+    max_homopolymer: int = Field(default=3, ge=1, description="Maximum homopolymer run length")
+
+    # Canonical duplex format defaults
+    overhang: str = Field(default="UU", description="Default overhang for miRNA mode (UU for RNA)")
+    modifications: str = Field(
+        default="standard_2ome", description="Default chemical modification pattern for miRNA mode"
+    )
+
+    # Off-target preset
+    off_target_preset: str = Field(
+        default="MIRNA_SEED_7_8", description="Off-target analysis preset (seed-based matching)"
+    )
+
+    # Scoring weights for miRNA-specific features
+    scoring_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "ago_start_bonus": 0.1,  # Bonus for A/U at guide position 1
+            "pos1_mismatch_bonus": 0.05,  # Bonus for G:U wobble or mismatch at position 1
+            "seed_clean_bonus": 0.15,  # Bonus for clean seed region (positions 2-8)
+            "supp_13_16_bonus": 0.1,  # Bonus for 3' supplementary pairing potential
+            "five_p_end_destabilization_bonus": 0.1,  # Bonus for destabilized 5' guide end
+        },
+        description="Scoring weight modifiers for miRNA-specific features",
+    )
+
+    # Pri-miRNA hairpin validation (enabled only when hairpin context is provided)
+    enable_pri_hairpin_validation: bool = Field(
+        default=False,
+        description="Enable pri-miRNA hairpin structure validation (requires hairpin input)",
+    )
+
+
 class DesignParameters(BaseModel):
     """Complete configuration parameters for siRNA design workflow."""
 
     model_config = ConfigDict(extra="forbid")
+
+    # Design mode selection
+    design_mode: DesignMode = Field(
+        default=DesignMode.SIRNA, description="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)"
+    )
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
@@ -198,6 +256,30 @@ class SiRNACandidate(BaseModel):
     # Off-target analysis
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
+
+    # miRNA-specific fields (populated when design_mode == "mirna")
+    guide_pos1_base: Optional[str] = Field(
+        default=None, description="Nucleotide at guide position 1 (for Argonaute selection scoring)"
+    )
+    pos1_pairing_state: Optional[str] = Field(
+        default=None, description="Pairing state at position 1: perfect, wobble, or mismatch"
+    )
+    seed_class: Optional[str] = Field(default=None, description="Seed match class: 6mer, 7mer-m8, 7mer-a1, or 8mer")
+    supp_13_16_score: Optional[float] = Field(
+        default=None, ge=0, le=1, description="3' supplementary pairing score (positions 13-16)"
+    )
+    seed_7mer_hits: Optional[int] = Field(
+        default=None, ge=0, description="Number of 7mer seed matches in off-target analysis"
+    )
+    seed_8mer_hits: Optional[int] = Field(
+        default=None, ge=0, description="Number of 8mer seed matches in off-target analysis"
+    )
+    seed_hits_weighted: Optional[float] = Field(
+        default=None, ge=0, description="Weighted seed hits by 3' UTR abundance (if expression data provided)"
+    )
+    off_target_seed_risk_class: Optional[str] = Field(
+        default=None, description="Off-target risk classification: low, medium, high"
+    )
 
     # Transcript hit metrics (how many input transcripts this guide hits)
     transcript_hit_count: int = Field(

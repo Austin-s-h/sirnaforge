@@ -34,7 +34,7 @@ from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
-from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
+from sirnaforge.models.sirna import DesignMode, DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
@@ -1151,6 +1151,7 @@ async def run_sirna_workflow(
     output_dir: str,
     input_fasta: str | None = None,
     database: str = "ensembl",
+    design_mode: str = "sirna",
     top_n_candidates: int = 20,
     genome_species: list[str] | None = None,
     gc_min: float = 30.0,
@@ -1168,6 +1169,7 @@ async def run_sirna_workflow(
         gene_query: Gene name or ID to search for
         output_dir: Directory for output files
         database: Database to search (ensembl, refseq, gencode)
+        design_mode: Design mode (sirna or mirna)
         top_n_candidates: Number of top candidates to generate
         genome_species: Species genomes for off-target analysis
         gc_min: Minimum GC content percentage
@@ -1177,6 +1179,12 @@ async def run_sirna_workflow(
     Returns:
         Dictionary with complete workflow results
     """
+    # Parse design mode
+    try:
+        mode_enum = DesignMode(design_mode.lower())
+    except ValueError:
+        mode_enum = DesignMode.SIRNA
+
     # Configure filter criteria
     filter_criteria = FilterCriteria(
         gc_min=gc_min,
@@ -1185,6 +1193,7 @@ async def run_sirna_workflow(
 
     # Configure workflow with modification parameters
     design_params = DesignParameters(
+        design_mode=mode_enum,
         top_n=top_n_candidates,
         sirna_length=sirna_length,
         filters=filter_criteria,
