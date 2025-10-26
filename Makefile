@@ -212,6 +212,14 @@ docker: ## Build Docker image
 	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
 	@echo "✅ Docker image built: $(DOCKER_IMAGE):$(VERSION)"
 
+docker-ensure-image: ## Ensure Docker image exists (build if missing)
+	@if ! docker image inspect $(DOCKER_IMAGE):latest >/dev/null 2>&1; then \
+		echo "🐳 Docker image not found, building..."; \
+		$(MAKE) docker; \
+	else \
+		echo "✅ Docker image $(DOCKER_IMAGE):latest already exists"; \
+	fi
+
 docker-run: GENE ?= TP53
 docker-run: ## Run workflow in Docker (usage: make docker-run GENE=<gene>)
 	docker run -v $$(pwd):/workspace -w /workspace \
@@ -224,37 +232,40 @@ docker-dev: ## Interactive Docker development shell
 		$(UV_CACHE_MOUNT) \
 		$(DOCKER_IMAGE):latest bash
 
-docker-test: ## Run tests in Docker (resource-limited for development)
+docker-test: docker-ensure-image ## Run tests in Docker (4GB memory for Nextflow compatibility)
 	docker run --rm \
 		--cpus=2 \
 		--memory=4g \
 		--memory-swap=6g \
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
+		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 --maxfail=5"
 
-docker-test-fast: ## Run smoke + basic integration tests (combines both test types)
+docker-test-fast: docker-ensure-image ## Run smoke + basic integration tests (combines both test types)
 	docker run --rm \
 		--cpus=1 \
 		--memory=2g \
 		--memory-swap=3g \
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
+		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and not slow' --maxfail=3"
 
-docker-test-lightweight: ## Run only lightweight Docker tests
+docker-test-lightweight: docker-ensure-image ## Run only lightweight Docker tests
 	docker run --rm \
 		--cpus=1 \
 		--memory=1g \
 		--memory-swap=2g \
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
+		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'lightweight or docker' --maxfail=3"
 
-docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST ALWAYS PASS
+docker-test-smoke: docker-ensure-image ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST ALWAYS PASS
 	docker run --rm \
 		--cpus=0.5 \
 		--memory=256m \
@@ -265,13 +276,14 @@ docker-test-smoke: ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST A
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and smoke' --maxfail=1 --tb=short"
 
-docker-test-full: ## Run all tests in Docker (high resources, for CI)
+docker-test-full: docker-ensure-image ## Run all tests in Docker (4GB memory for Nextflow compatibility)
 	docker run --rm \
 		--cpus=4 \
-		--memory=8g \
-		--memory-swap=12g \
+		--memory=4g \
+		--memory-swap=6g \
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
+		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
 		uv run --group dev pytest -v -n 2
 
@@ -279,13 +291,14 @@ docker-test-categories: ## Test the new smoke/integration categorization
 	@echo "🧪 Testing Docker test categorization for CI/CD workflow..."
 	./scripts/test_docker_categories.sh
 
-docker-test-integration: ## Run integration tests only (complex workflows that may fail in pre-release)
+docker-test-integration: docker-ensure-image ## Run integration tests only (complex workflows that may fail in pre-release)
 	docker run --rm \
 		--cpus=2 \
-		--memory=2g \
-		--memory-swap=3g \
+		--memory=4g \
+		--memory-swap=6g \
 		-v $$(pwd):/workspace -w /workspace \
 		$(UV_CACHE_MOUNT) \
+		-e UV_LINK_MODE=copy \
 		$(DOCKER_IMAGE):latest \
 		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 -m 'docker and (docker_integration or (not smoke))' --maxfail=5 --tb=short"
 

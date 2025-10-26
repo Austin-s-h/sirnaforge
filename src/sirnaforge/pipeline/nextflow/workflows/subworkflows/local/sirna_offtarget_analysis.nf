@@ -70,11 +70,10 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Create combinations for parallel processing: each candidate x each genome
     //
     SPLIT_CANDIDATES.out.individual_candidates
-        .flatten()
-        .map { file ->
-            // Extract candidate metadata from filename
-            def candidate_id = file.simpleName.replaceAll(/candidate_/, '').replaceAll(/\.fasta$/, '')
-            [[id: candidate_id, file: file.name], file]
+        .map { meta, candidate_file ->
+            // Preserve original metadata when available, otherwise derive from filename
+            def candidate_id = meta?.id ?: candidate_file.simpleName.replaceAll(/candidate_/, '').replaceAll(/\.fasta$/, '')
+            [[id: candidate_id, file: candidate_file.name], candidate_file]
         }
         .set { ch_individual_candidates }
 

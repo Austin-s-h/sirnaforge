@@ -23,11 +23,11 @@ process SPLIT_CANDIDATES {
     python3 -c "
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import parse_fasta_sequences
+from sirnaforge.core.off_target import parse_fasta_file
 from pathlib import Path
 
 # Parse candidates
-sequences = parse_fasta_sequences('${candidates_fasta}')
+sequences = parse_fasta_file('${candidates_fasta}')
 
 # Split into individual files
 candidate_files = []

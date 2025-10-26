@@ -64,9 +64,18 @@ USER root
 # so COPY --chown can resolve the user/group name.
 RUN useradd -m -s /bin/bash -u 1000 sirnauser && mkdir -p /home/sirnauser
 
+# Install runtime utilities required by Nextflow (ps for task metrics).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy the pre-built conda prefix from the conda-builder stage and set ownership
 # to the non-root user at layer creation time (fast, avoids recursive chown).
 COPY --from=conda-builder --chown=sirnauser:sirnauser /opt/conda /opt/conda
+
+# Provide micromamba/conda shims so Nextflow can materialize per-process envs.
+COPY --from=conda-builder /usr/bin/micromamba /usr/local/bin/micromamba
+RUN ln -sf /usr/local/bin/micromamba /usr/local/bin/conda
 
 # Switch to non-root user and install the application wheel into the conda
 # prefix (pip will satisfy pure-Python deps from wheels).
@@ -93,6 +102,8 @@ ENV NXF_HOME="/home/sirnauser/.nextflow"
 ENV UV_SYSTEM_PYTHON=1
 ENV UV_PYTHON="/opt/conda/bin/python"
 ENV VIRTUAL_ENV="/opt/conda"
+ENV MAMBA_ROOT_PREFIX="/opt/conda"
+ENV NXF_CONDA_CLI="micromamba"
 
 # Ensure Nextflow home is created and writable by the non-root user so Nextflow
 # does not attempt to create runtime directories under /usr/local/bin.
