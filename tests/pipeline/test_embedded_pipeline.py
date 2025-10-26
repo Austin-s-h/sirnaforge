@@ -243,6 +243,22 @@ class TestPipelineIntegration:
         assert test_config.profile == expected_test_profile
         assert prod_config.profile == "docker"
 
+    def test_memory_calculation_applies_buffer(self):
+        """Ensure memory auto-detect rounds down with a safety buffer."""
+        sixteen_gib = 16 * 1024**3
+        assert NextflowConfig._calculate_safe_memory_limit(sixteen_gib) == "15.GB"
+
+    def test_auto_configure_uses_detected_memory(self, monkeypatch):
+        """auto_configure should honor detected memory limits when available."""
+
+        def fake_autodetect(cls):
+            return "42.GB"
+
+        monkeypatch.setattr(NextflowConfig, "_autodetect_max_memory", classmethod(fake_autodetect))
+
+        config = NextflowConfig.auto_configure()
+        assert config.max_memory == "42.GB"
+
     def test_docker_availability_check(self):
         """Test Docker availability validation."""
         config = NextflowConfig()

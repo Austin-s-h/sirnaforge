@@ -19,6 +19,7 @@ Simple Usage Examples:
     config = NextflowConfig.for_local_docker_testing()
 """
 
+import math
 import os
 import shutil
 import subprocess  # nosec B404
@@ -89,6 +90,10 @@ def _validate_command_args(cmd: list[str]) -> None:
 class NextflowConfig:
     """Configuration manager for Nextflow workflows."""
 
+    MEMORY_BUFFER_GB = 0.5
+    MIN_MEMORY_GB = 1
+    _UNLIMITED_MEMORY_THRESHOLD_BYTES = 1 << 60  # Treat extremely large limits as "unbounded"
+
     def __init__(
         self,
         docker_image: str = "ghcr.io/austin-s-h/sirnaforge:latest",
@@ -118,6 +123,119 @@ class NextflowConfig:
         self.max_memory = max_memory
         self.max_time = max_time
         self.extra_params = kwargs
+
+    @classmethod
+    def _autodetect_max_memory(cls) -> Optional[str]:
+        """Detect a safe Nextflow max_memory value based on system limits."""
+        if os.getenv("SIRNAFORGE_DISABLE_MEMORY_AUTODETECT", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):  # pragma: no cover - opt-out
+            logger.info("Memory auto-detect disabled via SIRNAFORGE_DISABLE_MEMORY_AUTODETECT")
+            return None
+
+        env_override = os.getenv("SIRNAFORGE_MAX_MEMORY_GB")
+        if env_override:
+            try:
+                override_gb = float(env_override)
+                detected = cls._calculate_safe_memory_limit_from_gb(override_gb)
+                logger.info(
+                    "Using SIRNAFORGE_MAX_MEMORY_GB override (requested %.2f GiB -> %s)",
+                    override_gb,
+                    detected,
+                )
+                return detected
+            except ValueError:
+                logger.warning("Invalid SIRNAFORGE_MAX_MEMORY_GB value '%s' - ignoring", env_override)
+
+        cgroup_limit = cls._read_cgroup_memory_limit_bytes()
+        if cgroup_limit:
+            detected = cls._calculate_safe_memory_limit(cgroup_limit)
+            logger.info(
+                "Detected cgroup memory limit %.2f GiB -> using %s for Nextflow max_memory",
+                cgroup_limit / (1024**3),
+                detected,
+            )
+            return detected
+
+        meminfo_total = cls._read_meminfo_total_bytes()
+        if meminfo_total:
+            detected = cls._calculate_safe_memory_limit(meminfo_total)
+            logger.info(
+                "Detected system memory %.2f GiB -> using %s for Nextflow max_memory",
+                meminfo_total / (1024**3),
+                detected,
+            )
+            return detected
+
+        logger.warning("Unable to auto-detect system memory - falling back to default max_memory")
+        return None
+
+    @classmethod
+    def _read_cgroup_memory_limit_bytes(cls) -> Optional[int]:
+        """Read memory limits exposed via cgroups (v1 or v2)."""
+        candidate_paths = [
+            Path("/sys/fs/cgroup/memory.max"),  # cgroup v2
+            Path("/sys/fs/cgroup/memory.high"),
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),  # cgroup v1
+            Path("/sys/fs/cgroup/memory.limit_in_bytes"),
+        ]
+
+        for path in candidate_paths:
+            value = cls._read_int_from_file(path)
+            if value is None:
+                continue
+            if value >= cls._UNLIMITED_MEMORY_THRESHOLD_BYTES:
+                continue
+            return value
+        return None
+
+    @staticmethod
+    def _read_int_from_file(path: Path) -> Optional[int]:
+        """Try to parse an integer from the given file."""
+        try:
+            if not path.exists():
+                return None
+            content = path.read_text().strip()
+            if not content or content.lower() == "max":
+                return None
+            value = int(content)
+            if value <= 0:
+                return None
+            return value
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _read_meminfo_total_bytes() -> Optional[int]:
+        """Read MemTotal from /proc/meminfo."""
+        try:
+            with Path("/proc/meminfo").open() as meminfo:
+                for line in meminfo:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        if len(parts) < 2:
+                            continue
+                        # Value provided in kB
+                        total_kb = int(parts[1])
+                        return total_kb * 1024
+        except (OSError, ValueError):
+            return None
+        return None
+
+    @classmethod
+    def _calculate_safe_memory_limit(cls, total_bytes: int) -> str:
+        """Convert a byte limit into a safe Nextflow memory string."""
+        total_gb = total_bytes / (1024**3)
+        return cls._calculate_safe_memory_limit_from_gb(total_gb)
+
+    @classmethod
+    def _calculate_safe_memory_limit_from_gb(cls, total_gb: float) -> str:
+        """Apply safety buffer and formatting to a raw GiB value."""
+        safe_gb = math.floor(total_gb - cls.MEMORY_BUFFER_GB)
+        safe_gb = max(safe_gb, cls.MIN_MEMORY_GB)
+        return f"{safe_gb}.GB"
 
     def get_nextflow_args(
         self,
@@ -478,6 +596,11 @@ process {{
         """
         # Start with default production settings
         instance = cls.for_production(**kwargs)
+
+        if "max_memory" not in kwargs:
+            detected_memory = cls._autodetect_max_memory()
+            if detected_memory:
+                instance.max_memory = detected_memory
 
         # Auto-detect the best profile
         detected_profile = instance.get_execution_profile()

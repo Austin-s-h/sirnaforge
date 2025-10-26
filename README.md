@@ -9,7 +9,7 @@
   [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
   [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
   [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-  [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/Austin-s-h/packages/container/package/sirnaforge)
+  [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/austin-s-h/packages/container/package/sirnaforge)
   [![Nextflow](https://img.shields.io/badge/nextflow-pipeline-brightgreen?logo=nextflow)](https://github.com/austin-s-h/sirnaforge/tree/main/nextflow_pipeline)
   [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?logo=pytest)](https://github.com/austin-s-h/sirnaforge/actions)
   [![Coverage](https://img.shields.io/badge/coverage-%3E90%25-brightgreen?logo=codecov)](https://github.com/austin-s-h/sirnaforge)

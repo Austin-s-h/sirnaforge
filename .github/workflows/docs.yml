@@ -18,12 +18,27 @@ jobs:
     name: 📚 Build Documentation
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      repository-lower: ${{ steps.repo.outputs.repository }}
+      owner-lower: ${{ steps.repo.outputs.owner }}
+      name-lower: ${{ steps.repo.outputs.name }}
 
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
 
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+    - name: � Normalize repository identifiers
+      id: repo
+      run: |
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+        NAME_LOWER=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+
+        echo "repository=$REPO_LOWER" >> "$GITHUB_OUTPUT"
+        echo "owner=$OWNER_LOWER" >> "$GITHUB_OUTPUT"
+        echo "name=$NAME_LOWER" >> "$GITHUB_OUTPUT"
+
+    - name: �🐍 Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
@@ -48,10 +63,22 @@ jobs:
       with:
         path: docs/_build/html
 
+    - name: 📝 Record documentation summary
+      run: |
+        {
+          echo "## Documentation Build"
+          echo "- Repository: https://github.com/${{ steps.repo.outputs.repository }}"
+          echo "- Pages URL: https://${{ steps.repo.outputs.owner }}.github.io/${{ steps.repo.outputs.name }}"
+        } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-docs:
     name: 🚀 Deploy to GitHub Pages
     runs-on: ubuntu-latest
     needs: build-docs
+    env:
+      REPOSITORY_LOWER: ${{ needs.build-docs.outputs.repository-lower }}
+      OWNER_LOWER: ${{ needs.build-docs.outputs.owner-lower }}
+      NAME_LOWER: ${{ needs.build-docs.outputs.name-lower }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -60,3 +87,12 @@ jobs:
     - name: 🚀 Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4
+
+    - name: 📝 Confirm deployment summary
+      if: steps.deployment.outcome == 'success'
+      run: |
+        {
+          echo "## Documentation Deployment"
+          echo "- Source Repository: https://github.com/${{ env.REPOSITORY_LOWER }}"
+          echo "- Published URL: https://${{ env.OWNER_LOWER }}.github.io/${{ env.NAME_LOWER }}"
+        } >> "$GITHUB_STEP_SUMMARY"

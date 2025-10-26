@@ -1,7 +1,7 @@
 # Chemical Modification Annotation Specification
 
-**Version:** 1.0  
-**Date:** 2025-10-19  
+**Version:** 1.0
+**Date:** 2025-10-19
 **Status:** Implemented
 
 ## Overview
@@ -359,7 +359,7 @@ Common chemical modifications:
    ```python
    from sirnaforge.modifications import parse_header
    from Bio import SeqIO
-   
+
    for record in SeqIO.parse("annotated.fasta", "fasta"):
        metadata = parse_header(record)
        # Process with full metadata available
@@ -377,5 +377,5 @@ Potential future enhancements:
 
 ## References
 
-- siRNAforge GitHub: https://github.com/Austin-s-h/sirnaforge
+- siRNAforge GitHub: https://github.com/austin-s-h/sirnaforge
 - Issue #[number]: Implement best practice system for metadata of chemical modifications

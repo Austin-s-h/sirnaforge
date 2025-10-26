@@ -204,6 +204,8 @@ class NextflowRunner:
             additional_params=additional_params,
         )
 
+        logger.info("Nextflow max_memory limit set to %s", self.config.max_memory)
+
         # Build full command
         cmd = ["nextflow", "run", str(workflow_path)] + args
 

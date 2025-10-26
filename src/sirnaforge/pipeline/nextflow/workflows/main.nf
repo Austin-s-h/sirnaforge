@@ -42,6 +42,7 @@ workflow SIRNAFORGE_OFFTARGET {
         bwa_T                : ${params.bwa_T}
         seed_start           : ${params.seed_start}
         seed_end             : ${params.seed_end}
+        max_memory           : ${params.max_memory}
         """
         .stripIndent()
 
