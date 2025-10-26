@@ -417,6 +417,16 @@ class DesignResult(BaseModel):
                 "delta_dg_end": cs.get("delta_dg_end"),
                 "melting_temp_c": cs.get("melting_temp_c"),
                 "off_target_count": candidate.off_target_count,
+                # miRNA-specific columns (nullable)
+                "guide_pos1_base": candidate.guide_pos1_base,
+                "pos1_pairing_state": candidate.pos1_pairing_state,
+                "seed_class": candidate.seed_class,
+                "supp_13_16_score": candidate.supp_13_16_score,
+                "seed_7mer_hits": candidate.seed_7mer_hits,
+                "seed_8mer_hits": candidate.seed_8mer_hits,
+                "seed_hits_weighted": candidate.seed_hits_weighted,
+                "off_target_seed_risk_class": candidate.off_target_seed_risk_class,
+                # Transcript hit metrics
                 "transcript_hit_count": candidate.transcript_hit_count,
                 "transcript_hit_fraction": candidate.transcript_hit_fraction,
                 "composite_score": candidate.composite_score,

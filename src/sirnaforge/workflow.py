@@ -571,6 +571,16 @@ class SiRNAWorkflow:
                         "delta_dg_end": cs.get("delta_dg_end"),
                         "melting_temp_c": cs.get("melting_temp_c"),
                         "off_target_count": c.off_target_count,
+                        # miRNA-specific columns (nullable)
+                        "guide_pos1_base": c.guide_pos1_base,
+                        "pos1_pairing_state": c.pos1_pairing_state,
+                        "seed_class": c.seed_class,
+                        "supp_13_16_score": c.supp_13_16_score,
+                        "seed_7mer_hits": c.seed_7mer_hits,
+                        "seed_8mer_hits": c.seed_8mer_hits,
+                        "seed_hits_weighted": c.seed_hits_weighted,
+                        "off_target_seed_risk_class": c.off_target_seed_risk_class,
+                        # Transcript hit metrics
                         "transcript_hit_count": c.transcript_hit_count,
                         "transcript_hit_fraction": c.transcript_hit_fraction,
                         "composite_score": c.composite_score,
