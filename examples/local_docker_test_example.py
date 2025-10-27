@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Example script demonstrating how to use the local Docker image for Nextflow testing.
+"""Example script demonstrating how to use the local Docker image for Nextflow testing.
 
 This script shows how to configure the Nextflow integration to use the local
 Docker image built by 'make docker' for testing the off-target analysis.
@@ -13,7 +12,6 @@ from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 
 def test_local_docker_integration():
     """Test Nextflow integration using local Docker image."""
-
     print("🧪 Testing Nextflow with local Docker image...")
 
     # Create runner configured for local Docker testing
@@ -49,7 +47,6 @@ def test_local_docker_integration():
 
 async def async_test_example():
     """Async version of the test."""
-
     # Example async usage (commented out)
     """
     runner = NextflowRunner.for_local_docker_testing()

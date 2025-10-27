@@ -572,9 +572,9 @@ for chunk in stream_large_fasta("large_transcripts.fasta", chunk_size=100):
 
 After mastering the Python API:
 
-1. **{doc}`advanced_workflows`** - Complex multi-step analyses
+1. **{doc}`../usage_examples`** - Complex multi-step analyses
 2. **{doc}`pipeline_integration`** - Nextflow pipeline development
 3. **{doc}`custom_scoring`** - Advanced algorithm development
-4. **{doc}`../development`** - Contributing to siRNAforge development
+4. **{doc}`../developer/development`** - Contributing to siRNAforge development
 
 The Python API provides the flexibility to create sophisticated, automated siRNA design workflows tailored to your specific research needs.

@@ -7,8 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## Release Template
-When preparing a new release, copy this template and replace `[X.Y.Z]` with the actual version:
+## [0.2.2] - 2025-10-26
+
+### ✨ New Features
+- **miRNA Design Mode**: New `--design-mode mirna` option for microRNA-specific siRNA design
+  - Specialized `MiRNADesigner` subclass with miRNA-biogenesis-aware scoring
+  - Enhanced CSV schema with miRNA-specific columns (strand_role, biogenesis_score)
+  - CLI support via `--design-mode` flag with automatic parameter adjustment
+- **miRNA Seed Match Analysis**: Integrated miRNA off-target screening in Nextflow pipeline
+  - Lightweight seed region matching (positions 2-8) against miRNA databases
+  - Automatic miRNA database download and caching from MirGeneDB
+  - Per-candidate and aggregated miRNA hit reports in TSV/JSON formats
+  - Configurable via `--mirna-db` and `--mirna-species` flags
+- **Species Registry System**: Canonical species name mapping and normalization
+  - Unified species identifiers across genome and miRNA databases
+  - Automatic species alias resolution (e.g., "human" → "Homo sapiens" → mirgenedb slug)
+  - Support for multi-species analysis with consistent naming
+
+### 🔧 Improvements
+- **Nextflow Pipeline Enhancements**:
+  - Reduced memory requirements for Docker-constrained environments (2GB → 1GB for most processes)
+  - Added miRNA seed analysis module with BWA-based matching
+  - Improved error handling and progress reporting
+  - Better resource allocation with memory/CPU buffers
+- **Data Validation**: Extended Pandera schemas for miRNA-specific columns
+- **CSV Output**: New columns `transcript_hit_count` and `transcript_hit_fraction` track guide specificity
+- **miRNA Database Manager**: Enhanced with species normalization and canonical name mapping
+
+### 🐛 Bug Fixes
+- Fixed Nextflow Docker configuration for resource-constrained CI environments
+- Resolved schema validation errors for miRNA columns in mixed-mode workflows
+- Fixed typing issues in pipeline CLI functions
+
+### 📚 Documentation
+- **Major Documentation Consolidation**: Reorganized structure for improved user experience
+  - Simplified navigation from 4 to 3 main sections (Getting Started, User Guide, Reference, Developer)
+  - Consolidated `getting_started.md` and `quick_reference.md` into comprehensive guide
+  - Streamlined tutorials to 2 focused guides (pipeline integration, custom scoring)
+  - Created dedicated developer section for advanced documentation
+- **Complete API Reference**: Added 18 previously missing modules
+  - Comprehensive coverage of all 27 sirnaforge modules
+  - Auto-generated Sphinx documentation with proper cross-references
+- **Quality Improvements**: Configured ruff D rules for docstring validation
+  - Fixed 116 docstring formatting issues automatically
+  - Clean Sphinx builds with no warnings
+- **Usage Examples**: Added miRNA seed analysis workflow documentation
+
+### 🧪 Testing
+- **New Test Coverage**: 232 new tests for miRNA design mode
+  - Comprehensive unit tests for MiRNADesigner scoring
+  - Schema validation tests for miRNA-specific columns
+  - Integration tests for miRNA database functionality
+- **Test Organization**: Normalized test markers for consistent CI/CD workflows
+- **Documentation Tests**: Verified all doc builds and cross-references work correctly
+
+### 📦 Dependencies
+- No new runtime dependencies (leverages existing httpx, pydantic, pandera)
+- Enhanced development dependencies for documentation generation
+
+---
+
+## [0.2.1] - 2025-10-24
 
 ```markdown
 ## [X.Y.Z] - YYYY-MM-DD
@@ -171,5 +230,8 @@ When preparing a new release, copy this template and replace `[X.Y.Z]` with the 
 - **Pipeline**: Nextflow integration for scalability
 - **Documentation**: Sphinx with MyST parser, Read the Docs theme
 
-[Unreleased]: https://github.com/austin-s-h/sirnaforge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/austin-s-h/sirnaforge/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/austin-s-h/sirnaforge/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/austin-s-h/sirnaforge/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/austin-s-h/sirnaforge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/austin-s-h/sirnaforge/releases/tag/v0.1.0

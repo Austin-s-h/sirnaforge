@@ -87,6 +87,7 @@ class FilterCriteria(BaseModel):
     @field_validator_typed("gc_max")
     @classmethod
     def gc_max_greater_than_min(cls, v: float, info: ValidationInfo) -> float:
+        """Validate that gc_max is greater than or equal to gc_min."""
         if "gc_min" in info.data and v < info.data["gc_min"]:
             raise ValueError("gc_max must be greater than or equal to gc_min")
         return v
@@ -112,6 +113,7 @@ class ScoringWeights(BaseModel):
     @field_validator_typed("empirical")
     @classmethod
     def weights_sum_to_one(cls, v: float, info: ValidationInfo) -> float:
+        """Validate that scoring weights sum to approximately 1.0."""
         total = sum(info.data.values()) + v
         if not (0.95 <= total <= 1.05):  # Allow small floating point errors
             raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
@@ -323,6 +325,7 @@ class SiRNACandidate(BaseModel):
     @field_validator_typed("guide_sequence", "passenger_sequence")
     @classmethod
     def validate_nucleotide_sequence(cls, v: str) -> str:
+        """Validate that sequence contains only valid nucleotides."""
         valid_bases = set("ATCGU")
         if not all(base.upper() in valid_bases for base in v):
             raise ValueError(f"Sequence contains invalid nucleotides: {v}")
@@ -331,6 +334,7 @@ class SiRNACandidate(BaseModel):
     @field_validator_typed("passenger_sequence")
     @classmethod
     def sequences_same_length(cls, v: str, info: ValidationInfo) -> str:
+        """Validate that passenger sequence is same length as guide sequence."""
         if "guide_sequence" in info.data and len(v) != len(info.data["guide_sequence"]):
             raise ValueError("Guide and passenger sequences must be the same length")
         return v

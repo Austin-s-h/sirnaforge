@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""
-Create a realistic miRNA database with proper seed region matching for siRNA off-target analysis.
+"""Create a realistic miRNA database with proper seed region matching for siRNA off-target analysis.
+
 Uses a curated set of real human miRNAs and creates variants that will match our test siRNAs.
 """
 
@@ -73,7 +73,6 @@ def create_mirna_with_seed_match(sirna_seq: str, base_mirna: tuple) -> str:
 
 def generate_mirna_database() -> None:
     """Generate a realistic miRNA database with seed matches for our test siRNAs."""
-
     script_dir = Path(__file__).parent
     output_file = script_dir.parent / "tests" / "unit" / "data" / "toy_mirna_db.fasta"
     output_file.parent.mkdir(parents=True, exist_ok=True)

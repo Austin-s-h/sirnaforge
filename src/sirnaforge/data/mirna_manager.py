@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Elegant miRNA Database Manager with local caching and multi-species support.
+"""Elegant miRNA Database Manager with local caching and multi-species support.
 
 This module provides a clean interface for downloading, caching, and managing
 miRNA databases from multiple sources with automatic cache management and
@@ -62,6 +61,7 @@ class CacheMetadata:
 
     @classmethod
     def from_dict(cls, data: dict) -> "CacheMetadata":
+        """Create CacheMetadata from dictionary."""
         source = DatabaseSource(**data["source"])
         return cls(
             source=source,
@@ -72,12 +72,12 @@ class CacheMetadata:
         )
 
     def to_dict(self) -> dict:
+        """Convert CacheMetadata to dictionary."""
         return asdict(self)
 
 
 def _build_mirgenedb_sources() -> dict[str, DatabaseSource]:
     """Construct MirGeneDB source map from the slug-based metadata table."""
-
     sources: dict[str, DatabaseSource] = {}
     base_url = "https://www.mirgenedb.org/fasta/{slug}?mat=1"
 
@@ -200,13 +200,11 @@ class MiRNADatabaseManager:
     @classmethod
     def get_available_sources(cls) -> list[str]:
         """Return sorted list of supported database sources."""
-
         return sorted(cls.SOURCES.keys())
 
     @classmethod
     def get_all_species(cls) -> list[str]:
         """Return sorted list of all species across sources."""
-
         species: set[str] = set()
         for species_map in cls.SOURCES.values():
             species.update(species_map.keys())
@@ -215,13 +213,11 @@ class MiRNADatabaseManager:
     @classmethod
     def get_species_for_source(cls, source_name: str) -> list[str]:
         """Return sorted list of species supported by a given source."""
-
         return sorted(cls.SOURCES.get(source_name, {}).keys())
 
     @classmethod
     def get_species_aliases(cls, source_name: str) -> dict[str, list[str]]:
         """Return mapping of canonical species identifiers to their known aliases."""
-
         if source_name != "mirgenedb":
             return {species: [species] for species in cls.SOURCES.get(source_name, {})}
 
@@ -234,13 +230,11 @@ class MiRNADatabaseManager:
     @classmethod
     def get_canonical_species(cls) -> list[str]:
         """Return sorted list of canonical species keys."""
-
         return sorted(CANONICAL_SPECIES_REGISTRY.keys())
 
     @classmethod
     def canonicalize_species_name(cls, species: str) -> Optional[str]:
         """Normalize a raw species identifier to a canonical key."""
-
         if not species:
             return None
         return CANONICAL_SPECIES_ALIAS_MAP.get(species.lower())
@@ -248,7 +242,6 @@ class MiRNADatabaseManager:
     @classmethod
     def canonicalize_species_list(cls, species_list: Sequence[str]) -> list[str]:
         """Normalize a list of species identifiers to canonical keys, preserving order."""
-
         canonical: list[str] = []
         unknown: list[str] = []
 
@@ -268,7 +261,6 @@ class MiRNADatabaseManager:
     @classmethod
     def get_genome_species_for_canonical(cls, canonical_species: Sequence[str]) -> list[str]:
         """Return genome species identifiers for canonical species keys."""
-
         genome_species: list[str] = []
         for key in canonical_species:
             registry_entry = CANONICAL_SPECIES_REGISTRY.get(key)
@@ -282,7 +274,6 @@ class MiRNADatabaseManager:
     @classmethod
     def get_mirna_slugs_for_canonical(cls, canonical_species: Sequence[str], source_name: str) -> list[str]:
         """Return normalized miRNA identifiers for canonical species."""
-
         slugs: list[str] = []
         for key in canonical_species:
             registry_entry = CANONICAL_SPECIES_REGISTRY.get(key)
@@ -312,7 +303,6 @@ class MiRNADatabaseManager:
     @classmethod
     def get_supported_canonical_species_for_source(cls, source_name: str) -> list[str]:
         """Return canonical species supported by a given source."""
-
         supported: list[str] = []
         if source_name == "mirgenedb":
             for canonical_name, registry_entry in CANONICAL_SPECIES_REGISTRY.items():
@@ -336,7 +326,6 @@ class MiRNADatabaseManager:
         mirna_overrides: Optional[Sequence[str]] = None,
     ) -> dict[str, list[str]]:
         """Resolve canonical, genome, and miRNA identifiers for the requested species."""
-
         canonical_species = cls.canonicalize_species_list(requested_species)
         genome_species = cls.get_genome_species_for_canonical(canonical_species)
 
@@ -375,7 +364,6 @@ class MiRNADatabaseManager:
     @classmethod
     def normalize_species(cls, source_name: str, species: str) -> Optional[str]:
         """Normalize user-provided species identifiers to canonical keys."""
-
         if source_name == "mirgenedb":
             return cls._normalize_mirgenedb_species(species)
         return species
@@ -383,7 +371,6 @@ class MiRNADatabaseManager:
     @classmethod
     def get_source_configuration(cls, source_name: str, species: str) -> Optional[DatabaseSource]:
         """Retrieve the DatabaseSource configuration for a given source/species."""
-
         canonical_species = cls.normalize_species(source_name, species)
         if canonical_species is None:
             return None
@@ -392,13 +379,11 @@ class MiRNADatabaseManager:
     @classmethod
     def is_supported_source(cls, source_name: str) -> bool:
         """Check if a source is supported."""
-
         return source_name in cls.SOURCES
 
     @classmethod
     def is_supported_species(cls, source_name: str, species: str) -> bool:
         """Check if a species is supported for the given source."""
-
         canonical_species = cls.normalize_species(source_name, species)
         if canonical_species is None:
             return False
@@ -407,7 +392,6 @@ class MiRNADatabaseManager:
     @classmethod
     def get_mirgenedb_species_metadata(cls) -> dict[str, dict[str, Any]]:
         """Expose the MirGeneDB species metadata table."""
-
         return {key: dict(value) for key, value in MIRGENEDB_SPECIES_TABLE.items()}
 
     def __init__(self, cache_dir: Optional[Union[str, Path]] = None, cache_ttl_days: int = 30):

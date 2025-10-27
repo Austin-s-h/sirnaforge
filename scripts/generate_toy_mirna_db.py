@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Generate a realistic toy miRNA database for testing siRNA off-target analysis.
+"""Generate a realistic toy miRNA database for testing siRNA off-target analysis.
 
 This creates a smaller FASTA file (~500KB) with miRNA sequences that may have
 seed-region matches with our test siRNAs.

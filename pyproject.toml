@@ -183,10 +183,14 @@ select = [
   "RET", # flake8-return
   "PTH", # flake8-use-pathlib
   "PL", # pylint
+  "D", # pydocstyle (docstring conventions)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG001", "S101"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 # Black configuration
 [tool.black]

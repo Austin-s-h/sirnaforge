@@ -155,7 +155,6 @@ def parse_header(record: SeqRecord) -> dict[str, Any]:
 
 def _load_raw_metadata(path: Path) -> dict[str, Any]:
     """Load raw metadata mapping from JSON file without validation."""
-
     if not path.exists():
         return {}
 
@@ -172,7 +171,6 @@ def _load_raw_metadata(path: Path) -> dict[str, Any]:
 
 def _validate_metadata_entries(raw_metadata: dict[str, Any]) -> dict[str, StrandMetadata]:
     """Validate raw metadata payload into StrandMetadata instances."""
-
     metadata_dict: dict[str, StrandMetadata] = {}
     for strand_id, meta_data in raw_metadata.items():
         metadata_dict[strand_id] = StrandMetadata.model_validate(meta_data)
@@ -190,24 +188,6 @@ def load_metadata(json_path: Union[str, Path]) -> dict[str, StrandMetadata]:
 
     Raises:
         ValidationError: If JSON data doesn't match StrandMetadata schema
-
-    Example JSON structure:
-        {
-            "modifications": {
-                "patisiran_ttr_guide": {
-                    "id": "patisiran_ttr_guide",
-                    "sequence": "AUGGAAUACUCUUGGUUAC",
-                    "overhang": "dTdT",
-                    "chem_mods": [
-                        {"type": "2OMe", "positions": [1, 4, 6, 11, 13, 16, 19]}
-                    ],
-                    "provenance": {
-                        "source_type": "patent",
-                        "identifier": "US10060921B2"
-                    }
-                }
-            }
-        }
     """
     path = Path(json_path)
     raw_metadata = _load_raw_metadata(path)

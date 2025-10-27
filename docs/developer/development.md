@@ -2,14 +2,14 @@
 
 This guide covers development setup, contribution guidelines, and best practices for siRNAforge development.
 
-> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation and usage.
+> **New to siRNAforge?** Start with [Getting Started](../getting_started.md) for basic installation and usage.
 
 ## Development Environment Setup
 
 ### Prerequisites
 
 You'll need the same prerequisites as regular installation, plus development tools:
-- Python 3.9-3.12, Git, uv (see [Getting Started](getting_started.md))
+- Python 3.9-3.12, Git, uv (see [Getting Started](../getting_started.md))
 - Make (optional, for convenience commands)
 
 ### Developer Installation

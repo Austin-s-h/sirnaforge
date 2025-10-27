@@ -1,5 +1,4 @@
-"""
-Command-line interface functions for Nextflow module integration.
+"""Command-line interface functions for Nextflow module integration.
 
 These functions serve as entry points for Nextflow modules, providing
 clean separation between workflow orchestration and business logic.
@@ -27,8 +26,7 @@ logger = get_logger(__name__)
 
 
 def split_candidates_cli(input_fasta: str, output_dir: str = ".") -> dict[str, Any]:
-    """
-    Split multi-FASTA into individual candidate files with manifest.
+    """Split multi-FASTA into individual candidate files with manifest.
 
     Args:
         input_fasta: Path to input FASTA file
@@ -71,8 +69,7 @@ def split_candidates_cli(input_fasta: str, output_dir: str = ".") -> dict[str, A
 def prepare_candidates_cli(
     input_fasta: str, output_fasta: str = "validated_candidates.fasta", expected_length: int = 21
 ) -> dict[str, Any]:
-    """
-    Validate and prepare siRNA candidates for analysis.
+    """Validate and prepare siRNA candidates for analysis.
 
     Args:
         input_fasta: Path to input FASTA file
@@ -111,8 +108,7 @@ def prepare_candidates_cli(
 
 
 def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") -> dict[str, Any]:
-    """
-    Build BWA-MEM2 index for genome/transcriptome.
+    """Build BWA-MEM2 index for genome/transcriptome.
 
     Args:
         fasta_file: Path to input FASTA file
@@ -150,8 +146,7 @@ def run_offtarget_analysis_cli(
     seed_start: int = 2,
     seed_end: int = 8,
 ) -> dict[str, Any]:
-    """
-    Run off-target analysis for a single candidate against a genome.
+    """Run off-target analysis for a single candidate against a genome.
 
     Args:
         candidate_fasta: Path to candidate FASTA file
@@ -203,8 +198,7 @@ def run_mirna_seed_analysis_cli(
     mirna_species: str = "human",
     output_dir: str = ".",
 ) -> dict[str, Any]:
-    """
-    Run miRNA seed match analysis for a single candidate.
+    """Run miRNA seed match analysis for a single candidate.
 
     Args:
         candidate_fasta: Path to candidate FASTA file
@@ -257,8 +251,7 @@ def run_mirna_seed_analysis_cli(
 
 
 def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[str, Any]:
-    """
-    Aggregate off-target analysis results from multiple candidates and genomes.
+    """Aggregate off-target analysis results from multiple candidates and genomes.
 
     Args:
         genome_species: Comma-separated list of species
@@ -334,8 +327,7 @@ def aggregate_mirna_results_cli(
     results_dir: str = ".",
     output_dir: str = ".",
 ) -> dict[str, Any]:
-    """
-    Aggregate miRNA seed analysis results from multiple candidates.
+    """Aggregate miRNA seed analysis results from multiple candidates.
 
     Args:
         mirna_db: miRNA database name used for analysis
@@ -377,8 +369,7 @@ def resolve_genome_indices_cli(
     genome_indices_override: str = "",
     output_file: str = "resolved_indices.json",
 ) -> dict[str, Any]:
-    """
-    Resolve genome indices from configuration or auto-discovery.
+    """Resolve genome indices from configuration or auto-discovery.
 
     Args:
         genome_species: Comma-separated list of species

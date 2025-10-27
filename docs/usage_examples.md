@@ -102,6 +102,41 @@ uv run sirnaforge workflow THERAPEUTIC_TARGET \
   --verbose
 ```
 
+### Full Workflow with miRNA Seed Off-target Screening
+```bash
+# 1. Build or pull the container with Nextflow + BWA-MEM2 (one time)
+make docker
+# or
+docker pull ghcr.io/austin-s-h/sirnaforge:latest
+
+# 2. Run the full workflow with miRNA seed analysis enabled
+docker run --rm \
+  -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 \
+    --design-mode mirna \
+    --output-dir results/tp53_mirna_seed \
+    --top-n 25 \
+    --genome-species "human,mouse" \
+    --mirna-db mirgenedb \
+    --mirna-species "human,mouse"
+
+# 3. Inspect aggregated miRNA seed hits and summaries
+ls results/tp53_mirna_seed/off_target/results/aggregated/
+# -> combined_mirna_analysis.tsv, combined_summary.json, final_summary.txt, ...
+
+# Per-candidate seed matches live next to aggregated reports
+ls results/tp53_mirna_seed/off_target/results/individual_results/
+```
+
+The workflow automatically batches all selected candidates through the lightweight `mirna_seed`
+Nextflow module before running genome/transcriptome alignments. The `--mirna-species` flag defaults
+to the species chosen for `--genome-species`, so you can omit it when the same panel applies to both.
+Aggregated seed-match tables are written to `off_target/results/aggregated/combined_mirna_analysis.tsv`
+and the JSON summaries (per species and per candidate) land in
+`off_target/results/aggregated/combined_summary.json`, while individual candidate TSV/JSON pairs are
+placed under `off_target/results/individual_results/`.
+
 ### Difficult Targets (Low GC, High Structure)
 ```bash
 # Relaxed parameters for challenging sequences
@@ -397,4 +432,4 @@ du -sh "$analysis_dir"/* 2>/dev/null | head -5
 > **More Resources:**
 > - [CLI Reference](cli_reference.md) - Complete parameter documentation
 > - [Custom Scoring Guide](tutorials/custom_scoring.md) - Advanced thermodynamic principles
-> - [Development Guide](development.md) - Contributing and extending siRNAforge
+> - [Development Guide](developer/development.md) - Contributing and extending siRNAforge

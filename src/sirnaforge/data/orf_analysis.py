@@ -61,8 +61,7 @@ class ORFAnalyzer:
     """Analyze ORFs in transcript sequences and validate sequence types."""
 
     def __init__(self, database_client: Optional[AbstractDatabaseClient] = None):
-        """
-        Initialize ORF analyzer.
+        """Initialize ORF analyzer.
 
         Args:
             database_client: Optional database client for retrieving additional sequence types
@@ -201,8 +200,7 @@ class ORFAnalyzer:
         return protein
 
     async def get_additional_sequence(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
-        """
-        Retrieve specific sequence type using the database client if available.
+        """Retrieve specific sequence type using the database client if available.
 
         Args:
             transcript_id: Transcript identifier
@@ -333,7 +331,6 @@ class ORFAnalyzer:
 
     def _log_analysis_results(self, analysis: SequenceAnalysis) -> None:
         """Log comprehensive analysis results."""
-
         logger.info(f"=== ORF Analysis Results for {analysis.transcript_id} ===")
         seq_type = (
             analysis.sequence_type.value if hasattr(analysis.sequence_type, "value") else str(analysis.sequence_type)
@@ -402,8 +399,7 @@ class ORFAnalyzer:
 
 # Convenience functions
 def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None) -> ORFAnalyzer:
-    """
-    Create an ORF analyzer with optional database client.
+    """Create an ORF analyzer with optional database client.
 
     Args:
         database_client: Optional database client for retrieving additional sequence types
@@ -417,8 +413,7 @@ def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None
 async def analyze_transcript_orfs(
     transcript: TranscriptInfo, database_client: Optional[AbstractDatabaseClient] = None
 ) -> SequenceAnalysis:
-    """
-    Analyze ORFs in a single transcript.
+    """Analyze ORFs in a single transcript.
 
     Args:
         transcript: Transcript to analyze
@@ -434,8 +429,7 @@ async def analyze_transcript_orfs(
 async def analyze_multiple_transcript_orfs(
     transcripts: list[TranscriptInfo], database_client: Optional[AbstractDatabaseClient] = None
 ) -> dict[str, SequenceAnalysis]:
-    """
-    Analyze ORFs in multiple transcripts.
+    """Analyze ORFs in multiple transcripts.
 
     Args:
         transcripts: List of transcripts to analyze

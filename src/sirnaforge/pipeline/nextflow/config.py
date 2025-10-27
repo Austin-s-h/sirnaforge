@@ -1,5 +1,4 @@
-"""
-Nextflow Configuration Management
+"""Nextflow Configuration Management.
 
 This module handles configuration for Nextflow workflows, including
 Docker settings, resource management, and parameter validation.
@@ -104,8 +103,7 @@ class NextflowConfig:
         max_time: str = "240.h",
         **kwargs: Any,
     ) -> None:
-        """
-        Initialize Nextflow configuration.
+        """Initialize Nextflow configuration.
 
         Args:
             docker_image: Docker container image to use
@@ -245,8 +243,7 @@ class NextflowConfig:
         additional_params: Optional[dict[str, Any]] = None,
         include_test_profile: bool = False,
     ) -> list[str]:
-        """
-        Generate Nextflow command arguments.
+        """Generate Nextflow command arguments.
 
         Args:
             input_file: Input FASTA file path
@@ -316,8 +313,7 @@ class NextflowConfig:
         return args
 
     def create_config_file(self, config_path: Path) -> Path:
-        """
-        Create a custom Nextflow configuration file.
+        """Create a custom Nextflow configuration file.
 
         Args:
             config_path: Path where to create the config file
@@ -347,8 +343,7 @@ process {{
         return config_path
 
     def validate_docker_available(self) -> bool:
-        """
-        Check if Docker is available for Nextflow execution.
+        """Check if Docker is available for Nextflow execution.
 
         This checks if Docker can be used by Nextflow to run containers.
         Note: This is different from running tests inside Docker containers.
@@ -379,8 +374,7 @@ process {{
             return False
 
     def is_running_in_docker(self) -> bool:
-        """
-        Check if we're currently running inside a Docker container.
+        """Check if we're currently running inside a Docker container.
 
         This is useful for determining the appropriate execution profile
         when running tests or workflows.
@@ -438,8 +432,7 @@ process {{
             return False
 
     def get_execution_profile(self) -> str:
-        """
-        Get the appropriate execution profile based on available tools and environment.
+        """Get the appropriate execution profile based on available tools and environment.
 
         This method considers:
         1. Environment variables (SIRNAFORGE_USE_LOCAL_EXECUTION)
@@ -498,8 +491,7 @@ process {{
         return recommended_profile
 
     def get_environment_info(self) -> EnvironmentInfo:
-        """
-        Get information about the current execution environment.
+        """Get information about the current execution environment.
 
         This provides structured information about Docker availability,
         profile selection, and environment detection.
@@ -532,8 +524,7 @@ process {{
 
     @classmethod
     def for_testing(cls) -> "NextflowConfig":
-        """
-        Create a configuration optimized for testing.
+        """Create a configuration optimized for testing.
 
         This automatically detects if we're running in Docker and adjusts accordingly.
         Uses uv/conda for environment management when available.
@@ -561,8 +552,7 @@ process {{
 
     @classmethod
     def for_production(cls, **kwargs: Any) -> "NextflowConfig":
-        """
-        Create a configuration optimized for production use.
+        """Create a configuration optimized for production use.
 
         This uses Docker by default for reproducible execution with full resources.
 
@@ -583,8 +573,7 @@ process {{
 
     @classmethod
     def auto_configure(cls, **kwargs: Any) -> "NextflowConfig":
-        """
-        Auto-configure Nextflow settings based on environment detection.
+        """Auto-configure Nextflow settings based on environment detection.
 
         This method automatically detects available tools and selects the best profile.
 

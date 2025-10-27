@@ -29,8 +29,8 @@ try:
 
     original_init = rich.console.Console.__init__
 
-    def patched_init(self: "rich.console.Console", *args: Any, **kwargs: Any) -> None:  # noqa: D401
-        # Force simplified terminal capabilities for deterministic CI output.
+    def patched_init(self: "rich.console.Console", *args: Any, **kwargs: Any) -> None:
+        """Force simplified terminal capabilities for deterministic CI output."""
         kwargs["legacy_windows"] = True
         kwargs["force_terminal"] = False
         original_init(self, *args, **kwargs)
@@ -113,7 +113,6 @@ def _resolve_design_mode(
     modification_pattern: str,
 ) -> tuple[DesignMode, float, float, str, str]:
     """Normalize design mode and apply MIRNA defaults when appropriate."""
-
     try:
         mode_enum = DesignMode(design_mode.lower())
     except ValueError as exc:
@@ -192,7 +191,6 @@ def search(  # noqa: PLR0912
     ),
 ) -> None:
     """Search for gene transcripts and retrieve sequences."""
-
     try:
         # imports moved to top
 
@@ -465,7 +463,6 @@ def workflow(  # noqa: PLR0912
     ),
 ) -> None:
     """Run complete siRNA design workflow from gene query to off-target analysis."""
-
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
@@ -728,7 +725,6 @@ def design(  # noqa: PLR0912
     ),
 ) -> None:
     """Design siRNA candidates from transcript sequences."""
-
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
@@ -872,7 +868,6 @@ def validate(
     ),
 ) -> None:
     """Validate input FASTA file format and content."""
-
     try:
         with console.status("Validating FASTA file..."):
             sequences = list(SeqIO.parse(input_file, "fasta"))
@@ -922,7 +917,6 @@ def validate(
 @app_command()
 def version() -> None:
     """Show version information."""
-
     try:
         # Prefer Docker build-time APP_VERSION when the image is built with a VERSION arg
         app_version = os.environ.get("APP_VERSION") if "APP_VERSION" in os.environ else __version__
@@ -943,7 +937,6 @@ def version() -> None:
 @app_command()
 def config() -> None:
     """Show default configuration parameters."""
-
     default_params = DesignParameters()
 
     console.print("[bold blue]Default Design Parameters:[/bold blue]\n")

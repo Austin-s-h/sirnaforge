@@ -76,8 +76,7 @@ class BwaAnalyzer:
         seed_start: int = 2,
         seed_end: int = 8,
     ):
-        """
-        Initialize BWA-MEM2 analyzer.
+        """Initialize BWA-MEM2 analyzer.
 
         Args:
             index_prefix: Path to BWA index
@@ -110,8 +109,7 @@ class BwaAnalyzer:
             raise ValueError(f"Unknown mode: {mode}. Use 'transcriptome' or 'mirna_seed'")
 
     def analyze_sequences(self, sequences: dict[str, str]) -> list[dict[str, Any]]:
-        """
-        Run BWA-MEM2 analysis on sequences.
+        """Run BWA-MEM2 analysis on sequences.
 
         Args:
             sequences: Dictionary of sequence name -> sequence
@@ -336,6 +334,7 @@ class OffTargetAnalysisManager:
         transcriptome_index: Optional[Union[str, Path]] = None,
         mirna_index: Optional[Union[str, Path]] = None,
     ):
+        """Initialize the off-target analysis manager."""
         self.species = species
         self.transcriptome_path = Path(transcriptome_path) if transcriptome_path is not None else None
         self.mirna_path = Path(mirna_path) if mirna_path is not None else None
@@ -727,8 +726,7 @@ def run_bwa_alignment_analysis(
     seed_start: int = 2,
     seed_end: int = 8,
 ) -> Path:
-    """
-    Run BWA-MEM2 alignment analysis for candidate sequences using Pydantic models.
+    """Run BWA-MEM2 alignment analysis for candidate sequences using Pydantic models.
 
     This is the main function called by OFFTARGET_ANALYSIS Nextflow module.
 
@@ -842,8 +840,7 @@ def aggregate_offtarget_results(
     output_dir: Union[str, Path],
     genome_species: str,
 ) -> Path:
-    """
-    Aggregate off-target analysis results from multiple candidate-genome combinations using Pydantic models.
+    """Aggregate off-target analysis results from multiple candidate-genome combinations using Pydantic models.
 
     This is the main function called by AGGREGATE_RESULTS Nextflow module.
 
@@ -953,8 +950,7 @@ def run_mirna_seed_analysis(
     mirna_species: list[str],
     output_dir: Union[str, Path],
 ) -> Path:
-    """
-    Run miRNA seed match analysis for candidate sequences.
+    """Run miRNA seed match analysis for candidate sequences.
 
     This function uses the MiRNADatabaseManager to download and cache miRNA databases,
     builds BWA indices if needed, and performs seed match analysis.
@@ -1081,8 +1077,7 @@ def aggregate_mirna_results(
     mirna_db: str,
     mirna_species: str,
 ) -> Path:
-    """
-    Aggregate miRNA seed analysis results from multiple candidates using Pydantic models.
+    """Aggregate miRNA seed analysis results from multiple candidates using Pydantic models.
 
     Args:
         results_dir: Directory containing individual miRNA analysis results

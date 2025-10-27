@@ -34,6 +34,7 @@ def _load_patisiran_metadata() -> tuple[StrandMetadata, StrandMetadata]:
 @pytest.mark.local_python
 @pytest.mark.ci
 async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
+    """Test complete workflow execution from FASTA input file."""
     # Prepare input FASTA
     fasta = tmp_path / "test_input.fasta"
     _write_test_fasta(fasta)
@@ -110,6 +111,7 @@ async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
 @pytest.mark.local_python
 @pytest.mark.ci
 async def test_empty_fasta_triggers_design_error(tmp_path, monkeypatch):
+    """Test that empty FASTA files trigger appropriate design errors."""
     # Create empty FASTA
     fasta = tmp_path / "empty.fasta"
     fasta.write_text("")
@@ -129,6 +131,7 @@ async def test_empty_fasta_triggers_design_error(tmp_path, monkeypatch):
 @pytest.mark.local_python
 @pytest.mark.ci
 async def test_invalid_sequence_in_fasta_raises(tmp_path):
+    """Test that FASTA files with invalid sequences raise validation errors."""
     # Prepare FASTA with invalid characters
     fasta = tmp_path / "bad.fasta"
     FastaUtils.save_sequences_fasta([("bad1", "ATGNNNXYZTAA")], fasta)
@@ -143,6 +146,7 @@ async def test_invalid_sequence_in_fasta_raises(tmp_path):
 @pytest.mark.local_python
 @pytest.mark.ci
 async def test_single_sequence_workflow_success(tmp_path, monkeypatch):
+    """Test successful workflow execution with single FASTA sequence."""
     # Single valid FASTA sequence
     fasta = tmp_path / "single.fasta"
     FastaUtils.save_sequences_fasta([("single", "ATG" + "A" * 300 + "TAA")], fasta)

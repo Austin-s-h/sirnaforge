@@ -16,6 +16,7 @@ from sirnaforge.utils import resolve_input_source
 @pytest.mark.local_python
 @pytest.mark.ci
 def test_resolve_local_file(tmp_path: Path) -> None:
+    """Test resolving local file input sources."""
     content = ">seq1\nAUGCUA\n"
     local = tmp_path / "input.fasta"
     local.write_text(content)
@@ -39,6 +40,7 @@ class _SilentHandler(SimpleHTTPRequestHandler):
 @pytest.mark.local_python
 @pytest.mark.ci
 def test_resolve_http_download(tmp_path: Path) -> None:
+    """Test resolving HTTP URL input sources with download."""
     data_root = tmp_path / "server"
     data_root.mkdir()
     served_file = data_root / "remote.fasta"
@@ -67,5 +69,6 @@ def test_resolve_http_download(tmp_path: Path) -> None:
 @pytest.mark.local_python
 @pytest.mark.ci
 def test_resolve_unsupported_scheme(tmp_path: Path) -> None:
+    """Test that unsupported URL schemes raise ValueError."""
     with pytest.raises(ValueError):
         resolve_input_source("s3://bucket/key.fasta", tmp_path / "downloads")

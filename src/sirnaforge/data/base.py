@@ -19,6 +19,7 @@ class DatabaseError(Exception):
     """Base exception for database-related errors."""
 
     def __init__(self, message: str, database: Optional[str] = None):
+        """Initialize database error."""
         super().__init__(message)
         self.database = database
 
@@ -33,6 +34,7 @@ class GeneNotFoundError(DatabaseError):
     """Exception for when a gene is not found in the database."""
 
     def __init__(self, query: str, database: Optional[str] = None):
+        """Initialize gene not found error."""
         super().__init__(f"Gene '{query}' not found", database)
         self.query = query
 
@@ -114,8 +116,7 @@ class AbstractDatabaseClient(ABC):
     async def search_gene(
         self, query: str, include_sequence: bool = True
     ) -> tuple[Optional[GeneInfo], list[TranscriptInfo]]:
-        """
-        Search for a gene and return gene info and transcripts.
+        """Search for a gene and return gene info and transcripts.
 
         Args:
             query: Gene ID, gene name, or transcript ID
@@ -132,8 +133,7 @@ class AbstractDatabaseClient(ABC):
 
     @abstractmethod
     async def get_sequence(self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA) -> str:
-        """
-        Get sequence for a specific identifier.
+        """Get sequence for a specific identifier.
 
         Args:
             identifier: Gene ID, transcript ID, etc.
@@ -184,8 +184,7 @@ class EnsemblClient(AbstractDatabaseClient):
     async def get_sequence(
         self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA, headers: Optional[dict] = None
     ) -> str:
-        """
-        Get sequence from Ensembl REST API.
+        """Get sequence from Ensembl REST API.
 
         Args:
             identifier: Gene ID, transcript ID, etc.
@@ -259,8 +258,7 @@ class EnsemblClient(AbstractDatabaseClient):
         )
 
     async def _lookup_gene_data(self, query: str, expand: bool = False) -> dict:
-        """
-        Look up gene information from Ensembl.
+        """Look up gene information from Ensembl.
 
         Args:
             query: Gene ID, gene name, or transcript ID
@@ -758,8 +756,7 @@ class FastaUtils:
     def save_sequences_fasta(
         sequences: list[tuple[str, str]], output_path: Union[str, Path], line_length: int = 80
     ) -> None:
-        """
-        Save sequences to FASTA format.
+        """Save sequences to FASTA format.
 
         Args:
             sequences: List of (header, sequence) tuples
@@ -783,8 +780,7 @@ class FastaUtils:
 
     @staticmethod
     def read_fasta(file_path: Union[str, Path]) -> list[tuple[str, str]]:
-        """
-        Read sequences from FASTA file.
+        """Read sequences from FASTA file.
 
         Args:
             file_path: Path to FASTA file
@@ -815,8 +811,7 @@ class FastaUtils:
 
     @staticmethod
     def parse_fasta_to_dict(file_path: Union[str, Path]) -> dict[str, str]:
-        """
-        Parse FASTA file into a dictionary.
+        """Parse FASTA file into a dictionary.
 
         Args:
             file_path: Path to FASTA file
@@ -838,8 +833,7 @@ class FastaUtils:
 
     @staticmethod
     def write_dict_to_fasta(sequences: dict[str, str], output_path: Union[str, Path]) -> None:
-        """
-        Write sequences dictionary to FASTA format.
+        """Write sequences dictionary to FASTA format.
 
         Args:
             sequences: Dictionary of sequence name -> sequence
@@ -855,8 +849,7 @@ class FastaUtils:
 
     @staticmethod
     def validate_sirna_sequences(sequences: dict[str, str], expected_length: int = 21) -> dict[str, str]:
-        """
-        Validate siRNA sequences for correct length and nucleotide content.
+        """Validate siRNA sequences for correct length and nucleotide content.
 
         Args:
             sequences: Dictionary of sequence name -> sequence

@@ -66,7 +66,6 @@ def nextflow_test_work_dir(tmp_path):
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     """Normalize environment-tier markers for consistent workflows."""
-
     release_aliases = {"integration", "docker_integration", "pipeline", "slow", "nextflow"}
 
     for item in items:

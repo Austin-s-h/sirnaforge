@@ -1,5 +1,4 @@
-"""
-siRNAforge Pipeline Module
+"""siRNAforge Pipeline Module.
 
 Integrated Nextflow pipeline for comprehensive off-target analysis.
 This module provides a Python interface to the embedded Nextflow workflows.

@@ -153,7 +153,6 @@ def resolve_input_source(input_location: str, destination_root: Path, *, timeout
         ValueError: If the URI scheme is unsupported.
         httpx.HTTPStatusError: If the remote download fails with non-2xx status.
     """
-
     if not input_location:
         raise ValueError("input_location must be a non-empty string")
 

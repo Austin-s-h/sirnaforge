@@ -220,7 +220,6 @@ class SiRNADesigner:
 
     def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
         """Score candidates using composite scoring algorithm."""
-
         for candidate in candidates:
             # Calculate component scores
             # Thermodynamic end stabilities and asymmetry

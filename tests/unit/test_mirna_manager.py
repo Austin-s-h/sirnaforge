@@ -1,5 +1,4 @@
-"""
-Test the miRNA database manager functionality.
+"""Test the miRNA database manager functionality.
 
 Tests cover downloading, caching, and combining miRNA databases from various sources.
 """

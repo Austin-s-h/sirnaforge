@@ -1,6 +1,4 @@
-"""
-Test the fixed ViennaRNA integration.
-"""
+"""Test the fixed ViennaRNA integration."""
 
 import importlib.util
 import sys

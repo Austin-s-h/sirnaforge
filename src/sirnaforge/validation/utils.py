@@ -19,6 +19,7 @@ class ValidationResult:
     """Container for validation results."""
 
     def __init__(self, is_valid: bool = True):
+        """Initialize validation result container."""
         self.is_valid = is_valid
         self.errors: list[str] = []
         self.warnings: list[str] = []

@@ -1,5 +1,4 @@
-"""
-Integration tests for miRNA database functionality that work with the actual API.
+"""Integration tests for miRNA database functionality that work with the actual API.
 
 These tests focus on the real interface (get_database, get_combined_database, etc.)
 rather than non-existent methods like download_database.

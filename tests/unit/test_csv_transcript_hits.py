@@ -1,3 +1,5 @@
+"""Test CSV transcript hits functionality."""
+
 import csv
 
 import pytest
@@ -11,7 +13,6 @@ from sirnaforge.models.sirna import DesignParameters
 @pytest.mark.ci
 def test_csv_contains_transcript_hit_columns(tmp_path):
     """Design from a FASTA with two identical transcripts, save CSV, and assert columns/values."""
-
     fasta = tmp_path / "test.fa"
     # Use a sequence with balanced GC content (40%) to pass filters
     seq = "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"

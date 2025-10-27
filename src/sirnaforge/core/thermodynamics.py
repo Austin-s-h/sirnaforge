@@ -10,8 +10,7 @@ class ThermodynamicCalculator:
     """Calculate thermodynamic properties for siRNA candidates using ViennaRNA."""
 
     def __init__(self, temperature: float = 37.0):
-        """
-        Initialize thermodynamic calculator.
+        """Initialize thermodynamic calculator.
 
         Args:
             temperature: Temperature in Celsius for calculations
@@ -38,8 +37,7 @@ class ThermodynamicCalculator:
         return float(mfe)
 
     def calculate_asymmetry_score(self, candidate: SiRNACandidate) -> tuple[float, float, float]:
-        """
-        Calculate thermodynamic asymmetry score using ViennaRNA.
+        """Calculate thermodynamic asymmetry score using ViennaRNA.
 
         Returns:
             Tuple of (5' end stability, 3' end stability, asymmetry score)
@@ -67,8 +65,7 @@ class ThermodynamicCalculator:
     def calculate_target_accessibility(
         self, target_sequence: str, start_pos: int, sirna_length: int
     ) -> tuple[float, float]:
-        """
-        Calculate target site accessibility using ViennaRNA.
+        """Calculate target site accessibility using ViennaRNA.
 
         Args:
             target_sequence: Full target mRNA sequence
@@ -132,13 +129,11 @@ class ThermodynamicCalculator:
         return asymmetry_score >= threshold
 
     def calculate_secondary_structure(self, sequence: str) -> tuple[str, float, float]:
-        """
-        Calculate secondary structure for a sequence.
+        """Calculate secondary structure for a sequence.
 
         Returns:
             Tuple of (structure, mfe, paired_fraction)
         """
-
         fc = RNA.fold_compound(sequence, self.model_details)
         structure, mfe = fc.mfe()
 

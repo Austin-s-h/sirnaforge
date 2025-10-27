@@ -1,5 +1,4 @@
-"""
-siRNAforge Workflow Orchestrator
+"""siRNAforge Workflow Orchestrator.
 
 Coordinates the complete siRNA design pipeline:
 1. Transcript retrieval and validation
@@ -70,6 +69,7 @@ class WorkflowConfig:
         num_threads: int | None = None,
         input_source: InputSource | None = None,
     ):
+        """Initialize workflow configuration."""
         self.output_dir = Path(output_dir)
         self.input_source = input_source
 
@@ -110,6 +110,7 @@ class SiRNAWorkflow:
     """Main workflow orchestrator for siRNA design pipeline."""
 
     def __init__(self, config: WorkflowConfig):
+        """Initialize the siRNA workflow orchestrator."""
         self.config = config
         self.gene_searcher = GeneSearcher()
         self.orf_analyzer = ORFAnalyzer()
@@ -530,7 +531,6 @@ class SiRNAWorkflow:
         Args:
             design_results: DesignResult containing candidates to modify
         """
-
         pattern = self.config.design_params.modification_pattern
         overhang = self.config.design_params.default_overhang
 
@@ -547,7 +547,6 @@ class SiRNAWorkflow:
 
     async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
-
         # No user-facing top-candidates FASTA or text/json summaries are produced anymore.
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
@@ -1241,12 +1240,12 @@ async def run_sirna_workflow(
     log_file: str | None = None,
     write_json_summary: bool = True,
 ) -> dict:
-    """
-    Run complete siRNA design workflow.
+    """Run complete siRNA design workflow.
 
     Args:
         gene_query: Gene name or ID to search for
         output_dir: Directory for output files
+        input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
         design_mode: Design mode (sirna or mirna)
         top_n_candidates: Number of top candidates to generate
@@ -1256,6 +1255,10 @@ async def run_sirna_workflow(
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
+        modification_pattern: Chemical modification pattern
+        overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        log_file: Path to centralized log file
+        write_json_summary: Write logs/workflow_summary.json
 
     Returns:
         Dictionary with complete workflow results
@@ -1316,6 +1319,7 @@ async def run_sirna_workflow(
 if __name__ == "__main__":
     # Example usage
     async def main() -> None:
+        """Run example siRNA workflow."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results = await run_sirna_workflow(gene_query="TP53", output_dir=temp_dir, top_n_candidates=20)
             print(f"Workflow completed: {results}")

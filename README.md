@@ -485,7 +485,7 @@ Docker-powered tiers share the same pytest markers but execute inside the publis
 | `make docker-test` | `docker run … python -m pytest -v -n 1 -m 'docker and (docker_integration or (not smoke))'` | 2 CPUs / 4 GB | Standard docker regression |
 | `make docker-test-full` | `docker run … uv run --group dev pytest -v -n 2` | 4 CPUs / 8 GB | Release-grade validation |
 
-> ℹ️ Run `make install-dev` once to install development dependencies and pre-commit hooks before using these targets. The full matrix of commands, filters, and expected runtimes lives in [`docs/testing_guide.md`](docs/testing_guide.md).
+> ℹ️ Run `make install-dev` once to install development dependencies and pre-commit hooks before using these targets. The full matrix of commands, filters, and expected runtimes lives in [`docs/developer/testing_guide.md`](docs/developer/testing_guide.md).
 
 ## 📚 Documentation
 

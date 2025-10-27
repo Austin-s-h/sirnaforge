@@ -100,6 +100,7 @@ class DockerTestRunner:
     """Runner for executing tests in different Docker profiles."""
 
     def __init__(self, profile: DockerTestProfile):
+        """Initialize Docker test runner with profile configuration."""
         self.profile = profile
 
     def run_tests(self) -> subprocess.CompletedProcess:

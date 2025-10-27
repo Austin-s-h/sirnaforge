@@ -419,6 +419,6 @@ The field of siRNA scoring continues to evolve:
 - **Real-Time Optimization**: Adaptive scoring based on experimental feedback
 
 For more advanced implementations, refer to:
-- {doc}`python_api` for basic API usage
-- {doc}`../architecture` for scoring system design
+- {doc}`../api_reference` for complete API documentation
+- {doc}`../developer/architecture` for scoring system design
 - `src/sirnaforge/core/design.py` for current scoring implementation

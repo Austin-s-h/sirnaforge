@@ -1,5 +1,4 @@
-"""
-Integration tests for embedded Nextflow pipeline.
+"""Integration tests for embedded Nextflow pipeline.
 
 Tests the integrated Python-Nextflow pipeline functionality.
 """
@@ -275,8 +274,7 @@ class TestPipelineIntegration:
     @pytest.mark.docker
     @pytest.mark.local_nextflow
     def test_offtarget_analysis_docker_integration(self):
-        """
-        Integration test for off-target analysis module using Docker.
+        """Integration test for off-target analysis module using Docker.
 
         Tests the complete off-target analysis pipeline including:
         - Index building with core entrypoint functions
@@ -387,8 +385,7 @@ class TestPipelineIntegration:
             pytest.skip("Pipeline execution timed out - this is expected in resource-constrained environments")
 
     def _is_version_warning_only(self, error_msg: str) -> bool:
-        """
-        Check if the error message is only a Nextflow version warning.
+        """Check if the error message is only a Nextflow version warning.
 
         Args:
             error_msg: The error message from stderr
@@ -487,8 +484,7 @@ class TestPipelineIntegration:
     @pytest.mark.integration
     @pytest.mark.local_nextflow
     def test_offtarget_entrypoint_functions_directly(self):
-        """
-        Test the off-target entrypoint functions directly without Nextflow.
+        """Test the off-target entrypoint functions directly without Nextflow.
 
         This validates that the core functions work correctly and can be
         called from the pipeline modules.

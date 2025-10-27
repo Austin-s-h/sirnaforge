@@ -1,27 +1,7 @@
-"""
-Nextflow Pipeline Runner
+"""Nextflow Pipeline Runner.
 
 This module provides a Python interface to execute Nextflow workflows
 for siRNA off-target analysis with proper Docker integration.
-
-Simple Usage Examples:
-
-    # Auto-configured runner (easiest)
-    runner = NextflowRunner.create()
-    result = runner.run_sync(
-        input_file=Path("candidates.fasta"),
-        output_dir=Path("results")
-    )
-
-    # Local Docker testing (uses local image built by 'make docker')
-    runner = NextflowRunner.for_local_docker_testing()
-    result = runner.run_sync(...)
-
-    # Async version
-    result = await runner.run(
-        input_file=Path("candidates.fasta"),
-        output_dir=Path("results")
-    )
 """
 
 import asyncio
@@ -69,8 +49,7 @@ class NextflowRunner:
     """Execute Nextflow workflows from Python with proper error handling."""
 
     def __init__(self, config: Optional[NextflowConfig] = None):
-        """
-        Initialize Nextflow runner.
+        """Initialize Nextflow runner.
 
         Args:
             config: NextflowConfig instance, creates auto-configured if None
@@ -99,8 +78,7 @@ class NextflowRunner:
     async def run(
         self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
     ) -> dict[str, Any]:
-        """
-        Simple method to run Nextflow workflow with auto-validation and defaults.
+        """Simple method to run Nextflow workflow with auto-validation and defaults.
 
         Args:
             input_file: Path to input FASTA file
@@ -132,8 +110,7 @@ class NextflowRunner:
     def run_sync(
         self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
     ) -> dict[str, Any]:
-        """
-        Synchronous version of run() for simpler usage without async/await.
+        """Synchronous version of run() for simpler usage without async/await.
 
         Args:
             input_file: Path to input FASTA file
@@ -169,8 +146,7 @@ class NextflowRunner:
         additional_params: Optional[dict[str, Any]] = None,
         show_progress: bool = True,
     ) -> dict[str, Any]:
-        """
-        Run the off-target analysis Nextflow workflow.
+        """Run the off-target analysis Nextflow workflow.
 
         Args:
             input_file: Path to siRNA candidates FASTA file
@@ -239,8 +215,7 @@ class NextflowRunner:
         return self._process_results(output_dir, result)
 
     async def _run_subprocess(self, cmd: list[str]) -> Any:
-        """
-        Run subprocess asynchronously with proper logging.
+        """Run subprocess asynchronously with proper logging.
 
         Args:
             cmd: Command to execute as list of strings
@@ -297,8 +272,7 @@ class NextflowRunner:
         return AsyncResult(final_return_code, stdout, stderr)
 
     def _is_nextflow_version_warning_only(self, error_msg: str) -> bool:
-        """
-        Check if the error message is only a Nextflow version warning.
+        """Check if the error message is only a Nextflow version warning.
 
         Args:
             error_msg: The error message from stderr
@@ -327,8 +301,7 @@ class NextflowRunner:
         return True
 
     def _process_results(self, output_dir: Path, result: Any) -> dict[str, Any]:
-        """
-        Process Nextflow execution results and extract metadata.
+        """Process Nextflow execution results and extract metadata.
 
         Args:
             output_dir: Output directory where results were written
@@ -365,8 +338,7 @@ class NextflowRunner:
         }
 
     def validate_installation(self) -> dict[str, bool]:
-        """
-        Validate that Nextflow and required tools are available.
+        """Validate that Nextflow and required tools are available.
 
         Returns:
             Dictionary of tool availability status
@@ -428,8 +400,7 @@ class NextflowRunner:
 
     @classmethod
     def for_testing(cls) -> "NextflowRunner":
-        """
-        Create a runner configured for testing.
+        """Create a runner configured for testing.
 
         This uses the test configuration which automatically detects
         if we're running in Docker and adjusts accordingly.
@@ -442,8 +413,7 @@ class NextflowRunner:
 
     @classmethod
     def create(cls, **config_kwargs: Any) -> "NextflowRunner":
-        """
-        Create a NextflowRunner with auto-configured settings.
+        """Create a NextflowRunner with auto-configured settings.
 
         Args:
             **config_kwargs: Configuration parameters for NextflowConfig
@@ -459,6 +429,13 @@ class NextflowExecutionError(Exception):
     """Exception raised when Nextflow execution fails."""
 
     def __init__(self, message: str, stdout: str = "", stderr: str = ""):
+        """Initialize the exception with message and optional stdout/stderr.
+
+        Args:
+            message: Error message describing what went wrong
+            stdout: Standard output from the failed command
+            stderr: Standard error from the failed command
+        """
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr

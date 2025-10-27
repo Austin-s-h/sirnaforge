@@ -1,6 +1,4 @@
-"""
-Sphinx configuration file for siRNAforge documentation.
-"""
+"""Sphinx configuration file for siRNAforge documentation."""
 
 import sys
 from pathlib import Path
