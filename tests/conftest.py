@@ -61,3 +61,30 @@ def nextflow_test_work_dir(tmp_path):
     work_dir = tmp_path / "nextflow_work"
     work_dir.mkdir(exist_ok=True, parents=True)
     return work_dir
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Normalize environment-tier markers for consistent workflows."""
+
+    release_aliases = {"integration", "docker_integration", "pipeline", "slow", "nextflow"}
+
+    for item in items:
+        marker_names = {mark.name for mark in item.iter_markers()}
+
+        # Ensure smoke implies ci
+        if "smoke" in marker_names and "ci" not in marker_names:
+            item.add_marker("ci")
+
+        # Promote heavy workloads to release tier automatically
+        if marker_names & release_aliases or "release" in marker_names:
+            item.add_marker("release")
+            continue
+
+        # Skip automatically tagging explicit CI tests as dev
+        if "ci" in marker_names:
+            continue
+
+        # Default bucket for normal local development runs
+        if "dev" not in marker_names:
+            item.add_marker("dev")

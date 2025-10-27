@@ -20,21 +20,20 @@ process AGGREGATE_RESULTS {
 
     script:
     """
-    python3 -c "
+    python3 <<'PYEOF'
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli
 
-# Run aggregation
 result = aggregate_results_cli(
     genome_species='${genome_species}',
     output_dir='.'
 )
 
-print(f'Aggregation status: {result[\"status\"]}')
-print(f'Processed {result[\"analysis_files_processed\"]} analysis files')
-print(f'Processed {result[\"summary_files_processed\"]} summary files')
-"
+print(f"Aggregation status: {result.get('status', 'unknown')}")
+print(f"Processed {result.get('analysis_files_processed', 0)} analysis files")
+print(f"Processed {result.get('summary_files_processed', 0)} summary files")
+PYEOF
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

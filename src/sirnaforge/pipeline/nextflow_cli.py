@@ -82,17 +82,18 @@ def prepare_candidates_cli(
     Returns:
         Dictionary with validation statistics
     """
-    # Validate and write sequences
-    total, valid, errors = validate_and_write_sequences(
+    # Validate and write sequences (returns: valid_count, invalid_count, issues)
+    valid, invalid, errors = validate_and_write_sequences(
         input_file=input_fasta, output_file=output_fasta, expected_length=expected_length
     )
+    total = valid + invalid
 
     # Write validation report
     report_path = Path("validation_report.txt")
     with report_path.open("w") as f:
         f.write(f"Total candidates: {total}\n")
         f.write(f"Valid candidates: {valid}\n")
-        f.write(f"Invalid candidates: {total - valid}\n")
+        f.write(f"Invalid candidates: {invalid}\n")
         if errors:
             f.write("\nErrors:\n")
             for error in errors:
@@ -103,7 +104,7 @@ def prepare_candidates_cli(
     return {
         "total": total,
         "valid": valid,
-        "invalid": total - valid,
+        "invalid": invalid,
         "output_file": output_fasta,
         "report": str(report_path),
     }

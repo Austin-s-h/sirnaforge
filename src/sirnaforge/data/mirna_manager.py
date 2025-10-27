@@ -14,6 +14,8 @@ import hashlib
 import html
 import json
 import logging
+import os
+import tempfile
 import urllib.request
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -415,11 +417,41 @@ class MiRNADatabaseManager:
             cache_dir: Directory for caching databases (default: ~/.cache/sirnaforge/mirna)
             cache_ttl_days: Cache time-to-live in days
         """
-        if cache_dir is None:
-            cache_dir = Path.home() / ".cache" / "sirnaforge" / "mirna"
+        fallback_locations: list[Path] = []
+        env_override = os.getenv("SIRNAFORGE_CACHE_DIR")
 
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if cache_dir is not None:
+            fallback_locations.append(Path(cache_dir))
+        else:
+            if env_override:
+                fallback_locations.append(Path(env_override))
+
+            xdg_cache = os.getenv("XDG_CACHE_HOME")
+            if xdg_cache:
+                fallback_locations.append(Path(xdg_cache) / "sirnaforge" / "mirna")
+
+            fallback_locations.append(Path.home() / ".cache" / "sirnaforge" / "mirna")
+            fallback_locations.append(Path.cwd() / ".sirnaforge_cache" / "mirna")
+            fallback_locations.append(Path(tempfile.gettempdir()) / "sirnaforge" / "mirna")
+
+        cache_path: Optional[Path] = None
+        first_error: Optional[Exception] = None
+        for candidate in fallback_locations:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                cache_path = candidate
+                break
+            except PermissionError as exc:
+                logger.warning("Cannot create cache directory at %s; trying next option", candidate)
+                if first_error is None:
+                    first_error = exc
+
+        if cache_path is None:
+            if cache_dir is not None and first_error is not None:
+                raise first_error
+            raise RuntimeError("Cannot create a writable cache directory for miRNA databases")
+
+        self.cache_dir = cache_path
 
         self.cache_ttl = timedelta(days=cache_ttl_days)
         self.metadata_file = self.cache_dir / "cache_metadata.json"

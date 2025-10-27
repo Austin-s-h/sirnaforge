@@ -561,11 +561,15 @@ class SiRNAWorkflow:
             # Import modification summary helper
             # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
             rows = []
+            is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
             for c in design_results.candidates:
                 cs = getattr(c, "component_scores", {}) or {}
 
                 # Get modification summary if modifications were applied
                 mod_summary = get_modification_summary(c) if c.guide_metadata else {}
+
+                def _maybe_attr(obj: Any, name: str, *, default: Any = None) -> Any:
+                    return getattr(obj, name, default)
 
                 rows.append(
                     {
@@ -588,14 +592,14 @@ class SiRNAWorkflow:
                         "melting_temp_c": cs.get("melting_temp_c"),
                         "off_target_count": c.off_target_count,
                         # miRNA-specific columns (nullable)
-                        "guide_pos1_base": c.guide_pos1_base,
-                        "pos1_pairing_state": c.pos1_pairing_state,
-                        "seed_class": c.seed_class,
-                        "supp_13_16_score": c.supp_13_16_score,
-                        "seed_7mer_hits": c.seed_7mer_hits,
-                        "seed_8mer_hits": c.seed_8mer_hits,
-                        "seed_hits_weighted": c.seed_hits_weighted,
-                        "off_target_seed_risk_class": c.off_target_seed_risk_class,
+                        "guide_pos1_base": _maybe_attr(c, "guide_pos1_base"),
+                        "pos1_pairing_state": _maybe_attr(c, "pos1_pairing_state"),
+                        "seed_class": _maybe_attr(c, "seed_class"),
+                        "supp_13_16_score": _maybe_attr(c, "supp_13_16_score"),
+                        "seed_7mer_hits": _maybe_attr(c, "seed_7mer_hits"),
+                        "seed_8mer_hits": _maybe_attr(c, "seed_8mer_hits"),
+                        "seed_hits_weighted": _maybe_attr(c, "seed_hits_weighted"),
+                        "off_target_seed_risk_class": _maybe_attr(c, "off_target_seed_risk_class"),
                         # Transcript hit metrics
                         "transcript_hit_count": c.transcript_hit_count,
                         "transcript_hit_fraction": c.transcript_hit_fraction,
@@ -621,6 +625,21 @@ class SiRNAWorkflow:
 
             # Validate with schema (will raise if invalid)
             validated_all = SiRNACandidateSchema.validate(all_df)
+
+            if not is_mirna_mode:
+                # Drop miRNA-only columns when not in miRNA mode to avoid empty columns downstream
+                mirna_cols = [
+                    "guide_pos1_base",
+                    "pos1_pairing_state",
+                    "seed_class",
+                    "supp_13_16_score",
+                    "seed_7mer_hits",
+                    "seed_8mer_hits",
+                    "seed_hits_weighted",
+                    "off_target_seed_risk_class",
+                ]
+                existing = [col for col in mirna_cols if col in validated_all.columns]
+                validated_all = validated_all.drop(columns=existing)
 
             # Note: design parameters are not appended as per-row columns anymore
             # to avoid cluttering the candidate CSVs. Full parameters are included

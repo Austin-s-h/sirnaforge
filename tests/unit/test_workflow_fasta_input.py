@@ -1,10 +1,12 @@
 """Unit tests for running the workflow with an input FASTA file."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from sirnaforge.data.base import FastaUtils
+from sirnaforge.models.modifications import StrandMetadata
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.workflow import run_sirna_workflow
 
@@ -14,23 +16,17 @@ def _write_test_fasta(path: Path) -> None:
     FastaUtils.save_sequences_fasta(sequences, path)
 
 
-class DummyCandidate(SiRNACandidate):
-    @classmethod
-    def create_simple(cls, cid: str, tid: str, seq: str):
-        return cls(
-            id=cid,
-            transcript_id=tid,
-            position=1,
-            guide_sequence=seq[:21],
-            passenger_sequence=seq[:21],
-            gc_content=50.0,
-            length=21,
-            asymmetry_score=0.5,
-            duplex_stability=-20.0,
-            paired_fraction=0.1,
-            component_scores={"empirical": 1.0},
-            composite_score=100.0,
-        )
+def _load_patisiran_metadata() -> tuple[StrandMetadata, StrandMetadata]:
+    examples_dir = Path(__file__).parent.parent.parent / "examples" / "modification_patterns"
+    onpattro_file = examples_dir / "fda_approved_onpattro.json"
+
+    with onpattro_file.open() as fh:
+        data = json.load(fh)
+
+    sequences = data.get("sequences", {})
+    guide_meta = StrandMetadata.model_validate(sequences["patisiran_ttr_guide"])
+    passenger_meta = StrandMetadata.model_validate(sequences["patisiran_ttr_passenger"])
+    return guide_meta, passenger_meta
 
 
 @pytest.mark.asyncio
@@ -57,9 +53,30 @@ async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
 
     monkeypatch.setattr("sirnaforge.data.orf_analysis.ORFAnalyzer.analyze_transcript", fake_analyze_transcript)
 
-    # Mock SiRNADesigner.design_from_file to return a simple DesignResult
+    # Mock SiRNADesigner.design_from_file to return a simple DesignResult using embedded Patisiran metadata
     def fake_design_from_file(self, path):
-        cand = DummyCandidate.create_simple("c1", "trans1", "A" * 100)
+        guide_meta, passenger_meta = _load_patisiran_metadata()
+        guide_seq = guide_meta.sequence.upper()
+        passenger_seq = passenger_meta.sequence.upper()
+
+        gc_content = (guide_seq.count("G") + guide_seq.count("C")) / len(guide_seq) * 100
+
+        cand = SiRNACandidate(
+            id="c1",
+            transcript_id="trans1",
+            position=1,
+            guide_sequence=guide_seq,
+            passenger_sequence=passenger_seq,
+            gc_content=gc_content,
+            length=len(guide_seq),
+            asymmetry_score=0.5,
+            duplex_stability=-20.0,
+            paired_fraction=0.1,
+            component_scores={"empirical": 1.0},
+            composite_score=100.0,
+            guide_metadata=guide_meta,
+            passenger_metadata=passenger_meta,
+        )
         return DesignResult(
             input_file=str(path),
             parameters=DesignParameters(),
@@ -73,6 +90,11 @@ async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("sirnaforge.core.design.SiRNADesigner.design_from_file", fake_design_from_file)
+
+    async def fake_offtarget(self, design_results):  # noqa: ARG001
+        return {"status": "skipped", "reason": "unit_test"}
+
+    monkeypatch.setattr("sirnaforge.workflow.SiRNAWorkflow.step5_offtarget_analysis", fake_offtarget)
 
     # Run workflow
     results = await run_sirna_workflow(gene_query="test", output_dir=str(tmp_path / "out"), input_fasta=str(fasta))
@@ -142,19 +164,27 @@ async def test_single_sequence_workflow_success(tmp_path, monkeypatch):
 
     # Fake designer returns empty-but-valid DesignResult
     def fake_design_from_file(self, path):
+        guide_meta, passenger_meta = _load_patisiran_metadata()
+        guide_seq = guide_meta.sequence.upper()
+        passenger_seq = passenger_meta.sequence.upper()
+
+        gc_content = (guide_seq.count("G") + guide_seq.count("C")) / len(guide_seq) * 100
+
         cand = SiRNACandidate(
             id="c1",
             transcript_id="single",
             position=1,
-            guide_sequence="A" * 21,
-            passenger_sequence="A" * 21,
-            gc_content=50.0,
-            length=21,
+            guide_sequence=guide_seq,
+            passenger_sequence=passenger_seq,
+            gc_content=gc_content,
+            length=len(guide_seq),
             asymmetry_score=0.5,
             duplex_stability=-20.0,
             paired_fraction=0.1,
             component_scores={"empirical": 1.0},
             composite_score=100.0,
+            guide_metadata=guide_meta,
+            passenger_metadata=passenger_meta,
         )
 
         return DesignResult(
@@ -170,6 +200,11 @@ async def test_single_sequence_workflow_success(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("sirnaforge.core.design.SiRNADesigner.design_from_file", fake_design_from_file)
+
+    async def fake_offtarget(self, design_results):  # noqa: ARG001
+        return {"status": "skipped", "reason": "unit_test"}
+
+    monkeypatch.setattr("sirnaforge.workflow.SiRNAWorkflow.step5_offtarget_analysis", fake_offtarget)
 
     results = await run_sirna_workflow(
         gene_query="single", output_dir=str(tmp_path / "out_single"), input_fasta=str(fasta)

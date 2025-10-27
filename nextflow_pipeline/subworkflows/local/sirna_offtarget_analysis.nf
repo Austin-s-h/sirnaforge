@@ -2,19 +2,17 @@
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     SIRNA OFF-TARGET ANALYSIS SUBWORKFLOW
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Comprehensive off-target analysis with parallel processing per candidate per genome
+    Simplified off-target analysis with native Nextflow operators
 */
 
-include { PREPARE_CANDIDATES  } from '../../modules/local/prepare_candidates'
-include { SPLIT_CANDIDATES    } from '../../modules/local/split_candidates'
 include { BUILD_BWA_INDEX     } from '../../modules/local/build_bwa_index'
 include { OFFTARGET_ANALYSIS  } from '../../modules/local/offtarget_analysis'
 include { AGGREGATE_RESULTS   } from '../../modules/local/aggregate_results'
 
 workflow SIRNA_OFFTARGET_ANALYSIS {
     take:
-    candidates_fasta    // tuple: [meta, fasta_file]
-    genomes             // channel: [species, path_or_null, type] where type is 'fasta', 'index', or 'discover'
+    candidates_fasta    // path: input FASTA file
+    genomes             // channel: [species, path_or_null, type] where type is 'fasta', 'index'
     max_hits           // val: maximum hits per candidate
     bwa_k              // val: BWA seed length
     bwa_T              // val: BWA minimum score threshold
@@ -25,16 +23,15 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     ch_versions = Channel.empty()
 
     //
-    // MODULE: Validate and prepare siRNA candidates
+    // Split FASTA using native Nextflow operator - no separate process needed!
     //
-    PREPARE_CANDIDATES(candidates_fasta)
-    ch_versions = ch_versions.mix(PREPARE_CANDIDATES.out.versions)
-
-    //
-    // MODULE: Split candidates for parallel processing
-    //
-    SPLIT_CANDIDATES(PREPARE_CANDIDATES.out.candidates)
-    ch_versions = ch_versions.mix(SPLIT_CANDIDATES.out.versions)
+    ch_individual_candidates = candidates_fasta
+        .splitFasta(record: [id: true, seqString: true])
+        .map { record ->
+            def fasta_file = "candidate_${record.id}.fasta"
+            def fasta_content = ">${record.id}\n${record.seqString}\n"
+            [record.id, fasta_content]
+        }
 
     //
     // Prepare genome indices (build or use existing)
@@ -47,42 +44,35 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         .map { species, path, type -> [species, path] }
         .set { ch_genome_fastas }
 
-    BUILD_BWA_INDEX(ch_genome_fastas)
-    ch_versions = ch_versions.mix(BUILD_BWA_INDEX.out.versions)
+    if (ch_genome_fastas) {
+        BUILD_BWA_INDEX(ch_genome_fastas)
+        ch_versions = ch_versions.mix(BUILD_BWA_INDEX.out.versions)
 
-    // Add built indices to channel
-    BUILD_BWA_INDEX.out.index
-        .map { species, index_files ->
-            def index_prefix = index_files[0].toString().replaceAll(/\.[^.]+$/, '')
-            [species, index_prefix, 'bwa']
-        }
-        .set { ch_built_bwa_indices }
-    ch_genome_indices = ch_genome_indices.mix(ch_built_bwa_indices)
+        // Add built indices to channel
+        ch_genome_indices = ch_genome_indices.mix(
+            BUILD_BWA_INDEX.out.index
+                .map { species, index_files ->
+                    def index_prefix = index_files[0].toString().replaceAll(/\.[^.]+$/, '')
+                    [species, index_prefix]
+                }
+        )
+    }
 
     // Use existing indices
-    genomes
-        .filter { species, path, type -> type == 'index' }
-        .map { species, index_path, type -> [species, index_path, 'bwa'] }
-        .set { ch_existing_indices }
-    ch_genome_indices = ch_genome_indices.mix(ch_existing_indices)
+    ch_genome_indices = ch_genome_indices.mix(
+        genomes
+            .filter { species, path, type -> type == 'index' }
+            .map { species, index_path, type -> [species, index_path] }
+    )
 
     //
     // Create combinations for parallel processing: each candidate x each genome
     //
-    SPLIT_CANDIDATES.out.individual_candidates
-        .map { meta, candidate_file ->
-            // Preserve original metadata when available, otherwise derive from filename
-            def candidate_id = meta?.id ?: candidate_file.simpleName.replaceAll(/candidate_/, '').replaceAll(/\.fasta$/, '')
-            [[id: candidate_id, file: candidate_file.name], candidate_file]
-        }
-        .set { ch_individual_candidates }
-
-    ch_individual_candidates
+    ch_analysis_combinations = ch_individual_candidates
         .combine(ch_genome_indices)
-        .map { candidate_meta, candidate_file, species, index_path, index_type ->
-            [candidate_meta, candidate_file, species, index_path, index_type]
+        .map { candidate_id, fasta_content, species, index_path ->
+            [candidate_id, fasta_content, species, index_path]
         }
-        .set { ch_analysis_combinations }
 
     //
     // MODULE: Run off-target analysis for each candidate-genome combination
@@ -98,49 +88,31 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     ch_versions = ch_versions.mix(OFFTARGET_ANALYSIS.out.versions)
 
     //
-    // Collect all analysis results
+    // Collect all analysis results for aggregation
     //
-    OFFTARGET_ANALYSIS.out.results
-        .map { candidate_meta, species, analysis_type, analysis_file, summary_file ->
-            [analysis_file, summary_file]
-        }
-        .collect()
-        .set { ch_all_results }
+    ch_all_analysis = OFFTARGET_ANALYSIS.out.analysis.collect()
+    ch_all_summary = OFFTARGET_ANALYSIS.out.summary.collect()
 
-    //
     // Extract species list for aggregation
-    //
-    ch_genome_indices
-        .map { species, index_path, index_type -> species }
+    ch_genome_species = ch_genome_indices
+        .map { species, index_path -> species }
         .unique()
         .collect()
         .map { species_list -> species_list.join(',') }
-        .set { ch_genome_species_list }
 
     //
     // MODULE: Aggregate all results
     //
     AGGREGATE_RESULTS(
-        ch_all_results.map { it[0] }.flatten(),  // analysis files
-        ch_all_results.map { it[1] }.flatten(),  // summary files
-        ch_genome_species_list
+        ch_all_analysis,
+        ch_all_summary,
+        ch_genome_species
     )
     ch_versions = ch_versions.mix(AGGREGATE_RESULTS.out.versions)
 
     emit:
-    // Individual results for detailed analysis
-    individual_results   = OFFTARGET_ANALYSIS.out.results
-
-    // Aggregated results
     combined_analyses    = AGGREGATE_RESULTS.out.combined_analyses
     combined_summary     = AGGREGATE_RESULTS.out.combined_summary
     final_summary        = AGGREGATE_RESULTS.out.final_summary
-    html_report         = AGGREGATE_RESULTS.out.html_report
-
-    // Validation and metadata
-    validation_report    = PREPARE_CANDIDATES.out.candidates.map { it[2] }
-    candidate_manifest   = SPLIT_CANDIDATES.out.manifest
-
-    // Versions
     versions            = ch_versions
 }

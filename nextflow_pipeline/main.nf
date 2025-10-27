@@ -56,42 +56,40 @@ workflow SIRNAFORGE_OFFTARGET {
     }
 
     //
-    // Create input channels
+    // Create input channel - simple file input
     //
+    ch_input = Channel.fromPath(params.input, checkIfExists: true)
 
-    // Input siRNA candidates with metadata
-    ch_input = Channel.value([
-        [id: file(params.input).simpleName, single_end: false],
-        file(params.input, checkIfExists: true)
-    ])
-
-    // Genome configurations: parse both FASTAs and indices
+    //
+    // Genome configurations: combine FASTAs and indices into single channel
+    //
     ch_genomes = Channel.empty()
 
-    // Parse genome FASTAs (for building indices)
     if (params.genome_fastas) {
-        ch_fasta_genomes = Channel.fromList(params.genome_fastas.split(','))
-            .map { entry ->
-                def (species, fasta_path) = entry.split(':')
-                [species.trim(), file(fasta_path.trim(), checkIfExists: true), 'fasta']
-            }
-        ch_genomes = ch_genomes.mix(ch_fasta_genomes)
+        ch_genomes = ch_genomes.mix(
+            Channel.fromList(params.genome_fastas.split(','))
+                .map { entry ->
+                    def (species, fasta_path) = entry.split(':')
+                    [species.trim(), file(fasta_path.trim(), checkIfExists: true), 'fasta']
+                }
+        )
     }
 
-    // Parse pre-built indices
     if (params.genome_indices) {
-        ch_index_genomes = Channel.fromList(params.genome_indices.split(','))
-            .map { entry ->
-                def (species, index_path) = entry.split(':')
-                [species.trim(), index_path.trim(), 'index']
-            }
-        ch_genomes = ch_genomes.mix(ch_index_genomes)
+        ch_genomes = ch_genomes.mix(
+            Channel.fromList(params.genome_indices.split(','))
+                .map { entry ->
+                    def (species, index_path) = entry.split(':')
+                    [species.trim(), index_path.trim(), 'index']
+                }
+        )
     }
 
-    // If no genomes specified, use default species list with discovery
-    if (!params.genome_fastas && !params.genome_indices) {
-        ch_genomes = Channel.fromList(params.genome_species.split(','))
-            .map { species -> [species.trim(), null, 'discover'] }
+    // If no genomes specified, skip genome analysis (miRNA-only mode)
+    if (!params.genome_fastas && !params.genome_indices && ch_genomes.isEmpty()) {
+        log.info "No genome FASTAs or indices provided"
+        log.info "Genome/transcriptome off-target analysis: DISABLED"
+        log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
     }
 
     //
@@ -108,12 +106,9 @@ workflow SIRNAFORGE_OFFTARGET {
     )
 
     emit:
-    individual_results   = SIRNA_OFFTARGET_ANALYSIS.out.individual_results
     combined_analyses    = SIRNA_OFFTARGET_ANALYSIS.out.combined_analyses
     combined_summary     = SIRNA_OFFTARGET_ANALYSIS.out.combined_summary
     final_summary        = SIRNA_OFFTARGET_ANALYSIS.out.final_summary
-    html_report         = SIRNA_OFFTARGET_ANALYSIS.out.html_report
-    validation_report    = SIRNA_OFFTARGET_ANALYSIS.out.validation_report
     versions            = SIRNA_OFFTARGET_ANALYSIS.out.versions
 }
 

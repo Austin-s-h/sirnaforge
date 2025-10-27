@@ -16,6 +16,22 @@ UV_CACHE_MOUNT = $(shell \
 	else \
 		echo ""; \
 	fi)
+DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT)
+DOCKER_TEST_ENV_VARS = -e UV_LINK_MODE=copy -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e NXF_WORK=/workspace/.nextflow_work
+DOCKER_TMP_DIRS = .pytest_tmp .nextflow_work
+PREP_DOCKER_TMP = @mkdir -p $(DOCKER_TMP_DIRS) && chmod -R 777 $(DOCKER_TMP_DIRS) 2>/dev/null || true
+
+define RUN_DOCKER_TEST
+	$(PREP_DOCKER_TMP)
+	docker run --rm \
+		--cpus=$(1) \
+		--memory=$(2) \
+		--memory-swap=$(3) \
+		$(DOCKER_MOUNT_FLAGS) \
+		$(DOCKER_TEST_ENV_VARS) \
+		$(DOCKER_IMAGE):latest \
+		bash -c "uv sync --active --group dev && $(4)"
+endef
 
 # Default target
 help: ## Show available commands
@@ -27,24 +43,24 @@ help: ## Show available commands
 	@echo "  install-dev     Install with development dependencies"
 	@echo "  install-pipeline Pipeline tools (included in main deps)"
 	@echo ""
-	@echo "🐍 ENVIRONMENT MANAGEMENT"
+	@echo "🐍 ENVIRONMENT & SETUP"
 	@echo "  conda-env           Create conda environment for local development"
 	@echo "  conda-env-update    Update existing conda environment"
 	@echo "  conda-env-clean     Remove conda environment"
+	@echo "  dev                 Quick development setup"
 	@echo ""
 	@echo "🧪 TESTING (Tiered Approach - ✅ Verified)"
 	@echo "  test-local-python   Fastest tests (12-15s, 30 tests) ✅"
 	@echo "  test-unit           Unit tests (30-35s, 31 tests) ✅"
-	@echo "  test-fast          Fast tests excluding slow ones ✅"
-	@echo "  test-ci            CI/CD optimized with artifacts"
+	@echo "  test-dev           Development tier (default workflow) ✅"
+	@echo "  test-ci            CI/CD smoke tier"
+	@echo "  test-release       Release validation suite"
 	@echo "  test               Full test suite (60s+, some failures OK)"
 	@echo ""
 	@echo "🐳 DOCKER TESTING (Resource-Aware)"
-	@echo "  docker-test-smoke        Ultra-minimal smoke tests (256MB RAM, <30s) - MUST PASS"
-	@echo "  docker-test-integration  Integration validation (2GB RAM, 1-2 min) - Can fail in pre-release"
-	@echo "  docker-test-fast         Fast tests (2GB RAM, 1-2 min) - smoke + basic integration"
-	@echo "  docker-test              Standard tests (4GB RAM, 2-5 min) - all tests"
-	@echo "  docker-test-full         Comprehensive (8GB RAM, 5-10 min) - full CI suite"
+	@echo "  docker-test-smoke        Minimal smoke sweep (256MB RAM, <30s)"
+	@echo "  docker-test-integration  Balanced integration suite (2GB RAM, ~2 min)"
+	@echo "  docker-test-full         Comprehensive CI-equivalent run (8GB RAM, 5-10 min)"
 	@echo ""
 	@echo "🔧 CODE QUALITY"
 	@echo "  lint               Run all linting tools"
@@ -61,15 +77,14 @@ help: ## Show available commands
 	@echo "  docs-serve         Serve docs locally"
 	@echo "  docs-cli           Generate CLI reference"
 	@echo ""
-	@echo "🚀 NEXTFLOW"
+	@echo "🚀 PIPELINE & NEXTFLOW"
 	@echo "  nextflow-check     Check Nextflow installation"
 	@echo "  nextflow-run       Run Nextflow pipeline"
+	@echo "  nextflow-lint      Lint Nextflow scripts"
 	@echo ""
-	@echo "🛠️  UTILITIES"
-	@echo "  dev                Quick development setup"
+	@echo "🛠️ PROJECT UTILITIES"
 	@echo "  example            Run basic example"
 	@echo "  version            Show version"
-	@echo "  release-notes      Generate release notes preview"
 	@echo "  release-test       Test release preparation (quick)"
 	@echo "  release            Prepare release (full checks)"
 	@echo "  security           Run security checks"
@@ -155,8 +170,10 @@ test-unit: ## Run unit tests only (fast, Python-only)
 test-integration: ## Run integration tests (full workflow, requires Docker + Nextflow)
 	uv run --group dev pytest -v -m "integration"
 
-test-fast: ## Run tests excluding slow ones
-	uv run --group dev pytest -v -m "not slow"
+test-dev: ## Run development-tier tests (default local workflow)
+	uv run --group dev pytest -v -m "dev"
+
+test-fast: test-dev ## Backward compatible alias for development-tier tests
 
 test-cov: ## Run tests with coverage report
 	uv run --group dev pytest --cov=sirnaforge --cov-report=html --cov-report=term-missing
@@ -173,6 +190,9 @@ test-ci: ## Run tests optimized for CI environment
 	uv run --group dev pytest -m "ci" \
 		--junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=term-missing --cov-report=xml:coverage.xml -v
+
+test-release: ## Run release validation suite (comprehensive, may be slow)
+	uv run --group dev pytest -v -m "release"
 
 # Code Quality
 lint: ## Run all linting tools
@@ -222,103 +242,24 @@ docker-ensure-image: ## Ensure Docker image exists (build if missing)
 
 docker-run: GENE ?= TP53
 docker-run: ## Run workflow in Docker (usage: make docker-run GENE=<gene>)
-	docker run -v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
+	docker run $(DOCKER_MOUNT_FLAGS) \
 		$(DOCKER_IMAGE):latest \
 		sirnaforge workflow $(GENE) --output-dir docker_results
 
 docker-dev: ## Interactive Docker development shell
-	docker run -it -v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
+	docker run -it $(DOCKER_MOUNT_FLAGS) \
 		$(DOCKER_IMAGE):latest bash
 
-docker-test: docker-ensure-image ## Run tests in Docker (4GB memory for Nextflow compatibility)
-	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
-	docker run --rm \
-		--cpus=2 \
-		--memory=4g \
-		--memory-swap=6g \
-		-v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
-		-e UV_LINK_MODE=copy \
-		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
-		-e NXF_WORK=/workspace/.nextflow_work \
-		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 --maxfail=5"
-
-docker-test-fast: docker-ensure-image ## Run smoke + basic integration tests (combines both test types)
-	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
-	docker run --rm \
-		--cpus=1 \
-		--memory=2g \
-		--memory-swap=3g \
-		-v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
-		-e UV_LINK_MODE=copy \
-		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
-		-e NXF_WORK=/workspace/.nextflow_work \
-		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and not slow' --maxfail=3"
-
-docker-test-lightweight: docker-ensure-image ## Run only lightweight Docker tests
-	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
-	docker run --rm \
-		--cpus=1 \
-		--memory=1g \
-		--memory-swap=2g \
-		-v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
-		-e UV_LINK_MODE=copy \
-		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
-		-e NXF_WORK=/workspace/.nextflow_work \
-		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'lightweight or docker' --maxfail=3"
+docker-test: docker-test-integration ## Backward compatible alias for integration sweep
 
 docker-test-smoke: docker-ensure-image ## Run ultra-minimal smoke tests for CI/CD (fastest) - MUST ALWAYS PASS
-	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
-	docker run --rm \
-		--cpus=0.5 \
-		--memory=256m \
-		--memory-swap=512m \
-		-v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
-		-e UV_LINK_MODE=copy \
-		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
-		-e NXF_WORK=/workspace/.nextflow_work \
-		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -q -n 1 -m 'docker and smoke' --maxfail=1 --tb=short"
+	$(call RUN_DOCKER_TEST,0.5,256m,512m,python -m pytest tests/ -q -n 1 -m 'docker and smoke' --maxfail=1 --tb=short)
 
-docker-test-full: docker-ensure-image ## Run all tests in Docker (4GB memory for Nextflow compatibility)
-	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
-	docker run --rm \
-		--cpus=4 \
-		--memory=4g \
-		--memory-swap=6g \
-		-v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
-		-e UV_LINK_MODE=copy \
-		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
-		-e NXF_WORK=/workspace/.nextflow_work \
-		$(DOCKER_IMAGE):latest \
-		uv run --group dev pytest -v -n 2
+docker-test-integration: docker-ensure-image ## Run integration-focused Docker tests (balanced coverage)
+	$(call RUN_DOCKER_TEST,2,4g,6g,python -m pytest tests/ -v -n 1 -m 'docker and not smoke' --maxfail=5 --tb=short)
 
-docker-test-categories: ## Test the new smoke/integration categorization
-	@echo "🧪 Testing Docker test categorization for CI/CD workflow..."
-	./scripts/test_docker_categories.sh
-
-docker-test-integration: docker-ensure-image ## Run integration tests only (complex workflows that may fail in pre-release)
-	@mkdir -p .pytest_tmp .nextflow_work && chmod -R 777 .pytest_tmp .nextflow_work 2>/dev/null || true
-	docker run --rm \
-		--cpus=2 \
-		--memory=4g \
-		--memory-swap=6g \
-		-v $$(pwd):/workspace -w /workspace \
-		$(UV_CACHE_MOUNT) \
-		-e UV_LINK_MODE=copy \
-		-e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' \
-		-e NXF_WORK=/workspace/.nextflow_work \
-		$(DOCKER_IMAGE):latest \
-		bash -c "uv sync --active --group dev && python -m pytest tests/ -v -n 1 -m 'docker and (docker_integration or (not smoke))' --maxfail=5 --tb=short"
+docker-test-full: docker-ensure-image ## Run comprehensive Docker suite (CI parity)
+	$(call RUN_DOCKER_TEST,4,8g,12g,uv run --group dev pytest -v -n 2 -m 'docker' --maxfail=5)
 
 # Documentation
 docs: ## Build documentation
@@ -375,44 +316,6 @@ example: ## Run basic example
 version: ## Show version information
 	@echo "siRNAforge version: $(VERSION)"
 
-release-notes: ## Generate release notes preview (for current version)
-	@echo "📋 Generating release notes preview for version $(VERSION)..."
-	@echo ""
-	@echo "# 🧬 siRNAforge v$(VERSION)"
-	@echo ""
-	@echo "**Comprehensive siRNA design toolkit with multi-species off-target analysis**"
-	@echo ""
-	@echo "## 📋 What's New in v$(VERSION)"
-	@echo ""
-	@if [ -f CHANGELOG.md ]; then \
-		CHANGELOG_SECTION=$$(sed -n "/## \[$(VERSION)\]/,/## \[/p" CHANGELOG.md | sed '$$d' | sed '1d'); \
-		if [ -n "$$CHANGELOG_SECTION" ]; then \
-			echo "$$CHANGELOG_SECTION"; \
-		else \
-			echo "- Changelog entry for v$(VERSION) not found"; \
-		fi; \
-	else \
-		echo "- No changelog available"; \
-	fi
-	@echo ""
-	@echo "## 🔧 Technical Details"
-	@echo ""
-	@echo "**Python Support:** 3.9, 3.10, 3.11, 3.12"
-	@echo "**Package Manager:** uv (ultra-fast Python package management)"
-	@echo "**Architecture:** Modern async/await with Pydantic models"
-	@echo "**Container:** Multi-stage Docker build with conda bioinformatics stack"
-	@echo "**Pipeline:** Nextflow integration for scalable execution"
-	@echo ""
-	@echo "## 🧪 Quality Assurance"
-	@echo ""
-	@echo "This version includes comprehensive testing:"
-	@echo "- ✅ Unit Tests - Core algorithm validation"
-	@echo "- ✅ Integration Tests - End-to-end workflow testing"
-	@echo "- ✅ Docker Tests - Container functionality verification"
-	@echo "- ✅ Code Quality - Ruff, MyPy, and Black formatting"
-	@echo ""
-	@echo "📋 Preview generated! This is similar to what will appear in GitHub releases."
-
 release-test: ## Test release preparation (quick validation)
 	@echo "🧪 Testing release preparation for version $(VERSION)..."
 	@echo ""
@@ -450,7 +353,6 @@ release-test: ## Test release preparation (quick validation)
 	fi
 	@echo ""
 	@echo "📊 Release Test Summary:"
-	@echo "   Use 'make release-notes' to preview GitHub release notes"
 	@echo "   Use 'make release' for full release preparation"
 
 release: clean build test lint ## Prepare release (full checks)
