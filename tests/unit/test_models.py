@@ -10,7 +10,6 @@ from sirnaforge.models.sirna import DesignParameters, FilterCriteria, SiRNACandi
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 class TestDesignParameters:
     """Test DesignParameters model."""
@@ -38,7 +37,6 @@ class TestDesignParameters:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 class TestSiRNACandidate:
     """Test SiRNACandidate model."""
@@ -110,7 +108,6 @@ class TestSiRNACandidate:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 class TestCLI:
     """Test CLI functionality."""

@@ -51,7 +51,7 @@ class TestPipelineIntegration:
             shutil.rmtree(self.temp_dir)
 
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_nextflow_config_creation(self):
         """Test NextflowConfig creation and validation."""
         config = NextflowConfig.for_testing()
@@ -120,7 +120,7 @@ class TestPipelineIntegration:
             assert arg in args
 
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_nextflow_runner_initialization(self):
         """Test NextflowRunner initialization."""
         config = NextflowConfig.for_testing()
@@ -186,7 +186,7 @@ class TestPipelineIntegration:
 
     @pytest.mark.integration
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_pipeline_execution_dry_run(self):
         """Test pipeline execution in dry-run mode (requires Nextflow)."""
         pytest.importorskip("subprocess")
@@ -271,8 +271,8 @@ class TestPipelineIntegration:
         assert profile in ["docker", "local", "test", "conda", "singularity"]
 
     @pytest.mark.integration
-    @pytest.mark.docker
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_docker
+    @pytest.mark.requires_nextflow
     def test_offtarget_analysis_docker_integration(self):
         """Integration test for off-target analysis module using Docker.
 
@@ -482,7 +482,7 @@ class TestPipelineIntegration:
 
     @pytest.mark.integration
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_offtarget_entrypoint_functions_directly(self):
         """Test the off-target entrypoint functions directly without Nextflow.
 

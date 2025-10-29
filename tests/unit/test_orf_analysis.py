@@ -74,7 +74,6 @@ async def _test_orf_analysis():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 async def test_orf_analysis():
     """Run ORF analysis using pytest's asyncio event loop to avoid coroutine warnings."""

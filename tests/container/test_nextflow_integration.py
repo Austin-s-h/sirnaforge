@@ -15,9 +15,8 @@ import sirnaforge.pipeline.nextflow.config
 import sirnaforge.pipeline.nextflow.workflows
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_available():
     """Test that Nextflow is available in the Docker container."""
     try:
@@ -39,9 +38,8 @@ def test_nextflow_available():
         pytest.skip("Nextflow not available - run this test in Docker container with Nextflow")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_docker_profile():
     """Test that Nextflow can use Docker profiles correctly."""
     try:
@@ -64,9 +62,8 @@ def test_nextflow_docker_profile():
         pytest.skip("Nextflow config command timed out")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_sirnaforge_nextflow_workflow_syntax():
     """Test that siRNAforge Nextflow workflow has valid syntax."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,10 +118,8 @@ def test_sirnaforge_nextflow_workflow_syntax():
             pytest.skip("Nextflow syntax check timed out")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
-@pytest.mark.slow
+@pytest.mark.runs_in_container
 def test_sirnaforge_nextflow_minimal_execution():
     """Test that siRNAforge can execute Nextflow workflows with minimal resources."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -207,9 +202,8 @@ def test_sirnaforge_nextflow_minimal_execution():
             pytest.skip("Workflow execution timed out (expected on resource-constrained systems)")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_config_generation():
     """Test that siRNAforge can generate valid Nextflow configuration."""
     try:
@@ -245,9 +239,8 @@ def test_nextflow_config_generation():
         pytest.skip(f"siRNAforge NextflowConfig not available: {e}")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
-@pytest.mark.unit
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_channel_syntax_fix():
     """Test that the Channel.from syntax fix is working."""
     with tempfile.TemporaryDirectory() as tmpdir:

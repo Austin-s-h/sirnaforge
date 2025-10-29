@@ -45,10 +45,7 @@ def mirna_only_config_for_nextflow():
 
     Returns a dict with minimal parameters for miRNA-only mode.
     """
-    return {
-        # No genome_fastas or genome_indices provided
-        # This triggers miRNA-only analysis mode
-    }
+    return {}
 
 
 @pytest.fixture
@@ -65,25 +62,50 @@ def nextflow_test_work_dir(tmp_path):
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
-    """Normalize environment-tier markers for consistent workflows."""
-    release_aliases = {"integration", "docker_integration", "pipeline", "slow", "nextflow"}
+    """Auto-assign tier markers based on test type.
 
+    Tier hierarchy:
+    - dev: Fast unit tests for development iteration
+    - ci: Smoke tests and container validation for CI/CD
+    - release: Integration tests and heavy workloads for release validation
+    """
     for item in items:
         marker_names = {mark.name for mark in item.iter_markers()}
 
-        # Ensure smoke implies ci
-        if "smoke" in marker_names and "ci" not in marker_names:
-            item.add_marker("ci")
-
-        # Promote heavy workloads to release tier automatically
-        if marker_names & release_aliases or "release" in marker_names:
-            item.add_marker("release")
+        # Smoke tests → CI tier
+        if "smoke" in marker_names:
+            if "ci" not in marker_names:
+                item.add_marker(pytest.mark.ci)
             continue
 
-        # Skip automatically tagging explicit CI tests as dev
-        if "ci" in marker_names:
+        # Container tests → CI tier (validate Docker image)
+        if "runs_in_container" in marker_names:
+            if "ci" not in marker_names:
+                item.add_marker(pytest.mark.ci)
+            # Container integration tests also get release tier
+            if "integration" in marker_names and "release" not in marker_names:
+                item.add_marker(pytest.mark.release)
             continue
 
-        # Default bucket for normal local development runs
-        if "dev" not in marker_names:
-            item.add_marker("dev")
+        # Heavy workloads → Release tier
+        release_triggers = {
+            "integration",
+            "requires_docker",
+            "requires_nextflow",
+            "requires_tools",
+            "slow",
+        }
+        if marker_names & release_triggers:
+            if "release" not in marker_names:
+                item.add_marker(pytest.mark.release)
+            continue
+
+        # Unit tests → Dev tier
+        if "unit" in marker_names:
+            if "dev" not in marker_names:
+                item.add_marker(pytest.mark.dev)
+            continue
+
+        # Default: untagged tests → Dev tier
+        if "dev" not in marker_names and "release" not in marker_names and "ci" not in marker_names:
+            item.add_marker(pytest.mark.dev)

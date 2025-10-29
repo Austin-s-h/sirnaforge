@@ -15,7 +15,6 @@ from sirnaforge.data.gene_search import (
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 class TestGeneSearchModels:
     """Test gene search data models."""
@@ -69,7 +68,6 @@ class TestGeneSearchModels:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 class TestGeneSearcher:
     """Test GeneSearcher functionality."""
@@ -164,18 +162,21 @@ class TestGeneSearcher:
         """Test synchronous wrapper function."""
         mock_result = GeneSearchResult(query="TP53", database=DatabaseType.ENSEMBL)
 
-        # Test the synchronous wrapper by mocking asyncio.run
-        with patch("sirnaforge.data.gene_search.asyncio.run") as mock_run:
-            mock_run.return_value = mock_result
+        # Test the synchronous wrapper by mocking GeneSearcher.search_gene
+        async def mock_search_gene(query, database, include_sequence):
+            return mock_result
 
+        searcher = GeneSearcher()
+        with (
+            patch.object(searcher, "search_gene", new=mock_search_gene),
+            patch("sirnaforge.data.gene_search.GeneSearcher", return_value=searcher),
+        ):
             result = search_gene_sync("TP53")
 
             assert result == mock_result
-            mock_run.assert_called_once()
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 class TestDatabaseSpecificMethods:
     """Test database-specific search methods."""

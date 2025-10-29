@@ -67,7 +67,7 @@ class SiRNADesigner:
         ]
         top_candidates = (passing or all_candidates)[: self.parameters.top_n]
 
-        processing_time = time.time() - start_time
+        processing_time = max(0.0, time.time() - start_time)  # Ensure non-negative
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
         total_seqs = len(sequences)
         for c in all_candidates:

@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.docker
-@pytest.mark.lightweight
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_cli_help():
     """Test that siRNAforge CLI works in container environment."""
     # This test is designed to be run inside the Docker container via make ci-test-docker
@@ -26,8 +26,8 @@ def test_docker_cli_help():
         pytest.skip("sirnaforge CLI not available - run this test in Docker container")
 
 
-@pytest.mark.docker
-@pytest.mark.lightweight
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_version():
     """Test version command works in container."""
     try:
@@ -38,8 +38,8 @@ def test_docker_version():
         pytest.skip("sirnaforge CLI not available - run this test in Docker container")
 
 
-@pytest.mark.docker
-@pytest.mark.lightweight
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_command_structure():
     """Test that main commands are available in container."""
     commands = ["search", "workflow", "design"]
@@ -54,8 +54,8 @@ def test_docker_command_structure():
             pytest.fail(f"Command {cmd} failed: {e.stderr}")
 
 
-@pytest.mark.docker
-@pytest.mark.lightweight
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_python_environment():
     """Test that key Python packages are available in container."""
     required_packages = [
@@ -77,8 +77,8 @@ def test_docker_python_environment():
         pytest.fail(f"Missing required packages in Docker environment: {missing}")
 
 
-@pytest.mark.docker
-@pytest.mark.lightweight
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_sirnaforge_imports():
     """Test that siRNAforge modules can be imported in container."""
     # Test that basic modules can be imported
@@ -105,8 +105,8 @@ def test_docker_sirnaforge_imports():
         pytest.skip(f"siRNAforge classes not available: {e}")
 
 
-@pytest.mark.docker
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_minimal_workflow():
     """Test minimal siRNA design workflow in container with test data."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -148,8 +148,8 @@ def test_docker_minimal_workflow():
             pytest.skip("Command timed out - may indicate missing dependencies")
 
 
-@pytest.mark.docker
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_docker_bioinformatics_tools():
     """Test that key bioinformatics tools are available in container."""
     tools = [

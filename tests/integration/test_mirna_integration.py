@@ -16,7 +16,6 @@ class TestMiRNAManagerIntegration:
     """Integration tests for miRNA manager using real API."""
 
     @pytest.mark.integration
-    @pytest.mark.local_python
     def test_manager_initialization_integration(self):
         """Test manager can be initialized and basic operations work."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -35,7 +34,6 @@ class TestMiRNAManagerIntegration:
             assert info["total_files"] == 0
 
     @pytest.mark.integration
-    @pytest.mark.local_python
     def test_cache_lifecycle_integration(self):
         """Test complete cache lifecycle."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -70,11 +68,8 @@ class TestMiRNAManagerIntegration:
             assert info["total_files"] == 0
 
     @pytest.mark.integration
+    @pytest.mark.requires_network
     @pytest.mark.slow
-    @pytest.mark.skipif(
-        True,  # Skip by default - requires network
-        reason="Network test - enable manually for full integration testing",
-    )
     def test_real_database_download_integration(self):
         """Test real database download (requires network)."""
         with tempfile.TemporaryDirectory() as temp_dir:

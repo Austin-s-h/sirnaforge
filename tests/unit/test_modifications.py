@@ -30,7 +30,6 @@ from sirnaforge.modifications import (
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestChemicalModification:
     """Test ChemicalModification model."""
 
@@ -52,7 +51,6 @@ class TestChemicalModification:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestProvenance:
     """Test Provenance model."""
 
@@ -73,7 +71,6 @@ class TestProvenance:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestStrandMetadata:
     """Test StrandMetadata model."""
 
@@ -115,7 +112,6 @@ class TestStrandMetadata:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestSequenceRecord:
     """Test SequenceRecord model."""
 
@@ -154,7 +150,6 @@ class TestSequenceRecord:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestParsingFunctions:
     """Test parsing helper functions."""
 
@@ -211,7 +206,6 @@ class TestParsingFunctions:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestMetadataLoading:
     """Test metadata loading and merging."""
 
@@ -284,7 +278,6 @@ class TestMetadataLoading:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestPydanticValidation:
     """Test Pydantic validation features."""
 
@@ -343,7 +336,6 @@ class TestPydanticValidation:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestPydanticJSONSerialization:
     """Test Pydantic JSON serialization and deserialization."""
 
@@ -450,7 +442,6 @@ class TestPydanticJSONSerialization:
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestEdgeCases:
     """Test edge cases and error handling."""
 

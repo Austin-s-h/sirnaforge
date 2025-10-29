@@ -279,21 +279,37 @@ log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_level = "INFO"
 markers = [
-  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-  "integration: marks tests as integration tests",
-  "pipeline: marks tests that require pipeline tools",
-  "docker: marks tests that require Docker environment",
-  "nextflow: marks tests that require Nextflow workflows",
-  "asyncio: marks tests as async",
-  "unit: marks tests as unit tests",
-  "ci: marks tests included in the CI smoke tier",
-  "lightweight: marks tests as lightweight and fast",
-  "smoke: marks tests as ultra-minimal smoke tests for CI/CD - MUST always pass",
-  "docker_integration: marks tests as Docker integration tests - can fail in pre-release", # Environment-specific markers
-  "local_python: Local development tests - Python environment only",
-  "local_nextflow: Local development tests - includes Nextflow workflows",
-  "dev: marks tests for local development workflows (default tier)",
-  "release: marks tests required for release validation tier",
+  # === Core Test Types (mutually exclusive - pick ONE) ===
+  "unit: Pure Python unit tests - fast, isolated, no external dependencies",
+  "integration: End-to-end workflow tests - multi-component validation",
+  "smoke: Ultra-fast gate tests - MUST always pass in CI/CD",
+
+  # === Execution Environment (where test runs) ===
+  "runs_in_container: Test executes INSIDE Docker container (not on host)",
+
+  # === Requirement Markers (what test needs on host) ===
+  "requires_docker: Test requires Docker daemon on host machine",
+  "requires_nextflow: Test requires Nextflow pipeline execution",
+  "requires_network: Test requires internet connectivity",
+  "requires_tools: Test requires external bioinformatics tools (bwa-mem2, samtools, etc.)",
+
+  # === Test Tiers (auto-assigned by conftest.py hook) ===
+  "dev: Local development tier - fast iteration (auto-assigned to unit tests)",
+  "ci: CI/CD tier - quick validation (auto-assigned to smoke tests)",
+  "release: Release validation tier - comprehensive checks (auto-assigned to integration tests)",
+
+  # === Special Attributes ===
+  "slow: Test takes >30 seconds to complete",
+  "asyncio: Async test requiring asyncio event loop",
+
+  # === DEPRECATED (will be removed in v0.3.0) ===
+  "docker: DEPRECATED - use @pytest.mark.requires_docker instead",
+  "pipeline: DEPRECATED - use @pytest.mark.requires_nextflow instead",
+  "nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
+  "lightweight: DEPRECATED - use @pytest.mark.unit instead",
+  "local_python: DEPRECATED - use @pytest.mark.unit instead",
+  "local_nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
+  "docker_integration: DEPRECATED - use @pytest.mark.integration + @pytest.mark.requires_docker",
 ]
 minversion = "7.0"
 pythonpath = ["src"]
