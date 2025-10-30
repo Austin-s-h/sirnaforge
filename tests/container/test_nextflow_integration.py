@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import sirnaforge.pipeline.nextflow.config
-import sirnaforge.pipeline.nextflow.workflows
+from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 
 
 @pytest.mark.integration
@@ -20,7 +20,7 @@ import sirnaforge.pipeline.nextflow.workflows
 def test_nextflow_available():
     """Test that Nextflow is available in the Docker container."""
     try:
-        result = subprocess.run(["nextflow", "--version"], capture_output=True, text=True, timeout=30, check=True)
+        result = subprocess.run(["nextflow", "-version"], capture_output=True, text=True, timeout=30, check=True)
         assert "nextflow" in result.stdout.lower()
 
         # Check version compatibility (should be 25.x or higher)
@@ -40,12 +40,12 @@ def test_nextflow_available():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
-def test_nextflow_docker_profile():
-    """Test that Nextflow can use Docker profiles correctly."""
+def test_nextflow_local_profile():
+    """Test that Nextflow can use local profiles correctly."""
     try:
-        # Test that docker profile is available
+        # Test that local profile is available
         result = subprocess.run(
-            ["nextflow", "config", "-profile", "docker", "-show-profiles"],
+            ["nextflow", "config", "-profile", "local", "-show-profiles"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -70,9 +70,9 @@ def test_sirnaforge_nextflow_workflow_syntax():
         work_dir = Path(tmpdir)
 
         try:
-            # Get the main workflow file
-            workflow_module_path = Path(sirnaforge.pipeline.nextflow.workflows.__file__).parent
-            main_nf = workflow_module_path / "main.nf"
+            # Use the runner to get the workflow file
+            runner = NextflowRunner()
+            main_nf = runner.get_main_workflow()
 
             if not main_nf.exists():
                 pytest.skip(f"Nextflow workflow not found at {main_nf}")

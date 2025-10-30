@@ -134,13 +134,61 @@ jobs:
     needs: validate-release
     uses: ./.github/workflows/ci.yml
 
+  # Run comprehensive release tests with full coverage
+  test-release:
+    name: 🧪 Comprehensive Release Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [validate-release, run-ci]
+    if: needs.run-ci.result == 'success'
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: ⚡ Install uv CLI
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: test-release
+
+    - name: 📦 Install all dependencies
+      run: uv sync --dev
+
+    - name: 🧪 Run comprehensive test suite with coverage
+      run: make test-release
+
+    - name: 📊 Upload coverage reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-release-${{ needs.validate-release.outputs.version }}
+        path: |
+          coverage.xml
+          htmlcov/
+          pytest-report.xml
+        retention-days: 30
+
+    - name: 📈 Coverage summary
+      if: always()
+      run: |
+        echo "## 📊 Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY || echo "Coverage report not available" >> $GITHUB_STEP_SUMMARY
+
   # Build Python distribution artifacts once (reusable by PyPI/TestPyPI)
   build-artifacts:
     name: 📦 Build Python Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, run-ci]
-    if: needs.run-ci.result == 'success'
+    needs: [validate-release, run-ci, test-release]
+    if: needs.test-release.result == 'success'
     outputs:
       version: ${{ needs.validate-release.outputs.version }}
     steps:
@@ -174,7 +222,7 @@ jobs:
     name: 🐳 Build & Test Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [validate-release, run-ci]
+    needs: [validate-release, run-ci, test-release]
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.meta.outputs.tags }}
@@ -232,10 +280,10 @@ jobs:
 
         echo "🧪 Tagged image: $REGISTRY_IMAGE -> sirnaforge:latest"
 
-        echo "🧪 Running Docker smoke tests (critical functionality)..."
+        echo "🧪 Running Docker container validation tests..."
         # The Docker container uses its own conda environment with all bioinformatics tools
         # The Makefile automatically handles UV cache mounting based on environment
-        make docker-test-smoke
+        make docker-test
 
         echo "✅ Docker image tests passed!"
 
@@ -417,7 +465,7 @@ jobs:
           uv sync --dev
 
           # Verify with quick tests
-          make test-local-python  # ~12-15 seconds
+          make test-dev  # ~15 seconds
           ```
 
           ## 🚀 Usage Examples

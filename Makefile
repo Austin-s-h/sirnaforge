@@ -89,8 +89,9 @@ test-ci: ## CI tier - smoke tests for CI/CD
 	$(PYTEST_V) -m "ci" --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
-test-release: ## Release tier - comprehensive validation
-	$(PYTEST_V) -m "release"
+test-release: ## Release tier - comprehensive validation (all tests with coverage)
+	$(PYTEST_V) -m "dev or ci or release" --junitxml=pytest-report.xml \
+		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=html --cov-report=term-missing
 
 test: ## Run all tests (shows what passes/skips/fails)
 	$(PYTEST_V) || true
