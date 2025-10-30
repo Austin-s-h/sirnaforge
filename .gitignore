@@ -94,3 +94,4 @@ docs/_build/
 .pytest_tmp/
 nextflow_work/
 nxf-tmp.*
+pytest-report.xml

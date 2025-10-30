@@ -407,27 +407,14 @@ du -sh "$analysis_dir"/* 2>/dev/null | head -5
 
 ## Best Practices Summary
 
-### Parameter Selection Guidelines
-```bash
-# Research/Publication quality
---gc-min 35 --gc-max 55 --max-poly-runs 2 --top-n 30
-
-# High-throughput screening
---gc-min 25 --gc-max 70 --max-poly-runs 4 --top-n 15
-
-# Difficult targets
---gc-min 20 --gc-max 75 --skip-structure --top-n 50
-
-# Quick testing
---top-n 5 --skip-structure --skip-off-targets
-```
-
 ### Workflow Recommendations
 1. **Start simple**: Use `workflow` command for most use cases
 2. **Validate inputs**: Always run `validate` on custom FASTA files
 3. **Check results**: Review pass rates and quality metrics
 4. **Iterate parameters**: Adjust stringency based on results
 5. **Document settings**: Save configurations for reproducibility
+
+> **Parameter Guidelines**: See [Getting Started](getting_started.md) for recommended parameter ranges, quality thresholds, and complete parameter documentation.
 
 > **More Resources:**
 > - [CLI Reference](cli_reference.md) - Complete parameter documentation

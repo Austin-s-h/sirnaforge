@@ -7,24 +7,24 @@ Quick Access by Category
 =========================
 
 🚀 **Getting Started**
-   - :doc:`getting_started` - Installation & Setup
-   - :doc:`quick_reference` - Essential Commands
+   - :doc:`getting_started` - Installation, Setup & Quick Reference
+   - :doc:`cli_reference` - Complete CLI Reference
 
 📖 **User Documentation**
-   - :doc:`cli_reference` - Complete CLI Reference
    - :doc:`usage_examples` - Real-world Examples
    - :doc:`gene_search` - Gene Search Guide
+   - :doc:`thermodynamic_guide` - Thermodynamic Principles
+   - :doc:`modification_integration_guide` - Chemical Modifications
    - :doc:`tutorials/index` - Step-by-step Tutorials
 
-🏗️ **Technical Documentation**
-   - :doc:`architecture` - System Architecture
+📚 **Reference**
    - :doc:`api_reference` - Python API Reference
-
-🚀 **Operations & Deployment**
+   - :doc:`modification_annotation_spec` - Modification Specifications
    - :doc:`deployment` - Deployment Guide
+   - :doc:`glossary` - Glossary of Terms
 
 🛠️ **Development**
-   - :doc:`development` - Contributing Guide
+   - :doc:`developer/index` - Developer Documentation
    - :doc:`changelog` - Version History
 
 Search & Navigation

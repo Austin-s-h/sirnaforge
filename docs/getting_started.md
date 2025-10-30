@@ -76,6 +76,8 @@ cat my_first_analysis/logs/workflow_summary.json
 | `*_all.csv` | Complete candidate list with detailed scores | Analysis and custom filtering |
 | `workflow_summary.json` | High-level analysis statistics | QC and reporting |
 
+> **Data Models**: Results contain [`SiRNACandidate`](api_reference.rst) objects with full thermodynamic analysis. See [API Reference](api_reference.rst) for field descriptions.
+
 ## Quality Indicators
 
 **Key metrics:**
@@ -177,6 +179,8 @@ uv run sirnaforge workflow GENE --length 19 --gc-min 40 --max-poly-runs 2
 - Asymmetry Score: ≥0.65
 - Melting Temperature: 55-65°C
 - End Stability (ΔΔG): +2 to +6 kcal/mol
+
+> **Configuration**: These thresholds are enforced through [`FilterCriteria`](api_reference.rst) in [`DesignParameters`](api_reference.rst). See [API docs](api_reference.rst) for customization options.
 
 ## Next Steps
 
