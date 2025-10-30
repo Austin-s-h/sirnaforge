@@ -52,7 +52,7 @@ from sirnaforge.models.sirna import DesignParameters
 params = DesignParameters(
     sirna_length=21,
     top_candidates=20,
-    gc_content_range=(30.0, 52.0)
+    gc_content_range=(30.0, 60.0)
 )
 
 # Create designer instance
@@ -429,7 +429,7 @@ params = DesignParameters(
     top_candidates=20,
     filters=FilterCriteria(
         gc_min=30.0,
-        gc_max=52.0,
+        gc_max=60.0,
         min_composite_score=5.0,
         max_poly_runs=4
     )
@@ -447,7 +447,7 @@ from sirnaforge.models.sirna import DesignParameters
 
 # Read from environment variables
 gc_min = float(os.getenv("SIRNAFORGE_GC_MIN", "30.0"))
-gc_max = float(os.getenv("SIRNAFORGE_GC_MAX", "52.0"))
+gc_max = float(os.getenv("SIRNAFORGE_GC_MAX", "60.0"))
 top_n = int(os.getenv("SIRNAFORGE_TOP_N", "20"))
 
 params = DesignParameters(

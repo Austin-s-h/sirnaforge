@@ -21,6 +21,9 @@ The siRNAforge toolkit includes comprehensive gene search functionality to retri
 
 ### Command Line Usage
 
+`````{tab-set}
+
+````{tab-item} uv
 ```bash
 # Search for a gene and save sequences
 uv run sirnaforge search TP53 -o tp53_transcripts.fasta
@@ -34,10 +37,41 @@ uv run sirnaforge search MYC --all -o myc_all_databases.fasta
 # Get metadata only (no sequences)
 uv run sirnaforge search EGFR --no-sequence
 
-# Use a FASTA from disk or a remote URL as input for the full workflow (skip gene search)
+# Use a FASTA from disk or remote URL as input (skip gene search)
 uv run sirnaforge workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
 uv run sirnaforge workflow TP53 --input-fasta https://example.org/transcripts.fasta -o sirna_output
 ```
+````
+
+````{tab-item} Docker
+```bash
+# Search for a gene and save sequences
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search TP53 -o tp53_transcripts.fasta
+
+# Search specific database
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search BRCA1 -d ensembl -o brca1_ensembl.fasta
+
+# Search all databases
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search MYC --all -o myc_all_databases.fasta
+
+# Get metadata only (no sequences)
+docker run --rm ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search EGFR --no-sequence
+
+# Use a FASTA from disk or remote URL as input (skip gene search)
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 --input-fasta /workspace/transcripts.fasta -o sirna_output
+```
+````
+
+`````
 
 ### Python API Usage
 
@@ -186,14 +220,38 @@ searcher = GeneSearcher(
 
 The gene search functionality integrates seamlessly with the siRNA design pipeline:
 
+`````{tab-set}
+
+````{tab-item} uv
 ```bash
 # Complete pipeline: search → design → analyze
-sirnaforge search TP53 -o tp53.fasta
-sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
+uv run sirnaforge search TP53 -o tp53.fasta
+uv run sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
 
 # Or use the integrated workflow command
-sirnaforge workflow TP53 --output-dir results
+uv run sirnaforge workflow TP53 --output-dir results
 ```
+````
+
+````{tab-item} Docker
+```bash
+# Complete pipeline: search → design → analyze
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search TP53 -o tp53.fasta
+
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
+
+# Or use the integrated workflow command
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 --output-dir results
+```
+````
+
+`````
 
 > **Workflow Integration**: See [`run_sirna_workflow`](api_reference.rst) for the complete integrated pipeline
 

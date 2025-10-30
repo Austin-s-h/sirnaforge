@@ -420,7 +420,7 @@ def workflow(  # noqa: PLR0912
         help="Minimum GC content percentage",
     ),
     gc_max: float = typer.Option(
-        52.0,
+        60.0,
         "--gc-max",
         min=0.0,
         max=100.0,
@@ -674,7 +674,7 @@ def design(  # noqa: PLR0912
         help="Minimum GC content percentage",
     ),
     gc_max: float = typer.Option(
-        52.0,
+        60.0,
         "--gc-max",
         min=0.0,
         max=100.0,

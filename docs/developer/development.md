@@ -185,7 +185,7 @@ class DesignParameters(BaseModel):
 
     sirna_length: int = Field(21, ge=19, le=23)
     gc_min: float = Field(30.0, ge=0, le=100)
-    gc_max: float = Field(52.0, ge=0, le=100)
+    gc_max: float = Field(60.0, ge=0, le=100)
 
     @validator('gc_max')
     def gc_max_greater_than_min(cls, v, values):
