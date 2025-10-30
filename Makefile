@@ -213,5 +213,7 @@ nextflow-check: ## Check Nextflow installation
 
 security: ## Run security checks
 	@echo "🔐 Running security scans..."
+	@uv run bandit -r src/ -f json -o bandit-report.json || true
 	@uv run bandit -r src/ -q || true
-	@echo "✅ Security scan complete"
+	@(uv run safety check --output json 2>&1 | grep -v "UserWarning" > safety-report.json) || echo '{"vulnerabilities": [], "scan_failed": true}' > safety-report.json
+	@echo "✅ Security scan complete (reports: bandit-report.json, safety-report.json)"

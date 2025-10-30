@@ -58,6 +58,7 @@ jobs:
           bandit-report.json
           safety-report.json
         retention-days: 30
+        if-no-files-found: warn
 
   test-matrix:
     name: Test Python ${{ matrix.python-version }}
