@@ -15,7 +15,8 @@ This tutorial demonstrates how to use siRNAforge programmatically through its Py
 - Basic Python programming experience
 - Familiarity with basic siRNAforge concepts
 
-> **API Reference**: See the complete [API Reference](../api_reference.rst) for detailed class/method documentation including parameters, return types, and examples.
+For complete class and method documentation, see the {doc}`API Reference <../api_reference>`.
+
 
 ## Getting Started
 
@@ -36,7 +37,10 @@ import asyncio
 import pandas as pd
 ```
 
-> **Tip**: Hover over class names in your IDE to see docstrings, or check the [API Reference](../api_reference.rst) for full documentation.
+```{tip}
+Hover over class names in your IDE to see docstrings, or check the {doc}`API Reference <../api_reference>` for full documentation.
+```
+
 
 ### Basic API Usage
 
@@ -72,7 +76,8 @@ for candidate in results.top_candidates:
     print(f"{candidate.sirna_id}: {candidate.guide_sequence} (score: {candidate.composite_score:.1f})")
 ```
 
-> **Model Reference**: [`DesignParameters`](../api_reference.rst#sirnaforge.models.sirna.DesignParameters), [`SiRNADesigner`](../api_reference.rst#sirnaforge.core.design.SiRNADesigner), [`SiRNACandidate`](../api_reference.rst#sirnaforge.models.sirna.SiRNACandidate)
+See the {doc}`API Reference <../api_reference>` for complete documentation of `DesignParameters`, `SiRNADesigner`, and `SiRNACandidate`.
+
 
 #### 2. Design from FASTA File
 
@@ -92,7 +97,8 @@ print(f"Results saved to {output_file}")
 
 ## Gene Search API
 
-The gene search system retrieves transcripts from genomic databases. See [`GeneSearcher` API docs](../api_reference.rst#sirnaforge.data.gene_search.GeneSearcher) for complete documentation.
+The gene search system retrieves transcripts from genomic databases. See the {doc}`API Reference <../api_reference>` for complete `GeneSearcher` documentation.
+
 
 ### Synchronous Gene Search
 
@@ -114,7 +120,8 @@ else:
     print(f"Search failed: {result.error}")
 ```
 
-> **Model Reference**: [`GeneSearchResult`](../api_reference.rst#sirnaforge.data.gene_search.GeneSearchResult), [`TranscriptInfo`](../api_reference.rst#sirnaforge.data.gene_search.TranscriptInfo), [`GeneInfo`](../api_reference.rst#sirnaforge.data.gene_search.GeneInfo)
+See the {doc}`API Reference <../api_reference>` for details on `GeneSearchResult`, `TranscriptInfo`, and `GeneInfo`.
+
 
 ### Asynchronous Gene Search
 
@@ -145,7 +152,8 @@ for gene, result in results.items():
         print(f"{gene}: {len(result.transcripts)} transcripts ({canonical_count} canonical)")
 ```
 
-> **Async Methods**: See [`GeneSearcher.search_gene`](../api_reference.rst#sirnaforge.data.gene_search.GeneSearcher.search_gene) and [`GeneSearcher.search_multiple_databases`](../api_reference.rst#sirnaforge.data.gene_search.GeneSearcher.search_multiple_databases)
+See the {doc}`API Reference <../api_reference>` for details on async methods like `GeneSearcher.search_gene` and `GeneSearcher.search_multiple_databases`.
+
 
 ## Advanced API Usage
 
@@ -153,7 +161,8 @@ for gene, result in results.items():
 
 siRNAforge allows you to implement custom scoring algorithms by extending the base scorer class. This is useful for research-specific requirements or novel siRNA design principles.
 
-> **See Also**: [`BaseScorer`](../api_reference.rst#sirnaforge.core.design.BaseScorer) API documentation for the complete interface and built-in scorer implementations.
+See the {doc}`API Reference <../api_reference>` for complete documentation of the `BaseScorer` interface and built-in scorer implementations.
+
 
 ```python
 from sirnaforge.core.design import BaseScorer, SiRNADesigner
@@ -203,7 +212,8 @@ custom_scorer = CustomScorer(weight_gc=0.4, weight_structure=0.6)
 designer = SiRNADesigner(DesignParameters(), scorer=custom_scorer)
 ```
 
-> **Advanced**: For more complex scoring, see the [Custom Scoring Tutorial](custom_scoring.md) and [`ThermodynamicAnalyzer`](../api_reference.rst#sirnaforge.core.thermodynamics.ThermodynamicAnalyzer) for thermodynamic calculations.
+For more complex scoring, see the [Custom Scoring Tutorial](custom_scoring.md). The {doc}`API Reference <../api_reference>` provides details on `ThermodynamicAnalyzer` for thermodynamic calculations.
+
 
 ### Batch Processing
 
@@ -414,9 +424,8 @@ for gene in genes:
 
 ## Configuration and Customization
 
-Configuration in siRNAforge is handled through Pydantic models for type safety and validation.
+Configuration in siRNAforge is handled through Pydantic models for type safety and validation. See the {doc}`API Reference <../api_reference>` for complete documentation of `DesignParameters` and `FilterCriteria` with all available options and validation rules.
 
-> **Model Documentation**: See [`DesignParameters`](../api_reference.rst#sirnaforge.models.sirna.DesignParameters) and [`FilterCriteria`](../api_reference.rst#sirnaforge.models.sirna.FilterCriteria) for all available options and validation rules.
 
 ### Using Configuration Models
 
@@ -609,15 +618,18 @@ After mastering the Python API:
 1. **[Usage Examples](../usage_examples.md)** - Complex multi-step analyses and automation
 2. **[Pipeline Integration](pipeline_integration.md)** - Nextflow pipeline development
 3. **[Custom Scoring](custom_scoring.md)** - Advanced algorithm development
-4. **[API Reference](../api_reference.rst)** - Complete class and method documentation
+4. **{doc}`API Reference <../api_reference>`** - Complete class and method documentation
 5. **[Developer Guide](../developer/development.md)** - Contributing to siRNAforge
 
-## Key API Modules Reference
+## Key API Modules
 
-- **Core Design**: [`sirnaforge.core.design`](../api_reference.rst#module-sirnaforge.core.design) - Main design engine
-- **Models**: [`sirnaforge.models.sirna`](../api_reference.rst#module-sirnaforge.models.sirna) - Data models and schemas
-- **Gene Search**: [`sirnaforge.data.gene_search`](../api_reference.rst#module-sirnaforge.data.gene_search) - Database access
-- **Thermodynamics**: [`sirnaforge.core.thermodynamics`](../api_reference.rst#module-sirnaforge.core.thermodynamics) - RNA folding analysis
-- **Workflow**: [`sirnaforge.workflow`](../api_reference.rst#module-sirnaforge.workflow) - High-level orchestration
+For complete module documentation, see the {doc}`API Reference <../api_reference>`:
+
+- **Core Design**: `sirnaforge.core.design` - Main design engine
+- **Models**: `sirnaforge.models.sirna` - Data models and schemas
+- **Gene Search**: `sirnaforge.data.gene_search` - Database access
+- **Thermodynamics**: `sirnaforge.core.thermodynamics` - RNA folding analysis
+- **Workflow**: `sirnaforge.workflow` - High-level orchestration
+
 
 The Python API provides the flexibility to create sophisticated, automated siRNA design workflows tailored to your specific research needs.

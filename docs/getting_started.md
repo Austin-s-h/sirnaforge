@@ -66,7 +66,6 @@ docker run --rm sirnaforge:latest sirnaforge version
 
 **Includes**: Python packages, Nextflow, BWA-MEM2, SAMtools, ViennaRNA, AWS CLI
 
-> **Cloud Deployment**: For AWS Batch, HPC/SLURM, or Kubernetes deployment, see the [Deployment Guide](deployment.md).
 
 ## Your First Analysis
 
@@ -176,7 +175,6 @@ cat my_first_analysis/logs/workflow_summary.json
 | `*_all.csv` | Complete candidate list with detailed scores | Analysis and custom filtering |
 | `workflow_summary.json` | High-level analysis statistics | QC and reporting |
 
-> **Data Models**: Results contain [`SiRNACandidate`](api_reference.rst) objects with full thermodynamic analysis. See [API Reference](api_reference.rst) for field descriptions.
 
 ## Quality Indicators
 
@@ -381,7 +379,6 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 - Melting Temperature: 55-65°C
 - End Stability (ΔΔG): +2 to +6 kcal/mol
 
-> **Configuration**: These thresholds are enforced through [`FilterCriteria`](api_reference.rst) in [`DesignParameters`](api_reference.rst). See [API docs](api_reference.rst) for customization options.
 
 ## Next Steps
 
