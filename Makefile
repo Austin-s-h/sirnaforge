@@ -136,7 +136,7 @@ docker-ensure: ## Ensure Docker image exists (build if missing)
 
 docker-test: docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	$(DOCKER_RUN) bash -c "uv sync && uv run pytest tests/container/ -v -m 'runs_in_container'"
+	docker run --rm $(DOCKER_MOUNT_FLAGS) -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c "pip install --quiet pytest && /opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
 
 docker-shell: docker-ensure ## Interactive shell in Docker
 	docker run -it $(DOCKER_MOUNT_FLAGS) $(DOCKER_IMAGE):latest bash
