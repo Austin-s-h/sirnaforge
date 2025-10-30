@@ -20,7 +20,6 @@ Quick Access by Category
 📚 **Reference**
    - :doc:`api_reference` - Python API Reference
    - :doc:`modification_annotation_spec` - Modification Specifications
-   - :doc:`deployment` - Deployment Guide
    - :doc:`glossary` - Glossary of Terms
 
 🛠️ **Development**

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔧 Improvements
+- **Documentation Standardization**: Unified tab-based execution examples across all documentation
+  - Added sphinx-design tab-sets for uv/Docker execution in all usage examples
+  - Standardized command patterns in `usage_examples.md`, `gene_search.md`, `getting_started.md`
+  - Simplified usage examples from redundant variations to minimal/comprehensive pattern
+  - Improved user experience with consistent execution context switching
+- **GC Content Default Update**: Increased default `--gc-max` from 52% to 60%
+  - Updated across CLI, documentation, and tutorials
+  - Better alignment with siRNA design best practices
+  - Maintains conservative gc-min default of 35%
+- **CI/CD Pipeline Enhancements**:
+  - Fixed release.yml to use correct make targets (`docker-test`, `test-dev`)
+  - Added comprehensive `test-release` job with full coverage reporting
+  - Improved test tier structure: `test-dev` (unit), `test-ci` (smoke), `test-release` (comprehensive)
+  - Coverage artifacts now uploaded with 30-day retention
+  - Added coverage summary to GitHub Actions workflow UI
+
+### 🐛 Bug Fixes
+- **Docker Test Environment**: Fixed environment conflicts in `make docker-test`
+  - Removed uv sync from Docker container execution (conflicts with conda)
+  - Explicit pytest installation and conda path execution
+  - Resolved parallel execution issues with pytest-xdist
+- **Missing Dependencies**: Added `psutil>=6.0.0` to production dependencies
+  - Required by workflow.py but was previously undeclared
+  - Ensures consistent environment across installations
+- **Nextflow Integration Tests**: Fixed two previously skipped tests
+  - Corrected Nextflow version flag: `--version` → `-version`
+  - Fixed workflow access to use NextflowRunner API instead of module import
+  - All 20 container tests now passing (was 18 passed, 2 skipped)
+
+### 🧪 Testing
+- **Comprehensive Test Coverage**: Enhanced `make test-release` to run all test tiers
+  - Now runs 179 tests (dev + ci + release markers) with 55% coverage
+  - Generates XML, HTML, and terminal coverage reports
+  - Full JUnit XML for CI/CD integration
+  - Execution time: ~22 seconds for complete validation
+- **Test Organization**: All tests properly tagged with tier markers
+  - 9 expected skips (requires Docker/Nextflow/BWA-MEM2 tools)
+  - Consistent marker structure across test suite
+  - Better CI/CD integration with proper test selection
+
+### 📦 Build & Infrastructure
+- **Makefile Improvements**: Enhanced test targets with better coverage support
+  - `test-release` now comprehensive (dev + ci + release tests)
+  - All test targets include appropriate coverage/junit reporting
+  - Clear documentation of tier structure in help text
+- **GitHub Actions**: Aligned workflows with current Makefile structure
+  - CI workflow: lint → security → test-ci → build
+  - Release workflow: validate → ci → test-release → build artifacts → docker
+  - Proper dependency chains ensure quality gates
+
 ## [0.2.2] - 2025-10-26
 
 ### ✨ New Features

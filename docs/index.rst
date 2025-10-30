@@ -26,7 +26,6 @@ siRNAforge Documentation
 
    api_reference
    modification_annotation_spec
-   deployment
    changelog
    glossary
    sitemap
