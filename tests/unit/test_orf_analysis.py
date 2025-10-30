@@ -16,7 +16,6 @@ logger = get_logger(__name__)
 
 async def _test_orf_analysis():
     """Async implementation of ORF analysis on TP53 transcripts using saved test data."""
-
     logger.info("=== Testing ORF Analysis on TP53 Transcripts (Test Data) ===")
 
     # Load test data from saved file
@@ -75,7 +74,6 @@ async def _test_orf_analysis():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 async def test_orf_analysis():
     """Run ORF analysis using pytest's asyncio event loop to avoid coroutine warnings."""

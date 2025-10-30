@@ -24,7 +24,7 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.9, <3.13"
-version = "0.2.1"
+version = "0.2.2"
 
 dependencies = [
   "biopython>=1.84",
@@ -41,6 +41,7 @@ dependencies = [
   "httpx>=0.28.0",
   "nextflow>=25.04.0",
   "pandera>=0.26.0",
+  "psutil>=6.0.0",
 ]
 
 [dependency-groups]
@@ -183,10 +184,14 @@ select = [
   "RET", # flake8-return
   "PTH", # flake8-use-pathlib
   "PL", # pylint
+  "D", # pydocstyle (docstring conventions)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG001", "S101"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 # Black configuration
 [tool.black]
@@ -238,6 +243,8 @@ warn_return_any = true
 warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
+mypy_path = "src"
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 ignore_missing_imports = true
@@ -273,19 +280,37 @@ log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_level = "INFO"
 markers = [
-  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-  "integration: marks tests as integration tests",
-  "pipeline: marks tests that require pipeline tools",
-  "docker: marks tests that require Docker environment",
-  "nextflow: marks tests that require Nextflow workflows",
-  "asyncio: marks tests as async",
-  "unit: marks tests as unit tests",
-  "ci: marks tests as continuous integration tests",
-  "lightweight: marks tests as lightweight and fast",
-  "smoke: marks tests as ultra-minimal smoke tests for CI/CD - MUST always pass",
-  "docker_integration: marks tests as Docker integration tests - can fail in pre-release", # Environment-specific markers
-  "local_python: Local development tests - Python environment only",
-  "local_nextflow: Local development tests - includes Nextflow workflows",
+  # === Core Test Types (mutually exclusive - pick ONE) ===
+  "unit: Pure Python unit tests - fast, isolated, no external dependencies",
+  "integration: End-to-end workflow tests - multi-component validation",
+  "smoke: Ultra-fast gate tests - MUST always pass in CI/CD",
+
+  # === Execution Environment (where test runs) ===
+  "runs_in_container: Test executes INSIDE Docker container (not on host)",
+
+  # === Requirement Markers (what test needs on host) ===
+  "requires_docker: Test requires Docker daemon on host machine",
+  "requires_nextflow: Test requires Nextflow pipeline execution",
+  "requires_network: Test requires internet connectivity",
+  "requires_tools: Test requires external bioinformatics tools (bwa-mem2, samtools, etc.)",
+
+  # === Test Tiers (auto-assigned by conftest.py hook) ===
+  "dev: Local development tier - fast iteration (auto-assigned to unit tests)",
+  "ci: CI/CD tier - quick validation (auto-assigned to smoke tests)",
+  "release: Release validation tier - comprehensive checks (auto-assigned to integration tests)",
+
+  # === Special Attributes ===
+  "slow: Test takes >30 seconds to complete",
+  "asyncio: Async test requiring asyncio event loop",
+
+  # === DEPRECATED (will be removed in v0.3.0) ===
+  "docker: DEPRECATED - use @pytest.mark.requires_docker instead",
+  "pipeline: DEPRECATED - use @pytest.mark.requires_nextflow instead",
+  "nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
+  "lightweight: DEPRECATED - use @pytest.mark.unit instead",
+  "local_python: DEPRECATED - use @pytest.mark.unit instead",
+  "local_nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
+  "docker_integration: DEPRECATED - use @pytest.mark.integration + @pytest.mark.requires_docker",
 ]
 minversion = "7.0"
 pythonpath = ["src"]

@@ -25,17 +25,20 @@ sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.core.off_target import validate_and_write_sequences
 
 # Validate siRNA candidates
-total, valid, errors = validate_and_write_sequences(
+# Returns: (valid_count, invalid_count, issues)
+valid, invalid, errors = validate_and_write_sequences(
     input_file='${candidates_fasta}',
     output_file='validated_candidates.fasta',
     expected_length=21
 )
 
+total = valid + invalid
+
 # Write validation report
 with open('validation_report.txt', 'w') as f:
     f.write(f'Total candidates: {total}\\n')
     f.write(f'Valid candidates: {valid}\\n')
-    f.write(f'Invalid candidates: {total - valid}\\n')
+    f.write(f'Invalid candidates: {invalid}\\n')
     if errors:
         f.write('\\nErrors:\\n')
         for error in errors:

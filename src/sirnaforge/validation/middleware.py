@@ -20,6 +20,7 @@ class ValidationReport:
     """Comprehensive validation report for a workflow stage."""
 
     def __init__(self, stage: ValidationStage):
+        """Initialize validation report."""
         self.stage = stage
         self.start_time = time.time()
         self.end_time: Optional[float] = None
@@ -72,6 +73,7 @@ class ValidationMiddleware:
     """Middleware for integrating validation throughout the workflow."""
 
     def __init__(self, config: ValidationConfig):
+        """Initialize validation middleware."""
         self.config = config
         self.reports: list[ValidationReport] = []
         self._validation_cache: dict[str, ValidationResult] = {}

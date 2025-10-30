@@ -1,5 +1,4 @@
-"""
-Integration tests for embedded Nextflow pipeline.
+"""Integration tests for embedded Nextflow pipeline.
 
 Tests the integrated Python-Nextflow pipeline functionality.
 """
@@ -52,7 +51,7 @@ class TestPipelineIntegration:
             shutil.rmtree(self.temp_dir)
 
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_nextflow_config_creation(self):
         """Test NextflowConfig creation and validation."""
         config = NextflowConfig.for_testing()
@@ -121,7 +120,7 @@ class TestPipelineIntegration:
             assert arg in args
 
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_nextflow_runner_initialization(self):
         """Test NextflowRunner initialization."""
         config = NextflowConfig.for_testing()
@@ -187,7 +186,7 @@ class TestPipelineIntegration:
 
     @pytest.mark.integration
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_pipeline_execution_dry_run(self):
         """Test pipeline execution in dry-run mode (requires Nextflow)."""
         pytest.importorskip("subprocess")
@@ -243,6 +242,22 @@ class TestPipelineIntegration:
         assert test_config.profile == expected_test_profile
         assert prod_config.profile == "docker"
 
+    def test_memory_calculation_applies_buffer(self):
+        """Ensure memory auto-detect rounds down with a safety buffer."""
+        sixteen_gib = 16 * 1024**3
+        assert NextflowConfig._calculate_safe_memory_limit(sixteen_gib) == "15.GB"
+
+    def test_auto_configure_uses_detected_memory(self, monkeypatch):
+        """auto_configure should honor detected memory limits when available."""
+
+        def fake_autodetect(cls):
+            return "42.GB"
+
+        monkeypatch.setattr(NextflowConfig, "_autodetect_max_memory", classmethod(fake_autodetect))
+
+        config = NextflowConfig.auto_configure()
+        assert config.max_memory == "42.GB"
+
     def test_docker_availability_check(self):
         """Test Docker availability validation."""
         config = NextflowConfig()
@@ -256,11 +271,10 @@ class TestPipelineIntegration:
         assert profile in ["docker", "local", "test", "conda", "singularity"]
 
     @pytest.mark.integration
-    @pytest.mark.docker
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_docker
+    @pytest.mark.requires_nextflow
     def test_offtarget_analysis_docker_integration(self):
-        """
-        Integration test for off-target analysis module using Docker.
+        """Integration test for off-target analysis module using Docker.
 
         Tests the complete off-target analysis pipeline including:
         - Index building with core entrypoint functions
@@ -371,8 +385,7 @@ class TestPipelineIntegration:
             pytest.skip("Pipeline execution timed out - this is expected in resource-constrained environments")
 
     def _is_version_warning_only(self, error_msg: str) -> bool:
-        """
-        Check if the error message is only a Nextflow version warning.
+        """Check if the error message is only a Nextflow version warning.
 
         Args:
             error_msg: The error message from stderr
@@ -469,10 +482,9 @@ class TestPipelineIntegration:
 
     @pytest.mark.integration
     @pytest.mark.integration
-    @pytest.mark.local_nextflow
+    @pytest.mark.requires_nextflow
     def test_offtarget_entrypoint_functions_directly(self):
-        """
-        Test the off-target entrypoint functions directly without Nextflow.
+        """Test the off-target entrypoint functions directly without Nextflow.
 
         This validates that the core functions work correctly and can be
         called from the pipeline modules.

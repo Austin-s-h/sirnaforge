@@ -11,7 +11,6 @@ from sirnaforge.modifications import load_metadata
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 class TestExamplePatternFiles:
     """Validate example modification pattern files."""
 

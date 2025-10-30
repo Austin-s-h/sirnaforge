@@ -50,17 +50,23 @@ class TestSiRNACandidateSchema:
             }
         )
         result = SiRNACandidateSchema.validate(df)
-        # Schema adds missing modification columns (4 columns)
-        expected_cols = (
-            len(test_data.keys()) + 4
-        )  # guide_overhang, guide_modifications, passenger_overhang, passenger_modifications
+        # Schema adds missing modification columns (4) and miRNA columns (8) = 12 columns
+        expected_cols = len(test_data.keys()) + 12  # 4 modification columns + 8 miRNA columns
         assert result.shape == (2, expected_cols)
-        # Order-agnostic column check - now includes modification columns
+        # Order-agnostic column check - now includes modification and miRNA columns
         expected_columns = set(test_data.keys()) | {
             "guide_overhang",
             "guide_modifications",
             "passenger_overhang",
             "passenger_modifications",
+            "guide_pos1_base",
+            "pos1_pairing_state",
+            "seed_class",
+            "supp_13_16_score",
+            "seed_7mer_hits",
+            "seed_8mer_hits",
+            "seed_hits_weighted",
+            "off_target_seed_risk_class",
         }
         assert set(result.columns) == expected_columns
 

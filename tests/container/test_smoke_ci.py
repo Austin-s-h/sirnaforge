@@ -24,7 +24,7 @@ except ImportError:
     ValidationUtils = None
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_cli():
     """Smoke test: sirnaforge CLI is available and responds."""
@@ -38,7 +38,7 @@ def test_docker_smoke_cli():
         pytest.fail("CLI took too long to respond")
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_toy_workflow():
     """Smoke test: basic workflow with minimal toy data."""
@@ -84,7 +84,7 @@ def test_docker_smoke_toy_workflow():
             pass
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_help_commands():
     """Smoke test: help commands work quickly."""
@@ -107,7 +107,7 @@ def test_docker_smoke_help_commands():
             pass
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_package_imports():
     """Smoke test: basic package imports work (fallback when CLI unavailable)."""
@@ -149,7 +149,7 @@ def test_docker_smoke_package_imports():
         print(f"⚠️ Package import test encountered issue: {e}")
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_basic_functionality():
     """Smoke test: basic functionality without CLI (tests core logic)."""
@@ -186,7 +186,7 @@ def test_docker_smoke_basic_functionality():
         print(f"⚠️ Basic functionality test encountered issue: {e}")
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_test_data_exists():
     """Smoke test: verify smoke test data file exists and is valid."""
@@ -219,11 +219,10 @@ def test_docker_smoke_test_data_exists():
     )
 
 
-@pytest.mark.docker
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
 def test_docker_smoke_environment_ready():
     """Smoke test: validate Docker environment markers and CI readiness."""
-
     # Test that essential paths exist (even in CI simulation)
     test_data_dir = Path(__file__).parent.parent / "data"
     assert test_data_dir.exists(), "Test data directory should exist"

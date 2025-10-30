@@ -15,6 +15,8 @@ This tutorial demonstrates how to use siRNAforge programmatically through its Py
 - Basic Python programming experience
 - Familiarity with basic siRNAforge concepts
 
+> **API Reference**: See the complete [API Reference](../api_reference.rst) for detailed class/method documentation including parameters, return types, and examples.
+
 ## Getting Started
 
 ### Import Core Components
@@ -34,6 +36,8 @@ import asyncio
 import pandas as pd
 ```
 
+> **Tip**: Hover over class names in your IDE to see docstrings, or check the [API Reference](../api_reference.rst) for full documentation.
+
 ### Basic API Usage
 
 #### 1. Simple siRNA Design
@@ -43,10 +47,12 @@ from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.models.sirna import DesignParameters
 
 # Configure design parameters
+# See API docs for all DesignParameters options:
+# https://sirnaforge.readthedocs.io/en/latest/api_reference.html#sirnaforge.models.sirna.DesignParameters
 params = DesignParameters(
     sirna_length=21,
     top_candidates=20,
-    gc_content_range=(30.0, 52.0)
+    gc_content_range=(30.0, 60.0)
 )
 
 # Create designer instance
@@ -60,11 +66,13 @@ sequences = [
 
 results = designer.design_from_sequences(sequences)
 
-# Access results
+# Access results (SiRNADesignResult object)
 print(f"Generated {len(results.candidates)} siRNA candidates")
 for candidate in results.top_candidates:
     print(f"{candidate.sirna_id}: {candidate.guide_sequence} (score: {candidate.composite_score:.1f})")
 ```
+
+> **Model Reference**: [`DesignParameters`](../api_reference.rst#sirnaforge.models.sirna.DesignParameters), [`SiRNADesigner`](../api_reference.rst#sirnaforge.core.design.SiRNADesigner), [`SiRNACandidate`](../api_reference.rst#sirnaforge.models.sirna.SiRNACandidate)
 
 #### 2. Design from FASTA File
 
@@ -83,6 +91,8 @@ print(f"Results saved to {output_file}")
 ```
 
 ## Gene Search API
+
+The gene search system retrieves transcripts from genomic databases. See [`GeneSearcher` API docs](../api_reference.rst#sirnaforge.data.gene_search.GeneSearcher) for complete documentation.
 
 ### Synchronous Gene Search
 
@@ -103,6 +113,8 @@ if result.success:
 else:
     print(f"Search failed: {result.error}")
 ```
+
+> **Model Reference**: [`GeneSearchResult`](../api_reference.rst#sirnaforge.data.gene_search.GeneSearchResult), [`TranscriptInfo`](../api_reference.rst#sirnaforge.data.gene_search.TranscriptInfo), [`GeneInfo`](../api_reference.rst#sirnaforge.data.gene_search.GeneInfo)
 
 ### Asynchronous Gene Search
 
@@ -133,16 +145,26 @@ for gene, result in results.items():
         print(f"{gene}: {len(result.transcripts)} transcripts ({canonical_count} canonical)")
 ```
 
+> **Async Methods**: See [`GeneSearcher.search_gene`](../api_reference.rst#sirnaforge.data.gene_search.GeneSearcher.search_gene) and [`GeneSearcher.search_multiple_databases`](../api_reference.rst#sirnaforge.data.gene_search.GeneSearcher.search_multiple_databases)
+
 ## Advanced API Usage
 
 ### Custom Scoring
 
+siRNAforge allows you to implement custom scoring algorithms by extending the base scorer class. This is useful for research-specific requirements or novel siRNA design principles.
+
+> **See Also**: [`BaseScorer`](../api_reference.rst#sirnaforge.core.design.BaseScorer) API documentation for the complete interface and built-in scorer implementations.
+
 ```python
-from sirnaforge.core.design import BaseScorer
-from sirnaforge.models.sirna import SiRNACandidate
+from sirnaforge.core.design import BaseScorer, SiRNADesigner
+from sirnaforge.models.sirna import SiRNACandidate, DesignParameters
 
 class CustomScorer(BaseScorer):
-    """Custom scoring algorithm for specific research needs."""
+    """Custom scoring algorithm for specific research needs.
+
+    This example prioritizes GC content and 5' position over structure.
+    Extend BaseScorer and implement calculate_score() to create your own.
+    """
 
     def __init__(self, weight_gc=0.3, weight_position=0.2, weight_structure=0.5):
         self.weight_gc = weight_gc
@@ -150,8 +172,14 @@ class CustomScorer(BaseScorer):
         self.weight_structure = weight_structure
 
     def calculate_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate custom composite score."""
+        """Calculate custom composite score.
 
+        Args:
+            candidate: SiRNACandidate with thermodynamic properties
+
+        Returns:
+            Composite score between 0-10
+        """
         # GC content scoring (optimal around 45%)
         gc_score = 1.0 - abs(candidate.gc_content - 45.0) / 45.0
 
@@ -168,12 +196,14 @@ class CustomScorer(BaseScorer):
             self.weight_structure * structure_score
         )
 
-        return composite
+        return composite * 10.0  # Scale to 0-10
 
 # Use custom scorer
 custom_scorer = CustomScorer(weight_gc=0.4, weight_structure=0.6)
-designer = SiRNADesigner(params, scorer=custom_scorer)
+designer = SiRNADesigner(DesignParameters(), scorer=custom_scorer)
 ```
+
+> **Advanced**: For more complex scoring, see the [Custom Scoring Tutorial](custom_scoring.md) and [`ThermodynamicAnalyzer`](../api_reference.rst#sirnaforge.core.thermodynamics.ThermodynamicAnalyzer) for thermodynamic calculations.
 
 ### Batch Processing
 
@@ -384,46 +414,50 @@ for gene in genes:
 
 ## Configuration and Customization
 
-### Custom Configuration
+Configuration in siRNAforge is handled through Pydantic models for type safety and validation.
+
+> **Model Documentation**: See [`DesignParameters`](../api_reference.rst#sirnaforge.models.sirna.DesignParameters) and [`FilterCriteria`](../api_reference.rst#sirnaforge.models.sirna.FilterCriteria) for all available options and validation rules.
+
+### Using Configuration Models
 
 ```python
 from sirnaforge.models.sirna import DesignParameters, FilterCriteria
-from pydantic import BaseSettings
 
-class CustomConfig(BaseSettings):
-    """Custom configuration with environment variable support."""
-
-    # Default parameters
-    default_sirna_length: int = 21
-    default_candidates: int = 20
-    gc_min_default: float = 30.0
-    gc_max_default: float = 52.0
-
-    # API settings
-    ensembl_base_url: str = "https://rest.ensembl.org"
-    request_timeout: int = 30
-
-    # Quality thresholds
-    min_composite_score: float = 5.0
-    max_off_targets: int = 5
-
-    class Config:
-        env_prefix = "SIRNAFORGE_"
-
-# Load configuration
-config = CustomConfig()
-
-# Use in design
+# Create parameters with validation
 params = DesignParameters(
-    sirna_length=config.default_sirna_length,
-    top_candidates=config.default_candidates,
+    sirna_length=21,
+    top_candidates=20,
     filters=FilterCriteria(
-        gc_min=config.gc_min_default,
-        gc_max=config.gc_max_default,
-        min_composite_score=config.min_composite_score
+        gc_min=30.0,
+        gc_max=60.0,
+        min_composite_score=5.0,
+        max_poly_runs=4
     )
 )
+
+# Parameters are validated automatically
+designer = SiRNADesigner(params)
 ```
+
+### Environment-Based Configuration
+
+```python
+import os
+from sirnaforge.models.sirna import DesignParameters
+
+# Read from environment variables
+gc_min = float(os.getenv("SIRNAFORGE_GC_MIN", "30.0"))
+gc_max = float(os.getenv("SIRNAFORGE_GC_MAX", "60.0"))
+top_n = int(os.getenv("SIRNAFORGE_TOP_N", "20"))
+
+params = DesignParameters(
+    sirna_length=21,
+    top_candidates=top_n,
+    gc_content_range=(gc_min, gc_max)
+)
+```
+
+> **Validation**: All parameters are validated by Pydantic. Invalid values raise `ValidationError` with clear messages.
 
 ## Testing Your Code
 
@@ -572,9 +606,18 @@ for chunk in stream_large_fasta("large_transcripts.fasta", chunk_size=100):
 
 After mastering the Python API:
 
-1. **{doc}`advanced_workflows`** - Complex multi-step analyses
-2. **{doc}`pipeline_integration`** - Nextflow pipeline development
-3. **{doc}`custom_scoring`** - Advanced algorithm development
-4. **{doc}`../development`** - Contributing to siRNAforge development
+1. **[Usage Examples](../usage_examples.md)** - Complex multi-step analyses and automation
+2. **[Pipeline Integration](pipeline_integration.md)** - Nextflow pipeline development
+3. **[Custom Scoring](custom_scoring.md)** - Advanced algorithm development
+4. **[API Reference](../api_reference.rst)** - Complete class and method documentation
+5. **[Developer Guide](../developer/development.md)** - Contributing to siRNAforge
+
+## Key API Modules Reference
+
+- **Core Design**: [`sirnaforge.core.design`](../api_reference.rst#module-sirnaforge.core.design) - Main design engine
+- **Models**: [`sirnaforge.models.sirna`](../api_reference.rst#module-sirnaforge.models.sirna) - Data models and schemas
+- **Gene Search**: [`sirnaforge.data.gene_search`](../api_reference.rst#module-sirnaforge.data.gene_search) - Database access
+- **Thermodynamics**: [`sirnaforge.core.thermodynamics`](../api_reference.rst#module-sirnaforge.core.thermodynamics) - RNA folding analysis
+- **Workflow**: [`sirnaforge.workflow`](../api_reference.rst#module-sirnaforge.workflow) - High-level orchestration
 
 The Python API provides the flexibility to create sophisticated, automated siRNA design workflows tailored to your specific research needs.

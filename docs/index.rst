@@ -8,11 +8,10 @@ siRNAforge Documentation
    :caption: 🚀 Getting Started
 
    getting_started
-   quick_reference
 
 .. toctree::
    :maxdepth: 1
-   :caption: 📖 User Guides
+   :caption: 📖 User Guide
 
    cli_reference
    usage_examples
@@ -20,17 +19,6 @@ siRNAforge Documentation
    thermodynamic_guide
    modification_integration_guide
    tutorials/index
-
-.. toctree::
-   :maxdepth: 1
-   :caption: 🔧 Development
-
-   architecture
-   deployment
-   development
-   testing_guide
-   docker_test_categories
-   chemical_modification_review
 
 .. toctree::
    :maxdepth: 1
@@ -42,29 +30,35 @@ siRNAforge Documentation
    glossary
    sitemap
 
+.. toctree::
+   :maxdepth: 1
+   :caption: 🔧 Developer
+
+   developer/index
+
 Quick Start
 ===========
 
 .. grid:: 2
    :gutter: 3
 
-   .. grid-item-card:: 🚀 New Users
+   .. grid-item-card:: 🚀 Getting Started
       :link: getting_started
       :link-type: doc
 
-      Installation and first workflow
-
-   .. grid-item-card:: 📋 Quick Reference
-      :link: quick_reference
-      :link-type: doc
-
-      Essential commands and patterns
+      Installation, first workflow, and essential commands
 
    .. grid-item-card:: 🧬 CLI Reference
       :link: cli_reference
       :link-type: doc
 
       Complete command documentation
+
+   .. grid-item-card:: 📖 Usage Examples
+      :link: usage_examples
+      :link-type: doc
+
+      Real-world examples and workflows
 
    .. grid-item-card::  Tutorials
       :link: tutorials/index

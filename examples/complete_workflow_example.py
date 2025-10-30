@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Complete siRNAforge Workflow Example
+"""Complete siRNAforge Workflow Example.
 
 This example demonstrates the integrated workflow that goes from gene query
 to off-target analysis using both Python design algorithms and Nextflow pipeline.
@@ -20,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 async def run_complete_example() -> None:
     """Run complete siRNA design workflow for TP53."""
-
     print("🧬 Starting Complete siRNAforge Workflow Example")
     print("=" * 60)
 
@@ -89,7 +87,6 @@ async def run_complete_example() -> None:
 
 async def run_nextflow_only_example() -> None:
     """Example of running just the Nextflow off-target analysis."""
-
     print("\n🔬 Nextflow Off-target Analysis Example")
     print("=" * 45)
 

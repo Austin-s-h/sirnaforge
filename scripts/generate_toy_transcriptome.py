@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Generate a realistic toy transcriptome database for testing siRNA off-target analysis.
+"""Generate a realistic toy transcriptome database for testing siRNA off-target analysis.
 
 This creates a ~2MB FASTA file with:
 1. Perfect matches for smoke test siRNAs

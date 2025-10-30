@@ -46,8 +46,7 @@ class GeneSearcher:
     """Search genes and retrieve sequences from genomic databases using multiple clients."""
 
     def __init__(self, timeout: int = 30, max_retries: int = 3):
-        """
-        Initialize gene searcher with database clients.
+        """Initialize gene searcher with database clients.
 
         Args:
             timeout: Request timeout in seconds
@@ -68,8 +67,7 @@ class GeneSearcher:
         return self.clients[database]
 
     async def search_gene_with_fallback(self, query: str, include_sequence: bool = True) -> GeneSearchResult:
-        """
-        Search for a gene with automatic fallback to other databases.
+        """Search for a gene with automatic fallback to other databases.
 
         Tries databases in order: Ensembl -> RefSeq -> GENCODE
         Falls back to next database only if access is blocked (not if gene is not found).
@@ -123,8 +121,7 @@ class GeneSearcher:
     async def search_gene(
         self, query: str, database: Optional[DatabaseType] = None, include_sequence: bool = True
     ) -> GeneSearchResult:
-        """
-        Search for a gene and retrieve its isoforms.
+        """Search for a gene and retrieve its isoforms.
 
         Args:
             query: Gene ID, gene name, or transcript ID
@@ -157,8 +154,7 @@ class GeneSearcher:
     async def search_multiple_databases(
         self, query: str, databases: Optional[list[DatabaseType]] = None, include_sequence: bool = True
     ) -> list[GeneSearchResult]:
-        """
-        Search across multiple databases.
+        """Search across multiple databases.
 
         Args:
             query: Gene ID, gene name, or transcript ID
@@ -193,8 +189,7 @@ class GeneSearcher:
     def save_transcripts_fasta(
         self, transcripts: list[TranscriptInfo], output_path: Union[str, Path], include_metadata: bool = True
     ) -> None:
-        """
-        Save transcripts to FASTA format using shared utility.
+        """Save transcripts to FASTA format using shared utility.
 
         Args:
             transcripts: List of transcript information

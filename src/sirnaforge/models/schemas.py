@@ -155,6 +155,47 @@ class SiRNACandidateSchema(DataFrameModel):
     # Off-target analysis results
     off_target_count: Series[int] = Field(ge=0, description="Number of potential off-target sites (goal: ≤3)")
 
+    # miRNA-specific columns (populated when design_mode == "mirna")
+    # Using proper types with nullable=True for optional miRNA-mode fields
+    guide_pos1_base: Series[str] = Field(
+        description="Nucleotide at guide position 1 (for Argonaute selection)",
+        nullable=True,
+        coerce=True,
+    )
+    pos1_pairing_state: Series[str] = Field(
+        description="Pairing state at position 1: perfect, wobble, or mismatch",
+        nullable=True,
+        coerce=True,
+    )
+    seed_class: Series[str] = Field(
+        description="Seed match class: 6mer, 7mer-m8, 7mer-a1, or 8mer",
+        nullable=True,
+        coerce=True,
+    )
+    supp_13_16_score: Series[float] = Field(
+        description="3' supplementary pairing score (positions 13-16)",
+        nullable=True,
+        coerce=True,
+    )
+    seed_7mer_hits: Series[pd.Int64Dtype] = Field(
+        description="Number of 7mer seed matches in off-target analysis",
+        nullable=True,
+    )
+    seed_8mer_hits: Series[pd.Int64Dtype] = Field(
+        description="Number of 8mer seed matches in off-target analysis",
+        nullable=True,
+    )
+    seed_hits_weighted: Series[float] = Field(
+        description="Weighted seed hits by 3' UTR abundance (if expression data provided)",
+        nullable=True,
+        coerce=True,
+    )
+    off_target_seed_risk_class: Series[str] = Field(
+        description="Off-target risk classification: low, medium, high",
+        nullable=True,
+        coerce=True,
+    )
+
     # Transcript hit metrics
     transcript_hit_count: Series[int] = Field(ge=0, description="Number of input transcripts containing this guide")
     transcript_hit_fraction: Series[float] = Field(

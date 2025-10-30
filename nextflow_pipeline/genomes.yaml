@@ -18,6 +18,14 @@ rhesus:
   index_prefix: s3://ngi-igenomes/igenomes/Macaca_mulatta/NCBI/Mmul_10/Sequence/WholeGenomeFasta/
   container: biocontainers/bwa-mem2:v2.2.1_cv1
 
+mouse:
+  index_prefix: s3://ngi-igenomes/igenomes/Mus_musculus/Ensembl/GRCm39/Sequence/WholeGenomeFasta/
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+chicken:
+  index_prefix: s3://ngi-igenomes/igenomes/Gallus_gallus/Ensembl/GRCg6a/Sequence/WholeGenomeFasta/
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
 # Option 2: If you want to use local indices (uncomment and modify paths)
 # human:
 #   index_prefix: /path/to/your/human/genome/index

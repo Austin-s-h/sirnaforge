@@ -289,7 +289,7 @@ class DesignParameters(BaseModel):
 class FilterCriteria(BaseModel):
     """Quality filters for candidate selection"""
     gc_min: float = 30.0
-    gc_max: float = 52.0
+    gc_max: float = 60.0
     max_poly_runs: int = 3
     min_asymmetry_score: float = 0.65
 
@@ -416,7 +416,7 @@ from pydantic import BaseModel, Field
 class DesignParameters(BaseModel):
     sirna_length: int = Field(21, ge=19, le=23)
     top_candidates: int = Field(10, ge=1)
-    gc_content_range: tuple[float, float] = (30.0, 52.0)
+    gc_content_range: tuple[float, float] = (30.0, 60.0)
 ```
 
 ### 2. Separation of Concerns

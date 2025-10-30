@@ -7,8 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## Release Template
-When preparing a new release, copy this template and replace `[X.Y.Z]` with the actual version:
+### 🔧 Improvements
+- **Documentation Standardization**: Unified tab-based execution examples across all documentation
+  - Added sphinx-design tab-sets for uv/Docker execution in all usage examples
+  - Standardized command patterns in `usage_examples.md`, `gene_search.md`, `getting_started.md`
+  - Simplified usage examples from redundant variations to minimal/comprehensive pattern
+  - Improved user experience with consistent execution context switching
+- **GC Content Default Update**: Increased default `--gc-max` from 52% to 60%
+  - Updated across CLI, documentation, and tutorials
+  - Better alignment with siRNA design best practices
+  - Maintains conservative gc-min default of 35%
+- **CI/CD Pipeline Enhancements**:
+  - Fixed release.yml to use correct make targets (`docker-test`, `test-dev`)
+  - Added comprehensive `test-release` job with full coverage reporting
+  - Improved test tier structure: `test-dev` (unit), `test-ci` (smoke), `test-release` (comprehensive)
+  - Coverage artifacts now uploaded with 30-day retention
+  - Added coverage summary to GitHub Actions workflow UI
+
+### 🐛 Bug Fixes
+- **Docker Test Environment**: Fixed environment conflicts in `make docker-test`
+  - Removed uv sync from Docker container execution (conflicts with conda)
+  - Explicit pytest installation and conda path execution
+  - Resolved parallel execution issues with pytest-xdist
+- **Missing Dependencies**: Added `psutil>=6.0.0` to production dependencies
+  - Required by workflow.py but was previously undeclared
+  - Ensures consistent environment across installations
+- **Nextflow Integration Tests**: Fixed two previously skipped tests
+  - Corrected Nextflow version flag: `--version` → `-version`
+  - Fixed workflow access to use NextflowRunner API instead of module import
+  - All 20 container tests now passing (was 18 passed, 2 skipped)
+
+### 🧪 Testing
+- **Comprehensive Test Coverage**: Enhanced `make test-release` to run all test tiers
+  - Now runs 179 tests (dev + ci + release markers) with 55% coverage
+  - Generates XML, HTML, and terminal coverage reports
+  - Full JUnit XML for CI/CD integration
+  - Execution time: ~22 seconds for complete validation
+- **Test Organization**: All tests properly tagged with tier markers
+  - 9 expected skips (requires Docker/Nextflow/BWA-MEM2 tools)
+  - Consistent marker structure across test suite
+  - Better CI/CD integration with proper test selection
+
+### 📦 Build & Infrastructure
+- **Makefile Improvements**: Enhanced test targets with better coverage support
+  - `test-release` now comprehensive (dev + ci + release tests)
+  - All test targets include appropriate coverage/junit reporting
+  - Clear documentation of tier structure in help text
+- **GitHub Actions**: Aligned workflows with current Makefile structure
+  - CI workflow: lint → security → test-ci → build
+  - Release workflow: validate → ci → test-release → build artifacts → docker
+  - Proper dependency chains ensure quality gates
+
+## [0.2.2] - 2025-10-26
+
+### ✨ New Features
+- **miRNA Design Mode**: New `--design-mode mirna` option for microRNA-specific siRNA design
+  - Specialized `MiRNADesigner` subclass with miRNA-biogenesis-aware scoring
+  - Enhanced CSV schema with miRNA-specific columns (strand_role, biogenesis_score)
+  - CLI support via `--design-mode` flag with automatic parameter adjustment
+- **miRNA Seed Match Analysis**: Integrated miRNA off-target screening in Nextflow pipeline
+  - Lightweight seed region matching (positions 2-8) against miRNA databases
+  - Automatic miRNA database download and caching from MirGeneDB
+  - Per-candidate and aggregated miRNA hit reports in TSV/JSON formats
+  - Configurable via `--mirna-db` and `--mirna-species` flags
+- **Species Registry System**: Canonical species name mapping and normalization
+  - Unified species identifiers across genome and miRNA databases
+  - Automatic species alias resolution (e.g., "human" → "Homo sapiens" → mirgenedb slug)
+  - Support for multi-species analysis with consistent naming
+
+### 🔧 Improvements
+- **Nextflow Pipeline Enhancements**:
+  - Reduced memory requirements for Docker-constrained environments (2GB → 1GB for most processes)
+  - Added miRNA seed analysis module with BWA-based matching
+  - Improved error handling and progress reporting
+  - Better resource allocation with memory/CPU buffers
+- **Data Validation**: Extended Pandera schemas for miRNA-specific columns
+- **CSV Output**: New columns `transcript_hit_count` and `transcript_hit_fraction` track guide specificity
+- **miRNA Database Manager**: Enhanced with species normalization and canonical name mapping
+
+### 🐛 Bug Fixes
+- Fixed Nextflow Docker configuration for resource-constrained CI environments
+- Resolved schema validation errors for miRNA columns in mixed-mode workflows
+- Fixed typing issues in pipeline CLI functions
+
+### 📚 Documentation
+- **Major Documentation Consolidation**: Reorganized structure for improved user experience
+  - Simplified navigation from 4 to 3 main sections (Getting Started, User Guide, Reference, Developer)
+  - Consolidated `getting_started.md` and `quick_reference.md` into comprehensive guide
+  - Streamlined tutorials to 2 focused guides (pipeline integration, custom scoring)
+  - Created dedicated developer section for advanced documentation
+- **Complete API Reference**: Added 18 previously missing modules
+  - Comprehensive coverage of all 27 sirnaforge modules
+  - Auto-generated Sphinx documentation with proper cross-references
+- **Quality Improvements**: Configured ruff D rules for docstring validation
+  - Fixed 116 docstring formatting issues automatically
+  - Clean Sphinx builds with no warnings
+- **Usage Examples**: Added miRNA seed analysis workflow documentation
+
+### 🧪 Testing
+- **New Test Coverage**: 232 new tests for miRNA design mode
+  - Comprehensive unit tests for MiRNADesigner scoring
+  - Schema validation tests for miRNA-specific columns
+  - Integration tests for miRNA database functionality
+- **Test Organization**: Normalized test markers for consistent CI/CD workflows
+- **Documentation Tests**: Verified all doc builds and cross-references work correctly
+
+### 📦 Dependencies
+- No new runtime dependencies (leverages existing httpx, pydantic, pandera)
+- Enhanced development dependencies for documentation generation
+
+---
+
+## [0.2.1] - 2025-10-24
 
 ```markdown
 ## [X.Y.Z] - YYYY-MM-DD
@@ -171,5 +281,8 @@ When preparing a new release, copy this template and replace `[X.Y.Z]` with the 
 - **Pipeline**: Nextflow integration for scalability
 - **Documentation**: Sphinx with MyST parser, Read the Docs theme
 
-[Unreleased]: https://github.com/austin-s-h/sirnaforge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/austin-s-h/sirnaforge/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/austin-s-h/sirnaforge/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/austin-s-h/sirnaforge/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/austin-s-h/sirnaforge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/austin-s-h/sirnaforge/releases/tag/v0.1.0

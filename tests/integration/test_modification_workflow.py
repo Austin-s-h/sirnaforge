@@ -31,11 +31,11 @@ from sirnaforge.modifications import (
 )
 
 
-@pytest.mark.unit
-@pytest.mark.local_python
+@pytest.mark.integration
 class TestModificationWorkflow:
     """Test complete workflow of modification annotation."""
 
+    @pytest.mark.integration
     def test_create_annotate_export_roundtrip(self):
         """Test complete roundtrip: create -> annotate -> export -> load -> validate."""
         # Step 1: Create siRNA candidate (simulating design output)
@@ -88,6 +88,7 @@ class TestModificationWorkflow:
             assert loaded.confirmation_status == guide_metadata.confirmation_status
             assert loaded.notes == guide_metadata.notes
 
+    @pytest.mark.integration
     def test_fasta_annotation_workflow(self):
         """Test annotating FASTA file with modifications from JSON."""
         # Create test FASTA
@@ -167,6 +168,7 @@ class TestModificationWorkflow:
             assert "2OMe(2,4,6)" in rec2.description
             assert "PS()" in rec2.description
 
+    @pytest.mark.integration
     def test_parse_annotated_fasta(self):
         """Test parsing FASTA with modification annotations."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -209,8 +211,7 @@ class TestModificationWorkflow:
             assert prov.url == "https://example.com"
 
 
-@pytest.mark.unit
-@pytest.mark.local_python
+@pytest.mark.integration
 class TestModificationPatterns:
     """Test modification pattern loading and application."""
 
@@ -274,8 +275,7 @@ class TestModificationPatterns:
         assert "PS" in header
 
 
-@pytest.mark.unit
-@pytest.mark.local_python
+@pytest.mark.integration
 class TestCandidateMetadataIntegration:
     """Test integration of modifications with SiRNACandidate."""
 
@@ -349,8 +349,7 @@ class TestCandidateMetadataIntegration:
         assert "Provenance=Designed:sirnaforge_test" in fasta_annotated
 
 
-@pytest.mark.unit
-@pytest.mark.local_python
+@pytest.mark.integration
 class TestRealWorldExamples:
     """Test with real-world modification patterns."""
 

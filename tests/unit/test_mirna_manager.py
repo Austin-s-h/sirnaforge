@@ -1,5 +1,4 @@
-"""
-Test the miRNA database manager functionality.
+"""Test the miRNA database manager functionality.
 
 Tests cover downloading, caching, and combining miRNA databases from various sources.
 """
@@ -30,7 +29,6 @@ class TestMiRNADatabaseManager:
     """Test miRNA database manager functionality."""
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_manager_initialization(self, temp_cache_dir):
         """Test proper initialization of miRNA manager."""
         manager = MiRNADatabaseManager(cache_dir=temp_cache_dir)
@@ -39,7 +37,6 @@ class TestMiRNADatabaseManager:
         assert temp_cache_dir.exists()
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_list_available_databases(self, manager_with_temp_cache):
         """Test listing available miRNA databases."""
         sources = manager_with_temp_cache.list_available_databases()
@@ -49,6 +46,7 @@ class TestMiRNADatabaseManager:
 
         # Should have at least mirbase
         assert "mirbase" in sources or "mirbase_high_conf" in sources
+        assert "mirgenedb" in sources
 
         # Each source should have species mappings
         for _source_name, species_dict in sources.items():
@@ -57,7 +55,62 @@ class TestMiRNADatabaseManager:
                 assert hasattr(source, "description")
 
     @pytest.mark.unit
-    @pytest.mark.local_python
+    def test_available_sources_helpers(self):
+        """Helper methods should expose supported sources and species."""
+        sources = MiRNADatabaseManager.get_available_sources()
+        assert "mirgenedb" in sources
+        assert "mirbase" in sources
+        mirgenedb_species = MiRNADatabaseManager.get_species_for_source("mirgenedb")
+        assert "hsa" in mirgenedb_species
+        assert "mmu" in mirgenedb_species
+        assert "dre" in mirgenedb_species
+        assert MiRNADatabaseManager.normalize_species("mirgenedb", "human") == "hsa"
+
+        all_species = MiRNADatabaseManager.get_all_species()
+        assert "human" in all_species
+        assert "rat" in all_species
+        assert MiRNADatabaseManager.normalize_species("mirgenedb", "mosquito") == "aga"
+
+    @pytest.mark.unit
+    def test_mirgenedb_source_metadata(self):
+        """MirGeneDB helper should expose taxonomy metadata and build URLs."""
+        metadata = MiRNADatabaseManager.get_mirgenedb_species_metadata()
+        assert metadata["hsa"]["taxonomy_id"] == "9606"
+        assert "scientific_name" in metadata["dre"]
+
+        source = MiRNADatabaseManager.get_source_configuration("mirgenedb", "human")
+        assert source is not None
+        assert source.species == "hsa"
+        assert source.url.startswith("https://www.mirgenedb.org/fasta/hsa")
+
+    @pytest.mark.unit
+    def test_canonical_species_resolution(self):
+        """Canonical species registry should map aliases to genome and miRNA identifiers."""
+        resolution = MiRNADatabaseManager.resolve_species_selection(
+            ["Human", "mmu", "Chicken"],
+            "mirgenedb",
+        )
+        assert resolution["canonical"] == ["human", "mouse", "chicken"]
+        assert resolution["genome"] == ["human", "mouse", "chicken"]
+        assert resolution["mirna"] == ["hsa", "mmu", "chi"]
+
+        override = MiRNADatabaseManager.resolve_species_selection(
+            ["human"],
+            "mirgenedb",
+            mirna_overrides=["HSA", "human"],
+        )
+        assert override["mirna"] == ["hsa"]
+
+        with pytest.raises(ValueError):
+            MiRNADatabaseManager.resolve_species_selection(["unicorn"], "mirgenedb")
+
+    @pytest.mark.unit
+    def test_species_validation_helpers(self):
+        """Validation helpers should confirm supported and unsupported selections."""
+        assert MiRNADatabaseManager.is_supported_species("mirgenedb", "human") is True
+        assert MiRNADatabaseManager.is_supported_species("mirgenedb", "unicorn") is False
+
+    @pytest.mark.unit
     def test_cache_info_empty(self, manager_with_temp_cache):
         """Test cache info with empty cache."""
         info = manager_with_temp_cache.cache_info()
@@ -68,7 +121,6 @@ class TestMiRNADatabaseManager:
         assert info["cached_databases"] == []
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_cache_info_with_files(self, manager_with_temp_cache, temp_cache_dir):
         """Test cache info with existing files."""
         # Create some test cache files
@@ -86,7 +138,6 @@ class TestMiRNADatabaseManager:
         # Since we created .fa files directly, they won't be in metadata
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_clear_cache_dry_run(self, manager_with_temp_cache, temp_cache_dir):
         """Test cache clearing in dry run mode."""
         # Create test files
@@ -101,7 +152,6 @@ class TestMiRNADatabaseManager:
         assert test_file.exists()  # File should still exist
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_clear_cache_confirm(self, manager_with_temp_cache, temp_cache_dir):
         """Test actual cache clearing."""
         # Create test files
@@ -144,7 +194,6 @@ class TestMiRNADatabaseManager:
             pytest.skip(f"Network download failed: {e}")
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_get_combined_database_empty(self, manager_with_temp_cache):
         """Test combining databases with empty cache."""
         # This should handle the case where no databases are cached
@@ -183,7 +232,6 @@ class TestMiRNAManagerErrorHandling:
     """Test error handling in miRNA manager."""
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_invalid_cache_directory_permissions(self):
         """Test handling of permission errors for cache directory."""
         # Test with a path that would cause permission issues
@@ -194,14 +242,12 @@ class TestMiRNAManagerErrorHandling:
             MiRNADatabaseManager(cache_dir=restricted_path)
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_get_database_invalid_source(self, manager_with_temp_cache):
         """Test handling of invalid database source."""
         result = manager_with_temp_cache.get_database("invalid_source", "human")
         assert result is None or not result.exists()
 
     @pytest.mark.unit
-    @pytest.mark.local_python
     def test_get_database_invalid_species(self, manager_with_temp_cache):
         """Test handling of invalid species."""
         result = manager_with_temp_cache.get_database("mirbase", "invalid_species")

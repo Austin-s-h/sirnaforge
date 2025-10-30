@@ -1,5 +1,4 @@
-"""
-siRNAforge Workflow Orchestrator
+"""siRNAforge Workflow Orchestrator.
 
 Coordinates the complete siRNA design pipeline:
 1. Transcript retrieval and validation
@@ -17,24 +16,27 @@ import hashlib
 import json
 import math
 import os
+import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import psutil
 from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
-from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
 from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
-from sirnaforge.models.sirna import DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
+from sirnaforge.models.sirna import DesignMode, DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
@@ -59,12 +61,15 @@ class WorkflowConfig:
         # off-target selection now always equals design_params.top_n
         nextflow_config: dict | None = None,
         genome_species: list[str] | None = None,
+        mirna_database: str = "mirgenedb",
+        mirna_species: Sequence[str] | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
         num_threads: int | None = None,
         input_source: InputSource | None = None,
     ):
+        """Initialize workflow configuration."""
         self.output_dir = Path(output_dir)
         self.input_source = input_source
 
@@ -76,14 +81,21 @@ class WorkflowConfig:
         self.design_params = design_params or DesignParameters()
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
-        self.nextflow_config = nextflow_config or {}
-        self.genome_species = genome_species or ["human", "rat", "rhesus"]
+        self.nextflow_config = dict(nextflow_config) if nextflow_config else {}
+        default_genomes = genome_species or ["human", "rat", "rhesus"]
+        self.genome_species = list(dict.fromkeys(default_genomes))
+        self.mirna_database = mirna_database
+        self.mirna_species = list(dict.fromkeys(mirna_species)) if mirna_species else []
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
         # Parallelism for design stage (cap at 4 CPUs for better efficiency)
         requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
         self.num_threads = max(1, min(4, requested_threads))
+
+        if self.mirna_database and self.mirna_species:
+            self.nextflow_config.setdefault("mirna_db", self.mirna_database)
+            self.nextflow_config.setdefault("mirna_species", ",".join(self.mirna_species))
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -98,11 +110,19 @@ class SiRNAWorkflow:
     """Main workflow orchestrator for siRNA design pipeline."""
 
     def __init__(self, config: WorkflowConfig):
+        """Initialize the siRNA workflow orchestrator."""
         self.config = config
         self.gene_searcher = GeneSearcher()
         self.orf_analyzer = ORFAnalyzer()
         self.validation = ValidationMiddleware(config.validation_config)
-        self.sirnaforgeer = SiRNADesigner(config.design_params)
+
+        # Select designer based on design mode
+        self.sirnaforgeer: SiRNADesigner
+        if config.design_params.design_mode == DesignMode.MIRNA:
+            self.sirnaforgeer = MiRNADesigner(config.design_params)
+        else:
+            self.sirnaforgeer = SiRNADesigner(config.design_params)
+
         self.results: dict = {}
 
     async def run_complete_workflow(self) -> dict:
@@ -179,6 +199,10 @@ class SiRNAWorkflow:
                 "database": self.config.database.value,
                 "output_dir": str(self.config.output_dir),
                 "processing_time": total_time,
+                "mirna_reference": {
+                    "database": self.config.mirna_database,
+                    "species": self.config.mirna_species,
+                },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
             "orf_summary": self._summarize_orf_results(orf_results),
@@ -507,7 +531,6 @@ class SiRNAWorkflow:
         Args:
             design_results: DesignResult containing candidates to modify
         """
-
         pattern = self.config.design_params.modification_pattern
         overhang = self.config.design_params.default_overhang
 
@@ -524,7 +547,6 @@ class SiRNAWorkflow:
 
     async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 4: Generate comprehensive reports."""
-
         # No user-facing top-candidates FASTA or text/json summaries are produced anymore.
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
@@ -538,11 +560,15 @@ class SiRNAWorkflow:
             # Import modification summary helper
             # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
             rows = []
+            is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
             for c in design_results.candidates:
                 cs = getattr(c, "component_scores", {}) or {}
 
                 # Get modification summary if modifications were applied
                 mod_summary = get_modification_summary(c) if c.guide_metadata else {}
+
+                def _maybe_attr(obj: Any, name: str, *, default: Any = None) -> Any:
+                    return getattr(obj, name, default)
 
                 rows.append(
                     {
@@ -564,6 +590,16 @@ class SiRNAWorkflow:
                         "delta_dg_end": cs.get("delta_dg_end"),
                         "melting_temp_c": cs.get("melting_temp_c"),
                         "off_target_count": c.off_target_count,
+                        # miRNA-specific columns (nullable)
+                        "guide_pos1_base": _maybe_attr(c, "guide_pos1_base"),
+                        "pos1_pairing_state": _maybe_attr(c, "pos1_pairing_state"),
+                        "seed_class": _maybe_attr(c, "seed_class"),
+                        "supp_13_16_score": _maybe_attr(c, "supp_13_16_score"),
+                        "seed_7mer_hits": _maybe_attr(c, "seed_7mer_hits"),
+                        "seed_8mer_hits": _maybe_attr(c, "seed_8mer_hits"),
+                        "seed_hits_weighted": _maybe_attr(c, "seed_hits_weighted"),
+                        "off_target_seed_risk_class": _maybe_attr(c, "off_target_seed_risk_class"),
+                        # Transcript hit metrics
                         "transcript_hit_count": c.transcript_hit_count,
                         "transcript_hit_fraction": c.transcript_hit_fraction,
                         "composite_score": c.composite_score,
@@ -579,8 +615,30 @@ class SiRNAWorkflow:
                 )
 
             all_df = pd.DataFrame(rows)
+
+            # Convert nullable integer columns to pandas Int64 dtype for proper None handling
+            nullable_int_cols = ["seed_7mer_hits", "seed_8mer_hits"]
+            for col in nullable_int_cols:
+                if col in all_df.columns:
+                    all_df[col] = all_df[col].astype("Int64")
+
             # Validate with schema (will raise if invalid)
             validated_all = SiRNACandidateSchema.validate(all_df)
+
+            if not is_mirna_mode:
+                # Drop miRNA-only columns when not in miRNA mode to avoid empty columns downstream
+                mirna_cols = [
+                    "guide_pos1_base",
+                    "pos1_pairing_state",
+                    "seed_class",
+                    "supp_13_16_score",
+                    "seed_7mer_hits",
+                    "seed_8mer_hits",
+                    "seed_hits_weighted",
+                    "off_target_seed_risk_class",
+                ]
+                existing = [col for col in mirna_cols if col in validated_all.columns]
+                validated_all = validated_all.drop(columns=existing)
 
             # Note: design parameters are not appended as per-row columns anymore
             # to avoid cluttering the candidate CSVs. Full parameters are included
@@ -818,7 +876,25 @@ class SiRNAWorkflow:
 
     def _setup_nextflow_runner(self) -> NextflowRunner:
         """Configure Nextflow runner with user settings."""
-        nf_config = NextflowConfig.for_production()
+        # Auto-detect environment to use appropriate profile
+        # Use for_testing() in CI/test environments, for_production() otherwise
+
+        # Check if we're in a test/constrained environment
+        is_ci = bool(os.getenv("CI") or os.getenv("GITHUB_ACTIONS"))
+        is_pytest = "pytest" in os.getenv("_", "").lower() or "pytest" in " ".join(sys.argv)
+        available_memory_gb = psutil.virtual_memory().total / (1024**3)
+
+        # Use smoke profile if severely constrained (<2GB)
+        # Use test profile if moderately constrained (<8GB) or in CI/pytest
+        # Use production profile otherwise
+        if available_memory_gb < 2.0:
+            nf_config = NextflowConfig(profile="smoke", max_memory="512.MB", max_cpus=1)
+        elif available_memory_gb < 8.0 or is_ci or is_pytest:
+            nf_config = NextflowConfig.for_testing()
+        else:
+            nf_config = NextflowConfig.for_production()
+
+        # Apply user overrides
         if self.config.nextflow_config:
             for key, value in self.config.nextflow_config.items():
                 setattr(nf_config, key, value)
@@ -1151,8 +1227,11 @@ async def run_sirna_workflow(
     output_dir: str,
     input_fasta: str | None = None,
     database: str = "ensembl",
+    design_mode: str = "sirna",
     top_n_candidates: int = 20,
     genome_species: list[str] | None = None,
+    mirna_database: str = "mirgenedb",
+    mirna_species: Sequence[str] | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
@@ -1161,22 +1240,35 @@ async def run_sirna_workflow(
     log_file: str | None = None,
     write_json_summary: bool = True,
 ) -> dict:
-    """
-    Run complete siRNA design workflow.
+    """Run complete siRNA design workflow.
 
     Args:
         gene_query: Gene name or ID to search for
         output_dir: Directory for output files
+        input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
+        design_mode: Design mode (sirna or mirna)
         top_n_candidates: Number of top candidates to generate
         genome_species: Species genomes for off-target analysis
+        mirna_database: miRNA reference database identifier
+        mirna_species: miRNA reference species identifiers
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
+        modification_pattern: Chemical modification pattern
+        overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        log_file: Path to centralized log file
+        write_json_summary: Write logs/workflow_summary.json
 
     Returns:
         Dictionary with complete workflow results
     """
+    # Parse design mode
+    try:
+        mode_enum = DesignMode(design_mode.lower())
+    except ValueError:
+        mode_enum = DesignMode.SIRNA
+
     # Configure filter criteria
     filter_criteria = FilterCriteria(
         gc_min=gc_min,
@@ -1185,6 +1277,7 @@ async def run_sirna_workflow(
 
     # Configure workflow with modification parameters
     design_params = DesignParameters(
+        design_mode=mode_enum,
         top_n=top_n_candidates,
         sirna_length=sirna_length,
         filters=filter_criteria,
@@ -1211,6 +1304,8 @@ async def run_sirna_workflow(
         database=database_enum,
         design_params=design_params,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        mirna_database=mirna_database,
+        mirna_species=mirna_species,
         log_file=log_file,
         write_json_summary=write_json_summary,
         input_source=resolved_input,
@@ -1224,6 +1319,7 @@ async def run_sirna_workflow(
 if __name__ == "__main__":
     # Example usage
     async def main() -> None:
+        """Run example siRNA workflow."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results = await run_sirna_workflow(gene_query="TP53", output_dir=temp_dir, top_n_candidates=20)
             print(f"Workflow completed: {results}")

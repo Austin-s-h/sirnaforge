@@ -1,192 +1,243 @@
-# CLI Reference
+# `sirnaforge`
 
-## Commands Overview
+siRNAforge - siRNA design toolkit for gene silencing
 
-```bash
-sirnaforge [command] [options]
+**Usage**:
+
+```console
+$ sirnaforge [OPTIONS] COMMAND [ARGS]...
 ```
 
-| Command | Description |
-|---------|-------------|
-| `workflow` | Complete gene → siRNA pipeline |
-| `search` | Find gene transcripts |
-| `design` | Generate siRNA candidates |
-| `validate` | Check FASTA format |
-| `version` | Show version |
-| `config` | Show settings |
+**Options**:
 
-## Commands
+* `--install-completion`: Install completion for the current shell.
+* `--show-completion`: Show completion for the current shell, to copy it or customize the installation.
+* `--help`: Show this message and exit.
 
-### `search`
-```bash
+**Commands**:
 
- Usage: sirnaforge search [OPTIONS] QUERY
+* `search`: Search for gene transcripts and retrieve...
+* `workflow`: Run complete siRNA design workflow from...
+* `design`: Design siRNA candidates from transcript...
+* `validate`: Validate input FASTA file format and content.
+* `version`: Show version information.
+* `config`: Show default configuration parameters.
+* `cache`: Manage miRNA database cache.
+* `sequences`: Manage siRNA sequences and metadata
 
- Search for gene transcripts and retrieve sequences.
+## `sirnaforge search`
 
-┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ *    query      TEXT  Gene ID, gene name, or transcript ID to search for [required]                                 │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --output             -o                            PATH  Output FASTA file for transcript sequences                 │
-│                                                          [default: transcripts.fasta]                               │
-│ --database           -d                            TEXT  Database to search (ensembl, refseq, gencode)              │
-│                                                          [default: ensembl]                                         │
-│ --all                -a                                  Search all databases                                       │
-│ --no-sequence                                            Skip sequence retrieval (metadata only)                    │
-│ --canonical-only                                         Extract only canonical isoforms                            │
-│ --extract-canonical      --no-extract-canonical          Automatically extract canonical isoforms to separate file  │
-│                                                          [default: extract-canonical]                               │
-│ --types              -t                            TEXT  Comma-separated list of transcript types to include (e.g., │
-│                                                          protein_coding,lncRNA)                                     │
-│                                                          [default: protein_coding,lncRNA]                           │
-│ --exclude-types                                    TEXT  Comma-separated list of transcript types to exclude        │
-│                                                          [default: nonsense_mediated_decay,retained_intron]         │
-│ --verbose            -v                                  Enable verbose output                                      │
-│ --help                                                   Show this message and exit.                                │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Search for gene transcripts and retrieve sequences.
+
+**Usage**:
+
+```console
+$ sirnaforge search [OPTIONS] QUERY
 ```
 
-### `workflow`
-```bash
+**Arguments**:
 
- Usage: sirnaforge workflow [OPTIONS] GENE_QUERY
+* `QUERY`: Gene ID, gene name, or transcript ID to search for  [required]
 
- Run complete siRNA design workflow from gene query to off-target analysis.
+**Options**:
 
-┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ *    gene_query      TEXT  Gene name or ID to analyze [required]                                                     │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --input-fasta                                      TEXT  Local FASTA path or remote URI (http/https/ftp) to use     │
-│                                                          instead of performing a gene search                         │
-│ --output-dir         -o                            PATH  Output directory for all workflow results                  │
-│                                                          [default: sirna_workflow_output]                           │
-│ --database           -d                            TEXT  Database to search (ensembl, refseq, gencode)              │
-│                                                          [default: ensembl]                                         │
-│ --top-n              -n                            INTEGER RANGE [1<=x]  Number of top siRNA candidates to generate │
-│                                                          [default: 20]
-│                                                          analysis [default: 10]                                     │
-│ --genome-species                                   TEXT  Comma-separated list of genome species for off-target      │
-│                                                          analysis [default: human,rat,rhesus]                       │
-│ --gc-min                                           FLOAT RANGE [0.0<=x<=100.0]  Minimum GC content percentage      │
-│                                                          [default: 30.0]                                            │
-│ --gc-max                                           FLOAT RANGE [0.0<=x<=100.0]  Maximum GC content percentage      │
-│                                                          [default: 52.0]                                            │
-│ --length             -l                            INTEGER RANGE [19<=x<=23]  siRNA length in nucleotides          │
-│                                                          [default: 21]                                              │
-│ --verbose            -v                                  Enable verbose output                                      │
-│ --log-file                                         PATH  Path to centralized log file (overrides                   │
-│                                                          SIRNAFORGE_LOG_FILE env)                                   │
-│ --help                                                   Show this message and exit.                                │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+* `-o, --output PATH`: Output FASTA file for transcript sequences  [default: transcripts.fasta]
+* `-d, --database TEXT`: Database to search (ensembl, refseq, gencode)  [default: ensembl]
+* `-a, --all`: Search all databases
+* `--fallback / --no-fallback`: Enable automatic fallback to other databases if access is blocked  [default: fallback]
+* `--no-sequence`: Skip sequence retrieval (metadata only)
+* `--canonical-only`: Extract only canonical isoforms
+* `--extract-canonical / --no-extract-canonical`: Automatically extract canonical isoforms to separate file  [default: extract-canonical]
+* `-t, --types TEXT`: Comma-separated list of transcript types to include (e.g., protein_coding,lncRNA)  [default: protein_coding,lncRNA]
+* `--exclude-types TEXT`: Comma-separated list of transcript types to exclude  [default: nonsense_mediated_decay,retained_intron]
+* `-v, --verbose`: Enable verbose output
+* `--help`: Show this message and exit.
+
+## `sirnaforge workflow`
+
+Run complete siRNA design workflow from gene query to off-target analysis.
+
+**Usage**:
+
+```console
+$ sirnaforge workflow [OPTIONS] GENE_QUERY
 ```
 
-### `design`
-```bash
+**Arguments**:
 
- Usage: sirnaforge design [OPTIONS] INPUT_FILE
+* `GENE_QUERY`: Gene name or ID to analyze  [required]
 
- Design siRNA candidates from transcript sequences.
+**Options**:
 
-┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ *    input_file      PATH  Input FASTA file containing transcript sequences [required]                              │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --output             -o                            PATH  Output file for siRNA candidates                           │
-│                                                          [default: sirna_results.tsv]                              │
-│ --length             -l                            INTEGER RANGE [19<=x<=23]  siRNA length in nucleotides          │
-│                                                          [default: 21]                                              │
-│ --top-n              -n                            INTEGER RANGE [1<=x]  Number of top candidates to return        │
-│                                                          [default: 10]                                              │
-│ --gc-min                                           FLOAT RANGE [0.0<=x<=100.0]  Minimum GC content percentage      │
-│                                                          [default: 30.0]                                            │
-│ --gc-max                                           FLOAT RANGE [0.0<=x<=100.0]  Maximum GC content percentage      │
-│                                                          [default: 52.0]                                            │
-│ --max-poly-runs                                    INTEGER RANGE [1<=x]  Maximum consecutive identical nucleotides  │
-│                                                          [default: 3]                                               │
-│ --genome-index                                     PATH  Genome index for off-target analysis                      │
-│ --snp-file                                         PATH  VCF file with SNPs to avoid                               │
-│ --skip-structure                                         Skip secondary structure prediction (faster)               │
-│ --skip-off-targets                                       Skip off-target analysis (faster)                         │
-│ --verbose            -v                                  Enable verbose output                                      │
-│ --help                                                   Show this message and exit.                                │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+* `--input-fasta TEXT`: Local path or remote URI to an input FASTA file (http/https/ftp)
+* `-o, --output-dir PATH`: Output directory for all workflow results  [default: sirna_workflow_output]
+* `-d, --database TEXT`: Database to search (ensembl, refseq, gencode)  [default: ensembl]
+* `--design-mode TEXT`: Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)  [default: sirna]
+* `-n, --top-n INTEGER RANGE`: Number of top siRNA candidates to select (also used for off-target analysis)  [default: 20; x&gt;=1]
+* `--species, --genome-species TEXT`: Comma-separated canonical species identifiers (genome+miRNA). Supported values include human, mouse, rhesus, rat, chicken  [default: human,mouse,rhesus,rat,chicken]
+* `--mirna-db TEXT`: miRNA reference database to use for seed analysis  [default: mirgenedb]
+* `--mirna-species TEXT`: Optional comma-separated override for miRNA species identifiers. Defaults to mapping the --species selections
+* `--gc-min FLOAT RANGE`: Minimum GC content percentage  [default: 30.0; 0.0&lt;=x&lt;=100.0]
+* `--gc-max FLOAT RANGE`: Maximum GC content percentage  [default: 60.0; 0.0&lt;=x&lt;=100.0]
+* `-l, --length INTEGER RANGE`: siRNA length in nucleotides  [default: 21; 19&lt;=x&lt;=23]
+* `-m, --modifications TEXT`: Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)  [default: standard_2ome]
+* `--overhang TEXT`: Overhang sequence (dTdT for DNA, UU for RNA)  [default: dTdT]
+* `-v, --verbose`: Enable verbose output
+* `--log-file PATH`: Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)
+* `--json-summary / --no-json-summary`: Write logs/workflow_summary.json (disable to skip JSON output)  [default: json-summary]
+* `--help`: Show this message and exit.
+
+## `sirnaforge design`
+
+Design siRNA candidates from transcript sequences.
+
+**Usage**:
+
+```console
+$ sirnaforge design [OPTIONS] INPUT_FILE
 ```
 
-### `validate`
-```bash
+**Arguments**:
 
- Usage: sirnaforge validate [OPTIONS] INPUT_FILE
+* `INPUT_FILE`: Input FASTA file containing transcript sequences  [required]
 
- Validate input FASTA file format and content.
+**Options**:
 
-┌─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ *    input_file      PATH  FASTA file to validate [required]                                                        │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --help          Show this message and exit.                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+* `-o, --output PATH`: Output file for siRNA candidates  [default: sirna_results.tsv]
+* `--design-mode TEXT`: Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)  [default: sirna]
+* `-l, --length INTEGER RANGE`: siRNA length in nucleotides  [default: 21; 19&lt;=x&lt;=23]
+* `-n, --top-n INTEGER RANGE`: Number of top candidates to return  [default: 10; x&gt;=1]
+* `--gc-min FLOAT RANGE`: Minimum GC content percentage  [default: 30.0; 0.0&lt;=x&lt;=100.0]
+* `--gc-max FLOAT RANGE`: Maximum GC content percentage  [default: 60.0; 0.0&lt;=x&lt;=100.0]
+* `--max-poly-runs INTEGER RANGE`: Maximum consecutive identical nucleotides  [default: 3; x&gt;=1]
+* `--genome-index PATH`: Genome index for off-target analysis
+* `--snp-file PATH`: VCF file with SNPs to avoid
+* `--skip-structure`: Skip secondary structure prediction (faster)
+* `--skip-off-targets`: Skip off-target analysis (faster)
+* `-m, --modifications TEXT`: Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)  [default: standard_2ome]
+* `--overhang TEXT`: Overhang sequence (dTdT for DNA, UU for RNA)  [default: dTdT]
+* `-v, --verbose`: Enable verbose output
+* `--help`: Show this message and exit.
+
+## `sirnaforge validate`
+
+Validate input FASTA file format and content.
+
+**Usage**:
+
+```console
+$ sirnaforge validate [OPTIONS] INPUT_FILE
 ```
 
-### `version`
-```bash
+**Arguments**:
 
- Usage: sirnaforge version [OPTIONS]
+* `INPUT_FILE`: FASTA file to validate  [required]
 
- Show version information.
+**Options**:
 
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --help          Show this message and exit.                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+* `--help`: Show this message and exit.
+
+## `sirnaforge version`
+
+Show version information.
+
+**Usage**:
+
+```console
+$ sirnaforge version [OPTIONS]
 ```
 
-### `config`
-```bash
+**Options**:
 
- Usage: sirnaforge config [OPTIONS]
+* `--help`: Show this message and exit.
 
- Show default configuration parameters.
+## `sirnaforge config`
 
-┌─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ --help          Show this message and exit.                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Show default configuration parameters.
+
+**Usage**:
+
+```console
+$ sirnaforge config [OPTIONS]
 ```
 
-## Examples
+**Options**:
 
-### Basic Gene Search
-```bash
-# Search for TP53 gene transcripts
-sirnaforge search TP53
+* `--help`: Show this message and exit.
 
-# Search with custom output and database
-sirnaforge search BRCA1 --output brca1_transcripts.fasta --database ensembl
+## `sirnaforge cache`
 
-# Search all databases
-sirnaforge search MYC --all
+Manage miRNA database cache.
+
+**Usage**:
+
+```console
+$ sirnaforge cache [OPTIONS]
 ```
 
-### siRNA Design from Transcripts
-```bash
-# Design siRNAs from transcript file
-sirnaforge design transcripts.fasta --output results.tsv
+**Options**:
 
-# Custom parameters
-sirnaforge design input.fasta --length 19 --gc-min 40 --gc-max 60 --top-n 20
+* `--clear`: Clear all cached miRNA databases
+* `--dry-run`: Show what would be deleted without actually deleting
+* `--info`: Show cache information
+* `--help`: Show this message and exit.
+
+## `sirnaforge sequences`
+
+Manage siRNA sequences and metadata
+
+**Usage**:
+
+```console
+$ sirnaforge sequences [OPTIONS] COMMAND [ARGS]...
 ```
 
-### Full Workflow
-```bash
-# Complete workflow from gene name
-sirnaforge workflow TP53 --output-dir tp53_analysis
+**Options**:
 
-# Workflow with custom parameters
-sirnaforge workflow BRCA1 --top-n 30 --gc-min 35 --gc-max 55
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `show`: Show sequences with their metadata from...
+* `annotate`: Merge metadata from JSON into FASTA headers.
+
+### `sirnaforge sequences show`
+
+Show sequences with their metadata from FASTA file.
+
+**Usage**:
+
+```console
+$ sirnaforge sequences show [OPTIONS] INPUT_FILE
 ```
 
-### File Validation
-```bash
-# Validate FASTA file
-sirnaforge validate my_sequences.fasta
+**Arguments**:
+
+* `INPUT_FILE`: FASTA file to display  [required]
+
+**Options**:
+
+* `--id TEXT`: Show only this sequence ID
+* `-f, --format TEXT`: Output format (table, json, fasta)  [default: table]
+* `--help`: Show this message and exit.
+
+### `sirnaforge sequences annotate`
+
+Merge metadata from JSON into FASTA headers.
+
+**Usage**:
+
+```console
+$ sirnaforge sequences annotate [OPTIONS] INPUT_FASTA METADATA_JSON
 ```
+
+**Arguments**:
+
+* `INPUT_FASTA`: Input FASTA file  [required]
+* `METADATA_JSON`: JSON file with metadata  [required]
+
+**Options**:
+
+* `-o, --output PATH`: Output FASTA file (default: &lt;input&gt;_annotated.fasta)
+* `-v, --verbose`: Enable verbose output
+* `--help`: Show this message and exit.

@@ -2,11 +2,6 @@ process SPLIT_CANDIDATES {
     tag "$meta.id"
     label 'process_low'
 
-    conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6':
-        'community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6' }"
-
     input:
     tuple val(meta), path(candidates_fasta)
 
@@ -23,27 +18,15 @@ process SPLIT_CANDIDATES {
     python3 -c "
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import parse_fasta_sequences
-from pathlib import Path
+from sirnaforge.pipeline.nextflow_cli import split_candidates_cli
 
-# Parse candidates
-sequences = parse_fasta_sequences('${candidates_fasta}')
+# Split candidates into individual files
+result = split_candidates_cli(
+    input_fasta='${candidates_fasta}',
+    output_dir='.'
+)
 
-# Split into individual files
-candidate_files = []
-for i, (seq_id, sequence) in enumerate(sequences.items()):
-    filename = f'candidate_{i+1:04d}.fasta'
-    with open(filename, 'w') as f:
-        f.write(f'>{seq_id}\\n{sequence}\\n')
-    candidate_files.append(f'{seq_id}\\t{filename}')
-
-# Write manifest
-with open('candidate_manifest.txt', 'w') as f:
-    f.write('sequence_id\\tfilename\\n')
-    for entry in candidate_files:
-        f.write(f'{entry}\\n')
-
-print(f'Split {len(sequences)} candidates into individual files')
+print(f'Split {result[\"candidate_count\"]} candidates into individual files')
 "
 
     cat <<-END_VERSIONS > versions.yml

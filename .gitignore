@@ -78,6 +78,7 @@ tmp/
 .nextflow/
 .nextflow.log*
 work/
+.nextflow_work/
 
 # Docker
 .dockerignore
@@ -89,5 +90,8 @@ work/
 # Documentation
 docs/_build/
 
+# Test artifacts
+.pytest_tmp/
 nextflow_work/
 nxf-tmp.*
+pytest-report.xml

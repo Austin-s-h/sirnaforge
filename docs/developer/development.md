@@ -2,14 +2,14 @@
 
 This guide covers development setup, contribution guidelines, and best practices for siRNAforge development.
 
-> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation and usage.
+> **New to siRNAforge?** Start with [Getting Started](../getting_started.md) for basic installation and usage.
 
 ## Development Environment Setup
 
 ### Prerequisites
 
 You'll need the same prerequisites as regular installation, plus development tools:
-- Python 3.9-3.12, Git, uv (see [Getting Started](getting_started.md))
+- Python 3.9-3.12, Git, uv (see [Getting Started](../getting_started.md))
 - Make (optional, for convenience commands)
 
 ### Developer Installation
@@ -185,7 +185,7 @@ class DesignParameters(BaseModel):
 
     sirna_length: int = Field(21, ge=19, le=23)
     gc_min: float = Field(30.0, ge=0, le=100)
-    gc_max: float = Field(52.0, ge=0, le=100)
+    gc_max: float = Field(60.0, ge=0, le=100)
 
     @validator('gc_max')
     def gc_max_greater_than_min(cls, v, values):

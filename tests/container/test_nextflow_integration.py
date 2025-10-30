@@ -12,16 +12,15 @@ from pathlib import Path
 import pytest
 
 import sirnaforge.pipeline.nextflow.config
-import sirnaforge.pipeline.nextflow.workflows
+from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_available():
     """Test that Nextflow is available in the Docker container."""
     try:
-        result = subprocess.run(["nextflow", "--version"], capture_output=True, text=True, timeout=30, check=True)
+        result = subprocess.run(["nextflow", "-version"], capture_output=True, text=True, timeout=30, check=True)
         assert "nextflow" in result.stdout.lower()
 
         # Check version compatibility (should be 25.x or higher)
@@ -39,15 +38,14 @@ def test_nextflow_available():
         pytest.skip("Nextflow not available - run this test in Docker container with Nextflow")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
-def test_nextflow_docker_profile():
-    """Test that Nextflow can use Docker profiles correctly."""
+@pytest.mark.runs_in_container
+def test_nextflow_local_profile():
+    """Test that Nextflow can use local profiles correctly."""
     try:
-        # Test that docker profile is available
+        # Test that local profile is available
         result = subprocess.run(
-            ["nextflow", "config", "-profile", "docker", "-show-profiles"],
+            ["nextflow", "config", "-profile", "local", "-show-profiles"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -64,18 +62,17 @@ def test_nextflow_docker_profile():
         pytest.skip("Nextflow config command timed out")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_sirnaforge_nextflow_workflow_syntax():
     """Test that siRNAforge Nextflow workflow has valid syntax."""
     with tempfile.TemporaryDirectory() as tmpdir:
         work_dir = Path(tmpdir)
 
         try:
-            # Get the main workflow file
-            workflow_module_path = Path(sirnaforge.pipeline.nextflow.workflows.__file__).parent
-            main_nf = workflow_module_path / "main.nf"
+            # Use the runner to get the workflow file
+            runner = NextflowRunner()
+            main_nf = runner.get_main_workflow()
 
             if not main_nf.exists():
                 pytest.skip(f"Nextflow workflow not found at {main_nf}")
@@ -121,10 +118,8 @@ def test_sirnaforge_nextflow_workflow_syntax():
             pytest.skip("Nextflow syntax check timed out")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
-@pytest.mark.slow
+@pytest.mark.runs_in_container
 def test_sirnaforge_nextflow_minimal_execution():
     """Test that siRNAforge can execute Nextflow workflows with minimal resources."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -207,9 +202,8 @@ def test_sirnaforge_nextflow_minimal_execution():
             pytest.skip("Workflow execution timed out (expected on resource-constrained systems)")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
 @pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_config_generation():
     """Test that siRNAforge can generate valid Nextflow configuration."""
     try:
@@ -245,9 +239,8 @@ def test_nextflow_config_generation():
         pytest.skip(f"siRNAforge NextflowConfig not available: {e}")
 
 
-@pytest.mark.docker
-@pytest.mark.nextflow
-@pytest.mark.unit
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_channel_syntax_fix():
     """Test that the Channel.from syntax fix is working."""
     with tempfile.TemporaryDirectory() as tmpdir:

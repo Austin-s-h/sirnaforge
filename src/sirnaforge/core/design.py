@@ -67,7 +67,7 @@ class SiRNADesigner:
         ]
         top_candidates = (passing or all_candidates)[: self.parameters.top_n]
 
-        processing_time = time.time() - start_time
+        processing_time = max(0.0, time.time() - start_time)  # Ensure non-negative
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
         total_seqs = len(sequences)
         for c in all_candidates:
@@ -220,7 +220,6 @@ class SiRNADesigner:
 
     def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
         """Score candidates using composite scoring algorithm."""
-
         for candidate in candidates:
             # Calculate component scores
             # Thermodynamic end stabilities and asymmetry
@@ -478,3 +477,135 @@ class SiRNADesigner:
             "biopython": biopython_version,
             "sirnaforge": __version__,
         }
+
+
+class MiRNADesigner(SiRNADesigner):
+    """miRNA-biogenesis-aware siRNA designer with specialized scoring.
+
+    Extends SiRNADesigner with scoring rules optimized for miRNA-like processing:
+    - Argonaute selection preferences (pos1 A/U, mismatch at pos1)
+    - 3' supplementary pairing analysis (positions 13-16)
+    - Conservative thermodynamic thresholds
+    - Seed region quality assessment
+    """
+
+    def __init__(self, parameters: DesignParameters) -> None:
+        """Initialize miRNA designer with miRNA-specific config validation."""
+        super().__init__(parameters)
+        # Optionally apply miRNA-specific filter adjustments based on MiRNADesignConfig
+        # For now, we rely on the caller to set appropriate filters for miRNA mode
+
+    def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+        """Score candidates using miRNA-biogenesis-aware composite scoring.
+
+        Adds miRNA-specific scoring components:
+        - Argonaute start bonus for A/U at guide position 1
+        - Position 1 mismatch/wobble preference
+        - 3' supplementary pairing score
+        - Enhanced asymmetry requirements
+        """
+        from sirnaforge.models.sirna import MiRNADesignConfig  # noqa: PLC0415
+
+        mirna_config = MiRNADesignConfig()
+        scoring_weights = mirna_config.scoring_weights
+
+        # First, run the standard scoring
+        candidates = super()._score_candidates(candidates)
+
+        # Add miRNA-specific scoring enhancements
+        for candidate in candidates:
+            guide = candidate.guide_sequence
+            passenger = candidate.passenger_sequence
+
+            # 1. Argonaute selection: prefer A/U at guide position 1
+            guide_pos1_base = guide[0] if guide else ""
+            candidate.guide_pos1_base = guide_pos1_base
+            ago_start_bonus = scoring_weights["ago_start_bonus"] if guide_pos1_base in ["A", "U"] else 0.0
+
+            # 2. Position 1 pairing state: prefer G:U wobble or mismatch over perfect pair
+            pos1_pairing_state = self._classify_pos1_pairing(guide_pos1_base, passenger[-1] if passenger else "")
+            candidate.pos1_pairing_state = pos1_pairing_state
+            pos1_mismatch_bonus = (
+                scoring_weights["pos1_mismatch_bonus"] if pos1_pairing_state in ["wobble", "mismatch"] else 0.0
+            )
+
+            # 3. 3' supplementary pairing (positions 13-16)
+            supp_score = self._calculate_supplementary_score(guide)
+            candidate.supp_13_16_score = supp_score
+            supp_bonus = scoring_weights["supp_13_16_bonus"] * supp_score
+
+            # 4. Seed class classification (positions 2-8)
+            seed_class = self._classify_seed_region(guide)
+            candidate.seed_class = seed_class
+
+            # 5. Apply miRNA-specific bonuses to composite score
+            mirna_bonus = ago_start_bonus + pos1_mismatch_bonus + supp_bonus
+
+            # Update composite score (scale is 0-100, bonuses are fractions)
+            candidate.composite_score = candidate.composite_score + (mirna_bonus * 100)
+
+            # Clamp to 0-100 range
+            candidate.composite_score = max(0.0, min(100.0, candidate.composite_score))
+
+        return candidates
+
+    def _classify_pos1_pairing(self, guide_base: str, passenger_base: str) -> str:
+        """Classify pairing state at guide position 1.
+
+        Args:
+            guide_base: Guide strand base at position 1 (5' end)
+            passenger_base: Passenger strand base at position 21 (pairs with guide pos1)
+
+        Returns:
+            Pairing classification: "perfect", "wobble", or "mismatch"
+        """
+        # Watson-Crick pairs
+        perfect_pairs = {("A", "U"), ("U", "A"), ("G", "C"), ("C", "G")}
+        # G:U wobble pair
+        wobble_pairs = {("G", "U"), ("U", "G")}
+
+        pair = (guide_base, passenger_base)
+        if pair in perfect_pairs:
+            return "perfect"
+        if pair in wobble_pairs:
+            return "wobble"
+        return "mismatch"
+
+    def _calculate_supplementary_score(self, guide: str) -> float:
+        """Calculate 3' supplementary pairing potential (positions 13-16).
+
+        Lower score is better (less 3' pairing = better specificity).
+
+        Args:
+            guide: Guide strand sequence
+
+        Returns:
+            Normalized score [0-1] where 0 = high pairing, 1 = low pairing
+        """
+        if len(guide) < 16:
+            return 0.5  # Default for short sequences
+
+        # Extract positions 13-16 (0-indexed: 12-15)
+        supp_region = guide[12:16]
+
+        # Simple heuristic: count A/U content (lower stability)
+        au_count = supp_region.count("A") + supp_region.count("U")
+        # High A/U = low stability = high score (good for avoiding 3' pairing)
+        return au_count / len(supp_region) if supp_region else 0.5
+
+    def _classify_seed_region(self, guide: str) -> str:
+        """Classify seed match class based on guide positions 2-8.
+
+        Args:
+            guide: Guide strand sequence
+
+        Returns:
+            Seed class: "6mer", "7mer-m8", "7mer-a1", or "8mer"
+        """
+        # This is a simplified classification based on seed length
+        # In practice, seed class depends on target matching, which happens during off-target analysis
+        # For now, we just categorize based on sequence properties
+        if len(guide) < 8:
+            return "6mer"
+        # This is a placeholder - actual seed class determined during off-target matching
+        return "8mer"

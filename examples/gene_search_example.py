@@ -8,7 +8,6 @@ from sirnaforge.data.gene_search import DatabaseType, GeneSearcher
 
 async def main() -> None:
     """Example gene search demonstration."""
-
     # Initialize the gene searcher
     searcher = GeneSearcher(preferred_db=DatabaseType.ENSEMBL)
 

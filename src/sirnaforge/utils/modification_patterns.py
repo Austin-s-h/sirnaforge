@@ -136,7 +136,7 @@ def apply_modifications_to_candidate(
     provenance = Provenance(
         source_type=SourceType.DESIGNED,
         identifier=f"sirnaforge_{candidate.id}",
-        url="https://github.com/Austin-s-h/sirnaforge",
+        url="https://github.com/austin-s-h/sirnaforge",
     )
 
     # Create guide strand metadata

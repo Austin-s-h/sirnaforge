@@ -1,6 +1,4 @@
-"""
-Test the fixed ViennaRNA integration.
-"""
+"""Test the fixed ViennaRNA integration."""
 
 import importlib.util
 import sys
@@ -18,7 +16,6 @@ VIENNA_AVAILABLE = importlib.util.find_spec("RNA") is not None
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 def test_fixed_duplex_stability():
     """Test that duplex stability calculation works without segfault."""
@@ -40,7 +37,6 @@ def test_fixed_duplex_stability():
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 def test_fixed_asymmetry_calculation():
     """Test that asymmetry score calculation works without segfault."""
@@ -71,7 +67,6 @@ def test_fixed_asymmetry_calculation():
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 def test_multiple_sequences():
     """Test multiple sequences to ensure stability."""

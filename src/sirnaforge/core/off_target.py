@@ -14,6 +14,17 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from sirnaforge.data.base import FastaUtils
+from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.models.off_target import (
+    AggregatedMiRNASummary,
+    AggregatedOffTargetSummary,
+    AlignmentStrand,
+    AnalysisMode,
+    AnalysisSummary,
+    MiRNAHit,
+    MiRNASummary,
+    OffTargetHit,
+)
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 
@@ -65,8 +76,7 @@ class BwaAnalyzer:
         seed_start: int = 2,
         seed_end: int = 8,
     ):
-        """
-        Initialize BWA-MEM2 analyzer.
+        """Initialize BWA-MEM2 analyzer.
 
         Args:
             index_prefix: Path to BWA index
@@ -99,8 +109,7 @@ class BwaAnalyzer:
             raise ValueError(f"Unknown mode: {mode}. Use 'transcriptome' or 'mirna_seed'")
 
     def analyze_sequences(self, sequences: dict[str, str]) -> list[dict[str, Any]]:
-        """
-        Run BWA-MEM2 analysis on sequences.
+        """Run BWA-MEM2 analysis on sequences.
 
         Args:
             sequences: Dictionary of sequence name -> sequence
@@ -325,6 +334,7 @@ class OffTargetAnalysisManager:
         transcriptome_index: Optional[Union[str, Path]] = None,
         mirna_index: Optional[Union[str, Path]] = None,
     ):
+        """Initialize the off-target analysis manager."""
         self.species = species
         self.transcriptome_path = Path(transcriptome_path) if transcriptome_path is not None else None
         self.mirna_path = Path(mirna_path) if mirna_path is not None else None
@@ -705,6 +715,489 @@ def run_comprehensive_offtarget_analysis(
         return "", "", str(error_summary)
 
 
+def run_bwa_alignment_analysis(
+    candidates_file: Union[str, Path],
+    index_prefix: Union[str, Path],
+    species: str,
+    output_dir: Union[str, Path],
+    max_hits: int = 10000,
+    bwa_k: int = 12,
+    bwa_T: int = 15,
+    seed_start: int = 2,
+    seed_end: int = 8,
+) -> Path:
+    """Run BWA-MEM2 alignment analysis for candidate sequences using Pydantic models.
+
+    This is the main function called by OFFTARGET_ANALYSIS Nextflow module.
+
+    Args:
+        candidates_file: Path to FASTA file with candidate sequences
+        index_prefix: Path to BWA-MEM2 index prefix
+        species: Species identifier
+        output_dir: Directory to write results
+        max_hits: Maximum hits to report per candidate
+        bwa_k: BWA seed length parameter
+        bwa_T: BWA minimum score threshold
+        seed_start: Seed region start position (1-based)
+        seed_end: Seed region end position (1-based)
+
+    Returns:
+        Path to output directory containing results
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Parse input sequences
+    sequences = parse_fasta_file(candidates_file)
+
+    # Determine candidate ID from filename (e.g., "candidate_0001.fasta" -> "candidate_0001")
+    candidate_id = Path(candidates_file).stem
+
+    # Create unique output prefix for this candidate-species combination
+    output_prefix = output_path / f"{candidate_id}_{species}"
+
+    # Run BWA-MEM2 analysis
+    analyzer = BwaAnalyzer(
+        index_prefix=index_prefix,
+        mode="transcriptome",  # Always use transcriptome mode for genome analysis
+        seed_length=bwa_k,
+        min_score=bwa_T,
+        max_hits=max_hits,
+        seed_start=seed_start,
+        seed_end=seed_end,
+    )
+
+    results_dicts = analyzer.analyze_sequences(sequences)
+
+    # Convert dict results to OffTargetHit objects with validation
+    all_hits: list[OffTargetHit] = []
+    for hit_dict in results_dicts:
+        try:
+            # Parse coord string "chr1:12345" into integer
+            coord_str = hit_dict["coord"]
+            coord_int = int(coord_str.split(":")[1]) if ":" in coord_str else int(coord_str)
+
+            offtarget_hit = OffTargetHit(
+                qname=hit_dict["qname"],
+                qseq=hit_dict["qseq"],
+                rname=hit_dict["rname"],
+                coord=coord_int,
+                strand=AlignmentStrand(hit_dict["strand"]),
+                cigar=hit_dict["cigar"],
+                mapq=hit_dict["mapq"],
+                as_score=hit_dict.get("as_score"),
+                nm=hit_dict["nm"],
+                seed_mismatches=hit_dict["seed_mismatches"],
+                offtarget_score=hit_dict["offtarget_score"],
+            )
+            all_hits.append(offtarget_hit)
+        except Exception as e:
+            logger.warning(f"Failed to validate off-target hit: {e}, skipping")
+            continue
+
+    # Write TSV analysis file using Pydantic models
+    analysis_file = Path(f"{output_prefix}_analysis.tsv")
+    with analysis_file.open("w") as f:
+        f.write(OffTargetHit.tsv_header() + "\n")
+        for hit in all_hits:
+            f.write(hit.to_tsv_row() + "\n")
+
+    # Write JSON file with validated data
+    json_file = Path(f"{output_prefix}_hits.json")
+    with json_file.open("w") as f:
+        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+
+    # Create validated summary using Pydantic model
+    summary = AnalysisSummary(
+        candidate_id=candidate_id,
+        species=species,
+        mode=AnalysisMode.TRANSCRIPTOME,
+        total_sequences=len(sequences),
+        total_hits=len(all_hits),
+    )
+
+    # Write summary JSON file
+    summary_file = Path(f"{output_prefix}_summary.json")
+    with summary_file.open("w") as f:
+        # Add parameters to the output
+        summary_dict = summary.model_dump()
+        summary_dict["parameters"] = {
+            "bwa_k": bwa_k,
+            "bwa_T": bwa_T,
+            "max_hits": max_hits,
+            "seed_start": seed_start,
+            "seed_end": seed_end,
+        }
+        json.dump(summary_dict, f, indent=2)
+
+    logger.info(f"BWA analysis completed for {candidate_id} vs {species}: {len(all_hits)} hits")
+
+    return output_path
+
+
+def aggregate_offtarget_results(
+    results_dir: Union[str, Path],
+    output_dir: Union[str, Path],
+    genome_species: str,
+) -> Path:
+    """Aggregate off-target analysis results from multiple candidate-genome combinations using Pydantic models.
+
+    This is the main function called by AGGREGATE_RESULTS Nextflow module.
+
+    Args:
+        results_dir: Directory containing individual analysis results
+        output_dir: Directory to write aggregated results
+        genome_species: Comma-separated list of genome species analyzed
+
+    Returns:
+        Path to output directory containing aggregated results
+    """
+    results_path = Path(results_dir)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
+
+    # Collect all TSV analysis files
+    all_hits: list[OffTargetHit] = []
+    analysis_files = list(results_path.glob("**/*_analysis.tsv"))
+
+    for analysis_file in analysis_files:
+        try:
+            with analysis_file.open() as f:
+                # Skip header
+                next(f)
+                for line in f:
+                    if line.strip():
+                        parts = line.strip().split("\t")
+                        if len(parts) >= 11:
+                            try:
+                                # Parse coord from either "chr1:12345" or just "12345"
+                                coord_str = parts[3]
+                                coord_int = int(coord_str.split(":")[1]) if ":" in coord_str else int(coord_str)
+
+                                hit = OffTargetHit(
+                                    qname=parts[0],
+                                    qseq=parts[1],
+                                    rname=parts[2],
+                                    coord=coord_int,
+                                    strand=AlignmentStrand(parts[4]),
+                                    cigar=parts[5],
+                                    mapq=int(parts[6]),
+                                    as_score=None if parts[7] == "NA" else int(parts[7]),
+                                    nm=int(parts[8]),
+                                    seed_mismatches=int(parts[9]),
+                                    offtarget_score=float(parts[10]),
+                                )
+                                all_hits.append(hit)
+                            except Exception as e:
+                                logger.warning(f"Failed to parse hit from {analysis_file}: {e}, skipping")
+                                continue
+        except Exception as e:
+            logger.warning(f"Failed to read {analysis_file}: {e}")
+
+    # Write combined TSV using Pydantic models
+    combined_tsv = output_path / "combined_offtargets.tsv"
+    with combined_tsv.open("w") as f:
+        f.write(OffTargetHit.tsv_header() + "\n")
+        for hit in all_hits:
+            f.write(hit.to_tsv_row() + "\n")
+
+    # Write combined JSON with validated data
+    combined_json = output_path / "combined_offtargets.json"
+    with combined_json.open("w") as f:
+        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+
+    # Prepare file paths for summary
+    summary_json = output_path / "combined_summary.json"
+
+    # Create validated aggregated summary
+    summary = AggregatedOffTargetSummary(
+        species_analyzed=species_list,
+        analysis_files_processed=len(analysis_files),
+        total_results=len(all_hits),
+        combined_tsv=combined_tsv,
+        combined_json=combined_json,
+        summary_file=summary_json,
+    )
+
+    # Write summary JSON
+    with summary_json.open("w") as f:
+        json.dump(summary.model_dump(), f, indent=2)
+
+    # Write final summary text file
+    final_summary = output_path / "final_summary.txt"
+    with final_summary.open("w") as f:
+        f.write("Off-Target Analysis Aggregation Summary\n")
+        f.write("=" * 50 + "\n")
+        f.write(f"Total off-target hits: {len(all_hits)}\n")
+        f.write(f"Species analyzed: {', '.join(species_list)}\n")
+        f.write(f"Analysis files processed: {len(analysis_files)}\n")
+        f.write("\nOutput files:\n")
+        f.write(f"  - Combined TSV: {combined_tsv.name}\n")
+        f.write(f"  - Combined JSON: {combined_json.name}\n")
+        f.write(f"  - Summary JSON: {summary_json.name}\n")
+
+    logger.info(f"Aggregated {len(all_hits)} off-target hits from {len(analysis_files)} analysis files")
+
+    return output_path
+
+
+def run_mirna_seed_analysis(
+    candidates_file: Union[str, Path],
+    candidate_id: str,
+    mirna_db: str,
+    mirna_species: list[str],
+    output_dir: Union[str, Path],
+) -> Path:
+    """Run miRNA seed match analysis for candidate sequences.
+
+    This function uses the MiRNADatabaseManager to download and cache miRNA databases,
+    builds BWA indices if needed, and performs seed match analysis.
+
+    Args:
+        candidates_file: Path to FASTA file with candidate sequences
+        candidate_id: Candidate identifier
+        mirna_db: miRNA database name (mirgenedb, mirbase, etc.)
+        mirna_species: List of species to analyze against
+        output_dir: Directory to write results
+
+    Returns:
+        Path to output directory containing results
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Initialize miRNA database manager
+    manager = MiRNADatabaseManager()
+
+    # Parse input sequences
+    sequences = parse_fasta_file(candidates_file)
+
+    all_hits = []
+    species_stats = {}
+
+    logger.info(f"Running miRNA seed analysis for {candidate_id}")
+    logger.info(f"Database: {mirna_db}, Species: {mirna_species}")
+
+    for species in mirna_species:
+        try:
+            # Get or download miRNA database for this species
+            logger.info(f"Processing miRNA database for species: {species}")
+            db_fasta_path = manager.get_database(mirna_db, species)
+
+            if db_fasta_path is None or not db_fasta_path.exists():
+                logger.warning(f"miRNA database not available for {species}, skipping")
+                continue
+
+            # Build BWA index for miRNA database if it doesn't exist
+            index_prefix = db_fasta_path.with_suffix("")
+            if not validate_index_files(index_prefix, "bwa-mem2"):
+                logger.info(f"Building BWA index for {species} miRNA database")
+                build_bwa_index(db_fasta_path, index_prefix)
+
+            # Run BWA analysis in miRNA seed mode
+            analyzer = BwaAnalyzer(
+                index_prefix=index_prefix,
+                mode="mirna_seed",
+                seed_length=6,  # Short seed for miRNA seed region
+                min_score=6,  # Low threshold for sensitivity
+                max_hits=1000,  # Reasonable limit per candidate
+                seed_start=2,
+                seed_end=8,
+            )
+
+            results = analyzer.analyze_sequences(sequences)
+
+            # Convert dict results to MiRNAHit objects with validation
+            for hit_dict in results:
+                try:
+                    mirna_hit = MiRNAHit(
+                        qname=hit_dict["qname"],
+                        qseq=hit_dict["qseq"],
+                        species=species,
+                        database=mirna_db,
+                        mirna_id=hit_dict["rname"],  # Reference name is the miRNA ID
+                        coord=hit_dict["coord"],
+                        strand=AlignmentStrand(hit_dict["strand"]),
+                        cigar=hit_dict["cigar"],
+                        mapq=hit_dict["mapq"],
+                        as_score=hit_dict.get("as_score"),
+                        nm=hit_dict["nm"],
+                        seed_mismatches=hit_dict["seed_mismatches"],
+                        offtarget_score=hit_dict["offtarget_score"],
+                    )
+                    all_hits.append(mirna_hit)
+                except Exception as e:
+                    logger.warning(f"Failed to validate miRNA hit: {e}, skipping")
+                    continue
+
+            species_stats[species] = len(results)
+            logger.info(f"Found {len(results)} miRNA seed matches for {species}")
+
+        except Exception as e:
+            logger.error(f"Failed to process miRNA analysis for {species}: {e}")
+            species_stats[species] = 0
+
+    # Write TSV analysis file using Pydantic models
+    analysis_file = output_path / f"{candidate_id}_mirna_analysis.tsv"
+    with analysis_file.open("w") as f:
+        f.write(MiRNAHit.tsv_header() + "\n")
+        for hit in all_hits:
+            f.write(hit.to_tsv_row() + "\n")
+
+    # Write JSON file with validated data
+    json_file = output_path / f"{candidate_id}_mirna_hits.json"
+    with json_file.open("w") as f:
+        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+
+    # Create validated summary using Pydantic model
+    summary = MiRNASummary(
+        candidate_id=candidate_id,
+        mirna_database=mirna_db,
+        species_analyzed=mirna_species,
+        total_sequences=len(sequences),
+        total_hits=len(all_hits),
+        hits_per_species=species_stats,
+    )
+
+    # Write summary JSON file
+    summary_file = output_path / f"{candidate_id}_mirna_summary.json"
+    with summary_file.open("w") as f:
+        json.dump(summary.model_dump(), f, indent=2)
+
+    logger.info(f"miRNA seed analysis completed for {candidate_id}: {len(all_hits)} total hits")
+
+    return output_path
+
+
+def aggregate_mirna_results(
+    results_dir: Union[str, Path],
+    output_dir: Union[str, Path],
+    mirna_db: str,
+    mirna_species: str,
+) -> Path:
+    """Aggregate miRNA seed analysis results from multiple candidates using Pydantic models.
+
+    Args:
+        results_dir: Directory containing individual miRNA analysis results
+        output_dir: Directory to write aggregated results
+        mirna_db: miRNA database used for analysis
+        mirna_species: Comma-separated list of species analyzed
+
+    Returns:
+        Path to output directory containing aggregated results
+    """
+    results_path = Path(results_dir)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    species_list = [s.strip() for s in mirna_species.split(",") if s.strip()]
+
+    # Collect all miRNA analysis files and parse into validated MiRNAHit objects
+    all_hits: list[MiRNAHit] = []
+    analysis_files = list(results_path.glob("**/*_mirna_analysis.tsv"))
+    candidate_stats = {}
+
+    for analysis_file in analysis_files:
+        try:
+            candidate_id = analysis_file.stem.replace("_mirna_analysis", "")
+            hit_count = 0
+
+            with analysis_file.open() as f:
+                # Skip header
+                next(f)
+                for line in f:
+                    if line.strip():
+                        parts = line.strip().split("\t")
+                        if len(parts) >= 13:
+                            try:
+                                # Parse and validate using Pydantic model
+                                hit = MiRNAHit(
+                                    qname=parts[0],
+                                    qseq=parts[1],
+                                    species=parts[2],
+                                    database=parts[3],
+                                    mirna_id=parts[4],
+                                    coord=int(parts[5]),
+                                    strand=AlignmentStrand(parts[6]),
+                                    cigar=parts[7],
+                                    mapq=int(parts[8]),
+                                    as_score=None if parts[9] == "NA" else int(parts[9]),
+                                    nm=int(parts[10]),
+                                    seed_mismatches=int(parts[11]),
+                                    offtarget_score=float(parts[12]),
+                                )
+                                all_hits.append(hit)
+                                hit_count += 1
+                            except Exception as e:
+                                logger.warning(f"Failed to parse hit from {analysis_file}: {e}")
+                                continue
+
+            candidate_stats[candidate_id] = hit_count
+
+        except Exception as e:
+            logger.warning(f"Failed to parse {analysis_file}: {e}")
+
+    # Write combined TSV using Pydantic model methods
+    combined_tsv = output_path / "combined_mirna_hits.tsv"
+    with combined_tsv.open("w") as f:
+        f.write(MiRNAHit.tsv_header() + "\n")
+        for hit in all_hits:
+            f.write(hit.to_tsv_row() + "\n")
+
+    # Write combined JSON with validated data
+    combined_json = output_path / "combined_mirna_hits.json"
+    with combined_json.open("w") as f:
+        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+
+    # Calculate statistics
+    species_stats = {}
+    for species in species_list:
+        species_stats[species] = len([h for h in all_hits if h.species == species])
+
+    # Create validated summary using Pydantic model
+    summary = AggregatedMiRNASummary(
+        total_mirna_hits=len(all_hits),
+        mirna_database=mirna_db,
+        species_analyzed=species_list,
+        hits_per_species=species_stats,
+        hits_per_candidate=candidate_stats,
+        analysis_files_processed=len(analysis_files),
+        total_candidates=len(candidate_stats),
+        combined_tsv=combined_tsv,
+        combined_json=combined_json,
+        summary_file=output_path / "combined_mirna_summary.json",
+    )
+
+    # Write summary JSON
+    summary_json = output_path / "combined_mirna_summary.json"
+    with summary_json.open("w") as f:
+        json.dump(summary.model_dump(exclude={"combined_tsv", "combined_json", "summary_file"}), f, indent=2)
+
+    # Write final summary text file
+    final_summary = output_path / "final_mirna_summary.txt"
+    with final_summary.open("w") as f:
+        f.write("miRNA Seed Match Analysis Aggregation Summary\n")
+        f.write("=" * 50 + "\n")
+        f.write(f"Total miRNA seed matches: {len(all_hits)}\n")
+        f.write(f"Database: {mirna_db}\n")
+        f.write(f"Species analyzed: {', '.join(species_list)}\n")
+        f.write(f"Candidates analyzed: {len(candidate_stats)}\n")
+        f.write(f"Analysis files processed: {len(analysis_files)}\n")
+        f.write("\nHits per species:\n")
+        for species, count in species_stats.items():
+            f.write(f"  {species}: {count}\n")
+        f.write("\nOutput files:\n")
+        f.write(f"  - Combined TSV: {combined_tsv.name}\n")
+        f.write(f"  - Combined JSON: {combined_json.name}\n")
+        f.write(f"  - Summary JSON: {summary_json.name}\n")
+
+    logger.info(f"Aggregated {len(all_hits)} miRNA hits from {len(analysis_files)} analysis files")
+
+    return output_path
+
+
 # Export all main functions and classes
 __all__ = [
     # Core classes
@@ -719,8 +1212,9 @@ __all__ = [
     "write_fasta_file",
     "check_tool_availability",
     "validate_index_files",
-    # Nextflow functions
-    "run_mirna_analysis_for_nextflow",
-    "run_transcriptome_analysis_for_nextflow",
-    "run_comprehensive_offtarget_analysis",
+    # Nextflow integration functions (called directly from Nextflow modules)
+    "run_bwa_alignment_analysis",
+    "aggregate_offtarget_results",
+    "run_mirna_seed_analysis",
+    "aggregate_mirna_results",
 ]

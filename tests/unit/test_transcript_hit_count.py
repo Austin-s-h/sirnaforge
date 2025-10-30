@@ -1,3 +1,5 @@
+"""Test transcript hit count functionality."""
+
 import pytest
 
 from sirnaforge.core.design import SiRNADesigner
@@ -5,11 +7,9 @@ from sirnaforge.models.sirna import DesignParameters
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 def test_shared_guides(tmp_path):
     """Two identical transcripts -> each guide should hit both transcripts."""
-
     fasta = tmp_path / "shared.fa"
     # Use a sequence with balanced GC content (40%) to pass filters
     seq = "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"
@@ -28,11 +28,9 @@ def test_shared_guides(tmp_path):
 
 
 @pytest.mark.unit
-@pytest.mark.local_python
 @pytest.mark.ci
 def test_unique_guides(tmp_path):
     """Two different transcripts -> typical guide should hit only one transcript."""
-
     fasta = tmp_path / "unique.fa"
     # Use sequences with balanced GC content but different sequences
     seq1 = "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"

@@ -9,22 +9,38 @@ from .modifications import (
     StrandMetadata,
     StrandRole,
 )
+from .off_target import (
+    AggregatedMiRNASummary,
+    AggregatedOffTargetSummary,
+    AlignmentStrand,
+    AnalysisMode,
+    AnalysisSummary,
+    MiRNAHit,
+    MiRNASummary,
+    OffTargetHit,
+)
 from .sirna import (
+    DesignMode,
     DesignParameters,
     DesignResult,
     FilterCriteria,
+    MiRNADesignConfig,
     ScoringWeights,
     SequenceType,
     SiRNACandidate,
 )
 
 __all__ = [
+    # siRNA design models
+    "DesignMode",
     "DesignParameters",
     "DesignResult",
     "FilterCriteria",
+    "MiRNADesignConfig",
     "ScoringWeights",
     "SequenceType",
     "SiRNACandidate",
+    # Chemical modification models
     "ChemicalModification",
     "ConfirmationStatus",
     "Provenance",
@@ -32,4 +48,13 @@ __all__ = [
     "SourceType",
     "StrandMetadata",
     "StrandRole",
+    # Off-target analysis models
+    "OffTargetHit",
+    "MiRNAHit",
+    "AnalysisSummary",
+    "MiRNASummary",
+    "AggregatedOffTargetSummary",
+    "AggregatedMiRNASummary",
+    "AlignmentStrand",
+    "AnalysisMode",
 ]

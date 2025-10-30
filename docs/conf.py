@@ -1,9 +1,9 @@
-"""
-Sphinx configuration file for siRNAforge documentation.
-"""
+"""Sphinx configuration file for siRNAforge documentation."""
 
 import sys
 from pathlib import Path
+
+from sirnaforge.__init__ import __version__
 
 # Add the source directory to the path
 sys.path.insert(0, str(Path("../src").resolve()))
@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path("../src").resolve()))
 project = "siRNAforge"
 copyright = "2025, Austin S. Hovland"
 author = "Austin S. Hovland"
-release = "0.1.0"
+release = __version__
 
 # -- General configuration ---------------------------------------------------
 extensions = [
@@ -52,7 +52,7 @@ html_theme_options = {
 # HTML context for better navigation
 html_context = {
     "display_github": True,
-    "github_user": "Austin-s-h",
+    "github_user": "austin-s-h",
     "github_repo": "sirnaforge",
     "github_version": "master",
     "conf_py_path": "/docs/",

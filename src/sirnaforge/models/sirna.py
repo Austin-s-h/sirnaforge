@@ -87,6 +87,7 @@ class FilterCriteria(BaseModel):
     @field_validator_typed("gc_max")
     @classmethod
     def gc_max_greater_than_min(cls, v: float, info: ValidationInfo) -> float:
+        """Validate that gc_max is greater than or equal to gc_min."""
         if "gc_min" in info.data and v < info.data["gc_min"]:
             raise ValueError("gc_max must be greater than or equal to gc_min")
         return v
@@ -112,16 +113,75 @@ class ScoringWeights(BaseModel):
     @field_validator_typed("empirical")
     @classmethod
     def weights_sum_to_one(cls, v: float, info: ValidationInfo) -> float:
+        """Validate that scoring weights sum to approximately 1.0."""
         total = sum(info.data.values()) + v
         if not (0.95 <= total <= 1.05):  # Allow small floating point errors
             raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
         return v
 
 
+class DesignMode(str, Enum):
+    """Design mode for siRNA/miRNA-biogenesis-aware workflows."""
+
+    SIRNA = "sirna"  # Standard siRNA design mode
+    MIRNA = "mirna"  # miRNA-biogenesis-aware design mode
+
+
+class MiRNADesignConfig(BaseModel):
+    """Configuration preset for miRNA-biogenesis-aware siRNA design.
+
+    This config encapsulates thresholds, defaults, and scoring weights
+    optimized for miRNA-like processing (Drosha/Dicer recognition,
+    Argonaute loading preferences, seed-based off-target analysis).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Conservative thermodynamic thresholds for miRNA mode
+    gc_min: float = Field(default=30.0, ge=0, le=100, description="Minimum GC content % for miRNA mode")
+    gc_max: float = Field(default=52.0, ge=0, le=100, description="Maximum GC content % for miRNA mode")
+    asymmetry_min: float = Field(default=0.65, ge=0, le=1, description="Minimum asymmetry score for Argonaute loading")
+    max_homopolymer: int = Field(default=3, ge=1, description="Maximum homopolymer run length")
+
+    # Canonical duplex format defaults
+    overhang: str = Field(default="UU", description="Default overhang for miRNA mode (UU for RNA)")
+    modifications: str = Field(
+        default="standard_2ome", description="Default chemical modification pattern for miRNA mode"
+    )
+
+    # Off-target preset
+    off_target_preset: str = Field(
+        default="MIRNA_SEED_7_8", description="Off-target analysis preset (seed-based matching)"
+    )
+
+    # Scoring weights for miRNA-specific features
+    scoring_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "ago_start_bonus": 0.1,  # Bonus for A/U at guide position 1
+            "pos1_mismatch_bonus": 0.05,  # Bonus for G:U wobble or mismatch at position 1
+            "seed_clean_bonus": 0.15,  # Bonus for clean seed region (positions 2-8)
+            "supp_13_16_bonus": 0.1,  # Bonus for 3' supplementary pairing potential
+            "five_p_end_destabilization_bonus": 0.1,  # Bonus for destabilized 5' guide end
+        },
+        description="Scoring weight modifiers for miRNA-specific features",
+    )
+
+    # Pri-miRNA hairpin validation (enabled only when hairpin context is provided)
+    enable_pri_hairpin_validation: bool = Field(
+        default=False,
+        description="Enable pri-miRNA hairpin structure validation (requires hairpin input)",
+    )
+
+
 class DesignParameters(BaseModel):
     """Complete configuration parameters for siRNA design workflow."""
 
     model_config = ConfigDict(extra="forbid")
+
+    # Design mode selection
+    design_mode: DesignMode = Field(
+        default=DesignMode.SIRNA, description="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)"
+    )
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
@@ -199,6 +259,30 @@ class SiRNACandidate(BaseModel):
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
 
+    # miRNA-specific fields (populated when design_mode == "mirna")
+    guide_pos1_base: Optional[str] = Field(
+        default=None, description="Nucleotide at guide position 1 (for Argonaute selection scoring)"
+    )
+    pos1_pairing_state: Optional[str] = Field(
+        default=None, description="Pairing state at position 1: perfect, wobble, or mismatch"
+    )
+    seed_class: Optional[str] = Field(default=None, description="Seed match class: 6mer, 7mer-m8, 7mer-a1, or 8mer")
+    supp_13_16_score: Optional[float] = Field(
+        default=None, ge=0, le=1, description="3' supplementary pairing score (positions 13-16)"
+    )
+    seed_7mer_hits: Optional[int] = Field(
+        default=None, ge=0, description="Number of 7mer seed matches in off-target analysis"
+    )
+    seed_8mer_hits: Optional[int] = Field(
+        default=None, ge=0, description="Number of 8mer seed matches in off-target analysis"
+    )
+    seed_hits_weighted: Optional[float] = Field(
+        default=None, ge=0, description="Weighted seed hits by 3' UTR abundance (if expression data provided)"
+    )
+    off_target_seed_risk_class: Optional[str] = Field(
+        default=None, description="Off-target risk classification: low, medium, high"
+    )
+
     # Transcript hit metrics (how many input transcripts this guide hits)
     transcript_hit_count: int = Field(
         default=1, ge=0, description="Number of input transcripts containing this guide sequence"
@@ -241,6 +325,7 @@ class SiRNACandidate(BaseModel):
     @field_validator_typed("guide_sequence", "passenger_sequence")
     @classmethod
     def validate_nucleotide_sequence(cls, v: str) -> str:
+        """Validate that sequence contains only valid nucleotides."""
         valid_bases = set("ATCGU")
         if not all(base.upper() in valid_bases for base in v):
             raise ValueError(f"Sequence contains invalid nucleotides: {v}")
@@ -249,6 +334,7 @@ class SiRNACandidate(BaseModel):
     @field_validator_typed("passenger_sequence")
     @classmethod
     def sequences_same_length(cls, v: str, info: ValidationInfo) -> str:
+        """Validate that passenger sequence is same length as guide sequence."""
         if "guide_sequence" in info.data and len(v) != len(info.data["guide_sequence"]):
             raise ValueError("Guide and passenger sequences must be the same length")
         return v
@@ -335,6 +421,16 @@ class DesignResult(BaseModel):
                 "delta_dg_end": cs.get("delta_dg_end"),
                 "melting_temp_c": cs.get("melting_temp_c"),
                 "off_target_count": candidate.off_target_count,
+                # miRNA-specific columns (nullable)
+                "guide_pos1_base": candidate.guide_pos1_base,
+                "pos1_pairing_state": candidate.pos1_pairing_state,
+                "seed_class": candidate.seed_class,
+                "supp_13_16_score": candidate.supp_13_16_score,
+                "seed_7mer_hits": candidate.seed_7mer_hits,
+                "seed_8mer_hits": candidate.seed_8mer_hits,
+                "seed_hits_weighted": candidate.seed_hits_weighted,
+                "off_target_seed_risk_class": candidate.off_target_seed_risk_class,
+                # Transcript hit metrics
                 "transcript_hit_count": candidate.transcript_hit_count,
                 "transcript_hit_fraction": candidate.transcript_hit_fraction,
                 "composite_score": candidate.composite_score,
@@ -352,6 +448,12 @@ class DesignResult(BaseModel):
             df_data.append(row)
 
         df = pd.DataFrame(df_data)
+
+        # Convert nullable integer columns to pandas Int64 dtype for proper None handling
+        nullable_int_cols = ["seed_7mer_hits", "seed_8mer_hits"]
+        for col in nullable_int_cols:
+            if col in df.columns:
+                df[col] = df[col].astype("Int64")
 
         # Validate DataFrame against schema - let failures bubble up
         logger.debug(f"Validating siRNA candidates DataFrame with {len(df)} rows")

@@ -1,5 +1,4 @@
-"""
-Resource Management for siRNAforge Pipeline
+"""Resource Management for siRNAforge Pipeline.
 
 This module provides utilities for managing test data and pipeline resources.
 """
@@ -13,8 +12,7 @@ logger = get_logger(__name__)
 
 
 def get_resource_path(resource_name: str) -> Path:
-    """
-    Get path to a pipeline resource file.
+    """Get path to a pipeline resource file.
 
     Args:
         resource_name: Name of the resource file
@@ -50,8 +48,7 @@ def get_resource_path(resource_name: str) -> Path:
 
 
 def get_test_data_path(filename: str) -> Path:
-    """
-    Get path to test data file.
+    """Get path to test data file.
 
     Args:
         filename: Name of the test data file
@@ -66,8 +63,7 @@ def get_test_data_path(filename: str) -> Path:
 
 
 def get_workflow_path(workflow_name: str = "main.nf") -> Path:
-    """
-    Get path to embedded Nextflow workflow.
+    """Get path to embedded Nextflow workflow.
 
     Args:
         workflow_name: Name of the workflow file (default: main.nf)
@@ -88,8 +84,7 @@ def get_workflow_path(workflow_name: str = "main.nf") -> Path:
 
 
 def list_test_data() -> list[str]:
-    """
-    List available test data files.
+    """List available test data files.
 
     Returns:
         List of test data filenames
@@ -103,8 +98,7 @@ def list_test_data() -> list[str]:
 
 
 def validate_test_data() -> dict[str, bool]:
-    """
-    Validate that required test data files are present.
+    """Validate that required test data files are present.
 
     Returns:
         Dictionary mapping filenames to availability status
@@ -138,8 +132,7 @@ class ResourceManager:
         self.test_data_dir = self.resources_dir / "test_data"
 
     def ensure_test_data(self) -> bool:
-        """
-        Ensure test data directory exists and contains required files.
+        """Ensure test data directory exists and contains required files.
 
         Returns:
             True if all required test data is available
@@ -159,8 +152,7 @@ class ResourceManager:
         return True
 
     def get_test_config(self) -> dict[str, str]:
-        """
-        Get test configuration with paths to test data.
+        """Get test configuration with paths to test data.
 
         Returns:
             Dictionary containing test data paths

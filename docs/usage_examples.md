@@ -1,400 +1,615 @@
-# 🧬 siRNAforge Usage Examples
+# Usage Examples
 
-Comprehensive real-world examples for advanced siRNAforge usage patterns.
+Real-world examples demonstrating siRNAforge's core features and advanced capabilities.
 
-> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for basic installation and first analysis.
+> **New to siRNAforge?** Start with [Getting Started](getting_started.md) for installation and quick start.
 
-## Production Workflows
+## Core Workflows
 
-### High-Quality Research Design
+### Minimal Example
+
+`````{tab-set}
+
+````{tab-item} uv
 ```bash
-# Comprehensive analysis with strict quality control
+# Simplest workflow - uses all defaults
+uv run sirnaforge workflow TP53
+```
+````
+
+````{tab-item} Docker
+```bash
+# Simplest workflow - uses all defaults
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53
+```
+````
+
+`````
+
+**Defaults:** GC 30-60%, length 21nt, top 20 candidates, human genome, miRNA disabled
+
+### Comprehensive Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Publication-quality analysis with all major features
 uv run sirnaforge workflow TP53 \
-  --output-dir tp53_publication \
+  --output-dir tp53_analysis \
   --top-n 50 \
-  --gc-min 35 --gc-max 55 \
-  --max-poly-runs 2 \
-  --verbose
-```
-
-### Clinical Screening Pipeline
-```bash
-# Multi-gene analysis for therapeutic targets
-genes=("TP53" "BRCA1" "EGFR" "KRAS" "PIK3CA")
-for gene in "${genes[@]}"; do
-    uv run sirnaforge workflow "$gene" \
-        --output-dir "clinical_screen/$gene" \
-        --top-n 30 \
-        --gc-min 40 --gc-max 60 \
-        --genome-species "human,mouse" \
-        --verbose
-done
-```
-
-## Advanced Gene Search Scenarios
-
-### Multi-Database Search Strategy
-```bash
-# Comprehensive search across all databases
-uv run sirnaforge search RARE_GENE --all --verbose
-
-# Species-specific searches
-uv run sirnaforge search BRCA1 --database ensembl --species homo_sapiens
-uv run sirnaforge search BRCA1 --database ensembl --species mus_musculus
-
-# Transcript type filtering for lncRNA analysis
-uv run sirnaforge search HOTAIR \
-  --types "lncRNA,antisense" \
-  --database ensembl \
-  --verbose
-```
-
-### Custom Transcript Handling
-```bash
-# Working with your own transcript sequences
-# 1. Validate format first
-uv run sirnaforge validate custom_transcripts.fasta
-
-# 2. Design with custom sequences
-uv run sirnaforge design custom_transcripts.fasta \
-  --top-n 30 \
-  --gc-min 35 --gc-max 55 \
-  --output custom_sirnas.csv
-```
-
-## Specialized Design Workflows
-
-### Publication-Quality Analysis
-```bash
-# Research-grade parameters with comprehensive validation
-uv run sirnaforge workflow GENE_OF_INTEREST \
-  --output-dir publication_analysis \
-  --top-n 50 \
-  --gc-min 35 --gc-max 55 \
+  --gc-min 35 --gc-max 60 \
   --max-poly-runs 2 \
   --length 21 \
   --genome-species "human,mouse,rat" \
-  --verbose
-
-# Generate summary report
-echo "Analysis completed for publication dataset" > analysis_notes.txt
-cat publication_analysis/logs/workflow_summary.json >> analysis_notes.txt
-```
-
-### High-Throughput Screening
-```bash
-# Fast screening with relaxed parameters
-uv run sirnaforge design large_gene_set.fasta \
-  --skip-structure \
-  --top-n 10 \
-  --gc-min 25 --gc-max 70 \
-  --max-poly-runs 4 \
-  --output screening_results.csv
-```
-
-### Species-Specific Off-Target Analysis
-```bash
-# Multi-species safety screening
-uv run sirnaforge workflow THERAPEUTIC_TARGET \
-  --output-dir safety_analysis \
-  --genome-species "human,macaque,mouse" \
-  --top-n 25 \
+  --design-mode mirna \
+  --mirna-db mirgenedb \
+  --mirna-species "human,mouse" \
+  --modification-file examples/modification_patterns/standard_2ome.json \
   --verbose
 ```
+````
 
-### Difficult Targets (Low GC, High Structure)
+````{tab-item} Docker
 ```bash
-# Relaxed parameters for challenging sequences
-uv run sirnaforge design difficult_targets.fasta \
+# Publication-quality analysis with all major features
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 \
+    --output-dir tp53_analysis \
+    --top-n 50 \
+    --gc-min 35 --gc-max 60 \
+    --max-poly-runs 2 \
+    --length 21 \
+    --genome-species "human,mouse,rat" \
+    --design-mode mirna \
+    --mirna-db mirgenedb \
+    --mirna-species "human,mouse" \
+    --modification-file examples/modification_patterns/standard_2ome.json \
+    --verbose
+```
+````
+
+`````
+
+**Features:** Multi-species off-target, miRNA seed analysis, chemical modifications, verbose logging
+
+## Gene Search
+
+### Minimal Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Search gene symbol across all databases
+uv run sirnaforge search BRCA1
+
+# Save to file
+uv run sirnaforge search TP53 --output tp53.fasta
+```
+````
+
+````{tab-item} Docker
+```bash
+# Search gene symbol across all databases
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search BRCA1
+
+# Save to file
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search TP53 --output tp53.fasta
+```
+````
+
+`````
+
+### Comprehensive Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Multi-database search with filters
+uv run sirnaforge search HOTAIR \
+  --database ensembl \
+  --species homo_sapiens \
+  --types "lncRNA,antisense" \
+  --all \
+  --verbose
+
+# Batch search multiple genes
+for gene in TP53 BRCA1 EGFR KRAS; do
+    uv run sirnaforge search $gene \
+      --output transcripts/${gene}.fasta \
+      --database ensembl \
+      --species homo_sapiens
+done
+```
+````
+
+````{tab-item} Docker
+```bash
+# Multi-database search with filters
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search HOTAIR \
+    --database ensembl \
+    --species homo_sapiens \
+    --types "lncRNA,antisense" \
+    --all \
+    --verbose
+
+# Batch search multiple genes
+for gene in TP53 BRCA1 EGFR KRAS; do
+    docker run --rm -v $(pwd):/workspace -w /workspace \
+      ghcr.io/austin-s-h/sirnaforge:latest \
+      sirnaforge search $gene \
+        --output transcripts/${gene}.fasta \
+        --database ensembl \
+        --species homo_sapiens
+done
+```
+````
+
+`````
+
+**Options:** `--database` (ensembl/refseq/gencode), `--species`, `--types`, `--all`
+
+## Design Only (No Off-Target)
+
+### Minimal Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Design from custom FASTA
+uv run sirnaforge design examples/sample_transcripts.fasta
+```
+````
+
+````{tab-item} Docker
+```bash
+# Design from custom FASTA
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge design examples/sample_transcripts.fasta
+```
+````
+
+`````
+
+### Comprehensive Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Custom parameters with modifications
+uv run sirnaforge design custom_transcripts.fasta \
+  --output custom_sirnas.csv \
+  --top-n 50 \
+  --gc-min 35 --gc-max 60 \
+  --max-poly-runs 2 \
+  --length 21 \
+  --modification-file examples/modification_patterns/standard_2ome.json \
+  --verbose
+```
+````
+
+````{tab-item} Docker
+```bash
+# Custom parameters with modifications
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge design custom_transcripts.fasta \
+    --output custom_sirnas.csv \
+    --top-n 50 \
+    --gc-min 35 --gc-max 60 \
+    --max-poly-runs 2 \
+    --length 21 \
+    --modification-file examples/modification_patterns/standard_2ome.json \
+    --verbose
+```
+````
+
+`````
+
+## Batch Processing
+
+### Minimal Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Process multiple genes with defaults
+genes=("TP53" "BRCA1" "EGFR")
+for gene in "${genes[@]}"; do
+    uv run sirnaforge workflow "$gene" \
+        --output-dir "batch/$gene"
+done
+```
+````
+
+````{tab-item} Docker
+```bash
+# Process multiple genes with defaults
+genes=("TP53" "BRCA1" "EGFR")
+for gene in "${genes[@]}"; do
+    docker run --rm -v $(pwd):/workspace -w /workspace \
+      ghcr.io/austin-s-h/sirnaforge:latest \
+      sirnaforge workflow "$gene" \
+        --output-dir "batch/$gene"
+done
+```
+````
+
+`````
+
+### Comprehensive Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+#!/bin/bash
+# Automated batch with quality control
+
+genes=("TP53" "BRCA1" "EGFR" "MYC" "KRAS")
+output="batch_$(date +%Y%m%d)"
+qc="${output}/qc_summary.txt"
+
+echo "Batch Analysis - $(date)" > "$qc"
+
+for gene in "${genes[@]}"; do
+    echo "Processing $gene..."
+
+    uv run sirnaforge workflow "$gene" \
+        --output-dir "${output}/${gene}" \
+        --top-n 30 \
+        --gc-min 35 --gc-max 60 \
+        --genome-species "human,mouse" \
+        --verbose
+
+    # Quality check
+    pass="${output}/${gene}/sirna_design/${gene}_pass.csv"
+    all="${output}/${gene}/sirna_design/${gene}_all.csv"
+
+    if [[ -f "$pass" && -f "$all" ]]; then
+        total=$(tail -n +2 "$all" | wc -l)
+        passing=$(tail -n +2 "$pass" | wc -l)
+        rate=$(( passing * 100 / total ))
+        echo "$gene: $passing/$total ($rate%)" >> "$qc"
+    else
+        echo "$gene: FAILED" >> "$qc"
+    fi
+done
+
+cat "$qc"
+```
+````
+
+````{tab-item} Docker
+```bash
+#!/bin/bash
+# Automated batch with quality control
+
+genes=("TP53" "BRCA1" "EGFR" "MYC" "KRAS")
+output="batch_$(date +%Y%m%d)"
+qc="${output}/qc_summary.txt"
+
+echo "Batch Analysis - $(date)" > "$qc"
+
+for gene in "${genes[@]}"; do
+    echo "Processing $gene..."
+
+    docker run --rm -v $(pwd):/workspace -w /workspace \
+      ghcr.io/austin-s-h/sirnaforge:latest \
+      sirnaforge workflow "$gene" \
+        --output-dir "${output}/${gene}" \
+        --top-n 30 \
+        --gc-min 35 --gc-max 60 \
+        --genome-species "human,mouse" \
+        --verbose
+
+    # Quality check
+    pass="${output}/${gene}/sirna_design/${gene}_pass.csv"
+    all="${output}/${gene}/sirna_design/${gene}_all.csv"
+
+    if [[ -f "$pass" && -f "$all" ]]; then
+        total=$(tail -n +2 "$all" | wc -l)
+        passing=$(tail -n +2 "$pass" | wc -l)
+        rate=$(( passing * 100 / total ))
+        echo "$gene: $passing/$total ($rate%)" >> "$qc"
+    else
+        echo "$gene: FAILED" >> "$qc"
+    fi
+done
+
+cat "$qc"
+```
+````
+
+`````
+
+## Chemical Modifications
+
+### Minimal Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Apply built-in pattern
+uv run sirnaforge design examples/sample_transcripts.fasta \
+  --modification-file examples/modification_patterns/standard_2ome.json
+```
+````
+
+````{tab-item} Docker
+```bash
+# Apply built-in pattern
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge design examples/sample_transcripts.fasta \
+    --modification-file examples/modification_patterns/standard_2ome.json
+```
+````
+
+`````
+
+**Built-in patterns:** `standard_2ome.json`, `fda_approved_onpattro.json`, `maximal_stability.json`
+
+### Comprehensive Example
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Create custom pattern
+cat > custom_mods.json << 'EOFJSON'
+{
+  "name": "Custom Therapeutic",
+  "description": "2'-OMe terminal + PS backbone",
+  "modifications": [
+    {"position": 1, "strand": "guide", "type": "2'-O-methyl", "base": "*"},
+    {"position": 19, "strand": "guide", "type": "2'-O-methyl", "base": "*"},
+    {"position": 1, "strand": "passenger", "type": "phosphorothioate", "base": "*"}
+  ]
+}
+EOFJSON
+
+# Apply with thermodynamic recalculation
+uv run sirnaforge design examples/sample_transcripts.fasta \
+  --modification-file custom_mods.json \
+  --output modified.csv \
+  --verbose
+```
+````
+
+````{tab-item} Docker
+```bash
+# Create custom pattern
+cat > custom_mods.json << 'EOFJSON'
+{
+  "name": "Custom Therapeutic",
+  "description": "2'-OMe terminal + PS backbone",
+  "modifications": [
+    {"position": 1, "strand": "guide", "type": "2'-O-methyl", "base": "*"},
+    {"position": 19, "strand": "guide", "type": "2'-O-methyl", "base": "*"},
+    {"position": 1, "strand": "passenger", "type": "phosphorothioate", "base": "*"}
+  ]
+}
+EOFJSON
+
+# Apply with thermodynamic recalculation
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge design examples/sample_transcripts.fasta \
+    --modification-file custom_mods.json \
+    --output modified.csv \
+    --verbose
+```
+````
+
+`````
+
+See [Modification Integration Guide](modification_integration_guide.md) for full specification.
+
+## Python API
+
+### Minimal Example
+
+```python
+from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.models.sirna import DesignParameters
+
+# Simple programmatic design
+params = DesignParameters(sirna_length=21, top_candidates=10)
+designer = SiRNADesigner(params)
+
+results = designer.design_from_fasta("examples/sample_transcripts.fasta")
+for candidate in results:
+    print(f"{candidate.id}: GC={candidate.gc_content:.1f}%")
+```
+
+### Comprehensive Example
+
+```python
+#!/usr/bin/env python3
+"""Automated batch analysis with QC"""
+
+import subprocess
+import pandas as pd
+from pathlib import Path
+
+def run_batch(genes, output_dir, **params):
+    """Run workflow on multiple genes with QC"""
+    results = {}
+
+    for gene in genes:
+        gene_dir = output_dir / gene
+        cmd = [
+            "uv", "run", "sirnaforge", "workflow", gene,
+            "--output-dir", str(gene_dir),
+            "--top-n", str(params.get("top_n", 30)),
+            "--gc-min", str(params.get("gc_min", 35)),
+            "--gc-max", str(params.get("gc_max", 60)),
+            "--verbose"
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            pass_file = gene_dir / "sirna_design" / f"{gene}_pass.csv"
+            if pass_file.exists():
+                df = pd.read_csv(pass_file)
+                results[gene] = {
+                    "count": len(df),
+                    "mean_gc": df["gc_content"].mean(),
+                    "mean_score": df["composite_score"].mean()
+                }
+        else:
+            results[gene] = {"error": result.stderr}
+
+    return results
+
+# Run analysis
+genes = ["TP53", "BRCA1", "EGFR"]
+results = run_batch(genes, Path("batch"), top_n=30, gc_min=35, gc_max=60)
+
+# Summary
+summary = pd.DataFrame.from_dict(results, orient="index")
+summary.to_csv("batch_summary.csv")
+print(summary)
+```
+
+See [Python API Tutorial](tutorials/python_api.md) for detailed examples.
+
+## Specialized Scenarios
+
+### Difficult Targets
+
+```bash
+# Relaxed parameters for low-GC or high-structure sequences
+uv run sirnaforge design difficult.fasta \
   --gc-min 20 --gc-max 75 \
   --max-poly-runs 5 \
   --skip-structure \
-  --top-n 40 \
-  --verbose
-```
-## Batch Processing & Automation
-
-### Batch Gene Analysis
-```bash
-#!/bin/bash
-# Process multiple genes with consistent parameters
-
-genes=("TP53" "BRCA1" "EGFR" "MYC" "KRAS" "PIK3CA")
-output_base="batch_analysis_$(date +%Y%m%d)"
-
-for gene in "${genes[@]}"; do
-    echo "🧬 Processing $gene..."
-    uv run sirnaforge workflow "$gene" \
-        --output-dir "${output_base}/${gene}" \
-        --top-n 25 \
-        --gc-min 35 --gc-max 55 \
-        --verbose
-    echo "✅ $gene completed"
-done
-
-# Generate batch summary
-echo "Batch analysis completed: $(date)" > "${output_base}/batch_summary.txt"
+  --top-n 40
 ```
 
-### Parameter Set Comparisons
+### High-Throughput Screening
+
 ```bash
-# Compare different stringency levels
+# Fast mode - skip expensive computations
+uv run sirnaforge design large_set.fasta \
+  --skip-structure \
+  --top-n 10 \
+  --output screening.csv
+```
+
+### Parameter Comparison
+
+```bash
+# Compare stringency levels
 GENE="TP53"
 
-# High stringency
 uv run sirnaforge workflow $GENE \
-  --output-dir "${GENE}_high_stringency" \
-  --gc-min 40 --gc-max 50 \
-  --max-poly-runs 2 \
-  --top-n 20
+  --output-dir "${GENE}_conservative" \
+  --gc-min 40 --gc-max 55 --max-poly-runs 2 --top-n 20
 
-# Medium stringency
 uv run sirnaforge workflow $GENE \
-  --output-dir "${GENE}_medium_stringency" \
-  --gc-min 35 --gc-max 60 \
-  --max-poly-runs 3 \
-  --top-n 30
+  --output-dir "${GENE}_moderate" \
+  --gc-min 35 --gc-max 60 --max-poly-runs 3 --top-n 30
 
-# Low stringency (more candidates)
 uv run sirnaforge workflow $GENE \
-  --output-dir "${GENE}_low_stringency" \
+  --output-dir "${GENE}_permissive" \
+  --gc-min 25 --gc-max 70 --max-poly-runs 4 --top-n 50
+```
+
+## Troubleshooting
+
+### Input Validation
+
+```bash
+# Check FASTA format
+uv run sirnaforge validate custom.fasta
+
+# Debug gene search
+uv run sirnaforge search RARE_GENE --all --verbose
+
+# Enable verbose logging
+uv run sirnaforge workflow GENE --verbose 2>&1 | tee debug.log
+```
+
+### Common Issues
+
+**Low passing candidates:**
+```bash
+# Relax filters
+uv run sirnaforge design input.fasta \
   --gc-min 25 --gc-max 70 \
   --max-poly-runs 4 \
   --top-n 50
 ```
 
-### Automated Quality Assessment
+**Performance optimization:**
 ```bash
-#!/bin/bash
-# Automated pipeline with quality checks
-
-GENE=$1
-OUTPUT_DIR="analysis_${GENE}_$(date +%Y%m%d)"
-
-echo "🔍 Starting analysis for $GENE"
-
-# Run workflow
-uv run sirnaforge workflow $GENE \
-  --output-dir $OUTPUT_DIR \
-  --top-n 30 \
-  --verbose
-
-# Check results quality
-PASS_COUNT=$(tail -n +2 "$OUTPUT_DIR/sirnaforge/${GENE}_pass.csv" | wc -l)
-ALL_COUNT=$(tail -n +2 "$OUTPUT_DIR/sirnaforge/${GENE}_all.csv" | wc -l)
-
-echo "📊 Quality Report:"
-echo "  - Total candidates: $ALL_COUNT"
-echo "  - Passing filters: $PASS_COUNT"
-echo "  - Pass rate: $(( PASS_COUNT * 100 / ALL_COUNT ))%"
-
-if [ $PASS_COUNT -lt 5 ]; then
-    echo "⚠️  Warning: Low number of passing candidates"
-    echo "💡 Consider relaxing parameters or checking input quality"
-fi
+# Skip structure prediction
+uv run sirnaforge design large.fasta --skip-structure --top-n 15
 ```
 
-## Integration & Automation
-
-### Makefile Integration
-```makefile
-# Project Makefile with siRNAforge targets
-GENE ?= TP53
-OUTPUT_DIR = analysis_$(shell date +%Y%m%d)
-
-.PHONY: sirna-design sirna-batch sirna-qc
-
-sirna-design:
-	@echo "🧬 Designing siRNAs for $(GENE)"
-	uv run sirnaforge workflow $(GENE) \
-		--output-dir $(OUTPUT_DIR)/$(GENE) \
-		--top-n 25 \
-		--verbose
-
-sirna-batch:
-	@for gene in TP53 BRCA1 EGFR MYC KRAS; do \
-		echo "Processing $$gene..."; \
-		$(MAKE) sirna-design GENE=$$gene; \
-	done
-
-sirna-qc:
-	@echo "📊 Generating QC report"
-	@find $(OUTPUT_DIR) -name "*_pass.csv" -exec wc -l {} + > qc_summary.txt
-```
-
-### Python API Integration
-```python
-#!/usr/bin/env python3
-"""
-Advanced siRNAforge automation with Python
-"""
-import subprocess
-import json
-import pandas as pd
-from pathlib import Path
-
-def run_sirnaforge_workflow(gene, output_dir, **kwargs):
-    """Run siRNAforge workflow with custom parameters"""
-    cmd = [
-        "uv", "run", "sirnaforge", "workflow", gene,
-        "--output-dir", str(output_dir)
-    ]
-
-    # Add optional parameters
-    for key, value in kwargs.items():
-        cmd.extend([f"--{key.replace('_', '-')}", str(value)])
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.returncode == 0
-
-def analyze_results(output_dir, gene):
-    """Analyze siRNAforge results"""
-    pass_file = output_dir / "sirnaforge" / f"{gene}_pass.csv"
-    all_file = output_dir / "sirnaforge" / f"{gene}_all.csv"
-
-    if pass_file.exists() and all_file.exists():
-        pass_df = pd.read_csv(pass_file)
-        all_df = pd.read_csv(all_file)
-
-        return {
-            "gene": gene,
-            "total_candidates": len(all_df),
-            "passing_candidates": len(pass_df),
-            "pass_rate": len(pass_df) / len(all_df) * 100,
-            "mean_asymmetry": pass_df['asymmetry_score'].mean(),
-            "mean_gc": pass_df['gc_content'].mean()
-        }
-    return None
-
-# Example usage
-genes = ["TP53", "BRCA1", "EGFR"]
-results = []
-
-for gene in genes:
-    output_dir = Path(f"analysis_{gene}")
-
-    # Run analysis
-    success = run_sirnaforge_workflow(
-        gene, output_dir,
-        top_n=30,
-        gc_min=35,
-        gc_max=55,
-        verbose=True
-    )
-
-    if success:
-        analysis = analyze_results(output_dir, gene)
-        if analysis:
-            results.append(analysis)
-
-# Generate summary report
-summary_df = pd.DataFrame(results)
-summary_df.to_csv("batch_analysis_summary.csv", index=False)
-print("📊 Analysis completed. Summary saved to batch_analysis_summary.csv")
-```
-
-## Troubleshooting & Optimization
-
-### Performance Optimization
+**Multi-species requires Docker:**
 ```bash
-# For large datasets - skip expensive computations
-uv run sirnaforge design large_input.fasta \
-  --skip-structure \
-  --skip-off-targets \
-  --top-n 10 \
-  --output fast_results.csv
+# Build container (one-time)
+make docker
 
-# Memory-efficient processing
-uv run sirnaforge workflow GENE \
-  --output-dir results \
-  --top-n 15 \
-  --max-poly-runs 3
+# Run with BWA-MEM2 enabled
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 --genome-species "human,mouse"
 ```
 
-### Debugging Failed Analyses
-```bash
-# Verbose mode for troubleshooting
-uv run sirnaforge workflow PROBLEMATIC_GENE \
-  --output-dir debug_output \
-  --verbose 2>&1 | tee debug.log
+## Best Practices
 
-# Check intermediate files
-uv run sirnaforge search PROBLEMATIC_GENE \
-  --output debug_transcripts.fasta \
-  --verbose
+### Recommendations
 
-# Validate input quality
-uv run sirnaforge validate debug_transcripts.fasta
-```
+1. **Start Simple:** Use `workflow` command with gene symbols
+2. **Validate First:** Run `validate` on custom FASTA files
+3. **Check Quality:** Review pass rates before selecting candidates
+4. **Iterate:** Adjust parameters based on initial results
+5. **Document:** Save commands/scripts for reproducibility
 
-### Quality Control Scripts
-```bash
-#!/bin/bash
-# qc_analysis.sh - Quality control for siRNAforge results
+### Parameter Guidelines
 
-analysis_dir=$1
-if [ -z "$analysis_dir" ]; then
-    echo "Usage: $0 <analysis_directory>"
-    exit 1
-fi
+| Use Case | GC Range | Poly-runs | Top-N | Notes |
+|----------|----------|-----------|-------|-------|
+| Research | 35-60% | 2 | 30-50 | Conservative, high quality |
+| Screening | 40-60% | 2-3 | 20-30 | Balanced |
+| Initial | 30-70% | 3-4 | 30-50 | Permissive |
+| Difficult | 20-75% | 4-5 | 40-60 | Relaxed for low-GC |
 
-echo "🔍 Quality Control Report for $analysis_dir"
-echo "=============================================="
+### Quality Thresholds
 
-# Count total and passing candidates
-for csv_file in "$analysis_dir"/sirnaforge/*_all.csv; do
-    if [ -f "$csv_file" ]; then
-        gene=$(basename "$csv_file" _all.csv)
-        total=$(tail -n +2 "$csv_file" | wc -l)
-        pass_file="$analysis_dir/sirnaforge/${gene}_pass.csv"
+Typical pass rates: 60-80%. If < 30%:
+- Check input quality (`validate`)
+- Relax GC range (±5-10%)
+- Increase `--max-poly-runs`
+- Review sequence complexity
 
-        if [ -f "$pass_file" ]; then
-            passing=$(tail -n +2 "$pass_file" | wc -l)
-            pass_rate=$(( passing * 100 / total ))
-            echo "📊 $gene: $passing/$total candidates pass filters ($pass_rate%)"
-        fi
-    fi
-done
+---
 
-# Check for common issues
-echo ""
-echo "🔧 Diagnostic Checks:"
-if [ -f "$analysis_dir/logs/workflow_summary.json" ]; then
-    echo "✅ Workflow completed successfully"
-else
-    echo "❌ No workflow summary found - check for errors"
-fi
+## See Also
 
-# Size checks
-echo "📁 Output sizes:"
-du -sh "$analysis_dir"/* 2>/dev/null | head -5
-```
-
-## Best Practices Summary
-
-### Parameter Selection Guidelines
-```bash
-# Research/Publication quality
---gc-min 35 --gc-max 55 --max-poly-runs 2 --top-n 30
-
-# High-throughput screening
---gc-min 25 --gc-max 70 --max-poly-runs 4 --top-n 15
-
-# Difficult targets
---gc-min 20 --gc-max 75 --skip-structure --top-n 50
-
-# Quick testing
---top-n 5 --skip-structure --skip-off-targets
-```
-
-### Workflow Recommendations
-1. **Start simple**: Use `workflow` command for most use cases
-2. **Validate inputs**: Always run `validate` on custom FASTA files
-3. **Check results**: Review pass rates and quality metrics
-4. **Iterate parameters**: Adjust stringency based on results
-5. **Document settings**: Save configurations for reproducibility
-
-> **More Resources:**
-> - [CLI Reference](cli_reference.md) - Complete parameter documentation
-> - [Custom Scoring Guide](tutorials/custom_scoring.md) - Advanced thermodynamic principles
-> - [Development Guide](development.md) - Contributing and extending siRNAforge
+- [Getting Started](getting_started.md) - Installation and quick start
+- [CLI Reference](cli_reference.md) - Complete parameter docs
+- [Gene Search Guide](gene_search.md) - Database access
+- [Python API Tutorial](tutorials/python_api.md) - Programmatic usage
+- [Modification Guide](modification_integration_guide.md) - Chemical mods

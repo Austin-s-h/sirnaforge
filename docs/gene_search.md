@@ -21,6 +21,9 @@ The siRNAforge toolkit includes comprehensive gene search functionality to retri
 
 ### Command Line Usage
 
+`````{tab-set}
+
+````{tab-item} uv
 ```bash
 # Search for a gene and save sequences
 uv run sirnaforge search TP53 -o tp53_transcripts.fasta
@@ -34,10 +37,41 @@ uv run sirnaforge search MYC --all -o myc_all_databases.fasta
 # Get metadata only (no sequences)
 uv run sirnaforge search EGFR --no-sequence
 
-# Use a FASTA from disk or a remote URL as input for the full workflow (skip gene search)
+# Use a FASTA from disk or remote URL as input (skip gene search)
 uv run sirnaforge workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
 uv run sirnaforge workflow TP53 --input-fasta https://example.org/transcripts.fasta -o sirna_output
 ```
+````
+
+````{tab-item} Docker
+```bash
+# Search for a gene and save sequences
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search TP53 -o tp53_transcripts.fasta
+
+# Search specific database
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search BRCA1 -d ensembl -o brca1_ensembl.fasta
+
+# Search all databases
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search MYC --all -o myc_all_databases.fasta
+
+# Get metadata only (no sequences)
+docker run --rm ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search EGFR --no-sequence
+
+# Use a FASTA from disk or remote URL as input (skip gene search)
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 --input-fasta /workspace/transcripts.fasta -o sirna_output
+```
+````
+
+`````
 
 ### Python API Usage
 
@@ -98,33 +132,18 @@ results = asyncio.run(search_genes())
 
 ## Data Models
 
-### GeneInfo
-```python
-class GeneInfo(BaseModel):
-    gene_id: str                    # e.g., "ENSG00000141510"
-    gene_name: Optional[str]        # e.g., "TP53"
-    gene_type: Optional[str]        # e.g., "protein_coding"
-    chromosome: Optional[str]       # e.g., "17"
-    start: Optional[int]            # Genomic start position
-    end: Optional[int]              # Genomic end position
-    strand: Optional[int]           # 1 or -1
-    description: Optional[str]      # Gene description
-    database: DatabaseType          # Source database
-```
+The gene search system uses Pydantic models for type-safe data handling and validation.
 
-### TranscriptInfo
-```python
-class TranscriptInfo(BaseModel):
-    transcript_id: str              # e.g., "ENST00000269305"
-    transcript_name: Optional[str]  # Display name
-    transcript_type: Optional[str]  # e.g., "protein_coding"
-    gene_id: str                    # Parent gene ID
-    gene_name: Optional[str]        # Parent gene name
-    sequence: Optional[str]         # cDNA sequence
-    length: Optional[int]           # Sequence length
-    database: DatabaseType          # Source database
-    is_canonical: bool              # Canonical transcript flag
-```
+> **API Reference**: See complete model documentation at:
+> - [`GeneInfo`](api_reference.rst) - Gene metadata
+> - [`TranscriptInfo`](api_reference.rst) - Transcript data and sequences
+> - [`GeneSearchResult`](api_reference.rst) - Search result container
+> - [`DatabaseType`](api_reference.rst) - Database enumerations
+
+**Key Fields:**
+- **GeneInfo**: gene_id, gene_name, gene_type, chromosome, coordinates, description
+- **TranscriptInfo**: transcript_id, sequence, length, is_canonical, database
+- **GeneSearchResult**: gene_info, transcripts, success, error
 
 ## Example Workflows
 
@@ -150,6 +169,8 @@ if result.success:
     print(f"Designed {len(sirna_results.candidates)} siRNA candidates")
 ```
 
+> **See Also**: [`GeneSearcher.save_transcripts_fasta`](api_reference.rst) for FASTA output options
+
 ### 2. Compare Databases
 
 ```python
@@ -174,31 +195,24 @@ result = search_gene_sync("NONEXISTENT_GENE")
 
 if not result.success:
     print(f"Search failed: {result.error}")
+    if result.is_access_error:
+        print("Database access issue - check network/permissions")
     # Handle the error appropriately
 else:
     # Process successful result
     print(f"Found {len(result.transcripts)} transcripts")
 ```
 
+> **Exception Types**: See [`DatabaseAccessError`](api_reference.rst) and [`GeneNotFoundError`](api_reference.rst) in the API docs
+
 ## Configuration
 
-### Searcher Options
+Configuration is handled through constructor parameters. See [`GeneSearcher.__init__`](api_reference.rst) for all options.
 
 ```python
 searcher = GeneSearcher(
-    preferred_db=DatabaseType.ENSEMBL,  # Default database
-    timeout=60,                         # Request timeout (seconds)
-    max_retries=3                       # Maximum retry attempts
-)
-```
-
-### FASTA Output Options
-
-```python
-searcher.save_transcripts_fasta(
-    transcripts=transcripts,
-    output_path="sequences.fasta",
-    include_metadata=True  # Include gene info in headers
+    timeout=60,         # Request timeout (seconds)
+    max_retries=3      # Maximum retry attempts
 )
 ```
 
@@ -206,31 +220,43 @@ searcher.save_transcripts_fasta(
 
 The gene search functionality integrates seamlessly with the siRNA design pipeline:
 
+`````{tab-set}
+
+````{tab-item} uv
 ```bash
 # Complete pipeline: search → design → analyze
-sirnaforge search TP53 -o tp53.fasta
-sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
+uv run sirnaforge search TP53 -o tp53.fasta
+uv run sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
+
+# Or use the integrated workflow command
+uv run sirnaforge workflow TP53 --output-dir results
 ```
+````
 
-## Testing
-
-Run the gene search tests:
-
+````{tab-item} Docker
 ```bash
-# Run all gene search tests
-uv run pytest tests/unit/test_gene_search.py -v
+# Complete pipeline: search → design → analyze
+docker run --rm -v $(pwd):/workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge search TP53 -o tp53.fasta
 
-# Run with coverage
-uv run pytest tests/unit/test_gene_search.py --cov=sirnaforge.data.gene_search
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
+
+# Or use the integrated workflow command
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 --output-dir results
 ```
+````
+
+`````
+
+> **Workflow Integration**: See [`run_sirna_workflow`](api_reference.rst) for the complete integrated pipeline
 
 ## Contributing
 
-To add support for additional databases:
+To add support for additional databases, implement a new database client following the pattern in [`EnsemblClient`](api_reference.rst).
 
-1. Implement the `_search_<database>` method in `GeneSearcher`
-2. Add database configuration to `db_configs`
-3. Add the new database type to `DatabaseType` enum
-4. Write comprehensive tests
-
-See the existing Ensembl implementation as a reference.
+See the [Developer Guide](developer/development.md) for contribution guidelines.

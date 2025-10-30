@@ -51,6 +51,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       changelog: ${{ steps.changelog.outputs.content }}
+      repository-lower: ${{ steps.repo.outputs.repository }}
+      owner-lower: ${{ steps.repo.outputs.owner }}
+      name-lower: ${{ steps.repo.outputs.name }}
 
     steps:
     - name: 📥 Checkout code
@@ -79,6 +82,17 @@ jobs:
         fi
         echo "✅ Version $VERSION is available"
 
+    - name: 🔡 Normalize repository identifiers
+      id: repo
+      run: |
+        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+        NAME_LOWER=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+
+        echo "repository=$REPO_LOWER" >> $GITHUB_OUTPUT
+        echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
+        echo "name=$NAME_LOWER" >> $GITHUB_OUTPUT
+
     - name: 📊 Gather project statistics
       id: stats
       run: |
@@ -104,68 +118,15 @@ jobs:
 
     - name: 📋 Generate comprehensive release notes
       id: changelog
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        PY_FILES: ${{ steps.stats.outputs.py_files }}
+        TEST_FILES: ${{ steps.stats.outputs.test_files }}
+        TOTAL_LINES: ${{ steps.stats.outputs.total_lines }}
+        CLI_COMMANDS: ${{ steps.stats.outputs.cli_commands }}
+        DOCKER_SIZE: ${{ steps.stats.outputs.docker_size }}
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
-
-        # Generate comprehensive release content
-        cat << 'RELEASE_NOTES' > release_notes.md
-
-        ## 📋 What's New in v${VERSION}
-
-        RELEASE_NOTES
-
-        # Extract and format changelog section
-        if [ -f CHANGELOG.md ]; then
-          CHANGELOG_SECTION=$(sed -n "/## \[${VERSION}\]/,/## \[/p" CHANGELOG.md | sed '$d')
-          if [ -n "$CHANGELOG_SECTION" ]; then
-            echo "$CHANGELOG_SECTION" | sed '1d' >> release_notes.md  # Remove duplicate version header
-          else
-            echo "- Initial release or changelog entry missing" >> release_notes.md
-          fi
-        else
-          echo "- No changelog available for this version" >> release_notes.md
-        fi
-
-        # Add technical details section with statistics
-        cat << TECHNICAL_INFO >> release_notes.md
-
-        ## 🔧 Technical Details & Project Stats
-
-        **Python Support:** 3.9, 3.10, 3.11, 3.12
-        **Package Manager:** uv (ultra-fast Python package management)
-        **Architecture:** Modern async/await with Pydantic models
-        **Container:** Multi-stage Docker build with conda bioinformatics stack
-        **Pipeline:** Nextflow integration for scalable execution
-
-        **📊 Project Statistics:**
-        - 🐍 **Python Files:** ${{ steps.stats.outputs.py_files }} source files (~${{ steps.stats.outputs.total_lines }} lines of code)
-        - 🧪 **Test Files:** ${{ steps.stats.outputs.test_files }} test files with comprehensive coverage
-        - 🎯 **CLI Commands:** ${{ steps.stats.outputs.cli_commands }} commands available (workflow, search, design, validate, config, cache, version)
-        - 🐳 **Docker Image:** Multi-arch support with conda bioinformatics stack
-        - ⚡ **Dependencies:** Managed by uv for 10-100x faster installs than pip
-
-        TECHNICAL_INFO
-
-        # Add build and test information
-        cat << 'BUILD_INFO' >> release_notes.md
-
-        ## 🧪 Quality Assurance
-
-        This release has been validated through our comprehensive testing pipeline:
-        - ✅ **Unit Tests** - Core algorithm validation
-        - ✅ **Integration Tests** - End-to-end workflow testing
-        - ✅ **Docker Tests** - Container functionality verification
-        - ✅ **Smoke Tests** - Critical path validation (must pass for release)
-        - ✅ **Code Quality** - Ruff, MyPy, and Black formatting
-
-        BUILD_INFO
-
-        # Set output with proper escaping for multiline content
-        {
-          echo "content<<EOF"
-          cat release_notes.md
-          echo "EOF"
-        } >> $GITHUB_OUTPUT
+        python .github/scripts/generate_release_notes.py
 
   # Call the main CI workflow to ensure quality
   run-ci:
@@ -173,13 +134,61 @@ jobs:
     needs: validate-release
     uses: ./.github/workflows/ci.yml
 
+  # Run comprehensive release tests with full coverage
+  test-release:
+    name: 🧪 Comprehensive Release Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [validate-release, run-ci]
+    if: needs.run-ci.result == 'success'
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: ⚡ Install uv CLI
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: test-release
+
+    - name: 📦 Install all dependencies
+      run: uv sync --dev
+
+    - name: 🧪 Run comprehensive test suite with coverage
+      run: make test-release
+
+    - name: 📊 Upload coverage reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-release-${{ needs.validate-release.outputs.version }}
+        path: |
+          coverage.xml
+          htmlcov/
+          pytest-report.xml
+        retention-days: 30
+
+    - name: 📈 Coverage summary
+      if: always()
+      run: |
+        echo "## 📊 Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY || echo "Coverage report not available" >> $GITHUB_STEP_SUMMARY
+
   # Build Python distribution artifacts once (reusable by PyPI/TestPyPI)
   build-artifacts:
     name: 📦 Build Python Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, run-ci]
-    if: needs.run-ci.result == 'success'
+    needs: [validate-release, run-ci, test-release]
+    if: needs.test-release.result == 'success'
     outputs:
       version: ${{ needs.validate-release.outputs.version }}
     steps:
@@ -213,7 +222,7 @@ jobs:
     name: 🐳 Build & Test Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [validate-release, run-ci]
+    needs: [validate-release, run-ci, test-release]
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.meta.outputs.tags }}
@@ -232,27 +241,11 @@ jobs:
     - name: 🏗️ Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: 📝 Prepare repository variables (lowercase for Docker)
-      id: repo
-      run: |
-        # Convert repository to lowercase for Docker compatibility
-        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-        OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-        REPO_NAME_LOWER=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
-
-        echo "repository=$REPO_LOWER" >> $GITHUB_OUTPUT
-        echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
-        echo "name=$REPO_NAME_LOWER" >> $GITHUB_OUTPUT
-
-        echo "📝 Repository variables:"
-        echo "  Original: ${{ github.repository }}"
-        echo "  Lowercase: $REPO_LOWER"
-
-    - name: 📋 Generate Docker metadata
+    - name:  Generate Docker metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}
+        images: ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}
         tags: |
           type=raw,value=${{ needs.validate-release.outputs.version }}
           type=raw,value=latest,enable={{is_default_branch}}
@@ -260,8 +253,8 @@ jobs:
           org.opencontainers.image.title=siRNAforge
           org.opencontainers.image.description=siRNA design and analysis toolkit
           org.opencontainers.image.version=${{ needs.validate-release.outputs.version }}
-          org.opencontainers.image.url=https://github.com/${{ steps.repo.outputs.owner }}/${{ steps.repo.outputs.name }}
-          org.opencontainers.image.source=https://github.com/${{ steps.repo.outputs.owner }}/${{ steps.repo.outputs.name }}
+          org.opencontainers.image.url=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
+          org.opencontainers.image.source=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
 
     - name: 🐳 Build Docker image (don't push yet)
       id: build
@@ -282,15 +275,15 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Tag the image to match what the Makefile expects (sirnaforge:latest)
-        REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}:${{ needs.validate-release.outputs.version }}"
+        REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
         docker tag "$REGISTRY_IMAGE" sirnaforge:latest
 
         echo "🧪 Tagged image: $REGISTRY_IMAGE -> sirnaforge:latest"
 
-        echo "🧪 Running Docker smoke tests (critical functionality)..."
+        echo "🧪 Running Docker container validation tests..."
         # The Docker container uses its own conda environment with all bioinformatics tools
         # The Makefile automatically handles UV cache mounting based on environment
-        make docker-test-smoke
+        make docker-test
 
         echo "✅ Docker image tests passed!"
 
@@ -339,8 +332,7 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Set environment variable for tests
-        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${REPO_LOWER}:${{ needs.validate-release.outputs.version }}"
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
 
         # Run smoke tests - these MUST pass for any release
         echo "🔥 Running critical smoke tests..."
@@ -386,8 +378,7 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Set environment variable for tests
-        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${REPO_LOWER}:${{ needs.validate-release.outputs.version }}"
+        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
 
         # Run integration tests - these can fail in pre-release
         echo "🧪 Running integration tests..."
@@ -446,10 +437,10 @@ jobs:
           ### 🐳 Docker (Recommended - Complete Environment)
           ```bash
           # Pull the latest release
-          docker pull ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}
+          docker pull ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}
 
           # Quick test - should complete in ~2 seconds
-          docker run --rm ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }} sirnaforge --help
+          docker run --rm ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} sirnaforge --help
           ```
 
           ### 🐍 Python Package (Requires external tools for full functionality)
@@ -467,14 +458,14 @@ jobs:
           ### 🛠️ Development Installation
           ```bash
           # Clone repository
-          git clone https://github.com/${{ github.repository }}.git
+          git clone https://github.com/${{ needs.validate-release.outputs.repository-lower }}.git
           cd sirnaforge
 
           # Fast setup with uv (60-120 seconds)
           uv sync --dev
 
           # Verify with quick tests
-          make test-local-python  # ~12-15 seconds
+          make test-dev  # ~15 seconds
           ```
 
           ## 🚀 Usage Examples
@@ -483,12 +474,12 @@ jobs:
           ```bash
           # Complete gene-to-siRNA workflow
           docker run --rm -v $(pwd):/workspace -w /workspace \
-            ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }} \
+            ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} \
             sirnaforge workflow TP53 --output-dir results --genome-species human
 
           # Custom transcript file
           docker run --rm -v $(pwd):/workspace -w /workspace \
-            ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }} \
+            ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} \
             sirnaforge design transcripts.fasta --output results.csv
           ```
 
@@ -538,29 +529,29 @@ jobs:
           ## 🔗 Resources & Links
 
           ### 📚 Documentation & Guides
-          - 📖 [**Full Documentation**](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}) - Complete user guide
-          - 🚀 [**Quick Start Guide**](https://github.com/${{ github.repository }}#-quick-start) - Get running in 5 minutes
-          - 🧪 [**API Reference**](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/api) - Python API documentation
-          - 🐍 [**Development Guide**](https://github.com/${{ github.repository }}/blob/main/CONTRIBUTING.md) - Contributing instructions
+          - 📖 [**Full Documentation**](https://${{ needs.validate-release.outputs.owner-lower }}.github.io/${{ needs.validate-release.outputs.name-lower }}) - Complete user guide
+          - 🚀 [**Quick Start Guide**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}#-quick-start) - Get running in 5 minutes
+          - 🧪 [**API Reference**](https://${{ needs.validate-release.outputs.owner-lower }}.github.io/${{ needs.validate-release.outputs.name-lower }}/api) - Python API documentation
+          - 🐍 [**Development Guide**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/blob/main/CONTRIBUTING.md) - Contributing instructions
 
           ### 🐳 Container Images
-          - 🏷️ **Versioned:** `${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }}`
-          - 🔄 **Latest:** `${{ env.REGISTRY }}/${{ github.repository }}:latest`
-          - 📦 **Registry:** [${{ env.REGISTRY }}/${{ github.repository }}](${{ env.REGISTRY }}/${{ github.repository }})
+          - 🏷️ **Versioned:** `${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}`
+          - 🔄 **Latest:** `${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest`
+          - 📦 **Registry:** [${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}](${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }})
 
           ### 🛠️ Development & Support
-          - 💻 [**Source Code**](https://github.com/${{ github.repository }}) - Full repository
-          - 🐛 [**Report Issues**](https://github.com/${{ github.repository }}/issues) - Bug reports & feature requests
-          - 💬 [**Discussions**](https://github.com/${{ github.repository }}/discussions) - Community support
-          - 📋 [**Changelog**](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) - Version history
-          - 🏷️ [**All Releases**](https://github.com/${{ github.repository }}/releases) - Previous versions
+          - 💻 [**Source Code**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}) - Full repository
+          - 🐛 [**Report Issues**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/issues) - Bug reports & feature requests
+          - 💬 [**Discussions**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/discussions) - Community support
+          - 📋 [**Changelog**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/blob/main/CHANGELOG.md) - Version history
+          - 🏷️ [**All Releases**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/releases) - Previous versions
 
           ---
 
           **⚡ Quick Verification:**
           ```bash
           # Test Docker image (should complete in ~2 seconds)
-          docker run --rm ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.validate-release.outputs.version }} sirnaforge version
+          docker run --rm ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} sirnaforge version
 
           # Expected output: siRNAforge v${{ needs.validate-release.outputs.version }}
           ```
@@ -684,13 +675,12 @@ jobs:
         docker load --input /tmp/sirnaforge-image.tar
 
         # Push version-specific tag
-        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-        VERSION_TAG="${{ env.REGISTRY }}/${REPO_LOWER}:${{ needs.validate-release.outputs.version }}"
+        VERSION_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
         docker push "$VERSION_TAG"
 
         # Push latest tag if this is not a prerelease
         if [ "${{ github.event.inputs.prerelease }}" != "true" ]; then
-          LATEST_TAG="${{ env.REGISTRY }}/${REPO_LOWER}:latest"
+          LATEST_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest"
           docker tag "$VERSION_TAG" "$LATEST_TAG"
           docker push "$LATEST_TAG"
           echo "✅ Pushed both version and latest tags"
@@ -702,7 +692,7 @@ jobs:
       uses: actions/attest-build-provenance@v1
       continue-on-error: true
       with:
-        subject-name: ${{ env.REGISTRY }}/${REPO_LOWER}
+        subject-name: ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}
         push-to-registry: true
 
   # Final integration test with published images
@@ -717,8 +707,7 @@ jobs:
     - name: 🐳 Test published Docker image
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
-        REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-        IMAGE_TAG="${{ env.REGISTRY }}/${REPO_LOWER}:${VERSION}"
+        IMAGE_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${VERSION}"
 
         echo "🐳 Testing published image from ${{ env.REGISTRY }}..."
         docker pull "$IMAGE_TAG"
@@ -744,5 +733,5 @@ jobs:
       run: |
         echo "✅ Release v${{ needs.validate-release.outputs.version }} completed successfully"
         echo "📦 GitHub Release: ${{ needs.create-release.outputs.release-url }}"
-        echo "� Repository: ${{ github.repository }}"
+        echo "📁 Repository: ${{ needs.validate-release.outputs.repository-lower }}"
         echo "🏷️ Tag: v${{ needs.validate-release.outputs.version }}"

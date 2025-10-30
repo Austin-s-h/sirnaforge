@@ -17,10 +17,8 @@ from sirnaforge.models.modifications import (
     ChemicalModification,
     ConfirmationStatus,
     Provenance,
-    SequenceRecord,
     SourceType,
     StrandMetadata,
-    StrandRole,
 )
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.modifications import merge_metadata_into_fasta, save_metadata_json
@@ -119,7 +117,7 @@ def demonstrate_workflow():
             provenance=Provenance(
                 source_type=SourceType.DESIGNED,
                 identifier=f"sirnaforge_demo_{candidate.id}",
-                url="https://github.com/Austin-s-h/sirnaforge",
+                url="https://github.com/austin-s-h/sirnaforge",
             ),
             confirmation_status=ConfirmationStatus.PENDING,
             notes=f"Top candidate targeting TP53, pattern: {pattern_name}",
@@ -134,7 +132,7 @@ def demonstrate_workflow():
             provenance=Provenance(
                 source_type=SourceType.DESIGNED,
                 identifier=f"sirnaforge_demo_{candidate.id}",
-                url="https://github.com/Austin-s-h/sirnaforge",
+                url="https://github.com/austin-s-h/sirnaforge",
             ),
             confirmation_status=ConfirmationStatus.PENDING,
             notes=f"Passenger strand, pattern: {pattern_name}",
@@ -213,7 +211,9 @@ def demonstrate_workflow():
         },
         "modification_stats": {
             "total_sequences": len(metadata_dict),
-            "confirmed": sum(1 for m in metadata_dict.values() if m.confirmation_status == ConfirmationStatus.CONFIRMED),
+            "confirmed": sum(
+                1 for m in metadata_dict.values() if m.confirmation_status == ConfirmationStatus.CONFIRMED
+            ),
             "pending": sum(1 for m in metadata_dict.values() if m.confirmation_status == ConfirmationStatus.PENDING),
         },
     }

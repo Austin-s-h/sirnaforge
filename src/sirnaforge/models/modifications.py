@@ -195,26 +195,31 @@ class StrandMetadata(BaseModel):
 
     # Convenience mapping-style access for backward compatibility with dict usage
     def __getitem__(self, item: str) -> Any:
+        """Get item by key."""
         fields = type(self).model_fields
         if item in fields:
             return getattr(self, item)
         raise KeyError(item)
 
     def get(self, item: str, default: Any = None) -> Any:
+        """Get item by key with default."""
         try:
             return self[item]
         except KeyError:
             return default
 
     def __contains__(self, item: object) -> bool:
+        """Check if item is in fields."""
         if not isinstance(item, str):
             return False
         return item in type(self).model_fields
 
     def keys(self) -> Iterable[str]:
+        """Get field keys."""
         return tuple(type(self).model_fields.keys())
 
     def items(self) -> Iterable[tuple[str, Any]]:
+        """Get field items."""
         field_names = tuple(type(self).model_fields.keys())
         return ((key, getattr(self, key)) for key in field_names)
 
