@@ -33,7 +33,7 @@ class ThermodynamicCalculator:
         # Calculate duplex MFE (removed RNA.OPTION_EVAL_ONLY to fix segfault)
         fc = RNA.fold_compound(duplex_seq, self.model_details)
         mfe_structure, mfe = fc.mfe()
-
+        # TODO we should save this mfe structure to have alongside the other dotplot?
         return float(mfe)
 
     def calculate_asymmetry_score(self, candidate: SiRNACandidate) -> tuple[float, float, float]:

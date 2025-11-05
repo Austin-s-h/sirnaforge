@@ -896,17 +896,21 @@ def aggregate_offtarget_results(
         except Exception as e:
             logger.warning(f"Failed to read {analysis_file}: {e}")
 
-    # Write combined TSV using Pydantic models
+    # Write combined TSV using Pydantic models (always create, even if empty)
     combined_tsv = output_path / "combined_offtargets.tsv"
     with combined_tsv.open("w") as f:
         f.write(OffTargetHit.tsv_header() + "\n")
         for hit in all_hits:
             f.write(hit.to_tsv_row() + "\n")
 
-    # Write combined JSON with validated data
+    # Write combined JSON with validated data (always create, even if empty)
     combined_json = output_path / "combined_offtargets.json"
     with combined_json.open("w") as f:
         json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+
+    logger.info(
+        f"Wrote {len(all_hits)} genome/transcriptome off-target hits to {combined_tsv.name} and {combined_json.name}"
+    )
 
     # Prepare file paths for summary
     summary_json = output_path / "combined_summary.json"
@@ -923,31 +927,57 @@ def aggregate_offtarget_results(
 
     # Write summary JSON
     with summary_json.open("w") as f:
-        json.dump(summary.model_dump(), f, indent=2)
+        json.dump(summary.model_dump(mode="json"), f, indent=2)
 
     # Write final summary text file
     final_summary = output_path / "final_summary.txt"
     with final_summary.open("w") as f:
         f.write("Off-Target Analysis Aggregation Summary\n")
-        f.write("=" * 50 + "\n")
+        f.write("=" * 50 + "\n\n")
 
         # Check if genome analysis was performed
         if len(analysis_files) == 0:
-            f.write("\nNOTE: No genome/transcriptome off-target analysis was performed.\n")
-            f.write("This occurs when no genome FASTAs or BWA indices are provided.\n")
-            f.write("Only lightweight miRNA seed match analysis was run.\n")
-            f.write("\nTo enable genome off-target analysis, provide:\n")
-            f.write("  - genome_fastas: species:path pairs for reference genomes\n")
-            f.write("  - genome_indices: species:index_prefix pairs for pre-built BWA indices\n")
+            f.write("GENOME/TRANSCRIPTOME ANALYSIS STATUS: NOT PERFORMED\n")
+            f.write("-" * 50 + "\n")
+            f.write("Reason: No genome FASTAs or BWA indices were provided.\n")
+            f.write("Result: Only lightweight miRNA seed match analysis was run.\n\n")
+            f.write("To enable genome/transcriptome off-target analysis:\n")
+            f.write("  • Provide --genome_fastas 'species:path,species2:path2'\n")
+            f.write("     OR\n")
+            f.write("  • Provide --genome_indices 'species:index,species2:index2'\n\n")
             f.write("=" * 50 + "\n\n")
 
-        f.write(f"Total off-target hits: {len(all_hits)}\n")
-        f.write(f"Species analyzed: {', '.join(species_list)}\n")
-        f.write(f"Analysis files processed: {len(analysis_files)}\n")
-        f.write("\nOutput files:\n")
-        f.write(f"  - Combined TSV: {combined_tsv.name}\n")
-        f.write(f"  - Combined JSON: {combined_json.name}\n")
-        f.write(f"  - Summary JSON: {summary_json.name}\n")
+        # Results summary
+        f.write("RESULTS SUMMARY\n")
+        f.write("-" * 50 + "\n")
+        f.write(f"Genome/transcriptome off-target hits: {len(all_hits)}\n")
+
+        # Show species list or note if empty
+        if species_list:
+            f.write(f"Species requested for analysis: {', '.join(species_list)}\n")
+        else:
+            f.write("Species requested for analysis: (none - miRNA-only mode)\n")
+
+        f.write(f"Genome analysis files processed: {len(analysis_files)}\n\n")
+
+        # Explain what the output files contain
+        f.write("OUTPUT FILES\n")
+        f.write("-" * 50 + "\n")
+
+        if len(all_hits) == 0:
+            f.write(f"• {combined_tsv.name}: Header only (no hits found)\n")
+            f.write(f"• {combined_json.name}: Empty array (no hits found)\n")
+            f.write(f"• {summary_json.name}: Metadata only\n\n")
+            f.write("Note: Empty data files indicate NO problematic genome/\n")
+            f.write("transcriptome off-targets were detected - this is GOOD!\n")
+            f.write("Your siRNA candidates are clean at the genome level.\n\n")
+            f.write("For miRNA seed match analysis results, see:\n")
+            f.write("  ../mirna/mirna_analysis.tsv\n")
+            f.write("  ../mirna/mirna_summary.json\n")
+        else:
+            f.write(f"• {combined_tsv.name}: {len(all_hits)} off-target hits (TSV format)\n")
+            f.write(f"• {combined_json.name}: {len(all_hits)} off-target hits (JSON format)\n")
+            f.write(f"• {summary_json.name}: Analysis metadata and statistics\n")
 
     logger.info(f"Aggregated {len(all_hits)} off-target hits from {len(analysis_files)} analysis files")
 
@@ -1021,6 +1051,7 @@ def run_mirna_seed_analysis(
             results = analyzer.analyze_sequences(sequences)
 
             # Convert dict results to MiRNAHit objects with validation
+            validated_hits_count = 0
             for hit_dict in results:
                 try:
                     mirna_hit = MiRNAHit(
@@ -1039,12 +1070,16 @@ def run_mirna_seed_analysis(
                         offtarget_score=hit_dict["offtarget_score"],
                     )
                     all_hits.append(mirna_hit)
+                    validated_hits_count += 1
                 except Exception as e:
                     logger.warning(f"Failed to validate miRNA hit: {e}, skipping")
                     continue
 
             species_stats[species] = len(results)
-            logger.info(f"Found {len(results)} miRNA seed matches for {species}")
+            logger.info(
+                f"Species {species}: {len(results)} raw alignments, "
+                f"{validated_hits_count} validated seed region matches"
+            )
 
         except Exception as e:
             logger.error(f"Failed to process miRNA analysis for {species}: {e}")
@@ -1070,14 +1105,19 @@ def run_mirna_seed_analysis(
         total_sequences=len(sequences),
         total_hits=len(all_hits),
         hits_per_species=species_stats,
+        total_raw_alignments=sum(species_stats.values()),
     )
 
     # Write summary JSON file
     summary_file = output_path / f"{candidate_id}_mirna_summary.json"
     with summary_file.open("w") as f:
-        json.dump(summary.model_dump(), f, indent=2)
+        json.dump(summary.model_dump(mode="json"), f, indent=2)
 
-    logger.info(f"miRNA seed analysis completed for {candidate_id}: {len(all_hits)} total hits")
+    logger.info(
+        f"miRNA seed analysis completed for {candidate_id}: "
+        f"{len(all_hits)} validated seed region matches "
+        f"(from {sum(species_stats.values())} raw alignments)"
+    )
 
     return output_path
 
@@ -1184,7 +1224,7 @@ def aggregate_mirna_results(
     # Write summary JSON
     summary_json = output_path / "combined_mirna_summary.json"
     with summary_json.open("w") as f:
-        json.dump(summary.model_dump(exclude={"combined_tsv", "combined_json", "summary_file"}), f, indent=2)
+        json.dump(summary.model_dump(mode="json"), f, indent=2)
 
     # Write final summary text file
     final_summary = output_path / "final_mirna_summary.txt"
