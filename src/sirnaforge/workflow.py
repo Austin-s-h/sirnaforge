@@ -33,6 +33,7 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import DesignMode, DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
@@ -61,6 +62,7 @@ class WorkflowConfig:
         genome_species: list[str] | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
+        transcriptome_fasta: str | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
@@ -84,6 +86,7 @@ class WorkflowConfig:
         self.genome_species = list(dict.fromkeys(default_genomes))
         self.mirna_database = mirna_database
         self.mirna_species = list(dict.fromkeys(mirna_species)) if mirna_species else []
+        self.transcriptome_fasta = transcriptome_fasta
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
@@ -844,6 +847,35 @@ class SiRNAWorkflow:
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
         return input_fasta
 
+    async def _prepare_transcriptome_database(self, transcriptome_ref: str) -> dict[str, Path] | None:
+        """Prepare transcriptome database from user-provided reference.
+
+        Args:
+            transcriptome_ref: Can be:
+                - Pre-configured source name (e.g., 'ensembl_human_cdna')
+                - Local file path
+                - HTTP(S)/FTP URL
+
+        Returns:
+            Dictionary with 'fasta' and 'index' paths, or None if preparation failed
+        """
+        try:
+            manager = TranscriptomeManager()
+
+            # Check if it's a pre-configured source
+            if transcriptome_ref in manager.SOURCES:
+                logger.info(f"Using pre-configured transcriptome source: {transcriptome_ref}")
+                return manager.get_transcriptome(transcriptome_ref, build_index=True)
+
+            # Otherwise treat as custom path/URL
+            logger.info(f"Processing custom transcriptome reference: {transcriptome_ref}")
+            return manager.get_custom_transcriptome(transcriptome_ref, build_index=True)
+
+        except Exception as e:
+            logger.exception(f"Failed to prepare transcriptome database from {transcriptome_ref}")
+            console.print(f"⚠️  Transcriptome preparation error: {e}")
+            return None
+
     async def _run_nextflow_offtarget_analysis(self, candidates: list[SiRNACandidate], input_fasta: Path) -> dict:
         """Run Nextflow-based off-target analysis."""
         # Configure Nextflow runner
@@ -854,6 +886,24 @@ class SiRNAWorkflow:
             # Do not fall back to basic analysis here; report skipped instead
             return {"status": "skipped", "reason": "nextflow_unavailable"}
 
+        # Process transcriptome FASTA if provided
+        additional_params = dict(self.config.nextflow_config)  # Start with existing config
+        if self.config.transcriptome_fasta:
+            try:
+                transcriptome_result = await self._prepare_transcriptome_database(self.config.transcriptome_fasta)
+                if transcriptome_result and transcriptome_result.get("index"):
+                    # Pass the index path to Nextflow for transcriptome analysis
+                    additional_params["transcriptome_index"] = str(transcriptome_result["index"])
+                    console.print(
+                        f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
+                        f"(index: {transcriptome_result['index'].name})"
+                    )
+                else:
+                    console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
+            except Exception as e:
+                logger.exception("Failed to prepare transcriptome database")
+                console.print(f"⚠️  Transcriptome preparation failed: {e}")
+
         # Execute pipeline
         console.print("🚀 Running embedded Nextflow off-target analysis...")
         nf_output_dir = self.config.output_dir / "off_target" / "results"
@@ -862,7 +912,7 @@ class SiRNAWorkflow:
             input_file=input_fasta,
             output_dir=nf_output_dir,
             genome_species=self.config.genome_species,
-            additional_params=self.config.nextflow_config,
+            additional_params=additional_params,
             show_progress=True,
         )
 
@@ -1229,6 +1279,7 @@ async def run_sirna_workflow(
     genome_species: list[str] | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
+    transcriptome_fasta: str | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
@@ -1249,6 +1300,7 @@ async def run_sirna_workflow(
         genome_species: Species genomes for off-target analysis
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
+        transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
@@ -1303,6 +1355,7 @@ async def run_sirna_workflow(
         genome_species=genome_species or ["human", "rat", "rhesus"],
         mirna_database=mirna_database,
         mirna_species=mirna_species,
+        transcriptome_fasta=transcriptome_fasta,
         log_file=log_file,
         write_json_summary=write_json_summary,
         input_source=resolved_input,

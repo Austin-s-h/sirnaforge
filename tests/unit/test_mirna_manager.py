@@ -118,7 +118,7 @@ class TestMiRNADatabaseManager:
         assert info["cache_directory"] == str(manager_with_temp_cache.cache_dir)
         assert info["total_files"] == 0
         assert info["total_size_mb"] == 0.0
-        assert info["cached_databases"] == []
+        assert info["cached_items"] == []
 
     @pytest.mark.unit
     def test_cache_info_with_files(self, manager_with_temp_cache, temp_cache_dir):

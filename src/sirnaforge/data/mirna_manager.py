@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
-"""Elegant miRNA Database Manager with local caching and multi-species support.
+"""miRNA Database Manager with multi-species support.
 
 This module provides a clean interface for downloading, caching, and managing
-miRNA databases from multiple sources with automatic cache management and
-species-specific organization.
+miRNA databases from multiple sources (MirGeneDB, miRBase, TargetScan) with
+automatic cache management and species-specific organization.
 """
 
 import argparse
 import contextlib
-import gzip
-import hashlib
-import html
-import json
 import logging
-import os
-import tempfile
-import urllib.request
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 from .species_registry import (
     CANONICAL_SPECIES_ALIAS_MAP,
     CANONICAL_SPECIES_REGISTRY,
@@ -33,52 +27,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class DatabaseSource:
-    """Configuration for a miRNA database source."""
+class MiRNASource(ReferenceSource):
+    """miRNA-specific database source configuration.
 
-    name: str
-    url: str
-    species: str  # NCBI taxonomy ID or common name
-    format: str  # "fasta", "json", "tsv"
-    compressed: bool = False
-    description: str = ""
+    Inherits from ReferenceSource and can add miRNA-specific fields if needed.
+    """
 
-    def cache_key(self) -> str:
-        """Generate a unique cache key for this source."""
-        content = f"{self.name}_{self.species}_{self.url}"
-        return hashlib.md5(content.encode()).hexdigest()[:12]
+    pass
 
 
-@dataclass
-class CacheMetadata:
-    """Metadata for cached database files."""
-
-    source: DatabaseSource
-    downloaded_at: str
-    file_size: int
-    checksum: str
-    version: str = "1.0"
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "CacheMetadata":
-        """Create CacheMetadata from dictionary."""
-        source = DatabaseSource(**data["source"])
-        return cls(
-            source=source,
-            downloaded_at=data["downloaded_at"],
-            file_size=data["file_size"],
-            checksum=data["checksum"],
-            version=data.get("version", "1.0"),
-        )
-
-    def to_dict(self) -> dict:
-        """Convert CacheMetadata to dictionary."""
-        return asdict(self)
-
-
-def _build_mirgenedb_sources() -> dict[str, DatabaseSource]:
+def _build_mirgenedb_sources() -> dict[str, MiRNASource]:
     """Construct MirGeneDB source map from the slug-based metadata table."""
-    sources: dict[str, DatabaseSource] = {}
+    sources: dict[str, MiRNASource] = {}
     base_url = "https://www.mirgenedb.org/fasta/{slug}?mat=1"
 
     for slug, metadata in MIRGENEDB_SPECIES_TABLE.items():
@@ -89,7 +49,7 @@ def _build_mirgenedb_sources() -> dict[str, DatabaseSource]:
         if common_name and common_name.lower() not in scientific_name.lower():
             description = f"{description} [{common_name}]"
 
-        sources[slug] = DatabaseSource(
+        sources[slug] = MiRNASource(
             name="mirgenedb",
             url=base_url.format(slug=slug),
             species=slug,
@@ -101,13 +61,13 @@ def _build_mirgenedb_sources() -> dict[str, DatabaseSource]:
     return sources
 
 
-class MiRNADatabaseManager:
+class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
     """Elegant miRNA database manager with caching and multi-species support."""
 
     # Database source configurations
     SOURCES = {
         "mirbase": {
-            "human": DatabaseSource(
+            "human": MiRNASource(
                 name="mirbase_mature",
                 url="https://www.mirbase.org/download/CURRENT/mature.fa",
                 species="human",
@@ -115,7 +75,7 @@ class MiRNADatabaseManager:
                 compressed=False,
                 description="miRBase mature miRNA sequences (all species, filtered for Homo sapiens - hsa)",
             ),
-            "mouse": DatabaseSource(
+            "mouse": MiRNASource(
                 name="mirbase_mature",
                 url="https://www.mirbase.org/download/CURRENT/mature.fa",
                 species="mouse",
@@ -123,7 +83,7 @@ class MiRNADatabaseManager:
                 compressed=False,
                 description="miRBase mature miRNA sequences (all species, filtered for Mus musculus - mmu)",
             ),
-            "rat": DatabaseSource(
+            "rat": MiRNASource(
                 name="mirbase_mature",
                 url="https://www.mirbase.org/download/CURRENT/mature.fa",
                 species="rat",
@@ -133,7 +93,7 @@ class MiRNADatabaseManager:
             ),
         },
         "mirbase_high_conf": {
-            "human": DatabaseSource(
+            "human": MiRNASource(
                 name="mirbase_mature_hc",
                 url="https://www.mirbase.org/download/CURRENT/mature_high_conf.fa",
                 species="human",
@@ -141,7 +101,7 @@ class MiRNADatabaseManager:
                 compressed=False,
                 description="miRBase high-confidence mature miRNA sequences (Homo sapiens - hsa)",
             ),
-            "mouse": DatabaseSource(
+            "mouse": MiRNASource(
                 name="mirbase_mature_hc",
                 url="https://www.mirbase.org/download/CURRENT/mature_high_conf.fa",
                 species="mouse",
@@ -149,7 +109,7 @@ class MiRNADatabaseManager:
                 compressed=False,
                 description="miRBase high-confidence mature miRNA sequences (Mus musculus - mmu)",
             ),
-            "rat": DatabaseSource(
+            "rat": MiRNASource(
                 name="mirbase_mature_hc",
                 url="https://www.mirbase.org/download/CURRENT/mature_high_conf.fa",
                 species="rat",
@@ -159,7 +119,7 @@ class MiRNADatabaseManager:
             ),
         },
         "mirbase_hairpin": {
-            "human": DatabaseSource(
+            "human": MiRNASource(
                 name="mirbase_hairpin",
                 url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
                 species="human",
@@ -167,7 +127,7 @@ class MiRNADatabaseManager:
                 compressed=False,
                 description="miRBase hairpin precursor miRNA sequences (Homo sapiens - hsa)",
             ),
-            "mouse": DatabaseSource(
+            "mouse": MiRNASource(
                 name="mirbase_hairpin",
                 url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
                 species="mouse",
@@ -175,7 +135,7 @@ class MiRNADatabaseManager:
                 compressed=False,
                 description="miRBase hairpin precursor miRNA sequences (Mus musculus - mmu)",
             ),
-            "rat": DatabaseSource(
+            "rat": MiRNASource(
                 name="mirbase_hairpin",
                 url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
                 species="rat",
@@ -186,7 +146,7 @@ class MiRNADatabaseManager:
         },
         "mirgenedb": _build_mirgenedb_sources(),
         "targetscan": {
-            "human": DatabaseSource(
+            "human": MiRNASource(
                 name="targetscan",
                 url="https://www.targetscan.org/vert_80/vert_80_data_download/miR_Family_Info.txt.zip",
                 species="human",
@@ -369,8 +329,8 @@ class MiRNADatabaseManager:
         return species
 
     @classmethod
-    def get_source_configuration(cls, source_name: str, species: str) -> Optional[DatabaseSource]:
-        """Retrieve the DatabaseSource configuration for a given source/species."""
+    def get_source_configuration(cls, source_name: str, species: str) -> Optional[MiRNASource]:
+        """Retrieve the MiRNASource configuration for a given source/species."""
         canonical_species = cls.normalize_species(source_name, species)
         if canonical_species is None:
             return None
@@ -401,150 +361,11 @@ class MiRNADatabaseManager:
             cache_dir: Directory for caching databases (default: ~/.cache/sirnaforge/mirna)
             cache_ttl_days: Cache time-to-live in days
         """
-        fallback_locations: list[Path] = []
-        env_override = os.getenv("SIRNAFORGE_CACHE_DIR")
+        super().__init__(cache_subdir="mirna", cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
 
-        if cache_dir is not None:
-            fallback_locations.append(Path(cache_dir))
-        else:
-            if env_override:
-                fallback_locations.append(Path(env_override))
-
-            xdg_cache = os.getenv("XDG_CACHE_HOME")
-            if xdg_cache:
-                fallback_locations.append(Path(xdg_cache) / "sirnaforge" / "mirna")
-
-            fallback_locations.append(Path.home() / ".cache" / "sirnaforge" / "mirna")
-            fallback_locations.append(Path.cwd() / ".sirnaforge_cache" / "mirna")
-            fallback_locations.append(Path(tempfile.gettempdir()) / "sirnaforge" / "mirna")
-
-        cache_path: Optional[Path] = None
-        first_error: Optional[Exception] = None
-        for candidate in fallback_locations:
-            try:
-                candidate.mkdir(parents=True, exist_ok=True)
-                cache_path = candidate
-                break
-            except PermissionError as exc:
-                logger.warning("Cannot create cache directory at %s; trying next option", candidate)
-                if first_error is None:
-                    first_error = exc
-
-        if cache_path is None:
-            if cache_dir is not None and first_error is not None:
-                raise first_error
-            raise RuntimeError("Cannot create a writable cache directory for miRNA databases")
-
-        self.cache_dir = cache_path
-
-        self.cache_ttl = timedelta(days=cache_ttl_days)
-        self.metadata_file = self.cache_dir / "cache_metadata.json"
-
-        self._load_metadata()
-
-    def _load_metadata(self) -> None:
-        """Load cache metadata from disk."""
-        self.metadata: dict[str, CacheMetadata] = {}
-
-        if self.metadata_file.exists():
-            try:
-                with self.metadata_file.open("r") as f:
-                    data = json.load(f)
-                    for key, meta_dict in data.items():
-                        self.metadata[key] = CacheMetadata.from_dict(meta_dict)
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Failed to load cache metadata: {e}")
-
-    def _save_metadata(self) -> None:
-        """Save cache metadata to disk."""
-        try:
-            data = {key: meta.to_dict() for key, meta in self.metadata.items()}
-            with self.metadata_file.open("w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save cache metadata: {e}")
-
-    def _compute_file_checksum(self, file_path: Path) -> str:
-        """Compute MD5 checksum of a file."""
-        hash_md5 = hashlib.md5()
-        with file_path.open("rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
-
-    def _is_cache_valid(self, cache_key: str) -> bool:
-        """Check if cached data is still valid."""
-        if cache_key not in self.metadata:
-            return False
-
-        meta = self.metadata[cache_key]
-        cache_file = self.cache_dir / f"{cache_key}.fa"
-
-        # Check if file exists
-        if not cache_file.exists():
-            return False
-
-        # Reject zero-byte cache entries up front
-        if cache_file.stat().st_size == 0:
-            logger.warning("Cache file %s is empty; marking as invalid", cache_file)
-            return False
-
-        # Check TTL
-        downloaded_at = datetime.fromisoformat(meta.downloaded_at)
-        if datetime.now() - downloaded_at > self.cache_ttl:
-            return False
-
-        # Check file integrity
-        if self._compute_file_checksum(cache_file) != meta.checksum:
-            logger.warning(f"Cache file {cache_file} corrupted, will re-download")
-            return False
-
-        return True
-
-    def _download_file(self, source: DatabaseSource) -> Optional[str]:
-        """Download file from source URL and return as text."""
-        try:
-            logger.info(f"📥 Downloading {source.name} ({source.species}): {source.url}")
-
-            request = urllib.request.Request(
-                source.url,
-                headers={
-                    "User-Agent": "sirnaforge/1.0 (+https://github.com/austin-s-h/sirnaforge)",
-                    "Accept": "text/plain,application/octet-stream",
-                },
-            )
-
-            with urllib.request.urlopen(request, timeout=300) as response:
-                data = response.read()
-
-            if source.compressed and source.url.endswith(".gz"):
-                data = gzip.decompress(data)
-                # Note: Could add zip support here if needed
-
-            # Try to decode as text
-            try:
-                content: str = data.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    content = data.decode("latin-1")
-                except UnicodeDecodeError:
-                    logger.error(f"❌ Cannot decode {source.url} as text")
-                    return None
-
-            # Fix HTML entities (e.g., &gt; -> >, <br> -> newlines)
-            content = html.unescape(content)
-            content = content.replace("<br>", "\n").replace("<BR>", "\n")
-
-            if not content.strip():
-                logger.error("Received empty response from %s", source.url)
-                return None
-
-            logger.info(f"✅ Downloaded {len(content):,} characters")
-            return content
-
-        except Exception as e:
-            logger.error(f"❌ Failed to download {source.url}: {e}")
-            return None
+    def _metadata_from_dict(self, data: dict) -> CacheMetadata:
+        """Create CacheMetadata from dictionary using MiRNASource."""
+        return CacheMetadata.from_dict(data, source_class=MiRNASource)
 
     def _filter_species_sequences(self, fasta_content: str, species: str) -> str:
         """Filter FASTA content for specific species using miRBase three-letter codes."""
@@ -684,14 +505,19 @@ class MiRNADatabaseManager:
         checksum = self._compute_file_checksum(cache_file)
         self.metadata[cache_key] = CacheMetadata(
             source=source,
-            downloaded_at=datetime.now().isoformat(),
+            downloaded_at=self._get_current_timestamp(),
             file_size=cache_file.stat().st_size,
             checksum=checksum,
+            file_path=str(cache_file),
         )
         self._save_metadata()
 
         logger.info(f"✅ Cached {source.name} ({source.species}): {cache_file} ({cache_file.stat().st_size:,} bytes)")
         return cache_file
+
+    def _get_current_timestamp(self) -> str:
+        """Get current timestamp in ISO format."""
+        return datetime.now().isoformat()
 
     def _canonical_species_for_sources(self, sources: list[str], species: str) -> str:
         for source_name in sources:
@@ -767,52 +593,9 @@ class MiRNADatabaseManager:
         logger.info(f"✅ Combined database created: {combined_file} ({total_sequences} unique sequences)")
         return combined_file
 
-    def list_available_databases(self) -> dict[str, dict[str, DatabaseSource]]:
+    def list_available_databases(self) -> dict[str, dict[str, MiRNASource]]:
         """List all available database sources and species."""
         return self.SOURCES
-
-    def clean_cache(self, older_than_days: Optional[int] = None) -> None:
-        """Clean old cache files (both raw and filtered).
-
-        Args:
-            older_than_days: Remove files older than this (default: use TTL)
-        """
-        if older_than_days is None:
-            older_than_days = self.cache_ttl.days
-
-        cutoff = datetime.now() - timedelta(days=older_than_days)
-        removed_count = 0
-
-        for cache_key in list(self.metadata.keys()):
-            meta = self.metadata[cache_key]
-            downloaded_at = datetime.fromisoformat(meta.downloaded_at)
-
-            if downloaded_at < cutoff:
-                cache_file = self.cache_dir / f"{cache_key}.fa"
-                if cache_file.exists():
-                    cache_file.unlink()
-                    removed_count += 1
-
-                del self.metadata[cache_key]
-
-        if removed_count > 0:
-            self._save_metadata()
-            logger.info(f"🧹 Cleaned {removed_count} old cache files")
-        else:
-            logger.info("🧹 No old cache files to clean")
-
-    def cache_info(self) -> dict[str, Any]:
-        """Get information about the current cache state."""
-        total_files = len(list(self.cache_dir.glob("*.fa")))
-        total_size = sum(f.stat().st_size for f in self.cache_dir.glob("*.fa"))
-
-        return {
-            "cache_directory": str(self.cache_dir),
-            "total_files": total_files,
-            "total_size_mb": total_size / (1024 * 1024),
-            "cache_ttl_days": self.cache_ttl.days,
-            "cached_databases": list(self.metadata.keys()),
-        }
 
     def clear_cache(self, confirm: bool = False) -> dict[str, Any]:
         """Clear the miRNA cache directory.
