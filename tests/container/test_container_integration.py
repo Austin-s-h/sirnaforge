@@ -225,8 +225,10 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
                 str(output_dir),
                 "--top-n",
                 "10",  # Limit for speed
-                "--genome-species",
-                "human",  # Single species for speed
+                "--species",
+                "human",  # Single species for genome off-target analysis
+                "--transcriptome-fasta",
+                "ensembl_mouse_cdna",  # Enable mouse transcriptome off-target analysis
             ],
             capture_output=True,
             text=True,
@@ -303,11 +305,11 @@ def _verify_workflow_outputs(output_dir: Path, result: "subprocess.CompletedProc
     # Validate summary JSON
     summary = json.loads(expected_files["summary"].read_text())
 
-    # Check required phases
-    for phase in ["transcript_retrieval", "sirnaforge"]:
+    # Check required phases (updated to match new workflow summary structure)
+    for phase in ["transcript_summary", "design_summary"]:
         assert phase in summary, f"Missing {phase} phase in workflow summary"
 
-    # Validate phase results
-    assert summary["transcript_retrieval"].get("transcript_count", 0) > 0, "No transcripts retrieved"
-    assert summary["sirnaforge"].get("candidate_count", 0) > 0, "No candidates generated"
-    assert summary["sirnaforge"].get("passing_count", 0) > 0, "No candidates passed filters"
+    # Validate phase results (updated key names)
+    assert summary["transcript_summary"].get("total_transcripts", 0) > 0, "No transcripts retrieved"
+    assert summary["design_summary"].get("total_candidates", 0) > 0, "No candidates generated"
+    assert summary["design_summary"].get("pass_count", 0) > 0, "No candidates passed filters"

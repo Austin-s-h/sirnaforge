@@ -314,22 +314,23 @@ class ORFValidationSchema(DataFrameModel):
 
 
 class OffTargetHitsSchema(DataFrameModel):
-    """Validation schema for off-target analysis results (TSV output).
+    """DEPRECATED: Use MiRNAAlignmentSchema or GenomeAlignmentSchema instead.
 
-    Validates off-target prediction results from external alignment tools with
-    relaxed constraints to accommodate diverse tool outputs. Handles nullable
-    fields for cases with no significant off-target matches and various
-    alignment scoring systems.
+    Legacy validation schema for off-target analysis results (TSV output).
+    This schema is too generic and doesn't match actual BWA output format.
 
-    Supports results from BWA, BLAST, and other sequence similarity tools
-    used for genome-wide off-target analysis.
+    **Migration Guide:**
+    - For miRNA seed analysis → Use `MiRNAAlignmentSchema`
+    - For genome/transcriptome → Use `GenomeAlignmentSchema`
+
+    Will be removed in v0.3.0.
     """
 
     class Config(SchemaConfig):
         """Schema configuration with relaxed strictness for external tool outputs."""
 
-        description = "Off-target analysis results schema"
-        title = "Off-target Prediction Results"
+        description = "DEPRECATED: Generic off-target schema"
+        title = "Off-target Prediction Results (DEPRECATED)"
         strict = False  # More lenient for external tool outputs
 
     # Query information
@@ -351,6 +352,129 @@ class OffTargetHitsSchema(DataFrameModel):
 
     # Target sequence with alignment (nullable)
     target_sequence: Series[Any] = Field(description="Aligned target sequence with mismatch notation", nullable=True)
+
+
+class MiRNAAlignmentSchema(DataFrameModel):
+    """Pandera schema for miRNA seed match alignment results (TSV/DataFrame).
+
+    Validates tabular data from BWA-MEM2 miRNA seed analysis.
+    Each row represents one alignment between an siRNA candidate
+    and a miRNA seed region.
+
+    **Use this for:**
+    - Reading `*_mirna_analysis.tsv` files
+    - Validating pandas DataFrames from miRNA analysis
+    - Bulk operations on miRNA alignment results
+
+    **Corresponding Pydantic model:** `models.off_target.MiRNAHit` (for single rows)
+    """
+
+    class Config(SchemaConfig):
+        """Schema configuration."""
+
+        description = "miRNA seed match alignment results"
+        title = "miRNA Alignment DataFrame"
+        strict = True  # Enforce exact column match
+        coerce = True  # Auto-convert types
+
+    # Query information
+    qname: Series[str] = Field(description="Query siRNA sequence identifier")
+    qseq: Series[str] = Field(
+        str_matches=r"^[ATCGUN-]+$",
+        description="Query sequence (siRNA candidate, uppercase nucleotides)",
+    )
+
+    # miRNA-specific fields
+    species: Series[str] = Field(description="Species code (e.g., 'hsa', 'mmu')")
+    database: Series[str] = Field(description="miRNA database source (mirgenedb, mirbase, etc.)")
+    mirna_id: Series[str] = Field(description="miRNA identifier from database")
+
+    # Alignment details
+    coord: Series[int] = Field(ge=0, description="Alignment coordinate (0-based)")
+    strand: Series[str] = Field(isin=["+", "-"], description="Strand orientation (+/-)")
+    cigar: Series[str] = Field(description="CIGAR string describing alignment")
+    mapq: Series[int] = Field(ge=0, le=255, description="Mapping quality (0-255)")
+
+    # Scoring
+    as_score: Series[pd.Int64Dtype] = Field(nullable=True, description="Alignment score (AS tag)")
+    nm: Series[int] = Field(ge=0, description="Edit distance / total mismatches")
+    seed_mismatches: Series[int] = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
+    offtarget_score: Series[float] = Field(ge=0.0, description="Off-target penalty score")
+
+    @dataframe_check_typed
+    def validate_seed_mismatches(cls, df: pd.DataFrame) -> bool:
+        """Ensure seed_mismatches <= nm (total mismatches)."""
+        return bool((df["seed_mismatches"] <= df["nm"]).all())
+
+    @dataframe_check_typed
+    def validate_perfect_match_score(cls, df: pd.DataFrame) -> bool:
+        """Perfect matches (nm=0) should have offtarget_score == 10.0."""
+        if df.empty:
+            return True
+        perfect_matches = df["nm"] == 0
+        if perfect_matches.any():
+            return bool((~perfect_matches | (df["offtarget_score"] == 10.0)).all())
+        return True
+
+
+class GenomeAlignmentSchema(DataFrameModel):
+    """Pandera schema for genome/transcriptome off-target alignment results (TSV/DataFrame).
+
+    Validates tabular data from BWA-MEM2 genome/transcriptome analysis.
+    Each row represents one potential off-target alignment in the genome.
+
+    **Use this for:**
+    - Reading `*_analysis.tsv` files from genome alignment
+    - Validating pandas DataFrames from transcriptome off-target analysis
+    - Bulk operations on genome alignment results
+
+    **Corresponding Pydantic model:** `models.off_target.OffTargetHit` (for single rows)
+    """
+
+    class Config(SchemaConfig):
+        """Schema configuration."""
+
+        description = "Genome/transcriptome off-target alignment results"
+        title = "Genome Alignment DataFrame"
+        strict = True
+        coerce = True
+
+    # Query information
+    qname: Series[str] = Field(description="Query siRNA sequence identifier")
+    qseq: Series[str] = Field(
+        str_matches=r"^[ATCGUN-]+$",
+        description="Query sequence (siRNA candidate)",
+    )
+
+    # Target information
+    rname: Series[str] = Field(description="Reference sequence name (chromosome/transcript)")
+
+    # Alignment details
+    coord: Series[int] = Field(ge=0, description="Alignment coordinate (0-based)")
+    strand: Series[str] = Field(isin=["+", "-"], description="Strand orientation (+/-)")
+    cigar: Series[str] = Field(description="CIGAR string describing alignment")
+    mapq: Series[int] = Field(ge=0, le=255, description="Mapping quality (0-255)")
+
+    # Scoring
+    as_score: Series[pd.Int64Dtype] = Field(nullable=True, description="Alignment score (AS tag)")
+    nm: Series[int] = Field(ge=0, description="Edit distance / total mismatches")
+    seed_mismatches: Series[int] = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
+    offtarget_score: Series[float] = Field(ge=0.0, description="Off-target penalty score")
+
+    @dataframe_check_typed
+    def validate_seed_mismatches(cls, df: pd.DataFrame) -> bool:
+        """Ensure seed_mismatches <= nm (total mismatches)."""
+        return bool((df["seed_mismatches"] <= df["nm"]).all())
+
+    @dataframe_check_typed
+    def validate_score_consistency(cls, df: pd.DataFrame) -> bool:
+        """Perfect matches should have high offtarget_score (penalty)."""
+        if df.empty:
+            return True
+        perfect_matches = df["nm"] == 0
+        if perfect_matches.any():
+            return bool((~perfect_matches | (df["offtarget_score"] == 10.0)).all())
+        return True
 
 
 class ModificationSummarySchema(DataFrameModel):

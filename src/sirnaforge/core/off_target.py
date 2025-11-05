@@ -11,7 +11,9 @@ import shutil
 import subprocess  # nosec B404
 import tempfile
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, TypeVar, Union
+
+import pandas as pd
 
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
@@ -25,10 +27,147 @@ from sirnaforge.models.off_target import (
     MiRNASummary,
     OffTargetHit,
 )
+from sirnaforge.models.schemas import GenomeAlignmentSchema, MiRNAAlignmentSchema
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+# Type variable for Pydantic models
+T = TypeVar("T", MiRNAHit, OffTargetHit)
+
+
+# =============================================================================
+# Pandas + Pydantic Integration Helpers
+# =============================================================================
+
+
+def pydantic_list_to_dataframe(hits: list[T]) -> pd.DataFrame:
+    """Convert list of Pydantic models to pandas DataFrame efficiently.
+
+    Args:
+        hits: List of Pydantic model instances (MiRNAHit or OffTargetHit)
+
+    Returns:
+        DataFrame with validated data
+    """
+    if not hits:
+        return pd.DataFrame()
+    return pd.DataFrame([hit.model_dump() for hit in hits])
+
+
+def filter_dataframe_by_score(
+    df: pd.DataFrame,
+    score_column: str = "offtarget_score",
+    min_score: float = 0.0,
+    max_score: float = 10.0,
+    exclude_perfect: bool = True,
+) -> pd.DataFrame:
+    """Filter DataFrame by off-target score with type-safe operations.
+
+    Args:
+        df: Input DataFrame
+        score_column: Column name containing scores
+        min_score: Minimum score threshold (exclusive)
+        max_score: Maximum score threshold (exclusive)
+        exclude_perfect: Whether to exclude perfect matches (score == 10.0)
+
+    Returns:
+        Filtered DataFrame
+    """
+    if df.empty:
+        return df
+
+    mask = df[score_column] > min_score
+    if exclude_perfect:
+        mask &= df[score_column] < max_score
+
+    return df[mask].copy()
+
+
+def write_dataframe_outputs(
+    df: pd.DataFrame,
+    output_prefix: Path,
+    file_suffix: str,
+    model_class: type[T],
+) -> tuple[Path, Path]:
+    """Write DataFrame to TSV and JSON with consistent naming.
+
+    Args:
+        df: DataFrame to write
+        output_prefix: Output path prefix (without extension)
+        file_suffix: Suffix for output files (e.g., "_raw", "_filtered")
+        model_class: Pydantic model class for schema
+
+    Returns:
+        Tuple of (tsv_path, json_path)
+    """
+    tsv_path = Path(f"{output_prefix}{file_suffix}.tsv")
+    json_path = Path(f"{output_prefix}{file_suffix}.json")
+
+    if df.empty:
+        # Create empty files with correct schema
+        empty_df = pd.DataFrame(columns=list(model_class.model_fields.keys()))
+        empty_df.to_csv(tsv_path, sep="\t", index=False)
+        empty_df.to_json(json_path, orient="records", indent=2)
+    else:
+        df.to_csv(tsv_path, sep="\t", index=False)
+        df.to_json(json_path, orient="records", indent=2)
+
+    return tsv_path, json_path
+
+
+def aggregate_dataframes_from_files(
+    file_pattern: str,
+    results_dir: Path,
+    model_class: type[T],
+    parser_func: Optional[Any] = None,
+) -> tuple[pd.DataFrame, int]:
+    """Aggregate multiple TSV files into a single DataFrame with validation.
+
+    Args:
+        file_pattern: Glob pattern for files (e.g., "**/*_analysis.tsv")
+        results_dir: Directory to search for files
+        model_class: Pydantic model class for validation
+        parser_func: Optional custom parser function for complex fields
+
+    Returns:
+        Tuple of (combined_dataframe, files_processed_count)
+    """
+    all_files = list(results_dir.glob(file_pattern))
+    dfs = []
+
+    for file_path in all_files:
+        try:
+            # Read TSV with pandas (much faster than manual parsing)
+            df = pd.read_csv(file_path, sep="\t")
+
+            # Optional: Apply custom parser for complex fields
+            if parser_func:
+                df = parser_func(df)
+
+            # Validate schema matches expected model
+            expected_fields = set(model_class.model_fields.keys())
+            actual_fields = set(df.columns)
+
+            if not expected_fields.issubset(actual_fields):
+                missing = expected_fields - actual_fields
+                logger.warning(f"File {file_path.name} missing fields: {missing}")
+                continue
+
+            dfs.append(df[list(expected_fields)])  # Ensure column order
+
+        except Exception as e:
+            logger.warning(f"Failed to parse {file_path}: {e}")
+            continue
+
+    if dfs:
+        combined_df = pd.concat(dfs, ignore_index=True)
+    else:
+        combined_df = pd.DataFrame(columns=list(model_class.model_fields.keys()))
+
+    return combined_df, len(all_files)
 
 
 # =============================================================================
@@ -676,25 +815,20 @@ def run_comprehensive_offtarget_analysis(
 
         results = analyzer.analyze_sequences(sequences)
 
-        # Write results
+        # Write results using pandas (much faster than manual loop)
         tsv_path = output_root.parent / f"{output_root.name}.tsv"
         json_path = output_root.parent / f"{output_root.name}.json"
         summary_path = output_root.parent / f"{output_root.name}_summary.txt"
 
-        # Write TSV
-        with tsv_path.open("w") as f:
-            f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
-            for result in results:
-                f.write(
-                    f"{result['qname']}\t{result['qseq']}\t{result['rname']}\t"
-                    f"{result['coord']}\t{result['strand']}\t{result['cigar']}\t"
-                    f"{result['mapq']}\t{result.get('as_score', 'NA')}\t{result['nm']}\t"
-                    f"{result['seed_mismatches']}\t{result['offtarget_score']}\n"
-                )
+        # Convert dict results to DataFrame
+        df = pd.DataFrame(results)
 
-        # Write JSON
-        with json_path.open("w") as f:
-            json.dump(results, f, indent=2)
+        # Validate with Pandera schema
+        df = GenomeAlignmentSchema.validate(df, lazy=True)
+
+        # Write TSV and JSON (pandas handles efficiently)
+        df.to_csv(tsv_path, sep="\t", index=False)
+        df.to_json(json_path, orient="records", indent=2)
 
         # Write summary
         with summary_path.open("w") as f:
@@ -840,9 +974,10 @@ def aggregate_offtarget_results(
     output_dir: Union[str, Path],
     genome_species: str,
 ) -> Path:
-    """Aggregate off-target analysis results from multiple candidate-genome combinations using Pydantic models.
+    """Aggregate off-target analysis results from multiple candidate-genome combinations using Pandera.
 
-    This is the main function called by AGGREGATE_RESULTS Nextflow module.
+    Uses pandas + Pandera for efficient bulk reading and validation instead of
+    manual line-by-line parsing with Pydantic models.
 
     Args:
         results_dir: Directory containing individual analysis results
@@ -858,68 +993,57 @@ def aggregate_offtarget_results(
 
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
 
-    # Collect all TSV analysis files
-    all_hits: list[OffTargetHit] = []
+    # Collect all TSV analysis files using pandas (much faster than manual parsing)
     analysis_files = list(results_path.glob("**/*_analysis.tsv"))
 
-    for analysis_file in analysis_files:
-        try:
-            with analysis_file.open() as f:
-                # Skip header
-                next(f)
-                for line in f:
-                    if line.strip():
-                        parts = line.strip().split("\t")
-                        if len(parts) >= 11:
-                            try:
-                                # Parse coord from either "chr1:12345" or just "12345"
-                                coord_str = parts[3]
-                                coord_int = int(coord_str.split(":")[1]) if ":" in coord_str else int(coord_str)
+    if analysis_files:
+        # Read all files into DataFrames and concatenate (vectorized operation)
+        dfs = []
+        for analysis_file in analysis_files:
+            try:
+                # Pandas reads TSV much faster than manual line splitting
+                df = pd.read_csv(analysis_file, sep="\t")
 
-                                hit = OffTargetHit(
-                                    qname=parts[0],
-                                    qseq=parts[1],
-                                    rname=parts[2],
-                                    coord=coord_int,
-                                    strand=AlignmentStrand(parts[4]),
-                                    cigar=parts[5],
-                                    mapq=int(parts[6]),
-                                    as_score=None if parts[7] == "NA" else int(parts[7]),
-                                    nm=int(parts[8]),
-                                    seed_mismatches=int(parts[9]),
-                                    offtarget_score=float(parts[10]),
-                                )
-                                all_hits.append(hit)
-                            except Exception as e:
-                                logger.warning(f"Failed to parse hit from {analysis_file}: {e}, skipping")
-                                continue
-        except Exception as e:
-            logger.warning(f"Failed to read {analysis_file}: {e}")
+                # Validate schema with Pandera
+                df = GenomeAlignmentSchema.validate(df, lazy=True)
+                dfs.append(df)
 
-    # Write combined TSV using Pydantic models (always create, even if empty)
+            except Exception as e:
+                logger.warning(f"Failed to read/validate {analysis_file}: {e}")
+                continue
+
+        # Concatenate all DataFrames at once (much faster than append in loop)
+        if dfs:
+            combined_df = pd.concat(dfs, ignore_index=True)
+        else:
+            # Create empty DataFrame with correct schema
+            combined_df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
+
+    else:
+        # No files found - create empty DataFrame
+        combined_df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
+
+    # Write combined results (pandas is much faster than manual TSV writing)
     combined_tsv = output_path / "combined_offtargets.tsv"
-    with combined_tsv.open("w") as f:
-        f.write(OffTargetHit.tsv_header() + "\n")
-        for hit in all_hits:
-            f.write(hit.to_tsv_row() + "\n")
+    combined_df.to_csv(combined_tsv, sep="\t", index=False)
 
-    # Write combined JSON with validated data (always create, even if empty)
+    # Write JSON (pandas handles serialization)
     combined_json = output_path / "combined_offtargets.json"
-    with combined_json.open("w") as f:
-        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+    combined_df.to_json(combined_json, orient="records", indent=2)
 
     logger.info(
-        f"Wrote {len(all_hits)} genome/transcriptome off-target hits to {combined_tsv.name} and {combined_json.name}"
+        f"Aggregated {len(combined_df)} genome/transcriptome off-target hits "
+        f"from {len(analysis_files)} files using pandas"
     )
 
-    # Prepare file paths for summary
+    # Prepare summary metadata
     summary_json = output_path / "combined_summary.json"
 
     # Create validated aggregated summary
     summary = AggregatedOffTargetSummary(
         species_analyzed=species_list,
         analysis_files_processed=len(analysis_files),
-        total_results=len(all_hits),
+        total_results=len(combined_df),
         combined_tsv=combined_tsv,
         combined_json=combined_json,
         summary_file=summary_json,
@@ -950,7 +1074,7 @@ def aggregate_offtarget_results(
         # Results summary
         f.write("RESULTS SUMMARY\n")
         f.write("-" * 50 + "\n")
-        f.write(f"Genome/transcriptome off-target hits: {len(all_hits)}\n")
+        f.write(f"Genome/transcriptome off-target hits: {len(combined_df)}\n")
 
         # Show species list or note if empty
         if species_list:
@@ -964,7 +1088,7 @@ def aggregate_offtarget_results(
         f.write("OUTPUT FILES\n")
         f.write("-" * 50 + "\n")
 
-        if len(all_hits) == 0:
+        if len(combined_df) == 0:
             f.write(f"• {combined_tsv.name}: Header only (no hits found)\n")
             f.write(f"• {combined_json.name}: Empty array (no hits found)\n")
             f.write(f"• {summary_json.name}: Metadata only\n\n")
@@ -975,11 +1099,11 @@ def aggregate_offtarget_results(
             f.write("  ../mirna/mirna_analysis.tsv\n")
             f.write("  ../mirna/mirna_summary.json\n")
         else:
-            f.write(f"• {combined_tsv.name}: {len(all_hits)} off-target hits (TSV format)\n")
-            f.write(f"• {combined_json.name}: {len(all_hits)} off-target hits (JSON format)\n")
+            f.write(f"• {combined_tsv.name}: {len(combined_df)} off-target hits (TSV format)\n")
+            f.write(f"• {combined_json.name}: {len(combined_df)} off-target hits (JSON format)\n")
             f.write(f"• {summary_json.name}: Analysis metadata and statistics\n")
 
-    logger.info(f"Aggregated {len(all_hits)} off-target hits from {len(analysis_files)} analysis files")
+    logger.info(f"Wrote aggregated results to {output_path}")
 
     return output_path
 
@@ -1015,8 +1139,9 @@ def run_mirna_seed_analysis(
     # Parse input sequences
     sequences = parse_fasta_file(candidates_file)
 
-    all_hits = []
-    species_stats = {}
+    all_raw_hits = []  # All raw alignments from BWA
+    species_raw_stats = {}
+    species_filtered_stats = {}
 
     logger.info(f"Running miRNA seed analysis for {candidate_id}")
     logger.info(f"Database: {mirna_db}, Species: {mirna_species}")
@@ -1050,8 +1175,7 @@ def run_mirna_seed_analysis(
 
             results = analyzer.analyze_sequences(sequences)
 
-            # Convert dict results to MiRNAHit objects with validation
-            validated_hits_count = 0
+            # Convert dict results to structured data for pandas
             for hit_dict in results:
                 try:
                     mirna_hit = MiRNAHit(
@@ -1069,33 +1193,67 @@ def run_mirna_seed_analysis(
                         seed_mismatches=hit_dict["seed_mismatches"],
                         offtarget_score=hit_dict["offtarget_score"],
                     )
-                    all_hits.append(mirna_hit)
-                    validated_hits_count += 1
+                    all_raw_hits.append(mirna_hit)
+
                 except Exception as e:
                     logger.warning(f"Failed to validate miRNA hit: {e}, skipping")
                     continue
 
-            species_stats[species] = len(results)
-            logger.info(
-                f"Species {species}: {len(results)} raw alignments, "
-                f"{validated_hits_count} validated seed region matches"
-            )
+            species_raw_stats[species] = len(results)
+            logger.info(f"Species {species}: {len(results)} raw alignments validated")
 
         except Exception as e:
             logger.error(f"Failed to process miRNA analysis for {species}: {e}")
-            species_stats[species] = 0
+            species_raw_stats[species] = 0
+            species_filtered_stats[species] = 0
 
-    # Write TSV analysis file using Pydantic models
-    analysis_file = output_path / f"{candidate_id}_mirna_analysis.tsv"
-    with analysis_file.open("w") as f:
-        f.write(MiRNAHit.tsv_header() + "\n")
-        for hit in all_hits:
-            f.write(hit.to_tsv_row() + "\n")
+    # Convert Pydantic models to pandas DataFrame for efficient filtering and writing
+    if all_raw_hits:
+        df_raw = pd.DataFrame([hit.model_dump() for hit in all_raw_hits])
 
-    # Write JSON file with validated data
-    json_file = output_path / f"{candidate_id}_mirna_hits.json"
-    with json_file.open("w") as f:
-        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+        # Apply filtering criteria: exclude perfect matches (score==10) and keep quality hits
+        df_filtered = df_raw[(df_raw["offtarget_score"] > 0) & (df_raw["offtarget_score"] < 10.0)].copy()
+
+        # Calculate per-species filtered stats
+        for species in mirna_species:
+            species_filtered_stats[species] = len(df_filtered[df_filtered["species"] == species])
+
+        # Write RAW hits TSV (all alignments)
+        raw_analysis_file = output_path / f"{candidate_id}_mirna_analysis_raw.tsv"
+        df_raw.to_csv(raw_analysis_file, sep="\t", index=False)
+
+        # Write FILTERED hits TSV (quality-filtered)
+        filtered_analysis_file = output_path / f"{candidate_id}_mirna_analysis.tsv"
+        df_filtered.to_csv(filtered_analysis_file, sep="\t", index=False)
+
+        # Write raw hits JSON
+        raw_json_file = output_path / f"{candidate_id}_mirna_hits_raw.json"
+        df_raw.to_json(raw_json_file, orient="records", indent=2)
+
+        # Write filtered hits JSON
+        filtered_json_file = output_path / f"{candidate_id}_mirna_hits.json"
+        df_filtered.to_json(filtered_json_file, orient="records", indent=2)
+
+        total_filtered = len(df_filtered)
+        total_raw = len(df_raw)
+    else:
+        # No hits - create empty files
+        df_empty = pd.DataFrame(columns=list(MiRNAHit.model_fields.keys()))
+
+        raw_analysis_file = output_path / f"{candidate_id}_mirna_analysis_raw.tsv"
+        df_empty.to_csv(raw_analysis_file, sep="\t", index=False)
+
+        filtered_analysis_file = output_path / f"{candidate_id}_mirna_analysis.tsv"
+        df_empty.to_csv(filtered_analysis_file, sep="\t", index=False)
+
+        raw_json_file = output_path / f"{candidate_id}_mirna_hits_raw.json"
+        df_empty.to_json(raw_json_file, orient="records", indent=2)
+
+        filtered_json_file = output_path / f"{candidate_id}_mirna_hits.json"
+        df_empty.to_json(filtered_json_file, orient="records", indent=2)
+
+        total_filtered = 0
+        total_raw = 0
 
     # Create validated summary using Pydantic model
     summary = MiRNASummary(
@@ -1103,9 +1261,9 @@ def run_mirna_seed_analysis(
         mirna_database=mirna_db,
         species_analyzed=mirna_species,
         total_sequences=len(sequences),
-        total_hits=len(all_hits),
-        hits_per_species=species_stats,
-        total_raw_alignments=sum(species_stats.values()),
+        total_hits=total_filtered,  # Filtered hits count
+        hits_per_species=species_raw_stats,  # Raw hits per species
+        total_raw_alignments=total_raw,  # Total raw alignments
     )
 
     # Write summary JSON file
@@ -1115,8 +1273,8 @@ def run_mirna_seed_analysis(
 
     logger.info(
         f"miRNA seed analysis completed for {candidate_id}: "
-        f"{len(all_hits)} validated seed region matches "
-        f"(from {sum(species_stats.values())} raw alignments)"
+        f"{total_filtered} filtered high-quality matches "
+        f"(from {total_raw} raw alignments)"
     )
 
     return output_path
@@ -1128,7 +1286,10 @@ def aggregate_mirna_results(
     mirna_db: str,
     mirna_species: str,
 ) -> Path:
-    """Aggregate miRNA seed analysis results from multiple candidates using Pydantic models.
+    """Aggregate miRNA seed analysis results from multiple candidates using pandas.
+
+    Uses pandas + Pandera for efficient bulk reading and validation instead of
+    manual line-by-line parsing with Pydantic models.
 
     Args:
         results_dir: Directory containing individual miRNA analysis results
@@ -1145,71 +1306,67 @@ def aggregate_mirna_results(
 
     species_list = [s.strip() for s in mirna_species.split(",") if s.strip()]
 
-    # Collect all miRNA analysis files and parse into validated MiRNAHit objects
-    all_hits: list[MiRNAHit] = []
+    # Collect all miRNA analysis files using pandas (much faster than manual parsing)
     analysis_files = list(results_path.glob("**/*_mirna_analysis.tsv"))
-    candidate_stats = {}
 
-    for analysis_file in analysis_files:
-        try:
-            candidate_id = analysis_file.stem.replace("_mirna_analysis", "")
-            hit_count = 0
+    if analysis_files:
+        # Read all files into DataFrames and concatenate (vectorized operation)
+        dfs = []
+        candidate_stats = {}
 
-            with analysis_file.open() as f:
-                # Skip header
-                next(f)
-                for line in f:
-                    if line.strip():
-                        parts = line.strip().split("\t")
-                        if len(parts) >= 13:
-                            try:
-                                # Parse and validate using Pydantic model
-                                hit = MiRNAHit(
-                                    qname=parts[0],
-                                    qseq=parts[1],
-                                    species=parts[2],
-                                    database=parts[3],
-                                    mirna_id=parts[4],
-                                    coord=int(parts[5]),
-                                    strand=AlignmentStrand(parts[6]),
-                                    cigar=parts[7],
-                                    mapq=int(parts[8]),
-                                    as_score=None if parts[9] == "NA" else int(parts[9]),
-                                    nm=int(parts[10]),
-                                    seed_mismatches=int(parts[11]),
-                                    offtarget_score=float(parts[12]),
-                                )
-                                all_hits.append(hit)
-                                hit_count += 1
-                            except Exception as e:
-                                logger.warning(f"Failed to parse hit from {analysis_file}: {e}")
-                                continue
+        for analysis_file in analysis_files:
+            try:
+                # Extract candidate ID from filename
+                candidate_id = analysis_file.stem.replace("_mirna_analysis", "")
 
-            candidate_stats[candidate_id] = hit_count
+                # Pandas reads TSV much faster than manual line splitting
+                df = pd.read_csv(analysis_file, sep="\t")
 
-        except Exception as e:
-            logger.warning(f"Failed to parse {analysis_file}: {e}")
+                # Validate schema with Pandera
+                df = MiRNAAlignmentSchema.validate(df, lazy=True)
 
-    # Write combined TSV using Pydantic model methods
+                # Track hits per candidate
+                candidate_stats[candidate_id] = len(df)
+
+                dfs.append(df)
+
+            except Exception as e:
+                logger.warning(f"Failed to read/validate {analysis_file}: {e}")
+                continue
+
+        # Concatenate all DataFrames at once (much faster than append in loop)
+        if dfs:
+            combined_df = pd.concat(dfs, ignore_index=True)
+        else:
+            # Create empty DataFrame with correct schema
+            combined_df = pd.DataFrame(columns=list(MiRNAHit.model_fields.keys()))
+
+    else:
+        # No files found - create empty DataFrame
+        combined_df = pd.DataFrame(columns=list(MiRNAHit.model_fields.keys()))
+        candidate_stats = {}
+
+    # Write combined results (pandas is much faster than manual TSV writing)
     combined_tsv = output_path / "combined_mirna_hits.tsv"
-    with combined_tsv.open("w") as f:
-        f.write(MiRNAHit.tsv_header() + "\n")
-        for hit in all_hits:
-            f.write(hit.to_tsv_row() + "\n")
+    combined_df.to_csv(combined_tsv, sep="\t", index=False)
 
-    # Write combined JSON with validated data
+    # Write JSON (pandas handles serialization)
     combined_json = output_path / "combined_mirna_hits.json"
-    with combined_json.open("w") as f:
-        json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
+    combined_df.to_json(combined_json, orient="records", indent=2)
 
-    # Calculate statistics
+    logger.info(f"Aggregated {len(combined_df)} miRNA hits from {len(analysis_files)} files using pandas")
+
+    # Calculate statistics using pandas groupby (much faster than loops)
     species_stats = {}
-    for species in species_list:
-        species_stats[species] = len([h for h in all_hits if h.species == species])
+    if not combined_df.empty:
+        for species in species_list:
+            species_stats[species] = len(combined_df[combined_df["species"] == species])
+    else:
+        species_stats = dict.fromkeys(species_list, 0)
 
     # Create validated summary using Pydantic model
     summary = AggregatedMiRNASummary(
-        total_mirna_hits=len(all_hits),
+        total_mirna_hits=len(combined_df),
         mirna_database=mirna_db,
         species_analyzed=species_list,
         hits_per_species=species_stats,
@@ -1231,7 +1388,7 @@ def aggregate_mirna_results(
     with final_summary.open("w") as f:
         f.write("miRNA Seed Match Analysis Aggregation Summary\n")
         f.write("=" * 50 + "\n")
-        f.write(f"Total miRNA seed matches: {len(all_hits)}\n")
+        f.write(f"Total miRNA seed matches: {len(combined_df)}\n")
         f.write(f"Database: {mirna_db}\n")
         f.write(f"Species analyzed: {', '.join(species_list)}\n")
         f.write(f"Candidates analyzed: {len(candidate_stats)}\n")
@@ -1244,7 +1401,7 @@ def aggregate_mirna_results(
         f.write(f"  - Combined JSON: {combined_json.name}\n")
         f.write(f"  - Summary JSON: {summary_json.name}\n")
 
-    logger.info(f"Aggregated {len(all_hits)} miRNA hits from {len(analysis_files)} analysis files")
+    logger.info(f"Wrote aggregated miRNA results to {output_path}")
 
     return output_path
 

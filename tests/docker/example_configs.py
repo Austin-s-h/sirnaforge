@@ -144,7 +144,7 @@ DOCKER_CONFIGS = {
     },
     "workflow_integration": {
         "description": "Complete workflow in container",
-        "commands": ["sirnaforge workflow TP53 --output-dir /tmp/test_output --top-n 3 --genome-species human"],
+        "commands": ["sirnaforge workflow TP53 --output-dir /tmp/test_output --top-n 3 --species human"],
         "timeout": 600,
         "expected_files": [
             "/tmp/test_output/sirnaforge/*_all.csv",

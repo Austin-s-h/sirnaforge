@@ -280,22 +280,49 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             logger.error(f"FASTA file not found: {input_path}")
             return None
 
+        # Determine cache name and key
+        if cache_name is None:
+            cache_name = input_path.stem
+
         # Check if already in cache directory
         if input_path.parent == self.cache_dir:
-            # Already cached, just build index if needed
+            # Already cached - create metadata if missing
+            cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
+            cache_file = input_path
             index_prefix = input_path.parent / f"{input_path.stem}_index"
 
+            # Create or update metadata
+            if cache_key not in self.metadata:
+                checksum = self._compute_file_checksum(cache_file)
+                source = TranscriptomeSource(
+                    name=cache_name,
+                    url=str(input_path),
+                    species="custom",
+                    description=f"Local transcriptome from {input_path}",
+                )
+
+                self.metadata[cache_key] = CacheMetadata(
+                    source=source,
+                    downloaded_at=datetime.now().isoformat(),
+                    file_size=cache_file.stat().st_size,
+                    checksum=checksum,
+                    file_path=str(cache_file),
+                )
+                self._save_metadata()
+
+            # Build index if needed
             if build_index and self.auto_build_indices:
                 if not index_prefix.with_suffix(".amb").exists():
                     if self._build_index(input_path, index_prefix):
+                        self._set_index_path(self.metadata[cache_key], index_prefix)
+                        self._save_metadata()
                         return {"fasta": input_path, "index": index_prefix}
                     return {"fasta": input_path}
+                # Index exists - update metadata
+                self._set_index_path(self.metadata[cache_key], index_prefix)
+                self._save_metadata()
                 return {"fasta": input_path, "index": index_prefix}
             return {"fasta": input_path}
-
-        # Copy to cache
-        if cache_name is None:
-            cache_name = input_path.stem
 
         cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
         cache_file = self.cache_dir / f"{cache_name}_{cache_key}.fa"
