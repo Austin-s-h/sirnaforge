@@ -62,13 +62,6 @@ These tiers match the pytest marker structure:
 - `ci` tier: Smoke tests for CI/CD validation
 - `release` tier: Full integration and heavy tests
 
-#### By Type
-```bash
-make test-unit              # Unit tests only
-make test-integration       # Integration tests only
-make test-cov               # Tests with HTML coverage report
-```
-
 #### By Requirements
 ```bash
 make test-requires-docker    # Tests requiring Docker daemon

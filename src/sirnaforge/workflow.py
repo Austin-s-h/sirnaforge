@@ -16,7 +16,6 @@ import hashlib
 import json
 import math
 import os
-import sys
 import tempfile
 import time
 from collections.abc import Sequence
@@ -25,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import psutil
 from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
@@ -877,27 +875,26 @@ class SiRNAWorkflow:
     def _setup_nextflow_runner(self) -> NextflowRunner:
         """Configure Nextflow runner with user settings."""
         # Auto-detect environment to use appropriate profile
-        # Use for_testing() in CI/test environments, for_production() otherwise
+        # This will automatically switch to 'local' profile when running inside a container
+        nf_config = NextflowConfig.auto_configure()
 
-        # Check if we're in a test/constrained environment
-        is_ci = bool(os.getenv("CI") or os.getenv("GITHUB_ACTIONS"))
-        is_pytest = "pytest" in os.getenv("_", "").lower() or "pytest" in " ".join(sys.argv)
-        available_memory_gb = psutil.virtual_memory().total / (1024**3)
-
-        # Use smoke profile if severely constrained (<2GB)
-        # Use test profile if moderately constrained (<8GB) or in CI/pytest
-        # Use production profile otherwise
-        if available_memory_gb < 2.0:
-            nf_config = NextflowConfig(profile="smoke", max_memory="512.MB", max_cpus=1)
-        elif available_memory_gb < 8.0 or is_ci or is_pytest:
-            nf_config = NextflowConfig.for_testing()
-        else:
-            nf_config = NextflowConfig.for_production()
-
-        # Apply user overrides
+        # Apply user overrides from workflow config, BUT preserve auto-detected profile
+        # unless explicitly overridden AND we're not in a container
         if self.config.nextflow_config:
             for key, value in self.config.nextflow_config.items():
+                # Don't allow profile override when running in container
+                # (container detection takes precedence for safety)
+                if key == "profile" and nf_config.is_running_in_docker():
+                    logger.warning(
+                        f"Ignoring user profile override '{value}' - running in container, using 'local' profile"
+                    )
+                    continue
                 setattr(nf_config, key, value)
+
+        # Log the execution environment for debugging
+        env_info = nf_config.get_environment_info()
+        logger.info(f"Nextflow execution: {env_info.get_execution_summary()}")
+
         return NextflowRunner(nf_config)
 
     def _validate_nextflow_environment(self, runner: NextflowRunner) -> bool:

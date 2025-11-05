@@ -385,13 +385,25 @@ process {{
         try:
             # Check for Docker-specific files
             if Path("/.dockerenv").exists():
+                logger.debug("Detected container execution via /.dockerenv")
                 return True
 
             # Check cgroup for Docker container indicators
-            cgroup_content = Path("/proc/1/cgroup").read_text()
-            return "docker" in cgroup_content or "containerd" in cgroup_content
+            if Path("/proc/1/cgroup").exists():
+                cgroup_content = Path("/proc/1/cgroup").read_text()
+                if "docker" in cgroup_content or "containerd" in cgroup_content:
+                    logger.debug("Detected container execution via /proc/1/cgroup")
+                    return True
+
+            # Additional check: look for container-specific environment variables
+            if os.getenv("SIRNAFORGE_IN_CONTAINER") or os.getenv("CONTAINER"):
+                logger.debug("Detected container execution via environment variable")
+                return True
+
         except (FileNotFoundError, OSError):
-            return False
+            pass
+
+        return False
 
     def _is_singularity_available(self) -> bool:
         """Check if Singularity is available."""

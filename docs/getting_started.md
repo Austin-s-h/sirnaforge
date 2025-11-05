@@ -116,6 +116,10 @@ docker run --rm \
   ghcr.io/austin-s-h/sirnaforge:latest \
   sirnaforge workflow TP53 --output-dir my_first_analysis
 ```
+
+:::{note}
+**Container Execution Note**: When running inside the container, siRNAforge automatically detects the container environment and uses the `local` profile for Nextflow workflows (avoiding Docker-in-Docker). All bioinformatics tools (BWA-MEM2, SAMtools, ViennaRNA, Nextflow) are pre-installed and ready to use.
+:::
 ````
 
 `````
