@@ -3,9 +3,6 @@ process OFFTARGET_ANALYSIS {
     label 'process_medium'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f':
-        'community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f' }"
 
     input:
     tuple val(candidate_id), val(fasta_content), val(species), val(index_path)

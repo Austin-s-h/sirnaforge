@@ -3,9 +3,6 @@ process MIRNA_SEED_ANALYSIS {
     label 'process_low'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f':
-        'community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f' }"
 
     input:
     path candidates_fasta

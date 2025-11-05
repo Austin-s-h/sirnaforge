@@ -39,7 +39,7 @@ help: ## Show available commands
 	@echo "🧪 Testing - By Tier (matches marker structure)"
 	@echo "  make test-dev         Fast unit tests for dev iteration (~15s)"
 	@echo "  make test-ci          Smoke tests for CI/CD"
-	@echo "  make test-release     Full integration + heavy tests"
+	@echo "  make test-release     Complete release validation (host + container tests with combined coverage)"
 	@echo "  make test             All tests (may have skips/failures)"
 	@echo "  make all              Same as 'make test'"
 	@echo ""
@@ -86,12 +86,57 @@ test-dev: ## Development tier - fast unit tests (~15s)
 	$(PYTEST_V) -m "dev"
 
 test-ci: ## CI tier - smoke tests for CI/CD
-	$(PYTEST_V) -m "ci" --junitxml=pytest-report.xml \
+	$(PYTEST_V) -m "ci" -n 0 --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
-test-release: ## Release tier - comprehensive validation (all tests with coverage)
-	$(PYTEST_V) -m "dev or ci or release" --junitxml=pytest-report.xml \
-		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=html --cov-report=term-missing
+test-release: docker-ensure ## Release tier - comprehensive validation (host + container tests with combined coverage)
+	@echo "🔍 Step 1/4: Running host-based tests with coverage..."
+	@rm -f .coverage .coverage.* coverage*.xml pytest-*.xml 2>/dev/null || true
+	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container" \
+		-n 0 \
+		--cov=sirnaforge --cov-report= \
+		--junitxml=pytest-host-report.xml
+	@if [ -f .coverage ]; then mv .coverage .coverage.host; echo "✓ Host coverage saved"; else echo "⚠️  No host coverage generated"; fi
+	@echo ""
+	@echo "🐳 Step 2/4: Running container tests with coverage..."
+	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
+	docker run --rm $(DOCKER_MOUNT_FLAGS) -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c \
+		"pip install --quiet pytest pytest-cov && \
+		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' \
+		--cov=sirnaforge --cov-report= \
+		--junitxml=/workspace/pytest-container-report.xml \
+		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
+	@if [ -f .coverage ]; then mv .coverage .coverage.container; echo "✓ Container coverage saved"; else echo "⚠️  No container coverage generated"; fi
+	@echo ""
+	@echo "📊 Step 3/4: Combining coverage data..."
+	@if [ -f .coverage.host ] && [ -f .coverage.container ]; then \
+		echo "Combining both host and container coverage..."; \
+		uv run coverage combine .coverage.host .coverage.container; \
+	elif [ -f .coverage.host ]; then \
+		echo "Only host coverage available, using that..."; \
+		cp .coverage.host .coverage; \
+	elif [ -f .coverage.container ]; then \
+		echo "Only container coverage available, using that..."; \
+		cp .coverage.container .coverage; \
+	else \
+		echo "❌ No coverage data found!"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "📈 Step 4/4: Generating combined reports..."
+	@uv run coverage report -m
+	@uv run coverage xml -o coverage.xml
+	@uv run coverage html -d htmlcov
+	@echo ""
+	@echo "✅ Release validation complete!"
+	@echo "   📄 Reports:"
+	@echo "      - Host tests: pytest-host-report.xml"
+	@echo "      - Container tests: pytest-container-report.xml"
+	@echo "      - Combined coverage XML: coverage.xml"
+	@echo "      - Combined coverage HTML: htmlcov/index.html"
+	@echo ""
+	@echo "   📊 Coverage Summary:"
+	@uv run coverage report --format=total 2>/dev/null | awk '{printf "      Total: %.1f%%\n", $$1}' || echo "      (see above)"
 
 test: ## Run all tests (shows what passes/skips/fails)
 	$(PYTEST_V) || true
@@ -176,7 +221,8 @@ build: ## Build package
 
 clean: ## Clean build and cache artifacts
 	rm -rf dist/ build/ src/*.egg-info/ .pytest_cache/ .pytest_tmp/
-	rm -rf .coverage htmlcov/ .mypy_cache/ .ruff_cache/
+	rm -rf .coverage .coverage.* htmlcov/ .mypy_cache/ .ruff_cache/
+	rm -rf coverage*.xml pytest-*.xml
 	rm -rf docs/_build/ work/ .nextflow* nextflow_results/
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete

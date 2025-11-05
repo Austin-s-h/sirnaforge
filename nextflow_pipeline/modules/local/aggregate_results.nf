@@ -4,9 +4,6 @@ process AGGREGATE_RESULTS {
     publishDir "${params.outdir}/aggregated", mode: params.publish_dir_mode
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f':
-        'community.wave.seqera.io/library/python_biopython_pyyaml:a9b2e2e522b05e9f' }"
 
     input:
     path analysis_files

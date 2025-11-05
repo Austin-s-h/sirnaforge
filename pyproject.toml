@@ -69,7 +69,7 @@ dev = [
   "sphinx-design>=0.6.0",
   "sphinxcontrib-mermaid>=1.0.0",
   "jupyter>=1.0.0",
-  "jupyter-server>=2.14.1",  # CVE-2024-35178: NTLM credential leak on Windows
+  "jupyter-server>=2.14.1", # CVE-2024-35178: NTLM credential leak on Windows
   "matplotlib>=3.7.0",
   "seaborn>=0.12.0",
   "plotly>=5.15.0",
@@ -232,7 +232,9 @@ check_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_decorators = true
 disallow_untyped_defs = true
+explicit_package_bases = true
 ignore_missing_imports = true
+mypy_path = "src"
 no_implicit_optional = true
 pretty = true
 python_version = "3.9"
@@ -244,8 +246,6 @@ warn_return_any = true
 warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
-mypy_path = "src"
-explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 ignore_missing_imports = true
@@ -284,27 +284,17 @@ markers = [
   # === Core Test Types (mutually exclusive - pick ONE) ===
   "unit: Pure Python unit tests - fast, isolated, no external dependencies",
   "integration: End-to-end workflow tests - multi-component validation",
-  "smoke: Ultra-fast gate tests - MUST always pass in CI/CD",
-
-  # === Execution Environment (where test runs) ===
-  "runs_in_container: Test executes INSIDE Docker container (not on host)",
-
-  # === Requirement Markers (what test needs on host) ===
+  "smoke: Ultra-fast gate tests - MUST always pass in CI/CD", # === Execution Environment (where test runs) ===
+  "runs_in_container: Test executes INSIDE Docker container (not on host)", # === Requirement Markers (what test needs on host) ===
   "requires_docker: Test requires Docker daemon on host machine",
   "requires_nextflow: Test requires Nextflow pipeline execution",
   "requires_network: Test requires internet connectivity",
-  "requires_tools: Test requires external bioinformatics tools (bwa-mem2, samtools, etc.)",
-
-  # === Test Tiers (auto-assigned by conftest.py hook) ===
+  "requires_tools: Test requires external bioinformatics tools (bwa-mem2, samtools, etc.)", # === Test Tiers (auto-assigned by conftest.py hook) ===
   "dev: Local development tier - fast iteration (auto-assigned to unit tests)",
   "ci: CI/CD tier - quick validation (auto-assigned to smoke tests)",
-  "release: Release validation tier - comprehensive checks (auto-assigned to integration tests)",
-
-  # === Special Attributes ===
+  "release: Release validation tier - comprehensive checks (auto-assigned to integration tests)", # === Special Attributes ===
   "slow: Test takes >30 seconds to complete",
-  "asyncio: Async test requiring asyncio event loop",
-
-  # === DEPRECATED (will be removed in v0.3.0) ===
+  "asyncio: Async test requiring asyncio event loop", # === DEPRECATED (will be removed in v0.3.0) ===
   "docker: DEPRECATED - use @pytest.mark.requires_docker instead",
   "pipeline: DEPRECATED - use @pytest.mark.requires_nextflow instead",
   "nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
@@ -319,8 +309,18 @@ testpaths = ["tests"]
 
 # Coverage configuration
 [tool.coverage.run]
+data_file = ".coverage"
 omit = ["tests/*"]
+parallel = true
+relative_files = true
 source = ["src"]
+
+[tool.coverage.paths]
+source = [
+  "src/",
+  "/workspace/src/",
+  "*/sirnaforge/src/",
+]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -331,6 +331,12 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+[tool.coverage.html]
+directory = "htmlcov"
 
 # Bandit security linting configuration
 [tool.bandit]
