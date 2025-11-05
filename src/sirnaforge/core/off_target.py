@@ -930,6 +930,17 @@ def aggregate_offtarget_results(
     with final_summary.open("w") as f:
         f.write("Off-Target Analysis Aggregation Summary\n")
         f.write("=" * 50 + "\n")
+
+        # Check if genome analysis was performed
+        if len(analysis_files) == 0:
+            f.write("\nNOTE: No genome/transcriptome off-target analysis was performed.\n")
+            f.write("This occurs when no genome FASTAs or BWA indices are provided.\n")
+            f.write("Only lightweight miRNA seed match analysis was run.\n")
+            f.write("\nTo enable genome off-target analysis, provide:\n")
+            f.write("  - genome_fastas: species:path pairs for reference genomes\n")
+            f.write("  - genome_indices: species:index_prefix pairs for pre-built BWA indices\n")
+            f.write("=" * 50 + "\n\n")
+
         f.write(f"Total off-target hits: {len(all_hits)}\n")
         f.write(f"Species analyzed: {', '.join(species_list)}\n")
         f.write(f"Analysis files processed: {len(analysis_files)}\n")

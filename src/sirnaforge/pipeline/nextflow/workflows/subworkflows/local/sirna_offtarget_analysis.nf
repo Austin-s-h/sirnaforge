@@ -98,6 +98,10 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     ch_all_analysis = OFFTARGET_ANALYSIS.out.analysis.collect().ifEmpty([])
     ch_all_summary = OFFTARGET_ANALYSIS.out.summary.collect().ifEmpty([])
 
+    // Add miRNA analysis results to the collection
+    ch_all_analysis = ch_all_analysis.mix(MIRNA_SEED_ANALYSIS.out.analysis)
+    ch_all_summary = ch_all_summary.mix(MIRNA_SEED_ANALYSIS.out.summary)
+
     // Extract species list for aggregation
     ch_genome_species = ch_genome_indices
         .map { species, index_path -> species }

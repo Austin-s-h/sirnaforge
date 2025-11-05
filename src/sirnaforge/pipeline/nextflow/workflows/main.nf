@@ -96,9 +96,17 @@ workflow SIRNAFORGE_OFFTARGET {
 
     // If no genomes specified, skip genome analysis (miRNA-only mode)
     if (!params.genome_fastas && !params.genome_indices) {
-        log.info "No genome FASTAs or indices provided"
+        log.info ""
+        log.info "=" * 80
+        log.info "NOTE: No genome FASTAs or indices provided"
         log.info "Genome/transcriptome off-target analysis: DISABLED"
         log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
+        log.info ""
+        log.info "To enable genome off-target analysis, provide either:"
+        log.info "  --genome_fastas 'species:path,species2:path2' OR"
+        log.info "  --genome_indices 'species:index_prefix,species2:index_prefix2'"
+        log.info "=" * 80
+        log.info ""
     }
 
     //

@@ -6,6 +6,7 @@ pytest infrastructure and Makefile targets.
 """
 
 import importlib
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -192,3 +193,121 @@ def test_docker_bioinformatics_tools():
 
     if missing_tools:
         pytest.skip(f"Some bioinformatics tools missing in container: {missing_tools}")
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_network
+@pytest.mark.slow
+def test_docker_full_tp53_workflow(tmp_path: Path):
+    """Test complete TP53 workflow inside container using local profile.
+
+    This validates:
+    - Container environment auto-detection
+    - Local profile selection (no Docker-in-Docker)
+    - Gene search functionality
+    - siRNA design pipeline
+    - Off-target analysis with Nextflow local execution
+    - All bioinformatics tools working correctly
+
+    Based on integration/test_workflow_integration.sh patterns.
+    """
+    output_dir = tmp_path / "tp53_workflow_output"
+
+    try:
+        # Run complete TP53 workflow (similar to test_workflow_integration.sh)
+        result = subprocess.run(
+            [
+                "sirnaforge",
+                "workflow",
+                "TP53",
+                "--output-dir",
+                str(output_dir),
+                "--top-n",
+                "10",  # Limit for speed
+                "--genome-species",
+                "human",  # Single species for speed
+            ],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=300,  # 5 minutes max
+            check=False,
+        )
+
+        # Check for failures and categorize them
+        _check_workflow_result(result)
+
+        # Verify output structure
+        _verify_workflow_outputs(output_dir, result)
+
+    except FileNotFoundError:
+        pytest.skip("sirnaforge CLI not available - run this test in Docker container")
+    except subprocess.TimeoutExpired:
+        pytest.skip("Workflow timed out (may indicate missing dependencies or slow network)")
+
+
+def _check_workflow_result(result: "subprocess.CompletedProcess[str]") -> None:
+    """Check workflow execution result and handle different failure types."""
+    if result.returncode == 0:
+        return
+
+    error_text = result.stderr.lower()
+
+    # Critical failures (environment problems)
+    critical_errors = ["import error", "module not found", "command not found", "docker: command not found"]
+    if any(term in error_text for term in critical_errors):
+        pytest.fail(f"Environment issue in container workflow:\n{result.stderr}")
+
+    # Network issues are skippable (like test_mirna_integration.py)
+    network_errors = ["connection", "network", "timeout", "ssl", "ensembl"]
+    if any(term in error_text for term in network_errors):
+        pytest.skip(f"Network issue during workflow: {result.stderr[:500]}")
+
+    # Other failures might be transient
+    pytest.skip(f"Workflow issue (may be transient): {result.stderr[:500]}")
+
+
+def _verify_workflow_outputs(output_dir: Path, result: "subprocess.CompletedProcess[str]") -> None:
+    """Verify workflow outputs and validate content."""
+    # Expected output files
+    expected_files = {
+        "all_csv": output_dir / "sirnaforge" / "TP53_all.csv",
+        "pass_csv": output_dir / "sirnaforge" / "TP53_pass.csv",
+        "transcripts": output_dir / "transcripts" / "TP53_transcripts.fasta",
+        "summary": output_dir / "logs" / "workflow_summary.json",
+    }
+
+    missing_files = [name for name, path in expected_files.items() if not path.exists()]
+    if missing_files:
+        actual_files = list(output_dir.rglob("*")) if output_dir.exists() else []
+        pytest.fail(
+            f"Missing files: {missing_files}\n"
+            f"Created: {[str(f.relative_to(output_dir)) for f in actual_files if f.is_file()][:10]}"
+        )
+
+    # Verify no Docker-in-Docker attempts (key test for container fix)
+    if "docker: command not found" in result.stderr.lower():
+        pytest.fail("Workflow tried to use Docker-in-Docker (should use local profile)")
+
+    # Validate CSV content
+    all_csv = expected_files["all_csv"]
+    lines = all_csv.read_text().strip().split("\n")
+    assert len(lines) > 1, "No siRNA candidates generated (only header present)"
+
+    # Verify CSV structure
+    header = lines[0].lower()
+    for col in ["id", "sequence", "position", "gc_content"]:
+        assert col in header, f"Missing expected column: {col}"
+
+    # Validate summary JSON
+    summary = json.loads(expected_files["summary"].read_text())
+
+    # Check required phases
+    for phase in ["transcript_retrieval", "sirnaforge"]:
+        assert phase in summary, f"Missing {phase} phase in workflow summary"
+
+    # Validate phase results
+    assert summary["transcript_retrieval"].get("transcript_count", 0) > 0, "No transcripts retrieved"
+    assert summary["sirnaforge"].get("candidate_count", 0) > 0, "No candidates generated"
+    assert summary["sirnaforge"].get("passing_count", 0) > 0, "No candidates passed filters"

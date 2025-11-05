@@ -1,6 +1,7 @@
 process OFFTARGET_ANALYSIS {
     tag "$species"
     label 'process_medium'
+    publishDir "${params.outdir}/genome", mode: params.publish_dir_mode
 
     input:
     tuple val(species), val(index_path), path(candidates_fasta)
