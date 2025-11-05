@@ -380,18 +380,52 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 - End Stability (ΔΔG): +2 to +6 kcal/mol
 
 
+## Development Quick Reference
+
+For contributors and developers, siRNAforge uses `make` commands for streamlined workflows:
+
+### Essential Make Commands
+
+**Quick Setup**
+```bash
+make dev              # One-command setup (install + hooks)
+make install          # Install production dependencies only
+```
+
+**Testing**
+```bash
+make test-dev         # Fast unit tests (~15s)
+make test-ci          # Smoke tests with coverage
+make test-release     # Full validation
+make test-unit        # Unit tests only
+```
+
+**Code Quality**
+```bash
+make lint             # Check code quality
+make format           # Auto-format code
+make check            # format + test-dev
+```
+
+**Docker**
+```bash
+make docker-build     # Build Docker image
+make docker-test      # Test inside container
+make docker-run       # Run workflow (GENE=TP53)
+```
+
+**Documentation**
+```bash
+make docs             # Build documentation
+make docs-serve       # Serve at localhost:8000
+```
+
+Run `make help` for complete list of commands.
+
+📖 **[Full development guide →](developer/development.md)** 
+
 ## Next Steps
 
-- **� [Usage Examples](usage_examples.md)** - Comprehensive real-world examples
+- **📖 [Usage Examples](usage_examples.md)** - Comprehensive real-world examples
 - **⚙️ [CLI Reference](cli_reference.md)** - Complete parameter documentation
 - **🧬 [Custom Scoring Guide](tutorials/custom_scoring.md)** - Advanced thermodynamic principles
-
-## Troubleshooting
-
-### Common Issues
-
-**Command not found**: Run `uv run sirnaforge` instead of `sirnaforge`
-**No candidates found**: Try relaxing GC content with `--gc-min 25 --gc-max 70`
-**Slow performance**: Use `--skip-structure` for faster processing
-
-> **Need help?** Check our [Development Guide](developer/development.md) or open an issue on GitHub.

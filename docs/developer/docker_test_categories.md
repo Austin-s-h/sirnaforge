@@ -1,98 +1,98 @@
 # Docker Test Categories
 
-Test categorization for CI/CD pre-release handling.
+siRNAforge uses a tier-based testing approach integrated with Docker for comprehensive validation.
 
-## Test Types
+## Test Tiers (Auto-assigned by conftest.py)
 
-### Smoke Tests (Must Always Pass)
-**Purpose:** Basic Docker functionality
-**Command:** `make docker-test-smoke`
-**CI:** Must pass for ALL releases
+### Development Tier (`dev` marker)
+**Purpose:** Fast validation for active development
+**Command:** `make test-dev` or `make docker-test` (in container)
+**Expected:** ~15 seconds, ~30 tests
 
+- Unit tests only
+- No external dependencies
+- No Docker required (unless in container)
+- Fast feedback during development
+
+### CI Tier (`ci` marker)
+**Purpose:** Quick validation for CI/CD pipelines
+**Command:** `make test-ci`
+**Expected:** ~40 seconds, with coverage reports
+
+- Smoke tests (quick sanity checks)
+- Basic Docker functionality
 - CLI availability and help
-- Package imports
-- Basic version commands
-- Test data validation
+- Must always pass in CI
 
-### Integration Tests (Can Fail in Pre-release)
-**Purpose:** Complex workflows
-**Command:** `make docker-test-integration`
-**CI:** Can fail in pre-release, must pass for full release
+### Release Tier (`release` marker)
+**Purpose:** Comprehensive validation before release
+**Command:** `make test-release`
+**Expected:** ~60 seconds, all tests + coverage
 
+- Full integration tests
 - Off-target analysis workflows
 - Nextflow pipeline execution
 - Bioinformatics tool integration
-- Production configuration
+- Must pass before release
 
-## 🚦 CI/CD Workflow Logic
+## Docker Testing
 
-### Pre-release Mode (`prerelease: true`)
-```
-✅ Smoke tests pass → Docker image published
-⚠️  Integration tests can fail → Release still created with warning
-```
-
-### Full Release Mode (`prerelease: false`)
-```
-✅ Smoke tests pass → Continue to integration
-✅ Integration tests pass → Docker image published
-❌ Either test category fails → Release blocked
-```
-
-## 📋 Make Commands
-
+### Build Docker Image
 ```bash
-# Test individual categories
-make docker-test-smoke        # Ultra-fast, must always pass
-make docker-test-integration  # Complex workflows, can fail in pre-release
-
-# Combined testing
-make docker-test-fast         # Both categories combined
-make docker-test-categories   # Test the categorization setup
-
-# Resource-aware testing
-make docker-test-smoke        # 256MB RAM, <30s
-make docker-test-integration  # 2GB RAM, 1-2min
-make docker-test-full         # 8GB RAM, 5-10min
+make docker-build
+# Expected: ~15-20 minutes first time
+# Creates sirnaforge:latest image with all tools
 ```
 
-## 🧪 Implementation Details
+### Run Tests in Container
+```bash
+# Run Docker-specific tests inside container
+make docker-test
+# Expected: ~60 seconds
+# Validates: Container environment, all tools, integrations
 
-### Pytest Markers
+# Interactive debugging
+make docker-shell
+# Interactive bash prompt inside container
+```
+
+## 🎯 Pytest Markers
+
+Tests are organized using pytest markers for flexible execution:
+
 ```python
-@pytest.mark.smoke           # Basic Docker functionality - MUST pass
-@pytest.mark.docker_integration  # Complex workflows - can fail in pre-release
-@pytest.mark.docker          # All Docker-based tests
+# Tier markers (auto-assigned)
+@pytest.mark.dev          # Development tier - fast unit tests
+@pytest.mark.ci           # CI tier - smoke tests
+@pytest.mark.release      # Release tier - full integration
+
+# Type markers
+@pytest.mark.unit              # Unit tests
+@pytest.mark.integration       # Integration tests  
+@pytest.mark.smoke             # Quick sanity checks
+
+# Requirement markers
+@pytest.mark.requires_docker    # Needs Docker daemon
+@pytest.mark.requires_network   # Needs internet
+@pytest.mark.requires_nextflow  # Needs Nextflow
+@pytest.mark.runs_in_container  # Runs inside Docker
 ```
 
-### Marker Combinations
+### Running Tests by Marker
 ```bash
-# Smoke tests only
-pytest -m 'docker and smoke'
+# By tier
+pytest -m "dev"      # Fast development tests
+pytest -m "ci"       # CI smoke tests
+pytest -m "release"  # Full release validation
 
-# Integration tests only
-pytest -m 'docker and (docker_integration or (not smoke))'
+# By type
+pytest -m "unit"          # Unit tests only
+pytest -m "integration"   # Integration tests only
 
-# All Docker tests
-pytest -m 'docker'
+# By requirements
+pytest -m "requires_docker"    # Docker tests only
+pytest -m "not requires_network"  # Skip network tests
+
+# Combinations
+pytest -m "unit and not requires_network"
 ```
-
-### GitHub Actions Jobs
-- `test-docker-smoke`: Always required, blocks release if failed
-- `test-docker-integration`: Uses `continue-on-error` in pre-release mode
-
-## 🔍 Validation Script
-
-Use the validation script to test your setup:
-```bash
-./scripts/test_docker_categories.sh
-```
-
-This script runs both test categories and shows how they behave differently in pre-release vs full release scenarios.
-
----
-
-**Related Documentation:**
-- [Testing Guide](testing_guide.md) - Complete testing documentation
-- Release workflow in `.github/workflows/release.yml`
-- Docker documentation in `docker/` directory
