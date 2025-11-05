@@ -311,7 +311,6 @@ testpaths = ["tests"]
 [tool.coverage.run]
 data_file = ".coverage"
 omit = ["tests/*"]
-parallel = true
 relative_files = true
 source = ["src"]
 

@@ -29,35 +29,29 @@ PYTEST_Q = $(PYTEST) -q
 
 # Default target
 help: ## Show available commands
-	@echo "🧬 siRNAforge - Modern Python siRNA Design Toolkit"
+	@echo "siRNAforge - Modern Python siRNA Design Toolkit"
 	@echo ""
-	@echo "📦 Setup & Installation"
+	@echo "Setup & Installation"
 	@echo "  make install          Install production dependencies"
-	@echo "  make install-dev      Install with dev dependencies (default)"
-	@echo "  make dev              Quick dev setup (install-dev + pre-commit)"
+	@echo "  make dev              Quick dev setup (install + pre-commit)"
 	@echo ""
-	@echo "🧪 Testing - By Tier (matches marker structure)"
+	@echo "Testing - By Tier (matches marker structure)"
 	@echo "  make test-dev         Fast unit tests for dev iteration (~15s)"
 	@echo "  make test-ci          Smoke tests for CI/CD"
 	@echo "  make test-release     Complete release validation (host + container tests with combined coverage)"
 	@echo "  make test             All tests (may have skips/failures)"
-	@echo "  make all              Same as 'make test'"
 	@echo ""
-	@echo "🧪 Testing - By Type"
-	@echo "  make test-unit        Unit tests only"
-	@echo "  make test-integration Integration tests only"
-	@echo ""
-	@echo "🐳 Docker Testing"
+	@echo "Docker Testing"
 	@echo "  make docker-test      Run container validation tests INSIDE Docker"
 	@echo "  make docker-build     Build Docker image"
 	@echo "  make docker-shell     Interactive shell in Docker"
 	@echo ""
-	@echo "🔧 Code Quality"
+	@echo "Code Quality"
 	@echo "  make lint             Check code quality (ruff + mypy)"
 	@echo "  make format           Auto-format code"
 	@echo "  make check            lint + format + test-dev"
 	@echo ""
-	@echo "🚀 Other"
+	@echo "Other"
 	@echo "  make docs             Build documentation"
 	@echo "  make clean            Clean build artifacts"
 	@echo "  make build            Build package"
@@ -70,13 +64,10 @@ help: ## Show available commands
 install: ## Install production dependencies
 	uv sync --no-dev
 
-install-dev: ## Install with dev dependencies
+dev: ## Quick dev setup (install + pre-commit)
 	uv sync
-	@echo "✅ Development environment ready!"
-
-dev: install-dev ## Quick dev setup with pre-commit hooks
 	uv run pre-commit install
-	@echo "🚀 Ready for development!"
+	@echo "Ready for development!"
 
 #==============================================================================
 # TESTING - BY TIER (Matches marker structure)
@@ -90,71 +81,36 @@ test-ci: ## CI tier - smoke tests for CI/CD
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
 test-release: docker-ensure ## Release tier - comprehensive validation (host + container tests with combined coverage)
-	@echo "🔍 Step 1/4: Running host-based tests with coverage..."
-	@rm -f .coverage .coverage.* coverage*.xml pytest-*.xml 2>/dev/null || true
+	@echo "Step 1/3: Running host-based tests with coverage..."
+	@rm -f .coverage coverage*.xml pytest-*.xml 2>/dev/null || true
 	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container" \
 		-n 0 \
 		--cov=sirnaforge --cov-report= \
 		--junitxml=pytest-host-report.xml
-	@if [ -f .coverage ]; then mv .coverage .coverage.host; echo "✓ Host coverage saved"; else echo "⚠️  No host coverage generated"; fi
 	@echo ""
-	@echo "🐳 Step 2/4: Running container tests with coverage..."
+	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
 	docker run --rm $(DOCKER_MOUNT_FLAGS) -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c \
 		"pip install --quiet pytest pytest-cov && \
 		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' \
-		--cov=sirnaforge --cov-report= \
+		--cov=sirnaforge --cov-append --cov-report= \
 		--junitxml=/workspace/pytest-container-report.xml \
 		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
-	@if [ -f .coverage ]; then mv .coverage .coverage.container; echo "✓ Container coverage saved"; else echo "⚠️  No container coverage generated"; fi
 	@echo ""
-	@echo "📊 Step 3/4: Combining coverage data..."
-	@if [ -f .coverage.host ] && [ -f .coverage.container ]; then \
-		echo "Combining both host and container coverage..."; \
-		uv run coverage combine .coverage.host .coverage.container; \
-	elif [ -f .coverage.host ]; then \
-		echo "Only host coverage available, using that..."; \
-		cp .coverage.host .coverage; \
-	elif [ -f .coverage.container ]; then \
-		echo "Only container coverage available, using that..."; \
-		cp .coverage.container .coverage; \
-	else \
-		echo "❌ No coverage data found!"; \
-		exit 1; \
-	fi
-	@echo ""
-	@echo "📈 Step 4/4: Generating combined reports..."
+	@echo "Step 3/3: Generating combined coverage reports..."
 	@uv run coverage report -m
 	@uv run coverage xml -o coverage.xml
 	@uv run coverage html -d htmlcov
 	@echo ""
-	@echo "✅ Release validation complete!"
-	@echo "   📄 Reports:"
-	@echo "      - Host tests: pytest-host-report.xml"
-	@echo "      - Container tests: pytest-container-report.xml"
-	@echo "      - Combined coverage XML: coverage.xml"
-	@echo "      - Combined coverage HTML: htmlcov/index.html"
+	@echo "Release validation complete!"
+	@echo "   Test Reports: pytest-host-report.xml, pytest-container-report.xml"
+	@echo "   Coverage: coverage.xml (HTML: htmlcov/index.html)"
 	@echo ""
-	@echo "   📊 Coverage Summary:"
-	@uv run coverage report --format=total 2>/dev/null | awk '{printf "      Total: %.1f%%\n", $$1}' || echo "      (see above)"
+	@echo "   Summary:"
+	@uv run coverage report --format=total 2>/dev/null | awk '{printf "      Total Coverage: %.1f%%\n", $$1}' || echo "      (see above)"
 
 test: ## Run all tests (shows what passes/skips/fails)
 	$(PYTEST_V) || true
-
-all: test  ## Alias for 'make test'
-
-#==============================================================================
-# TESTING - BY TYPE
-#==============================================================================
-
-test-unit: ## Unit tests only
-	$(PYTEST_V) -m "unit"
-
-test-integration: ## Integration tests only
-	$(PYTEST_V) -m "integration"
-
-test-cov: ## Tests with coverage report
-	$(PYTEST) --cov=sirnaforge --cov-report=html --cov-report=term-missing
 
 #==============================================================================
 # TESTING - SPECIAL CATEGORIES
@@ -175,7 +131,7 @@ test-requires-nextflow: ## Tests requiring Nextflow
 
 docker-build: ## Build Docker image
 	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
-	@echo "✅ Docker image: $(DOCKER_IMAGE):$(VERSION)"
+	@echo "Docker image: $(DOCKER_IMAGE):$(VERSION)"
 
 docker-ensure: ## Ensure Docker image exists (build if missing)
 	@docker image inspect $(DOCKER_IMAGE):latest >/dev/null 2>&1 || $(MAKE) docker-build
@@ -202,12 +158,12 @@ lint: ## Check code quality
 	uv run ruff check src tests
 	uv run ruff format --check src tests
 	uv run mypy src
-	@echo "✅ Code quality checks passed!"
+	@echo "Code quality checks passed!"
 
 format: ## Auto-format code
 	uv run ruff format src tests
 	uv run ruff check --fix src tests
-	@echo "✅ Code formatted!"
+	@echo "Code formatted!"
 
 check: format test-dev ## Quick check: format + fast tests
 
@@ -217,7 +173,7 @@ check: format test-dev ## Quick check: format + fast tests
 
 build: ## Build package
 	uv build
-	@echo "✅ Package built in dist/"
+	@echo "Package built in dist/"
 
 clean: ## Clean build and cache artifacts
 	rm -rf dist/ build/ src/*.egg-info/ .pytest_cache/ .pytest_tmp/
@@ -226,7 +182,7 @@ clean: ## Clean build and cache artifacts
 	rm -rf docs/_build/ work/ .nextflow* nextflow_results/
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
-	@echo "✅ Cleaned!"
+	@echo "Cleaned!"
 
 version: ## Show version
 	@echo "siRNAforge version: $(VERSION)"
@@ -237,10 +193,10 @@ version: ## Show version
 
 docs: ## Build documentation
 	uv run sphinx-build -b html docs docs/_build/html
-	@echo "✅ Docs: docs/_build/html/index.html"
+	@echo "Docs: docs/_build/html/index.html"
 
 docs-serve: docs ## Serve docs locally
-	@echo "🌐 http://localhost:8000 (Ctrl+C to stop)"
+	@echo "http://localhost:8000 (Ctrl+C to stop)"
 	@cd docs/_build/html && uv run python -m http.server 8000
 
 #==============================================================================
@@ -255,11 +211,11 @@ pre-commit: ## Run pre-commit hooks
 	uv run pre-commit run --all-files
 
 nextflow-check: ## Check Nextflow installation
-	@uv run nextflow -version || echo "❌ Nextflow not available"
+	@uv run nextflow -version || echo "Nextflow not available"
 
 security: ## Run security checks
-	@echo "🔐 Running security scans..."
+	@echo "Running security scans..."
 	@uv run bandit -r src/ -f json -o bandit-report.json || true
 	@uv run bandit -r src/ -q || true
 	@(uv run safety check --output json 2>&1 | grep -v "UserWarning" > safety-report.json) || echo '{"vulnerabilities": [], "scan_failed": true}' > safety-report.json
-	@echo "✅ Security scan complete (reports: bandit-report.json, safety-report.json)"
+	@echo "Security scan complete (reports: bandit-report.json, safety-report.json)"

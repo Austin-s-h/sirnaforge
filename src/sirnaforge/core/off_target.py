@@ -946,7 +946,7 @@ def aggregate_offtarget_results(
 def run_mirna_seed_analysis(
     candidates_file: Union[str, Path],
     candidate_id: str,
-    mirna_db: str, # Review, can this be linked to a class describing all miRNA database protocol/ABC?
+    mirna_db: str,  # Review, can this be linked to a class describing all miRNA database protocol/ABC?
     mirna_species: list[str],
     output_dir: Union[str, Path],
 ) -> Path:
