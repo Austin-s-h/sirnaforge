@@ -1233,6 +1233,9 @@ def run_mirna_seed_analysis(
             results_df["database"] = mirna_db
             results_df["mirna_id"] = results_df["rname"]  # BWA uses rname for reference ID
 
+            # Remove the rname column as it's not part of the MiRNAAlignmentSchema
+            results_df = results_df.drop(columns=["rname"])
+
             # Validate and coerce types using Pandera schema
             try:
                 validated_df = MiRNAAlignmentSchema.validate(results_df, lazy=True)
