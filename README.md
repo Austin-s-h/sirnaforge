@@ -1,233 +1,311 @@
-# siRNAforge
-
 <div align="center">
-  <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="200"/>
-
-  **Computational platform for siRNA design and off-target analysis**
+  <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="300"/>
+  
+  <h1>siRNAforge</h1>
+  
+  <p><em>From gene to silencing — design high-specificity siRNAs with confidence</em></p>
 
   [![Release](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml)
   [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
   [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
   [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/austin-s-h/packages/container/package/sirnaforge)
-  [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/austin-s-h/sirnaforge/blob/main/LICENSE)
+  [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://austin-s-h.github.io/sirnaforge)
+  [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+  [**Quick Start**](#-quick-start) •
+  [**Documentation**](https://austin-s-h.github.io/sirnaforge) •
+  [**Examples**](#-usage-examples) •
+  [**API Reference**](docs/api_reference.rst)
 </div>
 
 ---
 
-siRNAforge is a computational toolkit for designing small interfering RNAs with integrated multi-species off-target analysis. The platform combines thermodynamic modeling, secondary structure prediction, and genome-wide alignment to identify high-specificity siRNA candidates for gene silencing applications.
+## 🧬 What is siRNAforge?
 
-## Overview
+**siRNAforge** is a production-ready tool for designing small interfering RNAs (siRNAs) with integrated multi-species off-target analysis. Built for researchers who need reliable, high-specificity gene silencing candidates.
 
-siRNAforge provides an end-to-end workflow from gene query to ranked siRNA candidates:
+### Why siRNAforge?
 
-- **Multi-database transcript retrieval** - Ensembl, RefSeq, GENCODE integration
-- **Thermodynamic and structural scoring** - ViennaRNA-based secondary structure prediction
-- **Multi-species off-target analysis** - BWA-MEM2 alignment across human, rat, and rhesus macaque genomes
-- **Nextflow pipeline integration** - Containerized, scalable workflow execution
-- **Chemical modification tracking** - Metadata support for 2'-O-methyl, 2'-fluoro, phosphorothioate linkages
+- 🎯 **End-to-end workflow** — From gene symbol to ranked candidates in one command
+- 🔬 **Multi-species validation** — Off-target analysis across human, rat, and rhesus macaque genomes
+- 🐍 **Developer-friendly** — Modern Python API with full type hints and Pydantic models
 
-**Supported Python versions:** 3.9–3.12 (Python 3.13+ pending ViennaRNA compatibility)
+### Key Features
 
-## Documentation
+| Feature | Description |
+|---------|-------------|
+| **🔍 Multi-database search** | Automatic transcript retrieval from Ensembl, RefSeq (TODO), and GENCODE (TODO) |
+| **🌡️ Thermodynamic scoring** | ViennaRNA-based secondary structure prediction and stability analysis |
+| **🎯 Transcriptome Off-target analysis** | Transcriptome BWA-MEM2 `transcriptome` search with mismatch tolerance control |
+| **🧬 miRNA seed avoidance** | MirGeneDB, MirBase (TODO) BWA-MEM2 `mirna_seed` search for known matches to miRNA seed regions |
+| **⚙️ Nextflow pipeline** | Scalable, containerized execution for high-throughput analysis |
+| **💉 Chemical modifications** | Track 2'-O-methyl, 2'-fluoro, and phosphorothioate patterns |
+| **📊 Rich output** | Structured CSV, FASTA, and JSON reports with comprehensive metadata |
 
-**📚 [View Full Documentation](docs/)**
+**Supported Python versions:** 3.9, 3.10, 3.11, 3.12 *(Python 3.13+ pending ViennaRNA compatibility)*
 
-### Getting Started
-- [Installation Guide](docs/getting_started.md#installation) - Docker, conda, and local setup
-- [Quick Start Tutorial](docs/getting_started.md#quick-start) - Your first analysis in minutes
-- [Usage Examples](docs/usage_examples.md) - Common workflows and patterns
+---
 
-### Technical Reference
-- [API Reference](docs/api_reference.rst) - Complete Python API documentation
-- [CLI Reference](docs/cli_reference.md) - Command-line interface
-- [Thermodynamic Scoring](docs/thermodynamic_guide.md) - Algorithm details
-- [Chemical Modifications](docs/modification_annotation_spec.md) - Metadata specification
+## 📦 Installation
 
-### Development
-- [Testing Guide](docs/developer/testing_guide.md) - Test suite and execution
-- [Contributing Guide](CONTRIBUTING.md) - Development workflow
-- [Developer Documentation](docs/developer/) - Architecture and design
+Choose your installation method based on your needs:
 
-## Installation
-
-### Docker (Recommended)
-
-Pre-built images include all bioinformatics dependencies:
-
+**🐋 Docker (Recommended)** — Complete toolkit with all bioinformatics dependencies
 ```bash
 docker pull ghcr.io/austin-s-h/sirnaforge:latest
+```
 
+**⚡ uv (Development)** — Fast Python package manager for local development
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/austin-s-h/sirnaforge && cd sirnaforge
+uv sync --dev
+
+# Alternatively, with make
+make dev
+```
+
+**🐍 conda** — Traditional package management
+```bash
+conda env create -f environment-dev.yml
+conda activate sirnaforge
+```
+
+ **[Complete installation guide with troubleshooting →](docs/getting_started.md)**
+
+---
+
+## 🚀 Quick Start
+
+Get your first results in 30 seconds:
+
+```bash
+# Docker
 docker run -v $(pwd):/workspace -w /workspace \
   ghcr.io/austin-s-h/sirnaforge:latest \
   sirnaforge workflow TP53 --output-dir results
+
+# Local
+uv run sirnaforge workflow TP53 --output-dir results
 ```
 
-### Local Installation
+**What you get:**
+- Transcript sequences from Ensembl
+- Thermodynamically-scored siRNA candidates  
+- Off-target analysis (Docker only)
+- Ranked results in CSV and FASTA formats
 
-Using the `uv` package manager:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-make install-dev
-```
-
-**→ [Complete Installation Guide](docs/getting_started.md#installation)**
-
-## Quick Start
-
-### Basic Workflow
-
-Design siRNAs for a target gene:
-
-```bash
-sirnaforge workflow TP53 --output-dir results
-```
-
-### Advanced Configuration
-
-Multi-species analysis with custom parameters:
+Need more control? Customize with parameters:
 
 ```bash
 sirnaforge workflow BRCA1 \
   --genome-species "human,rat,rhesus" \
   --gc-min 40 --gc-max 60 \
-  --sirna-length 21 \
   --top-n 50 \
-  --output-dir brca1_analysis
+  --design-mode mirna \
+  --output-dir results
 ```
 
-### Component Usage
-
-Individual pipeline components:
-
-```bash
-# Retrieve transcript sequences
-sirnaforge search TP53 --output transcripts.fasta
-
-# Design siRNAs from sequences
-sirnaforge design transcripts.fasta --output results.csv
-
-# Validate input files
-sirnaforge validate candidates.fasta
-```
-
-**→ [Usage Examples](docs/usage_examples.md) • [CLI Reference](docs/cli_reference.md)**
-
-## Output Structure
-
-siRNAforge generates structured output directories with comprehensive analysis results:
-
-```
-output_directory/
-├── transcripts/              # Retrieved sequences
-├── orf_reports/             # Coding sequence validation
-├── sirnaforge/              # siRNA design results
-│   ├── {gene}_sirna_results.csv
-│   ├── {gene}_top_candidates.fasta
-│   └── {gene}_candidate_summary.txt
-├── off_target/              # Off-target analysis
-│   ├── basic_analysis.json
-│   └── results/
-└── workflow_summary.json
-```
-
-**→ [Output Format Guide](docs/getting_started.md#output-formats)**
-
-## Development
-
-### Setup
-
-```bash
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-make install-dev
-```
-
-### Development Commands
-
-```bash
-make test-local-python  # Fast unit tests
-make lint               # Code quality checks
-make check              # Lint + tests
-make docs               # Build documentation
-```
-
-**→ [Testing Guide](docs/developer/testing_guide.md) • [Contributing Guide](CONTRIBUTING.md)**
-
-### Code Quality
-
-- **Type Safety** - Full mypy coverage with Pydantic models
-- **Formatting** - Black and ruff automated code formatting
-- **Testing** - >90% test coverage with pytest
-- **CI/CD** - Automated quality checks and multi-version testing
-
-
-
-## System Requirements
-
-### Docker Environment (Recommended)
-
-The Docker image includes all required bioinformatics tools:
-
-- Nextflow (≥25.04.0)
-- BWA-MEM2 (≥2.2.1)
-- SAMtools (≥1.19.2)
-- ViennaRNA (≥2.7.0)
-- AWS CLI (≥2.0)
-- Java 17
-
-### Local Development
-
-Bioinformatics dependencies can be installed via conda for local development.
-
-**→ [Dependency Guide](docs/getting_started.md#dependencies)**
-
-## Architecture
-
-siRNAforge implements a modular pipeline architecture:
-
-```
-Gene Query → Transcript Retrieval → siRNA Design → Off-target Analysis → Ranked Results
-```
-
-**Core components:**
-
-- **Gene Search** (`sirnaforge.data.gene_search`) - Multi-database transcript retrieval
-- **siRNA Design** (`sirnaforge.core.design`) - Thermodynamic and structural scoring
-- **Off-target Analysis** (`sirnaforge.core.off_target`) - BWA-MEM2-based genome alignment
-- **Nextflow Pipeline** (`nextflow_pipeline/`) - Scalable workflow execution
-
-**→ [Developer Documentation](docs/developer/)**
-
-## Citation
-
-If you use siRNAforge in your research, please cite:
-
-```
-[Citation information to be added upon publication]
-```
-
-## License
-
-This project is licensed under the MIT License. See **[LICENSE](LICENSE)** for details.
-
-## Support
-
-- **Issues & Bug Reports** - [GitHub Issues](https://github.com/austin-s-h/sirnaforge/issues)
-- **Documentation** - [docs/](docs/)
-- **Contributing** - [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## Acknowledgments
-
-siRNAforge integrates several open-source bioinformatics tools:
-
-- **ViennaRNA Package** - RNA secondary structure prediction
-- **BWA-MEM2** - High-performance sequence alignment
-- **Nextflow** - Scalable workflow orchestration
-- **BioPython** - Computational biology utilities
+📖 **[Usage examples and workflows →](docs/usage_examples.md)**  
+📖 **[Complete CLI reference →](docs/cli_reference.md)**
 
 ---
 
-**Note:** This software is provided for research use. Portions of the codebase were developed with AI assistance and have been reviewed and validated by human developers.
+## � Documentation
+
+<table>
+<tr>
+<td width="50%">
+
+### 🎯 For Users
+- **[Getting Started](docs/getting_started.md)** — Installation, first run, quick reference
+- **[Usage Examples](docs/usage_examples.md)** — Real-world workflows and patterns  
+- **[CLI Reference](docs/cli_reference.md)** — Complete command documentation
+- **[Gene Search](docs/gene_search.md)** — Multi-database transcript retrieval
+- **[Thermodynamic Guide](docs/thermodynamic_guide.md)** — Scoring algorithms explained
+
+</td>
+<td width="50%">
+
+### 🔧 For Developers
+- **[API Reference](docs/api_reference.rst)** — Python API documentation
+- **[Tutorials](docs/tutorials/)** — Python API, pipelines, custom scoring
+- **[Architecture](docs/developer/architecture.md)** — System design and components
+- **[Testing Guide](docs/developer/testing_guide.md)** — Running and writing tests
+- **[Contributing](CONTRIBUTING.md)** — Development workflow
+
+</td>
+</tr>
+</table>
+
+📘 **[Browse full documentation →](https://austin-s-h.github.io/sirnaforge)**
+
+---
+
+## 🎯 Use Cases
+
+**🧬 Basic Gene Silencing**
+```bash
+sirnaforge workflow EGFR --output-dir egfr_analysis
+```
+Design siRNAs for a single target gene with default parameters.
+
+**🔬 Multi-Species Validation**
+```bash
+sirnaforge workflow TP53 --genome-species "human,rat,rhesus"
+```
+Check off-target potential across multiple model organisms.
+
+**🧪 miRNA Seed Avoidance**
+```bash
+sirnaforge workflow BRCA1 --design-mode mirna --mirna-species "human,mouse"
+```
+Filter candidates that match microRNA seed regions to reduce off-target effects.
+
+**⚙️ High-Throughput Analysis**
+```bash
+nextflow run nextflow_pipeline/main.nf --gene_list genes.txt
+```
+Process hundreds of genes with containerized Nextflow pipeline.
+
+**💊 Chemical Modifications**
+```bash
+sirnaforge workflow KRAS --modification-file examples/modification_patterns/fda_approved_onpattro.json
+```
+Track and apply FDA-approved modification patterns.
+
+📖 **[More examples and tutorials →](docs/usage_examples.md)**
+
+---
+
+## 🏗️ Architecture
+
+siRNAforge implements a modular pipeline designed for both interactive use and high-throughput automation:
+
+```
+Gene Symbol → Transcript Retrieval → siRNA Design → Off-target Analysis → Ranked Candidates
+```
+
+**Core Components:**
+- **Gene Search** — Multi-database transcript retrieval (Ensembl, RefSeq, GENCODE)
+- **Design Engine** — Thermodynamic scoring with ViennaRNA integration
+- **Off-target Analysis** — BWA-MEM2 genome-wide alignment
+- **Nextflow Pipeline** — Scalable containerized execution
+
+📖 **[Architecture documentation →](docs/developer/architecture.md)**
+
+---
+
+## 🔬 System Requirements
+
+### Docker Environment (Recommended)
+All dependencies included in the image:
+- Nextflow ≥25.04.0
+- BWA-MEM2 ≥2.2.1  
+- SAMtools ≥1.19.2
+- ViennaRNA ≥2.7.0
+- Python 3.9-3.12
+
+### Local Development
+Python-only features work immediately. Off-target analysis requires Docker or manual installation of bioinformatics tools.
+
+📖 **[Dependency details →](docs/getting_started.md#dependencies)**
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! siRNAforge uses modern Python tooling with `make` workflows for efficient development.
+
+### Quick Development Setup
+
+```bash
+# One-command setup
+git clone https://github.com/austin-s-h/sirnaforge
+cd sirnaforge
+make dev  # Installs deps + pre-commit hooks
+```
+
+### Essential Make Commands
+
+**🧪 Testing (By Tier)**
+```bash
+make test-dev        # Fast unit tests (~15s) - for development iteration
+make test-ci         # Smoke tests for CI/CD with coverage reports
+make test-release    # Comprehensive validation (all tests + coverage)
+make test            # All tests (shows passes/skips/fails)
+```
+
+**🧪 Testing (By Type)**
+```bash
+make test-unit              # Unit tests only
+make test-integration       # Integration tests only  
+make test-requires-docker   # Tests requiring Docker daemon
+make test-requires-network  # Tests requiring network access
+```
+
+**🔧 Code Quality**
+```bash
+make lint       # Check code quality (ruff + mypy)
+make format     # Auto-format code
+make check      # format + test-dev (quick validation)
+```
+
+**🐳 Docker**
+```bash
+make docker-build    # Build Docker image
+make docker-test     # Run tests INSIDE container
+make docker-shell    # Interactive shell in container
+make docker-run      # Run workflow (e.g., make docker-run GENE=TP53)
+```
+
+**📚 Documentation**
+```bash
+make docs        # Build HTML documentation
+make docs-serve  # Serve docs locally at localhost:8000
+```
+
+**🔧 Other**
+```bash
+make clean      # Clean build artifacts
+make version    # Show current version
+make help       # Show all available commands
+```
+
+📖 **[Complete development guide →](docs/developer/development.md)**  
+📖 **[Contributing guidelines →](CONTRIBUTING.md)**  
+📖 **[Testing strategies →](docs/developer/testing_guide.md)**
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License. See **[LICENSE](LICENSE)** for details.
+
+---
+
+## 📞 Support & Community
+
+- **🐛 Bug Reports** — [GitHub Issues](https://github.com/austin-s-h/sirnaforge/issues)
+- **📖 Documentation** — [austin-s-h.github.io/sirnaforge](https://austin-s-h.github.io/sirnaforge)
+- **💬 Questions** — [GitHub Discussions](https://github.com/austin-s-h/sirnaforge/discussions)
+- **📝 Changelog** — [CHANGELOG.md](CHANGELOG.md)
+
+---
+
+## 🙏 Acknowledgments
+
+siRNAforge integrates several open-source bioinformatics tools:
+
+- **[ViennaRNA Package](https://www.tbi.univie.ac.at/RNA/)** — RNA secondary structure prediction
+- **[BWA-MEM2](https://github.com/bwa-mem2/bwa-mem2)** — High-performance sequence alignment  
+- **[Nextflow](https://www.nextflow.io/)** — Scalable workflow orchestration
+- **[BioPython](https://biopython.org/)** — Computational biology utilities
+
+---
+
+<div align="center">
+  <sub>Built with ❤️ for the research community</sub>
+  <br>
+  <sub>Portions developed with AI assistance • Reviewed and validated by human developers</sub>
+</div>

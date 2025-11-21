@@ -186,6 +186,7 @@ uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv
 - **Test failures:** 1 Docker integration failure is normal
 - **SSL warnings:** Normal in docs builds, can ignore
 - **Network timeouts:** Use `--input-fasta` with local files
+- **Emojis:** Avoid emojis in Makefiles and scripts for compatibility across terminals and systems
 
 ### Quick Health Check
 ```bash

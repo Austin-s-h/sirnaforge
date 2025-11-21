@@ -3,9 +3,6 @@ process SPLIT_CANDIDATES {
     label 'process_low'
 
     conda "${moduleDir}/environment.yml"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6':
-        'community.wave.seqera.io/library/python_biopython:e5b315e81e28f4c6' }"
 
     input:
     tuple val(meta), path(candidates_fasta)

@@ -69,32 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2025-10-24
 
-```markdown
-## [X.Y.Z] - YYYY-MM-DD
-
-### ✨ New Features
-- Brief description of new features
-
-### 🔧 Improvements
-- Improvements to existing functionality
-- Performance enhancements
-
-### 🐛 Bug Fixes
-- Fixed specific issues
-- Resolved edge cases
-
-### 📊 Performance
-- Performance improvements with metrics if available
-
-### 🧪 Testing
-- New tests added
-- Test coverage improvements
-```
-
----
-
-## [0.2.1] - 2025-10-24
-
 ### ✨ New Features
 - **Chemical Modification System**: Comprehensive infrastructure for siRNA chemical modifications
   - Default modification patterns automatically applied to designed siRNAs (standard_2ome, minimal_terminal, maximal_stability)

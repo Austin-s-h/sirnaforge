@@ -16,16 +16,14 @@ import hashlib
 import json
 import math
 import os
-import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
-import psutil
 from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
@@ -35,8 +33,16 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
-from sirnaforge.models.sirna import DesignMode, DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignParameters,
+    DesignResult,
+    FilterCriteria,
+    OffTargetFilterCriteria,
+    SiRNACandidate,
+)
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
@@ -59,10 +65,11 @@ class WorkflowConfig:
         database: DatabaseType = DatabaseType.ENSEMBL,
         design_params: DesignParameters | None = None,
         # off-target selection now always equals design_params.top_n
-        nextflow_config: dict | None = None,
+        nextflow_config: Mapping[str, Any] | None = None,
         genome_species: list[str] | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
+        transcriptome_fasta: str | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
@@ -81,11 +88,12 @@ class WorkflowConfig:
         self.design_params = design_params or DesignParameters()
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
-        self.nextflow_config = dict(nextflow_config) if nextflow_config else {}
+        self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
         default_genomes = genome_species or ["human", "rat", "rhesus"]
-        self.genome_species = list(dict.fromkeys(default_genomes))
+        self.genome_species: list[str] = list(dict.fromkeys(default_genomes))
         self.mirna_database = mirna_database
-        self.mirna_species = list(dict.fromkeys(mirna_species)) if mirna_species else []
+        self.mirna_species: list[str] = list(dict.fromkeys(mirna_species)) if mirna_species else []
+        self.transcriptome_fasta = transcriptome_fasta
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
@@ -154,14 +162,14 @@ class SiRNAWorkflow:
             design_results = await self.step3_design_sirnas(transcripts, progress)
             progress.advance(main_task)
 
-            # Step 4: Generate Reports
-            progress.update(main_task, description="[cyan]Generating reports...")
-            await self.step4_generate_reports(design_results)
-            progress.advance(main_task)
-
-            # Step 5: Off-target Analysis
+            # Step 4: Off-target Analysis (must run before reports to update candidate data)
             progress.update(main_task, description="[cyan]Running off-target analysis...")
             offtarget_results = await self.step5_offtarget_analysis(design_results)
+            progress.advance(main_task)
+
+            # Step 5: Generate Reports (after off-target analysis completes)
+            progress.update(main_task, description="[cyan]Generating reports...")
+            await self.step4_generate_reports(design_results)
             progress.advance(main_task)
 
         total_time = time.time() - start_time
@@ -205,7 +213,7 @@ class SiRNAWorkflow:
                 },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
-            "orf_summary": self._summarize_orf_results(orf_results),
+            "orf_summary": self._summarize_orf_results(cast(dict[str, Any], orf_results)),
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
             "offtarget_summary": offtarget_results,
@@ -590,6 +598,18 @@ class SiRNAWorkflow:
                         "delta_dg_end": cs.get("delta_dg_end"),
                         "melting_temp_c": cs.get("melting_temp_c"),
                         "off_target_count": c.off_target_count,
+                        "off_target_penalty": c.off_target_penalty,
+                        # Detailed transcriptome off-target metrics
+                        "transcriptome_hits_total": _maybe_attr(c, "transcriptome_hits_total", default=0),
+                        "transcriptome_hits_0mm": _maybe_attr(c, "transcriptome_hits_0mm", default=0),
+                        "transcriptome_hits_1mm": _maybe_attr(c, "transcriptome_hits_1mm", default=0),
+                        "transcriptome_hits_2mm": _maybe_attr(c, "transcriptome_hits_2mm", default=0),
+                        "transcriptome_hits_seed_0mm": _maybe_attr(c, "transcriptome_hits_seed_0mm", default=0),
+                        # Detailed miRNA off-target metrics
+                        "mirna_hits_total": _maybe_attr(c, "mirna_hits_total", default=0),
+                        "mirna_hits_0mm_seed": _maybe_attr(c, "mirna_hits_0mm_seed", default=0),
+                        "mirna_hits_1mm_seed": _maybe_attr(c, "mirna_hits_1mm_seed", default=0),
+                        "mirna_hits_high_risk": _maybe_attr(c, "mirna_hits_high_risk", default=0),
                         # miRNA-specific columns (nullable)
                         "guide_pos1_base": _maybe_attr(c, "guide_pos1_base"),
                         "pos1_pairing_state": _maybe_attr(c, "pos1_pairing_state"),
@@ -846,7 +866,53 @@ class SiRNAWorkflow:
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
         return input_fasta
 
-    async def _run_nextflow_offtarget_analysis(self, candidates: list[SiRNACandidate], input_fasta: Path) -> dict:
+    async def _prepare_transcriptome_database(self, transcriptome_ref: str) -> dict[str, Any] | None:
+        """Prepare transcriptome database from user-provided reference.
+
+        Args:
+            transcriptome_ref: Can be:
+                - Pre-configured source name (e.g., 'ensembl_human_cdna')
+                - Local file path
+                - HTTP(S)/FTP URL
+
+        Returns:
+            Dictionary with 'fasta' and 'index' paths, or None if preparation failed
+        """
+        try:
+            manager = TranscriptomeManager()
+
+            # Check if it's a pre-configured source
+            if transcriptome_ref in manager.SOURCES:
+                logger.info(f"Using pre-configured transcriptome source: {transcriptome_ref}")
+                raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+                if raw_result is None:
+                    return None
+
+                species = manager.SOURCES[transcriptome_ref].species or "transcriptome"
+                enriched_result: dict[str, Any] = {"species": species}
+                enriched_result.update(raw_result)
+                return enriched_result
+
+            # Otherwise treat as custom path/URL
+            logger.info(f"Processing custom transcriptome reference: {transcriptome_ref}")
+            raw_custom = manager.get_custom_transcriptome(transcriptome_ref, build_index=True)
+            if raw_custom is None:
+                return None
+
+            enriched_custom: dict[str, Any] = {"species": "transcriptome"}
+            enriched_custom.update(raw_custom)
+            return enriched_custom
+
+        except Exception as e:
+            logger.exception(f"Failed to prepare transcriptome database from {transcriptome_ref}")
+            console.print(f"⚠️  Transcriptome preparation error: {e}")
+            return None
+
+    async def _run_nextflow_offtarget_analysis(
+        self,
+        candidates: list[SiRNACandidate],
+        input_fasta: Path,
+    ) -> dict[str, Any]:
         """Run Nextflow-based off-target analysis."""
         # Configure Nextflow runner
         runner = self._setup_nextflow_runner()
@@ -856,6 +922,47 @@ class SiRNAWorkflow:
             # Do not fall back to basic analysis here; report skipped instead
             return {"status": "skipped", "reason": "nextflow_unavailable"}
 
+        # Process transcriptome FASTA if provided
+        additional_params: dict[str, Any] = dict(self.config.nextflow_config)
+        if self.config.transcriptome_fasta:
+            try:
+                transcriptome_result = await self._prepare_transcriptome_database(self.config.transcriptome_fasta)
+                if transcriptome_result and transcriptome_result.get("index"):
+                    # Pass the index path to Nextflow for transcriptome analysis
+                    species_value = transcriptome_result.get("species")
+                    transcriptome_species = species_value if isinstance(species_value, str) else "transcriptome"
+
+                    index_value = transcriptome_result["index"]
+                    transcriptome_index = str(index_value)
+
+                    # Ensure the species appears in the Nextflow genome species list for logging consistency
+                    if transcriptome_species not in self.config.genome_species:
+                        self.config.genome_species.append(transcriptome_species)
+
+                    # Use transcriptome_indices parameter (preferred) instead of genome_indices
+                    indices_entry = f"{transcriptome_species}:{transcriptome_index}"
+                    existing_indices = additional_params.get("transcriptome_indices")
+                    if existing_indices:
+                        entries = [token.strip() for token in existing_indices.split(",") if token.strip()]
+                        if indices_entry not in entries:
+                            entries.append(indices_entry)
+                            additional_params["transcriptome_indices"] = ",".join(entries)
+                    else:
+                        additional_params["transcriptome_indices"] = indices_entry
+
+                    additional_params["transcriptome_index"] = transcriptome_index
+                    additional_params["transcriptome_species"] = transcriptome_species
+
+                    console.print(
+                        f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
+                        f"(index: {transcriptome_result['index'].name})"
+                    )
+                else:
+                    console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
+            except Exception as e:
+                logger.exception("Failed to prepare transcriptome database")
+                console.print(f"⚠️  Transcriptome preparation failed: {e}")
+
         # Execute pipeline
         console.print("🚀 Running embedded Nextflow off-target analysis...")
         nf_output_dir = self.config.output_dir / "off_target" / "results"
@@ -864,7 +971,7 @@ class SiRNAWorkflow:
             input_file=input_fasta,
             output_dir=nf_output_dir,
             genome_species=self.config.genome_species,
-            additional_params=self.config.nextflow_config,
+            additional_params=additional_params,
             show_progress=True,
         )
 
@@ -877,27 +984,26 @@ class SiRNAWorkflow:
     def _setup_nextflow_runner(self) -> NextflowRunner:
         """Configure Nextflow runner with user settings."""
         # Auto-detect environment to use appropriate profile
-        # Use for_testing() in CI/test environments, for_production() otherwise
+        # This will automatically switch to 'local' profile when running inside a container
+        nf_config = NextflowConfig.auto_configure()
 
-        # Check if we're in a test/constrained environment
-        is_ci = bool(os.getenv("CI") or os.getenv("GITHUB_ACTIONS"))
-        is_pytest = "pytest" in os.getenv("_", "").lower() or "pytest" in " ".join(sys.argv)
-        available_memory_gb = psutil.virtual_memory().total / (1024**3)
-
-        # Use smoke profile if severely constrained (<2GB)
-        # Use test profile if moderately constrained (<8GB) or in CI/pytest
-        # Use production profile otherwise
-        if available_memory_gb < 2.0:
-            nf_config = NextflowConfig(profile="smoke", max_memory="512.MB", max_cpus=1)
-        elif available_memory_gb < 8.0 or is_ci or is_pytest:
-            nf_config = NextflowConfig.for_testing()
-        else:
-            nf_config = NextflowConfig.for_production()
-
-        # Apply user overrides
+        # Apply user overrides from workflow config, BUT preserve auto-detected profile
+        # unless explicitly overridden AND we're not in a container
         if self.config.nextflow_config:
             for key, value in self.config.nextflow_config.items():
+                # Don't allow profile override when running in container
+                # (container detection takes precedence for safety)
+                if key == "profile" and nf_config.is_running_in_docker():
+                    logger.warning(
+                        f"Ignoring user profile override '{value}' - running in container, using 'local' profile"
+                    )
+                    continue
                 setattr(nf_config, key, value)
+
+        # Log the execution environment for debugging
+        env_info = nf_config.get_environment_info()
+        logger.info(f"Nextflow execution: {env_info.get_execution_summary()}")
+
         return NextflowRunner(nf_config)
 
     def _validate_nextflow_environment(self, runner: NextflowRunner) -> bool:
@@ -918,9 +1024,27 @@ class SiRNAWorkflow:
         console.print("✅ Nextflow pipeline completed successfully")
         parsed = await self._parse_nextflow_results(output_dir)
 
-        # Map parsed results back to candidates
+        # Integrate off-target results into candidates with filtering
+        filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
+        updated_candidates, stats = self._integrate_offtarget_results(candidates, parsed, filter_criteria)
+
+        # Log filtering statistics
+        if stats.get("candidates_with_offtargets", 0) > 0:
+            console.print(f"📊 Off-target analysis: {stats['candidates_with_offtargets']} candidates with hits")
+            if stats.get("failed_perfect_match", 0) > 0:
+                console.print(f"   ❌ {stats['failed_perfect_match']} failed: perfect transcriptome matches")
+            if stats.get("failed_transcriptome_1mm", 0) > 0:
+                console.print(f"   ❌ {stats['failed_transcriptome_1mm']} failed: 1mm transcriptome threshold")
+            if stats.get("failed_transcriptome_2mm", 0) > 0:
+                console.print(f"   ❌ {stats['failed_transcriptome_2mm']} failed: 2mm transcriptome threshold")
+            if stats.get("failed_mirna_seed", 0) > 0:
+                console.print(f"   ❌ {stats['failed_mirna_seed']} failed: miRNA perfect seed matches")
+            if stats.get("failed_high_risk_mirna", 0) > 0:
+                console.print(f"   ❌ {stats['failed_high_risk_mirna']} failed: high-risk miRNA hits")
+
+        # Map parsed results for return structure
         mapped = {}
-        for c in candidates:
+        for c in updated_candidates:
             qid = c.id
             entry = parsed.get("results", {}).get(qid)
             if entry:
@@ -929,8 +1053,6 @@ class SiRNAWorkflow:
                     "off_target_score": entry.get("off_target_score", 0.0),
                     "hits": entry.get("hits", []),
                 }
-                # Update candidate object fields
-                self._update_candidate_scores(c, mapped[qid])
             else:
                 mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
 
@@ -940,17 +1062,8 @@ class SiRNAWorkflow:
             "output_dir": str(output_dir),
             "results": mapped,
             "execution_metadata": results,
+            "filtering_stats": stats,
         }
-
-    def _update_candidate_scores(self, candidate: SiRNACandidate, result_data: dict) -> None:
-        """Update candidate object with off-target analysis results."""
-        try:
-            candidate.off_target_count = result_data["off_target_count"]
-            candidate.off_target_penalty = result_data["off_target_score"]
-        except KeyError as e:
-            logger.warning(f"Missing key in result data: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error updating candidate scores: {e}")
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict:
         """Fallback basic off-target analysis."""
@@ -992,15 +1105,24 @@ class SiRNAWorkflow:
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-        # Prefer combined TSV if present
-        combined_tsv = output_dir / "combined_offtargets.tsv"
-        combined_json = output_dir / "combined_offtargets.json"
+        # Check for combined results in aggregated subdirectory (new pipeline structure)
+        aggregated_dir = output_dir / "aggregated"
+        combined_tsv = (
+            aggregated_dir / "combined_offtargets.tsv"
+            if aggregated_dir.exists()
+            else output_dir / "combined_offtargets.tsv"
+        )
+        combined_json = (
+            aggregated_dir / "combined_offtargets.json"
+            if aggregated_dir.exists()
+            else output_dir / "combined_offtargets.json"
+        )
 
         def _ensure_row_key(d: dict, key: str, default: int = 0) -> None:
             if key not in d:
                 d[key] = default
 
-        if combined_tsv.exists():
+        if combined_tsv.exists() and combined_tsv.stat().st_size > 100:  # Must have more than just header
             with combined_tsv.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
                 for row in reader:
@@ -1038,8 +1160,17 @@ class SiRNAWorkflow:
                     entry["hits"].append(item)
 
         else:
-            # Fallback: scan for any per-species TSV files under output_dir
-            files = list(output_dir.glob("**/*_offtargets.tsv"))
+            # Fallback: scan for genome and mirna analysis files
+            genome_files = (
+                list((output_dir / "genome").glob("*_analysis.tsv")) if (output_dir / "genome").exists() else []
+            )
+            mirna_files = list((output_dir / "mirna").glob("*_analysis.tsv")) if (output_dir / "mirna").exists() else []
+            files = genome_files + mirna_files
+
+            if not files:
+                # Last resort: scan for any TSV files
+                files = list(output_dir.glob("**/*_offtargets.tsv"))
+
             for fpath in files:
                 with Path(fpath).open() as fh:
                     reader = csv.DictReader(fh, delimiter="\t")
@@ -1057,6 +1188,178 @@ class SiRNAWorkflow:
                         entry["hits"].append(row)
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
+
+    def _check_offtarget_filters(
+        self,
+        transcriptome_0mm: int,
+        transcriptome_1mm: int,
+        transcriptome_2mm: int,
+        mirna_0mm_seed: int,
+        mirna_high_risk: int,
+        total_hits: int,
+        filter_criteria: OffTargetFilterCriteria,
+    ) -> tuple[bool, str | None]:
+        """Check if candidate fails off-target filters.
+
+        Returns:
+            Tuple of (should_fail, fail_reason)
+        """
+        # Define filter checks with their thresholds and messages
+        checks = [
+            (
+                filter_criteria.max_transcriptome_hits_0mm,
+                transcriptome_0mm,
+                f"TRANSCRIPTOME_PERFECT_MATCH ({transcriptome_0mm} hits)",
+            ),
+            (
+                filter_criteria.max_transcriptome_hits_1mm,
+                transcriptome_1mm,
+                f"TRANSCRIPTOME_1MM ({transcriptome_1mm} hits)",
+            ),
+            (
+                filter_criteria.max_transcriptome_hits_2mm,
+                transcriptome_2mm,
+                f"TRANSCRIPTOME_2MM ({transcriptome_2mm} hits)",
+            ),
+            (filter_criteria.max_mirna_perfect_seed, mirna_0mm_seed, f"MIRNA_PERFECT_SEED ({mirna_0mm_seed} hits)"),
+            (filter_criteria.max_total_offtarget_hits, total_hits, f"TOTAL_OFFTARGETS ({total_hits} hits)"),
+        ]
+
+        # Check all threshold-based filters
+        for threshold, value, message in checks:
+            if threshold is not None and value > threshold:
+                return True, message
+
+        # Check high-risk miRNA (boolean flag)
+        if filter_criteria.fail_on_high_risk_mirna and mirna_high_risk > 0:
+            return True, f"HIGH_RISK_MIRNA ({mirna_high_risk} hits)"
+
+        return False, None
+
+    def _integrate_offtarget_results(  # noqa: PLR0912
+        self,
+        candidates: list[SiRNACandidate],
+        offtarget_data: dict[str, Any],
+        filter_criteria: OffTargetFilterCriteria | None = None,
+    ) -> tuple[list[SiRNACandidate], dict[str, int]]:
+        """Integrate off-target analysis results into siRNA candidates.
+
+        Args:
+            candidates: List of siRNA candidates to update
+            offtarget_data: Off-target results from Nextflow pipeline
+            filter_criteria: Optional filtering criteria for off-targets
+
+        Returns:
+            Tuple of (updated candidates, statistics dict)
+        """
+        if not offtarget_data or offtarget_data.get("status") != "completed":
+            logger.warning("No completed off-target data available for integration")
+            return candidates, {}
+
+        if filter_criteria is None:
+            filter_criteria = OffTargetFilterCriteria()
+
+        results = offtarget_data.get("results", {})
+        stats = {
+            "candidates_analyzed": len(candidates),
+            "candidates_with_offtargets": 0,
+            "failed_perfect_match": 0,
+            "failed_transcriptome_1mm": 0,
+            "failed_transcriptome_2mm": 0,
+            "failed_mirna_seed": 0,
+            "failed_high_risk_mirna": 0,
+        }
+
+        for candidate in candidates:
+            candidate_id = candidate.id
+            offtarget_entry = results.get(candidate_id, {})
+
+            if not offtarget_entry or not offtarget_entry.get("hits"):
+                continue
+
+            stats["candidates_with_offtargets"] += 1
+
+            # Parse hit details
+            transcriptome_0mm = 0
+            transcriptome_1mm = 0
+            transcriptome_2mm = 0
+            transcriptome_seed_0mm = 0
+            mirna_total = 0
+            mirna_0mm_seed = 0
+            mirna_1mm_seed = 0
+            mirna_high_risk = 0
+
+            for hit in offtarget_entry.get("hits", []):
+                nm = int(hit.get("nm", 0))
+                seed_mismatches = int(hit.get("seed_mismatches", 0))
+                offtarget_score = float(hit.get("offtarget_score", 0.0))
+
+                # Check if this is a miRNA hit (has species/database/mirna_id fields)
+                is_mirna = "mirna_id" in hit or "database" in hit
+
+                if is_mirna:
+                    mirna_total += 1
+                    if seed_mismatches == 0:
+                        mirna_0mm_seed += 1
+                        # High risk: perfect seed + low penalty score (likely strong binding)
+                        if offtarget_score < 5.0:
+                            mirna_high_risk += 1
+                    elif seed_mismatches == 1:
+                        mirna_1mm_seed += 1
+                else:
+                    # Transcriptome hit
+                    if nm == 0:
+                        transcriptome_0mm += 1
+                    elif nm == 1:
+                        transcriptome_1mm += 1
+                    elif nm == 2:
+                        transcriptome_2mm += 1
+
+                    if seed_mismatches == 0:
+                        transcriptome_seed_0mm += 1
+
+            # Update candidate fields
+            candidate.transcriptome_hits_total = transcriptome_0mm + transcriptome_1mm + transcriptome_2mm
+            candidate.transcriptome_hits_0mm = transcriptome_0mm
+            candidate.transcriptome_hits_1mm = transcriptome_1mm
+            candidate.transcriptome_hits_2mm = transcriptome_2mm
+            candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
+            candidate.mirna_hits_total = mirna_total
+            candidate.mirna_hits_0mm_seed = mirna_0mm_seed
+            candidate.mirna_hits_1mm_seed = mirna_1mm_seed
+            candidate.mirna_hits_high_risk = mirna_high_risk
+            candidate.off_target_count = len(offtarget_entry.get("hits", []))
+            candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
+
+            # Apply filtering criteria
+            should_fail, fail_reason = self._check_offtarget_filters(
+                transcriptome_0mm,
+                transcriptome_1mm,
+                transcriptome_2mm,
+                mirna_0mm_seed,
+                mirna_high_risk,
+                candidate.off_target_count,
+                filter_criteria,
+            )
+
+            # Update filter status and stats if failed
+            if should_fail and fail_reason:
+                candidate.passes_filters = fail_reason  # type: ignore
+                logger.info(f"Candidate {candidate_id} failed off-target filter: {fail_reason}")
+
+                # Update appropriate stat counter
+                if "PERFECT_MATCH" in fail_reason:
+                    stats["failed_perfect_match"] += 1
+                elif "1MM" in fail_reason:
+                    stats["failed_transcriptome_1mm"] += 1
+                elif "2MM" in fail_reason:
+                    stats["failed_transcriptome_2mm"] += 1
+                elif "MIRNA_PERFECT_SEED" in fail_reason:
+                    stats["failed_mirna_seed"] += 1
+                elif "HIGH_RISK_MIRNA" in fail_reason:
+                    stats["failed_high_risk_mirna"] += 1
+
+        return candidates, stats
 
     def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
         """Generate ORF validation report in tab-delimited format with schema validation.
@@ -1179,7 +1482,7 @@ class SiRNAWorkflow:
         with report_file.open("w") as f:
             f.write("# Candidate summary report generation disabled.\n")
 
-    def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict:
+    def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict[str, Any]:
         """Summarize transcript retrieval results."""
         return {
             "total_transcripts": len(transcripts),
@@ -1193,7 +1496,7 @@ class SiRNAWorkflow:
             ),
         }
 
-    def _summarize_orf_results(self, orf_results: dict) -> dict:
+    def _summarize_orf_results(self, orf_results: dict[str, Any]) -> dict[str, Any]:
         """Summarize ORF validation results."""
         results = orf_results.get("results", {})
         valid_count = sum(1 for r in results.values() if r.has_valid_orf)
@@ -1204,7 +1507,7 @@ class SiRNAWorkflow:
             "validation_rate": valid_count / len(results) if results else 0,
         }
 
-    def _summarize_design_results(self, design_results: DesignResult) -> dict:
+    def _summarize_design_results(self, design_results: DesignResult) -> dict[str, Any]:
         """Summarize siRNA design results."""
         base = design_results.get_summary()
         total = design_results.total_candidates
@@ -1232,6 +1535,7 @@ async def run_sirna_workflow(
     genome_species: list[str] | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
+    transcriptome_fasta: str | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
@@ -1252,6 +1556,7 @@ async def run_sirna_workflow(
         genome_species: Species genomes for off-target analysis
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
+        transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
@@ -1306,6 +1611,7 @@ async def run_sirna_workflow(
         genome_species=genome_species or ["human", "rat", "rhesus"],
         mirna_database=mirna_database,
         mirna_species=mirna_species,
+        transcriptome_fasta=transcriptome_fasta,
         log_file=log_file,
         write_json_summary=write_json_summary,
         input_source=resolved_input,

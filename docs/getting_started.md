@@ -4,7 +4,7 @@ Get from installation to your first siRNA analysis in minutes, with essential co
 
 ## Installation
 
-### Development (uv - Recommended)
+### Development (Makefile + uv - Recommended)
 
 `````{tab-set}
 
@@ -16,7 +16,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Clone and setup
 git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
-uv sync --dev
+make dev              # One-command setup: installs dependencies + pre-commit hooks
+# OR for just dependencies:
+make install-dev      # Install dev dependencies via uv sync --dev
 ```
 ````
 
@@ -28,13 +30,13 @@ irm https://astral.sh/uv/install.ps1 | iex
 # Clone and setup
 git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
-uv sync --dev
+uv sync --dev        # Windows: use uv directly (make requires WSL/MinGW)
 ```
 ````
 
 `````
 
-**Prerequisites:** Python 3.9-3.12, Git
+**Prerequisites:** Python 3.9-3.12, Git, Make (Linux/macOS)
 
 ### Production (Docker - Full Stack)
 
@@ -55,7 +57,7 @@ docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge version
 # Clone and build
 git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
-make docker  # Builds complete image with Nextflow, BWA-MEM2, SAMtools, ViennaRNA
+make docker-build     # Builds complete image with Nextflow, BWA-MEM2, SAMtools, ViennaRNA
 
 # Test the build
 docker run --rm sirnaforge:latest sirnaforge version
@@ -73,10 +75,15 @@ docker run --rm sirnaforge:latest sirnaforge version
 
 `````{tab-set}
 
-````{tab-item} uv (Development)
+````{tab-item} Development (uv/make)
 ```bash
+# Direct uv commands
 uv run sirnaforge --help
 uv run sirnaforge version
+
+# Or using make for quick checks
+make version          # Show version via make
+make check            # Run linting + fast tests to verify setup
 ```
 ````
 
@@ -109,6 +116,10 @@ docker run --rm \
   ghcr.io/austin-s-h/sirnaforge:latest \
   sirnaforge workflow TP53 --output-dir my_first_analysis
 ```
+
+:::{note}
+**Container Execution Note**: When running inside the container, siRNAforge automatically detects the container environment and uses the `local` profile for Nextflow workflows (avoiding Docker-in-Docker). All bioinformatics tools (BWA-MEM2, SAMtools, ViennaRNA, Nextflow) are pre-installed and ready to use.
+:::
 ````
 
 `````
@@ -329,7 +340,7 @@ done
 
 `````{tab-set}
 
-````{tab-item} uv
+````{tab-item} Development (uv)
 ```bash
 # High-quality candidates
 uv run sirnaforge workflow GENE --gc-min 35 --gc-max 50 --top-n 30
@@ -342,6 +353,9 @@ uv run sirnaforge workflow GENE --genome-species "human,mouse,rat"
 
 # Custom parameters
 uv run sirnaforge workflow GENE --length 19 --gc-min 40 --max-poly-runs 2
+
+# Quick example using sample data
+make example          # Runs design on examples/sample_transcripts.fasta
 ```
 ````
 
@@ -366,6 +380,9 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 docker run --rm -v $(pwd):/workspace -w /workspace \
   ghcr.io/austin-s-h/sirnaforge:latest \
   sirnaforge workflow GENE --length 19 --gc-min 40 --max-poly-runs 2
+
+# Using make with Docker
+make docker-run GENE=TP53  # Simplified Docker workflow execution
 ```
 ````
 
@@ -380,18 +397,57 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 - End Stability (ΔΔG): +2 to +6 kcal/mol
 
 
+## Development Quick Reference
+
+For contributors and developers, siRNAforge uses **Make commands** for streamlined workflows powered by `uv`:
+
+### Essential Make Commands
+
+**Quick Setup**
+```bash
+make dev              # One-command setup: install deps + pre-commit hooks
+make install-dev      # Install dev dependencies (uv sync --dev)
+make install          # Install production dependencies only (uv sync --no-dev)
+```
+
+**Testing (Organized by Speed)**
+```bash
+make test-dev         # Fast unit tests (~15s) - for rapid iteration
+make test-ci          # Smoke tests with coverage - for CI/CD
+make test-release     # Full validation - for releases
+make test-unit        # Unit tests only
+make test             # All tests (may have skips/failures)
+```
+
+**Code Quality**
+```bash
+make lint             # Check code quality (ruff + mypy)
+make format           # Auto-format code (ruff)
+make check            # format + lint + test-dev
+```
+
+**Docker**
+```bash
+make docker-build     # Build Docker image
+make docker-test      # Run tests inside container
+make docker-run       # Run workflow (usage: make docker-run GENE=TP53)
+make docker-shell     # Interactive shell
+```
+
+**Documentation & Utilities**
+```bash
+make docs             # Build documentation
+make docs-serve       # Serve at localhost:8000
+make clean            # Clean build artifacts
+make version          # Show version
+```
+
+**Why Make?** The Makefile wraps `uv` commands for consistency, provides organized test tiers, and includes convenient shortcuts for Docker workflows. Run `make help` for complete command list.
+
+📖 **[Full development guide →](developer/development.md)**
+
 ## Next Steps
 
-- **� [Usage Examples](usage_examples.md)** - Comprehensive real-world examples
+- **📖 [Usage Examples](usage_examples.md)** - Comprehensive real-world examples
 - **⚙️ [CLI Reference](cli_reference.md)** - Complete parameter documentation
 - **🧬 [Custom Scoring Guide](tutorials/custom_scoring.md)** - Advanced thermodynamic principles
-
-## Troubleshooting
-
-### Common Issues
-
-**Command not found**: Run `uv run sirnaforge` instead of `sirnaforge`
-**No candidates found**: Try relaxing GC content with `--gc-min 25 --gc-max 70`
-**Slow performance**: Use `--skip-structure` for faster processing
-
-> **Need help?** Check our [Development Guide](developer/development.md) or open an issue on GitHub.

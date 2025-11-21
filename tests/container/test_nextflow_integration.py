@@ -143,7 +143,7 @@ def test_sirnaforge_nextflow_minimal_execution():
                     str(test_fasta),
                     "--output-dir",
                     str(output_dir),
-                    "--genome-species",
+                    "--species",
                     "human",
                     "--top-n",
                     "2",

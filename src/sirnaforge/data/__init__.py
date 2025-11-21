@@ -9,6 +9,7 @@ from .gene_search import (
     search_gene_sync,
     search_multiple_databases_sync,
 )
+from .transcriptome_manager import TranscriptomeManager
 
 __all__ = [
     "DatabaseType",
@@ -16,6 +17,7 @@ __all__ = [
     "GeneSearcher",
     "GeneSearchResult",
     "TranscriptInfo",
+    "TranscriptomeManager",
     "search_gene_sync",
     "search_multiple_databases_sync",
 ]

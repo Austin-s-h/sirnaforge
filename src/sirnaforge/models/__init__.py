@@ -15,6 +15,7 @@ from .off_target import (
     AlignmentStrand,
     AnalysisMode,
     AnalysisSummary,
+    MiRNADatabase,
     MiRNAHit,
     MiRNASummary,
     OffTargetHit,
@@ -57,4 +58,5 @@ __all__ = [
     "AggregatedMiRNASummary",
     "AlignmentStrand",
     "AnalysisMode",
+    "MiRNADatabase",
 ]

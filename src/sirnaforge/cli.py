@@ -412,6 +412,15 @@ def workflow(  # noqa: PLR0912
             "Defaults to mapping the --species selections"
         ),
     ),
+    transcriptome_fasta: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-fasta",
+        help=(
+            "Path or URL to transcriptome FASTA file for off-target analysis. "
+            "Can be a local file, HTTP(S) URL, or pre-configured source name "
+            "(e.g., 'ensembl_human_cdna'). Will be cached and indexed automatically."
+        ),
+    ),
     gc_min: float = typer.Option(
         30.0,
         "--gc-min",
@@ -566,6 +575,7 @@ def workflow(  # noqa: PLR0912
                     genome_species=species_list,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
+                    transcriptome_fasta=transcriptome_fasta,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,

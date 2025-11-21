@@ -14,9 +14,9 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 class AlignmentStrand(str, Enum):
@@ -31,6 +31,20 @@ class AnalysisMode(str, Enum):
 
     MIRNA_SEED = "mirna_seed"
     TRANSCRIPTOME = "transcriptome"
+
+
+class MiRNADatabase(str, Enum):
+    """Supported miRNA database sources.
+
+    Values correspond to database identifiers used by MiRNADatabaseManager.
+    Using str enum allows seamless string comparison while providing validation.
+    """
+
+    MIRGENEDB = "mirgenedb"  # MirGeneDB - high-confidence, manually curated
+    MIRBASE = "mirbase"  # miRBase - comprehensive, all mature miRNAs
+    MIRBASE_HIGH_CONF = "mirbase_high_conf"  # miRBase high-confidence subset
+    MIRBASE_HAIRPIN = "mirbase_hairpin"  # miRBase precursor hairpins
+    TARGETSCAN = "targetscan"  # TargetScan miRNA family data
 
 
 # Base classes for shared functionality
@@ -139,7 +153,9 @@ class MiRNAHit(BaseAlignmentHit):
 
     # miRNA-specific information
     species: str = Field(description="Species of miRNA database")
-    database: str = Field(description="miRNA database name (mirgenedb, mirbase, etc.)")
+    database: Union[MiRNADatabase, str] = Field(
+        description="miRNA database source (mirgenedb, mirbase, mirbase_high_conf, etc.)"
+    )
     mirna_id: str = Field(description="miRNA identifier (e.g., hsa-miR-21-5p)")
 
     def to_dict(self) -> dict[str, Any]:
@@ -176,7 +192,10 @@ class BaseSummary(BaseModel):
 
     candidate_id: str = Field(description="Candidate identifier")
     total_sequences: int = Field(ge=0, description="Number of sequences analyzed")
-    total_hits: int = Field(ge=0, description="Total hits found")
+    total_hits: int = Field(
+        ge=0,
+        description="Total validated hits (high-quality seed region matches)",
+    )
 
     # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Analysis timestamp")
@@ -196,11 +215,23 @@ class AnalysisSummary(BaseSummary):
 
 
 class MiRNASummary(BaseSummary):
-    """Summary statistics for miRNA seed match analysis."""
+    """Summary statistics for miRNA seed match analysis.
 
-    mirna_database: str = Field(description="miRNA database used")
+    Note: total_hits represents validated, high-quality seed region matches.
+    hits_per_species represents raw alignment counts (may include low-quality matches).
+    """
+
+    mirna_database: Union[MiRNADatabase, str] = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
     species_analyzed: list[str] = Field(description="List of species analyzed")
-    hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
+    hits_per_species: dict[str, int] = Field(
+        default_factory=dict,
+        description="Raw alignment counts by species (includes low-quality matches)",
+    )
+    total_raw_alignments: int = Field(
+        default=0,
+        ge=0,
+        description="Total raw alignments across all species (sum of hits_per_species)",
+    )
 
     # Analysis parameters
     parameters: dict[str, Any] = Field(
@@ -225,6 +256,11 @@ class BaseAggregatedSummary(BaseModel):
     # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Aggregation timestamp")
 
+    @field_serializer("combined_tsv", "combined_json", "summary_file")
+    def serialize_path(self, path: Optional[Path]) -> Optional[str]:
+        """Serialize Path objects to strings for JSON compatibility."""
+        return str(path) if path is not None else None
+
 
 class AggregatedOffTargetSummary(BaseAggregatedSummary):
     """Summary of aggregated off-target results across multiple candidates and genomes."""
@@ -236,7 +272,7 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
     """Summary of aggregated miRNA results across multiple candidates."""
 
     total_mirna_hits: int = Field(ge=0, description="Total miRNA seed matches")
-    mirna_database: str = Field(description="miRNA database used")
+    mirna_database: Union[MiRNADatabase, str] = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
 
     hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
     hits_per_candidate: dict[str, int] = Field(default_factory=dict, description="Hit counts by candidate")

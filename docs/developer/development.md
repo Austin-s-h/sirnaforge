@@ -8,119 +8,198 @@ This guide covers development setup, contribution guidelines, and best practices
 
 ### Prerequisites
 
-You'll need the same prerequisites as regular installation, plus development tools:
-- Python 3.9-3.12, Git, uv (see [Getting Started](../getting_started.md))
-- Make (optional, for convenience commands)
+- Python 3.9-3.12
+- Git
+- `uv` package manager
+- `make` (optional but recommended)
 
-### Developer Installation
+### Quick Start
 
 ```bash
-# Clone the repository
+# Clone repository
 git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 
-# One-command development setup
-make install-dev
-
-# Verify development environment
-make test-local-python
-uv run sirnaforge --help
+# One-command setup (installs deps + pre-commit hooks)
+make dev
 ```
 
-### Manual Development Setup
+This runs:
+1. `uv sync` - Installs all dependencies with dev extras
+2. `uv run pre-commit install` - Sets up git hooks for code quality
+
+### Manual Setup
+
+If you prefer not to use `make`:
 
 ```bash
 # Install with development dependencies
-uv sync --group dev
+uv sync
 
-# Install pre-commit hooks for code quality
+# Install pre-commit hooks
 uv run pre-commit install
 
 # Verify installation
-uv run pytest -m "local_python"
+uv run sirnaforge --help
+```
+
+## Make Commands Reference
+
+siRNAforge uses a comprehensive `Makefile` for common development tasks. Run `make help` to see all available commands.
+
+### Testing Commands
+
+#### By Tier (Recommended)
+```bash
+make test-dev        # Fast unit tests (~15s) - development iteration
+make test-ci         # Smoke tests for CI/CD with coverage
+make test-release    # Comprehensive validation (all tests + coverage)
+make test            # All tests (may have skips/failures)
+```
+
+These tiers match the pytest marker structure:
+- `dev` tier: Fast unit tests for rapid iteration
+- `ci` tier: Smoke tests for CI/CD validation
+- `release` tier: Full integration and heavy tests
+
+#### By Requirements
+```bash
+make test-requires-docker    # Tests requiring Docker daemon
+make test-requires-network   # Tests requiring network access
+make test-requires-nextflow  # Tests requiring Nextflow
+```
+
+### Code Quality Commands
+
+```bash
+make lint       # Check code quality (ruff + mypy)
+make format     # Auto-format code (ruff format + fixes)
+make check      # Quick validation: format + test-dev
+make pre-commit # Run pre-commit hooks on all files
+make security   # Run security scans (bandit + safety)
+```
+
+### Docker Commands
+
+```bash
+make docker-build    # Build Docker image
+make docker-test     # Run tests INSIDE container
+make docker-shell    # Interactive shell in container
+make docker-run      # Run workflow in Docker (GENE=TP53)
+make docker-ensure   # Ensure image exists (build if needed)
+```
+
+**Example:**
+```bash
+# Run workflow for specific gene in Docker
+make docker-run GENE=BRCA1
+```
+
+### Documentation Commands
+
+```bash
+make docs        # Build HTML documentation
+make docs-serve  # Serve docs at localhost:8000
+```
+
+### Utility Commands
+
+```bash
+make clean      # Clean build and cache artifacts
+make version    # Show current version
+make build      # Build package distribution
+make example    # Run basic example workflow
+make help       # Show all available commands
 ```
 
 ## Development Workflow
 
-### 1. Code Changes
+### Typical Development Cycle
 
 ```bash
-# Create feature branch
-git checkout -b feature/my-new-feature
+# 1. Create feature branch
+git checkout -b feature/my-feature
 
-# Make your changes
-# ... edit files ...
+# 2. Make changes and iterate quickly
+make test-dev          # Fast feedback (~15s)
 
-# Run focused suites during development
-make test-unit
-make test-local-python
+# 3. Format and check quality
+make format            # Auto-format code
+make lint              # Check for issues
 
-# Run specific test files when debugging
+# 4. Run comprehensive tests before commit
+make check             # format + test-dev
+
+# 5. Commit changes (pre-commit hooks run automatically)
+git commit -m "feat: add my feature"
+
+# 6. Run full validation before PR
+make test-release      # All tests with coverage
+```
+
+### Working with Tests
+
+#### Running Specific Tests
+
+```bash
+# Run specific test file
 uv run pytest tests/unit/test_design.py -v
+
+# Run specific test function
+uv run pytest tests/unit/test_design.py::test_basic_design -v
+
+# Run tests matching pattern
+uv run pytest -k "test_gc_content" -v
+
+# Run with live output
+uv run pytest tests/unit/ -v -s
 ```
 
-### 2. Quality Checks
+#### Test Markers
+
+Tests are organized by markers for flexible execution:
 
 ```bash
-# Format code (ruff fmt + lint fixes)
-make format
+# By tier (auto-assigned)
+uv run pytest -m "dev"        # Fast unit tests
+uv run pytest -m "ci"         # Smoke tests
+uv run pytest -m "release"    # Integration tests
 
-# Run all quality checks (ruff + mypy)
-make lint
+# By type
+uv run pytest -m "unit"          # Unit tests
+uv run pytest -m "integration"   # Integration tests
+uv run pytest -m "smoke"         # Quick gate tests
 
-# Run tests with coverage
-make test-cov
+# By requirements
+uv run pytest -m "requires_docker"    # Needs Docker
+uv run pytest -m "requires_network"   # Needs internet
+uv run pytest -m "requires_nextflow"  # Needs Nextflow
 
-# Full quality check
-make check  # Runs lint-fix then test-fast
+# By execution environment
+uv run pytest -m "runs_in_container"  # Runs inside Docker
+
+# Combine markers
+uv run pytest -m "unit and not requires_network"
 ```
 
-### 3. Testing
-
-#### Unit Tests
-```bash
-# Run all unit tests
-uv run pytest tests/unit/
-
-# Run with coverage report
-uv run pytest tests/unit/ --cov=sirnaforge --cov-report=html
-
-# Run specific test class/function
-uv run pytest tests/unit/test_design.py::TestSiRNADesigner::test_basic_design
-```
-
-#### Integration Tests
-```bash
-# Run integration tests (may be slower)
-uv run pytest tests/integration/ -v
-
-# Skip slow tests during development
-uv run pytest -m "not slow"
-```
-
-#### Pipeline Tests
-```bash
-# Test Nextflow pipeline components
-uv run pytest tests/pipeline/
-
-# Run pipeline integration test
-bash tests/integration/test_workflow_integration.sh
-```
-
-### 4. Documentation
+### Docker Development
 
 ```bash
-# Build HTML documentation
-make docs
+# Build image
+make docker-build
 
-# Generate CLI documentation
-make docs-cli
+# Test the image
+make docker-test
 
-# Live-reload docs during editing
-make docs-dev
+# Debug in container
+make docker-shell
+# Then inside: pytest tests/container/ -v
 
-# Serve built documentation locally
-make docs-serve
+# Run workflow in container
+make docker-run GENE=TP53
+
+# Check if image exists (builds if missing)
+make docker-ensure
 ```
 
 ## Code Style and Standards
