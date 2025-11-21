@@ -1093,15 +1093,24 @@ class SiRNAWorkflow:
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-        # Prefer combined TSV if present
-        combined_tsv = output_dir / "combined_offtargets.tsv"
-        combined_json = output_dir / "combined_offtargets.json"
+        # Check for combined results in aggregated subdirectory (new pipeline structure)
+        aggregated_dir = output_dir / "aggregated"
+        combined_tsv = (
+            aggregated_dir / "combined_offtargets.tsv"
+            if aggregated_dir.exists()
+            else output_dir / "combined_offtargets.tsv"
+        )
+        combined_json = (
+            aggregated_dir / "combined_offtargets.json"
+            if aggregated_dir.exists()
+            else output_dir / "combined_offtargets.json"
+        )
 
         def _ensure_row_key(d: dict, key: str, default: int = 0) -> None:
             if key not in d:
                 d[key] = default
 
-        if combined_tsv.exists():
+        if combined_tsv.exists() and combined_tsv.stat().st_size > 100:  # Must have more than just header
             with combined_tsv.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
                 for row in reader:
@@ -1139,8 +1148,17 @@ class SiRNAWorkflow:
                     entry["hits"].append(item)
 
         else:
-            # Fallback: scan for any per-species TSV files under output_dir
-            files = list(output_dir.glob("**/*_offtargets.tsv"))
+            # Fallback: scan for genome and mirna analysis files
+            genome_files = (
+                list((output_dir / "genome").glob("*_analysis.tsv")) if (output_dir / "genome").exists() else []
+            )
+            mirna_files = list((output_dir / "mirna").glob("*_analysis.tsv")) if (output_dir / "mirna").exists() else []
+            files = genome_files + mirna_files
+
+            if not files:
+                # Last resort: scan for any TSV files
+                files = list(output_dir.glob("**/*_offtargets.tsv"))
+
             for fpath in files:
                 with Path(fpath).open() as fh:
                     reader = csv.DictReader(fh, delimiter="\t")
