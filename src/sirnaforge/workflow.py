@@ -162,14 +162,14 @@ class SiRNAWorkflow:
             design_results = await self.step3_design_sirnas(transcripts, progress)
             progress.advance(main_task)
 
-            # Step 4: Generate Reports
-            progress.update(main_task, description="[cyan]Generating reports...")
-            await self.step4_generate_reports(design_results)
-            progress.advance(main_task)
-
-            # Step 5: Off-target Analysis
+            # Step 4: Off-target Analysis (must run before reports to update candidate data)
             progress.update(main_task, description="[cyan]Running off-target analysis...")
             offtarget_results = await self.step5_offtarget_analysis(design_results)
+            progress.advance(main_task)
+
+            # Step 5: Generate Reports (after off-target analysis completes)
+            progress.update(main_task, description="[cyan]Generating reports...")
+            await self.step4_generate_reports(design_results)
             progress.advance(main_task)
 
         total_time = time.time() - start_time
@@ -598,6 +598,18 @@ class SiRNAWorkflow:
                         "delta_dg_end": cs.get("delta_dg_end"),
                         "melting_temp_c": cs.get("melting_temp_c"),
                         "off_target_count": c.off_target_count,
+                        "off_target_penalty": c.off_target_penalty,
+                        # Detailed transcriptome off-target metrics
+                        "transcriptome_hits_total": _maybe_attr(c, "transcriptome_hits_total", default=0),
+                        "transcriptome_hits_0mm": _maybe_attr(c, "transcriptome_hits_0mm", default=0),
+                        "transcriptome_hits_1mm": _maybe_attr(c, "transcriptome_hits_1mm", default=0),
+                        "transcriptome_hits_2mm": _maybe_attr(c, "transcriptome_hits_2mm", default=0),
+                        "transcriptome_hits_seed_0mm": _maybe_attr(c, "transcriptome_hits_seed_0mm", default=0),
+                        # Detailed miRNA off-target metrics
+                        "mirna_hits_total": _maybe_attr(c, "mirna_hits_total", default=0),
+                        "mirna_hits_0mm_seed": _maybe_attr(c, "mirna_hits_0mm_seed", default=0),
+                        "mirna_hits_1mm_seed": _maybe_attr(c, "mirna_hits_1mm_seed", default=0),
+                        "mirna_hits_high_risk": _maybe_attr(c, "mirna_hits_high_risk", default=0),
                         # miRNA-specific columns (nullable)
                         "guide_pos1_base": _maybe_attr(c, "guide_pos1_base"),
                         "pos1_pairing_state": _maybe_attr(c, "pos1_pairing_state"),

@@ -49,6 +49,7 @@ help: ## Show available commands
 	@echo "  make test             All tests (may have skips/failures)"
 	@echo ""
 	@echo "Docker Testing"
+	@echo "  make docker-build-test Clean + build + test Docker image (all-in-one)"
 	@echo "  make docker-test      Run container validation tests INSIDE Docker"
 	@echo "  make docker-build     Build Docker image"
 	@echo "  make docker-shell     Interactive shell in Docker"
@@ -147,6 +148,14 @@ docker-ensure: ## Ensure Docker image exists (build if missing)
 docker-test: docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
 	docker run --rm $(DOCKER_MOUNT_FLAGS) -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c "pip install --quiet pytest && /opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
+
+docker-build-test: ## Clean debug folder, build Docker image, and run tests
+	@echo "Cleaning debug folders..."
+	@rm -rf tp53_workflow_debug workflow_output
+	@echo "Building Docker image..."
+	@$(MAKE) docker-build
+	@echo "Running container tests..."
+	@$(MAKE) docker-test
 
 docker-shell: docker-ensure ## Interactive shell in Docker
 	docker run -it $(DOCKER_MOUNT_FLAGS) $(DOCKER_IMAGE):latest bash
