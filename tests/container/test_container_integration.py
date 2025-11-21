@@ -7,6 +7,7 @@ pytest infrastructure and Makefile targets.
 
 import importlib
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -212,8 +213,11 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
 
     Based on integration/test_workflow_integration.sh patterns.
     """
-    # Use fixed directory for debugging instead of tmp_path
-    output_dir = Path("/tmp/tp53_workflow_debug")
+    # Use /workspace if in container, otherwise tmp_path
+    if Path("/workspace").exists() and os.access("/workspace", os.W_OK):
+        output_dir = Path("/workspace/tp53_workflow_debug")
+    else:
+        output_dir = tmp_path / "tp53_workflow_debug"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:

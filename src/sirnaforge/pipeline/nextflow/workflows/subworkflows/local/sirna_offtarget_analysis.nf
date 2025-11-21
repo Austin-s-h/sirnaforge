@@ -71,12 +71,11 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Instead of candidate × genome combinations (e.g., 100 × 3 = 300 processes),
     // we run 3 processes (one per genome), each processing all 100 candidates sequentially
     //
-    // Combine all candidates into single FASTA per genome
-    ch_all_candidates_fasta = candidates_fasta
-
+    // Combine genome indices with the candidates FASTA file
     ch_genome_analysis_input = ch_genome_indices
-        .map { species, index_path ->
-            [species, index_path, ch_all_candidates_fasta]
+        .combine(candidates_fasta)
+        .map { species, index_path, fasta_file ->
+            [species, index_path, fasta_file]
         }
 
     //

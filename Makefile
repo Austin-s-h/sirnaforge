@@ -14,7 +14,14 @@ UV_CACHE_MOUNT = $(shell \
 		echo "-v $$(uv cache dir):/home/sirnauser/.cache/uv"; \
 	else echo ""; fi)
 
-DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT)
+# SiRNAforge data cache mounts (transcriptomes and miRNA databases)
+SIRNAFORGE_CACHE_DIR = $(shell echo "$$HOME/.cache/sirnaforge")
+SIRNAFORGE_CACHE_MOUNT = $(shell \
+	if [ -d "$(SIRNAFORGE_CACHE_DIR)" ]; then \
+		echo "-v $(SIRNAFORGE_CACHE_DIR):/home/sirnauser/.cache/sirnaforge"; \
+	else echo ""; fi)
+
+DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIRNAFORGE_CACHE_MOUNT)
 DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp'
 DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
@@ -45,6 +52,7 @@ help: ## Show available commands
 	@echo "  make docker-test      Run container validation tests INSIDE Docker"
 	@echo "  make docker-build     Build Docker image"
 	@echo "  make docker-shell     Interactive shell in Docker"
+	@echo "  make cache-info       Show data cache locations and status"
 	@echo ""
 	@echo "Code Quality"
 	@echo "  make lint             Check code quality (ruff + mypy)"
@@ -219,3 +227,36 @@ security: ## Run security checks
 	@uv run bandit -r src/ -q || true
 	@(uv run safety check --output json 2>&1 | grep -v "UserWarning" > safety-report.json) || echo '{"vulnerabilities": [], "scan_failed": true}' > safety-report.json
 	@echo "Security scan complete (reports: bandit-report.json, safety-report.json)"
+
+cache-info: ## Show data cache locations and status
+	@echo "SiRNAforge Data Cache Information"
+	@echo "=================================="
+	@echo ""
+	@echo "Cache Directories:"
+	@echo "  Transcriptomes: $(SIRNAFORGE_CACHE_DIR)/transcriptomes"
+	@echo "  miRNA DBs:      $(SIRNAFORGE_CACHE_DIR)/mirna"
+	@echo ""
+	@if [ -d "$(SIRNAFORGE_CACHE_DIR)" ]; then \
+		echo "Status: ✅ Cache directory exists"; \
+		echo ""; \
+		echo "Disk Usage:"; \
+		du -sh "$(SIRNAFORGE_CACHE_DIR)" 2>/dev/null || echo "  (unable to calculate)"; \
+		if [ -d "$(SIRNAFORGE_CACHE_DIR)/transcriptomes" ]; then \
+			echo "  Transcriptomes: $$(du -sh $(SIRNAFORGE_CACHE_DIR)/transcriptomes 2>/dev/null | cut -f1)"; \
+			echo "  Files: $$(find $(SIRNAFORGE_CACHE_DIR)/transcriptomes -type f 2>/dev/null | wc -l)"; \
+		fi; \
+		if [ -d "$(SIRNAFORGE_CACHE_DIR)/mirna" ]; then \
+			echo "  miRNA DBs: $$(du -sh $(SIRNAFORGE_CACHE_DIR)/mirna 2>/dev/null | cut -f1)"; \
+			echo "  Files: $$(find $(SIRNAFORGE_CACHE_DIR)/mirna -type f 2>/dev/null | wc -l)"; \
+		fi; \
+		echo ""; \
+		echo "Docker Mount: ✅ Will be mounted to container at /home/sirnauser/.cache/sirnaforge"; \
+	else \
+		echo "Status: ⚠️  Cache directory does not exist yet"; \
+		echo "        It will be created automatically when downloading data."; \
+		echo ""; \
+		echo "Docker Mount: ⏭️  No mount (cache empty)"; \
+	fi
+	@echo ""
+	@echo "To populate cache, run workflows or use CLI commands like:"
+	@echo "  uv run sirnaforge workflow <gene> --species human"

@@ -35,7 +35,14 @@ from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
-from sirnaforge.models.sirna import DesignMode, DesignParameters, DesignResult, FilterCriteria, SiRNACandidate
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignParameters,
+    DesignResult,
+    FilterCriteria,
+    OffTargetFilterCriteria,
+    SiRNACandidate,
+)
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.logging_utils import get_logger
@@ -1005,9 +1012,27 @@ class SiRNAWorkflow:
         console.print("✅ Nextflow pipeline completed successfully")
         parsed = await self._parse_nextflow_results(output_dir)
 
-        # Map parsed results back to candidates
+        # Integrate off-target results into candidates with filtering
+        filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
+        updated_candidates, stats = self._integrate_offtarget_results(candidates, parsed, filter_criteria)
+
+        # Log filtering statistics
+        if stats.get("candidates_with_offtargets", 0) > 0:
+            console.print(f"📊 Off-target analysis: {stats['candidates_with_offtargets']} candidates with hits")
+            if stats.get("failed_perfect_match", 0) > 0:
+                console.print(f"   ❌ {stats['failed_perfect_match']} failed: perfect transcriptome matches")
+            if stats.get("failed_transcriptome_1mm", 0) > 0:
+                console.print(f"   ❌ {stats['failed_transcriptome_1mm']} failed: 1mm transcriptome threshold")
+            if stats.get("failed_transcriptome_2mm", 0) > 0:
+                console.print(f"   ❌ {stats['failed_transcriptome_2mm']} failed: 2mm transcriptome threshold")
+            if stats.get("failed_mirna_seed", 0) > 0:
+                console.print(f"   ❌ {stats['failed_mirna_seed']} failed: miRNA perfect seed matches")
+            if stats.get("failed_high_risk_mirna", 0) > 0:
+                console.print(f"   ❌ {stats['failed_high_risk_mirna']} failed: high-risk miRNA hits")
+
+        # Map parsed results for return structure
         mapped = {}
-        for c in candidates:
+        for c in updated_candidates:
             qid = c.id
             entry = parsed.get("results", {}).get(qid)
             if entry:
@@ -1016,8 +1041,6 @@ class SiRNAWorkflow:
                     "off_target_score": entry.get("off_target_score", 0.0),
                     "hits": entry.get("hits", []),
                 }
-                # Update candidate object fields
-                self._update_candidate_scores(c, mapped[qid])
             else:
                 mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
 
@@ -1027,17 +1050,8 @@ class SiRNAWorkflow:
             "output_dir": str(output_dir),
             "results": mapped,
             "execution_metadata": results,
+            "filtering_stats": stats,
         }
-
-    def _update_candidate_scores(self, candidate: SiRNACandidate, result_data: dict) -> None:
-        """Update candidate object with off-target analysis results."""
-        try:
-            candidate.off_target_count = result_data["off_target_count"]
-            candidate.off_target_penalty = result_data["off_target_score"]
-        except KeyError as e:
-            logger.warning(f"Missing key in result data: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error updating candidate scores: {e}")
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict:
         """Fallback basic off-target analysis."""
@@ -1144,6 +1158,178 @@ class SiRNAWorkflow:
                         entry["hits"].append(row)
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
+
+    def _check_offtarget_filters(
+        self,
+        transcriptome_0mm: int,
+        transcriptome_1mm: int,
+        transcriptome_2mm: int,
+        mirna_0mm_seed: int,
+        mirna_high_risk: int,
+        total_hits: int,
+        filter_criteria: OffTargetFilterCriteria,
+    ) -> tuple[bool, str | None]:
+        """Check if candidate fails off-target filters.
+
+        Returns:
+            Tuple of (should_fail, fail_reason)
+        """
+        # Define filter checks with their thresholds and messages
+        checks = [
+            (
+                filter_criteria.max_transcriptome_hits_0mm,
+                transcriptome_0mm,
+                f"TRANSCRIPTOME_PERFECT_MATCH ({transcriptome_0mm} hits)",
+            ),
+            (
+                filter_criteria.max_transcriptome_hits_1mm,
+                transcriptome_1mm,
+                f"TRANSCRIPTOME_1MM ({transcriptome_1mm} hits)",
+            ),
+            (
+                filter_criteria.max_transcriptome_hits_2mm,
+                transcriptome_2mm,
+                f"TRANSCRIPTOME_2MM ({transcriptome_2mm} hits)",
+            ),
+            (filter_criteria.max_mirna_perfect_seed, mirna_0mm_seed, f"MIRNA_PERFECT_SEED ({mirna_0mm_seed} hits)"),
+            (filter_criteria.max_total_offtarget_hits, total_hits, f"TOTAL_OFFTARGETS ({total_hits} hits)"),
+        ]
+
+        # Check all threshold-based filters
+        for threshold, value, message in checks:
+            if threshold is not None and value > threshold:
+                return True, message
+
+        # Check high-risk miRNA (boolean flag)
+        if filter_criteria.fail_on_high_risk_mirna and mirna_high_risk > 0:
+            return True, f"HIGH_RISK_MIRNA ({mirna_high_risk} hits)"
+
+        return False, None
+
+    def _integrate_offtarget_results(  # noqa: PLR0912
+        self,
+        candidates: list[SiRNACandidate],
+        offtarget_data: dict[str, Any],
+        filter_criteria: OffTargetFilterCriteria | None = None,
+    ) -> tuple[list[SiRNACandidate], dict[str, int]]:
+        """Integrate off-target analysis results into siRNA candidates.
+
+        Args:
+            candidates: List of siRNA candidates to update
+            offtarget_data: Off-target results from Nextflow pipeline
+            filter_criteria: Optional filtering criteria for off-targets
+
+        Returns:
+            Tuple of (updated candidates, statistics dict)
+        """
+        if not offtarget_data or offtarget_data.get("status") != "completed":
+            logger.warning("No completed off-target data available for integration")
+            return candidates, {}
+
+        if filter_criteria is None:
+            filter_criteria = OffTargetFilterCriteria()
+
+        results = offtarget_data.get("results", {})
+        stats = {
+            "candidates_analyzed": len(candidates),
+            "candidates_with_offtargets": 0,
+            "failed_perfect_match": 0,
+            "failed_transcriptome_1mm": 0,
+            "failed_transcriptome_2mm": 0,
+            "failed_mirna_seed": 0,
+            "failed_high_risk_mirna": 0,
+        }
+
+        for candidate in candidates:
+            candidate_id = candidate.id
+            offtarget_entry = results.get(candidate_id, {})
+
+            if not offtarget_entry or not offtarget_entry.get("hits"):
+                continue
+
+            stats["candidates_with_offtargets"] += 1
+
+            # Parse hit details
+            transcriptome_0mm = 0
+            transcriptome_1mm = 0
+            transcriptome_2mm = 0
+            transcriptome_seed_0mm = 0
+            mirna_total = 0
+            mirna_0mm_seed = 0
+            mirna_1mm_seed = 0
+            mirna_high_risk = 0
+
+            for hit in offtarget_entry.get("hits", []):
+                nm = int(hit.get("nm", 0))
+                seed_mismatches = int(hit.get("seed_mismatches", 0))
+                offtarget_score = float(hit.get("offtarget_score", 0.0))
+
+                # Check if this is a miRNA hit (has species/database/mirna_id fields)
+                is_mirna = "mirna_id" in hit or "database" in hit
+
+                if is_mirna:
+                    mirna_total += 1
+                    if seed_mismatches == 0:
+                        mirna_0mm_seed += 1
+                        # High risk: perfect seed + low penalty score (likely strong binding)
+                        if offtarget_score < 5.0:
+                            mirna_high_risk += 1
+                    elif seed_mismatches == 1:
+                        mirna_1mm_seed += 1
+                else:
+                    # Transcriptome hit
+                    if nm == 0:
+                        transcriptome_0mm += 1
+                    elif nm == 1:
+                        transcriptome_1mm += 1
+                    elif nm == 2:
+                        transcriptome_2mm += 1
+
+                    if seed_mismatches == 0:
+                        transcriptome_seed_0mm += 1
+
+            # Update candidate fields
+            candidate.transcriptome_hits_total = transcriptome_0mm + transcriptome_1mm + transcriptome_2mm
+            candidate.transcriptome_hits_0mm = transcriptome_0mm
+            candidate.transcriptome_hits_1mm = transcriptome_1mm
+            candidate.transcriptome_hits_2mm = transcriptome_2mm
+            candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
+            candidate.mirna_hits_total = mirna_total
+            candidate.mirna_hits_0mm_seed = mirna_0mm_seed
+            candidate.mirna_hits_1mm_seed = mirna_1mm_seed
+            candidate.mirna_hits_high_risk = mirna_high_risk
+            candidate.off_target_count = len(offtarget_entry.get("hits", []))
+            candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
+
+            # Apply filtering criteria
+            should_fail, fail_reason = self._check_offtarget_filters(
+                transcriptome_0mm,
+                transcriptome_1mm,
+                transcriptome_2mm,
+                mirna_0mm_seed,
+                mirna_high_risk,
+                candidate.off_target_count,
+                filter_criteria,
+            )
+
+            # Update filter status and stats if failed
+            if should_fail and fail_reason:
+                candidate.passes_filters = fail_reason  # type: ignore
+                logger.info(f"Candidate {candidate_id} failed off-target filter: {fail_reason}")
+
+                # Update appropriate stat counter
+                if "PERFECT_MATCH" in fail_reason:
+                    stats["failed_perfect_match"] += 1
+                elif "1MM" in fail_reason:
+                    stats["failed_transcriptome_1mm"] += 1
+                elif "2MM" in fail_reason:
+                    stats["failed_transcriptome_2mm"] += 1
+                elif "MIRNA_PERFECT_SEED" in fail_reason:
+                    stats["failed_mirna_seed"] += 1
+                elif "HIGH_RISK_MIRNA" in fail_reason:
+                    stats["failed_high_risk_mirna"] += 1
+
+        return candidates, stats
 
     def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
         """Generate ORF validation report in tab-delimited format with schema validation.

@@ -442,19 +442,63 @@ class BwaAnalyzer:
         return positions
 
     def _calculate_offtarget_score(self, mismatch_positions: list[int]) -> float:
-        """Calculate off-target score based on mismatch positions."""
-        score = 0.0
+        """Calculate off-target score based on mismatch count and positions.
+
+        Scoring principles (based on siRNA literature):
+        1. Total mismatch count - most fundamental property
+        2. Seed region (positions 2-8) - critical for target recognition
+        3. Position-specific weights - 5' end more important than 3' end
+        4. Continuous mismatches - clusters reduce binding more than scattered
+
+        Returns:
+            float: Off-target penalty score (lower = more likely off-target effect)
+                   0.0 = perfect match (highest risk)
+                   Higher scores = more mismatches (lower risk)
+
+        References: TODO: validate
+            - Jackson et al. 2003 (seed region importance)
+            - Birmingham et al. 2006 (position-specific effects)
+            - Huesken et al. 2005 (thermodynamic contributions)
+        """
+        num_mismatches = len(mismatch_positions)
+
+        # Perfect match = highest off-target risk
+        if num_mismatches == 0:
+            return 0.0
+
+        # Base score: number of mismatches (most fundamental property)
+        # Each mismatch significantly reduces binding affinity
+        base_score = num_mismatches * 10.0
+
+        # Position-specific penalties (seed region is critical)
+        position_penalty = 0.0
+        seed_mismatches = 0
 
         for pos in mismatch_positions:
             if self.seed_start <= pos <= self.seed_end:
-                score += 5.0  # Seed region mismatches are more critical
+                # Seed region (pos 2-8): mismatches here strongly disrupt binding
+                position_penalty += 5.0
+                seed_mismatches += 1
+            elif pos <= 10:
+                # 5' region (pos 1, 9-10): moderately important
+                position_penalty += 3.0
             else:
-                score += 1.0  # Non-seed mismatches
+                # 3' region (pos 11-19): less critical but still relevant
+                position_penalty += 1.0
 
-        if len(mismatch_positions) == 0:
-            score += 10.0  # Perfect matches get high penalty (bad for off-target)
+        # Continuous mismatch bonus (clusters disrupt binding more)
+        continuous_bonus = 0.0
+        if num_mismatches >= 2:
+            sorted_positions = sorted(mismatch_positions)
+            continuous_count = 0
+            for i in range(len(sorted_positions) - 1):
+                if sorted_positions[i + 1] - sorted_positions[i] == 1:
+                    continuous_count += 1
+            # Adjacent mismatches create stronger disruption
+            continuous_bonus = continuous_count * 2.0
 
-        return score
+        # Total score: base + position weights + continuity bonus
+        return base_score + position_penalty + continuous_bonus
 
     def _filter_and_rank(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter and rank results by off-target score."""
@@ -1175,44 +1219,44 @@ def run_mirna_seed_analysis(
 
             results = analyzer.analyze_sequences(sequences)
 
-            # Convert dict results to structured data for pandas
-            for hit_dict in results:
-                try:
-                    mirna_hit = MiRNAHit(
-                        qname=hit_dict["qname"],
-                        qseq=hit_dict["qseq"],
-                        species=species,
-                        database=mirna_db,
-                        mirna_id=hit_dict["rname"],  # Reference name is the miRNA ID
-                        coord=hit_dict["coord"],
-                        strand=AlignmentStrand(hit_dict["strand"]),
-                        cigar=hit_dict["cigar"],
-                        mapq=hit_dict["mapq"],
-                        as_score=hit_dict.get("as_score"),
-                        nm=hit_dict["nm"],
-                        seed_mismatches=hit_dict["seed_mismatches"],
-                        offtarget_score=hit_dict["offtarget_score"],
-                    )
-                    all_raw_hits.append(mirna_hit)
+            # Convert BWA results to DataFrame directly - let Pandera handle validation
+            results_df = pd.DataFrame(results)
 
-                except Exception as e:
-                    logger.warning(f"Failed to validate miRNA hit: {e}, skipping")
-                    continue
+            # Parse coord field: for miRNA it's "miRNA_ID:position", extract integer position
+            if "coord" in results_df.columns:
+                results_df["coord"] = results_df["coord"].apply(
+                    lambda x: int(x.split(":")[-1]) if isinstance(x, str) and ":" in x else int(x)
+                )
 
-            species_raw_stats[species] = len(results)
-            logger.info(f"Species {species}: {len(results)} raw alignments validated")
+            # Add miRNA-specific columns
+            results_df["species"] = species
+            results_df["database"] = mirna_db
+            results_df["mirna_id"] = results_df["rname"]  # BWA uses rname for reference ID
+
+            # Validate and coerce types using Pandera schema
+            try:
+                validated_df = MiRNAAlignmentSchema.validate(results_df, lazy=True)
+                all_raw_hits.append(validated_df)
+                species_raw_stats[species] = len(validated_df)
+                logger.info(f"Species {species}: {len(validated_df)} miRNA alignments validated")
+            except Exception as validation_error:
+                logger.error(f"Failed to validate miRNA hits for {species}: {validation_error}")
+                species_raw_stats[species] = 0
+                species_filtered_stats[species] = 0
+                continue
 
         except Exception as e:
             logger.error(f"Failed to process miRNA analysis for {species}: {e}")
             species_raw_stats[species] = 0
             species_filtered_stats[species] = 0
 
-    # Convert Pydantic models to pandas DataFrame for efficient filtering and writing
+    # Concatenate all validated DataFrames from different species
     if all_raw_hits:
-        df_raw = pd.DataFrame([hit.model_dump() for hit in all_raw_hits])
+        df_raw = pd.concat(all_raw_hits, ignore_index=True)
 
-        # Apply filtering criteria: exclude perfect matches (score==10) and keep quality hits
-        df_filtered = df_raw[(df_raw["offtarget_score"] > 0) & (df_raw["offtarget_score"] < 10.0)].copy()
+        # Keep ALL hits including perfect matches - they're biologically relevant off-targets
+        # Users can filter by score threshold if desired
+        df_filtered = df_raw.copy()
 
         # Calculate per-species filtered stats
         for species in mirna_species:
@@ -1237,8 +1281,8 @@ def run_mirna_seed_analysis(
         total_filtered = len(df_filtered)
         total_raw = len(df_raw)
     else:
-        # No hits - create empty files
-        df_empty = pd.DataFrame(columns=list(MiRNAHit.model_fields.keys()))
+        # No hits - create empty DataFrame with proper schema columns
+        df_empty = pd.DataFrame(columns=list(MiRNAAlignmentSchema.to_schema().columns.keys()))
 
         raw_analysis_file = output_path / f"{candidate_id}_mirna_analysis_raw.tsv"
         df_empty.to_csv(raw_analysis_file, sep="\t", index=False)

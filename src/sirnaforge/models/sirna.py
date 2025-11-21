@@ -93,6 +93,45 @@ class FilterCriteria(BaseModel):
         return v
 
 
+class OffTargetFilterCriteria(BaseModel):
+    """Filtering criteria for off-target analysis results.
+
+    Controls which siRNA candidates fail due to excessive off-target potential.
+    """
+
+    # Transcriptome off-target thresholds
+    max_transcriptome_hits_0mm: Optional[int] = Field(
+        default=0,
+        ge=0,
+        description="Maximum perfect match transcriptome hits (0 = fail any perfect match, None = no limit)",
+    )
+    max_transcriptome_hits_1mm: Optional[int] = Field(
+        default=5, ge=0, description="Maximum 1-mismatch transcriptome hits (typical: 5-10, None = no limit)"
+    )
+    max_transcriptome_hits_2mm: Optional[int] = Field(
+        default=20, ge=0, description="Maximum 2-mismatch transcriptome hits (typical: 20-50, None = no limit)"
+    )
+    max_transcriptome_seed_perfect: Optional[int] = Field(
+        default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
+    )
+
+    # miRNA off-target thresholds
+    max_mirna_perfect_seed: Optional[int] = Field(
+        default=3, ge=0, description="Maximum perfect miRNA seed matches (typical: 3-5, None = no limit)"
+    )
+    max_mirna_1mm_seed: Optional[int] = Field(
+        default=10, ge=0, description="Maximum 1-mismatch miRNA seed hits (typical: 10-20, None = no limit)"
+    )
+    fail_on_high_risk_mirna: bool = Field(
+        default=True, description="Fail if high-risk miRNA hits detected (perfect seed + offtarget_score < 5.0)"
+    )
+
+    # Combined off-target threshold
+    max_total_offtarget_hits: Optional[int] = Field(
+        default=None, ge=0, description="Maximum total off-target hits (transcriptome + miRNA, None = no limit)"
+    )
+
+
 class ScoringWeights(BaseModel):
     """Relative weights for composite siRNA scoring components."""
 
@@ -258,6 +297,23 @@ class SiRNACandidate(BaseModel):
     # Off-target analysis
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
+
+    # Detailed transcriptome off-target metrics
+    transcriptome_hits_total: int = Field(default=0, ge=0, description="Total transcriptome off-target hits")
+    transcriptome_hits_0mm: int = Field(default=0, ge=0, description="Perfect match transcriptome hits (0 mismatches)")
+    transcriptome_hits_1mm: int = Field(default=0, ge=0, description="Transcriptome hits with 1 mismatch")
+    transcriptome_hits_2mm: int = Field(default=0, ge=0, description="Transcriptome hits with 2 mismatches")
+    transcriptome_hits_seed_0mm: int = Field(
+        default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8)"
+    )
+
+    # miRNA off-target metrics
+    mirna_hits_total: int = Field(default=0, ge=0, description="Total miRNA seed match hits")
+    mirna_hits_0mm_seed: int = Field(default=0, ge=0, description="Perfect miRNA seed matches (positions 2-8)")
+    mirna_hits_1mm_seed: int = Field(default=0, ge=0, description="miRNA seed matches with 1 mismatch in seed")
+    mirna_hits_high_risk: int = Field(
+        default=0, ge=0, description="High-risk miRNA hits (perfect seed + low offtarget_score)"
+    )
 
     # miRNA-specific fields (populated when design_mode == "mirna")
     guide_pos1_base: Optional[str] = Field(

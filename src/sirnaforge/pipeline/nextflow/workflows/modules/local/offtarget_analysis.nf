@@ -20,6 +20,7 @@ process OFFTARGET_ANALYSIS {
     task.ext.when == null || task.ext.when
 
     script:
+    def candidates_basename = candidates_fasta.baseName  // e.g., "input_candidates" from "input_candidates.fasta"
     """
     # Run off-target analysis for ALL candidates against this genome in one session
     # This is much more efficient: load index once, process all candidates sequentially
@@ -43,6 +44,12 @@ output_path = run_bwa_alignment_analysis(
 
 print(f"Batch analysis completed for ${species}: all candidates processed")
 PYEOF
+
+    # Rename output files to match expected names
+    # Function creates: {candidate_id}_{species}_analysis.tsv
+    # Process expects: {species}_analysis.tsv
+    mv ${candidates_basename}_${species}_analysis.tsv ${species}_analysis.tsv
+    mv ${candidates_basename}_${species}_summary.json ${species}_summary.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
