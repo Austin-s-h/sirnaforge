@@ -236,7 +236,7 @@ class SiRNACandidateSchema(DataFrameModel):
     @dataframe_check_typed
     def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
         """Ensure passes_filters contains allowed filter status values."""
-        allowed = {
+        allowed_prefixes = {
             "PASS",
             "GC_OUT_OF_RANGE",
             "POLY_RUNS",
@@ -253,7 +253,10 @@ class SiRNACandidateSchema(DataFrameModel):
         def _ok(v: Any) -> bool:
             if isinstance(v, bool):
                 return True
-            return isinstance(v, str) and v in allowed
+            if not isinstance(v, str):
+                return False
+            # Allow exact matches or strings that start with allowed prefixes (e.g., "TRANSCRIPTOME_PERFECT_MATCH (9 hits)")
+            return v in allowed_prefixes or any(v.startswith(prefix) for prefix in allowed_prefixes)
 
         return bool(series.map(_ok).all())
 

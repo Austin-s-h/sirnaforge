@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover - fallback handled at runtime
     tomllib = None
 
 __author__ = "Austin S. Hovland."
-__email__ = "your-email@example.com"
+__email__ = "austin@sansterbioanalytics.com"
 
 
 def _read_version_from_pyproject() -> str | None:
