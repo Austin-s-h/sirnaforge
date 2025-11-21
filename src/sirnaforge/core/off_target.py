@@ -1233,8 +1233,11 @@ def run_mirna_seed_analysis(
             results_df["database"] = mirna_db
             results_df["mirna_id"] = results_df["rname"]  # BWA uses rname for reference ID
 
-            # Remove the rname column as it's not part of the MiRNAAlignmentSchema
-            results_df = results_df.drop(columns=["rname"])
+            # Remove internal columns not part of the MiRNAAlignmentSchema
+            # - rname: copied to mirna_id (schema uses domain-specific naming)
+            # - mismatch_positions: internal debugging data, not needed in output
+            columns_to_drop = ["rname", "mismatch_positions"]
+            results_df = results_df.drop(columns=[col for col in columns_to_drop if col in results_df.columns])
 
             # Validate and coerce types using Pandera schema
             try:

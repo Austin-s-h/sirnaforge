@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2025-11-21
 
 ### 🔧 Improvements
 - **Documentation Standardization**: Unified tab-based execution examples across all documentation
@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added coverage summary to GitHub Actions workflow UI
 
 ### 🐛 Bug Fixes
+- **Off Target and miRNA seed match search now works!**
 - **Docker Test Environment**: Fixed environment conflicts in `make docker-test`
   - Removed uv sync from Docker container execution (conflicts with conda)
   - Explicit pytest installation and conda path execution

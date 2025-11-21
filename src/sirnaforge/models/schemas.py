@@ -416,12 +416,12 @@ class MiRNAAlignmentSchema(DataFrameModel):
 
     @dataframe_check_typed
     def validate_perfect_match_score(cls, df: pd.DataFrame) -> bool:
-        """Perfect matches (nm=0) should have offtarget_score == 10.0."""
+        """Perfect matches (nm=0) should have offtarget_score == 0.0 (highest risk)."""
         if df.empty:
             return True
         perfect_matches = df["nm"] == 0
         if perfect_matches.any():
-            return bool((~perfect_matches | (df["offtarget_score"] == 10.0)).all())
+            return bool((~perfect_matches | (df["offtarget_score"] == 0.0)).all())
         return True
 
 
@@ -476,12 +476,12 @@ class GenomeAlignmentSchema(DataFrameModel):
 
     @dataframe_check_typed
     def validate_score_consistency(cls, df: pd.DataFrame) -> bool:
-        """Perfect matches should have high offtarget_score (penalty)."""
+        """Perfect matches should have offtarget_score == 0.0 (highest risk)."""
         if df.empty:
             return True
         perfect_matches = df["nm"] == 0
         if perfect_matches.any():
-            return bool((~perfect_matches | (df["offtarget_score"] == 10.0)).all())
+            return bool((~perfect_matches | (df["offtarget_score"] == 0.0)).all())
         return True
 
 
