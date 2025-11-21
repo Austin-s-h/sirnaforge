@@ -212,7 +212,9 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
 
     Based on integration/test_workflow_integration.sh patterns.
     """
-    output_dir = tmp_path / "tp53_workflow_output"
+    # Use fixed directory for debugging instead of tmp_path
+    output_dir = Path("/tmp/tp53_workflow_debug")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         # Run complete TP53 workflow (similar to test_workflow_integration.sh)
@@ -232,10 +234,19 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
             ],
             capture_output=True,
             text=True,
-            cwd=tmp_path,
+            cwd=output_dir,
             timeout=300,  # 5 minutes max
             check=False,
         )
+
+        # Always save workflow outputs for debugging
+        print(f"\n{'=' * 80}")
+        print(f"TP53 Workflow Results saved to: {output_dir}")
+        print(f"{'=' * 80}")
+        print(f"STDOUT:\n{result.stdout}")
+        print(f"{'=' * 80}")
+        print(f"STDERR:\n{result.stderr}")
+        print(f"{'=' * 80}\n")
 
         # Check for failures and categorize them
         _check_workflow_result(result)

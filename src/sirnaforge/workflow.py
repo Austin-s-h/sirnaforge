@@ -18,10 +18,10 @@ import math
 import os
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 from pandera.typing import DataFrame
@@ -58,7 +58,7 @@ class WorkflowConfig:
         database: DatabaseType = DatabaseType.ENSEMBL,
         design_params: DesignParameters | None = None,
         # off-target selection now always equals design_params.top_n
-        nextflow_config: dict | None = None,
+        nextflow_config: Mapping[str, Any] | None = None,
         genome_species: list[str] | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
@@ -81,11 +81,11 @@ class WorkflowConfig:
         self.design_params = design_params or DesignParameters()
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
-        self.nextflow_config = dict(nextflow_config) if nextflow_config else {}
+        self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
         default_genomes = genome_species or ["human", "rat", "rhesus"]
-        self.genome_species = list(dict.fromkeys(default_genomes))
+        self.genome_species: list[str] = list(dict.fromkeys(default_genomes))
         self.mirna_database = mirna_database
-        self.mirna_species = list(dict.fromkeys(mirna_species)) if mirna_species else []
+        self.mirna_species: list[str] = list(dict.fromkeys(mirna_species)) if mirna_species else []
         self.transcriptome_fasta = transcriptome_fasta
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
@@ -206,7 +206,7 @@ class SiRNAWorkflow:
                 },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
-            "orf_summary": self._summarize_orf_results(orf_results),
+            "orf_summary": self._summarize_orf_results(cast(dict[str, Any], orf_results)),
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
             "offtarget_summary": offtarget_results,
@@ -847,7 +847,7 @@ class SiRNAWorkflow:
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
         return input_fasta
 
-    async def _prepare_transcriptome_database(self, transcriptome_ref: str) -> dict[str, Path] | None:
+    async def _prepare_transcriptome_database(self, transcriptome_ref: str) -> dict[str, Any] | None:
         """Prepare transcriptome database from user-provided reference.
 
         Args:
@@ -865,18 +865,35 @@ class SiRNAWorkflow:
             # Check if it's a pre-configured source
             if transcriptome_ref in manager.SOURCES:
                 logger.info(f"Using pre-configured transcriptome source: {transcriptome_ref}")
-                return manager.get_transcriptome(transcriptome_ref, build_index=True)
+                raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+                if raw_result is None:
+                    return None
+
+                species = manager.SOURCES[transcriptome_ref].species or "transcriptome"
+                enriched_result: dict[str, Any] = {"species": species}
+                enriched_result.update(raw_result)
+                return enriched_result
 
             # Otherwise treat as custom path/URL
             logger.info(f"Processing custom transcriptome reference: {transcriptome_ref}")
-            return manager.get_custom_transcriptome(transcriptome_ref, build_index=True)
+            raw_custom = manager.get_custom_transcriptome(transcriptome_ref, build_index=True)
+            if raw_custom is None:
+                return None
+
+            enriched_custom: dict[str, Any] = {"species": "transcriptome"}
+            enriched_custom.update(raw_custom)
+            return enriched_custom
 
         except Exception as e:
             logger.exception(f"Failed to prepare transcriptome database from {transcriptome_ref}")
             console.print(f"⚠️  Transcriptome preparation error: {e}")
             return None
 
-    async def _run_nextflow_offtarget_analysis(self, candidates: list[SiRNACandidate], input_fasta: Path) -> dict:
+    async def _run_nextflow_offtarget_analysis(
+        self,
+        candidates: list[SiRNACandidate],
+        input_fasta: Path,
+    ) -> dict[str, Any]:
         """Run Nextflow-based off-target analysis."""
         # Configure Nextflow runner
         runner = self._setup_nextflow_runner()
@@ -887,13 +904,36 @@ class SiRNAWorkflow:
             return {"status": "skipped", "reason": "nextflow_unavailable"}
 
         # Process transcriptome FASTA if provided
-        additional_params = dict(self.config.nextflow_config)  # Start with existing config
+        additional_params: dict[str, Any] = dict(self.config.nextflow_config)
         if self.config.transcriptome_fasta:
             try:
                 transcriptome_result = await self._prepare_transcriptome_database(self.config.transcriptome_fasta)
                 if transcriptome_result and transcriptome_result.get("index"):
                     # Pass the index path to Nextflow for transcriptome analysis
-                    additional_params["transcriptome_index"] = str(transcriptome_result["index"])
+                    species_value = transcriptome_result.get("species")
+                    transcriptome_species = species_value if isinstance(species_value, str) else "transcriptome"
+
+                    index_value = transcriptome_result["index"]
+                    transcriptome_index = str(index_value)
+
+                    # Ensure the species appears in the Nextflow genome species list for logging consistency
+                    if transcriptome_species not in self.config.genome_species:
+                        self.config.genome_species.append(transcriptome_species)
+
+                    # Use transcriptome_indices parameter (preferred) instead of genome_indices
+                    indices_entry = f"{transcriptome_species}:{transcriptome_index}"
+                    existing_indices = additional_params.get("transcriptome_indices")
+                    if existing_indices:
+                        entries = [token.strip() for token in existing_indices.split(",") if token.strip()]
+                        if indices_entry not in entries:
+                            entries.append(indices_entry)
+                            additional_params["transcriptome_indices"] = ",".join(entries)
+                    else:
+                        additional_params["transcriptome_indices"] = indices_entry
+
+                    additional_params["transcriptome_index"] = transcriptome_index
+                    additional_params["transcriptome_species"] = transcriptome_species
+
                     console.print(
                         f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
                         f"(index: {transcriptome_result['index'].name})"
@@ -1226,7 +1266,7 @@ class SiRNAWorkflow:
         with report_file.open("w") as f:
             f.write("# Candidate summary report generation disabled.\n")
 
-    def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict:
+    def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict[str, Any]:
         """Summarize transcript retrieval results."""
         return {
             "total_transcripts": len(transcripts),
@@ -1240,7 +1280,7 @@ class SiRNAWorkflow:
             ),
         }
 
-    def _summarize_orf_results(self, orf_results: dict) -> dict:
+    def _summarize_orf_results(self, orf_results: dict[str, Any]) -> dict[str, Any]:
         """Summarize ORF validation results."""
         results = orf_results.get("results", {})
         valid_count = sum(1 for r in results.values() if r.has_valid_orf)
@@ -1251,7 +1291,7 @@ class SiRNAWorkflow:
             "validation_rate": valid_count / len(results) if results else 0,
         }
 
-    def _summarize_design_results(self, design_results: DesignResult) -> dict:
+    def _summarize_design_results(self, design_results: DesignResult) -> dict[str, Any]:
         """Summarize siRNA design results."""
         base = design_results.get_summary()
         total = design_results.total_candidates

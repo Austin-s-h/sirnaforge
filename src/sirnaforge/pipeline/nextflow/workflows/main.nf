@@ -38,8 +38,12 @@ workflow SIRNAFORGE_OFFTARGET {
         outdir               : ${params.outdir}
 
         GENOME ANALYSIS (OPTIONAL - Resource Intensive)
-        genome_fastas        : ${params.genome_fastas ?: 'Not provided (miRNA-only mode)'}
+        genome_fastas        : ${params.genome_fastas ?: 'Not provided'}
         genome_indices       : ${params.genome_indices ?: 'Not provided'}
+
+        TRANSCRIPTOME ANALYSIS (OPTIONAL - Resource Intensive)
+        transcriptome_indices: ${params.transcriptome_indices ?: 'Not provided'}
+        transcriptome_species: ${params.transcriptome_species ?: 'N/A'}
         genome_species       : ${params.genome_species}
 
         ANALYSIS PARAMETERS
@@ -71,6 +75,7 @@ workflow SIRNAFORGE_OFFTARGET {
 
     //
     // Genome configurations: combine FASTAs and indices into single channel
+    // Also handle transcriptome indices (preferred parameter name)
     //
     ch_genomes = Channel.empty()
 
@@ -94,17 +99,32 @@ workflow SIRNAFORGE_OFFTARGET {
         )
     }
 
-    // If no genomes specified, skip genome analysis (miRNA-only mode)
-    if (!params.genome_fastas && !params.genome_indices) {
+    // NEW: Handle transcriptome_indices parameter (preferred for transcriptome-specific analysis)
+    if (params.transcriptome_indices) {
+        ch_genomes = ch_genomes.mix(
+            Channel.from(params.transcriptome_indices.split(','))
+                .map { entry ->
+                    def (species, index_path) = entry.split(':')
+                    [species.trim(), index_path.trim(), 'index']
+                }
+        )
+    }
+
+    // Check if ANY off-target analysis is enabled (genome or transcriptome)
+    def has_offtarget_data = params.genome_fastas || params.genome_indices || params.transcriptome_indices
+
+    // If no genomes/transcriptomes specified, skip genome analysis (miRNA-only mode)
+    if (!has_offtarget_data) {
         log.info ""
         log.info "=" * 80
-        log.info "NOTE: No genome FASTAs or indices provided"
+        log.info "NOTE: No genome FASTAs, genome indices, or transcriptome indices provided"
         log.info "Genome/transcriptome off-target analysis: DISABLED"
         log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
         log.info ""
-        log.info "To enable genome off-target analysis, provide either:"
+        log.info "To enable genome/transcriptome off-target analysis, provide either:"
         log.info "  --genome_fastas 'species:path,species2:path2' OR"
-        log.info "  --genome_indices 'species:index_prefix,species2:index_prefix2'"
+        log.info "  --genome_indices 'species:index_prefix,species2:index_prefix2' OR"
+        log.info "  --transcriptome_indices 'species:index_prefix,species2:index_prefix2'"
         log.info "=" * 80
         log.info ""
     }
