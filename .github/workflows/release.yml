@@ -355,7 +355,7 @@ jobs:
 
         # Run smoke tests - these MUST pass for any release
         echo "🔥 Running critical smoke tests..."
-        uv run --group dev pytest tests/docker/ -v --tb=short -m "docker and smoke" --maxfail=1
+        uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and smoke" --maxfail=1
         echo "✅ All smoke tests passed - Docker image is functional"
 
   # Run Docker integration tests (can fail in pre-release)
@@ -403,10 +403,10 @@ jobs:
         echo "🧪 Running integration tests..."
         if [ "${{ github.event.inputs.prerelease }}" == "true" ]; then
           echo "⚠️ Pre-release mode: Integration test failures will not block release"
-          uv run --group dev pytest tests/docker/ -v --tb=short -m "docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
+          uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
         else
           echo "🔒 Full release mode: Integration tests must pass"
-          uv run --group dev pytest tests/docker/ -v --tb=short -m "docker and not smoke" --maxfail=3
+          uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=3
         fi
 
   # Create GitHub release after smoke tests pass (integration can fail in pre-release)
