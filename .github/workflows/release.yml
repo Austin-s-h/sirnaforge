@@ -139,8 +139,8 @@ jobs:
     name: 🧪 Comprehensive Release Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-release, run-ci]
-    if: needs.run-ci.result == 'success'
+    needs: [validate-release, run-ci, build-docker]
+    if: needs.run-ci.result == 'success' && needs.build-docker.result == 'success'
 
     steps:
     - name: 📥 Checkout code
@@ -160,6 +160,25 @@ jobs:
 
     - name: 📦 Install all dependencies
       run: uv sync --dev
+
+    - name: 📥 Download Docker image
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image-${{ needs.validate-release.outputs.version }}
+        path: /tmp/
+
+    - name: 🐳 Load Docker image for testing
+      run: |
+        # Load the built image
+        docker load --input /tmp/sirnaforge-image.tar
+
+        # Tag the image to match what the Makefile expects (sirnaforge:latest)
+        REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
+        docker tag "$REGISTRY_IMAGE" sirnaforge:latest
+        docker tag "$REGISTRY_IMAGE" sirnaforge:${{ needs.validate-release.outputs.version }}
+
+        echo "✅ Docker image loaded and tagged for testing"
+        docker images | grep sirnaforge
 
     - name: 🧪 Run comprehensive test suite with coverage
       run: make test-release
@@ -222,7 +241,7 @@ jobs:
     name: 🐳 Build & Test Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [validate-release, run-ci, test-release]
+    needs: [validate-release, run-ci]
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.meta.outputs.tags }}
