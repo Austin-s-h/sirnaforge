@@ -11,11 +11,20 @@ DIRTY_CONTROL_SUFFIX = "__DIRTY_CONTROL"
 def inject_dirty_controls(design_result: DesignResult, count: int = 2) -> list[SiRNACandidate]:
     """Append clearly labelled "dirty" control candidates to a design result.
 
-    The controls are deep copies of the lowest-scoring candidates so that
-    off-target stages always receive at least a couple of intentionally
-    risky guides, guaranteeing observable signal. Control candidates are
-    appended to both the candidate pool and the top-candidate list, and
-    their IDs are suffixed with ``__DIRTY_CONTROL_<n>`` for clarity.
+    "Dirty" controls are *not* synthetic sequences. We intentionally reuse
+    the lowest-scoring rejected candidates from the same run so every control
+    is a plausible design that simply failed QC (GC range, off-target score,
+    etc.). Carrying these borderline guides forward guarantees that the
+    downstream off-target pipeline receives at least a couple of sequences
+    that should light up in the reports, making it easier for users to
+    confirm the workflow is wired correctly.
+
+    The clones retain their original guide/passenger sequences and metadata
+    but are marked with :attr:`~sirnaforge.models.sirna.SiRNACandidate.FilterStatus.DIRTY_CONTROL`.
+    They are appended to both ``candidates`` and ``top_candidates`` so that
+    subsequent stages (CSV export, Nextflow off-target analysis, etc.) see
+    the controls exactly where they expect normal guides. IDs are suffixed
+    with ``__DIRTY_CONTROL_<n>`` for clarity.
 
     Args:
         design_result: Aggregated design result to augment in-place.

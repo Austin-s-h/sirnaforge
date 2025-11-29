@@ -872,7 +872,14 @@ class SiRNAWorkflow:
             return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
 
     def _select_candidates_for_offtarget(self, design_results: DesignResult) -> list[SiRNACandidate]:
-        """Return top-N candidates plus any dirty controls for off-target analysis."""
+        """Return top-N candidates plus any dirty controls for off-target analysis.
+
+        Off-target pipelines expect to see at least one "fails on purpose"
+        control so we always tack the :func:`inject_dirty_controls` output onto
+        the regular top-N selection. The controls remain true siRNA designs that
+        merely failed QC, which makes them perfect sentinels for verifying that
+        downstream aligners, Nextflow modules, and reports are actually running.
+        """
         selected: list[SiRNACandidate] = list(design_results.top_candidates[: self.config.top_n])
 
         dirty_controls = [c for c in design_results.top_candidates if self._is_dirty_control_candidate(c)]
@@ -899,7 +906,14 @@ class SiRNAWorkflow:
         return status_is_dirty or (DIRTY_CONTROL_LABEL in issues)
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
-        """Prepare FASTA input file for off-target analysis."""
+        """Prepare FASTA input file for off-target analysis.
+
+        ``candidates`` must already include any dirty controls (handled by
+        :meth:`_select_candidates_for_offtarget`). We simply persist the ID and
+        guide sequence for each entry so the generated
+        ``off_target/input_candidates.fasta`` mirrors whatever the off-target
+        runner receives.
+        """
         input_fasta = self.config.output_dir / "off_target" / "input_candidates.fasta"
         sequences = [(f"{c.id}", c.guide_sequence) for c in candidates]
         FastaUtils.save_sequences_fasta(sequences, input_fasta)

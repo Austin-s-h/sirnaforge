@@ -137,6 +137,8 @@ my_first_analysis/
 ├── sirnaforge/
 │   ├── TP53_pass.csv        # Best candidates for lab use
 │   └── TP53_all.csv         # All candidates with scores
+├── off_target/
+│   └── input_candidates.fasta      # FASTA passed to Nextflow (includes dirty controls)
 ├── transcripts/
 │   ├── TP53_transcripts.fasta      # All retrieved transcripts
 │   ├── TP53_canonical.fasta        # Canonical isoform only
@@ -147,6 +149,31 @@ my_first_analysis/
 └── orf_reports/
     └── TP53_orf_validation.txt     # ORF analysis results
 ```
+
+### Dirty Control Sentinels
+
+Every workflow run automatically appends **dirty control** candidates to the
+design results. These are real guides chosen from the lowest-scoring rejected
+pool (for example, GC outside the desired window or a known off-target risk)
+and labeled with the `DIRTY_CONTROL` quality flag. We keep the original
+sequence data intact so they behave exactly like normal candidates, aside from
+being clearly marked.
+
+Why they matter:
+
+- They guarantee the downstream Nextflow off-target pipeline always receives a
+  few guides that *should* trigger hits, making it easy to confirm that your
+  installation has BWA-MEM2, SAMtools, and Nextflow wired correctly.
+- Because they originate from the same transcript set and scoring pipeline,
+  they provide realistic “fails on purpose” controls without inventing fake
+  sequences.
+- You will see them in the CSV/FASTA outputs (`*_all.csv`, `*_pass.csv`, and
+  `off_target/input_candidates.fasta`) with IDs that end in
+  `__DIRTY_CONTROL_<n>`.
+
+You can simply ignore them when selecting lab-ready candidates, but keep them
+around when filing bug reports or sharing workflow outputs—the controls answer
+the question “did the off-target analysis even run?” at a glance.
 
 ### Examine Your Results
 

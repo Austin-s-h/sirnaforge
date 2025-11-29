@@ -1,5 +1,7 @@
 """Tests for injecting dirty control candidates."""
 
+from __future__ import annotations
+
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 
