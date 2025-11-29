@@ -847,14 +847,14 @@ class SiRNAWorkflow:
 
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict:
         """Step 5: Run off-target analysis using embedded Nextflow pipeline."""
-        top_candidates = design_results.top_candidates[: self.config.top_n]
+        candidates_for_offtarget = self._select_candidates_for_offtarget(design_results)
 
-        if not top_candidates:
+        if not candidates_for_offtarget:
             console.print("⚠️  No candidates available for off-target analysis")
             return {"status": "skipped", "reason": "no_candidates"}
 
         # Prepare input files
-        input_fasta = await self._prepare_offtarget_input(top_candidates)
+        input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
 
         # If user disabled off-target checking via design parameters, skip entirely
         if not getattr(self.config.design_params, "check_off_targets", True):
@@ -865,11 +865,38 @@ class SiRNAWorkflow:
         # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
         # so downstream steps/users can see the explicit reason.
         try:
-            return await self._run_nextflow_offtarget_analysis(top_candidates, input_fasta)
+            return await self._run_nextflow_offtarget_analysis(candidates_for_offtarget, input_fasta)
         except Exception as e:
             console.print(f"⚠️  Nextflow execution failed: {e}")
             logger.exception("Nextflow pipeline execution error")
             return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
+
+    def _select_candidates_for_offtarget(self, design_results: DesignResult) -> list[SiRNACandidate]:
+        """Return top-N candidates plus any dirty controls for off-target analysis."""
+        selected: list[SiRNACandidate] = list(design_results.top_candidates[: self.config.top_n])
+
+        dirty_controls = [c for c in design_results.top_candidates if self._is_dirty_control_candidate(c)]
+        for control in dirty_controls:
+            if control not in selected:
+                selected.append(control)
+
+        return selected
+
+    @staticmethod
+    def _is_dirty_control_candidate(candidate: SiRNACandidate) -> bool:
+        """Identify dirty control sequences injected for observability."""
+        status = getattr(candidate, "passes_filters", True)
+        issues = getattr(candidate, "quality_issues", []) or []
+
+        status_is_dirty = False
+        if isinstance(status, bool):
+            status_is_dirty = False
+        elif isinstance(status, SiRNACandidate.FilterStatus):
+            status_is_dirty = status == SiRNACandidate.FilterStatus.DIRTY_CONTROL
+        else:
+            status_is_dirty = str(status) == DIRTY_CONTROL_LABEL
+
+        return status_is_dirty or (DIRTY_CONTROL_LABEL in issues)
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
         """Prepare FASTA input file for off-target analysis."""

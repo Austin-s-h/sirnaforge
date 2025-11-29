@@ -8,7 +8,8 @@ import pytest
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.models.modifications import StrandMetadata
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
-from sirnaforge.workflow import run_sirna_workflow
+from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL
+from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig, run_sirna_workflow
 
 
 def _write_test_fasta(path: Path) -> None:
@@ -27,6 +28,26 @@ def _load_patisiran_metadata() -> tuple[StrandMetadata, StrandMetadata]:
     guide_meta = StrandMetadata.model_validate(sequences["patisiran_ttr_guide"])
     passenger_meta = StrandMetadata.model_validate(sequences["patisiran_ttr_passenger"])
     return guide_meta, passenger_meta
+
+
+def _make_candidate(candidate_id: str, guide_seq: str, passes_filters: object = True) -> SiRNACandidate:
+    """Create a minimal SiRNACandidate for tests."""
+    passenger_seq = guide_seq.translate(str.maketrans("ATCG", "TAGC"))
+    gc_content = (guide_seq.count("G") + guide_seq.count("C")) / len(guide_seq) * 100
+
+    return SiRNACandidate(
+        id=candidate_id,
+        transcript_id="trans1",
+        position=1,
+        guide_sequence=guide_seq,
+        passenger_sequence=passenger_seq,
+        gc_content=gc_content,
+        length=len(guide_seq),
+        asymmetry_score=0.5,
+        component_scores={"empirical": 1.0},
+        composite_score=90.0,
+        passes_filters=passes_filters,
+    )
 
 
 @pytest.mark.asyncio
@@ -212,3 +233,37 @@ async def test_single_sequence_workflow_success(tmp_path, monkeypatch):
 
     assert results["transcript_summary"]["total_transcripts"] == 1
     assert results["design_summary"]["total_candidates"] == 1
+
+
+@pytest.mark.unit
+def test_offtarget_selection_includes_dirty_controls(tmp_path):
+    """Dirty control candidates must appear in off-target FASTA selection."""
+    params = DesignParameters(top_n=1)
+    config = WorkflowConfig(output_dir=tmp_path / "out_dirty", gene_query="tp53", design_params=params)
+    workflow = SiRNAWorkflow(config)
+
+    primary = _make_candidate("c_primary", "ATGCGATGCGATGCGATGCGC")
+    dirty = _make_candidate(
+        "c_dirty",
+        "TTGCGATGCGATGCGATGCGA",
+        passes_filters=SiRNACandidate.FilterStatus.DIRTY_CONTROL,
+    )
+    dirty.quality_issues = [DIRTY_CONTROL_LABEL]
+
+    design_result = DesignResult(
+        input_file="input",
+        parameters=params,
+        candidates=[primary, dirty],
+        top_candidates=[primary, dirty],
+        total_sequences=1,
+        total_candidates=2,
+        filtered_candidates=1,
+        processing_time=0.1,
+        tool_versions={},
+    )
+
+    selected = workflow._select_candidates_for_offtarget(design_result)
+
+    assert primary in selected
+    assert dirty in selected
+    assert len(selected) == 2
