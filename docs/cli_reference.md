@@ -77,6 +77,7 @@ $ sirnaforge workflow [OPTIONS] GENE_QUERY
 * `--species, --genome-species TEXT`: Comma-separated canonical species identifiers (genome+miRNA). Supported values include human, mouse, rhesus, rat, chicken  [default: human,mouse,rhesus,rat,chicken]
 * `--mirna-db TEXT`: miRNA reference database to use for seed analysis  [default: mirgenedb]
 * `--mirna-species TEXT`: Optional comma-separated override for miRNA species identifiers. Defaults to mapping the --species selections
+* `--transcriptome-fasta TEXT`: Path or URL to transcriptome FASTA (local file, URL, or pre-configured source such as `ensembl_human_cdna`). Cached and indexed automatically; defaults to `ensembl_human_cdna` when omitted
 * `--gc-min FLOAT RANGE`: Minimum GC content percentage  [default: 30.0; 0.0&lt;=x&lt;=100.0]
 * `--gc-max FLOAT RANGE`: Maximum GC content percentage  [default: 60.0; 0.0&lt;=x&lt;=100.0]
 * `-l, --length INTEGER RANGE`: siRNA length in nucleotides  [default: 21; 19&lt;=x&lt;=23]

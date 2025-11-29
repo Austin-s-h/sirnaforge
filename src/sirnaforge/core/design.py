@@ -24,7 +24,7 @@ class SiRNADesigner:
 
     def design_from_file(self, input_file: str) -> DesignResult:
         """Design siRNAs from input FASTA file."""
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Parse input sequences
         sequences = list(SeqIO.parse(input_file, "fasta"))
@@ -67,7 +67,7 @@ class SiRNADesigner:
         ]
         top_candidates = (passing or all_candidates)[: self.parameters.top_n]
 
-        processing_time = max(0.0, time.time() - start_time)  # Ensure non-negative
+        processing_time = max(0.0, time.perf_counter() - start_time)  # Ensure non-negative
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
         total_seqs = len(sequences)
         for c in all_candidates:
@@ -99,7 +99,7 @@ class SiRNADesigner:
 
     def design_from_sequence(self, sequence: str, transcript_id: str = "seq1") -> DesignResult:
         """Design siRNAs from a single sequence."""
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         sequence = sequence.upper()
 
@@ -124,7 +124,7 @@ class SiRNADesigner:
         ]
         top_candidates = (passing or scored_candidates)[: self.parameters.top_n]
 
-        processing_time = time.time() - start_time
+        processing_time = max(0.0, time.perf_counter() - start_time)
         # For single-sequence runs, transcript hit metrics are trivial (hits=1, fraction=1.0)
         for c in scored_candidates:
             c.transcript_hit_count = 1

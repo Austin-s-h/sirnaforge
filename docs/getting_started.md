@@ -17,8 +17,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 make dev              # One-command setup: installs dependencies + pre-commit hooks
-# OR for just dependencies:
-make install-dev      # Install dev dependencies via uv sync --dev
+# OR install development dependencies only:
+uv sync --dev
 ```
 ````
 
@@ -406,7 +406,6 @@ For contributors and developers, siRNAforge uses **Make commands** for streamlin
 **Quick Setup**
 ```bash
 make dev              # One-command setup: install deps + pre-commit hooks
-make install-dev      # Install dev dependencies (uv sync --dev)
 make install          # Install production dependencies only (uv sync --no-dev)
 ```
 
@@ -415,21 +414,30 @@ make install          # Install production dependencies only (uv sync --no-dev)
 make test-dev         # Fast unit tests (~15s) - for rapid iteration
 make test-ci          # Smoke tests with coverage - for CI/CD
 make test-release     # Full validation - for releases
-make test-unit        # Unit tests only
 make test             # All tests (may have skips/failures)
+```
+
+**Testing (By Requirement)**
+```bash
+make test-requires-docker   # Tests requiring Docker daemon
+make test-requires-network  # Tests requiring network access
+make test-requires-nextflow # Tests requiring Nextflow
 ```
 
 **Code Quality**
 ```bash
-make lint             # Check code quality (ruff + mypy)
-make format           # Auto-format code (ruff)
-make check            # format + lint + test-dev
+make lint             # Check code quality (ruff check + mypy)
+make format           # Auto-format and autofix style issues (ruff)
+make check            # format + test-dev (mutating quick validation)
+make pre-commit       # Run all pre-commit hooks locally
+make security         # Run bandit + safety scans
 ```
 
 **Docker**
 ```bash
 make docker-build     # Build Docker image
 make docker-test      # Run tests inside container
+make docker-build-test # Clean, rebuild, and validate Docker image
 make docker-run       # Run workflow (usage: make docker-run GENE=TP53)
 make docker-shell     # Interactive shell
 ```
@@ -438,8 +446,10 @@ make docker-shell     # Interactive shell
 ```bash
 make docs             # Build documentation
 make docs-serve       # Serve at localhost:8000
-make clean            # Clean build artifacts
+make clean            # Clean build artifacts and caches
 make version          # Show version
+make example          # Run bundled sample transcripts workflow
+make cache-info       # Inspect local transcript/miRNA cache mounts
 ```
 
 **Why Make?** The Makefile wraps `uv` commands for consistency, provides organized test tiers, and includes convenient shortcuts for Docker workflows. Run `make help` for complete command list.

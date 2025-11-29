@@ -20,15 +20,11 @@ This document outlines the three main groups of tests in siRNAforge, designed to
 
 **Run commands**:
 ```bash
-# All unit tests
-make test-unit
-# or
-uv run pytest -m "unit"
+# Fastest Make shortcut focused on dev markers
+make test-dev
 
-# Local Python development
-make test-local-python
-# or
-uv run pytest -m "local_python"
+# Full unit marker set via pytest
+uv run pytest -m "unit"
 
 # CI-optimized
 make test-ci
@@ -52,14 +48,11 @@ uv run pytest -m "ci"
 
 **Run commands**:
 ```bash
-# Integration tests in Docker
-make docker-test-integration
-# or
-docker run --rm -v $(pwd):/workspace -w /workspace sirnaforge:latest \
-  uv run pytest -m "integration"
+# Container validation suite (runs tests/container)
+make docker-test
 
-# Full workflow integration
-make docker-test-full
+# Marker-based integration tests on host
+uv run pytest -m "integration"
 ```
 
 ### 3. Local Nextflow Tests (`local_nextflow`)
@@ -76,10 +69,11 @@ make docker-test-full
 
 **Run commands**:
 ```bash
-# Local Nextflow tests
-make test-local-nextflow
-# or
+# Marker-based Nextflow subset (requires local Nextflow install)
 uv run pytest -m "local_nextflow"
+
+# Host target that isolates Nextflow requirements
+make test-requires-nextflow
 
 # Full integration script
 ./tests/integration/test_workflow_integration.sh TP53
@@ -104,19 +98,19 @@ uv run pytest -m "local_nextflow"
 ### For Python Development
 ```bash
 # Quick validation
-make test-unit
+make test-dev
 
 # Full local testing
-make test-local-python
+make test
 ```
 
 ### For Pipeline Development
 ```bash
-# Test Nextflow integration
-make test-local-nextflow
+# Test Nextflow-heavy markers on host
+make test-requires-nextflow
 
 # Full Docker integration
-make docker-test-integration
+make docker-test
 ```
 
 ### For CI/CD
@@ -124,8 +118,8 @@ make docker-test-integration
 # Fast CI tests
 make test-ci
 
-# Full CI validation
-make docker-test-full
+# Release validation pipeline
+make test-release
 ```
 
 ## Resource Requirements

@@ -56,6 +56,8 @@ from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
 
+DEFAULT_TRANSCRIPTOME_SOURCE = "ensembl_human_cdna"
+
 app = typer.Typer(
     name="sirnaforge",
     help="siRNAforge - siRNA design toolkit for gene silencing",
@@ -418,7 +420,8 @@ def workflow(  # noqa: PLR0912
         help=(
             "Path or URL to transcriptome FASTA file for off-target analysis. "
             "Can be a local file, HTTP(S) URL, or pre-configured source name "
-            "(e.g., 'ensembl_human_cdna'). Will be cached and indexed automatically."
+            "(e.g., 'ensembl_human_cdna'). Will be cached and indexed automatically. "
+            "Defaults to 'ensembl_human_cdna' when omitted."
         ),
     ),
     gc_min: float = typer.Option(
@@ -532,6 +535,9 @@ def workflow(  # noqa: PLR0912
     if input_fasta:
         input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
 
+    transcriptome_selection = transcriptome_fasta or DEFAULT_TRANSCRIPTOME_SOURCE
+    transcriptome_label = transcriptome_fasta or f"{DEFAULT_TRANSCRIPTOME_SOURCE} (auto)"
+
     console.print(
         Panel.fit(
             f"🧬 [bold blue]Complete siRNA Workflow[/bold blue]\n"
@@ -545,6 +551,7 @@ def workflow(  # noqa: PLR0912
             f"Species: [green]{', '.join(canonical_species)}[/green]\n"
             f"Genome Species: [green]{', '.join(species_list)}[/green]\n"
             f"miRNA Reference ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
+            f"Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
@@ -575,7 +582,7 @@ def workflow(  # noqa: PLR0912
                     genome_species=species_list,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
-                    transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_fasta=transcriptome_selection,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,

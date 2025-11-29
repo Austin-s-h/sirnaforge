@@ -139,7 +139,7 @@ class SiRNAWorkflow:
         console.print(f"Gene Query: [yellow]{self.config.gene_query}[/yellow]")
         console.print(f"Output Directory: [blue]{self.config.output_dir}[/blue]")
 
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Validate input parameters (quiet: avoid verbose warnings in console)
         _ = self.validation.validate_input_parameters(self.config.design_params)
@@ -172,7 +172,7 @@ class SiRNAWorkflow:
             await self.step4_generate_reports(design_results)
             progress.advance(main_task)
 
-        total_time = time.time() - start_time
+        total_time = max(0.0, time.perf_counter() - start_time)
 
         # Compile final results
         # Serialize authoritative design parameters into the workflow summary.
@@ -390,7 +390,7 @@ class SiRNAWorkflow:
             return design_result
 
         # Parallel per-transcript path
-        start = time.time()
+        start = time.perf_counter()
         total = len(sequences)
         task = progress.add_task("[yellow]Designing siRNAs...", total=total if total > 0 else 1)
 
@@ -442,7 +442,7 @@ class SiRNAWorkflow:
         ]
         top_candidates = (passing or all_candidates)[: self.config.top_n]
 
-        processing_time = time.time() - start
+        processing_time = max(0.0, time.perf_counter() - start)
         filtered_count = len(passing)
         tool_versions = results[0].tool_versions if results else {}
 

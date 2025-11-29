@@ -1,8 +1,8 @@
 <div align="center">
   <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="300"/>
-  
+
   <h1>siRNAforge</h1>
-  
+
   <p><em>From gene to silencing — design high-specificity siRNAs with confidence</em></p>
 
   [![Release](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml)
@@ -27,8 +27,8 @@
 ### Why siRNAforge?
 
 - 🎯 **End-to-end workflow** — From gene symbol to ranked candidates in one command
-- 🔬 **Multi-species validation** — Off-target analysis across human, rat, and rhesus macaque genomes
-- 🐍 **Developer-friendly** — Modern Python API with full type hints and Pydantic models
+- 🔬 **Multi-species validation** — Off-target analysis of transcriptome and miRNA seed matches across human, rat, and rhesus macaque genomes
+- 🐍 **Developer-friendly** — Modern Python API with full type hints and Pydantic models. Easily extend with your own scoring methods.
 
 ### Key Features
 
@@ -50,7 +50,7 @@
 
 Choose your installation method based on your needs:
 
-**🐋 Docker (Recommended)** — Complete toolkit with all bioinformatics dependencies
+**🐋 Docker (Recommended)** — Complete toolkit with all dependencies, scalable execution
 ```bash
 docker pull ghcr.io/austin-s-h/sirnaforge:latest
 ```
@@ -91,9 +91,10 @@ uv run sirnaforge workflow TP53 --output-dir results
 
 **What you get:**
 - Transcript sequences from Ensembl
-- Thermodynamically-scored siRNA candidates  
+- Thermodynamically-scored siRNA candidates
 - Off-target analysis (Docker only)
 - Ranked results in CSV and FASTA formats
+- Automatic Ensembl human cDNA transcriptome indexing (override with `--transcriptome-fasta`)
 
 Need more control? Customize with parameters:
 
@@ -106,7 +107,7 @@ sirnaforge workflow BRCA1 \
   --output-dir results
 ```
 
-📖 **[Usage examples and workflows →](docs/usage_examples.md)**  
+📖 **[Usage examples and workflows →](docs/usage_examples.md)**
 📖 **[Complete CLI reference →](docs/cli_reference.md)**
 
 ---
@@ -119,7 +120,7 @@ sirnaforge workflow BRCA1 \
 
 ### 🎯 For Users
 - **[Getting Started](docs/getting_started.md)** — Installation, first run, quick reference
-- **[Usage Examples](docs/usage_examples.md)** — Real-world workflows and patterns  
+- **[Usage Examples](docs/usage_examples.md)** — Real-world workflows and patterns
 - **[CLI Reference](docs/cli_reference.md)** — Complete command documentation
 - **[Gene Search](docs/gene_search.md)** — Multi-database transcript retrieval
 - **[Thermodynamic Guide](docs/thermodynamic_guide.md)** — Scoring algorithms explained
@@ -139,6 +140,8 @@ sirnaforge workflow BRCA1 \
 </table>
 
 📘 **[Browse full documentation →](https://austin-s-h.github.io/sirnaforge)**
+
+Use `sirnaforge --help`, `sirnaforge workflow --help`, or the detailed [`CLI reference`](docs/cli_reference.md).
 
 ---
 
@@ -201,7 +204,7 @@ Gene Symbol → Transcript Retrieval → siRNA Design → Off-target Analysis �
 ### Docker Environment (Recommended)
 All dependencies included in the image:
 - Nextflow ≥25.04.0
-- BWA-MEM2 ≥2.2.1  
+- BWA-MEM2 ≥2.2.1
 - SAMtools ≥1.19.2
 - ViennaRNA ≥2.7.0
 - Python 3.9-3.12
@@ -236,19 +239,20 @@ make test-release    # Comprehensive validation (all tests + coverage)
 make test            # All tests (shows passes/skips/fails)
 ```
 
-**🧪 Testing (By Type)**
+**🧪 Testing (By Requirement)**
 ```bash
-make test-unit              # Unit tests only
-make test-integration       # Integration tests only  
 make test-requires-docker   # Tests requiring Docker daemon
 make test-requires-network  # Tests requiring network access
+make test-requires-nextflow # Tests requiring Nextflow
 ```
 
 **🔧 Code Quality**
 ```bash
-make lint       # Check code quality (ruff + mypy)
-make format     # Auto-format code
-make check      # format + test-dev (quick validation)
+make lint       # Check code quality (ruff check + mypy)
+make format     # Auto-format and autofix style issues (ruff)
+make check      # format + test-dev (mutating quick validation)
+make pre-commit # Run all pre-commit hooks locally
+make security   # Run bandit + safety scans
 ```
 
 **🐳 Docker**
@@ -257,6 +261,7 @@ make docker-build    # Build Docker image
 make docker-test     # Run tests INSIDE container
 make docker-shell    # Interactive shell in container
 make docker-run      # Run workflow (e.g., make docker-run GENE=TP53)
+make docker-build-test # Clean, rebuild, and validate Docker image
 ```
 
 **📚 Documentation**
@@ -265,15 +270,17 @@ make docs        # Build HTML documentation
 make docs-serve  # Serve docs locally at localhost:8000
 ```
 
-**🔧 Other**
+**🔧 Utilities**
 ```bash
-make clean      # Clean build artifacts
-make version    # Show current version
-make help       # Show all available commands
+make clean       # Clean build artifacts and caches
+make version     # Show current version
+make example     # Run the sample workflow on bundled transcripts
+make cache-info  # Inspect local transcript/miRNA cache mounts
+make help        # Show all Make targets with descriptions
 ```
 
-📖 **[Complete development guide →](docs/developer/development.md)**  
-📖 **[Contributing guidelines →](CONTRIBUTING.md)**  
+📖 **[Complete development guide →](docs/developer/development.md)**
+📖 **[Contributing guidelines →](CONTRIBUTING.md)**
 📖 **[Testing strategies →](docs/developer/testing_guide.md)**
 
 ---
@@ -298,7 +305,7 @@ This project is licensed under the MIT License. See **[LICENSE](LICENSE)** for d
 siRNAforge integrates several open-source bioinformatics tools:
 
 - **[ViennaRNA Package](https://www.tbi.univie.ac.at/RNA/)** — RNA secondary structure prediction
-- **[BWA-MEM2](https://github.com/bwa-mem2/bwa-mem2)** — High-performance sequence alignment  
+- **[BWA-MEM2](https://github.com/bwa-mem2/bwa-mem2)** — High-performance sequence alignment
 - **[Nextflow](https://www.nextflow.io/)** — Scalable workflow orchestration
 - **[BioPython](https://biopython.org/)** — Computational biology utilities
 
