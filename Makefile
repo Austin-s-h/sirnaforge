@@ -85,8 +85,8 @@ dev: ## Quick dev setup (install + pre-commit)
 test-dev: ## Development tier - fast unit tests (~15s)
 	$(PYTEST_V) -m "dev"
 
-test-ci: ## CI tier - smoke tests for CI/CD
-	$(PYTEST_V) -m "ci" -n 0 --junitxml=pytest-report.xml \
+test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow suites)
+	$(PYTEST_V) -m "ci and not runs_in_container and not requires_docker and not requires_tools" -n 0 --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
 test-release: docker-ensure ## Release tier - comprehensive validation (host + container tests with combined coverage)
