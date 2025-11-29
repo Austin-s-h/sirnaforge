@@ -47,7 +47,7 @@ for species, index_path in indices.items():
         python: \$(python --version | sed 's/Python //g')
         pyyaml: \$(python -c "import yaml; print(yaml.__version__)")
     END_VERSIONS
-    """
+    """.stripIndent()
 
     stub:
     """
@@ -58,5 +58,5 @@ for species, index_path in indices.items():
         python: \$(python --version | sed 's/Python //g')
         pyyaml: \$(python -c "import yaml; print(yaml.__version__)")
     END_VERSIONS
-    """
+    """.stripIndent()
 }
