@@ -54,11 +54,6 @@ COPY docker/environment-nextflow.yml /tmp/environment.yml
 RUN micromamba install --prefix /opt/conda --file /tmp/environment.yml -y && \
     micromamba clean --all --yes
 
-# Install the freshly built siRNAforge wheel into the conda prefix so later
-# stages can reuse the fully-populated environment without re-running pip.
-COPY --from=builder /app/dist/*.whl /tmp/
-RUN /opt/conda/bin/pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
-
 # Unit test stage (fast) - runs unit tests using the builder image
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS unit-test
 ARG VERSION=0.0.0+local
@@ -87,8 +82,12 @@ RUN ln -sf /usr/local/bin/micromamba /usr/local/bin/conda
 USER sirnauser
 WORKDIR /home/sirnauser
 
-# The conda prefix already contains the siRNAforge wheel from the
-# conda-builder stage, so no additional pip install is necessary here.
+# Copy and install the application wheel
+COPY --from=builder --chown=sirnauser:sirnauser /app/dist/*.whl /tmp/
+RUN /opt/conda/bin/pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
+
+# Switch to the non-root user for installing the application wheel so files
+# created during installation are owned by sirnauser.
 USER sirnauser
 WORKDIR /home/sirnauser
 
@@ -105,8 +104,6 @@ ENV UV_PYTHON="/opt/conda/bin/python"
 ENV VIRTUAL_ENV="/opt/conda"
 ENV MAMBA_ROOT_PREFIX="/opt/conda"
 ENV NXF_CONDA_CLI="micromamba"
-# Mark that we're running inside a container for auto-detection
-ENV SIRNAFORGE_IN_CONTAINER=1
 
 # Ensure Nextflow home is created and writable by the non-root user so Nextflow
 # does not attempt to create runtime directories under /usr/local/bin.
