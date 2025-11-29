@@ -45,6 +45,7 @@ from sirnaforge.models.sirna import (
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
+from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
@@ -382,6 +383,11 @@ class SiRNAWorkflow:
             task = progress.add_task("[yellow]Designing siRNAs...", total=2)
             progress.advance(task)
             design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
+            added_controls = inject_dirty_controls(design_result)
+            if added_controls:
+                console.print(
+                    f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification"
+                )
             progress.advance(task)
             _ = self.validation.validate_design_results(design_result)
             temp_fasta.unlink(missing_ok=True)
@@ -421,6 +427,7 @@ class SiRNAWorkflow:
 
         # Merge candidates
         all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
+        rejected_pool: list[SiRNACandidate] = [c for dr in results for c in getattr(dr, "rejected_candidates", [])]
 
         # Recompute transcript hit metrics across all inputs
         total_seqs = total
@@ -456,7 +463,12 @@ class SiRNAWorkflow:
             filtered_candidates=filtered_count,
             processing_time=processing_time,
             tool_versions=tool_versions,
+            rejected_candidates=rejected_pool,
         )
+
+        added_controls = inject_dirty_controls(combined)
+        if added_controls:
+            console.print(f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification")
 
         _ = self.validation.validate_design_results(combined)
 

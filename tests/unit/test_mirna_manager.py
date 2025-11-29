@@ -92,7 +92,7 @@ class TestMiRNADatabaseManager:
         )
         assert resolution["canonical"] == ["human", "mouse", "chicken"]
         assert resolution["genome"] == ["human", "mouse", "chicken"]
-        assert resolution["mirna"] == ["hsa", "mmu", "chi"]
+        assert resolution["mirna"] == ["hsa", "mmu", "gga"]
 
         override = MiRNADatabaseManager.resolve_species_selection(
             ["human"],

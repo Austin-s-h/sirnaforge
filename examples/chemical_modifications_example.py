@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example: Working with Chemical Modifications Metadata in siRNAforge
+"""Example: Working with Chemical Modifications Metadata in siRNAforge.
 
 This script demonstrates how to:
 1. Create chemical modification annotations
