@@ -247,6 +247,7 @@ class SiRNACandidateSchema(DataFrameModel):
             "TRANSCRIPTOME_HITS_2MM",
             "MIRNA_SEED_HITS",
             "MIRNA_HIGH_RISK",
+            "DIRTY_CONTROL",
         }
         series = df["passes_filters"]
 

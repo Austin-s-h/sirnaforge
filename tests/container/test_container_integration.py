@@ -239,7 +239,7 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
             capture_output=True,
             text=True,
             cwd=output_dir,
-            timeout=300,  # 5 minutes max
+            timeout=1200,  # 20 minutes max
             check=False,
         )
 

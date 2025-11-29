@@ -104,8 +104,6 @@ ENV UV_PYTHON="/opt/conda/bin/python"
 ENV VIRTUAL_ENV="/opt/conda"
 ENV MAMBA_ROOT_PREFIX="/opt/conda"
 ENV NXF_CONDA_CLI="micromamba"
-# Mark that we're running inside a container for auto-detection
-ENV SIRNAFORGE_IN_CONTAINER=1
 
 # Ensure Nextflow home is created and writable by the non-root user so Nextflow
 # does not attempt to create runtime directories under /usr/local/bin.

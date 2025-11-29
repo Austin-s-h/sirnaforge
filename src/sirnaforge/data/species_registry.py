@@ -78,11 +78,11 @@ MIRGENEDB_SPECIES_TABLE: dict[str, dict[str, Any]] = {
         "common_name": "Sheep",
         "aliases": ["sheep", "ovis_aries"],
     },
-    "chi": {
+    "gga": {
         "taxonomy_id": "9031",
         "scientific_name": "Gallus gallus",
         "common_name": "Chicken",
-        "aliases": ["chicken", "gallus_gallus"],
+        "aliases": ["chicken", "gallus_gallus", "chi"],
     },
     "tgu": {
         "taxonomy_id": "9103",
@@ -176,8 +176,8 @@ CANONICAL_SPECIES_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "chicken": {
         "genome": "chicken",
-        "mirgenedb_slug": "chi",
-        "aliases": ["gallus_gallus"],
+        "mirgenedb_slug": "gga",
+        "aliases": ["gallus_gallus", "chi"],
     },
 }
 

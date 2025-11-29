@@ -6,29 +6,35 @@ Tiered testing approach for different development phases and resources.
 
 ### Development (Python-only)
 ```bash
-make test-dev           # Fast unit tests (~15s) - development iteration
-make test-unit          # Unit tests only (~30s)
-make lint               # Code quality checks (~5s)
-make check              # format + test-dev (~40s)
+make test-dev           # Fast marker-based tests (~15s) for iteration
+make test               # Full pytest run on host (may include skips)
+make lint               # Ruff + mypy checks (~5s)
+make format             # Auto-format & autofix style issues
+make check              # format + test-dev (mutating quick gate)
 ```
+
+> **Note:** `make check` runs `make format` first, so it will modify files to enforce style before executing tests.
 
 ### Docker (Full environment)
 ```bash
 make docker-test        # Tests INSIDE container
 make docker-build       # Build Docker image
 make docker-shell       # Interactive debugging
+make docker-run         # Run workflow smoke test inside container
 ```
 
 ### Test Categories by Tier
 
-| Category | Purpose | Time | Tests | Resources |
-|----------|---------|------|-------|-----------|
-| `test-dev` | Development iteration | ~15s | 30 | Minimal |
-| `test-ci` | CI/CD validation | ~40s | 50+ | Low |
-| `test-release` | Full validation | ~60s | All | Medium |
-| `test-unit` | Unit tests only | ~30s | 31 | Low |
-| `test-integration` | Integration tests | ~30s | 20+ | Low |
-| `docker-test` | Container tests | ~60s | All | High |
+| Target | Purpose | Time | Scope | Resources |
+|--------|---------|------|-------|-----------|
+| `test-dev` | Fast development iteration (pytest `-m dev`) | ~15s | Fastest unit-style set | Minimal |
+| `test-ci` | CI/CD smoke with coverage | ~40s | `ci` markers + coverage XML | Low |
+| `test-release` | Host + container validation with combined coverage | ~60s | dev+ci+release markers | Medium |
+| `test` | Full pytest run (allows skips/failures) | 60s+ | Entire suite on host | Medium |
+| `test-requires-docker` | Host tests needing Docker daemon | ~45s | `requires_docker` marker subset | Medium |
+| `test-requires-network` | Network-access-required subset | ~30s | `requires_network` marker | Low |
+| `test-requires-nextflow` | Nextflow-specific subset | ~45s | `requires_nextflow` marker | Medium |
+| `docker-test` | Container-only tests (`runs_in_container`) | ~60s | tests/container suite | High |
 
 ## Local Development Testing
 
@@ -46,10 +52,6 @@ make dev
 make test-dev
 # Expected: ~15 seconds, 30 tests
 # ✅ Success: All tests pass, no Docker required
-
-# Alternative: Unit tests only
-make test-unit
-# Expected: ~30 seconds, 31 tests
 ```
 
 ### 3. Code Quality Checks
@@ -148,7 +150,7 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:latest \
 5. **Validation**: `make test-release` before releases
 
 ### Resource Management
-- **Local development**: Use `test-dev` and `test-unit`
+- **Local development**: Use `test-dev` for iteration and `test` before commits
 - **CI/CD**: Use `test-ci` with artifacts
 - **Release validation**: Use `test-release` with full coverage
 - **Quick validation**: Use `make check` for lint + fast tests

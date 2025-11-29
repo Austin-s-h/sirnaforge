@@ -45,6 +45,7 @@ from sirnaforge.models.sirna import (
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
+from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
@@ -139,7 +140,7 @@ class SiRNAWorkflow:
         console.print(f"Gene Query: [yellow]{self.config.gene_query}[/yellow]")
         console.print(f"Output Directory: [blue]{self.config.output_dir}[/blue]")
 
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Validate input parameters (quiet: avoid verbose warnings in console)
         _ = self.validation.validate_input_parameters(self.config.design_params)
@@ -172,7 +173,7 @@ class SiRNAWorkflow:
             await self.step4_generate_reports(design_results)
             progress.advance(main_task)
 
-        total_time = time.time() - start_time
+        total_time = max(0.0, time.perf_counter() - start_time)
 
         # Compile final results
         # Serialize authoritative design parameters into the workflow summary.
@@ -382,6 +383,11 @@ class SiRNAWorkflow:
             task = progress.add_task("[yellow]Designing siRNAs...", total=2)
             progress.advance(task)
             design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
+            added_controls = inject_dirty_controls(design_result)
+            if added_controls:
+                console.print(
+                    f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification"
+                )
             progress.advance(task)
             _ = self.validation.validate_design_results(design_result)
             temp_fasta.unlink(missing_ok=True)
@@ -390,7 +396,7 @@ class SiRNAWorkflow:
             return design_result
 
         # Parallel per-transcript path
-        start = time.time()
+        start = time.perf_counter()
         total = len(sequences)
         task = progress.add_task("[yellow]Designing siRNAs...", total=total if total > 0 else 1)
 
@@ -421,6 +427,7 @@ class SiRNAWorkflow:
 
         # Merge candidates
         all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
+        rejected_pool: list[SiRNACandidate] = [c for dr in results for c in getattr(dr, "rejected_candidates", [])]
 
         # Recompute transcript hit metrics across all inputs
         total_seqs = total
@@ -442,7 +449,7 @@ class SiRNAWorkflow:
         ]
         top_candidates = (passing or all_candidates)[: self.config.top_n]
 
-        processing_time = time.time() - start
+        processing_time = max(0.0, time.perf_counter() - start)
         filtered_count = len(passing)
         tool_versions = results[0].tool_versions if results else {}
 
@@ -456,7 +463,12 @@ class SiRNAWorkflow:
             filtered_candidates=filtered_count,
             processing_time=processing_time,
             tool_versions=tool_versions,
+            rejected_candidates=rejected_pool,
         )
+
+        added_controls = inject_dirty_controls(combined)
+        if added_controls:
+            console.print(f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification")
 
         _ = self.validation.validate_design_results(combined)
 
@@ -835,14 +847,14 @@ class SiRNAWorkflow:
 
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict:
         """Step 5: Run off-target analysis using embedded Nextflow pipeline."""
-        top_candidates = design_results.top_candidates[: self.config.top_n]
+        candidates_for_offtarget = self._select_candidates_for_offtarget(design_results)
 
-        if not top_candidates:
+        if not candidates_for_offtarget:
             console.print("⚠️  No candidates available for off-target analysis")
             return {"status": "skipped", "reason": "no_candidates"}
 
         # Prepare input files
-        input_fasta = await self._prepare_offtarget_input(top_candidates)
+        input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
 
         # If user disabled off-target checking via design parameters, skip entirely
         if not getattr(self.config.design_params, "check_off_targets", True):
@@ -853,14 +865,55 @@ class SiRNAWorkflow:
         # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
         # so downstream steps/users can see the explicit reason.
         try:
-            return await self._run_nextflow_offtarget_analysis(top_candidates, input_fasta)
+            return await self._run_nextflow_offtarget_analysis(candidates_for_offtarget, input_fasta)
         except Exception as e:
             console.print(f"⚠️  Nextflow execution failed: {e}")
             logger.exception("Nextflow pipeline execution error")
             return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
 
+    def _select_candidates_for_offtarget(self, design_results: DesignResult) -> list[SiRNACandidate]:
+        """Return top-N candidates plus any dirty controls for off-target analysis.
+
+        Off-target pipelines expect to see at least one "fails on purpose"
+        control so we always tack the :func:`inject_dirty_controls` output onto
+        the regular top-N selection. The controls remain true siRNA designs that
+        merely failed QC, which makes them perfect sentinels for verifying that
+        downstream aligners, Nextflow modules, and reports are actually running.
+        """
+        selected: list[SiRNACandidate] = list(design_results.top_candidates[: self.config.top_n])
+
+        dirty_controls = [c for c in design_results.top_candidates if self._is_dirty_control_candidate(c)]
+        for control in dirty_controls:
+            if control not in selected:
+                selected.append(control)
+
+        return selected
+
+    @staticmethod
+    def _is_dirty_control_candidate(candidate: SiRNACandidate) -> bool:
+        """Identify dirty control sequences injected for observability."""
+        status = getattr(candidate, "passes_filters", True)
+        issues = getattr(candidate, "quality_issues", []) or []
+
+        status_is_dirty = False
+        if isinstance(status, bool):
+            status_is_dirty = False
+        elif isinstance(status, SiRNACandidate.FilterStatus):
+            status_is_dirty = status == SiRNACandidate.FilterStatus.DIRTY_CONTROL
+        else:
+            status_is_dirty = str(status) == DIRTY_CONTROL_LABEL
+
+        return status_is_dirty or (DIRTY_CONTROL_LABEL in issues)
+
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
-        """Prepare FASTA input file for off-target analysis."""
+        """Prepare FASTA input file for off-target analysis.
+
+        ``candidates`` must already include any dirty controls (handled by
+        :meth:`_select_candidates_for_offtarget`). We simply persist the ID and
+        guide sequence for each entry so the generated
+        ``off_target/input_candidates.fasta`` mirrors whatever the off-target
+        runner receives.
+        """
         input_fasta = self.config.output_dir / "off_target" / "input_candidates.fasta"
         sequences = [(f"{c.id}", c.guide_sequence) for c in candidates]
         FastaUtils.save_sequences_fasta(sequences, input_fasta)

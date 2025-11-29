@@ -24,7 +24,7 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.9, <3.13"
-version = "0.3.0"
+version = "0.3.1"
 
 dependencies = [
   "biopython>=1.84",
@@ -294,14 +294,6 @@ markers = [
   "ci: CI/CD tier - quick validation (auto-assigned to smoke tests)",
   "release: Release validation tier - comprehensive checks (auto-assigned to integration tests)", # === Special Attributes ===
   "slow: Test takes >30 seconds to complete",
-  "asyncio: Async test requiring asyncio event loop", # === DEPRECATED (will be removed in v0.3.0) ===
-  "docker: DEPRECATED - use @pytest.mark.requires_docker instead",
-  "pipeline: DEPRECATED - use @pytest.mark.requires_nextflow instead",
-  "nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
-  "lightweight: DEPRECATED - use @pytest.mark.unit instead",
-  "local_python: DEPRECATED - use @pytest.mark.unit instead",
-  "local_nextflow: DEPRECATED - use @pytest.mark.requires_nextflow instead",
-  "docker_integration: DEPRECATED - use @pytest.mark.integration + @pytest.mark.requires_docker",
 ]
 minversion = "7.0"
 pythonpath = ["src"]

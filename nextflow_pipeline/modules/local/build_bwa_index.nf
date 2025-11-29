@@ -39,7 +39,7 @@ PYEOF
         python: \$(python --version | sed 's/Python //g')
         bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//')
     END_VERSIONS
-    """
+    """.stripIndent()
 
     stub:
     """
@@ -54,5 +54,5 @@ PYEOF
         python: \$(python --version | sed 's/Python //g')
         bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//')
     END_VERSIONS
-    """
+    """.stripIndent()
 }

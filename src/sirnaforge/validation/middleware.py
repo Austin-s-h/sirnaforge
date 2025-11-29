@@ -22,7 +22,7 @@ class ValidationReport:
     def __init__(self, stage: ValidationStage):
         """Initialize validation report."""
         self.stage = stage
-        self.start_time = time.time()
+        self.start_time = time.perf_counter()
         self.end_time: Optional[float] = None
         self.overall_result = ValidationResult()
         self.item_results: list[ValidationResult] = []
@@ -38,7 +38,7 @@ class ValidationReport:
 
     def finalize(self) -> None:
         """Finalize the report and calculate summary statistics."""
-        self.end_time = time.time()
+        self.end_time = time.perf_counter()
 
         total_items = len(self.item_results)
         valid_items = sum(1 for r in self.item_results if r.is_valid)
@@ -47,7 +47,7 @@ class ValidationReport:
 
         self.summary_stats = {
             "stage": self.stage.value,
-            "duration_seconds": self.end_time - self.start_time,
+            "duration_seconds": max(0.0, self.end_time - self.start_time),
             "total_items": total_items,
             "valid_items": valid_items,
             "invalid_items": total_items - valid_items,

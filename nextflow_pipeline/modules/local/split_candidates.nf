@@ -48,7 +48,7 @@ print(f'Split {len(sequences)} candidates into individual files')
         python: \$(python --version | sed 's/Python //g')
         biopython: \$(python -c "import Bio; print(Bio.__version__)")
     END_VERSIONS
-    """
+    """.stripIndent()
 
     stub:
     """
@@ -60,5 +60,5 @@ print(f'Split {len(sequences)} candidates into individual files')
         python: \$(python --version | sed 's/Python //g')
         biopython: \$(python -c "import Bio; print(Bio.__version__)")
     END_VERSIONS
-    """
+    """.stripIndent()
 }

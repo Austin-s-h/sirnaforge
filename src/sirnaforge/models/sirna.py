@@ -361,6 +361,7 @@ class SiRNACandidate(BaseModel):
         POLY_RUNS = "POLY_RUNS"
         EXCESS_PAIRING = "EXCESS_PAIRING"
         LOW_ASYMMETRY = "LOW_ASYMMETRY"
+        DIRTY_CONTROL = "DIRTY_CONTROL"
 
     # Either True (passed) or one of the FilterStatus reasons (failed)
     passes_filters: Union[bool, FilterStatus] = Field(
@@ -433,6 +434,10 @@ class DesignResult(BaseModel):
     # Processing metadata
     processing_time: float = Field(ge=0, description="Total processing time in seconds")
     tool_versions: dict[str, str] = Field(default_factory=dict, description="Software versions used in analysis")
+    rejected_candidates: list[SiRNACandidate] = Field(
+        default_factory=list,
+        description=("Candidates discarded during initial filtering (used for dirty controls and auditing)"),
+    )
 
     @pa.check_types
     def save_csv(self, filepath: str) -> DataFrame[SiRNACandidateSchema]:

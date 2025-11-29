@@ -1,14 +1,20 @@
-"""Test configuration profiles for Docker-based testing.
+"""Test configuration profiles and Nextflow evaluation helpers.
 
-Provides two simple profiles:
-- smoke: Quick validation with fixed 2GB RAM limit
-- production: Full tests with auto-detected RAM based on system capacity
+Provides two Docker testing profiles (smoke + production) and exposes the
+Nextflow configurations that the workflow can auto-detect so tests/scripts can
+validate their availability before attempting container launches.
 """
 
+from __future__ import annotations
+
+import functools
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable
+
+from sirnaforge.pipeline.nextflow.config import EnvironmentInfo, NextflowConfig
 
 
 def _get_available_memory_gb() -> float:
@@ -60,6 +66,86 @@ def _calculate_safe_memory_gb(total_gb: float, buffer_gb: float = 0.5, min_gb: i
     return max(safe_gb, min_gb)
 
 
+ConfigFactory = Callable[[], NextflowConfig]
+
+
+@dataclass
+class NextflowConfigEvaluation:
+    """Summary of a Nextflow configuration detected from the workflow."""
+
+    name: str
+    requested_profile: str
+    recommended_profile: str
+    docker_available: bool
+    running_in_docker: bool
+    max_cpus: int
+    max_memory: str
+    max_time: str
+    env_summary: str
+    docker_image: str | None = None
+    environment: EnvironmentInfo | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize evaluation for logging or JSON reporting."""
+        return {
+            "name": self.name,
+            "requested_profile": self.requested_profile,
+            "recommended_profile": self.recommended_profile,
+            "docker_available": self.docker_available,
+            "running_in_docker": self.running_in_docker,
+            "max_cpus": self.max_cpus,
+            "max_memory": self.max_memory,
+            "max_time": self.max_time,
+            "docker_image": self.docker_image,
+            "env_summary": self.env_summary,
+        }
+
+
+def _default_nextflow_factories() -> dict[str, ConfigFactory]:
+    """Factories mirroring the workflow's available Nextflow configurations."""
+    return {
+        "auto": NextflowConfig.auto_configure,
+        "testing": NextflowConfig.for_testing,
+        "production": NextflowConfig.for_production,
+    }
+
+
+def _evaluate_factories(factories: Mapping[str, ConfigFactory]) -> dict[str, NextflowConfigEvaluation]:
+    evaluations: dict[str, NextflowConfigEvaluation] = {}
+    for name, factory in factories.items():
+        config = factory()
+        env_info = config.get_environment_info()
+        evaluations[name] = NextflowConfigEvaluation(
+            name=name,
+            requested_profile=config.profile,
+            recommended_profile=env_info.recommended_profile,
+            docker_available=env_info.docker_available,
+            running_in_docker=env_info.running_in_docker,
+            max_cpus=config.max_cpus,
+            max_memory=config.max_memory,
+            max_time=config.max_time,
+            docker_image=config.docker_image if env_info.recommended_profile == "docker" else None,
+            env_summary=env_info.get_execution_summary(),
+            environment=env_info,
+        )
+    return evaluations
+
+
+@functools.lru_cache(maxsize=1)
+def evaluate_nextflow_configurations() -> dict[str, NextflowConfigEvaluation]:
+    """Evaluate workflow-backed Nextflow configurations once per session."""
+    return _evaluate_factories(_default_nextflow_factories())
+
+
+def get_nextflow_configuration(name: str) -> NextflowConfigEvaluation:
+    """Fetch a specific evaluated Nextflow configuration by name."""
+    configs = evaluate_nextflow_configurations()
+    if name not in configs:
+        available = ", ".join(sorted(configs.keys()))
+        raise ValueError(f"Unknown Nextflow configuration '{name}'. Available: {available}")
+    return configs[name]
+
+
 @dataclass
 class TestProfile:
     """Configuration for Docker-based test execution."""
@@ -71,7 +157,11 @@ class TestProfile:
     docker_memory: str
     docker_memory_swap: str
     max_fail: int
-    timeout: Optional[int] = None
+    timeout: int | None = None
+
+    def available_nextflow_profiles(self) -> dict[str, NextflowConfigEvaluation]:
+        """Expose workflow-driven Nextflow configuration evaluations."""
+        return evaluate_nextflow_configurations()
 
 
 # Prevent pytest from treating the dataclass as a test container
@@ -118,7 +208,10 @@ def get_profile(name: str) -> TestProfile:
     if name not in TEST_PROFILES:
         available = list(TEST_PROFILES.keys())
         raise ValueError(f"Unknown profile '{name}'. Available: {available}")
-    return TEST_PROFILES[name]
+    profile = TEST_PROFILES[name]
+    # Ensure Nextflow configurations are evaluated whenever a profile is requested
+    profile.available_nextflow_profiles()
+    return profile
 
 
 def get_docker_run_command(profile: TestProfile, image_name: str = "sirnaforge:latest") -> list[str]:

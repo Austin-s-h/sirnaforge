@@ -42,7 +42,7 @@ PYEOF
         python: \$(python --version | sed 's/Python //g')
         biopython: \$(python -c "import Bio; print(Bio.__version__)" 2>/dev/null || echo 'not available')
     END_VERSIONS
-    """
+    """.stripIndent()
 
     stub:
     """
@@ -55,5 +55,5 @@ PYEOF
         python: \$(python --version | sed 's/Python //g')
         biopython: \$(python -c "import Bio; print(Bio.__version__)" 2>/dev/null || echo 'not available')
     END_VERSIONS
-    """
+    """.stripIndent()
 }

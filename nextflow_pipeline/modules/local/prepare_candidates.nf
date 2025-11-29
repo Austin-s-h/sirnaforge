@@ -49,7 +49,7 @@ print(f'Validated {valid} out of {total} candidates')
         python: \$(python --version | sed 's/Python //g')
         biopython: \$(python -c "import Bio; print(Bio.__version__)")
     END_VERSIONS
-    """
+    """.stripIndent()
 
     stub:
     """
@@ -61,5 +61,5 @@ print(f'Validated {valid} out of {total} candidates')
         python: \$(python --version | sed 's/Python //g')
         biopython: \$(python -c "import Bio; print(Bio.__version__)")
     END_VERSIONS
-    """
+    """.stripIndent()
 }

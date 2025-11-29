@@ -44,7 +44,7 @@ print(f'Results written to: {tsv_path}, {json_path}, {summary_path}')
         python: \$(python --version | sed 's/Python //g')
         bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//' || echo 'not available')
     END_VERSIONS
-    """
+    """.stripIndent()
 
     stub:
     def output_prefix = "${candidate_meta.id}_${species}"
@@ -60,5 +60,5 @@ print(f'Results written to: {tsv_path}, {json_path}, {summary_path}')
         python: \$(python --version | sed 's/Python //g')
         bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//' || echo 'not available')
     END_VERSIONS
-    """
+    """.stripIndent()
 }

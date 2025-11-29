@@ -24,7 +24,7 @@ class SiRNADesigner:
 
     def design_from_file(self, input_file: str) -> DesignResult:
         """Design siRNAs from input FASTA file."""
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Parse input sequences
         sequences = list(SeqIO.parse(input_file, "fasta"))
@@ -32,6 +32,7 @@ class SiRNADesigner:
             raise ValueError(f"No sequences found in {input_file}")
 
         all_candidates: list[SiRNACandidate] = []
+        rejected_pool: list[SiRNACandidate] = []
         # Map guide_sequence -> set of transcript_ids where it appears
         guide_to_transcripts: dict[str, set[str]] = {}
 
@@ -41,7 +42,8 @@ class SiRNADesigner:
             sequence = str(seq_record.seq).upper()
 
             # Generate candidates for this sequence
-            candidates = self._enumerate_candidates(sequence, transcript_id)
+            candidates, rejected = self._enumerate_candidates(sequence, transcript_id)
+            rejected_pool.extend(rejected)
 
             # Apply filters
             filtered_candidates = self._apply_filters(candidates)
@@ -67,7 +69,7 @@ class SiRNADesigner:
         ]
         top_candidates = (passing or all_candidates)[: self.parameters.top_n]
 
-        processing_time = max(0.0, time.time() - start_time)  # Ensure non-negative
+        processing_time = max(0.0, time.perf_counter() - start_time)  # Ensure non-negative
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
         total_seqs = len(sequences)
         for c in all_candidates:
@@ -95,16 +97,17 @@ class SiRNADesigner:
             ),
             processing_time=processing_time,
             tool_versions=self._get_tool_versions(),
+            rejected_candidates=rejected_pool,
         )
 
     def design_from_sequence(self, sequence: str, transcript_id: str = "seq1") -> DesignResult:
         """Design siRNAs from a single sequence."""
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         sequence = sequence.upper()
 
         # Generate candidates
-        candidates = self._enumerate_candidates(sequence, transcript_id)
+        candidates, rejected = self._enumerate_candidates(sequence, transcript_id)
 
         # Apply filters
         filtered_candidates = self._apply_filters(candidates)
@@ -124,7 +127,7 @@ class SiRNADesigner:
         ]
         top_candidates = (passing or scored_candidates)[: self.parameters.top_n]
 
-        processing_time = time.time() - start_time
+        processing_time = max(0.0, time.perf_counter() - start_time)
         # For single-sequence runs, transcript hit metrics are trivial (hits=1, fraction=1.0)
         for c in scored_candidates:
             c.transcript_hit_count = 1
@@ -149,11 +152,15 @@ class SiRNADesigner:
             ),
             processing_time=processing_time,
             tool_versions=self._get_tool_versions(),
+            rejected_candidates=rejected,
         )
 
-    def _enumerate_candidates(self, sequence: str, transcript_id: str) -> list[SiRNACandidate]:
-        """Enumerate all possible siRNA candidates using sliding window with early filtering."""
-        candidates = []
+    def _enumerate_candidates(
+        self, sequence: str, transcript_id: str
+    ) -> tuple[list[SiRNACandidate], list[SiRNACandidate]]:
+        """Enumerate all possible siRNA candidates and record those failing early filters."""
+        candidates: list[SiRNACandidate] = []
+        rejected: list[SiRNACandidate] = []
         sirna_length = self.parameters.sirna_length
         filters = self.parameters.filters
 
@@ -167,12 +174,11 @@ class SiRNADesigner:
 
             # Early filtering for computational efficiency
             gc_content = self._calculate_gc_content(guide_seq)
+            fail_reason: Optional[SiRNACandidate.FilterStatus] = None
             if not (filters.gc_min <= gc_content <= filters.gc_max):
-                continue
-
-            # Early filtering: check for poly runs before creating candidate object
-            if self._has_poly_runs(guide_seq, filters.max_poly_runs):
-                continue
+                fail_reason = SiRNACandidate.FilterStatus.GC_OUT_OF_RANGE
+            elif self._has_poly_runs(guide_seq, filters.max_poly_runs):
+                fail_reason = SiRNACandidate.FilterStatus.POLY_RUNS
 
             # Create candidate ID with project moniker and sanitized transcript id
             # Format: SIRNAF_<TRANSCRIPT>_<start>_<end>
@@ -195,9 +201,18 @@ class SiRNADesigner:
                 composite_score=0.0,  # Will be calculated in scoring
             )
 
+            if fail_reason is not None:
+                candidate.passes_filters = fail_reason
+                issues = list(candidate.quality_issues or [])
+                label = fail_reason.value if hasattr(fail_reason, "value") else str(fail_reason)
+                issues.append(label)
+                candidate.quality_issues = issues
+                rejected.append(candidate)
+                continue
+
             candidates.append(candidate)
 
-        return candidates
+        return candidates, rejected
 
     def _apply_filters(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
         """Apply remaining filters (early GC and poly-run filtering already done in enumeration)."""
