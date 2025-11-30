@@ -410,22 +410,6 @@ def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None
     return ORFAnalyzer(database_client=database_client)
 
 
-async def analyze_transcript_orfs(
-    transcript: TranscriptInfo, database_client: Optional[AbstractDatabaseClient] = None
-) -> SequenceAnalysis:
-    """Analyze ORFs in a single transcript.
-
-    Args:
-        transcript: Transcript to analyze
-        database_client: Optional database client for additional sequence retrieval
-
-    Returns:
-        SequenceAnalysis result
-    """
-    analyzer = create_orf_analyzer(database_client)
-    return await analyzer.analyze_transcript(transcript)
-
-
 async def analyze_multiple_transcript_orfs(
     transcripts: list[TranscriptInfo], database_client: Optional[AbstractDatabaseClient] = None
 ) -> dict[str, SequenceAnalysis]:

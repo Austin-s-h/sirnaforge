@@ -62,41 +62,6 @@ def get_test_data_path(filename: str) -> Path:
     return get_resource_path(f"test_data/{filename}")
 
 
-def get_workflow_path(workflow_name: str = "main.nf") -> Path:
-    """Get path to embedded Nextflow workflow.
-
-    Args:
-        workflow_name: Name of the workflow file (default: main.nf)
-
-    Returns:
-        Path to the workflow file
-
-    Raises:
-        FileNotFoundError: If workflow is not found
-    """
-    package_dir = Path(__file__).parent
-    workflow_path = package_dir / "nextflow" / "workflows" / workflow_name
-
-    if not workflow_path.exists():
-        raise FileNotFoundError(f"Workflow not found: {workflow_name}")
-
-    return workflow_path
-
-
-def list_test_data() -> list[str]:
-    """List available test data files.
-
-    Returns:
-        List of test data filenames
-    """
-    try:
-        test_data_dir = get_resource_path("test_data")
-        return [f.name for f in test_data_dir.glob("*") if f.is_file()]
-    except FileNotFoundError:
-        logger.warning("Test data directory not found")
-        return []
-
-
 def validate_test_data() -> dict[str, bool]:
     """Validate that required test data files are present.
 

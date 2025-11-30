@@ -267,6 +267,66 @@ The chemical modification system is **ready for production use**. The main need 
 
 ---
 
+## Code Cleanup - Unused Helpers Removed
+
+**Date:** 2025-11-30  
+**Status:** ✅ Complete  
+**Tests:** 160/160 passing (100%)
+
+### Summary
+
+Removed unused helper utilities to enforce KISS and DRY software engineering best practices. These were identified as vestigial code from earlier development phases that were never wired into the workflow.
+
+### Removed Functions
+
+#### `core/off_target.py`
+- `pydantic_list_to_dataframe` - Unused Pandas export helper
+- `filter_dataframe_by_score` - Unused DataFrame filtering helper
+- `write_dataframe_outputs` - Unused file output helper
+- `aggregate_dataframes_from_files` - Unused file aggregation helper
+
+#### `data/base.py`
+- `get_sequence_type_display_name` - No call sites in code, docs, or configs
+
+#### `data/orf_analysis.py`
+- `analyze_transcript_orfs` - Unused async helper; orchestration goes through `ORFAnalyzer.analyze_transcript`
+
+#### `models/schemas.py`
+- `valid_nucleotide_sequence` - Standalone validator never hooked into Pandera models
+- `valid_rna_sequence` - Standalone validator never hooked into Pandera models
+- `valid_strand` - Standalone validator never hooked into Pandera models
+- `valid_codon` - Standalone validator never hooked into Pandera models
+- `sirna_length_range` - Standalone validator never hooked into Pandera models
+- `ModificationSummarySchema` - DataFrameModel class never used for validation
+
+#### `pipeline/nextflow_cli.py`
+- `run_mirna_seed_analysis_cli` - Not dispatched from `main()` and not imported by Nextflow modules
+- `aggregate_mirna_results_cli` - Not dispatched from `main()` and not imported by Nextflow modules
+- `resolve_genome_indices_cli` - Not dispatched from `main()` and not imported by Nextflow modules
+
+#### `pipeline/resources/resources.py`
+- `get_workflow_path` - Early scaffolding for resource discovery, never used
+- `list_test_data` - Early scaffolding for resource discovery, never used
+
+### Preserved Functions (False Positives)
+
+The following were verified as actively used and preserved:
+
+- `sequences_show` / `sequences_annotate` in `cli.py` - Legitimate Typer commands (registered via decorators)
+- `run_comprehensive_offtarget_analysis` - Called from Nextflow `.nf` modules
+- `run_mirna_analysis_for_nextflow` - Called from Nextflow `.nf` modules
+- `run_transcriptome_analysis_for_nextflow` - Called from Nextflow `.nf` modules
+- `split_candidates_cli` - Available in `main()` dispatch
+- `aggregate_results_cli` - Called from Nextflow `.nf` modules
+
+### Validation
+
+- ✅ All lint checks pass (ruff + mypy)
+- ✅ All 160 dev tests pass
+- ✅ No breaking changes to existing functionality
+
+---
+
 **Review Completed By:** GitHub Copilot Agent  
 **Date:** 2025-10-24  
 **Status:** ✅ All deliverables complete and validated  
