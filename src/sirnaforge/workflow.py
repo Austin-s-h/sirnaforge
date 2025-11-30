@@ -1152,13 +1152,18 @@ class SiRNAWorkflow:
         return {"status": "completed", "method": "basic", "results": results}
 
     async def _parse_nextflow_results(self, output_dir: Path) -> dict:  # noqa: PLR0912
-        """Parse results from Nextflow off-target analysis."""
+        """Parse results from Nextflow off-target analysis.
+
+        Parses BOTH genome/transcriptome AND miRNA results from their respective
+        output directories and combines them into a single results structure for
+        candidate filtering.
+        """
         results: dict = {}
 
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-        # Check for combined results in aggregated subdirectory (new pipeline structure)
+        # Check for combined genome/transcriptome results in aggregated subdirectory
         aggregated_dir = output_dir / "aggregated"
         combined_tsv = (
             aggregated_dir / "combined_offtargets.tsv"
@@ -1170,10 +1175,6 @@ class SiRNAWorkflow:
             if aggregated_dir.exists()
             else output_dir / "combined_offtargets.json"
         )
-
-        def _ensure_row_key(d: dict, key: str, default: int = 0) -> None:
-            if key not in d:
-                d[key] = default
 
         if combined_tsv.exists() and combined_tsv.stat().st_size > 100:  # Must have more than just header
             with combined_tsv.open() as fh:
@@ -1239,6 +1240,30 @@ class SiRNAWorkflow:
                         entry["off_target_count"] += 1
                         entry["off_target_score"] = max(entry["off_target_score"], score)
                         entry["hits"].append(row)
+
+            # ALSO parse miRNA results from separate directory
+            mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
+            if mirna_tsv.exists() and mirna_tsv.stat().st_size > 100:
+                logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
+                with mirna_tsv.open() as fh:
+                    reader = csv.DictReader(fh, delimiter="\t")
+                    for row in reader:
+                        qname = row.get("qname") or row.get("query") or row.get("id")
+                        if not qname:
+                            continue
+                        try:
+                            score = float(row.get("offtarget_score") or 0)
+                        except Exception:
+                            score = 0.0
+
+                        entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
+                        entry["off_target_count"] += 1
+                        entry["off_target_score"] = max(entry["off_target_score"], score)
+                        entry["hits"].append(row)
+
+                logger.info(
+                    f"Parsed {len([r for r in results.values() if any('mirna_id' in h for h in r.get('hits', []))])} candidates with miRNA hits"
+                )
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
@@ -1528,12 +1553,6 @@ class SiRNAWorkflow:
         validated_df.to_csv(report_file, sep="\t", index=False)
 
         return validated_df
-
-    def _generate_candidate_report(self, design_results: DesignResult, report_file: Path) -> None:  # noqa: ARG002
-        """Deprecated: summary report disabled (kept for backward API compatibility)."""
-        report_file.parent.mkdir(parents=True, exist_ok=True)
-        with report_file.open("w") as f:
-            f.write("# Candidate summary report generation disabled.\n")
 
     def _summarize_transcripts(self, transcripts: list[TranscriptInfo]) -> dict[str, Any]:
         """Summarize transcript retrieval results."""

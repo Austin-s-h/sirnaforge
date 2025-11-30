@@ -1018,10 +1018,14 @@ def aggregate_offtarget_results(
     output_dir: Union[str, Path],
     genome_species: str,
 ) -> Path:
-    """Aggregate off-target analysis results from multiple candidate-genome combinations using Pandera.
+    """Aggregate genome/transcriptome off-target analysis results using Pandera.
 
     Uses pandas + Pandera for efficient bulk reading and validation instead of
     manual line-by-line parsing with Pydantic models.
+
+    NOTE: This function ONLY aggregates genome/transcriptome hits. miRNA results
+    are aggregated separately by aggregate_mirna_results() to keep output files
+    distinct and properly typed.
 
     Args:
         results_dir: Directory containing individual analysis results
@@ -1037,8 +1041,13 @@ def aggregate_offtarget_results(
 
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
 
-    # Collect all TSV analysis files using pandas (much faster than manual parsing)
+    # Collect ONLY genome/transcriptome TSV analysis files
+    # miRNA files are handled separately by aggregate_mirna_results()
     analysis_files = list(results_path.glob("**/*_analysis.tsv"))
+    # Filter out miRNA files explicitly to avoid schema validation errors
+    analysis_files = [f for f in analysis_files if "mirna" not in f.name.lower()]
+
+    logger.info(f"Found {len(analysis_files)} genome/transcriptome analysis files to aggregate")
 
     if analysis_files:
         # Read all files into DataFrames and concatenate (vectorized operation)
@@ -1126,7 +1135,7 @@ def aggregate_offtarget_results(
         else:
             f.write("Species requested for analysis: (none - miRNA-only mode)\n")
 
-        f.write(f"Genome analysis files processed: {len(analysis_files)}\n\n")
+        f.write(f"Genome/transcriptome analysis files processed: {len(analysis_files)}\n\n")
 
         # Explain what the output files contain
         f.write("OUTPUT FILES\n")
