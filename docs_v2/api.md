@@ -1,6 +1,6 @@
-# Python API
+# Python API Usage
 
-Use siRNAforge programmatically for custom workflows and automation.
+This page shows common usage patterns for the siRNAforge Python API. For complete class and method documentation, see the [Auto-generated API Reference](api_autodoc.rst).
 
 ## Basic Usage
 
@@ -79,36 +79,7 @@ results = asyncio.run(analyze_gene("TP53"))
 print(f"Generated {len(results['candidates'])} candidates")
 ```
 
-## Key Classes
-
-### DesignParameters
-
-```python
-from sirnaforge.models.sirna import DesignParameters
-
-params = DesignParameters(
-    sirna_length=21,           # 19-23 nt
-    top_candidates=20,         # Number to return
-    gc_content_range=(30, 60), # Min/max GC %
-)
-```
-
-### SiRNACandidate
-
-Each candidate includes:
-
-```python
-candidate.sirna_id          # Unique identifier
-candidate.guide_sequence    # 21nt guide strand
-candidate.passenger_sequence # Passenger strand
-candidate.position          # Position in transcript
-candidate.composite_score   # Overall score (0-10)
-candidate.asymmetry_score   # Thermodynamic asymmetry
-candidate.gc_content        # GC percentage
-candidate.melting_temp_c    # Melting temperature
-```
-
-### Chemical Modifications
+## Chemical Modifications
 
 ```python
 from sirnaforge.models.modifications import (
@@ -134,24 +105,17 @@ metadata = StrandMetadata(
 
 ## File I/O
 
-### Save Results
-
-```python
-# Save to CSV
-results.save_csv("candidates.csv")
-
-# Save to FASTA
-results.save_fasta("candidates.fasta")
-```
-
-### Load Sequences
-
 ```python
 from pathlib import Path
 from sirnaforge.core.design import SiRNADesigner
 
+# Design from file
 designer = SiRNADesigner(params)
 results = designer.design_from_file(Path("transcripts.fasta"))
+
+# Save results
+results.save_csv("candidates.csv")
+results.save_fasta("candidates.fasta")
 ```
 
 ## Error Handling
@@ -173,5 +137,6 @@ except DesignException as e:
 
 ## See Also
 
+- [Auto-generated API Reference](api_autodoc.rst) - Complete class documentation from docstrings
 - [Workflows](workflows.md) - CLI workflows
 - [Scoring](scoring.md) - Understanding metrics

@@ -95,3 +95,4 @@ docs/_build/
 nextflow_work/
 nxf-tmp.*
 pytest-report.xml
+docs_v2/_build/

@@ -1,30 +1,35 @@
-# Commands
+# CLI Reference
 
-Complete reference for all siRNAforge CLI commands.
+> **Auto-generated**: All command output below is captured live during documentation build from the actual `sirnaforge` CLI.
+
+This reference shows each command with its real `--help` output and working examples.
+
+## Help & Version
+
+### Main Help
+
+```{program-output} uv run sirnaforge --help
+```
+
+### Version
+
+```{program-output} uv run sirnaforge version
+```
+
+---
 
 ## workflow
 
-Run complete siRNA design pipeline from gene query to scored candidates.
+Run complete siRNA design from gene query to scored candidates.
 
-```bash
-sirnaforge workflow GENE [OPTIONS]
+### Help
+
+```{program-output} uv run sirnaforge workflow --help
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--output-dir` | `sirna_workflow_output` | Output directory |
-| `--gc-min` | 30 | Minimum GC content (%) |
-| `--gc-max` | 60 | Maximum GC content (%) |
-| `--length` | 21 | siRNA length (nt) |
-| `--top-n` | 20 | Number of candidates to retain |
-| `--verbose` | off | Show detailed progress |
-
-**Examples:**
-```bash
-sirnaforge workflow TP53
-sirnaforge workflow BRCA1 --gc-min 35 --gc-max 55 --top-n 30
-sirnaforge workflow EGFR --output-dir egfr_analysis --verbose
-```
+:::{note}
+The workflow command searches for gene transcripts, designs siRNA candidates, scores them using thermodynamic analysis, and outputs ranked results.
+:::
 
 ---
 
@@ -32,24 +37,9 @@ sirnaforge workflow EGFR --output-dir egfr_analysis --verbose
 
 Search gene databases and retrieve transcript sequences.
 
-```bash
-sirnaforge search QUERY [OPTIONS]
-```
+### Help
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-o, --output` | `transcripts.fasta` | Output FASTA file |
-| `-d, --database` | `ensembl` | Database (ensembl/refseq/gencode) |
-| `-a, --all` | off | Search all databases |
-| `--canonical-only` | off | Only canonical isoforms |
-| `-t, --types` | `protein_coding,lncRNA` | Transcript types to include |
-| `--verbose` | off | Show detailed progress |
-
-**Examples:**
-```bash
-sirnaforge search TP53 -o tp53.fasta
-sirnaforge search HOTAIR --database ensembl --types lncRNA
-sirnaforge search BRCA1 --all --canonical-only
+```{program-output} uv run sirnaforge search --help
 ```
 
 ---
@@ -58,25 +48,20 @@ sirnaforge search BRCA1 --all --canonical-only
 
 Design siRNA candidates from FASTA sequences.
 
-```bash
-sirnaforge design INPUT [OPTIONS]
+### Help
+
+```{program-output} uv run sirnaforge design --help
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-o, --output` | `sirna_results.tsv` | Output file |
-| `--gc-min` | 30 | Minimum GC content (%) |
-| `--gc-max` | 60 | Maximum GC content (%) |
-| `--length` | 21 | siRNA length (nt) |
-| `--top-n` | 10 | Number of candidates to retain |
-| `--skip-structure` | off | Skip secondary structure prediction |
-| `--verbose` | off | Show detailed progress |
+### Example: Design from Sample Data
 
-**Examples:**
-```bash
-sirnaforge design transcripts.fasta -o results.csv
-sirnaforge design input.fasta --gc-min 40 --gc-max 55 --top-n 25
-sirnaforge design large_file.fasta --skip-structure  # Faster
+```{program-output} uv run sirnaforge design ../examples/sample_transcripts.fasta -o /tmp/sirna_example.csv --top-n 5
+```
+
+#### Output Preview
+
+```{program-output} head -6 /tmp/sirna_example.csv
+:shell:
 ```
 
 ---
@@ -85,52 +70,14 @@ sirnaforge design large_file.fasta --skip-structure  # Faster
 
 Check FASTA file format and content.
 
-```bash
-sirnaforge validate INPUT [OPTIONS]
+### Help
+
+```{program-output} uv run sirnaforge validate --help
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--verbose` | off | Show detailed validation results |
+### Example: Validate Sample Data
 
-**Examples:**
-```bash
-sirnaforge validate input.fasta
-sirnaforge validate transcripts.fasta --verbose
-```
-
----
-
-## sequences
-
-Manage siRNA sequences and chemical modification metadata.
-
-### sequences show
-
-Display sequences with modification metadata.
-
-```bash
-sirnaforge sequences show FILE [OPTIONS]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--id` | - | Show specific sequence by ID |
-| `--format` | `table` | Output format (table/json/fasta) |
-
-### sequences annotate
-
-Merge modification metadata into FASTA headers.
-
-```bash
-sirnaforge sequences annotate FASTA METADATA -o OUTPUT
-```
-
-**Examples:**
-```bash
-sirnaforge sequences show candidates.fasta
-sirnaforge sequences show candidates.fasta --format json
-sirnaforge sequences annotate candidates.fasta mods.json -o annotated.fasta
+```{program-output} uv run sirnaforge validate ../examples/sample_transcripts.fasta
 ```
 
 ---
@@ -139,8 +86,18 @@ sirnaforge sequences annotate candidates.fasta mods.json -o annotated.fasta
 
 Show default configuration parameters.
 
-```bash
-sirnaforge config
+```{program-output} uv run sirnaforge config
+```
+
+---
+
+## sequences
+
+Manage siRNA sequences and chemical modification metadata.
+
+### Help
+
+```{program-output} uv run sirnaforge sequences --help
 ```
 
 ---
@@ -149,21 +106,7 @@ sirnaforge config
 
 Manage miRNA database cache for off-target analysis.
 
-```bash
-sirnaforge cache [COMMAND]
-```
+### Help
 
-| Command | Description |
-|---------|-------------|
-| `info` | Show cache location and status |
-| `clear` | Clear cached databases |
-
----
-
-## version
-
-Show version information.
-
-```bash
-sirnaforge version
+```{program-output} uv run sirnaforge cache --help
 ```

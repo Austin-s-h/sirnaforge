@@ -1,9 +1,13 @@
-siRNAforge Documentation (v2)
-=============================
+siRNAforge Documentation
+========================
 
 **Design effective siRNAs in minutes.**
 
 siRNAforge is a comprehensive toolkit for designing siRNA candidates with thermodynamic scoring, off-target analysis, and chemical modification support.
+
+.. note::
+
+   This documentation is **self-generating**: CLI examples show live output from actual command execution, and API documentation is extracted directly from source code docstrings.
 
 Quick Start
 -----------
@@ -31,9 +35,9 @@ Quick Start
    :maxdepth: 2
    :caption: Reference
 
-   commands_live
    commands
    scoring
+   api_autodoc
 
 .. toctree::
    :maxdepth: 2
@@ -51,6 +55,22 @@ Key Features
 * **Chemical modifications** - 2'-O-methyl, phosphorothioate patterns
 * **Batch processing** - Analyze multiple genes efficiently
 * **Docker/Nextflow** - Production-ready containerized workflows
+
+
+Documentation Philosophy
+------------------------
+
+This documentation follows the principle of **single source of truth**:
+
+* **CLI Reference** → Generated live from ``sirnaforge --help`` during build
+* **API Reference** → Auto-generated from Python docstrings and type hints
+* **User Guides** → Focus on concepts and workflows, not redundant details
+
+The code documents itself through:
+
+* Comprehensive type annotations (validated by mypy)
+* Detailed docstrings following Google/NumPy style
+* Rich CLI help text via Typer
 
 
 Indices and tables
