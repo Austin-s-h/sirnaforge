@@ -885,10 +885,3 @@ def get_database_display_name(database: DatabaseType) -> str:
     if hasattr(database, "value"):
         return database.value
     return str(database)
-
-
-def get_sequence_type_display_name(seq_type: SequenceType) -> str:
-    """Get display name for sequence type, handling both enum and string values."""
-    if hasattr(seq_type, "value"):
-        return seq_type.value
-    return str(seq_type)
