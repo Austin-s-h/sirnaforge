@@ -1,4 +1,8 @@
-"""Integration tests for toy databases with offtarget workflow."""
+"""Integration tests for toy databases with offtarget workflow.
+
+These tests require BWA-MEM2 which is only available inside the Docker container.
+They are marked with `runs_in_container` to run via `make docker-test`.
+"""
 
 from pathlib import Path
 
@@ -8,8 +12,8 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager, build_bwa_index
 from sirnaforge.data.base import FastaUtils
 
 
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
-@pytest.mark.requires_docker
 @pytest.mark.integration
 def test_toy_transcriptome_analysis_workflow(tmp_path: Path):
     """Test complete transcriptome analysis workflow with toy database."""
@@ -39,8 +43,8 @@ def test_toy_transcriptome_analysis_workflow(tmp_path: Path):
     assert json_path.stat().st_size > 10, "JSON should have meaningful content"
 
 
+@pytest.mark.runs_in_container
 @pytest.mark.smoke
-@pytest.mark.requires_docker
 @pytest.mark.integration
 def test_toy_mirna_analysis_workflow(tmp_path: Path):
     """Test complete miRNA analysis workflow with toy database."""
@@ -70,7 +74,7 @@ def test_toy_mirna_analysis_workflow(tmp_path: Path):
     assert json_path.stat().st_size > 10, "JSON should have meaningful content"
 
 
-@pytest.mark.requires_docker
+@pytest.mark.runs_in_container
 @pytest.mark.integration
 def test_combined_offtarget_analysis(tmp_path: Path):
     """Test combined transcriptome and miRNA analysis with toy databases."""
