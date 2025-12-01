@@ -154,7 +154,7 @@ done
 
 `````
 
-**Options:** `--database` (ensembl/refseq/gencode), `--types`, `--all`, `--verbose`
+**Options:** `--database` (ensembl/refseq/gencode), `--output`, `--types`, `--all`, `--verbose`
 
 ## Design Only (No Off-Target)
 
