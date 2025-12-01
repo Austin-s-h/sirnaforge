@@ -76,6 +76,9 @@ autosummary_generate = True
 
 # Program output (live CLI examples)
 programoutput_prompt_template = "$ {command}\n{output}"
+# Allow commands to fail gracefully during docs build (e.g., network unavailable)
+# Error output will be shown in the docs instead of failing the build
+programoutput_use_ansi = True
 
 # Intersphinx
 intersphinx_mapping = {
