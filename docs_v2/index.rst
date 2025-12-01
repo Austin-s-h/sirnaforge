@@ -37,6 +37,7 @@ Quick Start
 
    commands
    scoring
+   models_and_scoring
    api_autodoc
 
 .. toctree::
