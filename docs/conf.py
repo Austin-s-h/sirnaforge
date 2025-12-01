@@ -154,6 +154,9 @@ intersphinx_mapping = {
     "biopython": ("https://biopython.org/docs/1.81/api/", None),
 }
 
+# Intersphinx timeout (fail gracefully if network unavailable)
+intersphinx_timeout = 10
+
 # Type hints configuration
 typehints_fully_qualified = False
 always_document_param_types = True

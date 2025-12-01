@@ -17,7 +17,6 @@ siRNAforge Documentation
    usage_examples
    gene_search
    thermodynamic_guide
-   modification_integration_guide
    tutorials/index
 
 .. toctree::
@@ -28,13 +27,13 @@ siRNAforge Documentation
    modification_annotation_spec
    changelog
    glossary
-   sitemap
 
 .. toctree::
    :maxdepth: 1
    :caption: 🔧 Developer
 
    developer/index
+   modification_integration_guide
 
 Quick Start
 ===========
