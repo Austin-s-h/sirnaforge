@@ -1,0 +1,421 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Python API &mdash; siRNAforge 0.3.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=6de935c7"></script>
+      <script src="_static/doctools.js?v=9a2dae69"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="Chemical Modifications" href="modifications.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            siRNAforge
+              <img src="_static/sirnaforge_logo_3.svg" class="logo" alt="Logo"/>
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#recommended-pip-uv">Recommended: pip/uv</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#development-setup">Development Setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#docker-full-bioinformatics-stack">Docker (Full Bioinformatics Stack)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#verify-installation">Verify Installation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="workflows.html">Workflows</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#complete-workflow">Complete Workflow</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="workflows.html#output-structure">Output Structure</a></li>
+<li class="toctree-l3"><a class="reference internal" href="workflows.html#common-options">Common Options</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#step-by-step-workflow">Step-by-Step Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#batch-processing">Batch Processing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#docker-workflow">Docker Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#nextflow-pipeline">Nextflow Pipeline</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="commands_live.html">Commands (Live Examples)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#help-version">Help &amp; Version</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#main-help">Main Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#version">Version</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#workflow">workflow</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#help">Help</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#search">search</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id1">Help</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#design">design</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id2">Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#example-design-from-sample-data">Example: Design from Sample Data</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#validate">validate</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id3">Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#example-validate-sample-data">Example: Validate Sample Data</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#config">config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#sequences">sequences</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id4">Help</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#cache">cache</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id5">Help</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#workflow">workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#search">search</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#design">design</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#validate">validate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#sequences">sequences</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#sequences-show">sequences show</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#sequences-annotate">sequences annotate</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#config">config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#cache">cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#version">version</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="scoring.html">Scoring</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#quick-reference">Quick Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#composite-score">Composite Score</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#asymmetry-score">Asymmetry Score</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#gc-content">GC Content</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#melting-temperature">Melting Temperature</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#minimum-free-energy-mfe">Minimum Free Energy (MFE)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#filtering-recommendations">Filtering Recommendations</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="scoring.html#standard-most-applications">Standard (most applications)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scoring.html#stringent-publication-quality">Stringent (publication-quality)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scoring.html#relaxed-difficult-targets">Relaxed (difficult targets)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#output-columns">Output Columns</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scoring.html#references">References</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Advanced</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="modifications.html">Chemical Modifications</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#quick-start">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#common-modification-types">Common Modification Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#modification-patterns">Modification Patterns</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#standard-balanced">Standard (Balanced)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#minimal-cost-optimized">Minimal (Cost-Optimized)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#therapeutic-fda-approved-pattern">Therapeutic (FDA-approved pattern)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#cli-usage">CLI Usage</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#view-modifications">View Modifications</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#annotate-fasta">Annotate FASTA</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#json-metadata-format">JSON Metadata Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#fasta-header-format">FASTA Header Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#integration-with-workflow">Integration with Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#position-numbering">Position Numbering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#see-also">See Also</a></li>
+</ul>
+</li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Python API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#basic-usage">Basic Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#gene-search">Gene Search</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#async-search">Async Search</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#complete-workflow">Complete Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#key-classes">Key Classes</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#designparameters">DesignParameters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#sirnacandidate">SiRNACandidate</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#chemical-modifications">Chemical Modifications</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#file-i-o">File I/O</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#save-results">Save Results</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#load-sequences">Load Sequences</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#error-handling">Error Handling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#see-also">See Also</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">siRNAforge</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Python API</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul><div class="rst-breadcrumbs-buttons" role="navigation" aria-label="Sequential page navigation">
+        <a href="modifications.html" class="btn btn-neutral float-left" title="Chemical Modifications" accesskey="p"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+  </div>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="python-api">
+<h1>Python API<a class="headerlink" href="#python-api" title="Link to this heading"></a></h1>
+<p>Use siRNAforge programmatically for custom workflows and automation.</p>
+<section id="basic-usage">
+<h2>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading"></a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.core.design</span><span class="w"> </span><span class="kn">import</span> <span class="n">SiRNADesigner</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.models.sirna</span><span class="w"> </span><span class="kn">import</span> <span class="n">DesignParameters</span>
+
+<span class="c1"># Configure parameters</span>
+<span class="n">params</span> <span class="o">=</span> <span class="n">DesignParameters</span><span class="p">(</span>
+    <span class="n">sirna_length</span><span class="o">=</span><span class="mi">21</span><span class="p">,</span>
+    <span class="n">top_candidates</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+    <span class="n">gc_content_range</span><span class="o">=</span><span class="p">(</span><span class="mf">35.0</span><span class="p">,</span> <span class="mf">55.0</span><span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># Design from sequences</span>
+<span class="n">designer</span> <span class="o">=</span> <span class="n">SiRNADesigner</span><span class="p">(</span><span class="n">params</span><span class="p">)</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">designer</span><span class="o">.</span><span class="n">design_from_sequences</span><span class="p">([</span>
+    <span class="s2">&quot;AUGCGCGAUCUCGAUGCAUGUGCGAUCGAUGCGUAUCGAU&quot;</span>
+<span class="p">])</span>
+
+<span class="c1"># Access results</span>
+<span class="k">for</span> <span class="n">candidate</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">top_candidates</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">candidate</span><span class="o">.</span><span class="n">sirna_id</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">candidate</span><span class="o">.</span><span class="n">guide_sequence</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Score: </span><span class="si">{</span><span class="n">candidate</span><span class="o">.</span><span class="n">composite_score</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  GC: </span><span class="si">{</span><span class="n">candidate</span><span class="o">.</span><span class="n">gc_content</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">%&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="gene-search">
+<h2>Gene Search<a class="headerlink" href="#gene-search" title="Link to this heading"></a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.data.gene_search</span><span class="w"> </span><span class="kn">import</span> <span class="n">search_gene_sync</span><span class="p">,</span> <span class="n">DatabaseType</span>
+
+<span class="c1"># Search for gene</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">search_gene_sync</span><span class="p">(</span><span class="s2">&quot;TP53&quot;</span><span class="p">,</span> <span class="n">database</span><span class="o">=</span><span class="n">DatabaseType</span><span class="o">.</span><span class="n">ENSEMBL</span><span class="p">)</span>
+
+<span class="k">if</span> <span class="n">result</span><span class="o">.</span><span class="n">success</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Found </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">transcripts</span><span class="p">)</span><span class="si">}</span><span class="s2"> transcripts&quot;</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">transcripts</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="n">t</span><span class="o">.</span><span class="n">transcript_id</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">t</span><span class="o">.</span><span class="n">sequence</span><span class="p">)</span><span class="si">}</span><span class="s2"> bp&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="async-search">
+<h3>Async Search<a class="headerlink" href="#async-search" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.data.gene_search</span><span class="w"> </span><span class="kn">import</span> <span class="n">GeneSearcher</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">search_genes</span><span class="p">():</span>
+    <span class="n">searcher</span> <span class="o">=</span> <span class="n">GeneSearcher</span><span class="p">()</span>
+    <span class="n">results</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">gene</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">&quot;TP53&quot;</span><span class="p">,</span> <span class="s2">&quot;BRCA1&quot;</span><span class="p">,</span> <span class="s2">&quot;EGFR&quot;</span><span class="p">]:</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">searcher</span><span class="o">.</span><span class="n">search_gene</span><span class="p">(</span><span class="n">gene</span><span class="p">)</span>
+        <span class="n">results</span><span class="p">[</span><span class="n">gene</span><span class="p">]</span> <span class="o">=</span> <span class="n">result</span>
+    <span class="k">return</span> <span class="n">results</span>
+
+<span class="n">results</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">search_genes</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="complete-workflow">
+<h2>Complete Workflow<a class="headerlink" href="#complete-workflow" title="Link to this heading"></a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.workflow</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_sirna_workflow</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">analyze_gene</span><span class="p">(</span><span class="n">gene</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+    <span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="n">run_sirna_workflow</span><span class="p">(</span>
+        <span class="n">gene_query</span><span class="o">=</span><span class="n">gene</span><span class="p">,</span>
+        <span class="n">output_dir</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;results/</span><span class="si">{</span><span class="n">gene</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="n">top_n_candidates</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+        <span class="n">gc_min</span><span class="o">=</span><span class="mf">35.0</span><span class="p">,</span>
+        <span class="n">gc_max</span><span class="o">=</span><span class="mf">55.0</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">results</span>
+
+<span class="n">results</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">analyze_gene</span><span class="p">(</span><span class="s2">&quot;TP53&quot;</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Generated </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">results</span><span class="p">[</span><span class="s1">&#39;candidates&#39;</span><span class="p">])</span><span class="si">}</span><span class="s2"> candidates&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="key-classes">
+<h2>Key Classes<a class="headerlink" href="#key-classes" title="Link to this heading"></a></h2>
+<section id="designparameters">
+<h3>DesignParameters<a class="headerlink" href="#designparameters" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.models.sirna</span><span class="w"> </span><span class="kn">import</span> <span class="n">DesignParameters</span>
+
+<span class="n">params</span> <span class="o">=</span> <span class="n">DesignParameters</span><span class="p">(</span>
+    <span class="n">sirna_length</span><span class="o">=</span><span class="mi">21</span><span class="p">,</span>           <span class="c1"># 19-23 nt</span>
+    <span class="n">top_candidates</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>         <span class="c1"># Number to return</span>
+    <span class="n">gc_content_range</span><span class="o">=</span><span class="p">(</span><span class="mi">30</span><span class="p">,</span> <span class="mi">60</span><span class="p">),</span> <span class="c1"># Min/max GC %</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="sirnacandidate">
+<h3>SiRNACandidate<a class="headerlink" href="#sirnacandidate" title="Link to this heading"></a></h3>
+<p>Each candidate includes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">candidate</span><span class="o">.</span><span class="n">sirna_id</span>          <span class="c1"># Unique identifier</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">guide_sequence</span>    <span class="c1"># 21nt guide strand</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">passenger_sequence</span> <span class="c1"># Passenger strand</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">position</span>          <span class="c1"># Position in transcript</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">composite_score</span>   <span class="c1"># Overall score (0-10)</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">asymmetry_score</span>   <span class="c1"># Thermodynamic asymmetry</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">gc_content</span>        <span class="c1"># GC percentage</span>
+<span class="n">candidate</span><span class="o">.</span><span class="n">melting_temp_c</span>    <span class="c1"># Melting temperature</span>
+</pre></div>
+</div>
+</section>
+<section id="chemical-modifications">
+<h3>Chemical Modifications<a class="headerlink" href="#chemical-modifications" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.models.modifications</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">StrandMetadata</span><span class="p">,</span>
+    <span class="n">ChemicalModification</span><span class="p">,</span>
+    <span class="n">Provenance</span><span class="p">,</span>
+    <span class="n">SourceType</span>
+<span class="p">)</span>
+
+<span class="n">metadata</span> <span class="o">=</span> <span class="n">StrandMetadata</span><span class="p">(</span>
+    <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;sirna_001&quot;</span><span class="p">,</span>
+    <span class="n">sequence</span><span class="o">=</span><span class="s2">&quot;AUCGAUCGAUCGAUCGAUCGA&quot;</span><span class="p">,</span>
+    <span class="n">overhang</span><span class="o">=</span><span class="s2">&quot;dTdT&quot;</span><span class="p">,</span>
+    <span class="n">chem_mods</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">ChemicalModification</span><span class="p">(</span><span class="nb">type</span><span class="o">=</span><span class="s2">&quot;2OMe&quot;</span><span class="p">,</span> <span class="n">positions</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
+    <span class="p">],</span>
+    <span class="n">provenance</span><span class="o">=</span><span class="n">Provenance</span><span class="p">(</span>
+        <span class="n">source_type</span><span class="o">=</span><span class="n">SourceType</span><span class="o">.</span><span class="n">DESIGNED</span><span class="p">,</span>
+        <span class="n">identifier</span><span class="o">=</span><span class="s2">&quot;my_experiment_001&quot;</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="file-i-o">
+<h2>File I/O<a class="headerlink" href="#file-i-o" title="Link to this heading"></a></h2>
+<section id="save-results">
+<h3>Save Results<a class="headerlink" href="#save-results" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Save to CSV</span>
+<span class="n">results</span><span class="o">.</span><span class="n">save_csv</span><span class="p">(</span><span class="s2">&quot;candidates.csv&quot;</span><span class="p">)</span>
+
+<span class="c1"># Save to FASTA</span>
+<span class="n">results</span><span class="o">.</span><span class="n">save_fasta</span><span class="p">(</span><span class="s2">&quot;candidates.fasta&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="load-sequences">
+<h3>Load Sequences<a class="headerlink" href="#load-sequences" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.core.design</span><span class="w"> </span><span class="kn">import</span> <span class="n">SiRNADesigner</span>
+
+<span class="n">designer</span> <span class="o">=</span> <span class="n">SiRNADesigner</span><span class="p">(</span><span class="n">params</span><span class="p">)</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">designer</span><span class="o">.</span><span class="n">design_from_file</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">&quot;transcripts.fasta&quot;</span><span class="p">))</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="error-handling">
+<h2>Error Handling<a class="headerlink" href="#error-handling" title="Link to this heading"></a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.core.design</span><span class="w"> </span><span class="kn">import</span> <span class="n">DesignException</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">sirnaforge.data.gene_search</span><span class="w"> </span><span class="kn">import</span> <span class="n">GeneNotFoundError</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">search_gene_sync</span><span class="p">(</span><span class="s2">&quot;INVALID_GENE&quot;</span><span class="p">)</span>
+<span class="k">except</span> <span class="n">GeneNotFoundError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Gene not found: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">results</span> <span class="o">=</span> <span class="n">designer</span><span class="o">.</span><span class="n">design_from_sequences</span><span class="p">([])</span>
+<span class="k">except</span> <span class="n">DesignException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Design failed: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="workflows.html"><span class="std std-doc">Workflows</span></a> - CLI workflows</p></li>
+<li><p><a class="reference internal" href="scoring.html"><span class="std std-doc">Scoring</span></a> - Understanding metrics</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="modifications.html" class="btn btn-neutral float-left" title="Chemical Modifications" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Austin S. Hovland.</p>
+  </div>
+
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

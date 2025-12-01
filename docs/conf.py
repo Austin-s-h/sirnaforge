@@ -28,6 +28,7 @@ extensions = [
     "myst_parser",
     "sphinx_design",
     "sphinxcontrib.mermaid",
+    "sphinxcontrib.programoutput",  # Execute shell commands and capture output
 ]
 
 templates_path = ["_templates"]
@@ -161,3 +162,7 @@ intersphinx_timeout = 10
 typehints_fully_qualified = False
 always_document_param_types = True
 typehints_document_rtype = True
+
+# Program output configuration (for live CLI examples)
+# Commands will be run through uv to use the project environment
+programoutput_prompt_template = "$ {command}\n{output}"

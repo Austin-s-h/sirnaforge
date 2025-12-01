@@ -1,0 +1,445 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scoring &mdash; siRNAforge 0.3.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=6de935c7"></script>
+      <script src="_static/doctools.js?v=9a2dae69"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Chemical Modifications" href="modifications.html" />
+    <link rel="prev" title="Commands" href="commands.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            siRNAforge
+              <img src="_static/sirnaforge_logo_3.svg" class="logo" alt="Logo"/>
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#recommended-pip-uv">Recommended: pip/uv</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#development-setup">Development Setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#docker-full-bioinformatics-stack">Docker (Full Bioinformatics Stack)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#verify-installation">Verify Installation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="workflows.html">Workflows</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#complete-workflow">Complete Workflow</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="workflows.html#output-structure">Output Structure</a></li>
+<li class="toctree-l3"><a class="reference internal" href="workflows.html#common-options">Common Options</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#step-by-step-workflow">Step-by-Step Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#batch-processing">Batch Processing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#docker-workflow">Docker Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="workflows.html#nextflow-pipeline">Nextflow Pipeline</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="commands_live.html">Commands (Live Examples)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#help-version">Help &amp; Version</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#main-help">Main Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#version">Version</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#workflow">workflow</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#help">Help</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#search">search</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id1">Help</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#design">design</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id2">Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#example-design-from-sample-data">Example: Design from Sample Data</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#validate">validate</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id3">Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#example-validate-sample-data">Example: Validate Sample Data</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#config">config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#sequences">sequences</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id4">Help</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands_live.html#cache">cache</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands_live.html#id5">Help</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#workflow">workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#search">search</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#design">design</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#validate">validate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#sequences">sequences</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#sequences-show">sequences show</a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#sequences-annotate">sequences annotate</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#config">config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#cache">cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#version">version</a></li>
+</ul>
+</li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Scoring</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#quick-reference">Quick Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#composite-score">Composite Score</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#asymmetry-score">Asymmetry Score</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#gc-content">GC Content</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#melting-temperature">Melting Temperature</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#minimum-free-energy-mfe">Minimum Free Energy (MFE)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#filtering-recommendations">Filtering Recommendations</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#standard-most-applications">Standard (most applications)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#stringent-publication-quality">Stringent (publication-quality)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#relaxed-difficult-targets">Relaxed (difficult targets)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#output-columns">Output Columns</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Advanced</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="modifications.html">Chemical Modifications</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#quick-start">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#common-modification-types">Common Modification Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#modification-patterns">Modification Patterns</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#standard-balanced">Standard (Balanced)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#minimal-cost-optimized">Minimal (Cost-Optimized)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#therapeutic-fda-approved-pattern">Therapeutic (FDA-approved pattern)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#cli-usage">CLI Usage</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#view-modifications">View Modifications</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modifications.html#annotate-fasta">Annotate FASTA</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#json-metadata-format">JSON Metadata Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#fasta-header-format">FASTA Header Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#integration-with-workflow">Integration with Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#position-numbering">Position Numbering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modifications.html#see-also">See Also</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">Python API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#basic-usage">Basic Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#gene-search">Gene Search</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api.html#async-search">Async Search</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#complete-workflow">Complete Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#key-classes">Key Classes</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api.html#designparameters">DesignParameters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#sirnacandidate">SiRNACandidate</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#chemical-modifications">Chemical Modifications</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#file-i-o">File I/O</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api.html#save-results">Save Results</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#load-sequences">Load Sequences</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#error-handling">Error Handling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#see-also">See Also</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">siRNAforge</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Scoring</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul><div class="rst-breadcrumbs-buttons" role="navigation" aria-label="Sequential page navigation">
+        <a href="commands.html" class="btn btn-neutral float-left" title="Commands" accesskey="p"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="modifications.html" class="btn btn-neutral float-right" title="Chemical Modifications" accesskey="n">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+  </div>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="scoring">
+<h1>Scoring<a class="headerlink" href="#scoring" title="Link to this heading"></a></h1>
+<p>siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. Higher composite scores indicate better predicted efficacy.</p>
+<section id="quick-reference">
+<h2>Quick Reference<a class="headerlink" href="#quick-reference" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Optimal Range</p></th>
+<th class="head"><p>What It Means</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">composite_score</span></code></p></td>
+<td><p>7-10</p></td>
+<td><p>Overall quality (higher = better)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">asymmetry_score</span></code></p></td>
+<td><p>≥0.65</p></td>
+<td><p>Guide strand selection preference</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gc_content</span></code></p></td>
+<td><p>40-55%</p></td>
+<td><p>Stability vs. accessibility balance</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">melting_temp</span></code></p></td>
+<td><p>55-65°C</p></td>
+<td><p>Duplex stability</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mfe</span></code></p></td>
+<td><p>-4 to -7 kcal/mol</p></td>
+<td><p>Secondary structure stability</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="composite-score">
+<h2>Composite Score<a class="headerlink" href="#composite-score" title="Link to this heading"></a></h2>
+<p>The composite score combines multiple factors with research-validated weights:</p>
+<ul class="simple">
+<li><p><strong>Thermodynamic asymmetry</strong> (25%) - Guide strand preferentially enters RISC</p></li>
+<li><p><strong>GC content</strong> (20%) - Balance between stability and accessibility</p></li>
+<li><p><strong>Target accessibility</strong> (25%) - mRNA region accessibility</p></li>
+<li><p><strong>Off-target potential</strong> (20%) - Specificity prediction</p></li>
+<li><p><strong>Empirical rules</strong> (10%) - Position-specific sequence features</p></li>
+</ul>
+<p><strong>Interpreting scores:</strong></p>
+<ul class="simple">
+<li><p><strong>8-10</strong>: Excellent candidates for experiments</p></li>
+<li><p><strong>6-8</strong>: Good candidates, may need validation</p></li>
+<li><p><strong>&lt;6</strong>: Consider alternatives</p></li>
+</ul>
+</section>
+<section id="asymmetry-score">
+<h2>Asymmetry Score<a class="headerlink" href="#asymmetry-score" title="Link to this heading"></a></h2>
+<p>The most important single predictor of siRNA efficacy.</p>
+<p><strong>Why it matters:</strong> RISC preferentially loads the strand with the less stable 5’ end. Higher asymmetry = correct strand selection = better knockdown.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Score</p></th>
+<th class="head"><p>Interpretation</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0.8-1.0</p></td>
+<td><p>Excellent - strong guide strand bias</p></td>
+</tr>
+<tr class="row-odd"><td><p>0.65-0.8</p></td>
+<td><p>Good - likely correct strand selection</p></td>
+</tr>
+<tr class="row-even"><td><p>0.5-0.65</p></td>
+<td><p>Moderate - mixed strand loading possible</p></td>
+</tr>
+<tr class="row-odd"><td><p>&lt;0.5</p></td>
+<td><p>Poor - passenger strand may dominate</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Research basis:</strong> Khvorova et al. (2003), Schwarz et al. (2003)</p>
+</section>
+<section id="gc-content">
+<h2>GC Content<a class="headerlink" href="#gc-content" title="Link to this heading"></a></h2>
+<p>Affects duplex stability and target accessibility.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Range</p></th>
+<th class="head"><p>Effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>&lt;35%</p></td>
+<td><p>Unstable duplex, poor RISC loading</p></td>
+</tr>
+<tr class="row-odd"><td><p>35-40%</p></td>
+<td><p>Acceptable, monitor stability</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>40-55%</strong></p></td>
+<td><p><strong>Optimal range</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>55-60%</p></td>
+<td><p>Acceptable, may reduce accessibility</p></td>
+</tr>
+<tr class="row-even"><td><p>&gt;60%</p></td>
+<td><p>Overly stable, poor target release</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="melting-temperature">
+<h2>Melting Temperature<a class="headerlink" href="#melting-temperature" title="Link to this heading"></a></h2>
+<p>Temperature at which 50% of duplexes dissociate.</p>
+<ul class="simple">
+<li><p><strong>&lt;55°C</strong>: Unstable, may dissociate prematurely</p></li>
+<li><p><strong>55-65°C</strong>: Optimal for mammalian cells</p></li>
+<li><p><strong>65-75°C</strong>: Acceptable, verify experimentally</p></li>
+<li><p><strong>&gt;75°C</strong>: May resist RISC processing</p></li>
+</ul>
+</section>
+<section id="minimum-free-energy-mfe">
+<h2>Minimum Free Energy (MFE)<a class="headerlink" href="#minimum-free-energy-mfe" title="Link to this heading"></a></h2>
+<p>Predicts secondary structure stability of the guide strand.</p>
+<ul class="simple">
+<li><p><strong>&gt;0 kcal/mol</strong>: Unstable, poor structure</p></li>
+<li><p><strong>-2 to -4 kcal/mol</strong>: Minimal structure (good)</p></li>
+<li><p><strong>-4 to -8 kcal/mol</strong>: Moderate structure (optimal)</p></li>
+<li><p><strong>&lt;-10 kcal/mol</strong>: Strong self-structure (may reduce activity)</p></li>
+</ul>
+</section>
+<section id="filtering-recommendations">
+<h2>Filtering Recommendations<a class="headerlink" href="#filtering-recommendations" title="Link to this heading"></a></h2>
+<section id="standard-most-applications">
+<h3>Standard (most applications)<a class="headerlink" href="#standard-most-applications" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sirnaforge<span class="w"> </span>workflow<span class="w"> </span>GENE<span class="w"> </span>--gc-min<span class="w"> </span><span class="m">35</span><span class="w"> </span>--gc-max<span class="w"> </span><span class="m">60</span>
+</pre></div>
+</div>
+</section>
+<section id="stringent-publication-quality">
+<h3>Stringent (publication-quality)<a class="headerlink" href="#stringent-publication-quality" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sirnaforge<span class="w"> </span>workflow<span class="w"> </span>GENE<span class="w"> </span>--gc-min<span class="w"> </span><span class="m">40</span><span class="w"> </span>--gc-max<span class="w"> </span><span class="m">55</span><span class="w"> </span>--top-n<span class="w"> </span><span class="m">30</span>
+</pre></div>
+</div>
+</section>
+<section id="relaxed-difficult-targets">
+<h3>Relaxed (difficult targets)<a class="headerlink" href="#relaxed-difficult-targets" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sirnaforge<span class="w"> </span>workflow<span class="w"> </span>GENE<span class="w"> </span>--gc-min<span class="w"> </span><span class="m">30</span><span class="w"> </span>--gc-max<span class="w"> </span><span class="m">65</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="output-columns">
+<h2>Output Columns<a class="headerlink" href="#output-columns" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">*_pass.csv</span></code> and <code class="docutils literal notranslate"><span class="pre">*_all.csv</span></code> files include:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sirna_id</span></code></p></td>
+<td><p>Unique identifier</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">guide_sequence</span></code></p></td>
+<td><p>21nt guide strand (5’→3’)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">passenger_sequence</span></code></p></td>
+<td><p>Passenger/sense strand</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">position</span></code></p></td>
+<td><p>Start position in transcript</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">composite_score</span></code></p></td>
+<td><p>Overall quality score</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">asymmetry_score</span></code></p></td>
+<td><p>Thermodynamic asymmetry</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gc_content</span></code></p></td>
+<td><p>GC percentage</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">melting_temp_c</span></code></p></td>
+<td><p>Melting temperature (°C)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mfe</span></code></p></td>
+<td><p>Minimum free energy (kcal/mol)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">quality_flags</span></code></p></td>
+<td><p>Any warnings or notes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="references">
+<h2>References<a class="headerlink" href="#references" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Khvorova A et al. (2003) - Thermodynamic asymmetry and RISC loading</p></li>
+<li><p>Schwarz DS et al. (2003) - Asymmetry rule for siRNA strand selection</p></li>
+<li><p>Reynolds A et al. (2004) - Rational siRNA design guidelines</p></li>
+<li><p>Ui-Tei K et al. (2004) - Guidelines for effective siRNAs</p></li>
+</ol>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="commands.html" class="btn btn-neutral float-left" title="Commands" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="modifications.html" class="btn btn-neutral float-right" title="Chemical Modifications" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Austin S. Hovland.</p>
+  </div>
+
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
