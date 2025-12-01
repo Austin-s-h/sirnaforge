@@ -17,8 +17,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/austin-s-h/sirnaforge
 cd sirnaforge
 make dev              # One-command setup: installs dependencies + pre-commit hooks
-# OR install development dependencies only:
-uv sync --dev
 ```
 ````
 
@@ -77,13 +75,8 @@ docker run --rm sirnaforge:latest sirnaforge version
 
 ````{tab-item} Development (uv/make)
 ```bash
-# Direct uv commands
 uv run sirnaforge --help
 uv run sirnaforge version
-
-# Or using make for quick checks
-make version          # Show version via make
-make check            # Run linting + fast tests to verify setup
 ```
 ````
 
@@ -150,36 +143,8 @@ my_first_analysis/
     └── TP53_orf_validation.txt     # ORF analysis results
 ```
 
-### Dirty Control Sentinels
-
-Every workflow run automatically appends **dirty control** candidates to the
-design results. These are real guides chosen from the lowest-scoring rejected
-pool (for example, GC outside the desired window or a known off-target risk)
-and labeled with the `DIRTY_CONTROL` quality flag. We keep the original
-sequence data intact so they behave exactly like normal candidates, aside from
-being clearly marked.
-
-Why they matter:
-
-- They guarantee the downstream Nextflow off-target pipeline always receives a
-  few guides that *should* trigger hits, making it easy to confirm that your
-  installation has BWA-MEM2, SAMtools, and Nextflow wired correctly.
-- Because they originate from the same transcript set and scoring pipeline,
-  they provide realistic “fails on purpose” controls without inventing fake
-  sequences.
-- You will see them in the CSV/FASTA outputs (`*_all.csv`, `*_pass.csv`, and
-  `off_target/input_candidates.fasta`) with IDs that end in
-  `__DIRTY_CONTROL_<n>`.
-
-You can simply ignore them when selecting lab-ready candidates, but keep them
-around when filing bug reports or sharing workflow outputs—the controls answer
-the question “did the off-target analysis even run?” at a glance.
-
 ### Examine Your Results
 
-`````{tab-set}
-
-````{tab-item} uv
 ```bash
 # View top candidates
 head -6 my_first_analysis/sirnaforge/TP53_pass.csv
@@ -187,21 +152,6 @@ head -6 my_first_analysis/sirnaforge/TP53_pass.csv
 # Check workflow summary
 cat my_first_analysis/logs/workflow_summary.json
 ```
-````
-
-````{tab-item} Docker
-```bash
-# View top candidates
-docker run --rm -v $(pwd):/workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  head -6 /workspace/my_first_analysis/sirnaforge/TP53_pass.csv
-
-# Check workflow summary (use host tools)
-cat my_first_analysis/logs/workflow_summary.json
-```
-````
-
-`````
 
 ## Understanding Your Results
 
@@ -213,278 +163,42 @@ cat my_first_analysis/logs/workflow_summary.json
 | `*_all.csv` | Complete candidate list with detailed scores | Analysis and custom filtering |
 | `workflow_summary.json` | High-level analysis statistics | QC and reporting |
 
+### Quality Metrics
 
-## Quality Indicators
-
-**Key metrics:**
+**Key metrics to look for:**
 - `asymmetry_score` ≥0.65 (optimal)
 - `gc_content` 35-60% (balanced)
 - `melting_temp` 55-65°C (effective)
-
-### Interpreting Scores
 
 **Score Ranges:**
 - **Composite Score (7-10)**: Higher is better; combines all factors
 - **Thermodynamic Score (0-1)**: Measures RNA folding favorability and asymmetry
 - **GC Content (35-60%)**: Optimal range 40-55% for stability and accessibility
 - **Asymmetry Score (0.65-1.0)**: Higher values indicate better guide strand selection
-- **MFE (-2 to -8 kcal/mol)**: Moderate stability preferred for effective processing
 
-## Customizing Your Analysis
+## Essential Commands
 
-### High-Quality Design
-
-`````{tab-set}
-
-````{tab-item} uv
-```bash
-# Stricter quality parameters for research publications
-uv run sirnaforge workflow TP53 \
-  --output-dir tp53_high_quality \
-  --gc-min 35 --gc-max 50 \
-  --top-n 30 \
-  --verbose
-```
-````
-
-````{tab-item} Docker
-```bash
-# Stricter quality parameters for research publications
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow TP53 \
-    --output-dir tp53_high_quality \
-    --gc-min 35 --gc-max 50 \
-    --top-n 30 \
-    --verbose
-```
-````
-
-`````
-
-### Step-by-Step Workflow
-
-`````{tab-set}
-
-````{tab-item} uv
-```bash
-# 1. Search transcripts
-uv run sirnaforge search TP53 -o transcripts.fasta --verbose
-
-# 2. Validate sequences
-uv run sirnaforge validate transcripts.fasta
-
-# 3. Design siRNAs
-uv run sirnaforge design transcripts.fasta \
-  -o results.csv \
-  --top-n 25 \
-  --verbose
-```
-````
-
-````{tab-item} Docker
-```bash
-# 1. Search transcripts
-docker run --rm -v $(pwd):/workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge search TP53 -o transcripts.fasta --verbose
-
-# 2. Validate sequences
-docker run --rm -v $(pwd):/workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge validate transcripts.fasta
-
-# 3. Design siRNAs
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge design transcripts.fasta \
-    -o results.csv \
-    --top-n 25 \
-    --verbose
-```
-````
-
-`````
-
-### Batch Processing Multiple Genes
-
-`````{tab-set}
-
-````{tab-item} uv
-```bash
-# Process multiple genes
-genes=("TP53" "BRCA1" "EGFR")
-for gene in "${genes[@]}"; do
-    uv run sirnaforge workflow "$gene" \
-        --output-dir "analysis_$gene" \
-        --gc-min 35 --gc-max 55 \
-        --top-n 20
-done
-```
-````
-
-````{tab-item} Docker
-```bash
-# Process multiple genes
-genes=("TP53" "BRCA1" "EGFR")
-for gene in "${genes[@]}"; do
-    docker run --rm -v $(pwd):/workspace -w /workspace \
-        ghcr.io/austin-s-h/sirnaforge:latest \
-        sirnaforge workflow "$gene" \
-          --output-dir "analysis_$gene" \
-          --gc-min 35 --gc-max 55 \
-          --top-n 20
-done
-```
-````
-
-`````
-
-## Essential Commands & Parameters
-
-### Core Commands
-
-| Command | Purpose | Key Options |
-|---------|---------|------------|
-| `workflow` | Gene → siRNA pipeline | `--output-dir`, `--top-n` |
-| `search` | Find transcripts | `--database`, `--output` |
-| `design` | Generate siRNAs | `--top-n`, `--gc-min/max` |
-| `validate` | Check FASTA | `--verbose` |
-| `version` | Show version | - |
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `workflow` | Complete gene → siRNA pipeline | `sirnaforge workflow TP53 --output-dir results` |
+| `search` | Find gene transcripts | `sirnaforge search BRCA1 -o transcripts.fasta` |
+| `design` | Generate siRNAs from FASTA | `sirnaforge design input.fasta --top-n 20` |
+| `validate` | Check FASTA format | `sirnaforge validate input.fasta` |
+| `version` | Show version | `sirnaforge version` |
 
 ### Key Parameters
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
-| `--gc-min` / `--gc-max` | 30 % / 60 % | GC content window |
-| `--length` | 21 | Candidate length in nt |
+| `--gc-min` / `--gc-max` | 30% / 60% | GC content window |
+| `--length` | 21 | siRNA length in nucleotides |
 | `--top-n` | 10 (`design`), 20 (`workflow`) | Number of candidates retained |
 | `--output-dir` | `sirna_workflow_output` | Output directory for workflows |
-| `--output` | `sirna_results.tsv` | Output path for single-step commands |
 | `--verbose` | `false` | Emit detailed progress messages |
-
-### Common Usage Patterns
-
-`````{tab-set}
-
-````{tab-item} Development (uv)
-```bash
-# High-quality candidates
-uv run sirnaforge workflow GENE --gc-min 35 --gc-max 50 --top-n 30
-
-# Fast screening
-uv run sirnaforge design input.fasta --skip-structure --top-n 10
-
-# Multi-species analysis
-uv run sirnaforge workflow GENE --genome-species "human,mouse,rat"
-
-# Custom parameters
-uv run sirnaforge workflow GENE --length 19 --gc-min 40 --max-poly-runs 2
-
-# Quick example using sample data
-make example          # Runs design on examples/sample_transcripts.fasta
-```
-````
-
-````{tab-item} Docker
-```bash
-# High-quality candidates
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow GENE --gc-min 35 --gc-max 50 --top-n 30
-
-# Fast screening
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge design input.fasta --skip-structure --top-n 10
-
-# Multi-species analysis
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow GENE --genome-species "human,mouse,rat"
-
-# Custom parameters
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow GENE --length 19 --gc-min 40 --max-poly-runs 2
-
-# Using make with Docker
-make docker-run GENE=TP53  # Simplified Docker workflow execution
-```
-````
-
-`````
-
-### Quality Thresholds
-
-**Recommended for lab experiments:**
-- GC Content: 35-60% (optimal: 40-55%)
-- Asymmetry Score: ≥0.65
-- Melting Temperature: 55-65°C
-- End Stability (ΔΔG): +2 to +6 kcal/mol
-
-
-## Development Quick Reference
-
-For contributors and developers, siRNAforge uses **Make commands** for streamlined workflows powered by `uv`:
-
-### Essential Make Commands
-
-**Quick Setup**
-```bash
-make dev              # One-command setup: install deps + pre-commit hooks
-make install          # Install production dependencies only (uv sync --no-dev)
-```
-
-**Testing (Organized by Speed)**
-```bash
-make test-dev         # Fast unit tests (~15s) - for rapid iteration
-make test-ci          # Smoke tests with coverage - for CI/CD
-make test-release     # Full validation - for releases
-make test             # All tests (may have skips/failures)
-```
-
-**Testing (By Requirement)**
-```bash
-make test-requires-docker   # Tests requiring Docker daemon
-make test-requires-network  # Tests requiring network access
-make test-requires-nextflow # Tests requiring Nextflow
-```
-
-**Code Quality**
-```bash
-make lint             # Check code quality (ruff check + mypy)
-make format           # Auto-format and autofix style issues (ruff)
-make check            # format + test-dev (mutating quick validation)
-make pre-commit       # Run all pre-commit hooks locally
-make security         # Run bandit + safety scans
-```
-
-**Docker**
-```bash
-make docker-build     # Build Docker image
-make docker-test      # Run tests inside container
-make docker-build-test # Clean, rebuild, and validate Docker image
-make docker-run       # Run workflow (usage: make docker-run GENE=TP53)
-make docker-shell     # Interactive shell
-```
-
-**Documentation & Utilities**
-```bash
-make docs             # Build documentation
-make docs-serve       # Serve at localhost:8000
-make clean            # Clean build artifacts and caches
-make version          # Show version
-make example          # Run bundled sample transcripts workflow
-make cache-info       # Inspect local transcript/miRNA cache mounts
-```
-
-**Why Make?** The Makefile wraps `uv` commands for consistency, provides organized test tiers, and includes convenient shortcuts for Docker workflows. Run `make help` for complete command list.
-
-📖 **[Full development guide →](developer/development.md)**
 
 ## Next Steps
 
-- **📖 [Usage Examples](usage_examples.md)** - Comprehensive real-world examples
+- **📖 [Usage Examples](usage_examples.md)** - Batch processing, custom parameters, chemical modifications
 - **⚙️ [CLI Reference](cli_reference.md)** - Complete parameter documentation
-- **🧬 [Custom Scoring Guide](tutorials/custom_scoring.md)** - Advanced thermodynamic principles
+- **🧬 [Thermodynamic Guide](thermodynamic_guide.md)** - Understanding scoring metrics
+- **🔧 [Developer Guide](developer/development.md)** - For contributors and developers
