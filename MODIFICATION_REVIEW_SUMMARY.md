@@ -299,11 +299,6 @@ Removed unused helper utilities to enforce KISS and DRY software engineering bes
 - `sirna_length_range` - Standalone validator never hooked into Pandera models
 - `ModificationSummarySchema` - DataFrameModel class never used for validation
 
-#### `pipeline/nextflow_cli.py`
-- `run_mirna_seed_analysis_cli` - Not dispatched from `main()` and not imported by Nextflow modules
-- `aggregate_mirna_results_cli` - Not dispatched from `main()` and not imported by Nextflow modules
-- `resolve_genome_indices_cli` - Not dispatched from `main()` and not imported by Nextflow modules
-
 #### `pipeline/resources/resources.py`
 - `get_workflow_path` - Early scaffolding for resource discovery, never used
 - `list_test_data` - Early scaffolding for resource discovery, never used
@@ -318,6 +313,9 @@ The following were verified as actively used and preserved:
 - `run_transcriptome_analysis_for_nextflow` - Called from Nextflow `.nf` modules
 - `split_candidates_cli` - Available in `main()` dispatch
 - `aggregate_results_cli` - Called from Nextflow `.nf` modules
+- `run_mirna_seed_analysis_cli` - Preserved for future Nextflow integration
+- `aggregate_mirna_results_cli` - Preserved for future Nextflow integration
+- `resolve_genome_indices_cli` - Preserved for future Nextflow integration
 
 ### Validation
 

@@ -12,10 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from sirnaforge.core.off_target import (
+    aggregate_mirna_results,
     aggregate_offtarget_results,
     build_bwa_index,
     parse_fasta_file,
     run_bwa_alignment_analysis,
+    run_mirna_seed_analysis,
     validate_and_write_sequences,
 )
 from sirnaforge.utils.logging_utils import get_logger
@@ -189,6 +191,65 @@ def run_offtarget_analysis_cli(
     }
 
 
+def run_mirna_seed_analysis_cli(
+    candidate_fasta: str,
+    candidate_id: str,
+    mirna_db: str = "mirgenedb",
+    mirna_species: str = "human",
+    output_dir: str = ".",
+) -> dict[str, Any]:
+    """Run miRNA seed match analysis for a single candidate.
+
+    Args:
+        candidate_fasta: Path to candidate FASTA file
+        candidate_id: Candidate identifier
+        mirna_db: miRNA database to use (mirgenedb, mirbase, etc.)
+        mirna_species: Comma-separated list of species
+        output_dir: Directory to write results
+
+    Returns:
+        Dictionary with analysis results
+    """
+    logger.info(f"Running miRNA seed match analysis for {candidate_id}")
+    logger.info(f"Database: {mirna_db}, Species: {mirna_species}")
+
+    # Parse species list
+    species_list = [s.strip() for s in mirna_species.split(",") if s.strip()]
+
+    if not species_list:
+        raise ValueError("No species provided for miRNA analysis")
+
+    # Run the analysis using the core function
+    output_path = run_mirna_seed_analysis(
+        candidates_file=candidate_fasta,
+        candidate_id=candidate_id,
+        mirna_db=mirna_db,
+        mirna_species=species_list,
+        output_dir=output_dir,
+    )
+
+    # Return metadata about the results
+    analysis_file = output_path / f"{candidate_id}_mirna_analysis.tsv"
+    summary_file = output_path / f"{candidate_id}_mirna_summary.json"
+
+    # Load summary to get hit count
+    hit_count = 0
+    if summary_file.exists():
+        with summary_file.open() as f:
+            summary_data = json.load(f)
+            hit_count = summary_data.get("total_hits", 0)
+
+    logger.info(f"miRNA seed analysis completed for {candidate_id}: {hit_count} hits")
+
+    return {
+        "candidate_id": candidate_id,
+        "total_hits": hit_count,
+        "analysis_file": str(analysis_file),
+        "summary_file": str(summary_file),
+        "status": "completed",
+    }
+
+
 def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[str, Any]:
     """Aggregate off-target analysis results from multiple candidates and genomes.
 
@@ -257,6 +318,93 @@ def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[st
         "summary_files_processed": 0,
         "species": [],
         "output_dir": str(output_path),
+    }
+
+
+def aggregate_mirna_results_cli(
+    mirna_db: str,
+    mirna_species: str,
+    results_dir: str = ".",
+    output_dir: str = ".",
+) -> dict[str, Any]:
+    """Aggregate miRNA seed analysis results from multiple candidates.
+
+    Args:
+        mirna_db: miRNA database name used for analysis
+        mirna_species: Comma-separated list of species analyzed
+        results_dir: Directory containing individual miRNA results
+        output_dir: Directory to write aggregated results
+
+    Returns:
+        Dictionary with aggregation statistics
+    """
+    logger.info(f"Aggregating miRNA results from {results_dir}")
+
+    # Run aggregation using core function
+    result_path = aggregate_mirna_results(
+        results_dir=results_dir, output_dir=output_dir, mirna_db=mirna_db, mirna_species=mirna_species
+    )
+
+    # Load summary to get statistics
+    summary_file = result_path / "combined_mirna_summary.json"
+    stats = {}
+    if summary_file.exists():
+        with summary_file.open() as f:
+            stats = json.load(f)
+
+    logger.info(f"miRNA aggregation completed: {result_path}")
+
+    return {
+        "status": "completed",
+        "mirna_database": mirna_db,
+        "species": mirna_species.split(","),
+        "total_hits": stats.get("total_mirna_hits", 0),
+        "candidates_analyzed": stats.get("total_candidates", 0),
+        "output_dir": str(result_path),
+    }
+
+
+def resolve_genome_indices_cli(
+    genome_species: str,
+    genome_indices_override: str = "",
+    output_file: str = "resolved_indices.json",
+) -> dict[str, Any]:
+    """Resolve genome indices from configuration or auto-discovery.
+
+    Args:
+        genome_species: Comma-separated list of species
+        genome_indices_override: Override indices (format: species:path,species:path)
+        output_file: Path to write resolved indices JSON
+
+    Returns:
+        Dictionary of species to index paths
+    """
+    # This is a placeholder - implement actual resolution logic
+    # For now, just create an empty resolution
+    indices = {}
+
+    species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
+
+    # Parse override if provided
+    if genome_indices_override:
+        for entry in genome_indices_override.split(","):
+            if ":" in entry:
+                species, index_path = entry.split(":", 1)
+                indices[species.strip()] = index_path.strip()
+
+    # Write resolved indices to JSON
+    output_path = Path(output_file)
+    with output_path.open("w") as f:
+        json.dump(indices, f, indent=2)
+
+    logger.info(f"Resolved indices for species: {list(indices.keys())}")
+    for species, index_path in indices.items():
+        logger.info(f"  {species}: {index_path}")
+
+    return {
+        "species": species_list,
+        "resolved_indices": indices,
+        "output_file": str(output_path),
     }
 
 
