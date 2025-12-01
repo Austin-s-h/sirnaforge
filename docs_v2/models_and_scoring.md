@@ -47,8 +47,11 @@ class SiRNACandidate(BaseModel):
     
     # Off-target metrics
     off_target_count: int      # Potential off-target sites (goal: ≤3)
-    transcriptome_hits_*: int  # Detailed transcriptome hit metrics
-    mirna_hits_*: int          # miRNA seed match metrics
+    transcriptome_hits_0mm: int   # Perfect match hits
+    transcriptome_hits_1mm: int   # 1-mismatch hits
+    transcriptome_hits_2mm: int   # 2-mismatch hits
+    mirna_hits_total: int         # Total miRNA seed matches
+    mirna_hits_0mm_seed: int      # Perfect seed matches
     
     # Scoring
     composite_score: float     # Overall quality (0-100 scale)
@@ -355,7 +358,7 @@ Additional filters applied during scoring:
 | Filter | Condition | Rationale |
 |--------|-----------|-----------|
 | `EXCESS_PAIRING` | paired_fraction > 0.6 | Prevents rigid structures |
-| `LOW_ASYMMETRY` | empirical_score < min_asymmetry | Ensures guide strand selection |
+| `LOW_ASYMMETRY` | asymmetry_score < min_asymmetry_score | Ensures guide strand selection |
 
 ### 3.3 Filter Status Codes
 
@@ -571,7 +574,7 @@ class ChemicalModification(BaseModel):
 
 5. **Naito Y, Yoshimura J, Morishita S, Ui-Tei K** (2009). siDirect 2.0: updated software for designing functional siRNA with reduced seed-dependent off-target effect. *BMC Bioinformatics* 10:392.
 
-6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2017). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. *Nucleic Acids Research* 35(18):e123.
+6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2007). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. *Nucleic Acids Research* 35(18):e123.
 
 7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. *Nature Biotechnology* 26(5):578-583.
 
