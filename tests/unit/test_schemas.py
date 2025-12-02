@@ -70,6 +70,52 @@ class TestSiRNACandidateSchema:
         }
         assert set(result.columns) == expected_columns
 
+    def test_passes_filters_allows_new_reason_strings(self):
+        """Ensure passes_filters accepts detailed reason strings from filters."""
+        test_data = {
+            "id": ["test_1", "test_2"],
+            "transcript_id": ["ENST00000000001", "ENST00000000002"],
+            "position": [100, 200],
+            "guide_sequence": ["TTTTTTTTTTTTTTTTTTTTT", "AAAAAAAAAAAAAAAAAAAAA"],
+            "passenger_sequence": ["AAAAAAAAAAAAAAAAAAAAA", "TTTTTTTTTTTTTTTTTTTTT"],
+            "gc_content": [0.0, 0.0],
+            "asymmetry_score": [0.5, 0.7],
+            "paired_fraction": [0.3, 0.4],
+            "structure": [None, None],
+            "mfe": [None, None],
+            "duplex_stability_dg": [None, None],
+            "duplex_stability_score": [None, None],
+            "dg_5p": [None, None],
+            "dg_3p": [None, None],
+            "delta_dg_end": [None, None],
+            "melting_temp_c": [None, None],
+            "off_target_count": [2, 1],
+            "transcript_hit_count": [1, 1],
+            "transcript_hit_fraction": [1.0, 1.0],
+            "composite_score": [75.5, 82.3],
+            "passes_filters": [
+                "MIRNA_PERFECT_SEED (1 hits)",
+                "TRANSCRIPTOME_PERFECT_MATCH (2 hits)",
+            ],
+        }
+
+        df = pd.DataFrame(test_data)
+        df = df.astype(
+            {
+                "mfe": "float64",
+                "duplex_stability_dg": "float64",
+                "duplex_stability_score": "float64",
+                "dg_5p": "float64",
+                "dg_3p": "float64",
+                "delta_dg_end": "float64",
+                "melting_temp_c": "float64",
+            }
+        )
+
+        result = SiRNACandidateSchema.validate(df)
+        assert result.loc[0, "passes_filters"].startswith("MIRNA_PERFECT_SEED")
+        assert result.loc[1, "passes_filters"].startswith("TRANSCRIPTOME_PERFECT_MATCH")
+
     def test_invalid_sequence_length_fails(self):
         """Test that invalid sequence lengths fail validation."""
         test_data = {
