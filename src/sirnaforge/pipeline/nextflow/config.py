@@ -98,6 +98,7 @@ class NextflowConfig:
         docker_image: str = "ghcr.io/austin-s-h/sirnaforge:latest",
         profile: str = "docker",
         work_dir: Optional[Path] = None,
+        nxf_home: Optional[Path] = None,
         max_cpus: int = 16,
         max_memory: str = "128.GB",
         max_time: str = "240.h",
@@ -109,6 +110,7 @@ class NextflowConfig:
             docker_image: Docker container image to use
             profile: Nextflow profile (docker, singularity, conda, local)
             work_dir: Working directory for Nextflow execution
+            nxf_home: Nextflow home cache
             max_cpus: Maximum CPU cores
             max_memory: Maximum memory allocation
             max_time: Maximum execution time
@@ -117,6 +119,7 @@ class NextflowConfig:
         self.docker_image = docker_image
         self.profile = profile
         self.work_dir = work_dir or Path.cwd() / "nextflow_work"
+        self.nxf_home = nxf_home or Path.home() / ".nextflow"
         self.max_cpus = max_cpus
         self.max_memory = max_memory
         self.max_time = max_time
