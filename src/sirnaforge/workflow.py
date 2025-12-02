@@ -1158,112 +1158,96 @@ class SiRNAWorkflow:
         output directories and combines them into a single results structure for
         candidate filtering.
         """
-        results: dict = {}
+        results: dict[str, dict[str, Any]] = {}
 
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
         # Check for combined genome/transcriptome results in aggregated subdirectory
         aggregated_dir = output_dir / "aggregated"
-        combined_tsv = (
-            aggregated_dir / "combined_offtargets.tsv"
-            if aggregated_dir.exists()
-            else output_dir / "combined_offtargets.tsv"
-        )
-        combined_json = (
-            aggregated_dir / "combined_offtargets.json"
-            if aggregated_dir.exists()
-            else output_dir / "combined_offtargets.json"
-        )
 
-        if combined_tsv.exists() and combined_tsv.stat().st_size > 100:  # Must have more than just header
-            with combined_tsv.open() as fh:
+        def _aggregate_path(filename: str) -> Path:
+            return (aggregated_dir / filename) if aggregated_dir.exists() else (output_dir / filename)
+
+        def _ingest_row(row: dict[str, Any]) -> None:
+            qname = row.get("qname") or row.get("query") or row.get("id")
+            if not qname:
+                return
+            try:
+                score = float(row.get("offtarget_score") or row.get("score") or 0)
+            except Exception:
+                score = 0.0
+            entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
+            entry["off_target_count"] += 1
+            entry["off_target_score"] = max(entry["off_target_score"], score)
+            entry["hits"].append(row)
+
+        def _ingest_tsv(path: Path) -> bool:
+            if not path.exists() or path.stat().st_size == 0:
+                return False
+            found = False
+            with path.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
                 for row in reader:
-                    qname = row.get("qname") or row.get("query") or row.get("id")
-                    if not qname:
-                        continue
-                    try:
-                        score = float(row.get("offtarget_score") or 0)
-                    except Exception:
-                        score = 0.0
+                    _ingest_row(row)
+                    found = True
+            return found
 
-                    entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                    entry["off_target_count"] += 1
-                    # keep the maximum per-query off-target score as a conservative summary
-                    entry["off_target_score"] = max(entry["off_target_score"], score)
-                    entry["hits"].append(row)
-
-        elif combined_json.exists():
-            with combined_json.open() as fh:
-                try:
+        def _ingest_json(path: Path) -> bool:
+            if not path.exists() or path.stat().st_size == 0:
+                return False
+            try:
+                with path.open() as fh:
                     data = json.load(fh)
-                except Exception:
-                    data = []
-                for item in data:
-                    qname = item.get("qname") or item.get("query") or item.get("id")
-                    if not qname:
-                        continue
-                    try:
-                        score = float(item.get("offtarget_score") or 0)
-                    except Exception:
-                        score = 0.0
-                    entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                    entry["off_target_count"] += 1
-                    entry["off_target_score"] = max(entry["off_target_score"], score)
-                    entry["hits"].append(item)
+            except Exception:
+                data = []
+            found = False
+            for item in data:
+                if isinstance(item, dict):
+                    _ingest_row(item)
+                    found = True
+            return found
 
-        else:
-            # Fallback: scan for genome and mirna analysis files
-            genome_files = (
-                list((output_dir / "genome").glob("*_analysis.tsv")) if (output_dir / "genome").exists() else []
-            )
-            mirna_files = list((output_dir / "mirna").glob("*_analysis.tsv")) if (output_dir / "mirna").exists() else []
-            files = genome_files + mirna_files
+        genome_hits_found = _ingest_tsv(_aggregate_path("combined_offtargets.tsv"))
+        if not genome_hits_found:
+            genome_hits_found = _ingest_json(_aggregate_path("combined_offtargets.json"))
 
-            if not files:
+        mirna_hits_found = _ingest_tsv(_aggregate_path("combined_mirna_hits.tsv"))
+        if not mirna_hits_found:
+            mirna_hits_found = _ingest_json(_aggregate_path("combined_mirna_hits.json"))
+
+        if not genome_hits_found or not mirna_hits_found:
+            genome_files: list[Path] = []
+            mirna_files: list[Path] = []
+
+            if not genome_hits_found:
+                genome_dir = output_dir / "genome"
+                if genome_dir.exists():
+                    genome_files = list(genome_dir.glob("*_analysis.tsv"))
+
+            if not mirna_hits_found:
+                mirna_dir = output_dir / "mirna"
+                if mirna_dir.exists():
+                    mirna_files = list(mirna_dir.glob("*_analysis.tsv"))
+
+            files: list[Path] = []
+            if not genome_hits_found:
+                files.extend(genome_files)
+            if not mirna_hits_found:
+                files.extend(mirna_files)
+
+            if not files and not genome_hits_found and not mirna_hits_found:
                 # Last resort: scan for any TSV files
                 files = list(output_dir.glob("**/*_offtargets.tsv"))
 
             for fpath in files:
-                with Path(fpath).open() as fh:
-                    reader = csv.DictReader(fh, delimiter="\t")
-                    for row in reader:
-                        qname = row.get("qname") or row.get("query") or row.get("id")
-                        if not qname:
-                            continue
-                        try:
-                            score = float(row.get("offtarget_score") or 0)
-                        except Exception:
-                            score = 0.0
-                        entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                        entry["off_target_count"] += 1
-                        entry["off_target_score"] = max(entry["off_target_score"], score)
-                        entry["hits"].append(row)
+                _ingest_tsv(Path(fpath))
 
-            # ALSO parse miRNA results from separate directory
-            mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
-            if mirna_tsv.exists() and mirna_tsv.stat().st_size > 100:
-                logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
-                with mirna_tsv.open() as fh:
-                    reader = csv.DictReader(fh, delimiter="\t")
-                    for row in reader:
-                        qname = row.get("qname") or row.get("query") or row.get("id")
-                        if not qname:
-                            continue
-                        try:
-                            score = float(row.get("offtarget_score") or 0)
-                        except Exception:
-                            score = 0.0
-
-                        entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                        entry["off_target_count"] += 1
-                        entry["off_target_score"] = max(entry["off_target_score"], score)
-                        entry["hits"].append(row)
-
-                logger.info(
-                    f"Parsed {len([r for r in results.values() if any('mirna_id' in h for h in r.get('hits', []))])} candidates with miRNA hits"
-                )
+            if not mirna_hits_found:
+                mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
+                if _ingest_tsv(mirna_tsv):
+                    logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
+                    mirna_hits_found = True
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
