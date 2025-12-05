@@ -117,7 +117,6 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 # Multi-database search with filters
 uv run sirnaforge search HOTAIR \
   --database ensembl \
-  --species homo_sapiens \
   --types "lncRNA,antisense" \
   --all \
   --verbose
@@ -126,8 +125,7 @@ uv run sirnaforge search HOTAIR \
 for gene in TP53 BRCA1 EGFR KRAS; do
     uv run sirnaforge search $gene \
       --output transcripts/${gene}.fasta \
-      --database ensembl \
-      --species homo_sapiens
+      --database ensembl
 done
 ```
 ````
@@ -139,7 +137,6 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
   ghcr.io/austin-s-h/sirnaforge:latest \
   sirnaforge search HOTAIR \
     --database ensembl \
-    --species homo_sapiens \
     --types "lncRNA,antisense" \
     --all \
     --verbose
@@ -150,15 +147,14 @@ for gene in TP53 BRCA1 EGFR KRAS; do
       ghcr.io/austin-s-h/sirnaforge:latest \
       sirnaforge search $gene \
         --output transcripts/${gene}.fasta \
-        --database ensembl \
-        --species homo_sapiens
+        --database ensembl
 done
 ```
 ````
 
 `````
 
-**Options:** `--database` (ensembl/refseq/gencode), `--species`, `--types`, `--all`
+**Options:** `--database` (ensembl/refseq/gencode), `--output`, `--types`, `--all`, `--verbose`
 
 ## Design Only (No Off-Target)
 

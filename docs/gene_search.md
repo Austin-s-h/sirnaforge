@@ -216,47 +216,8 @@ searcher = GeneSearcher(
 )
 ```
 
-## Integration with siRNA Design
+## See Also
 
-The gene search functionality integrates seamlessly with the siRNA design pipeline:
-
-`````{tab-set}
-
-````{tab-item} uv
-```bash
-# Complete pipeline: search → design → analyze
-uv run sirnaforge search TP53 -o tp53.fasta
-uv run sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
-
-# Or use the integrated workflow command
-uv run sirnaforge workflow TP53 --output-dir results
-```
-````
-
-````{tab-item} Docker
-```bash
-# Complete pipeline: search → design → analyze
-docker run --rm -v $(pwd):/workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge search TP53 -o tp53.fasta
-
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge design tp53.fasta -o tp53_sirnas.tsv --top-n 20
-
-# Or use the integrated workflow command
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow TP53 --output-dir results
-```
-````
-
-`````
-
-> **Workflow Integration**: See [`run_sirna_workflow`](api_reference.rst) for the complete integrated pipeline
-
-## Contributing
-
-To add support for additional databases, implement a new database client following the pattern in [`EnsemblClient`](api_reference.rst).
-
-See the [Developer Guide](developer/development.md) for contribution guidelines.
+- **[Getting Started](getting_started.md)** - Complete workflow including gene search
+- **[Usage Examples](usage_examples.md)** - More search examples and batch processing
+- **[API Reference](api_reference.rst)** - Full Python API documentation
