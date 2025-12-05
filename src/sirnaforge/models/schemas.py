@@ -181,6 +181,7 @@ class SiRNACandidateSchema(DataFrameModel):
             "TRANSCRIPTOME_PERFECT_MATCH",
             "TRANSCRIPTOME_HITS_1MM",
             "TRANSCRIPTOME_HITS_2MM",
+            "MIRNA_PERFECT_SEED",
             "MIRNA_SEED_HITS",
             "MIRNA_HIGH_RISK",
             "DIRTY_CONTROL",

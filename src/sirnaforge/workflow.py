@@ -16,9 +16,10 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, cast
@@ -45,6 +46,7 @@ from sirnaforge.models.sirna import (
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
+from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
@@ -76,6 +78,7 @@ class WorkflowConfig:
         write_json_summary: bool = True,
         num_threads: int | None = None,
         input_source: InputSource | None = None,
+        keep_nextflow_work: bool = False,
     ):
         """Initialize workflow configuration."""
         self.output_dir = Path(output_dir)
@@ -98,6 +101,7 @@ class WorkflowConfig:
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
+        self.keep_nextflow_work = keep_nextflow_work
         # Parallelism for design stage (cap at 4 CPUs for better efficiency)
         requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
         self.num_threads = max(1, min(4, requested_threads))
@@ -132,9 +136,10 @@ class SiRNAWorkflow:
         else:
             self.sirnaforgeer = SiRNADesigner(config.design_params)
 
-        self.results: dict = {}
+        self.results: dict[str, Any] = {}
+        self._nextflow_cache_info: dict[str, Any] | None = None
 
-    async def run_complete_workflow(self) -> dict:
+    async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete siRNA design workflow."""
         console.print("\n🧬 [bold cyan]Starting siRNAforge Workflow[/bold cyan]")
         console.print(f"Gene Query: [yellow]{self.config.gene_query}[/yellow]")
@@ -178,7 +183,7 @@ class SiRNAWorkflow:
         # Compile final results
         # Serialize authoritative design parameters into the workflow summary.
         dp = self.config.design_params
-        design_parameters = {
+        design_parameters: dict[str, Any] = {
             "top_n": dp.top_n,
             "sirna_length": dp.sirna_length,
             "filters": {
@@ -202,7 +207,7 @@ class SiRNAWorkflow:
             "genome_index": dp.genome_index,
         }
 
-        final_results = {
+        final_results: dict[str, Any] = {
             "workflow_config": {
                 "gene_query": self.config.gene_query,
                 "database": self.config.database.value,
@@ -214,7 +219,7 @@ class SiRNAWorkflow:
                 },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
-            "orf_summary": self._summarize_orf_results(cast(dict[str, Any], orf_results)),
+            "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
             "offtarget_summary": offtarget_results,
@@ -335,12 +340,12 @@ class SiRNAWorkflow:
 
         return protein_transcripts
 
-    async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict:
+    async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict[str, Any]:
         """Step 2: Validate ORFs and generate validation report."""
         task = progress.add_task("[yellow]Analyzing ORFs...", total=len(transcripts) + 1)
 
-        orf_results = {}
-        valid_transcripts = []
+        orf_results: dict[str, Any] = {}
+        valid_transcripts: list[TranscriptInfo] = []
 
         for transcript in transcripts:
             try:
@@ -507,7 +512,7 @@ class SiRNAWorkflow:
                 # Cap batch size to avoid memory issues
                 batch_size = min(batch_size, 20)
 
-        batches = []
+        batches: list[list[TranscriptInfo]] = []
         for i in range(0, len(transcripts), batch_size):
             batch = transcripts[i : i + batch_size]
             if batch:  # Only add non-empty batches
@@ -571,74 +576,72 @@ class SiRNAWorkflow:
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
 
-        # Apply chemical modifications if enabled
         if self.config.design_params.apply_modifications:
             self._apply_modifications_to_results(design_results)
 
-        # Emit candidate CSVs: always keep ALL and a filtered PASSING file
-        try:
-            # Import modification summary helper
-            # Build DataFrame from all candidates with columns matching SiRNACandidateSchema
-            rows = []
-            is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
-            for c in design_results.candidates:
-                cs = getattr(c, "component_scores", {}) or {}
+        base = self.config.output_dir / "sirnaforge"
+        all_csv = base / f"{self.config.gene_query}_all.csv"
+        pass_csv = base / f"{self.config.gene_query}_pass.csv"
+        pass_fasta = base / f"{self.config.gene_query}_pass.fasta"
+        report_file = self.config.output_dir / "orf_reports" / f"{self.config.gene_query}_orf_validation.txt"
+        is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
 
-                # Get modification summary if modifications were applied
-                mod_summary = get_modification_summary(c) if c.guide_metadata else {}
+        try:
+            rows: list[dict[str, Any]] = []
+            for candidate in design_results.candidates:
+                cs = getattr(candidate, "component_scores", {}) or {}
+                mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
+
+                pass_state = candidate.passes_filters
+                if isinstance(pass_state, _ModelSiRNACandidate.FilterStatus):
+                    normalized_pass_field: Any = pass_state.value
+                else:
+                    normalized_pass_field = pass_state
 
                 def _maybe_attr(obj: Any, name: str, *, default: Any = None) -> Any:
                     return getattr(obj, name, default)
 
                 rows.append(
                     {
-                        "id": c.id,
-                        "transcript_id": c.transcript_id,
-                        "position": c.position,
-                        "guide_sequence": c.guide_sequence,
-                        "passenger_sequence": c.passenger_sequence,
-                        "gc_content": c.gc_content,
-                        "asymmetry_score": c.asymmetry_score,
-                        "paired_fraction": c.paired_fraction,
-                        # Thermodynamics
-                        "structure": getattr(c, "structure", None),
-                        "mfe": getattr(c, "mfe", None),
-                        "duplex_stability_dg": c.duplex_stability,
+                        "id": candidate.id,
+                        "transcript_id": candidate.transcript_id,
+                        "position": candidate.position,
+                        "guide_sequence": candidate.guide_sequence,
+                        "passenger_sequence": candidate.passenger_sequence,
+                        "gc_content": candidate.gc_content,
+                        "asymmetry_score": candidate.asymmetry_score,
+                        "paired_fraction": candidate.paired_fraction,
+                        "structure": getattr(candidate, "structure", None),
+                        "mfe": getattr(candidate, "mfe", None),
+                        "duplex_stability_dg": candidate.duplex_stability,
                         "duplex_stability_score": cs.get("duplex_stability_score"),
                         "dg_5p": cs.get("dg_5p"),
                         "dg_3p": cs.get("dg_3p"),
                         "delta_dg_end": cs.get("delta_dg_end"),
                         "melting_temp_c": cs.get("melting_temp_c"),
-                        "off_target_count": c.off_target_count,
-                        "off_target_penalty": c.off_target_penalty,
-                        # Detailed transcriptome off-target metrics
-                        "transcriptome_hits_total": _maybe_attr(c, "transcriptome_hits_total", default=0),
-                        "transcriptome_hits_0mm": _maybe_attr(c, "transcriptome_hits_0mm", default=0),
-                        "transcriptome_hits_1mm": _maybe_attr(c, "transcriptome_hits_1mm", default=0),
-                        "transcriptome_hits_2mm": _maybe_attr(c, "transcriptome_hits_2mm", default=0),
-                        "transcriptome_hits_seed_0mm": _maybe_attr(c, "transcriptome_hits_seed_0mm", default=0),
-                        # Detailed miRNA off-target metrics
-                        "mirna_hits_total": _maybe_attr(c, "mirna_hits_total", default=0),
-                        "mirna_hits_0mm_seed": _maybe_attr(c, "mirna_hits_0mm_seed", default=0),
-                        "mirna_hits_1mm_seed": _maybe_attr(c, "mirna_hits_1mm_seed", default=0),
-                        "mirna_hits_high_risk": _maybe_attr(c, "mirna_hits_high_risk", default=0),
-                        # miRNA-specific columns (nullable)
-                        "guide_pos1_base": _maybe_attr(c, "guide_pos1_base"),
-                        "pos1_pairing_state": _maybe_attr(c, "pos1_pairing_state"),
-                        "seed_class": _maybe_attr(c, "seed_class"),
-                        "supp_13_16_score": _maybe_attr(c, "supp_13_16_score"),
-                        "seed_7mer_hits": _maybe_attr(c, "seed_7mer_hits"),
-                        "seed_8mer_hits": _maybe_attr(c, "seed_8mer_hits"),
-                        "seed_hits_weighted": _maybe_attr(c, "seed_hits_weighted"),
-                        "off_target_seed_risk_class": _maybe_attr(c, "off_target_seed_risk_class"),
-                        # Transcript hit metrics
-                        "transcript_hit_count": c.transcript_hit_count,
-                        "transcript_hit_fraction": c.transcript_hit_fraction,
-                        "composite_score": c.composite_score,
-                        "passes_filters": (
-                            c.passes_filters.value if hasattr(c.passes_filters, "value") else c.passes_filters
-                        ),
-                        # Chemical modifications
+                        "off_target_count": candidate.off_target_count,
+                        "off_target_penalty": candidate.off_target_penalty,
+                        "transcriptome_hits_total": _maybe_attr(candidate, "transcriptome_hits_total", default=0),
+                        "transcriptome_hits_0mm": _maybe_attr(candidate, "transcriptome_hits_0mm", default=0),
+                        "transcriptome_hits_1mm": _maybe_attr(candidate, "transcriptome_hits_1mm", default=0),
+                        "transcriptome_hits_2mm": _maybe_attr(candidate, "transcriptome_hits_2mm", default=0),
+                        "transcriptome_hits_seed_0mm": _maybe_attr(candidate, "transcriptome_hits_seed_0mm", default=0),
+                        "mirna_hits_total": _maybe_attr(candidate, "mirna_hits_total", default=0),
+                        "mirna_hits_0mm_seed": _maybe_attr(candidate, "mirna_hits_0mm_seed", default=0),
+                        "mirna_hits_1mm_seed": _maybe_attr(candidate, "mirna_hits_1mm_seed", default=0),
+                        "mirna_hits_high_risk": _maybe_attr(candidate, "mirna_hits_high_risk", default=0),
+                        "guide_pos1_base": _maybe_attr(candidate, "guide_pos1_base"),
+                        "pos1_pairing_state": _maybe_attr(candidate, "pos1_pairing_state"),
+                        "seed_class": _maybe_attr(candidate, "seed_class"),
+                        "supp_13_16_score": _maybe_attr(candidate, "supp_13_16_score"),
+                        "seed_7mer_hits": _maybe_attr(candidate, "seed_7mer_hits"),
+                        "seed_8mer_hits": _maybe_attr(candidate, "seed_8mer_hits"),
+                        "seed_hits_weighted": _maybe_attr(candidate, "seed_hits_weighted"),
+                        "off_target_seed_risk_class": _maybe_attr(candidate, "off_target_seed_risk_class"),
+                        "transcript_hit_count": candidate.transcript_hit_count,
+                        "transcript_hit_fraction": candidate.transcript_hit_fraction,
+                        "composite_score": candidate.composite_score,
+                        "passes_filters": normalized_pass_field,
                         "guide_overhang": mod_summary.get("guide_overhang", ""),
                         "guide_modifications": mod_summary.get("guide_modifications", ""),
                         "passenger_overhang": mod_summary.get("passenger_overhang", ""),
@@ -646,19 +649,22 @@ class SiRNAWorkflow:
                     }
                 )
 
-            all_df = pd.DataFrame(rows)
+            if rows:
+                all_df = pd.DataFrame(rows)
+            else:
+                template_cols = list(SiRNACandidateSchema.to_schema().columns.keys())
+                all_df = pd.DataFrame(columns=template_cols)
 
-            # Convert nullable integer columns to pandas Int64 dtype for proper None handling
-            nullable_int_cols = ["seed_7mer_hits", "seed_8mer_hits"]
-            for col in nullable_int_cols:
+            for col in ("seed_7mer_hits", "seed_8mer_hits"):
                 if col in all_df.columns:
                     all_df[col] = all_df[col].astype("Int64")
 
-            # Validate with schema (will raise if invalid)
+            if "passes_filters" not in all_df.columns:
+                all_df["passes_filters"] = pd.Series(dtype="object")
+
             validated_all = SiRNACandidateSchema.validate(all_df)
 
             if not is_mirna_mode:
-                # Drop miRNA-only columns when not in miRNA mode to avoid empty columns downstream
                 mirna_cols = [
                     "guide_pos1_base",
                     "pos1_pairing_state",
@@ -670,77 +676,55 @@ class SiRNAWorkflow:
                     "off_target_seed_risk_class",
                 ]
                 existing = [col for col in mirna_cols if col in validated_all.columns]
-                validated_all = validated_all.drop(columns=existing)
+                if existing:
+                    validated_all = validated_all.drop(columns=existing)
 
-            # Note: design parameters are not appended as per-row columns anymore
-            # to avoid cluttering the candidate CSVs. Full parameters are included
-            # in the `workflow_summary.json` under the key `design_parameters`.
-
-            # Normalize passes_filters values so legacy booleans are treated as 'PASS'/'FAIL'
-            def _normalize_pass(v: Any) -> str:
-                """Normalize various legacy pass values into 'PASS' or 'FAIL'.
-
-                Accepts booleans, numeric 0/1, and common strings. For unknown
-                values we fall back to truthiness (truthy -> 'PASS', falsy -> 'FAIL').
-                Always returns a string to satisfy static typing checks.
-                """
-                result: str
+            def _normalize_pass(value: Any) -> str:
+                normalized = "FAIL"
                 try:
-                    # Handle booleans and numeric 0/1
-                    if v is True or (isinstance(v, (int, float)) and v == 1):
-                        result = "PASS"
-                    elif v is False or (isinstance(v, (int, float)) and v == 0):
-                        result = "FAIL"
-                    elif isinstance(v, str):
-                        vs = v.strip().upper()
-                        if vs in {"PASS", "TRUE", "YES"}:
-                            result = "PASS"
-                        elif vs in {"FAIL", "FALSE", "NO"}:
-                            result = "FAIL"
+                    if value is True or (isinstance(value, (int, float)) and value == 1):
+                        normalized = "PASS"
+                    elif value is False or (isinstance(value, (int, float)) and value == 0):
+                        normalized = "FAIL"
+                    elif isinstance(value, str):
+                        cleaned = value.strip().upper()
+                        if cleaned in {"PASS", "TRUE", "YES"}:
+                            normalized = "PASS"
+                        elif cleaned in {"FAIL", "FALSE", "NO"}:
+                            normalized = "FAIL"
                         else:
-                            # Unknown string: return uppercased form
-                            result = vs
+                            normalized = cleaned
                     else:
-                        # Fallback: use truthiness
-                        result = "PASS" if bool(v) else "FAIL"
+                        normalized = "PASS" if bool(value) else "FAIL"
                 except Exception:
-                    # On unexpected errors, fail-safe to 'FAIL'
-                    result = "FAIL"
+                    normalized = "FAIL"
+                return normalized
 
-                return result
-
-            validated_all["passes_filters"] = validated_all["passes_filters"].apply(_normalize_pass)
-
-            # Split into pass/fail and write ALL + PASS files (append later too for consistency)
+            validated_all["passes_filters"] = [_normalize_pass(value) for value in validated_all["passes_filters"]]
             pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
-            base = self.config.output_dir / "sirnaforge"
-            out_all = base / f"{self.config.gene_query}_all.csv"
-            out_pass = base / f"{self.config.gene_query}_pass.csv"
-            validated_all.to_csv(out_all, index=False)
-            pass_df.to_csv(out_pass, index=False)
 
-            # Generate FASTA file for passing candidates
-            try:
-                out_pass_fasta = base / f"{self.config.gene_query}_pass.fasta"
-                self._write_pass_candidates_fasta(pass_df, out_pass_fasta)
-            except Exception as e:
-                logger.warning(f"Failed to write PASS candidates FASTA: {e}")
+            validated_all.to_csv(all_csv, index=False)
+            pass_df.to_csv(pass_csv, index=False)
+
+            if pass_df.empty:
+                pass_fasta.unlink(missing_ok=True)
+            else:
+                try:
+                    self._write_pass_candidates_fasta(pass_df, pass_fasta)
+                except Exception as e:
+                    logger.warning(f"Failed to write PASS candidates FASTA: {e}")
 
         except Exception as e:  # Do not fail workflow for reporting extras
             logger.warning(f"Failed to write all/pass CSVs: {e}")
 
-        # Generate machine-readable candidate summary JSON (concise)
-        # No separate thermodynamic CSV or candidate summary JSON is written anymore.
-
-        # Build a FAIR manifest with checksums and counts
         try:
             manifest = self._build_fair_manifest(
-                all_csv=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_all.csv"),
-                pass_csv=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_pass.csv"),
-                pass_fasta=(self.config.output_dir / "sirnaforge" / f"{self.config.gene_query}_pass.fasta"),
-                orf_report=(self.config.output_dir / "orf_reports" / f"{self.config.gene_query}_orf_validation.txt"),
+                all_csv=all_csv,
+                pass_csv=pass_csv,
+                pass_fasta=pass_fasta,
+                orf_report=report_file,
             )
-            manifest_path = self.config.output_dir / "sirnaforge" / "manifest.json"
+            manifest_path = base / "manifest.json"
             with manifest_path.open("w") as mf:
                 json.dump(manifest, mf, indent=2)
         except Exception as e:
@@ -759,7 +743,7 @@ class SiRNAWorkflow:
             output_path: Path to write the FASTA file
         """
         try:
-            sequences = []
+            sequences: list[tuple[str, str]] = []
             for _, row in pass_df.iterrows():
                 # Create simple header with candidate ID and score
                 header = f"{row['id']} score={row['composite_score']:.1f}"
@@ -797,7 +781,7 @@ class SiRNAWorkflow:
         pass_csv: Path,
         pass_fasta: Path,
         orf_report: Path,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Create a manifest JSON describing generated outputs (checksums, sizes, counts)."""
         now = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
         files: dict[str, dict[str, Any]] = {}
@@ -845,7 +829,7 @@ class SiRNAWorkflow:
             "files": files,
         }
 
-    async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict:
+    async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict[str, Any]:
         """Step 5: Run off-target analysis using embedded Nextflow pipeline."""
         candidates_for_offtarget = self._select_candidates_for_offtarget(design_results)
 
@@ -961,21 +945,183 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation error: {e}")
             return None
 
+    def _resolve_active_genome_species(self, params: Mapping[str, Any]) -> list[str]:
+        """Filter genome species down to those with available indices."""
+        requested = [species.strip() for species in self.config.genome_species if species.strip()]
+        available: set[str] = set()
+        for key in ("genome_indices", "genome_fastas"):
+            raw_value = params.get(key) or self.config.nextflow_config.get(key)
+            available.update(self._parse_species_entries(raw_value))
+
+        if available:
+            filtered = [species for species in requested if species in available]
+            for species in sorted(available):
+                if species not in filtered:
+                    filtered.append(species)
+            return filtered
+        return requested
+
+    @staticmethod
+    def _parse_species_entries(raw_value: Any) -> set[str]:
+        """Extract species identifiers from 'species:path' style strings."""
+        species: set[str] = set()
+        if not raw_value:
+            return species
+
+        values: list[str]
+        if isinstance(raw_value, str):
+            values = [raw_value]
+        elif isinstance(raw_value, (list, tuple, set)):
+            iterable = cast(Iterable[Any], raw_value)
+            values = [str(entry) for entry in iterable]
+        else:
+            values = [str(raw_value)]
+
+        for value in values:
+            for token in value.split(","):
+                entry = token.strip()
+                if not entry:
+                    continue
+                if ":" in entry:
+                    species.add(entry.split(":", 1)[0].strip())
+                else:
+                    species.add(entry)
+        return species
+
+    def _prepare_nextflow_cache(
+        self,
+        nf_config: NextflowConfig,
+        genome_species: Sequence[str],
+        additional_params: Mapping[str, Any],
+        pipeline_revision: str,
+    ) -> dict[str, Any]:
+        """Configure cached work and home directories for Nextflow runs."""
+        cache_root = resolve_cache_subdir("nextflow")
+        home_dir = cache_root / "home"
+        work_root = cache_root / "work"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        work_root.mkdir(parents=True, exist_ok=True)
+
+        payload: dict[str, Any] = {
+            "pipeline_revision": pipeline_revision,
+            "profile": nf_config.profile,
+            "max_cpus": nf_config.max_cpus,
+            "max_memory": nf_config.max_memory,
+            "max_time": nf_config.max_time,
+            "genome_species": sorted(genome_species),
+            "additional_params": self._normalize_param_dict(additional_params),
+            "extra_params": self._normalize_param_dict(nf_config.extra_params),
+        }
+        cache_key = stable_cache_key(payload)
+        work_dir = work_root / cache_key
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        metadata: dict[str, Any] = {
+            "payload": payload,
+            "work_dir": str(work_dir),
+            "nxf_home": str(home_dir),
+            "created_at": time.time(),
+        }
+        metadata_file = work_dir / "cache_metadata.json"
+        try:
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+        except OSError as exc:
+            logger.debug(f"Unable to write Nextflow cache metadata: {exc}")
+
+        nf_config.work_dir = work_dir
+        nf_config.nxf_home = home_dir
+
+        cache_info = {
+            "cache_key": cache_key,
+            "work_dir": str(work_dir),
+            "nxf_home": str(home_dir),
+            "pipeline_revision": pipeline_revision,
+        }
+        self._nextflow_cache_info = cache_info
+        return cache_info
+
+    @staticmethod
+    def _normalize_param_dict(params: Mapping[str, Any]) -> dict[str, Any]:
+        """Convert values to JSON-friendly primitives for hashing."""
+        normalized: dict[str, Any] = {}
+        for key in sorted(params):
+            value = params[key]
+            if isinstance(value, Path):
+                normalized[key] = str(value)
+            elif isinstance(value, (list, tuple, set)):
+                iterable = cast(Iterable[Any], value)
+                normalized[key] = [SiRNAWorkflow._stringify_param(entry) for entry in iterable]
+            else:
+                normalized[key] = SiRNAWorkflow._stringify_param(value)
+        return normalized
+
+    @staticmethod
+    def _stringify_param(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (list, tuple, set)):
+            iterable = cast(Iterable[Any], value)
+            return [SiRNAWorkflow._stringify_param(entry) for entry in iterable]
+        return value
+
+    def _publish_nextflow_work_reference(self) -> None:
+        """Write workdir pointer and optionally expose a symlink inside output."""
+        if not self._nextflow_cache_info:
+            return
+
+        info = self._nextflow_cache_info
+        work_dir = Path(info["work_dir"])
+        off_target_dir = self.config.output_dir / "off_target"
+        off_target_dir.mkdir(parents=True, exist_ok=True)
+
+        ref_file = off_target_dir / "NEXTFLOW_WORKDIR.txt"
+        lines = [
+            "Nextflow intermediate cache",
+            f"Work directory: {work_dir}",
+            f"Cache key: {info.get('cache_key')}",
+            f"Pipeline revision: {info.get('pipeline_revision', 'unknown')}",
+        ]
+        try:
+            ref_file.write_text("\n".join(lines) + "\n")
+        except OSError as exc:
+            logger.debug(f"Unable to write Nextflow work reference: {exc}")
+
+        link_path = off_target_dir / "nextflow_work"
+        if self.config.keep_nextflow_work:
+            self._ensure_symlink(link_path, work_dir)
+        elif link_path.exists() or link_path.is_symlink():
+            try:
+                if link_path.is_dir() and not link_path.is_symlink():
+                    shutil.rmtree(link_path)
+                else:
+                    link_path.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _ensure_symlink(link_path: Path, target: Path) -> None:
+        """Ensure link_path points at target, replacing existing artifacts."""
+        try:
+            if link_path.exists() or link_path.is_symlink():
+                try:
+                    if link_path.resolve() == target.resolve():
+                        return
+                except OSError:
+                    pass
+                if link_path.is_dir() and not link_path.is_symlink():
+                    shutil.rmtree(link_path)
+                else:
+                    link_path.unlink()
+            link_path.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            logger.debug(f"Unable to create Nextflow workdir symlink: {exc}")
+
     async def _run_nextflow_offtarget_analysis(
         self,
         candidates: list[SiRNACandidate],
         input_fasta: Path,
     ) -> dict[str, Any]:
         """Run Nextflow-based off-target analysis."""
-        # Configure Nextflow runner
-        runner = self._setup_nextflow_runner()
-
-        # Validate installation
-        if not self._validate_nextflow_environment(runner):
-            # Do not fall back to basic analysis here; report skipped instead
-            return {"status": "skipped", "reason": "nextflow_unavailable"}
-
-        # Process transcriptome FASTA if provided
         additional_params: dict[str, Any] = dict(self.config.nextflow_config)
         if self.config.transcriptome_fasta:
             try:
@@ -1016,6 +1162,18 @@ class SiRNAWorkflow:
                 logger.exception("Failed to prepare transcriptome database")
                 console.print(f"⚠️  Transcriptome preparation failed: {e}")
 
+        active_species = self._resolve_active_genome_species(additional_params)
+        has_transcriptome = bool(additional_params.get("transcriptome_indices"))
+
+        if not active_species and not has_transcriptome:
+            console.print("ℹ️  No genome or transcriptome indices configured; skipping Nextflow run")
+            return await self._basic_offtarget_analysis(candidates)
+
+        runner, _ = self._setup_nextflow_runner(active_species, additional_params)
+
+        if not self._validate_nextflow_environment(runner):
+            return {"status": "skipped", "reason": "nextflow_unavailable"}
+
         # Execute pipeline
         console.print("🚀 Running embedded Nextflow off-target analysis...")
         nf_output_dir = self.config.output_dir / "off_target" / "results"
@@ -1023,10 +1181,12 @@ class SiRNAWorkflow:
         results = await runner.run_offtarget_analysis(
             input_file=input_fasta,
             output_dir=nf_output_dir,
-            genome_species=self.config.genome_species,
+            genome_species=active_species,
             additional_params=additional_params,
             show_progress=True,
         )
+
+        self._publish_nextflow_work_reference()
 
         if results["status"] == "completed":
             return await self._process_nextflow_results(candidates, nf_output_dir, results)
@@ -1034,8 +1194,12 @@ class SiRNAWorkflow:
         console.print(f"❌ Nextflow pipeline failed: {results}")
         return await self._basic_offtarget_analysis(candidates)
 
-    def _setup_nextflow_runner(self) -> NextflowRunner:
-        """Configure Nextflow runner with user settings."""
+    def _setup_nextflow_runner(
+        self,
+        genome_species: Sequence[str],
+        additional_params: Mapping[str, Any],
+    ) -> tuple[NextflowRunner, dict[str, Any]]:
+        """Configure Nextflow runner with user settings and cached workdirs."""
         # Auto-detect environment to use appropriate profile
         # This will automatically switch to 'local' profile when running inside a container
         nf_config = NextflowConfig.auto_configure()
@@ -1057,7 +1221,14 @@ class SiRNAWorkflow:
         env_info = nf_config.get_environment_info()
         logger.info(f"Nextflow execution: {env_info.get_execution_summary()}")
 
-        return NextflowRunner(nf_config)
+        runner = NextflowRunner(nf_config)
+        cache_info = self._prepare_nextflow_cache(
+            nf_config=nf_config,
+            genome_species=genome_species,
+            additional_params=additional_params,
+            pipeline_revision=runner.get_pipeline_revision(),
+        )
+        return runner, cache_info
 
     def _validate_nextflow_environment(self, runner: NextflowRunner) -> bool:
         """Validate Nextflow installation and workflow files."""
@@ -1071,8 +1242,8 @@ class SiRNAWorkflow:
         return True
 
     async def _process_nextflow_results(
-        self, candidates: list[SiRNACandidate], output_dir: Path, results: dict
-    ) -> dict:
+        self, candidates: list[SiRNACandidate], output_dir: Path, results: dict[str, Any]
+    ) -> dict[str, Any]:
         """Process and map Nextflow pipeline results to candidates."""
         console.print("✅ Nextflow pipeline completed successfully")
         parsed = await self._parse_nextflow_results(output_dir)
@@ -1118,7 +1289,7 @@ class SiRNAWorkflow:
             "filtering_stats": stats,
         }
 
-    async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict:
+    async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict[str, Any]:
         """Fallback basic off-target analysis."""
         # Use simplified analysis when external tools are not available
         analyzer = OffTargetAnalysisManager(species="human")  # Default to human for basic analysis
@@ -1151,119 +1322,111 @@ class SiRNAWorkflow:
         console.print(f"📊 Basic off-target analysis completed for {len(candidates)} candidates")
         return {"status": "completed", "method": "basic", "results": results}
 
-    async def _parse_nextflow_results(self, output_dir: Path) -> dict:  # noqa: PLR0912
+    async def _parse_nextflow_results(self, output_dir: Path) -> dict[str, Any]:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis.
 
         Parses BOTH genome/transcriptome AND miRNA results from their respective
         output directories and combines them into a single results structure for
         candidate filtering.
         """
-        results: dict = {}
+        results: dict[str, dict[str, Any]] = {}
 
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
         # Check for combined genome/transcriptome results in aggregated subdirectory
         aggregated_dir = output_dir / "aggregated"
-        combined_tsv = (
-            aggregated_dir / "combined_offtargets.tsv"
-            if aggregated_dir.exists()
-            else output_dir / "combined_offtargets.tsv"
-        )
-        combined_json = (
-            aggregated_dir / "combined_offtargets.json"
-            if aggregated_dir.exists()
-            else output_dir / "combined_offtargets.json"
-        )
 
-        if combined_tsv.exists() and combined_tsv.stat().st_size > 100:  # Must have more than just header
-            with combined_tsv.open() as fh:
+        def _aggregate_path(filename: str) -> Path:
+            return (aggregated_dir / filename) if aggregated_dir.exists() else (output_dir / filename)
+
+        def _ingest_row(row: dict[str, Any]) -> None:
+            qname = row.get("qname") or row.get("query") or row.get("id")
+            if not qname:
+                return
+            try:
+                score = float(row.get("offtarget_score") or row.get("score") or 0)
+            except Exception:
+                score = 0.0
+            entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
+            entry["off_target_count"] += 1
+            entry["off_target_score"] = max(entry["off_target_score"], score)
+            entry["hits"].append(row)
+
+        def _ingest_tsv(path: Path) -> bool:
+            if not path.exists() or path.stat().st_size == 0:
+                return False
+            found = False
+            with path.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
                 for row in reader:
-                    qname = row.get("qname") or row.get("query") or row.get("id")
-                    if not qname:
-                        continue
-                    try:
-                        score = float(row.get("offtarget_score") or 0)
-                    except Exception:
-                        score = 0.0
+                    _ingest_row(row)
+                    found = True
+            return found
 
-                    entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                    entry["off_target_count"] += 1
-                    # keep the maximum per-query off-target score as a conservative summary
-                    entry["off_target_score"] = max(entry["off_target_score"], score)
-                    entry["hits"].append(row)
+        def _ingest_json(path: Path) -> bool:
+            if not path.exists() or path.stat().st_size == 0:
+                return False
+            raw_data: list[Any] | dict[str, Any] | str | int | float | bool | None
+            try:
+                with path.open() as fh:
+                    raw_data = json.load(fh)
+            except Exception:
+                raw_data = []
+            found = False
+            data: list[dict[str, Any]] = []
+            if isinstance(raw_data, list):
+                raw_entries: list[Any] = raw_data
+            else:
+                raw_entries = []
+            for entry in raw_entries:
+                if isinstance(entry, dict):
+                    data.append(cast(dict[str, Any], entry))
+            for item in data:
+                _ingest_row(item)
+                found = True
+            return found
 
-        elif combined_json.exists():
-            with combined_json.open() as fh:
-                try:
-                    data = json.load(fh)
-                except Exception:
-                    data = []
-                for item in data:
-                    qname = item.get("qname") or item.get("query") or item.get("id")
-                    if not qname:
-                        continue
-                    try:
-                        score = float(item.get("offtarget_score") or 0)
-                    except Exception:
-                        score = 0.0
-                    entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                    entry["off_target_count"] += 1
-                    entry["off_target_score"] = max(entry["off_target_score"], score)
-                    entry["hits"].append(item)
+        genome_hits_found = _ingest_tsv(_aggregate_path("combined_offtargets.tsv"))
+        if not genome_hits_found:
+            genome_hits_found = _ingest_json(_aggregate_path("combined_offtargets.json"))
 
-        else:
-            # Fallback: scan for genome and mirna analysis files
-            genome_files = (
-                list((output_dir / "genome").glob("*_analysis.tsv")) if (output_dir / "genome").exists() else []
-            )
-            mirna_files = list((output_dir / "mirna").glob("*_analysis.tsv")) if (output_dir / "mirna").exists() else []
-            files = genome_files + mirna_files
+        mirna_hits_found = _ingest_tsv(_aggregate_path("combined_mirna_hits.tsv"))
+        if not mirna_hits_found:
+            mirna_hits_found = _ingest_json(_aggregate_path("combined_mirna_hits.json"))
 
-            if not files:
+        if not genome_hits_found or not mirna_hits_found:
+            genome_files: list[Path] = []
+            mirna_files: list[Path] = []
+
+            if not genome_hits_found:
+                genome_dir = output_dir / "genome"
+                if genome_dir.exists():
+                    genome_files = list(genome_dir.glob("*_analysis.tsv"))
+
+            if not mirna_hits_found:
+                mirna_dir = output_dir / "mirna"
+                if mirna_dir.exists():
+                    mirna_files = list(mirna_dir.glob("*_analysis.tsv"))
+
+            files: list[Path] = []
+            if not genome_hits_found:
+                files.extend(genome_files)
+            if not mirna_hits_found:
+                files.extend(mirna_files)
+
+            if not files and not genome_hits_found and not mirna_hits_found:
                 # Last resort: scan for any TSV files
                 files = list(output_dir.glob("**/*_offtargets.tsv"))
 
             for fpath in files:
-                with Path(fpath).open() as fh:
-                    reader = csv.DictReader(fh, delimiter="\t")
-                    for row in reader:
-                        qname = row.get("qname") or row.get("query") or row.get("id")
-                        if not qname:
-                            continue
-                        try:
-                            score = float(row.get("offtarget_score") or 0)
-                        except Exception:
-                            score = 0.0
-                        entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                        entry["off_target_count"] += 1
-                        entry["off_target_score"] = max(entry["off_target_score"], score)
-                        entry["hits"].append(row)
+                _ingest_tsv(Path(fpath))
 
-            # ALSO parse miRNA results from separate directory
-            mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
-            if mirna_tsv.exists() and mirna_tsv.stat().st_size > 100:
-                logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
-                with mirna_tsv.open() as fh:
-                    reader = csv.DictReader(fh, delimiter="\t")
-                    for row in reader:
-                        qname = row.get("qname") or row.get("query") or row.get("id")
-                        if not qname:
-                            continue
-                        try:
-                            score = float(row.get("offtarget_score") or 0)
-                        except Exception:
-                            score = 0.0
-
-                        entry = results.setdefault(qname, {"off_target_count": 0, "off_target_score": 0.0, "hits": []})
-                        entry["off_target_count"] += 1
-                        entry["off_target_score"] = max(entry["off_target_score"], score)
-                        entry["hits"].append(row)
-
-                logger.info(
-                    f"Parsed {len([r for r in results.values() if any('mirna_id' in h for h in r.get('hits', []))])} candidates with miRNA hits"
-                )
+            if not mirna_hits_found:
+                mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
+                if _ingest_tsv(mirna_tsv):
+                    logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
+                    mirna_hits_found = True
 
         return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
@@ -1494,9 +1657,9 @@ class SiRNAWorkflow:
             return validated_df
 
         # Prepare data for DataFrame
-        rows = []
+        rows: list[dict[str, Any]] = []
         for transcript_id, analysis in orf_results.items():
-            row_data = {
+            row_data: dict[str, Any] = {
                 "transcript_id": transcript_id,
                 "sequence_length": getattr(analysis, "sequence_length", None),
                 "gc_content": getattr(analysis, "gc_content", None),
@@ -1615,7 +1778,7 @@ async def run_sirna_workflow(
     overhang: str = "dTdT",
     log_file: str | None = None,
     write_json_summary: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
     Args:

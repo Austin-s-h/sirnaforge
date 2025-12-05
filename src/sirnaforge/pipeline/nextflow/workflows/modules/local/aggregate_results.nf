@@ -25,14 +25,22 @@ import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli
 
+mirna_db = '${params.mirna_db ?: 'mirgenedb'}'.strip()
+mirna_species = '${params.mirna_species ?: 'human,mouse,rat'}'.strip()
+
 result = aggregate_results_cli(
     genome_species='${genome_species}',
-    output_dir='.'
+    output_dir='.',
+    mirna_db=mirna_db or None,
+    mirna_species=mirna_species or None,
 )
 
 print(f"Aggregation status: {result.get('status', 'unknown')}")
 print(f"Processed {result.get('analysis_files_processed', 0)} analysis files")
 print(f"Processed {result.get('summary_files_processed', 0)} summary files")
+if result.get('mirna'):
+    stats = result['mirna']
+    print(f"miRNA aggregation: {stats.get('analysis_files_processed', 0)} files using {stats.get('mirna_db')}")
 PYEOF
 
     cat <<-END_VERSIONS > versions.yml

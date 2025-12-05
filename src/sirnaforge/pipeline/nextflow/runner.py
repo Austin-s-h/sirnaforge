@@ -5,10 +5,11 @@ for siRNA off-target analysis with proper Docker integration.
 """
 
 import asyncio
+import os
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -42,6 +43,37 @@ def _validate_command_args(cmd: list[str]) -> None:
         raise ValueError(f"Executable must be an absolute path: {executable}")
 
 
+def _find_repo_root(start: Path) -> Optional[Path]:
+    """Locate the nearest git root from the provided path."""
+    for candidate in [start] + list(start.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _detect_pipeline_revision(workflow_dir: Path) -> str:
+    """Return the git SHA or a filesystem fingerprint for the pipeline."""
+    repo_root = _find_repo_root(workflow_dir)
+    if repo_root:
+        try:
+            result = subprocess.run(  # nosec B603
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=5,
+            )
+            return result.stdout.strip()
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+    try:
+        return f"nogit-{workflow_dir.stat().st_mtime_ns}"
+    except OSError:
+        return "unknown"
+
+
 console = Console()
 
 
@@ -56,6 +88,7 @@ class NextflowRunner:
         """
         self.config = config or NextflowConfig.auto_configure()
         self.workflow_dir = self._get_workflow_dir()
+        self._pipeline_revision = _detect_pipeline_revision(self.workflow_dir)
 
     def _get_workflow_dir(self) -> Path:
         """Get the directory containing embedded Nextflow workflows."""
@@ -74,6 +107,10 @@ class NextflowRunner:
         if not main_nf.exists():
             raise FileNotFoundError(f"Main workflow not found at {main_nf}")
         return main_nf
+
+    def get_pipeline_revision(self) -> str:
+        """Expose the detected pipeline revision identifier."""
+        return self._pipeline_revision
 
     async def run(
         self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
@@ -185,6 +222,8 @@ class NextflowRunner:
         # Build full command
         cmd = ["nextflow", "run", str(workflow_path)] + args
 
+        env = self._build_subprocess_env()
+
         logger.info(f"Executing Nextflow workflow from {Path.cwd()}: {' '.join(cmd)}")
         logger.debug(f"Input file exists: {abs_input_file.exists()} at {abs_input_file}")
         logger.debug(f"Output directory: {abs_output_dir}")
@@ -199,7 +238,7 @@ class NextflowRunner:
                 task = progress.add_task("Running Nextflow off-target analysis...", total=None)
 
                 try:
-                    result = await self._run_subprocess(cmd)
+                    result = await self._run_subprocess(cmd, env=env)
                     progress.update(task, description="✅ Nextflow execution completed")
 
                 except subprocess.CalledProcessError as e:
@@ -207,18 +246,27 @@ class NextflowRunner:
                     raise NextflowExecutionError(f"Nextflow failed: {e}") from e
         else:
             try:
-                result = await self._run_subprocess(cmd)
+                result = await self._run_subprocess(cmd, env=env)
             except subprocess.CalledProcessError as e:
                 raise NextflowExecutionError(f"Nextflow failed: {e}") from e
 
         # Process results
         return self._process_results(output_dir, result)
 
-    async def _run_subprocess(self, cmd: list[str]) -> Any:
+    def _build_subprocess_env(self) -> dict[str, str]:
+        """Prepare environment variables for Nextflow subprocesses."""
+        env = os.environ.copy()
+        if self.config.nxf_home:
+            env.setdefault("NXF_HOME", str(self.config.nxf_home.resolve()))
+            Path(env["NXF_HOME"]).mkdir(parents=True, exist_ok=True)
+        return env
+
+    async def _run_subprocess(self, cmd: list[str], env: Optional[dict[str, str]] = None) -> Any:
         """Run subprocess asynchronously with proper logging.
 
         Args:
             cmd: Command to execute as list of strings
+            env: Optional dictionary of environment variable names and values to pass to the subprocess.
 
         Returns:
             AsyncResult instance with subprocess-like interface
@@ -236,6 +284,7 @@ class NextflowRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=project_root,
+            env=env,
         )
 
         stdout, stderr = await process.communicate()
@@ -337,13 +386,13 @@ class NextflowRunner:
             "stderr": result.stderr.decode() if hasattr(result, "stderr") else "",
         }
 
-    def validate_installation(self) -> dict[str, bool]:
+    def validate_installation(self) -> dict[str, Union[bool, str]]:
         """Validate that Nextflow and required tools are available.
 
         Returns:
             Dictionary of tool availability status
         """
-        tools = {}
+        tools: dict[str, Union[bool, str]] = {}
 
         # Check Nextflow
         try:
@@ -355,9 +404,10 @@ class NextflowRunner:
             else:
                 cmd = [nextflow_path, "-version"]
                 _validate_command_args(cmd)
-                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True, text=True)  # nosec B603
                 tools["nextflow"] = True
-                logger.debug(f"Nextflow version: {result.stdout.decode()}")
+                tools["nextflow_version"] = result.stdout.strip()
+                logger.debug(f"Nextflow version: {result.stdout.strip()}")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
             tools["nextflow"] = False
             logger.warning("Nextflow not available")
@@ -371,9 +421,9 @@ class NextflowRunner:
             if uv_path:
                 cmd = [uv_path, "--version"]
                 _validate_command_args(cmd)
-                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True, text=True)  # nosec B603
                 tools["uv"] = True
-                logger.debug(f"uv version: {result.stdout.decode()}")
+                logger.debug(f"uv version: {result.stdout.strip()}")
             else:
                 tools["uv"] = False
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
@@ -385,9 +435,9 @@ class NextflowRunner:
             if conda_path:
                 cmd = [conda_path, "--version"]
                 _validate_command_args(cmd)
-                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
+                result = subprocess.run(cmd, capture_output=True, timeout=10, check=True, text=True)  # nosec B603
                 tools["conda"] = True
-                logger.debug(f"Conda version: {result.stdout.decode()}")
+                logger.debug(f"Conda version: {result.stdout.strip()}")
             else:
                 tools["conda"] = False
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
@@ -395,6 +445,7 @@ class NextflowRunner:
 
         # Check workflow files
         tools["workflow_files"] = self.workflow_dir.exists() and (self.workflow_dir / "main.nf").exists()
+        tools["pipeline_revision"] = self.get_pipeline_revision()
 
         return tools
 

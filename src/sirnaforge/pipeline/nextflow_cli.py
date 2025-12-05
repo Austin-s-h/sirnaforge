@@ -9,7 +9,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from sirnaforge.core.off_target import (
     aggregate_mirna_results,
@@ -250,12 +250,19 @@ def run_mirna_seed_analysis_cli(
     }
 
 
-def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[str, Any]:
+def aggregate_results_cli(  # noqa: PLR0912
+    genome_species: str,
+    output_dir: str = ".",
+    mirna_db: Optional[str] = None,
+    mirna_species: Optional[str] = None,
+) -> dict[str, Any]:
     """Aggregate off-target analysis results from multiple candidates and genomes.
 
     Args:
         genome_species: Comma-separated list of species
         output_dir: Directory to write aggregated results
+        mirna_db: The database that provided the reference
+        mirna_species: The species code for the matching miRNA
 
     Returns:
         Dictionary with aggregation statistics
@@ -265,8 +272,8 @@ def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[st
 
     # Collect all analysis and summary files from current directory (Nextflow stages them)
     current_dir = Path()
-    analysis_files = list(current_dir.glob("*_analysis.tsv"))
-    summary_files = list(current_dir.glob("*_summary.json"))
+    analysis_files = list(current_dir.glob("*_analysis.tsv")) + list(current_dir.glob("mirna_analysis.tsv"))
+    summary_files = list(current_dir.glob("*_summary.json")) + list(current_dir.glob("mirna_summary.json"))
 
     logger.info(f"Found {len(analysis_files)} analysis files and {len(summary_files)} summary files")
 
@@ -283,12 +290,41 @@ def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[st
 
             # Copy relevant files to species directory
             for f in analysis_files:
+                name_lower = f.name.lower()
+                if name_lower.startswith("mirna"):
+                    continue
                 if species in f.name:
                     shutil.copy(f, species_dir / f.name)
 
             for f in summary_files:
+                name_lower = f.name.lower()
+                if name_lower.startswith("mirna"):
+                    continue
                 if species in f.name:
                     shutil.copy(f, species_dir / f.name)
+
+        # Also persist miRNA batch results (if present) under dedicated directory
+        mirna_results_dir = results_dir / "mirna"
+        mirna_results_dir.mkdir(exist_ok=True)
+        mirna_analysis_files: list[Path] = []
+        for f in analysis_files:
+            if "mirna" not in f.name.lower():
+                continue
+            dest_name = f.name
+            if not dest_name.endswith("_mirna_analysis.tsv"):
+                dest_name = "batch_mirna_analysis.tsv"
+            dest_path = mirna_results_dir / dest_name
+            shutil.copy(f, dest_path)
+            mirna_analysis_files.append(dest_path)
+
+        for f in summary_files:
+            if "mirna" not in f.name.lower():
+                continue
+            dest_name = f.name
+            if not dest_name.endswith("_mirna_summary.json"):
+                dest_name = "batch_mirna_summary.json"
+            dest_path = mirna_results_dir / dest_name
+            shutil.copy(f, dest_path)
 
         # Run aggregation using core function
         result_path = aggregate_offtarget_results(
@@ -297,12 +333,30 @@ def aggregate_results_cli(genome_species: str, output_dir: str = ".") -> dict[st
 
         logger.info(f"Aggregation completed: {result_path}")
 
+        mirna_summary: Optional[dict[str, Any]] = None
+        if mirna_analysis_files and (mirna_db or mirna_species):
+            resolved_mirna_db = mirna_db or "mirgenedb"
+            resolved_mirna_species = mirna_species or "human"
+            mirna_output = aggregate_mirna_results(
+                results_dir=str(mirna_results_dir),
+                output_dir=output_dir,
+                mirna_db=resolved_mirna_db,
+                mirna_species=resolved_mirna_species,
+            )
+            mirna_summary = {
+                "mirna_db": resolved_mirna_db,
+                "mirna_species": resolved_mirna_species,
+                "output_dir": str(mirna_output),
+                "analysis_files_processed": len(mirna_analysis_files),
+            }
+
         return {
             "status": "completed",
             "analysis_files_processed": len(analysis_files),
             "summary_files_processed": len(summary_files),
             "species": species_list,
             "output_dir": str(result_path),
+            "mirna": mirna_summary,
         }
 
     # Create empty final summary
