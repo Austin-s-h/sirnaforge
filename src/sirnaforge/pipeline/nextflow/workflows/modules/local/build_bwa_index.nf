@@ -14,20 +14,19 @@ process BUILD_BWA_INDEX {
 
     script:
     """
-    python3 -c "
+    python3 <<'PYEOF'
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.pipeline.nextflow_cli import build_bwa_index_cli
 
-# Build BWA index
 result = build_bwa_index_cli(
     fasta_file='${genome_fasta}',
     species='${species}',
     output_dir='.'
 )
 
-print(f'Built BWA index for ${species}: {result[\"index_prefix\"]}')
-"
+print(f"Built BWA index for {result['species']}: {result['index_prefix']}")
+PYEOF
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
