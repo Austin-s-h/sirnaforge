@@ -101,15 +101,15 @@ class OffTargetFilterCriteria(BaseModel):
 
     # Transcriptome off-target thresholds
     max_transcriptome_hits_0mm: Optional[int] = Field(
-        default=0,
+        default=1,
         ge=0,
-        description="Maximum perfect match transcriptome hits (0 = fail any perfect match, None = no limit)",
+        description="Maximum perfect match transcriptome hits. 1 hit may indicate ontarget effect.",
     )
     max_transcriptome_hits_1mm: Optional[int] = Field(
-        default=5, ge=0, description="Maximum 1-mismatch transcriptome hits (typical: 5-10, None = no limit)"
+        default=10, ge=0, description="Maximum 1-mismatch transcriptome hits (typical: 5-10, None = no limit)"
     )
     max_transcriptome_hits_2mm: Optional[int] = Field(
-        default=20, ge=0, description="Maximum 2-mismatch transcriptome hits (typical: 20-50, None = no limit)"
+        default=50, ge=0, description="Maximum 2-mismatch transcriptome hits (typical: 20-50, None = no limit)"
     )
     max_transcriptome_seed_perfect: Optional[int] = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
@@ -117,7 +117,7 @@ class OffTargetFilterCriteria(BaseModel):
 
     # miRNA off-target thresholds
     max_mirna_perfect_seed: Optional[int] = Field(
-        default=3, ge=0, description="Maximum perfect miRNA seed matches (typical: 3-5, None = no limit)"
+        default=0, ge=0, description="Maximum perfect miRNA seed matches (typical: 3-5, None = no limit)"
     )
     max_mirna_1mm_seed: Optional[int] = Field(
         default=10, ge=0, description="Maximum 1-mismatch miRNA seed hits (typical: 10-20, None = no limit)"
@@ -136,17 +136,17 @@ class ScoringWeights(BaseModel):
     """Relative weights for composite siRNA scoring components."""
 
     asymmetry: float = Field(
-        default=0.25, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+        default=0.15, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
     )
     gc_content: float = Field(
-        default=0.20, ge=0, le=1, description="GC content optimization weight (stability balance)"
+        default=0.15, ge=0, le=1, description="GC content optimization weight (stability balance)"
     )
     accessibility: float = Field(
-        default=0.25, ge=0, le=1, description="Target accessibility weight (secondary structure)"
+        default=0.20, ge=0, le=1, description="Target accessibility weight (secondary structure)"
     )
-    off_target: float = Field(default=0.20, ge=0, le=1, description="Off-target avoidance weight (specificity)")
+    off_target: float = Field(default=0.30, ge=0, le=1, description="Off-target avoidance weight (specificity)")
     empirical: float = Field(
-        default=0.10, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+        default=0.20, ge=0, le=1, description="Empirical design rules weight (established patterns)"
     )
 
     @field_validator_typed("empirical")

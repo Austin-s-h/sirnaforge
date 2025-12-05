@@ -9,7 +9,6 @@ type safety, error reporting, and maintainability.
 Use schemas: MySchema.validate(df) - validation errors provide detailed feedback.
 """
 
-import re
 from typing import Any, Callable, TypeVar, cast
 
 import pandas as pd
@@ -21,69 +20,6 @@ from pandera.typing.pandas import Series
 F = TypeVar("F", bound=Callable[..., Any])
 # Pandera's dataframe_check has a complex decorator signature; cast for mypy.
 dataframe_check_typed = cast(Callable[[F], F], pa.dataframe_check)
-
-
-# Custom validation functions for bioinformatics data
-def valid_nucleotide_sequence(sequence: str) -> bool:
-    """Validate nucleotide sequence contains only standard DNA/RNA bases.
-
-    Args:
-        sequence: Nucleotide sequence to validate
-
-    Returns:
-        True if sequence contains only A, T, C, G, U, N, or - characters
-    """
-    return bool(re.match(r"^[ATCGUN-]*$", sequence.upper())) if isinstance(sequence, str) else False
-
-
-def valid_rna_sequence(sequence: str) -> bool:
-    """Validate RNA sequence contains only standard RNA bases.
-
-    Args:
-        sequence: RNA sequence to validate
-
-    Returns:
-        True if sequence contains only A, U, C, G characters
-    """
-    return bool(re.match(r"^[AUCG]+$", sequence.upper())) if isinstance(sequence, str) else False
-
-
-def valid_strand(strand: str) -> bool:
-    """Validate genomic strand orientation notation.
-
-    Args:
-        strand: Strand indicator to validate
-
-    Returns:
-        True if strand is "+" or "-"
-    """
-    return strand in ["+", "-"] if isinstance(strand, str) else False
-
-
-def valid_codon(codon: str) -> bool:
-    """Validate start or stop codon sequences.
-
-    Args:
-        codon: Three-nucleotide codon to validate
-
-    Returns:
-        True if codon is a valid start (ATG) or stop (TAA, TAG, TGA) codon
-    """
-    valid_start = ["ATG"]
-    valid_stop = ["TAA", "TAG", "TGA"]
-    return codon.upper() in (valid_start + valid_stop) if isinstance(codon, str) else False
-
-
-def sirna_length_range(sequence: str) -> bool:
-    """Validate siRNA sequence length is in functional range.
-
-    Args:
-        sequence: siRNA sequence to validate
-
-    Returns:
-        True if sequence length is between 19-23 nucleotides (typical siRNA range)
-    """
-    return 19 <= len(sequence) <= 23 if isinstance(sequence, str) else False
 
 
 # Schema configuration for better error reporting
@@ -245,6 +181,7 @@ class SiRNACandidateSchema(DataFrameModel):
             "TRANSCRIPTOME_PERFECT_MATCH",
             "TRANSCRIPTOME_HITS_1MM",
             "TRANSCRIPTOME_HITS_2MM",
+            "MIRNA_PERFECT_SEED",
             "MIRNA_SEED_HITS",
             "MIRNA_HIGH_RISK",
             "DIRTY_CONTROL",
@@ -483,38 +420,4 @@ class GenomeAlignmentSchema(DataFrameModel):
         perfect_matches = df["nm"] == 0
         if perfect_matches.any():
             return bool((~perfect_matches | (df["offtarget_score"] == 0.0)).all())
-        return True
-
-
-class ModificationSummarySchema(DataFrameModel):
-    """Validation schema for chemical modification summary data.
-
-    Validates modification summary dictionaries returned by get_modification_summary()
-    when converted to DataFrame format. Used for validating modification-enhanced
-    siRNA candidate outputs.
-    """
-
-    class Config(SchemaConfig):
-        """Schema configuration."""
-
-        description = "Chemical modification summary schema"
-        title = "Modification Summary"
-        strict = False  # Allow extra fields
-
-    guide_overhang: Series[str] = Field(description="Guide strand 3' overhang (e.g., dTdT, UU)")
-    guide_modifications: Series[str] = Field(description="Guide modifications (e.g., 2OMe(11)+PS(2))")
-    passenger_overhang: Series[str] = Field(description="Passenger strand 3' overhang")
-    passenger_modifications: Series[str] = Field(description="Passenger modifications")
-
-    @dataframe_check_typed
-    def check_modification_format(cls, df: pd.DataFrame) -> bool:
-        """Validate modification summary format."""
-        # Valid formats: "none", "", "2OMe(11)", "2OMe(11)+PS(2)"
-        for col in ["guide_modifications", "passenger_modifications"]:
-            if col in df.columns:
-                series = df[col]
-                # Empty strings and "none" are valid
-                valid_pattern = r"^(none|)$|^([A-Z0-9]+\(\d+\)(\+[A-Z0-9]+\(\d+\))*)$"
-                if not series.str.match(valid_pattern, na=False).all():
-                    return False
         return True

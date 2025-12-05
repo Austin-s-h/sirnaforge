@@ -11,7 +11,7 @@ import shutil
 import subprocess  # nosec B404
 import tempfile
 from pathlib import Path
-from typing import Any, Optional, TypeVar, Union
+from typing import Any, Optional, Union
 
 import pandas as pd
 
@@ -32,142 +32,6 @@ from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
-
-
-# Type variable for Pydantic models
-T = TypeVar("T", MiRNAHit, OffTargetHit)
-
-
-# =============================================================================
-# Pandas + Pydantic Integration Helpers
-# =============================================================================
-
-
-def pydantic_list_to_dataframe(hits: list[T]) -> pd.DataFrame:
-    """Convert list of Pydantic models to pandas DataFrame efficiently.
-
-    Args:
-        hits: List of Pydantic model instances (MiRNAHit or OffTargetHit)
-
-    Returns:
-        DataFrame with validated data
-    """
-    if not hits:
-        return pd.DataFrame()
-    return pd.DataFrame([hit.model_dump() for hit in hits])
-
-
-def filter_dataframe_by_score(
-    df: pd.DataFrame,
-    score_column: str = "offtarget_score",
-    min_score: float = 0.0,
-    max_score: float = 10.0,
-    exclude_perfect: bool = True,
-) -> pd.DataFrame:
-    """Filter DataFrame by off-target score with type-safe operations.
-
-    Args:
-        df: Input DataFrame
-        score_column: Column name containing scores
-        min_score: Minimum score threshold (exclusive)
-        max_score: Maximum score threshold (exclusive)
-        exclude_perfect: Whether to exclude perfect matches (score == 10.0)
-
-    Returns:
-        Filtered DataFrame
-    """
-    if df.empty:
-        return df
-
-    mask = df[score_column] > min_score
-    if exclude_perfect:
-        mask &= df[score_column] < max_score
-
-    return df[mask].copy()
-
-
-def write_dataframe_outputs(
-    df: pd.DataFrame,
-    output_prefix: Path,
-    file_suffix: str,
-    model_class: type[T],
-) -> tuple[Path, Path]:
-    """Write DataFrame to TSV and JSON with consistent naming.
-
-    Args:
-        df: DataFrame to write
-        output_prefix: Output path prefix (without extension)
-        file_suffix: Suffix for output files (e.g., "_raw", "_filtered")
-        model_class: Pydantic model class for schema
-
-    Returns:
-        Tuple of (tsv_path, json_path)
-    """
-    tsv_path = Path(f"{output_prefix}{file_suffix}.tsv")
-    json_path = Path(f"{output_prefix}{file_suffix}.json")
-
-    if df.empty:
-        # Create empty files with correct schema
-        empty_df = pd.DataFrame(columns=list(model_class.model_fields.keys()))
-        empty_df.to_csv(tsv_path, sep="\t", index=False)
-        empty_df.to_json(json_path, orient="records", indent=2)
-    else:
-        df.to_csv(tsv_path, sep="\t", index=False)
-        df.to_json(json_path, orient="records", indent=2)
-
-    return tsv_path, json_path
-
-
-def aggregate_dataframes_from_files(
-    file_pattern: str,
-    results_dir: Path,
-    model_class: type[T],
-    parser_func: Optional[Any] = None,
-) -> tuple[pd.DataFrame, int]:
-    """Aggregate multiple TSV files into a single DataFrame with validation.
-
-    Args:
-        file_pattern: Glob pattern for files (e.g., "**/*_analysis.tsv")
-        results_dir: Directory to search for files
-        model_class: Pydantic model class for validation
-        parser_func: Optional custom parser function for complex fields
-
-    Returns:
-        Tuple of (combined_dataframe, files_processed_count)
-    """
-    all_files = list(results_dir.glob(file_pattern))
-    dfs = []
-
-    for file_path in all_files:
-        try:
-            # Read TSV with pandas (much faster than manual parsing)
-            df = pd.read_csv(file_path, sep="\t")
-
-            # Optional: Apply custom parser for complex fields
-            if parser_func:
-                df = parser_func(df)
-
-            # Validate schema matches expected model
-            expected_fields = set(model_class.model_fields.keys())
-            actual_fields = set(df.columns)
-
-            if not expected_fields.issubset(actual_fields):
-                missing = expected_fields - actual_fields
-                logger.warning(f"File {file_path.name} missing fields: {missing}")
-                continue
-
-            dfs.append(df[list(expected_fields)])  # Ensure column order
-
-        except Exception as e:
-            logger.warning(f"Failed to parse {file_path}: {e}")
-            continue
-
-    if dfs:
-        combined_df = pd.concat(dfs, ignore_index=True)
-    else:
-        combined_df = pd.DataFrame(columns=list(model_class.model_fields.keys()))
-
-    return combined_df, len(all_files)
 
 
 # =============================================================================
@@ -1018,10 +882,14 @@ def aggregate_offtarget_results(
     output_dir: Union[str, Path],
     genome_species: str,
 ) -> Path:
-    """Aggregate off-target analysis results from multiple candidate-genome combinations using Pandera.
+    """Aggregate genome/transcriptome off-target analysis results using Pandera.
 
     Uses pandas + Pandera for efficient bulk reading and validation instead of
     manual line-by-line parsing with Pydantic models.
+
+    NOTE: This function ONLY aggregates genome/transcriptome hits. miRNA results
+    are aggregated separately by aggregate_mirna_results() to keep output files
+    distinct and properly typed.
 
     Args:
         results_dir: Directory containing individual analysis results
@@ -1037,8 +905,13 @@ def aggregate_offtarget_results(
 
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
 
-    # Collect all TSV analysis files using pandas (much faster than manual parsing)
+    # Collect ONLY genome/transcriptome TSV analysis files
+    # miRNA files are handled separately by aggregate_mirna_results()
     analysis_files = list(results_path.glob("**/*_analysis.tsv"))
+    # Filter out miRNA files explicitly to avoid schema validation errors
+    analysis_files = [f for f in analysis_files if "mirna" not in f.name.lower()]
+
+    logger.info(f"Found {len(analysis_files)} genome/transcriptome analysis files to aggregate")
 
     if analysis_files:
         # Read all files into DataFrames and concatenate (vectorized operation)
@@ -1126,7 +999,7 @@ def aggregate_offtarget_results(
         else:
             f.write("Species requested for analysis: (none - miRNA-only mode)\n")
 
-        f.write(f"Genome analysis files processed: {len(analysis_files)}\n\n")
+        f.write(f"Genome/transcriptome analysis files processed: {len(analysis_files)}\n\n")
 
         # Explain what the output files contain
         f.write("OUTPUT FILES\n")

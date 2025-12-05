@@ -1,118 +1,41 @@
 # GitHub Copilot Instructions for siRNAforge
 
-**Modern Python bioinformatics toolkit using uv package manager and make-based workflows.**
+## Architecture Snapshot
+- CLI (`src/sirnaforge/cli.py`) uses Typer/Rich to call the façade helpers in `workflow.py`, which orchestrate design/thermo/off-target engines under `core/`, data providers in `data/`, and Nextflow/Docker hooks in `pipeline/`. Skim `docs/developer/architecture.md` before deep rewrites.
+- Outputs flow: gene search → transcript validation → siRNA design (`core/design.py`) → thermodynamic scoring (`core/thermodynamics.py`) → optional off-target + Nextflow (`core/off_target.py`, `pipeline/`). Reuse the Pydantic models in `models/` and Pandera schemas in `validation/` instead of rolling new dict structures.
+- Gene/ORF retrieval (`data/gene_search.py`, `data/orf_analysis.py`) talks to Ensembl/NCBI; inject fixtures or cached FASTA files (`examples/`, `tests/data/`) when you need deterministic tests.
 
-## Quick Reference
+## Source Layout & Conventions
+- Strict `src/` layout; new packages go under `src/sirnaforge/` and must be wired through `workflow.py` so the CLI stays thin.
+- CLI subcommands live in a single Typer app; expose new flows by adding `@app.command` functions that delegate to orchestration functions in `workflow.py`.
+- Examples and documentation leverage `examples/*.py` and `examples/modification_patterns/*.json`; prefer reusing these assets (also mirrored in `docs/usage_examples.md`).
 
-**Package Manager:** `uv` (fast Python package management)
-**Python:** 3.9-3.12 with `src/` source layout
-**Build Tool:** `make` commands for all workflows
-**Testing:** Multiple test categories with pytest
-**Packaging:** Modern `pyproject.toml` with hatchling
+## Developer Environment
+- Bootstrap once with `make dev` (wraps `uv sync --dev` and installs pre-commit). Do not bypass this—Ruff/mypy hooks rely on the managed `.venv`.
+- Daily commands run through `uv`: `uv run sirnaforge workflow TP53 --output-dir results`, `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
+- Packaging is Hatchling-only (`pyproject.toml`, `uv.lock`); avoid introducing `setup.py` or ad-hoc requirements files.
 
-## Essential Commands
+## CI & Make Commands
+- `make lint` runs Ruff check/format (check-only) plus mypy; `make format` applies Ruff format/fixes. `make check` chains `format` then `test-dev`, so expect unstaged formatting edits.
+- Test tiers map to pytest markers defined in `pyproject.toml`: `make test-dev` (`-m dev`), `make test-ci` (smoke + coverage, host-only), `make test-release` (host + Docker, merges coverage), `make test` (all, tolerant of skips).
+- Requirement slices: `make test-requires-docker`, `make test-requires-nextflow`, `make test-requires-network`; use these before touching external tooling.
+- Docker workflow: `make docker-build` (tags version + latest), `make docker-test` (runs `tests/container` inside image), `make docker-build-test` (clean debug dirs → build → test), `make docker-run GENE=TP53` (smoke workflow in container).
+- Utilities worth knowing: `make docs` / `make docs-serve`, `make security` (bandit + safety JSON reports), `make cache-info` (shows transcriptome/miRNA cache mounts), `make example` (designs bundled FASTA).
 
-### Setup (REQUIRED - 15 seconds)
-```bash
-make dev
-# or
-uv sync --dev
-```
+## Testing Matrix
+- Fast iteration: `make lint`, `make test-dev` (pytest `-m dev`, ~15s). `make check` auto-formats as part of the run, so expect files to change.
+- Broader gates: `make test-ci`, `make test-release`, or marker slices (`make test-requires-docker`, `make test-requires-nextflow`, `make test-requires-network`).
+- Container validation: `make docker-build`, `make docker-test`, `make docker-run GENE=TP53`; anything in `tests/container/` assumes BWA-MEM2/SAMtools/ViennaRNA and only passes inside Docker.
 
-### Development Cycle (FAST)
-```bash
-make lint                    # Code quality (3-5s)
-make test-local-python      # Fastest tests (12-15s)
-make test-unit              # Unit tests (30-35s)
-make check                  # Lint + fast tests (35-40s)
-```
+## Pipelines & External Integrations
+- Nextflow pipeline assets live in `nextflow_pipeline/`; drive them via Nextflow CLI or Docker, not by importing modules into Python.
+- Off-target steps require BWA-MEM2, SAMtools, ViennaRNA; these are pinned in `docker/Dockerfile`. On bare metal they are optional, so gate calls behind capability checks.
+- Workflow outputs go under `workflow_output/` or debugging dirs like `tp53_workflow_debug/`. Preserve this structure when adding new reporters so downstream tools keep working.
 
-### Package Commands
-```bash
-uv run sirnaforge --help    # Verify installation
-uv run sirnaforge version   # Check version (alt to make build)
-make clean                  # Clean artifacts before building
-```
+## Documentation & Support Files
+- Sphinx docs are under `docs/`; run `make docs` or `make docs-serve` whenever you touch `.rst` files (notably `docs/cli_reference.md`, `docs/developer/testing_guide.md`).
+- `examples/complete_workflow_example.py` and `docs/tutorials/python_api.md` are the canonical references for end-to-end usage—keep them updated when signatures change.
 
-## File Structure
-
-```
-src/sirnaforge/          # Main package (modern src/ layout)
-├── cli.py              # CLI entry point
-├── core/               # Core algorithms
-├── models/             # Data models
-└── workflow.py         # Main workflows
-
-tests/
-├── unit/               # Fast Python tests (30 tests, 12s)
-├── integration/        # Cross-component tests
-└── pipeline/           # Nextflow pipeline tests
-
-pyproject.toml          # Modern Python packaging config
-Makefile               # All development workflows
-uv.lock                # Dependency lock file
-```
-
-### Dependency Management
-- `pyproject.toml` - Project config and dependencies
-- `uv.lock` - Exact dependency versions (committed)
-- `[dependency-groups]` - Separate dev dependencies in pyproject.toml
-
-## Python Packaging (Modern Style)
-
-### Key Files
-- `pyproject.toml` - Single config file (replaces setup.py, setup.cfg, requirements.txt)
-- `src/sirnaforge/` - Source layout (prevents import issues)
-- `uv.lock` - Reproducible builds
-
-## Testing Strategy (4 Categories)
-
-### 1. Unit Tests (`make test-unit`)
-- **Purpose:** Test individual functions/classes
-- **Speed:** 30-35 seconds (31 tests)
-- **Use for:** Core algorithm development
-
-### 2. Local Python (`make test-local-python`)
-- **Purpose:** Python-only integration tests
-- **Speed:** 12-15 seconds (30 tests) - FASTEST
-- **Use for:** Development iteration
-
-### 3. Fast Tests (`make test-fast`)
-- **Purpose:** All tests except slow external ones
-- **Speed:** 25-30 seconds (53+ tests)
-- **Use for:** Pre-commit validation
-
-### 4. Full Tests (`make test`)
-- **Purpose:** Complete test suite including Docker/Nextflow
-- **Speed:** 60+ seconds, some failures expected
-- **Use for:** Release validation
-
-## External Dependencies
-
-### ✅ Works in Base Environment
-- Python siRNA algorithms
-- CLI functionality
-- Unit/integration tests
-- Documentation builds
-- Code quality tools
-
-### ❌ Requires Docker
-- Nextflow pipeline execution
-- BWA-MEM2 alignment
-- SAMtools processing
-- ViennaRNA folding
-- Full off-target analysis
-
-## Best Practices for AI Coding Agents
-
-### Development Workflow
-1. **Setup:** `uv sync --dev` (one-time, 60-120s)
-2. **Iterate:** `make test-local-python` (12s validation)
-3. **Quality:** `make lint` (3s) before any commit
-4. **Validate:** `make check` (35s) before push
-
-### Manual Verification After Changes
-```bash
-uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv
-# Expected: Success in 1-2 seconds, CSV output created
-```
+## Manual Verification
+- Host sanity check: `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv` (completes in ~2s and produces a CSV).
+- Container/pipeline check: `make docker-run GENE=TP53` or `sirnaforge workflow TP53 --output-dir tp53_workflow_debug` and inspect `tp53_workflow_debug/orf_reports/*.txt` plus the summary CSVs.
