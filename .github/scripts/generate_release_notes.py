@@ -28,6 +28,7 @@ def _collect_reference_links(changelog_text: str) -> list[str]:
 
 
 def main() -> None:
+    """Generate release notes content."""
     version = os.environ["VERSION"]
     py_files = os.environ.get("PY_FILES", "0")
     test_files = os.environ.get("TEST_FILES", "0")

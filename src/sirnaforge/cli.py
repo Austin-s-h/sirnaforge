@@ -386,7 +386,7 @@ def workflow(  # noqa: PLR0912
         help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
     ),
     top_n_candidates: int = typer.Option(
-        20,
+        100,
         "--top-n",
         "-n",
         min=1,
@@ -711,7 +711,7 @@ def design(  # noqa: PLR0912
         help="siRNA length in nucleotides",
     ),
     top_n: int = typer.Option(
-        10,
+        100,
         "--top-n",
         "-n",
         min=1,

@@ -231,8 +231,6 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
                 "TP53",
                 "--output-dir",
                 str(output_dir),
-                "--top-n",
-                "10",  # Limit for speed
                 "--species",
                 "human",  # Single species for genome off-target analysis
                 "--input-fasta",
