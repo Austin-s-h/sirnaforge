@@ -94,10 +94,7 @@ def test_full_workflow_with_gene_search(tmp_path: Path):
         error_lower = result.stderr.lower()
         if any(term in error_lower for term in ["connection", "network", "timeout", "ensembl", "ssl"]):
             pytest.skip(f"Network issue during gene search: {result.stderr[:300]}")
-        # Print output location before failing
-        print(f"\n{'=' * 80}")
-        print(f"Test failed. Output saved to: {output_dir}")
-        print(f"{'=' * 80}\n")
+        _print_failure_location(output_dir)
         pytest.fail(f"Full workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify transcript retrieval
@@ -161,6 +158,7 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
         error_lower = result.stderr.lower()
         if any(term in error_lower for term in ["connection", "network", "timeout", "download", "ssl"]):
             pytest.skip(f"Network issue during transcriptome download: {result.stderr[:300]}")
+        _print_failure_location(output_dir)
         pytest.fail(f"Custom transcriptome workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify off-target results exist
@@ -212,6 +210,7 @@ def test_genome_index_override(tmp_path: Path):
     )
 
     if result.returncode != 0:
+        _print_failure_location(output_dir)
         pytest.fail(f"Index override workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify workflow completed
@@ -264,6 +263,7 @@ def test_mirna_design_mode(tmp_path: Path):
     )
 
     if result.returncode != 0:
+        _print_failure_location(output_dir)
         pytest.fail(f"miRNA mode workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify outputs
@@ -321,6 +321,7 @@ def test_modification_pattern_application(tmp_path: Path):
     )
 
     if result.returncode != 0:
+        _print_failure_location(output_dir)
         pytest.fail(f"Modification workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify FASTA with modifications
@@ -375,6 +376,7 @@ def test_multi_species_offtarget(tmp_path: Path):
     )
 
     if result.returncode != 0:
+        _print_failure_location(output_dir)
         pytest.fail(f"Multi-species workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify outputs
@@ -428,6 +430,7 @@ def test_gc_range_filtering(tmp_path: Path):
     )
 
     if result.returncode != 0:
+        _print_failure_location(output_dir)
         pytest.fail(f"GC filtering workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify both all and pass CSVs exist
@@ -492,6 +495,7 @@ def test_minimal_toy_workflow(tmp_path: Path):
     )
 
     if result.returncode != 0:
+        _print_failure_location(output_dir)
         pytest.fail(f"Toy workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify basic outputs

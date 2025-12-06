@@ -2,6 +2,34 @@
 
 This document outlines the three main groups of tests in siRNAforge, designed to support different development and deployment scenarios.
 
+## Test Output & Cleanup Behavior
+
+### Container Test Persistence (for Failure Inspection)
+
+All container tests use a **dual-strategy** for output management:
+
+**When running in Docker** (`make docker-test`, `make docker-build-test`):
+- Output saved to `/workspace/workflow_test_debug_*` directories
+- These are mounted from host via `-v $(pwd):/workspace`
+- **Persists after test completion** for manual inspection
+- Clean with: `make docker-build-test` (removes all `workflow_test_debug_*` dirs)
+
+**When running on host** (`pytest tests/container/`):
+- Output saved to pytest's `tmp_path` (`.pytest_tmp/`)
+- **Auto-cleanup**: Removed after successful tests
+- **Auto-retention**: pytest keeps last 3 failed test directories
+- Temporary directories include full output for debugging failures
+
+**Failure inspection workflow:**
+```bash
+# After a container test failure:
+ls -la workflow_test_debug_*/       # Check persistent output
+cat workflow_test_debug_*/logs/*.log  # View logs
+
+# Clean before next run:
+make docker-build-test  # Cleans all debug dirs + rebuilds + tests
+```
+
 ## Test Groups Overview
 
 ### 1. Unit Tests (`unit`, `local_python`, `ci`)
