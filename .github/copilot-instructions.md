@@ -20,6 +20,7 @@
 - Test tiers map to pytest markers defined in `pyproject.toml`: `make test-dev` (`-m dev`), `make test-ci` (smoke + coverage, host-only), `make test-release` (host + Docker, merges coverage), `make test` (all, tolerant of skips).
 - Requirement slices: `make test-requires-docker`, `make test-requires-nextflow`, `make test-requires-network`; use these before touching external tooling.
 - Docker workflow: `make docker-build` (tags version + latest), `make docker-test` (runs `tests/container` inside image), `make docker-build-test` (clean debug dirs → build → test), `make docker-run GENE=TP53` (smoke workflow in container).
+- Workflow CLI: prefer `--input-fasta` when using pre-made transcripts (container tests); override genome indices with `--offtarget-indices human:/abs/GRCh38,mouse:/abs/GRCm39` to replace cached defaults.
 - Utilities worth knowing: `make docs` / `make docs-serve`, `make security` (bandit + safety JSON reports), `make cache-info` (shows transcriptome/miRNA cache mounts), `make example` (designs bundled FASTA).
 
 ## Testing Matrix

@@ -424,6 +424,15 @@ def workflow(  # noqa: PLR0912
             "Defaults to 'ensembl_human_cdna' when omitted."
         ),
     ),
+    offtarget_indices: Optional[str] = typer.Option(
+        None,
+        "--offtarget-indices",
+        help=(
+            "Comma-separated overrides for genome indices used in off-target analysis. "
+            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39. "
+            "When provided, overrides cached/default genome references."
+        ),
+    ),
     gc_min: float = typer.Option(
         30.0,
         "--gc-min",
@@ -527,6 +536,22 @@ def workflow(  # noqa: PLR0912
     species_list = species_resolution["genome"]
     mirna_species_list = species_resolution["mirna"]
 
+    override_species = None
+    if offtarget_indices:
+        entries = [token.strip() for token in offtarget_indices.split(",") if token.strip()]
+        bad_entries = [entry for entry in entries if ":" not in entry]
+        if bad_entries:
+            console.print(
+                "❌ Error: --offtarget-indices entries must be in species:/index_prefix form",
+                style="red",
+            )
+            raise typer.Exit(1)
+        override_species = []
+        for entry in entries:
+            species_token = entry.split(":", 1)[0].strip() or entry
+            if species_token and species_token not in override_species:
+                override_species.append(species_token)
+
     if not mirna_species_list:
         console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
         raise typer.Exit(1)
@@ -535,8 +560,15 @@ def workflow(  # noqa: PLR0912
     if input_fasta:
         input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
 
-    transcriptome_selection = transcriptome_fasta or DEFAULT_TRANSCRIPTOME_SOURCE
-    transcriptome_label = transcriptome_fasta or f"{DEFAULT_TRANSCRIPTOME_SOURCE} (auto)"
+    # When using input-fasta (design-only mode), only enable transcriptome off-target if explicitly requested
+    if input_fasta and not transcriptome_fasta:
+        transcriptome_selection = None
+        transcriptome_label = "disabled (design-only mode)"
+    else:
+        transcriptome_selection = transcriptome_fasta or DEFAULT_TRANSCRIPTOME_SOURCE
+        transcriptome_label = transcriptome_fasta or f"{DEFAULT_TRANSCRIPTOME_SOURCE} (auto)"
+    genome_species_for_workflow = override_species or species_list
+    offtarget_override_label = offtarget_indices or "cached defaults"
 
     console.print(
         Panel.fit(
@@ -549,9 +581,10 @@ def workflow(  # noqa: PLR0912
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
             f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
             f"Species: [green]{', '.join(canonical_species)}[/green]\n"
-            f"Genome Species: [green]{', '.join(species_list)}[/green]\n"
+            f"Genome Species: [green]{', '.join(genome_species_for_workflow)}[/green]\n"
             f"miRNA Reference ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
+            f"Genome Index Override: [green]{offtarget_override_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
@@ -579,7 +612,8 @@ def workflow(  # noqa: PLR0912
                     database=database,
                     design_mode=design_mode,
                     top_n_candidates=top_n_candidates,
-                    genome_species=species_list,
+                    genome_species=genome_species_for_workflow,
+                    genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_selection,

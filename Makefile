@@ -46,6 +46,8 @@ help: ## Show available commands
 	@echo "  make test-dev         Fast unit tests for dev iteration (~15s)"
 	@echo "  make test-ci          Smoke tests for CI/CD"
 	@echo "  make test-release     Complete release validation (host + container tests with combined coverage)"
+	@echo "  make test-release-host      Host-only release suite (generates coverage base)"
+	@echo "  make test-release-container Container release suite (expects host coverage)"
 	@echo "  make test             All tests (may have skips/failures)"
 	@echo ""
 	@echo "Docker Testing"
@@ -89,7 +91,9 @@ test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow sui
 	$(PYTEST_V) -m "ci and not runs_in_container and not requires_docker and not requires_tools" -n 0 --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
-test-release: docker-ensure ## Release tier - comprehensive validation (host + container tests with combined coverage)
+test-release: test-release-host test-release-container test-release-report ## Release tier - comprehensive validation (host + container tests with combined coverage)
+
+test-release-host: ## Host-only release suite (produces base coverage database)
 	@echo "Step 1/3: Running host-based tests with coverage..."
 	@rm -f .coverage coverage*.xml pytest-*.xml 2>/dev/null || true
 	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container" \
@@ -97,6 +101,12 @@ test-release: docker-ensure ## Release tier - comprehensive validation (host + c
 		--cov=sirnaforge --cov-report= \
 		--junitxml=pytest-host-report.xml
 	@echo ""
+
+test-release-container: docker-ensure ## Container release suite (expects .coverage from host stage)
+	@if [ ! -f ".coverage" ]; then \
+		echo "Missing .coverage from host tests. Run 'make test-release-host' first or provide the artifact before running container tests."; \
+		exit 1; \
+	fi
 	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
 	docker run --rm $(DOCKER_MOUNT_FLAGS) -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c \
@@ -106,6 +116,8 @@ test-release: docker-ensure ## Release tier - comprehensive validation (host + c
 		--junitxml=/workspace/pytest-container-report.xml \
 		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
 	@echo ""
+
+test-release-report: ## Generate coverage rollups used for release verification artifacts
 	@echo "Step 3/3: Generating combined coverage reports..."
 	@uv run coverage report -m
 	@uv run coverage xml -o coverage.xml
@@ -151,7 +163,7 @@ docker-test: docker-ensure ## Run tests INSIDE Docker container (validates image
 
 docker-build-test: ## Clean debug folder, build Docker image, and run tests
 	@echo "Cleaning debug folders..."
-	@rm -rf tp53_workflow_debug workflow_output
+	@rm -rf tp53_workflow_debug workflow_output workflow_test_debug_*
 	@echo "Building Docker image..."
 	@$(MAKE) docker-build
 	@echo "Running container tests..."
