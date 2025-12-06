@@ -42,13 +42,12 @@ else
 fi
 
 # Test our pipeline syntax (dry run)
-echo "🔬 Testing SIRNAforge pipeline syntax..."
+echo "🔬 Testing SIRNAforge pipeline syntax with built-in defaults..."
 uv run --group pipeline nextflow run nextflow_pipeline/main.nf \
     --input nextflow_pipeline/candidates.fasta \
     --outdir test_results \
-    --genome_species human \
     -profile test \
-    -preview || echo "⚠️  Pipeline syntax test failed - this may be expected if dependencies are missing"
+    -stub-run || echo "⚠️  Pipeline syntax test failed - this may be expected if dependencies are missing"
 
 echo "✅ Nextflow integration tests completed!"
 echo ""

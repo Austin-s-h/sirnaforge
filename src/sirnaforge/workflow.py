@@ -69,6 +69,7 @@ class WorkflowConfig:
         design_params: DesignParameters | None = None,
         # off-target selection now always equals design_params.top_n
         nextflow_config: Mapping[str, Any] | None = None,
+        genome_indices_override: str | None = None,
         genome_species: list[str] | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
@@ -86,14 +87,23 @@ class WorkflowConfig:
 
         resolved_input = input_source.local_path if input_source else (Path(input_fasta) if input_fasta else None)
         self.input_fasta = resolved_input
-        # If input_fasta is provided, use its stem as the gene_query identifier
-        self.gene_query = gene_query if resolved_input is None else resolved_input.stem
+        # Preserve the user-supplied gene_query as the logical label even when using an input FASTA
+        self.gene_query = gene_query
         self.database = database
         self.design_params = design_params or DesignParameters()
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
         self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
+
+        override_species: list[str] | None = None
+        if genome_indices_override:
+            self.nextflow_config["genome_indices"] = genome_indices_override
+            override_species = self._extract_species_from_indices(genome_indices_override)
+
         default_genomes = genome_species or ["human", "rat", "rhesus"]
+        if override_species:
+            default_genomes = override_species
+
         self.genome_species: list[str] = list(dict.fromkeys(default_genomes))
         self.mirna_database = mirna_database
         self.mirna_species: list[str] = list(dict.fromkeys(mirna_species)) if mirna_species else []
@@ -117,6 +127,19 @@ class WorkflowConfig:
         (self.output_dir / "sirnaforge").mkdir(exist_ok=True)
         (self.output_dir / "off_target").mkdir(exist_ok=True)
         (self.output_dir / "logs").mkdir(exist_ok=True)
+
+    @staticmethod
+    def _extract_species_from_indices(indices: str) -> list[str]:
+        """Derive species list from comma-separated species:/index_prefix entries."""
+        species: list[str] = []
+        for token in indices.split(","):
+            entry = token.strip()
+            if not entry:
+                continue
+            head = entry.split(":", 1)[0].strip() if ":" in entry else entry
+            if head and head not in species:
+                species.append(head)
+        return species
 
 
 class SiRNAWorkflow:
@@ -1768,6 +1791,7 @@ async def run_sirna_workflow(
     design_mode: str = "sirna",
     top_n_candidates: int = 20,
     genome_species: list[str] | None = None,
+    genome_indices_override: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
@@ -1789,6 +1813,7 @@ async def run_sirna_workflow(
         design_mode: Design mode (sirna or mirna)
         top_n_candidates: Number of top candidates to generate
         genome_species: Species genomes for off-target analysis
+        genome_indices_override: Comma-separated species:/index_prefix overrides for off-target analysis
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -1843,6 +1868,7 @@ async def run_sirna_workflow(
         input_fasta=input_path,
         database=database_enum,
         design_params=design_params,
+        genome_indices_override=genome_indices_override,
         genome_species=genome_species or ["human", "rat", "rhesus"],
         mirna_database=mirna_database,
         mirna_species=mirna_species,

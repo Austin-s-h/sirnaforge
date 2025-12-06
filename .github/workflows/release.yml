@@ -22,11 +22,6 @@ on:
               required: false
               default: false
               type: boolean
-            publish_testpypi:
-              description: 'Publish package to TestPyPI (for validation)'
-              required: false
-              default: false
-              type: boolean
             deploy_docs_release:
               description: 'Build & deploy docs as part of release'
               required: false

@@ -76,6 +76,38 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 
 **Features:** Multi-species off-target, miRNA seed analysis, chemical modifications, verbose logging
 
+### Custom FASTA + Transcriptome Override
+
+`````{tab-set}
+
+````{tab-item} uv
+```bash
+# Design directly from a provided FASTA while aligning against mouse transcriptome
+uv run sirnaforge workflow TP53 \
+  --input-fasta examples/sample_transcripts.fasta \
+  --transcriptome-fasta ensembl_mouse_cdna \
+  --output-dir tp53_custom_inputs
+```
+````
+
+````{tab-item} Docker
+```bash
+docker run --rm -v $(pwd):/workspace -w /workspace \
+  ghcr.io/austin-s-h/sirnaforge:latest \
+  sirnaforge workflow TP53 \
+    --input-fasta examples/sample_transcripts.fasta \
+    --transcriptome-fasta ensembl_mouse_cdna \
+    --output-dir tp53_custom_inputs
+```
+````
+
+`````
+
+**Tips:**
+- Combine `--input-fasta` with a gene query to keep familiar file names while sourcing transcripts from your own assemblies.
+- `--transcriptome-fasta` accepts preset identifiers (`ensembl_*`), HTTP(S) URLs, or local files; siRNAforge caches indexes automatically so repeated runs are fast.
+- Leave the transcriptome flag unset to fall back to `ensembl_human_cdna`.
+
 ## Gene Search
 
 ### Minimal Example

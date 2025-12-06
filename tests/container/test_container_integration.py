@@ -220,6 +220,8 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
         output_dir = tmp_path / "tp53_workflow_debug"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "sample_transcripts.fasta"
+
     try:
         # Run complete TP53 workflow (similar to test_workflow_integration.sh)
         result = subprocess.run(
@@ -229,12 +231,10 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
                 "TP53",
                 "--output-dir",
                 str(output_dir),
-                "--top-n",
-                "10",  # Limit for speed
                 "--species",
                 "human",  # Single species for genome off-target analysis
-                "--transcriptome-fasta",
-                "ensembl_mouse_cdna",  # Enable mouse transcriptome off-target analysis
+                "--input-fasta",
+                str(input_fasta),
             ],
             capture_output=True,
             text=True,

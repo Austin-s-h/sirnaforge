@@ -30,6 +30,11 @@ async def run_complete_example() -> None:
     print(f"Output Directory: {output_dir}")
     print()
 
+    # Optional: point the workflow at your own transcripts and transcriptome reference.
+    # Uncomment and edit the paths below to try the dual-input flow documented in README.
+    # custom_input_fasta = Path(__file__).parent / "sample_transcripts.fasta"
+    # custom_transcriptome = "ensembl_mouse_cdna"  # or a local/remote FASTA path
+
     try:
         # Run the complete workflow
         results = await run_sirna_workflow(
@@ -41,6 +46,8 @@ async def run_complete_example() -> None:
             gc_min=30.0,
             gc_max=52.0,
             sirna_length=21,
+            # input_fasta=str(custom_input_fasta),
+            # transcriptome_fasta=custom_transcriptome,
         )
 
         print("✅ Workflow completed successfully!")
