@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from sirnaforge.core.off_target import build_bwa_index
+
 
 @pytest.fixture
 def toy_genome_path():
@@ -19,6 +21,27 @@ def toy_genome_path():
         pytest.skip(f"Toy genome database not found: {genome_path}")
 
     return genome_path
+
+
+@pytest.fixture(scope="session")
+def toy_genome_index_prefix(tmp_path_factory):
+    """Build a BWA index for the toy transcriptome database once per test session."""
+    test_data_dir = Path(__file__).parent / "unit" / "data"
+    genome_fasta = test_data_dir / "toy_transcriptome_db.fasta"
+
+    if not genome_fasta.exists():
+        pytest.skip(f"Toy genome database not found: {genome_fasta}")
+
+    index_dir = tmp_path_factory.mktemp("toy_transcriptome_index")
+    index_prefix = Path(index_dir) / "toy_transcriptome"
+
+    if not all(index_prefix.with_suffix(suffix).exists() for suffix in (".amb", ".ann", ".bwt.2bit.64", ".pac", ".sa")):
+        try:
+            build_bwa_index(genome_fasta, index_prefix)
+        except Exception as exc:  # pragma: no cover - requires bwa tooling
+            pytest.skip(f"Unable to build toy genome index: {exc}")
+
+    return index_prefix
 
 
 @pytest.fixture

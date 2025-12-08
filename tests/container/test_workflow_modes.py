@@ -174,7 +174,7 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_genome_index_override(tmp_path: Path):
+def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path):
     """Test workflow with --offtarget-indices override.
 
     Validates:
@@ -186,13 +186,6 @@ def test_genome_index_override(tmp_path: Path):
 
     input_fasta = Path(__file__).resolve().parents[2] / "examples" / "realistic_transcripts.fasta"
 
-    # Use absolute path to toy database that works in container
-    toy_index = Path("/workspace/tests/unit/data/toy_transcriptome_db").resolve()
-
-    # Fallback to relative path if not in container
-    if not toy_index.exists():
-        toy_index = Path(__file__).parent.parent / "unit" / "data" / "toy_transcriptome_db"
-
     result = subprocess.run(
         [
             "sirnaforge",
@@ -201,7 +194,7 @@ def test_genome_index_override(tmp_path: Path):
             "--input-fasta",
             str(input_fasta),
             "--offtarget-indices",
-            f"toy_genome:{toy_index}",
+            f"toy_genome:{toy_genome_index_prefix}",
             "--output-dir",
             str(output_dir),
         ],
@@ -223,8 +216,20 @@ def test_genome_index_override(tmp_path: Path):
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
 
     # Species should be derived from override
-    # (Implementation detail: check that toy_genome appears in species list or off-target config)
-    _ = summary  # Verify summary can be loaded
+    offtarget_summary = summary.get("offtarget_summary", {})
+    output_files = offtarget_summary.get("output_files", {})
+    combined_summaries = output_files.get("combined_summary") or []
+    assert combined_summaries, "Off-target summary missing combined_summary output"
+
+    combined_summary_path = Path(combined_summaries[0])
+    if not combined_summary_path.exists():  # Fallback to deterministic location when running on host
+        combined_summary_path = output_dir / "off_target" / "results" / "aggregated" / "combined_summary.json"
+
+    assert combined_summary_path.exists(), "Combined summary file missing for override run"
+    combined_summary = json.loads(combined_summary_path.read_text())
+    assert combined_summary.get("species_analyzed") == ["toy_genome"], (
+        f"Override species not respected: {combined_summary.get('species_analyzed')}"
+    )
 
 
 @pytest.mark.integration
@@ -282,8 +287,11 @@ def test_mirna_design_mode(tmp_path: Path):
 
     # Verify design mode in summary
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
-    # Check that design mode is mentioned or that miRNA-specific scoring is present
-    _ = summary  # Verify summary can be loaded
+    workflow_config = summary.get("workflow_config", {})
+    mirna_reference = workflow_config.get("mirna_reference", {})
+    assert mirna_reference.get("species") == ["hsa"], (
+        f"miRNA species should collapse to ['hsa'], got: {mirna_reference.get('species')}"
+    )
 
 
 @pytest.mark.integration
