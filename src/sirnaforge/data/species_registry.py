@@ -28,7 +28,7 @@ MIRGENEDB_SPECIES_TABLE: dict[str, dict[str, Any]] = {
         "taxonomy_id": "9544",
         "scientific_name": "Macaca mulatta",
         "common_name": "Rhesus macaque",
-        "aliases": ["rhesus", "macaca_mulatta"],
+        "aliases": ["rhesus", "macaca_mulatta", "macaque"],
     },
     "mmu": {
         "taxonomy_id": "10090",
@@ -164,10 +164,10 @@ CANONICAL_SPECIES_REGISTRY: dict[str, dict[str, Any]] = {
         "mirgenedb_slug": "mmu",
         "aliases": ["mus_musculus"],
     },
-    "rhesus": {
+    "macaque": {
         "genome": "rhesus",
         "mirgenedb_slug": "mml",
-        "aliases": ["macaca_mulatta", "rhesus_macaque"],
+        "aliases": ["rhesus", "macaca_mulatta", "rhesus_macaque"],
     },
     "rat": {
         "genome": "rat",
@@ -178,6 +178,11 @@ CANONICAL_SPECIES_REGISTRY: dict[str, dict[str, Any]] = {
         "genome": "chicken",
         "mirgenedb_slug": "gga",
         "aliases": ["gallus_gallus", "chi"],
+    },
+    "pig": {
+        "genome": "pig",
+        "mirgenedb_slug": "ssc",
+        "aliases": ["sus_scrofa"],
     },
 }
 

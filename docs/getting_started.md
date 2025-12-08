@@ -124,6 +124,21 @@ docker run --rm \
 4. Rank and filter best candidates
 5. Generate results
 
+### Using Custom Transcripts or Transcriptomes
+
+Want to skip the gene-search step or run offline? Provide your own FASTA input while still leveraging the full workflow:
+
+```bash
+uv run sirnaforge workflow TP53 \
+  --input-fasta examples/sample_transcripts.fasta \
+  --transcriptome-fasta ensembl_mouse_cdna \
+  --output-dir custom_tp53_run
+```
+
+- `--input-fasta` accepts local files or remote URLs. The workflow copies and validates the sequences before design, but still uses the `GENE_QUERY` argument for naming outputs.
+- `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local path, URL, or presets such as `ensembl_human_cdna`). When omitted the workflow indexes the bundled Ensembl human, mouse, rat, and macaque transcriptomes so off-target analysis still runs.
+- Remote resources are cached under `~/.cache/sirnaforge/`, so subsequent runs reuse downloads automatically.
+
 ### Results Structure
 ```
 my_first_analysis/

@@ -21,6 +21,12 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from sirnaforge.config import (
+    DEFAULT_MIRNA_CANONICAL_SPECIES,
+    DEFAULT_TRANSCRIPTOME_SOURCES,
+    ReferencePolicyResolver,
+    WorkflowInputSpec,
+)
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 
 # Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
@@ -56,8 +62,6 @@ from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
 
-DEFAULT_TRANSCRIPTOME_SOURCE = "ensembl_human_cdna"
-
 app = typer.Typer(
     name="sirnaforge",
     help="siRNAforge - siRNA design toolkit for gene silencing",
@@ -70,6 +74,8 @@ console = Console(force_terminal=False, legacy_windows=True)
 T = TypeVar("T", bound=Callable[..., object])
 CommandDecorator = Callable[..., Callable[[T], T]]
 app_command: CommandDecorator = app.command
+
+DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
 def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
@@ -386,19 +392,19 @@ def workflow(  # noqa: PLR0912
         help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
     ),
     top_n_candidates: int = typer.Option(
-        20,
+        100,
         "--top-n",
         "-n",
         min=1,
         help="Number of top siRNA candidates to select (also used for off-target analysis)",
     ),
     species: str = typer.Option(
-        "human,mouse,rhesus,rat,chicken",
+        DEFAULT_SPECIES_ARGUMENT,
         "--species",
         "--genome-species",
         help=(
             "Comma-separated canonical species identifiers (genome+miRNA). "
-            "Supported values include human, mouse, rhesus, rat, chicken"
+            "Supported values include human, mouse, macaque, rat, chicken, pig"
         ),
     ),
     mirna_db: str = typer.Option(
@@ -421,7 +427,16 @@ def workflow(  # noqa: PLR0912
             "Path or URL to transcriptome FASTA file for off-target analysis. "
             "Can be a local file, HTTP(S) URL, or pre-configured source name "
             "(e.g., 'ensembl_human_cdna'). Will be cached and indexed automatically. "
-            "Defaults to 'ensembl_human_cdna' when omitted."
+            "When omitted the workflow indexes the bundled Ensembl human, mouse, rat, and macaque transcriptomes."
+        ),
+    ),
+    offtarget_indices: Optional[str] = typer.Option(
+        None,
+        "--offtarget-indices",
+        help=(
+            "Comma-separated overrides for genome indices used in off-target analysis. "
+            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39. "
+            "When provided, overrides cached/default genome references."
         ),
     ),
     gc_min: float = typer.Option(
@@ -527,6 +542,22 @@ def workflow(  # noqa: PLR0912
     species_list = species_resolution["genome"]
     mirna_species_list = species_resolution["mirna"]
 
+    override_species = None
+    if offtarget_indices:
+        entries = [token.strip() for token in offtarget_indices.split(",") if token.strip()]
+        bad_entries = [entry for entry in entries if ":" not in entry]
+        if bad_entries:
+            console.print(
+                "❌ Error: --offtarget-indices entries must be in species:/index_prefix form",
+                style="red",
+            )
+            raise typer.Exit(1)
+        override_species = []
+        for entry in entries:
+            species_token = entry.split(":", 1)[0].strip() or entry
+            if species_token and species_token not in override_species:
+                override_species.append(species_token)
+
     if not mirna_species_list:
         console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
         raise typer.Exit(1)
@@ -535,8 +566,24 @@ def workflow(  # noqa: PLR0912
     if input_fasta:
         input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
 
-    transcriptome_selection = transcriptome_fasta or DEFAULT_TRANSCRIPTOME_SOURCE
-    transcriptome_label = transcriptome_fasta or f"{DEFAULT_TRANSCRIPTOME_SOURCE} (auto)"
+    # Resolve transcriptome policy once so downstream layers receive metadata
+    transcriptome_spec = WorkflowInputSpec(
+        input_fasta=input_fasta,
+        transcriptome_argument=transcriptome_fasta,
+        default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+        design_only=False,
+    )
+    transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
+    if transcriptome_selection.enabled:
+        rendered_choices = [
+            f"{choice.value} ({choice.state.value})" for choice in transcriptome_selection.choices if choice.value
+        ]
+        transcriptome_label = ", ".join(rendered_choices)
+    else:
+        reason = transcriptome_selection.disabled_reason or "not available"
+        transcriptome_label = f"disabled ({reason})"
+    genome_species_for_workflow = override_species or species_list
+    offtarget_override_label = offtarget_indices or "cached defaults"
 
     console.print(
         Panel.fit(
@@ -549,9 +596,10 @@ def workflow(  # noqa: PLR0912
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
             f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
             f"Species: [green]{', '.join(canonical_species)}[/green]\n"
-            f"Genome Species: [green]{', '.join(species_list)}[/green]\n"
+            f"Genome Species: [green]{', '.join(genome_species_for_workflow)}[/green]\n"
             f"miRNA Reference ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
+            f"Genome Index Override: [green]{offtarget_override_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
@@ -579,10 +627,12 @@ def workflow(  # noqa: PLR0912
                     database=database,
                     design_mode=design_mode,
                     top_n_candidates=top_n_candidates,
-                    genome_species=species_list,
+                    genome_species=genome_species_for_workflow,
+                    genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
-                    transcriptome_fasta=transcriptome_selection,
+                    transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_selection=transcriptome_selection,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,
@@ -677,7 +727,7 @@ def design(  # noqa: PLR0912
         help="siRNA length in nucleotides",
     ),
     top_n: int = typer.Option(
-        10,
+        100,
         "--top-n",
         "-n",
         min=1,

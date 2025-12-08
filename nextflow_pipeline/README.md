@@ -29,13 +29,20 @@ nextflow run nextflow_pipeline/main.nf \
     --input nextflow_pipeline/candidates.fasta \
     --outdir results
 
-# Specify custom genome species and parameters
+# Override any parameter only when needed
 nextflow run nextflow_pipeline/main.nf \
     --input my_sirnas.fasta \
-    --genome_species "human,rat" \
     --bwa_k 10 \
-    --outdir results
+    --outdir results \
+    --transcriptome_indices "mouse:/data/indexes/mouse_transcriptome" \
 ```
+
+Built-in defaults already cover the most common references:
+- Genome off-target analysis targets `human,rat,rhesus` unless overridden
+- Transcriptome runs automatically index the Ensembl cDNA references for human, mouse, rat, and macaque (cached under `~/.cache/sirnaforge`)
+- miRNA seed analysis uses MirGeneDB with `chicken,pig,rat,mouse,human,macaque` species preloaded
+
+That means the majority of workflows only need the `--input` and `--outdir` arguments shown above.
 
 ### Test Run
 
@@ -46,7 +53,6 @@ Run the pipeline with the bundled test dataset:
 nextflow run nextflow_pipeline/main.nf \
     --input nextflow_pipeline/candidates.fasta \
     --outdir results/test_run \
-    --genome_species human,rat \
     -with-trace -with-timeline timeline.html
 
 # Docker execution
@@ -54,6 +60,13 @@ nextflow run nextflow_pipeline/main.nf \
     --input nextflow_pipeline/candidates.fasta \
     --outdir results/test_run_docker \
     -profile docker
+
+# Fast syntax check / stub run (skips heavy alignments)
+nextflow run nextflow_pipeline/main.nf \
+    --input nextflow_pipeline/candidates.fasta \
+    --outdir results/test_stub \
+    -profile test \
+    -stub-run
 ```
 
 Expected outputs:
@@ -71,6 +84,9 @@ Expected outputs:
 | `input` | None | Input FASTA file with siRNA candidates |
 | `outdir` | 'results' | Output directory |
 | `genome_species` | 'human,rat,rhesus' | Comma-separated species list |
+| `transcriptome_indices` | None | Comma-separated `species:/path/to/index_prefix` entries for transcriptome references |
+| `mirna_db` | 'mirgenedb' | miRNA seed reference database |
+| `mirna_species` | 'chicken,pig,rat,mouse,human,macaque' | Comma-separated miRNA species analyzed by default |
 | `genome_config` | 'genomes.yaml' | Genome configuration file |
 | `sirna_length` | 21 | Expected siRNA length |
 | `max_hits` | 10000 | Maximum hits per candidate |

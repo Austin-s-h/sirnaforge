@@ -189,6 +189,10 @@ src/sirnaforge/
 - Error handling and user-friendly messages
 - Configuration management
 
+### Configuration & Default Resolution (`sirnaforge.config`)
+
+The `sirnaforge.config.reference_policy` module centralizes how user inputs and default references are resolved. `WorkflowInputSpec` captures raw CLI/API inputs, while `ReferencePolicyResolver` produces metadata-rich `ReferenceChoice` objects that indicate whether a reference was explicitly provided, auto-selected, or disabled. The workflow records these choices (currently for transcriptome references) inside `logs/workflow_summary.json` so production runs can be audited without inspecting CLI arguments.
+
 ### 2. Workflow Layer (`workflow.py`)
 
 **Purpose**: High-level process orchestration

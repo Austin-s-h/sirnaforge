@@ -26,7 +26,7 @@ sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli
 
 mirna_db = '${params.mirna_db ?: 'mirgenedb'}'.strip()
-mirna_species = '${params.mirna_species ?: 'human,mouse,rat'}'.strip()
+mirna_species = '${params.mirna_species ?: 'chicken,pig,rat,mouse,human,macaque'}'.strip()
 
 result = aggregate_results_cli(
     genome_species='${genome_species}',

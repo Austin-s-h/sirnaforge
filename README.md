@@ -48,30 +48,33 @@
 
 ## 📦 Installation
 
-Choose your installation method based on your needs:
-
-**🐋 Docker (Recommended)** — Complete toolkit with all dependencies, scalable execution
-```bash
-docker pull ghcr.io/austin-s-h/sirnaforge:latest
-```
-
-**⚡ uv (Development)** — Fast Python package manager for local development
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone https://github.com/austin-s-h/sirnaforge && cd sirnaforge
-uv sync --dev
-
-# Alternatively, with make
-make dev
-```
-
-**🐍 conda** — Traditional package management
-```bash
-conda env create -f environment-dev.yml
-conda activate sirnaforge
-```
+Choose your path based on what you need to do:
 
  **[Complete installation guide with troubleshooting →](docs/getting_started.md)**
+
+- **Deploy / run from registry (no setup)** — Pull the prebuilt image with all bio tools, Nextflow, and Java bundled.
+  ```bash
+  docker pull ghcr.io/austin-s-h/sirnaforge:latest
+  ```
+
+- **Daily development (Python-only, fast)** — Use uv + managed virtualenv; great for core code and unit tests. Heavy bio/Nextflow tests stay skipped unless you also have Docker/Java.
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  git clone https://github.com/austin-s-h/sirnaforge && cd sirnaforge
+  uv sync --dev
+  make dev
+  make check
+  ```
+
+- **Complete local testing (matches CI)** — Either
+  1) Build and test in Docker (reuses the bundled tools): `make docker-build-test`
+  2) Or use conda to get bio deps + Java locally, then run the full suite:
+  ```bash
+  conda env create -f environment-dev.yml
+  conda activate sirnaforge
+  make test-release
+  ```
+  (Nextflow/Java are required for Nextflow-marked tests; Docker is required for container-marked tests.)
 
 ---
 
@@ -94,7 +97,8 @@ uv run sirnaforge workflow TP53 --output-dir results
 - Thermodynamically-scored siRNA candidates
 - Off-target analysis (Docker only)
 - Ranked results in CSV and FASTA formats
-- Automatic Ensembl human cDNA transcriptome indexing (override with `--transcriptome-fasta`)
+- Automatic Ensembl transcriptome indexing across human, mouse, rat, and rhesus macaque (override with `--transcriptome-fasta`, or supply design-ready transcripts via `--input-fasta`)
+- A `reference_summary` block in `logs/workflow_summary.json` that records whether each reference was explicit, defaulted, or disabled
 
 Need more control? Customize with parameters:
 
@@ -106,6 +110,34 @@ sirnaforge workflow BRCA1 \
   --design-mode mirna \
   --output-dir results
 ```
+
+### Custom inputs & offline mode
+
+Bring your own transcript sequences while still running the full workflow:
+
+```bash
+# Design from bundled sample FASTA (design-only mode, no transcriptome off-target)
+sirnaforge workflow TP53 \
+  --input-fasta examples/sample_transcripts.fasta \
+  --output-dir custom_inputs_demo
+
+# Design from bundled sample FASTA and align against mouse transcriptome
+sirnaforge workflow TP53 \
+  --input-fasta examples/sample_transcripts.fasta \
+  --transcriptome-fasta ensembl_mouse_cdna \
+  --output-dir custom_inputs_demo
+
+# Remote FASTA sources also work
+sirnaforge workflow BRCA1 \
+  --input-fasta https://example.org/custom/brca1.fasta \
+  --transcriptome-fasta /data/reference/ensembl_human_cdna_111.fasta
+```
+
+`--input-fasta` skips the gene search stage and designs directly from your sequences. When used alone, transcriptome off-target analysis is disabled (design-only mode). To enable transcriptome off-target with custom inputs, explicitly provide `--transcriptome-fasta`.
+
+When `--transcriptome-fasta` is omitted the workflow automatically indexes the bundled Ensembl cDNA transcriptomes for human, mouse, rat, and macaque so multi-species off-target analysis runs out of the box.
+
+Every workflow run now captures the resolved transcriptome decision in `logs/workflow_summary.json` under `reference_summary.transcriptome`, indicating whether the reference was auto-selected, explicitly supplied, or intentionally disabled. This makes it easier to audit production runs and confirm that default references were applied as expected.
 
 📖 **[Usage examples and workflows →](docs/usage_examples.md)**
 📖 **[Complete CLI reference →](docs/cli_reference.md)**

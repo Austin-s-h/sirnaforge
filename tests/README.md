@@ -2,6 +2,34 @@
 
 This document outlines the three main groups of tests in siRNAforge, designed to support different development and deployment scenarios.
 
+## Test Output & Cleanup Behavior
+
+### Container Test Persistence (for Failure Inspection)
+
+All container tests use a **dual-strategy** for output management:
+
+**When running in Docker** (`make docker-test`, `make docker-build-test`):
+- Output saved to `/workspace/workflow_test_debug_*` directories
+- These are mounted from host via `-v $(pwd):/workspace`
+- **Persists after test completion** for manual inspection
+- Clean with: `make docker-build-test` (removes all `workflow_test_debug_*` dirs)
+
+**When running on host** (`pytest tests/container/`):
+- Output saved to pytest's `tmp_path` (`.pytest_tmp/`)
+- **Auto-cleanup**: Removed after successful tests
+- **Auto-retention**: pytest keeps last 3 failed test directories
+- Temporary directories include full output for debugging failures
+
+**Failure inspection workflow:**
+```bash
+# After a container test failure:
+ls -la workflow_test_debug_*/       # Check persistent output
+cat workflow_test_debug_*/logs/*.log  # View logs
+
+# Clean before next run:
+make docker-build-test  # Cleans all debug dirs + rebuilds + tests
+```
+
 ## Test Groups Overview
 
 ### 1. Unit Tests (`unit`, `local_python`, `ci`)
@@ -151,6 +179,9 @@ tests/
 │   ├── test_gene_search.py # Gene search functionality
 │   ├── test_fixed_vienna.py # Thermodynamics
 │   └── ...
+├── container/              # Docker container integration tests
+│   ├── test_container_integration.py  # Basic container validation
+│   └── test_workflow_modes.py         # Comprehensive workflow coverage
 ├── docker/                 # Docker integration tests
 │   ├── test_container_integration.py
 │   └── test_profiles.py
@@ -158,5 +189,73 @@ tests/
 │   └── test_embedded_pipeline.py
 └── integration/            # Full workflow scripts
     └── test_workflow_integration.sh
-```</content>
-<parameter name="filePath">/home/hovland/sirnaforge/sirnaforge/tests/README.md
+```
+
+## Container Test Coverage
+
+The `tests/container/` directory contains comprehensive end-to-end tests that validate different workflow operation modes inside Docker:
+
+### `test_container_integration.py` - Basic Container Validation
+- CLI help and version commands
+- Python environment and package availability
+- Bioinformatics tool availability (BWA-MEM2, SAMtools, ViennaRNA)
+- Minimal workflow smoke test
+- Full TP53 workflow with real data
+
+### `test_workflow_modes.py` - Comprehensive Workflow Coverage
+Tests all major workflow configurations non-redundantly with existing unit tests and test_container_integration.py:
+
+1. **Full Gene Search Workflow** (`test_full_workflow_with_gene_search`)
+   - Gene symbol (ACTB) → transcript retrieval → ORF validation → design → off-target
+   - Validates Ensembl API integration
+   - Checks complete output structure
+   - **Non-redundant**: Uses gene search (vs TP53 test which uses --input-fasta)
+
+2. **Custom Transcriptome Off-Target** (`test_custom_transcriptome_offtarget`)
+   - Uses `--input-fasta` + `--transcriptome-fasta`
+   - Validates transcriptome indexing
+   - Verifies off-target analysis runs
+
+3. **Genome Index Override** (`test_genome_index_override`)
+   - Tests `--offtarget-indices` flag
+   - Validates custom genome reference paths
+   - Checks species derivation from overrides
+
+4. **miRNA Design Mode** (`test_mirna_design_mode`)
+   - Uses `--design-mode mirna`
+   - Validates miRNA-specific scoring columns
+   - Checks position-1 nucleotide preference
+
+5. **Chemical Modifications** (`test_modification_pattern_application`)
+   - Tests `--modifications` and `--overhang` flags
+   - Validates modification annotations in FASTA headers
+   - Checks manifest includes modification info
+
+6. **Multi-Species Off-Target** (`test_multi_species_offtarget`)
+   - Tests `--species` with multiple values
+   - Validates cross-species miRNA seed checks
+   - Verifies off-target across genomes
+
+7. **GC Content Filtering** (`test_gc_range_filtering`)
+   - Tests `--gc-min` and `--gc-max` filters
+   - Validates candidate filtering logic
+   - Checks QC reason documentation
+
+8. **Toy Database Workflow** (`test_minimal_toy_workflow`)
+    - Fast sanity check using toy databases
+    - Validates basic pipeline flow
+    - Quick validation for container builds
+
+**Note**: Design-only mode (--input-fasta without transcriptome) is already comprehensively tested in `test_container_integration.py::test_docker_full_tp53_workflow`, so it's intentionally not duplicated here. Output directory structure validation is also covered by the TP53 test's `_verify_workflow_outputs()` helper.
+
+**Run container tests**:
+```bash
+# Build and test container
+make docker-build-test
+
+# Run container tests directly
+make docker-test
+
+# Run specific workflow mode test
+uv run pytest tests/container/test_workflow_modes.py::test_mirna_design_mode -v
+```

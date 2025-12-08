@@ -56,6 +56,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             compressed=True,
             description="Ensembl rat cDNA sequences (mRatBN7.2)",
         ),
+        "ensembl_macaque_cdna": TranscriptomeSource(
+            name="ensembl_cdna",
+            url="https://ftp.ensembl.org/pub/current_fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
+            species="macaque",
+            format="fasta",
+            compressed=True,
+            description="Ensembl rhesus macaque cDNA sequences (Mmul_10)",
+        ),
     }
 
     def __init__(
@@ -70,6 +78,65 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         """
         super().__init__(cache_subdir="transcriptomes", cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
         self.auto_build_indices = auto_build_indices
+
+    def describe_source_status(self, source_name: str) -> dict[str, Any]:
+        """Return cache metadata for a configured source."""
+        source = self.SOURCES.get(source_name)
+        if source is None:
+            return {
+                "namespace": "transcriptome",
+                "identifier": source_name,
+                "species": "unknown",
+                "description": "unknown transcriptome source",
+                "cached": False,
+                "indexed": False,
+                "cache_path": None,
+                "index_path": None,
+                "size_mb": None,
+                "last_updated": None,
+            }
+
+        cache_key = source.cache_key()
+        meta = self.metadata.get(cache_key)
+        cache_path: Optional[Path] = None
+        if meta:
+            cache_path = Path(meta.file_path)
+            if not cache_path.exists():
+                cache_path = None
+        cached = self._is_cache_valid(cache_key)
+        index_path = None
+        indexed = False
+
+        if meta:
+            candidate_index = self._get_index_path(meta)
+            if candidate_index and candidate_index.with_suffix(".amb").exists():
+                index_path = candidate_index
+                indexed = True
+            elif candidate_index:
+                index_path = candidate_index
+
+        size_mb = (meta.file_size / (1024 * 1024)) if meta else None
+        last_updated = meta.downloaded_at if meta else None
+
+        return {
+            "namespace": "transcriptome",
+            "identifier": source_name,
+            "species": source.species,
+            "description": source.description,
+            "cached": cached,
+            "indexed": indexed,
+            "cache_path": str(cache_path) if cache_path else None,
+            "index_path": str(index_path) if index_path else None,
+            "size_mb": size_mb,
+            "last_updated": last_updated,
+        }
+
+    def describe_sources_status(
+        self, source_names: Optional[Union[list[str], tuple[str, ...]]] = None
+    ) -> list[dict[str, Any]]:
+        """Return cache statuses for multiple transcriptome sources."""
+        targets = source_names or list(self.SOURCES.keys())
+        return [self.describe_source_status(name) for name in targets]
 
     def _metadata_from_dict(self, data: dict[str, Any]) -> CacheMetadata:
         """Create CacheMetadata with TranscriptomeSource."""
