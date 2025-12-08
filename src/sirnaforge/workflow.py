@@ -29,6 +29,13 @@ from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
+from sirnaforge.config import (
+    DEFAULT_TRANSCRIPTOME_SOURCES,
+    ReferenceChoice,
+    ReferencePolicyResolver,
+    ReferenceSelection,
+    WorkflowInputSpec,
+)
 from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
 from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
@@ -74,6 +81,7 @@ class WorkflowConfig:
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
         transcriptome_fasta: str | None = None,
+        transcriptome_selection: ReferenceSelection | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
@@ -107,7 +115,16 @@ class WorkflowConfig:
         self.genome_species: list[str] = list(dict.fromkeys(default_genomes))
         self.mirna_database = mirna_database
         self.mirna_species: list[str] = list(dict.fromkeys(mirna_species)) if mirna_species else []
-        self.transcriptome_fasta = transcriptome_fasta
+        if transcriptome_selection is None and transcriptome_fasta:
+            transcriptome_selection = ReferenceSelection(
+                choices=(ReferenceChoice.explicit(transcriptome_fasta, reason="legacy transcriptome argument"),)
+            )
+        self.transcriptome_selection = transcriptome_selection or ReferenceSelection.disabled(
+            "no transcriptome configured"
+        )
+        self.transcriptome_references = [
+            choice.value for choice in self.transcriptome_selection.choices if choice.value
+        ]
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
@@ -246,6 +263,9 @@ class SiRNAWorkflow:
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
             "offtarget_summary": offtarget_results,
+            "reference_summary": {
+                "transcriptome": self.config.transcriptome_selection.to_metadata(),
+            },
         }
 
         # Optionally save workflow summary JSON (store in logs/)
@@ -968,6 +988,33 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation error: {e}")
             return None
 
+    async def _materialize_transcriptome_reference(self, choice: ReferenceChoice) -> tuple[str, str] | None:
+        """Prepare a transcriptome reference for Nextflow usage."""
+        if not choice.value:
+            return None
+
+        console.print(f"📚 Transcriptome reference: {choice.value} ({choice.state.value})")
+        try:
+            transcriptome_result = await self._prepare_transcriptome_database(choice.value)
+        except Exception as exc:  # pragma: no cover - defensive logging path
+            logger.exception("Failed to prepare transcriptome database")
+            console.print(f"⚠️  Transcriptome preparation failed: {exc}")
+            return None
+
+        if not transcriptome_result or not transcriptome_result.get("index"):
+            console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
+            return None
+
+        species_value = transcriptome_result.get("species")
+        transcriptome_species = species_value if isinstance(species_value, str) else "transcriptome"
+        transcriptome_index = str(transcriptome_result["index"])
+
+        console.print(
+            f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
+            f"(index: {transcriptome_result['index'].name})"
+        )
+        return transcriptome_species, transcriptome_index
+
     def _resolve_active_genome_species(self, params: Mapping[str, Any]) -> list[str]:
         """Filter genome species down to those with available indices."""
         requested = [species.strip() for species in self.config.genome_species if species.strip()]
@@ -1146,44 +1193,35 @@ class SiRNAWorkflow:
     ) -> dict[str, Any]:
         """Run Nextflow-based off-target analysis."""
         additional_params: dict[str, Any] = dict(self.config.nextflow_config)
-        if self.config.transcriptome_fasta:
-            try:
-                transcriptome_result = await self._prepare_transcriptome_database(self.config.transcriptome_fasta)
-                if transcriptome_result and transcriptome_result.get("index"):
-                    # Pass the index path to Nextflow for transcriptome analysis
-                    species_value = transcriptome_result.get("species")
-                    transcriptome_species = species_value if isinstance(species_value, str) else "transcriptome"
+        transcriptome_selection = self.config.transcriptome_selection
+        prepared_entries: list[str] = []
+        prepared_species: list[str] = []
+        if transcriptome_selection.enabled and self.config.transcriptome_references:
+            for choice in transcriptome_selection.choices:
+                materialized = await self._materialize_transcriptome_reference(choice)
+                if not materialized:
+                    continue
+                transcriptome_species, transcriptome_index = materialized
 
-                    index_value = transcriptome_result["index"]
-                    transcriptome_index = str(index_value)
+                if transcriptome_species not in self.config.genome_species:
+                    self.config.genome_species.append(transcriptome_species)
 
-                    # Ensure the species appears in the Nextflow genome species list for logging consistency
-                    if transcriptome_species not in self.config.genome_species:
-                        self.config.genome_species.append(transcriptome_species)
+                entry = f"{transcriptome_species}:{transcriptome_index}"
+                prepared_entries.append(entry)
+                prepared_species.append(transcriptome_species)
 
-                    # Use transcriptome_indices parameter (preferred) instead of genome_indices
-                    indices_entry = f"{transcriptome_species}:{transcriptome_index}"
-                    existing_indices = additional_params.get("transcriptome_indices")
-                    if existing_indices:
-                        entries = [token.strip() for token in existing_indices.split(",") if token.strip()]
-                        if indices_entry not in entries:
-                            entries.append(indices_entry)
-                            additional_params["transcriptome_indices"] = ",".join(entries)
-                    else:
-                        additional_params["transcriptome_indices"] = indices_entry
-
-                    additional_params["transcriptome_index"] = transcriptome_index
-                    additional_params["transcriptome_species"] = transcriptome_species
-
-                    console.print(
-                        f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
-                        f"(index: {transcriptome_result['index'].name})"
-                    )
-                else:
-                    console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
-            except Exception as e:
-                logger.exception("Failed to prepare transcriptome database")
-                console.print(f"⚠️  Transcriptome preparation failed: {e}")
+            if prepared_entries:
+                existing_indices = additional_params.get("transcriptome_indices")
+                merged_entries = [token.strip() for token in existing_indices.split(",")] if existing_indices else []
+                merged_entries = [entry for entry in merged_entries if entry]
+                for entry in prepared_entries:
+                    if entry not in merged_entries:
+                        merged_entries.append(entry)
+                additional_params["transcriptome_indices"] = ",".join(merged_entries)
+                unique_species = list(dict.fromkeys(prepared_species))
+                additional_params["transcriptome_species"] = ",".join(unique_species)
+        elif not transcriptome_selection.enabled:
+            console.print(f"ℹ️  Transcriptome off-target disabled ({transcriptome_selection.disabled_reason})")
 
         active_species = self._resolve_active_genome_species(additional_params)
         has_transcriptome = bool(additional_params.get("transcriptome_indices"))
@@ -1795,6 +1833,7 @@ async def run_sirna_workflow(
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
+    transcriptome_selection: ReferenceSelection | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
@@ -1802,6 +1841,10 @@ async def run_sirna_workflow(
     overhang: str = "dTdT",
     log_file: str | None = None,
     write_json_summary: bool = True,
+    num_threads: int | None = None,
+    allow_transcriptome_with_input_fasta: bool = False,
+    default_transcriptome_sources: Sequence[str] = DEFAULT_TRANSCRIPTOME_SOURCES,
+    keep_nextflow_work: bool = False,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -1817,6 +1860,7 @@ async def run_sirna_workflow(
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
+        transcriptome_selection: Pre-resolved transcriptome selection metadata
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
@@ -1824,6 +1868,10 @@ async def run_sirna_workflow(
         overhang: Overhang sequence (dTdT for DNA, UU for RNA)
         log_file: Path to centralized log file
         write_json_summary: Write logs/workflow_summary.json
+        num_threads: Optional override for design parallelism
+        allow_transcriptome_with_input_fasta: Force transcriptome analysis even when using input FASTA
+        default_transcriptome_sources: Ordered list of transcriptome identifiers evaluated by default
+        keep_nextflow_work: Keep Nextflow work directory symlink in output
 
     Returns:
         Dictionary with complete workflow results
@@ -1862,6 +1910,17 @@ async def run_sirna_workflow(
         resolved_input = resolve_input_source(input_fasta, inputs_dir)
         input_path = resolved_input.local_path
 
+    if transcriptome_selection is None:
+        input_spec = WorkflowInputSpec(
+            input_fasta=input_fasta,
+            transcriptome_argument=transcriptome_fasta,
+            default_transcriptomes=default_transcriptome_sources,
+            design_only=False,
+            allow_transcriptome_for_input_fasta=allow_transcriptome_with_input_fasta,
+        )
+        resolver = ReferencePolicyResolver(input_spec)
+        transcriptome_selection = resolver.resolve_transcriptomes()
+
     config = WorkflowConfig(
         output_dir=output_path,
         gene_query=gene_query,
@@ -1873,9 +1932,12 @@ async def run_sirna_workflow(
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
+        transcriptome_selection=transcriptome_selection,
         log_file=log_file,
         write_json_summary=write_json_summary,
+        num_threads=num_threads,
         input_source=resolved_input,
+        keep_nextflow_work=keep_nextflow_work,
     )
 
     # Run workflow

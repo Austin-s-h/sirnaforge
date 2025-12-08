@@ -56,6 +56,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             compressed=True,
             description="Ensembl rat cDNA sequences (mRatBN7.2)",
         ),
+        "ensembl_macaque_cdna": TranscriptomeSource(
+            name="ensembl_cdna",
+            url="https://ftp.ensembl.org/pub/current_fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
+            species="macaque",
+            format="fasta",
+            compressed=True,
+            description="Ensembl rhesus macaque cDNA sequences (Mmul_10)",
+        ),
     }
 
     def __init__(

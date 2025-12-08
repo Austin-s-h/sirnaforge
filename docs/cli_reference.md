@@ -77,7 +77,7 @@ $ sirnaforge workflow [OPTIONS] GENE_QUERY
 * `--species, --genome-species TEXT`: Comma-separated canonical species identifiers (genome+miRNA). Supported values include human, mouse, rhesus, rat, chicken  [default: human,mouse,rhesus,rat,chicken]
 * `--mirna-db TEXT`: miRNA reference database to use for seed analysis  [default: mirgenedb]
 * `--mirna-species TEXT`: Optional comma-separated override for miRNA species identifiers. Defaults to mapping the --species selections
-* `--transcriptome-fasta TEXT`: Path or URL to transcriptome FASTA (local file, URL, or pre-configured source such as `ensembl_human_cdna`). Cached and indexed automatically; defaults to `ensembl_human_cdna` when omitted
+* `--transcriptome-fasta TEXT`: Path or URL to transcriptome FASTA (local file, URL, or pre-configured source such as `ensembl_human_cdna`). Cached and indexed automatically; when omitted the workflow indexes the bundled Ensembl human/mouse/rat/macaque transcriptomes
 * `--offtarget-indices TEXT`: Comma-separated overrides for genome indices used in off-target analysis. Format: `human:/abs/path/GRCh38,mouse:/abs/path/GRCm39`. When provided, these replace cached/default genome references.
 * `--gc-min FLOAT RANGE`: Minimum GC content percentage  [default: 30.0; 0.0&lt;=x&lt;=100.0]
 * `--gc-max FLOAT RANGE`: Maximum GC content percentage  [default: 60.0; 0.0&lt;=x&lt;=100.0]
@@ -97,7 +97,9 @@ siRNAforge accepts two complementary inputs:
 - `--transcriptome-fasta` selects the dataset used for transcriptome off-target analysis. It accepts local/remote files as well as shortcuts such as `ensembl_human_cdna`, `ensembl_mouse_cdna`, and other presets listed in `sirnaforge cache --info`. **Explicitly provide this flag to enable transcriptome off-target when using `--input-fasta`.**
 - `--offtarget-indices` overrides the genome indices used for off-target analysis with explicit `species:/index_prefix` entries. When present, these override cached/default genome references and drive the genome species selection for Nextflow.
 
-Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow/BWA-MEM2 stage. When `--transcriptome-fasta` is omitted the CLI defaults to `ensembl_human_cdna`. Remote files are cached under `~/.cache/sirnaforge/` and reused across runs.
+Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow/BWA-MEM2 stage. When `--transcriptome-fasta` is omitted the CLI indexes all bundled Ensembl transcriptomes (human, mouse, rat, macaque) so transcriptome off-target analysis still runs. Remote files are cached under `~/.cache/sirnaforge/` and reused across runs.
+
+The workflow records the resolved decision in `logs/workflow_summary.json` as `reference_summary.transcriptome`, so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
 
 ## `sirnaforge design`
 

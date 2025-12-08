@@ -21,6 +21,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from sirnaforge.config import DEFAULT_TRANSCRIPTOME_SOURCES, ReferencePolicyResolver, WorkflowInputSpec
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 
 # Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
@@ -55,8 +56,6 @@ from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_sirna_workflow
-
-DEFAULT_TRANSCRIPTOME_SOURCE = "ensembl_human_cdna"
 
 app = typer.Typer(
     name="sirnaforge",
@@ -421,7 +420,7 @@ def workflow(  # noqa: PLR0912
             "Path or URL to transcriptome FASTA file for off-target analysis. "
             "Can be a local file, HTTP(S) URL, or pre-configured source name "
             "(e.g., 'ensembl_human_cdna'). Will be cached and indexed automatically. "
-            "Defaults to 'ensembl_human_cdna' when omitted."
+            "When omitted the workflow indexes the bundled Ensembl human, mouse, rat, and macaque transcriptomes."
         ),
     ),
     offtarget_indices: Optional[str] = typer.Option(
@@ -560,13 +559,22 @@ def workflow(  # noqa: PLR0912
     if input_fasta:
         input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
 
-    # When using input-fasta (design-only mode), only enable transcriptome off-target if explicitly requested
-    if input_fasta and not transcriptome_fasta:
-        transcriptome_selection = None
-        transcriptome_label = "disabled (design-only mode)"
+    # Resolve transcriptome policy once so downstream layers receive metadata
+    transcriptome_spec = WorkflowInputSpec(
+        input_fasta=input_fasta,
+        transcriptome_argument=transcriptome_fasta,
+        default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+        design_only=False,
+    )
+    transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
+    if transcriptome_selection.enabled:
+        rendered_choices = [
+            f"{choice.value} ({choice.state.value})" for choice in transcriptome_selection.choices if choice.value
+        ]
+        transcriptome_label = ", ".join(rendered_choices)
     else:
-        transcriptome_selection = transcriptome_fasta or DEFAULT_TRANSCRIPTOME_SOURCE
-        transcriptome_label = transcriptome_fasta or f"{DEFAULT_TRANSCRIPTOME_SOURCE} (auto)"
+        reason = transcriptome_selection.disabled_reason or "not available"
+        transcriptome_label = f"disabled ({reason})"
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
 
@@ -616,7 +624,8 @@ def workflow(  # noqa: PLR0912
                     genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
-                    transcriptome_fasta=transcriptome_selection,
+                    transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_selection=transcriptome_selection,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,

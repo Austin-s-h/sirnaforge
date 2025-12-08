@@ -97,7 +97,8 @@ uv run sirnaforge workflow TP53 --output-dir results
 - Thermodynamically-scored siRNA candidates
 - Off-target analysis (Docker only)
 - Ranked results in CSV and FASTA formats
-- Automatic Ensembl human cDNA transcriptome indexing (override with `--transcriptome-fasta`, or supply design-ready transcripts via `--input-fasta`)
+- Automatic Ensembl transcriptome indexing across human, mouse, rat, and rhesus macaque (override with `--transcriptome-fasta`, or supply design-ready transcripts via `--input-fasta`)
+- A `reference_summary` block in `logs/workflow_summary.json` that records whether each reference was explicit, defaulted, or disabled
 
 Need more control? Customize with parameters:
 
@@ -133,6 +134,10 @@ sirnaforge workflow BRCA1 \
 ```
 
 `--input-fasta` skips the gene search stage and designs directly from your sequences. When used alone, transcriptome off-target analysis is disabled (design-only mode). To enable transcriptome off-target with custom inputs, explicitly provide `--transcriptome-fasta`.
+
+When `--transcriptome-fasta` is omitted the workflow automatically indexes the bundled Ensembl cDNA transcriptomes for human, mouse, rat, and macaque so multi-species off-target analysis runs out of the box.
+
+Every workflow run now captures the resolved transcriptome decision in `logs/workflow_summary.json` under `reference_summary.transcriptome`, indicating whether the reference was auto-selected, explicitly supplied, or intentionally disabled. This makes it easier to audit production runs and confirm that default references were applied as expected.
 
 📖 **[Usage examples and workflows →](docs/usage_examples.md)**
 📖 **[Complete CLI reference →](docs/cli_reference.md)**

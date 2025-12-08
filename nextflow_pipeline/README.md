@@ -39,7 +39,7 @@ nextflow run nextflow_pipeline/main.nf \
 
 Built-in defaults already cover the most common references:
 - Genome off-target analysis targets `human,rat,rhesus` unless overridden
-- Transcriptome runs automatically index the Ensembl human cDNA reference (cached under `~/.cache/sirnaforge`)
+- Transcriptome runs automatically index the Ensembl cDNA references for human, mouse, rat, and macaque (cached under `~/.cache/sirnaforge`)
 - miRNA seed analysis uses MirGeneDB with `human,mouse,rat` species preloaded
 
 That means the majority of workflows only need the `--input` and `--outdir` arguments shown above.

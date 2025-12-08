@@ -136,7 +136,7 @@ uv run sirnaforge workflow TP53 \
 ```
 
 - `--input-fasta` accepts local files or remote URLs. The workflow copies and validates the sequences before design, but still uses the `GENE_QUERY` argument for naming outputs.
-- `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local path, URL, or presets such as `ensembl_human_cdna`). When omitted it defaults to the Ensembl human cDNA dataset.
+- `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local path, URL, or presets such as `ensembl_human_cdna`). When omitted the workflow indexes the bundled Ensembl human, mouse, rat, and macaque transcriptomes so off-target analysis still runs.
 - Remote resources are cached under `~/.cache/sirnaforge/`, so subsequent runs reuse downloads automatically.
 
 ### Results Structure

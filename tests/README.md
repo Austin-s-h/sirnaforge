@@ -257,5 +257,5 @@ make docker-build-test
 make docker-test
 
 # Run specific workflow mode test
-uv run pytest tests/container/test_workflow_modes.py::test_design_only_mode_no_offtarget -v
+uv run pytest tests/container/test_workflow_modes.py::test_mirna_design_mode -v
 ```

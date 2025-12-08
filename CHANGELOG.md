@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🔧 Improvements
 - **Resilient Aggregation & Reporting**: Nextflow modules (`modules/local/aggregate_results.nf`, `mirna_offtarget_analysis.nf`, `split_candidates.nf`, etc.) plus `pipeline/nextflow_cli.py` were refactored to emit consolidated TSV/JSON artefacts even when some analyses are skipped, ensuring miRNA/genome summaries always arrive in `workflow_output/`.
 - **Deterministic Caching**: New cache utilities expose `SIRNAFORGE_CACHE_DIR`/XDG-aware paths and tag Nextflow workdirs with metadata, dramatically reducing repeated downloads and making cleanup predictable.
-- **Workflow Parameter Safety**: CLI defaults now enforce valid GC range/length boundaries and automatically fall back to the bundled `ensembl_human_cdna` transcriptome when no input is provided, preventing empty design runs.
+- **Workflow Parameter Safety**: CLI defaults now enforce valid GC range/length boundaries and automatically fall back to the bundled Ensembl transcriptome set (`ensembl_human_cdna`, `ensembl_mouse_cdna`, `ensembl_rat_cdna`, `ensembl_macaque_cdna`) when no input is provided, preventing empty design runs.
 
 ### 🐛 Bug Fixes
 - **Pipeline Robustness**: Aggregation handles missing combined TSVs, gracefully copies per-species miRNA batches, and logs explicit workdir pointers so failed runs can be recovered without manual spelunking.

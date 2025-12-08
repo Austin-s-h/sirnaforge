@@ -106,7 +106,7 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 **Tips:**
 - Combine `--input-fasta` with a gene query to keep familiar file names while sourcing transcripts from your own assemblies.
 - `--transcriptome-fasta` accepts preset identifiers (`ensembl_*`), HTTP(S) URLs, or local files; siRNAforge caches indexes automatically so repeated runs are fast.
-- Leave the transcriptome flag unset to fall back to `ensembl_human_cdna`.
+- Leave the transcriptome flag unset to fall back to the bundled Ensembl transcriptomes (human, mouse, rat, macaque).
 
 ## Gene Search
 
