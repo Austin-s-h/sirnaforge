@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from sirnaforge.config import DEFAULT_MIRNA_CANONICAL_SPECIES
 from sirnaforge.core.off_target import (
     aggregate_mirna_results,
     aggregate_offtarget_results,
@@ -23,6 +24,8 @@ from sirnaforge.core.off_target import (
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+DEFAULT_MIRNA_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
 def split_candidates_cli(input_fasta: str, output_dir: str = ".") -> dict[str, Any]:
@@ -195,7 +198,7 @@ def run_mirna_seed_analysis_cli(
     candidate_fasta: str,
     candidate_id: str,
     mirna_db: str = "mirgenedb",
-    mirna_species: str = "human",
+    mirna_species: str = DEFAULT_MIRNA_SPECIES_ARGUMENT,
     output_dir: str = ".",
 ) -> dict[str, Any]:
     """Run miRNA seed match analysis for a single candidate.
@@ -336,7 +339,7 @@ def aggregate_results_cli(  # noqa: PLR0912
         mirna_summary: Optional[dict[str, Any]] = None
         if mirna_analysis_files and (mirna_db or mirna_species):
             resolved_mirna_db = mirna_db or "mirgenedb"
-            resolved_mirna_species = mirna_species or "human"
+            resolved_mirna_species = mirna_species or DEFAULT_MIRNA_SPECIES_ARGUMENT
             mirna_output = aggregate_mirna_results(
                 results_dir=str(mirna_results_dir),
                 output_dir=output_dir,

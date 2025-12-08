@@ -14,6 +14,16 @@ DEFAULT_TRANSCRIPTOME_SOURCES: tuple[str, ...] = (
 )
 DEFAULT_TRANSCRIPTOME_SOURCE = DEFAULT_TRANSCRIPTOME_SOURCES[0]
 
+DEFAULT_MIRNA_SOURCE = "mirgenedb"
+DEFAULT_MIRNA_CANONICAL_SPECIES: tuple[str, ...] = (
+    "chicken",
+    "pig",
+    "rat",
+    "mouse",
+    "human",
+    "macaque",
+)
+
 
 class ReferenceState(str, Enum):
     """Describe how a reference input was selected."""
@@ -129,6 +139,8 @@ class ReferencePolicyResolver:
 __all__ = [
     "DEFAULT_TRANSCRIPTOME_SOURCE",
     "DEFAULT_TRANSCRIPTOME_SOURCES",
+    "DEFAULT_MIRNA_SOURCE",
+    "DEFAULT_MIRNA_CANONICAL_SPECIES",
     "ReferenceChoice",
     "ReferenceSelection",
     "ReferencePolicyResolver",

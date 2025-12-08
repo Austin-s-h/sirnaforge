@@ -74,7 +74,7 @@ $ sirnaforge workflow [OPTIONS] GENE_QUERY
 * `-d, --database TEXT`: Database to search (ensembl, refseq, gencode)  [default: ensembl]
 * `--design-mode TEXT`: Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)  [default: sirna]
 * `-n, --top-n INTEGER RANGE`: Number of top siRNA candidates to select (also used for off-target analysis)  [default: 20; x&gt;=1]
-* `--species, --genome-species TEXT`: Comma-separated canonical species identifiers (genome+miRNA). Supported values include human, mouse, rhesus, rat, chicken  [default: human,mouse,rhesus,rat,chicken]
+* `--species, --genome-species TEXT`: Comma-separated canonical species identifiers (genome+miRNA). Supported values include human, mouse, macaque, rat, chicken, pig  [default: chicken,pig,rat,mouse,human,macaque]
 * `--mirna-db TEXT`: miRNA reference database to use for seed analysis  [default: mirgenedb]
 * `--mirna-species TEXT`: Optional comma-separated override for miRNA species identifiers. Defaults to mapping the --species selections
 * `--transcriptome-fasta TEXT`: Path or URL to transcriptome FASTA (local file, URL, or pre-configured source such as `ensembl_human_cdna`). Cached and indexed automatically; when omitted the workflow indexes the bundled Ensembl human/mouse/rat/macaque transcriptomes

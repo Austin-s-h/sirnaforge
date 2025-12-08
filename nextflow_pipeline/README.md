@@ -40,7 +40,7 @@ nextflow run nextflow_pipeline/main.nf \
 Built-in defaults already cover the most common references:
 - Genome off-target analysis targets `human,rat,rhesus` unless overridden
 - Transcriptome runs automatically index the Ensembl cDNA references for human, mouse, rat, and macaque (cached under `~/.cache/sirnaforge`)
-- miRNA seed analysis uses MirGeneDB with `human,mouse,rat` species preloaded
+- miRNA seed analysis uses MirGeneDB with `chicken,pig,rat,mouse,human,macaque` species preloaded
 
 That means the majority of workflows only need the `--input` and `--outdir` arguments shown above.
 
@@ -86,7 +86,7 @@ Expected outputs:
 | `genome_species` | 'human,rat,rhesus' | Comma-separated species list |
 | `transcriptome_indices` | None | Comma-separated `species:/path/to/index_prefix` entries for transcriptome references |
 | `mirna_db` | 'mirgenedb' | miRNA seed reference database |
-| `mirna_species` | 'human,mouse,rat' | Comma-separated miRNA species analyzed by default |
+| `mirna_species` | 'chicken,pig,rat,mouse,human,macaque' | Comma-separated miRNA species analyzed by default |
 | `genome_config` | 'genomes.yaml' | Genome configuration file |
 | `sirna_length` | 21 | Expected siRNA length |
 | `max_hits` | 10000 | Maximum hits per candidate |

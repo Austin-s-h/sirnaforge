@@ -29,7 +29,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     MIRNA_SEED_ANALYSIS(
         candidates_fasta,
         params.mirna_db ?: 'mirgenedb',
-        params.mirna_species ?: 'human,mouse,rat'
+        params.mirna_species ?: 'chicken,pig,rat,mouse,human,macaque'
     )
     ch_versions = ch_versions.mix(MIRNA_SEED_ANALYSIS.out.versions)
 

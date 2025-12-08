@@ -21,7 +21,12 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from sirnaforge.config import DEFAULT_TRANSCRIPTOME_SOURCES, ReferencePolicyResolver, WorkflowInputSpec
+from sirnaforge.config import (
+    DEFAULT_MIRNA_CANONICAL_SPECIES,
+    DEFAULT_TRANSCRIPTOME_SOURCES,
+    ReferencePolicyResolver,
+    WorkflowInputSpec,
+)
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 
 # Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
@@ -69,6 +74,8 @@ console = Console(force_terminal=False, legacy_windows=True)
 T = TypeVar("T", bound=Callable[..., object])
 CommandDecorator = Callable[..., Callable[[T], T]]
 app_command: CommandDecorator = app.command
+
+DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
 def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
@@ -392,12 +399,12 @@ def workflow(  # noqa: PLR0912
         help="Number of top siRNA candidates to select (also used for off-target analysis)",
     ),
     species: str = typer.Option(
-        "human,mouse,rhesus,rat,chicken",
+        DEFAULT_SPECIES_ARGUMENT,
         "--species",
         "--genome-species",
         help=(
             "Comma-separated canonical species identifiers (genome+miRNA). "
-            "Supported values include human, mouse, rhesus, rat, chicken"
+            "Supported values include human, mouse, macaque, rat, chicken, pig"
         ),
     ),
     mirna_db: str = typer.Option(
