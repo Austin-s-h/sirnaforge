@@ -66,39 +66,5 @@ def test_fixed_asymmetry_calculation():
     print(f"✓ Asymmetry calculation: 5'={dg_5p}, 3'={dg_3p}, asym={asymmetry}")
 
 
-@pytest.mark.unit
-@pytest.mark.ci
-def test_multiple_sequences():
-    """Test multiple sequences to ensure stability."""
-    if not VIENNA_AVAILABLE:
-        pytest.skip("ViennaRNA not available")
-
-    calc = ThermodynamicCalculator(temperature=37.0)
-
-    # Multiple real sequences from TP53
-    sequences = [
-        ("CAAATTTCCTTCCACTCGGAT", "ATCCGAGTGGAAGGAAATTTG"),
-        ("ATCAAATCATCCATTGCTTGG", "CCAAGCAATGGATGATTTGAT"),
-        ("AAATCATCCATTGCTTGGGAC", "GTCCCAAGCAATGGATGATTT"),
-        ("GAACCGGAGGGAGCCGCAGTC", "GACTGCGGCTCCCTCCGGTTC"),
-        ("ACCGGAGGGAGCCGCAGTCAG", "CTGACTGCGGCTCCCTCCGGT"),
-    ]
-
-    for i, (guide, passenger) in enumerate(sequences):
-        print(f"Testing sequence {i + 1}: {guide}")
-
-        # Test duplex stability
-        dg = calc.calculate_duplex_stability(guide, passenger)
-        assert isinstance(dg, float)
-        print(f"  ✓ Duplex stability: {dg}")
-
-        # Test end stability
-        dg_5p = calc._calculate_end_stability(guide[:7], passenger[:7])
-        dg_3p = calc._calculate_end_stability(guide[14:], passenger[14:])
-        assert isinstance(dg_5p, float)
-        assert isinstance(dg_3p, float)
-        print(f"  ✓ End stabilities: 5'={dg_5p}, 3'={dg_3p}")
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

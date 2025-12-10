@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔧 Improvements
+- **Automatic Species Normalization**: All species inputs now automatically normalize to canonical form
+  - Accepts common names (`human`, `mouse`), miRBase codes (`hsa`, `mmu`), or scientific names (`Homo sapiens`)
+  - Consistent internal storage eliminates cross-system comparison issues
+  - Registry-based lookup in `src/sirnaforge/data/species_registry.py`
+- **Relaxed Index Requirements**: Workflow now accepts transcriptome FASTAs without pre-built BWA indices
+  - Nextflow builds indices in Docker environment when needed
+  - Enables off-target analysis on systems without local BWA-MEM2 installation
+- **Updated Ensembl URLs**: Fixed rat transcriptome download URL to current GRCr8 assembly
+
+### 📚 Documentation
+- **Species Normalization Guide**: Added comprehensive section to modular override guide
+  - Documents all supported species name formats
+  - Explains automatic normalization behavior
+  - Lists registry mappings and aliases
+- **Updated Examples**: All CLI examples now demonstrate flexible species format usage
+
+## [0.3.2] - 2025-12-09
+
+- Reviewed testing and eliminated overlapping and redundant information.
+- TODO: review docs_v2 and compare to current make-docs stack
+
 ## [0.3.1] - 2025-12-04
 
 ### ✨ Added

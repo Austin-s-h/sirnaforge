@@ -56,7 +56,7 @@ nextflow run nextflow_pipeline/main.nf \
 Important parameters:
 - `--candidates`: FASTA file with siRNA sequences (one per record)
 - `--outdir`: Output directory for per-species TSV/JSON summaries
-- `--genome_species`: Comma-separated list matching `genomes.yaml`
+- `--genome_species`: Comma-separated list for miRNA genome lookups (not genomic DNA alignment)
 - `--max_hits`, `--bwa_k`, `--bwa_T`, `--seed_start`, `--seed_end`: Override alignment sensitivity (see pipeline config)
 
 To run inside Docker for maximum reproducibility:

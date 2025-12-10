@@ -207,3 +207,28 @@ for canonical_name, registry_entry in CANONICAL_SPECIES_REGISTRY.items():
     for alias in alias_values:
         if alias:
             CANONICAL_SPECIES_ALIAS_MAP[alias] = canonical_name
+
+
+def normalize_species_name(species: str) -> str:
+    """Normalize species name to canonical form.
+
+    Args:
+        species: Species name in any recognized form (e.g., 'hsa', 'human', 'Homo sapiens')
+
+    Returns:
+        Canonical species name (e.g., 'human'), or original string if not recognized
+
+    Examples:
+        >>> normalize_species_name('hsa')
+        'human'
+        >>> normalize_species_name('Mus musculus')
+        'mouse'
+        >>> normalize_species_name('macaque')
+        'macaque'
+        >>> normalize_species_name('unknown')
+        'unknown'
+    """
+    if not species:
+        return species
+    normalized = species.strip().lower()
+    return CANONICAL_SPECIES_ALIAS_MAP.get(normalized, species)

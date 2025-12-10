@@ -1,8 +1,0 @@
->smoke_test_seq_minimal
-AUGCUGAUCGACUACGAUGCUGAUCGACUAC
-
->smoke_test_seq_short
-AUGAAACGCCUGAUCGACUACGAUGCUG
-
->smoke_test_seq_gc_balanced
-AUGCGCGCUGAUCGACUAUGCCGCGCGC

@@ -41,6 +41,7 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -108,13 +109,19 @@ class WorkflowConfig:
             self.nextflow_config["genome_indices"] = genome_indices_override
             override_species = self._extract_species_from_indices(genome_indices_override)
 
-        default_genomes = genome_species or ["human", "rat", "rhesus"]
+        # miRNA genome species: used for miRNA database lookups, not genomic DNA alignment
+        default_mirna_genomes = genome_species or ["human", "rat", "rhesus"]
         if override_species:
-            default_genomes = override_species
+            default_mirna_genomes = override_species
 
-        self.genome_species: list[str] = list(dict.fromkeys(default_genomes))
+        # Normalize all species names to canonical form for consistent comparisons
+        normalized_genomes = [normalize_species_name(s) for s in default_mirna_genomes]
+        self.mirna_genome_species: list[str] = list(dict.fromkeys(normalized_genomes))
         self.mirna_database = mirna_database
-        self.mirna_species: list[str] = list(dict.fromkeys(mirna_species)) if mirna_species else []
+        # Normalize mirna_species as well for consistency
+        self.mirna_species: list[str] = (
+            list(dict.fromkeys([normalize_species_name(s) for s in mirna_species])) if mirna_species else []
+        )
         if transcriptome_selection is None and transcriptome_fasta:
             transcriptome_selection = ReferenceSelection(
                 choices=(ReferenceChoice.explicit(transcriptome_fasta, reason="legacy transcriptome argument"),)
@@ -1001,23 +1008,34 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation failed: {exc}")
             return None
 
-        if not transcriptome_result or not transcriptome_result.get("index"):
+        if not transcriptome_result or not transcriptome_result.get("fasta"):
             console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
             return None
 
         species_value = transcriptome_result.get("species")
-        transcriptome_species = species_value if isinstance(species_value, str) else "transcriptome"
-        transcriptome_index = str(transcriptome_result["index"])
+        raw_species = species_value if isinstance(species_value, str) else "transcriptome"
+        # Normalize species name to canonical form (e.g., 'hsa' -> 'human', 'mmu' -> 'mouse')
+        transcriptome_species = normalize_species_name(raw_species)
 
-        console.print(
-            f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
-            f"(index: {transcriptome_result['index'].name})"
-        )
+        # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
+        # Nextflow will build the index in Docker if needed
+        transcriptome_path = transcriptome_result.get("index") or transcriptome_result["fasta"]
+        transcriptome_index = str(transcriptome_path)
+
+        if transcriptome_result.get("index"):
+            console.print(
+                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
+                f"(index: {transcriptome_result['index'].name})"
+            )
+        else:
+            console.print(
+                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} (Nextflow will build index)"
+            )
         return transcriptome_species, transcriptome_index
 
     def _resolve_active_genome_species(self, params: Mapping[str, Any]) -> list[str]:
         """Filter genome species down to those with available indices."""
-        requested = [species.strip() for species in self.config.genome_species if species.strip()]
+        requested = [species.strip() for species in self.config.mirna_genome_species if species.strip()]
         available: set[str] = set()
         for key in ("genome_indices", "genome_fastas"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
@@ -1065,7 +1083,17 @@ class SiRNAWorkflow:
         additional_params: Mapping[str, Any],
         pipeline_revision: str,
     ) -> dict[str, Any]:
-        """Configure cached work and home directories for Nextflow runs."""
+        """Configure cached work and home directories for Nextflow runs.
+
+        Args:
+            nf_config: Nextflow configuration
+            genome_species: Species for miRNA genome lookups (used in cache key)
+            additional_params: Additional pipeline parameters
+            pipeline_revision: Git revision of pipeline
+
+        Returns:
+            Cache metadata dictionary
+        """
         cache_root = resolve_cache_subdir("nextflow")
         home_dir = cache_root / "home"
         work_root = cache_root / "work"
@@ -1203,8 +1231,8 @@ class SiRNAWorkflow:
                     continue
                 transcriptome_species, transcriptome_index = materialized
 
-                if transcriptome_species not in self.config.genome_species:
-                    self.config.genome_species.append(transcriptome_species)
+                if transcriptome_species not in self.config.mirna_genome_species:
+                    self.config.mirna_genome_species.append(transcriptome_species)
 
                 entry = f"{transcriptome_species}:{transcriptome_index}"
                 prepared_entries.append(entry)
@@ -1260,7 +1288,15 @@ class SiRNAWorkflow:
         genome_species: Sequence[str],
         additional_params: Mapping[str, Any],
     ) -> tuple[NextflowRunner, dict[str, Any]]:
-        """Configure Nextflow runner with user settings and cached workdirs."""
+        """Configure Nextflow runner with user settings and cached workdirs.
+
+        Args:
+            genome_species: Species for miRNA genome lookups
+            additional_params: Additional pipeline parameters
+
+        Returns:
+            Configured NextflowRunner and cache metadata
+        """
         # Auto-detect environment to use appropriate profile
         # This will automatically switch to 'local' profile when running inside a container
         nf_config = NextflowConfig.auto_configure()

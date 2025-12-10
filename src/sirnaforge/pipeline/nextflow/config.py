@@ -251,7 +251,7 @@ class NextflowConfig:
         Args:
             input_file: Input FASTA file path
             output_dir: Output directory
-            genome_species: List of genome species to analyze
+            genome_species: List of species for miRNA genome lookups (not genomic DNA)
             additional_params: Additional parameters to pass
             include_test_profile: Whether to include 'test' profile for integration testing
 
@@ -290,9 +290,9 @@ class NextflowConfig:
                 "--max_cpus",
                 str(self.max_cpus),
                 "--max_memory",
-                f"'{self.max_memory}'",
+                self.max_memory,
                 "--max_time",
-                f"'{self.max_time}'",
+                self.max_time,
             ]
         )
 

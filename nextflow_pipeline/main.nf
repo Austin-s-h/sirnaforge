@@ -30,18 +30,22 @@ workflow SIRNAFORGE_OFFTARGET {
     //
     // Print parameter summary
     //
-    log.info """\
+    log.info """
         ===============================================
          S I R N A F O R G E   O F F - T A R G E T
         ===============================================
         input                : ${params.input}
         outdir               : ${params.outdir}
-        genome_species       : ${params.genome_species}
+
+        GENOME ANALYSIS (OPTIONAL - Resource Intensive)
         genome_fastas        : ${params.genome_fastas ?: 'Not provided'}
         genome_indices       : ${params.genome_indices ?: 'Not provided'}
 
+        TRANSCRIPTOME ANALYSIS (OPTIONAL - Resource Intensive)
         transcriptome_indices: ${params.transcriptome_indices ?: 'Not provided'}
-        transcriptome_species: ${params.transcriptome_species ?: 'N/A'}
+
+        MIRNA ANALYSIS
+        genome_species       : ${params.genome_species}
 
         max_hits             : ${params.max_hits}
         bwa_k                : ${params.bwa_k}

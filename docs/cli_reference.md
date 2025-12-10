@@ -74,9 +74,9 @@ $ sirnaforge workflow [OPTIONS] GENE_QUERY
 * `-d, --database TEXT`: Database to search (ensembl, refseq, gencode)  [default: ensembl]
 * `--design-mode TEXT`: Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)  [default: sirna]
 * `-n, --top-n INTEGER RANGE`: Number of top siRNA candidates to select (also used for off-target analysis)  [default: 20; x&gt;=1]
-* `--species, --genome-species TEXT`: Comma-separated canonical species identifiers (genome+miRNA). Supported values include human, mouse, macaque, rat, chicken, pig  [default: chicken,pig,rat,mouse,human,macaque]
+* `--species TEXT`: Comma-separated species identifiers — automatically normalized to canonical names. Accepts common names (human, mouse), miRBase codes (hsa, mmu), or scientific names (Homo sapiens, Mus musculus). Drives both transcriptome and miRNA off-target analysis.  [default: chicken,pig,rat,mouse,human,macaque]
 * `--mirna-db TEXT`: miRNA reference database to use for seed analysis  [default: mirgenedb]
-* `--mirna-species TEXT`: Optional comma-separated override for miRNA species identifiers. Defaults to mapping the --species selections
+* `--mirna-species TEXT`: Optional comma-separated override for miRNA-specific species selection (accepts any format, auto-normalized). When omitted, mirrors `--species` parameter. Use for independent miRNA species control.
 * `--transcriptome-fasta TEXT`: Path or URL to transcriptome FASTA (local file, URL, or pre-configured source such as `ensembl_human_cdna`). Cached and indexed automatically; when omitted the workflow indexes the bundled Ensembl human/mouse/rat/macaque transcriptomes
 * `--offtarget-indices TEXT`: Comma-separated overrides for genome indices used in off-target analysis. Format: `human:/abs/path/GRCh38,mouse:/abs/path/GRCm39`. When provided, these replace cached/default genome references.
 * `--gc-min FLOAT RANGE`: Minimum GC content percentage  [default: 30.0; 0.0&lt;=x&lt;=100.0]

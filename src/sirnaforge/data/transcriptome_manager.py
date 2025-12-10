@@ -50,11 +50,11 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         ),
         "ensembl_rat_cdna": TranscriptomeSource(
             name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/rattus_norvegicus/cdna/Rattus_norvegicus.mRatBN7.2.cdna.all.fa.gz",
+            url="https://ftp.ensembl.org/pub/current_fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
             species="rat",
             format="fasta",
             compressed=True,
-            description="Ensembl rat cDNA sequences (mRatBN7.2)",
+            description="Ensembl rat cDNA sequences (GRCr8)",
         ),
         "ensembl_macaque_cdna": TranscriptomeSource(
             name="ensembl_cdna",

@@ -97,6 +97,10 @@ docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge version
 ```bash
 # End-to-end analysis for TP53
 uv run sirnaforge workflow TP53 --output-dir my_first_analysis
+
+# With multi-species off-target validation (any format works)
+uv run sirnaforge workflow TP53 --species "human,mouse,rat" --output-dir my_analysis
+# Equivalent: --species "hsa,mmu,rno" or --species "Homo sapiens,Mus musculus,Rattus norvegicus"
 ```
 ````
 

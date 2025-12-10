@@ -401,10 +401,12 @@ def workflow(  # noqa: PLR0912
     species: str = typer.Option(
         DEFAULT_SPECIES_ARGUMENT,
         "--species",
-        "--genome-species",
         help=(
-            "Comma-separated canonical species identifiers (genome+miRNA). "
-            "Supported values include human, mouse, macaque, rat, chicken, pig"
+            "Comma-separated canonical species identifiers. This single parameter drives "
+            "all off-target analysis: miRNA database lookups (default: 7 species) and "
+            "transcriptome fetching from Ensembl (default: 4 species). "
+            "Override specific layers with --mirna-species or --transcriptome-fasta. "
+            "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
         ),
     ),
     mirna_db: str = typer.Option(
@@ -416,18 +418,20 @@ def workflow(  # noqa: PLR0912
         None,
         "--mirna-species",
         help=(
-            "Optional comma-separated override for miRNA species identifiers. "
-            "Defaults to mapping the --species selections"
+            "Override miRNA species identifiers (comma-separated). "
+            "When omitted, automatically maps from --species. "
+            "Use this for surgical control of miRNA database queries."
         ),
     ),
     transcriptome_fasta: Optional[str] = typer.Option(
         None,
         "--transcriptome-fasta",
         help=(
-            "Path or URL to transcriptome FASTA file for off-target analysis. "
-            "Can be a local file, HTTP(S) URL, or pre-configured source name "
-            "(e.g., 'ensembl_human_cdna'). Will be cached and indexed automatically. "
-            "When omitted the workflow indexes the bundled Ensembl human, mouse, rat, and macaque transcriptomes."
+            "Override or extend transcriptome references for off-target analysis. "
+            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "When omitted, automatically fetches Ensembl cDNA for species selected via --species. "
+            "Custom FASTA files are cached and indexed automatically. "
+            "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
         ),
     ),
     offtarget_indices: Optional[str] = typer.Option(
@@ -595,11 +599,10 @@ def workflow(  # noqa: PLR0912
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
             f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
-            f"Species: [green]{', '.join(canonical_species)}[/green]\n"
-            f"Genome Species: [green]{', '.join(genome_species_for_workflow)}[/green]\n"
-            f"miRNA Reference ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
-            f"Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
-            f"Genome Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
+            f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
+            f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
+            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
