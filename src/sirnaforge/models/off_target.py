@@ -268,6 +268,20 @@ class AggregatedOffTargetSummary(BaseAggregatedSummary):
     """Summary of aggregated off-target results across multiple candidates and genomes."""
 
     total_results: int = Field(ge=0, description="Total off-target hits aggregated")
+    hits_per_species: dict[str, int] = Field(
+        default_factory=dict,
+        description="Hit counts keyed by the species label present in aggregated TSVs",
+    )
+    human_hits: int = Field(
+        default=0,
+        ge=0,
+        description="Total hits assigned to the human species bucket",
+    )
+    other_species_hits: int = Field(
+        default=0,
+        ge=0,
+        description="Hits assigned to non-human species (per-species detail available in hits_per_species)",
+    )
 
 
 class AggregatedMiRNASummary(BaseAggregatedSummary):
@@ -278,5 +292,15 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
 
     hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
     hits_per_candidate: dict[str, int] = Field(default_factory=dict, description="Hit counts by candidate")
+    human_hits: int = Field(
+        default=0,
+        ge=0,
+        description="miRNA hits bucketed as human (aliases handled via utils.species)",
+    )
+    other_species_hits: int = Field(
+        default=0,
+        ge=0,
+        description="miRNA hits assigned to non-human species",
+    )
 
     total_candidates: int = Field(ge=0, description="Total candidates analyzed")

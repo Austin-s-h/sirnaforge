@@ -30,8 +30,23 @@ from sirnaforge.models.off_target import (
 from sirnaforge.models.schemas import GenomeAlignmentSchema, MiRNAAlignmentSchema
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.species import human_vs_other_totals
 
 logger = get_logger(__name__)
+
+
+def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Build a frequency map for the 'species' column in a DataFrame."""
+    if df.empty or "species" not in df.columns:
+        return {}
+
+    counts: dict[str, int] = {}
+    for value in df["species"].tolist():
+        label = "unknown"
+        if value is not None and not pd.isna(value):
+            label = str(value)
+        counts[label] = counts.get(label, 0) + 1
+    return counts
 
 
 # =============================================================================
@@ -898,7 +913,7 @@ def run_bwa_alignment_analysis(
     return output_path
 
 
-def aggregate_offtarget_results(
+def aggregate_offtarget_results(  # noqa: PLR0912
     results_dir: Union[str, Path],
     output_dir: Union[str, Path],
     genome_species: str,
@@ -969,6 +984,15 @@ def aggregate_offtarget_results(
     combined_json = output_path / "combined_offtargets.json"
     combined_df.to_json(combined_json, orient="records", indent=2)
 
+    species_counts = _compute_species_counts(combined_df)
+    if not species_counts:
+        species_counts = dict.fromkeys(species_list, 0) if species_list else {}
+
+    for species in species_list:
+        species_counts.setdefault(species, 0)
+
+    human_hits, other_hits = human_vs_other_totals(species_counts)
+
     logger.info(
         f"Aggregated {len(combined_df)} genome/transcriptome off-target hits "
         f"from {len(analysis_files)} files using pandas"
@@ -985,6 +1009,9 @@ def aggregate_offtarget_results(
         combined_tsv=combined_tsv,
         combined_json=combined_json,
         summary_file=summary_json,
+        hits_per_species=species_counts,
+        human_hits=human_hits,
+        other_species_hits=other_hits,
     )
 
     # Write summary JSON
@@ -1013,12 +1040,19 @@ def aggregate_offtarget_results(
         f.write("RESULTS SUMMARY\n")
         f.write("-" * 50 + "\n")
         f.write(f"Genome/transcriptome off-target hits: {len(combined_df)}\n")
+        f.write(f"Human hits: {human_hits}\n")
+        f.write(f"Other species hits: {other_hits}\n")
 
         # Show species list or note if empty
         if species_list:
             f.write(f"Species requested for analysis: {', '.join(species_list)}\n")
         else:
             f.write("Species requested for analysis: (none - miRNA-only mode)\n")
+
+        if species_counts:
+            f.write("Per-species hit counts:\n")
+            for species, count in sorted(species_counts.items()):
+                f.write(f"  {species}: {count}\n")
 
         f.write(f"Genome/transcriptome analysis files processed: {len(analysis_files)}\n\n")
 
@@ -1301,12 +1335,14 @@ def aggregate_mirna_results(
     logger.info(f"Aggregated {len(combined_df)} miRNA hits from {len(analysis_files)} files using pandas")
 
     # Calculate statistics using pandas groupby (much faster than loops)
-    species_stats = {}
-    if not combined_df.empty:
-        for species in species_list:
-            species_stats[species] = len(combined_df[combined_df["species"] == species])
-    else:
-        species_stats = dict.fromkeys(species_list, 0)
+    species_stats = _compute_species_counts(combined_df)
+    if not species_stats:
+        species_stats = dict.fromkeys(species_list, 0) if species_list else {}
+
+    for species in species_list:
+        species_stats.setdefault(species, 0)
+
+    human_hits, other_hits = human_vs_other_totals(species_stats)
 
     # Create validated summary using Pydantic model
     summary = AggregatedMiRNASummary(
@@ -1320,6 +1356,8 @@ def aggregate_mirna_results(
         combined_tsv=combined_tsv,
         combined_json=combined_json,
         summary_file=output_path / "combined_mirna_summary.json",
+        human_hits=human_hits,
+        other_species_hits=other_hits,
     )
 
     # Write summary JSON
@@ -1337,6 +1375,8 @@ def aggregate_mirna_results(
         f.write(f"Species analyzed: {', '.join(species_list)}\n")
         f.write(f"Candidates analyzed: {len(candidate_stats)}\n")
         f.write(f"Analysis files processed: {len(analysis_files)}\n")
+        f.write(f"Human hits: {human_hits}\n")
+        f.write(f"Other species hits: {other_hits}\n")
         f.write("\nHits per species:\n")
         for species, count in species_stats.items():
             f.write(f"  {species}: {count}\n")

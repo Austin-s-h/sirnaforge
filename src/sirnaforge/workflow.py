@@ -59,6 +59,7 @@ from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirt
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
+from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
 logger = get_logger(__name__)
@@ -1362,6 +1363,14 @@ class SiRNAWorkflow:
                 console.print(f"   ❌ {stats['failed_mirna_seed']} failed: miRNA perfect seed matches")
             if stats.get("failed_high_risk_mirna", 0) > 0:
                 console.print(f"   ❌ {stats['failed_high_risk_mirna']} failed: high-risk miRNA hits")
+            human_tx = stats.get("human_transcriptome_hits", 0)
+            other_tx = stats.get("other_transcriptome_hits", 0)
+            if human_tx or other_tx:
+                console.print(f"   🧬 Transcriptome hits — human: {human_tx}, other: {other_tx}")
+            human_mirna = stats.get("human_mirna_hits", 0)
+            other_mirna = stats.get("other_mirna_hits", 0)
+            if human_mirna or other_mirna:
+                console.print(f"   🌱 miRNA hits — human: {human_mirna}, other: {other_mirna}")
 
         # Map parsed results for return structure
         mapped = {}
@@ -1606,6 +1615,10 @@ class SiRNAWorkflow:
             "failed_transcriptome_2mm": 0,
             "failed_mirna_seed": 0,
             "failed_high_risk_mirna": 0,
+            "human_transcriptome_hits": 0,
+            "other_transcriptome_hits": 0,
+            "human_mirna_hits": 0,
+            "other_mirna_hits": 0,
         }
 
         for candidate in candidates:
@@ -1618,65 +1631,92 @@ class SiRNAWorkflow:
             stats["candidates_with_offtargets"] += 1
 
             # Parse hit details
-            transcriptome_0mm = 0
-            transcriptome_1mm = 0
-            transcriptome_2mm = 0
+            transcriptome_totals = {0: 0, 1: 0, 2: 0}
+            transcriptome_human = {0: 0, 1: 0, 2: 0}
             transcriptome_seed_0mm = 0
+
             mirna_total = 0
-            mirna_0mm_seed = 0
+            mirna_human_total = 0
+            mirna_0mm_seed_total = 0
+            mirna_human_0mm_seed = 0
             mirna_1mm_seed = 0
-            mirna_high_risk = 0
+            mirna_high_risk_total = 0
+            mirna_high_risk_human = 0
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
                 seed_mismatches = int(hit.get("seed_mismatches", 0))
                 offtarget_score = float(hit.get("offtarget_score", 0.0))
+                species_label = hit.get("species")
+                species_is_human = is_human_species(species_label)
 
                 # Check if this is a miRNA hit (has species/database/mirna_id fields)
                 is_mirna = "mirna_id" in hit or "database" in hit
 
                 if is_mirna:
                     mirna_total += 1
+                    if species_is_human:
+                        mirna_human_total += 1
                     if seed_mismatches == 0:
-                        mirna_0mm_seed += 1
+                        mirna_0mm_seed_total += 1
+                        if species_is_human:
+                            mirna_human_0mm_seed += 1
                         # High risk: perfect seed + low penalty score (likely strong binding)
                         if offtarget_score < 5.0:
-                            mirna_high_risk += 1
+                            mirna_high_risk_total += 1
+                            if species_is_human:
+                                mirna_high_risk_human += 1
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
                     # Transcriptome hit
+                    treated_as_human = species_is_human or not species_label
                     if nm == 0:
-                        transcriptome_0mm += 1
+                        transcriptome_totals[0] += 1
+                        if treated_as_human:
+                            transcriptome_human[0] += 1
                     elif nm == 1:
-                        transcriptome_1mm += 1
+                        transcriptome_totals[1] += 1
+                        if treated_as_human:
+                            transcriptome_human[1] += 1
                     elif nm == 2:
-                        transcriptome_2mm += 1
+                        transcriptome_totals[2] += 1
+                        if treated_as_human:
+                            transcriptome_human[2] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
 
+            transcriptome_total_hits = sum(transcriptome_totals.values())
+            human_transcriptome_hits = sum(transcriptome_human.values())
+
             # Update candidate fields
-            candidate.transcriptome_hits_total = transcriptome_0mm + transcriptome_1mm + transcriptome_2mm
-            candidate.transcriptome_hits_0mm = transcriptome_0mm
-            candidate.transcriptome_hits_1mm = transcriptome_1mm
-            candidate.transcriptome_hits_2mm = transcriptome_2mm
+            candidate.transcriptome_hits_total = transcriptome_total_hits
+            candidate.transcriptome_hits_0mm = transcriptome_totals[0]
+            candidate.transcriptome_hits_1mm = transcriptome_totals[1]
+            candidate.transcriptome_hits_2mm = transcriptome_totals[2]
             candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
             candidate.mirna_hits_total = mirna_total
-            candidate.mirna_hits_0mm_seed = mirna_0mm_seed
+            candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total
             candidate.mirna_hits_1mm_seed = mirna_1mm_seed
-            candidate.mirna_hits_high_risk = mirna_high_risk
+            candidate.mirna_hits_high_risk = mirna_high_risk_total
             candidate.off_target_count = len(offtarget_entry.get("hits", []))
             candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
 
+            stats["human_transcriptome_hits"] += human_transcriptome_hits
+            stats["other_transcriptome_hits"] += transcriptome_total_hits - human_transcriptome_hits
+            stats["human_mirna_hits"] += mirna_human_total
+            stats["other_mirna_hits"] += mirna_total - mirna_human_total
+
             # Apply filtering criteria
+            human_total_hits_for_filters = human_transcriptome_hits + mirna_human_total
             should_fail, fail_reason = self._check_offtarget_filters(
-                transcriptome_0mm,
-                transcriptome_1mm,
-                transcriptome_2mm,
-                mirna_0mm_seed,
-                mirna_high_risk,
-                candidate.off_target_count,
+                transcriptome_human[0],
+                transcriptome_human[1],
+                transcriptome_human[2],
+                mirna_human_0mm_seed,
+                mirna_high_risk_human,
+                human_total_hits_for_filters,
                 filter_criteria,
             )
 

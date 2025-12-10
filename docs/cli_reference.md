@@ -103,6 +103,8 @@ Passing both flags is common: the input FASTA feeds the design engine, while the
 
 Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` now include a `species` column so you can filter hits directly without relying on filenames. Each entry records the reference species that produced the alignment, which is especially helpful when mixing cached defaults with custom overrides.
 
+Aggregated summaries and console reports collapse these per-row values into two buckets: `human` and `other`. The JSON summaries written by both the transcriptome (`combined_summary.json`) and miRNA (`combined_mirna_summary.json`) stages now expose `hits_per_species`, `human_hits`, and `other_species_hits` so downstream tooling can quickly separate core human liabilities from cross-species matches. Workflow filters also key off the human bucket only—non-human hits remain in the TSV/JSON outputs for auditing but no longer force automatic candidate rejection.
+
 The workflow records the resolved decision in `logs/workflow_summary.json` as `reference_summary.transcriptome`, so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
 
 ## `sirnaforge design`
