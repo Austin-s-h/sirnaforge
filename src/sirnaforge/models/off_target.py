@@ -120,6 +120,7 @@ class OffTargetHit(BaseAlignmentHit):
     """
 
     # Target information (specific to genome/transcriptome hits)
+    species: str = Field(description="Reference species identifier for this hit")
     rname: str = Field(description="Reference sequence identifier (chromosome, transcript, etc.)")
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +128,7 @@ class OffTargetHit(BaseAlignmentHit):
         return {
             "qname": self.qname,
             "qseq": self.qseq,
+            "species": self.species,
             "rname": self.rname,
             "coord": self.coord,
             "strand": self.strand.value,
@@ -141,7 +143,7 @@ class OffTargetHit(BaseAlignmentHit):
     @classmethod
     def tsv_header(cls) -> str:
         """Get TSV header line."""
-        return "qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
+        return "qname\tqseq\tspecies\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
 
 
 class MiRNAHit(BaseAlignmentHit):

@@ -99,6 +99,10 @@ siRNAforge accepts two complementary inputs:
 
 Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow/BWA-MEM2 stage. When `--transcriptome-fasta` is omitted the CLI indexes all bundled Ensembl transcriptomes (human, mouse, rat, macaque) so transcriptome off-target analysis still runs. Remote files are cached under `~/.cache/sirnaforge/` and reused across runs.
 
+#### Transcriptome off-target outputs
+
+Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` now include a `species` column so you can filter hits directly without relying on filenames. Each entry records the reference species that produced the alignment, which is especially helpful when mixing cached defaults with custom overrides.
+
 The workflow records the resolved decision in `logs/workflow_summary.json` as `reference_summary.transcriptome`, so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
 
 ## `sirnaforge design`

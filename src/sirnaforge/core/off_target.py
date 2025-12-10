@@ -458,19 +458,31 @@ class OffTargetAnalysisManager:
     ) -> None:
         """Write miRNA analysis results."""
         # Write TSV
+        species_label = getattr(self, "species", "unknown")
+        enriched_results: list[dict[str, Any]] = []
+
         with Path(tsv_path).open("w") as f:
-            f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
+            f.write(
+                "qname\tqseq\tspecies\trname\tcoord\tstrand\tcigar\tmapq\tas_score\t"
+                "nm\tseed_mismatches\tofftarget_score\n"
+            )
             for result in results:
+                row_species = result.get("species", species_label)
+                enriched = {
+                    **result,
+                    "species": row_species,
+                }
+                enriched_results.append(enriched)
                 f.write(
-                    f"{result['qname']}\t{result['qseq']}\t{result['rname']}\t"
-                    f"{result['coord']}\t{result['strand']}\t{result['cigar']}\t"
-                    f"{result['mapq']}\t{result.get('as_score', 'NA')}\t{result['nm']}\t"
-                    f"{result['seed_mismatches']}\t{result['offtarget_score']}\n"
+                    f"{enriched['qname']}\t{enriched['qseq']}\t{enriched['species']}\t{enriched['rname']}\t"
+                    f"{enriched['coord']}\t{enriched['strand']}\t{enriched['cigar']}\t"
+                    f"{enriched['mapq']}\t{enriched.get('as_score', 'NA')}\t{enriched['nm']}\t"
+                    f"{enriched['seed_mismatches']}\t{enriched['offtarget_score']}\n"
                 )
 
         # Write JSON
         with Path(json_path).open("w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(enriched_results, f, indent=2)
 
     def _write_transcriptome_results(
         self, results: list[dict[str, Any]], tsv_path: Union[str, Path], json_path: Union[str, Path]
@@ -731,6 +743,14 @@ def run_comprehensive_offtarget_analysis(
         # Convert dict results to DataFrame
         df = pd.DataFrame(results)
 
+        if df.empty:
+            # Create empty DataFrame with required schema columns (including species)
+            df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
+        elif "species" not in df.columns:
+            df["species"] = species
+        else:
+            df["species"] = df["species"].fillna(species)
+
         # Validate with Pandera schema
         df = GenomeAlignmentSchema.validate(df, lazy=True)
 
@@ -822,6 +842,7 @@ def run_bwa_alignment_analysis(
             offtarget_hit = OffTargetHit(
                 qname=hit_dict["qname"],
                 qseq=hit_dict["qseq"],
+                species=species,
                 rname=hit_dict["rname"],
                 coord=coord_int,
                 strand=AlignmentStrand(hit_dict["strand"]),

@@ -392,6 +392,9 @@ class GenomeAlignmentSchema(DataFrameModel):
         description="Query sequence (siRNA candidate)",
     )
 
+    # Reference provenance
+    species: Series[str] = Field(description="Target species identifier (e.g., human, mouse)")
+
     # Target information
     rname: Series[str] = Field(description="Reference sequence name (chromosome/transcript)")
 

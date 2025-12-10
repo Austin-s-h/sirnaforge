@@ -237,6 +237,7 @@ class TestGenomeAlignmentTransformation:
             {
                 "qname": ["sirna_001"],
                 "qseq": ["UGAGGUAGUAGGUUGUAUAGU"],
+                "species": ["human"],
                 "rname": ["chr1"],  # Keep for genome analysis
                 "coord": ["chr1:123456"],
                 "strand": ["+"],
@@ -270,6 +271,7 @@ class TestGenomeAlignmentTransformation:
             {
                 "qname": ["sirna_001"],
                 "qseq": ["UGAGGUAGUAGGUUGUAUAGU"],
+                "species": ["human"],
                 # "rname": missing!
                 "coord": [123456],
                 "strand": ["+"],
@@ -286,6 +288,29 @@ class TestGenomeAlignmentTransformation:
             GenomeAlignmentSchema.validate(df, lazy=True)
 
         assert "rname" in str(exc_info.value)
+
+    def test_genome_schema_requires_species(self):
+        """Species provenance is mandatory for each alignment row."""
+        df = pd.DataFrame(
+            {
+                "qname": ["sirna_001"],
+                "qseq": ["UGAGGUAGUAGGUUGUAUAGU"],
+                "rname": ["chr1"],
+                "coord": [123456],
+                "strand": ["+"],
+                "cigar": ["21M"],
+                "mapq": [60],
+                "as_score": [42],
+                "nm": [0],
+                "seed_mismatches": [0],
+                "offtarget_score": [0.0],
+            }
+        )
+
+        with pytest.raises(SchemaErrors) as exc_info:
+            GenomeAlignmentSchema.validate(df, lazy=True)
+
+        assert "species" in str(exc_info.value)
 
 
 class TestEmptyDataFrameHandling:
@@ -323,6 +348,7 @@ class TestEmptyDataFrameHandling:
             columns=[
                 "qname",
                 "qseq",
+                "species",
                 "rname",
                 "coord",
                 "strand",
