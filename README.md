@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="300"/>
+  <img src="docs/branding/sirnaforge_logo_4.png" alt="siRNAforge Logo" width="400"/>
 
   <h1>siRNAforge</h1>
 
