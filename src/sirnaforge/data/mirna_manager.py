@@ -220,7 +220,11 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
 
     @classmethod
     def get_genome_species_for_canonical(cls, canonical_species: Sequence[str]) -> list[str]:
-        """Return genome species identifiers for canonical species keys."""
+        """Return genome species identifiers for canonical species keys.
+
+        Note: These are used for miRNA database lookups, not genomic DNA alignment.
+        The term 'genome' here refers to the organism's miRNA annotation set.
+        """
         genome_species: list[str] = []
         for key in canonical_species:
             registry_entry = CANONICAL_SPECIES_REGISTRY.get(key)
@@ -311,7 +315,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
 
         return {
             "canonical": canonical_species,
-            "genome": genome_species,
+            "genome": genome_species,  # miRNA genome annotations, not genomic DNA
             "mirna": mirna_species,
         }
 

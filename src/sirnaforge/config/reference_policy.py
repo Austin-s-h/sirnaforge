@@ -21,6 +21,7 @@ DEFAULT_MIRNA_CANONICAL_SPECIES: tuple[str, ...] = (
     "rat",
     "mouse",
     "human",
+    "rhesus",
     "macaque",
 )
 

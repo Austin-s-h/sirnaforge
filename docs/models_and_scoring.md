@@ -22,29 +22,29 @@ The `SiRNACandidate` model represents a complete siRNA duplex with all computed 
 ```python
 class SiRNACandidate(BaseModel):
     """Individual siRNA candidate with computed thermodynamic and efficacy properties."""
-    
+
     # Identity (unique identifier and source)
     id: str                    # Format: SIRNAF_{transcript}_{start}_{end}
     transcript_id: str         # Source transcript (e.g., ENST00000269305)
     position: int              # 1-based start position in transcript
-    
+
     # Duplex sequences
     guide_sequence: str        # Antisense strand (loaded into RISC)
     passenger_sequence: str    # Sense strand (typically degraded)
-    
+
     # Basic properties
     gc_content: float          # GC percentage (optimal: 35-60%)
     length: int                # Duplex length (typically 21 nt)
-    
+
     # Thermodynamic properties
     asymmetry_score: float     # RISC loading preference (optimal: ≥0.65)
     duplex_stability: float    # ΔG in kcal/mol (optimal: -15 to -25)
-    
+
     # Secondary structure
     structure: str             # Dot-bracket notation
     mfe: float                 # Minimum free energy (optimal: -2 to -8 kcal/mol)
     paired_fraction: float     # Fraction paired bases (optimal: 0.4-0.6)
-    
+
     # Off-target metrics
     off_target_count: int      # Potential off-target sites (goal: ≤3)
     transcriptome_hits_0mm: int   # Perfect match hits
@@ -52,7 +52,7 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_2mm: int   # 2-mismatch hits
     mirna_hits_total: int         # Total miRNA seed matches
     mirna_hits_0mm_seed: int      # Perfect seed matches
-    
+
     # Scoring
     composite_score: float     # Overall quality (0-100 scale)
     component_scores: dict     # Individual scoring components
@@ -73,18 +73,18 @@ Configuration model for the design workflow:
 ```python
 class DesignParameters(BaseModel):
     """Complete configuration for siRNA design workflow."""
-    
+
     # Design mode
     design_mode: DesignMode     # "sirna" or "mirna"
-    
+
     # Sequence parameters
     sirna_length: int = 21     # Duplex length (19-23 nt)
     top_n: int = 50            # Number of candidates to return
-    
+
     # Quality control
     filters: FilterCriteria    # Threshold parameters
     scoring: ScoringWeights    # Component weights
-    
+
     # Chemical modifications
     apply_modifications: bool = True
     modification_pattern: str = "standard_2ome"
@@ -98,36 +98,36 @@ Threshold parameters for quality filtering:
 ```python
 class FilterCriteria(BaseModel):
     """Quality filters based on thermodynamic and empirical criteria."""
-    
+
     # GC content (literature: 30-60%, optimal: 40-55%)
     gc_min: float = 35.0
     gc_max: float = 60.0
-    
+
     # Sequence composition
     max_poly_runs: int = 3     # Max consecutive identical nucleotides
-    
+
     # Secondary structure
     max_paired_fraction: float = 0.6  # Prevent rigid structures
-    
+
     # Thermodynamic asymmetry
     min_asymmetry_score: float = 0.65  # Guide strand selection
-    
+
     # MFE thresholds (kcal/mol)
     mfe_min: float = -8.0      # Too stable (more negative)
     mfe_max: float = -2.0      # Too unstable (less negative)
-    
+
     # Duplex stability (kcal/mol)
     duplex_stability_min: float = -25.0
     duplex_stability_max: float = -15.0
-    
+
     # Melting temperature (°C, for mammalian cells)
     melting_temp_min: float = 60.0
     melting_temp_max: float = 78.0
-    
+
     # End asymmetry ΔΔG (kcal/mol)
     delta_dg_end_min: float = 2.0
     delta_dg_end_max: float = 6.0
-    
+
     # Off-target limits
     max_off_target_count: int = 3
 ```
@@ -139,12 +139,12 @@ Specialized filtering for off-target analysis results:
 ```python
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
-    
+
     # Transcriptome off-targets (mismatch tolerance)
     max_transcriptome_hits_0mm: int = 0    # Perfect matches
     max_transcriptome_hits_1mm: int = 5    # 1-mismatch hits
     max_transcriptome_hits_2mm: int = 20   # 2-mismatch hits
-    
+
     # miRNA seed matches (positions 2-8)
     max_mirna_perfect_seed: int = 3
     max_mirna_1mm_seed: int = 10
@@ -158,7 +158,7 @@ Relative weights for composite scoring:
 ```python
 class ScoringWeights(BaseModel):
     """Component weights for composite scoring (must sum to 1.0)."""
-    
+
     asymmetry: float = 0.25      # Thermodynamic asymmetry
     gc_content: float = 0.20     # GC optimization
     accessibility: float = 0.25  # Target accessibility
@@ -186,7 +186,7 @@ RISC preferentially loads the strand with the less thermodynamically stable 5' e
 
 **Algorithm**:
 1. Calculate 5' end stability (positions 1-7): $\Delta G_{5'}$
-2. Calculate 3' end stability (positions 15-21): $\Delta G_{3'}$  
+2. Calculate 3' end stability (positions 15-21): $\Delta G_{3'}$
 3. Compute asymmetry: $\text{raw} = \Delta G_{5'} - \Delta G_{3'}$
 4. Normalize: $\text{score} = \max(0, \min(1, (\text{raw} + 5) / 10))$
 
@@ -301,19 +301,19 @@ Position-specific sequence preferences:
 def _calculate_empirical_score(candidate) -> float:
     """Simplified Reynolds rules."""
     score = 0.5  # Base score
-    
+
     # Prefer A/U at position 19 (3' end)
     if guide[18] in ["A", "U"]:
         score += 0.1
-    
+
     # Prefer G/C at position 1
     if guide[0] in ["G", "C"]:
         score += 0.1
-    
+
     # Avoid C at position 19
     if guide[18] == "C":
         score -= 0.1
-    
+
     return max(0.0, min(1.0, score))
 ```
 
@@ -336,14 +336,14 @@ def _enumerate_candidates(sequence, transcript_id):
         target_seq = sequence[i:i+sirna_length]
         guide_seq = reverse_complement(target_seq)
         gc_content = calculate_gc_content(guide_seq)
-        
+
         # Fast rejection
         fail_reason = None
         if not (gc_min <= gc_content <= gc_max):
             fail_reason = FilterStatus.GC_OUT_OF_RANGE
         elif has_poly_runs(guide_seq, max_poly_runs):
             fail_reason = FilterStatus.POLY_RUNS
-        
+
         if fail_reason:
             # Store in rejected pool for "dirty control" analysis
             rejected.append(candidate)
@@ -431,12 +431,12 @@ Specialized parameters for miRNA-like siRNA design:
 ```python
 class MiRNADesignConfig(BaseModel):
     """miRNA-biogenesis-aware configuration."""
-    
+
     # Conservative thresholds
     gc_min: float = 30.0       # Relaxed lower bound
     gc_max: float = 52.0       # Stricter upper bound
     asymmetry_min: float = 0.65
-    
+
     # Argonaute loading preferences
     scoring_weights: dict = {
         "ago_start_bonus": 0.1,      # A/U at position 1
@@ -471,7 +471,7 @@ class MiRNADesignConfig(BaseModel):
 ```python
 class OffTargetHit(BaseModel):
     """Single off-target alignment from BWA analysis."""
-    
+
     qname: str           # siRNA identifier
     qseq: str            # Query sequence
     rname: str           # Reference (chromosome/transcript)
@@ -487,7 +487,7 @@ class OffTargetHit(BaseModel):
 ```python
 class MiRNAHit(BaseModel):
     """miRNA seed match from database alignment."""
-    
+
     species: str         # e.g., "hsa" (human)
     database: str        # mirgenedb, mirbase, etc.
     mirna_id: str        # e.g., hsa-miR-21-5p
@@ -512,7 +512,7 @@ class MiRNAHit(BaseModel):
 ```python
 class StrandMetadata(BaseModel):
     """Complete strand metadata with modifications."""
-    
+
     id: str
     sequence: str
     overhang: str          # e.g., "dTdT", "UU"
@@ -525,7 +525,7 @@ class StrandMetadata(BaseModel):
 ```python
 class ChemicalModification(BaseModel):
     """Position-specific chemical modification."""
-    
+
     type: str              # 2OMe, 2F, PS, LNA
     positions: list[int]   # 1-based positions
 ```

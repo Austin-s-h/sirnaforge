@@ -8,6 +8,7 @@ Optimized for both standalone use and parallelized Nextflow workflows.
 
 import json
 import shutil
+import statistics
 import subprocess  # nosec B404
 import tempfile
 from pathlib import Path
@@ -30,8 +31,23 @@ from sirnaforge.models.off_target import (
 from sirnaforge.models.schemas import GenomeAlignmentSchema, MiRNAAlignmentSchema
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.species import human_vs_other_totals
 
 logger = get_logger(__name__)
+
+
+def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Build a frequency map for the 'species' column in a DataFrame."""
+    if df.empty or "species" not in df.columns:
+        return {}
+
+    counts: dict[str, int] = {}
+    for value in df["species"].tolist():
+        label = "unknown"
+        if value is not None and not pd.isna(value):
+            label = str(value)
+        counts[label] = counts.get(label, 0) + 1
+    return counts
 
 
 # =============================================================================
@@ -458,19 +474,31 @@ class OffTargetAnalysisManager:
     ) -> None:
         """Write miRNA analysis results."""
         # Write TSV
+        species_label = getattr(self, "species", "unknown")
+        enriched_results: list[dict[str, Any]] = []
+
         with Path(tsv_path).open("w") as f:
-            f.write("qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score\n")
+            f.write(
+                "qname\tqseq\tspecies\trname\tcoord\tstrand\tcigar\tmapq\tas_score\t"
+                "nm\tseed_mismatches\tofftarget_score\n"
+            )
             for result in results:
+                row_species = result.get("species", species_label)
+                enriched = {
+                    **result,
+                    "species": row_species,
+                }
+                enriched_results.append(enriched)
                 f.write(
-                    f"{result['qname']}\t{result['qseq']}\t{result['rname']}\t"
-                    f"{result['coord']}\t{result['strand']}\t{result['cigar']}\t"
-                    f"{result['mapq']}\t{result.get('as_score', 'NA')}\t{result['nm']}\t"
-                    f"{result['seed_mismatches']}\t{result['offtarget_score']}\n"
+                    f"{enriched['qname']}\t{enriched['qseq']}\t{enriched['species']}\t{enriched['rname']}\t"
+                    f"{enriched['coord']}\t{enriched['strand']}\t{enriched['cigar']}\t"
+                    f"{enriched['mapq']}\t{enriched.get('as_score', 'NA')}\t{enriched['nm']}\t"
+                    f"{enriched['seed_mismatches']}\t{enriched['offtarget_score']}\n"
                 )
 
         # Write JSON
         with Path(json_path).open("w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(enriched_results, f, indent=2)
 
     def _write_transcriptome_results(
         self, results: list[dict[str, Any]], tsv_path: Union[str, Path], json_path: Union[str, Path]
@@ -555,6 +583,12 @@ def build_bwa_index(fasta_file: Union[str, Path], index_prefix: Union[str, Path]
 
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)  # nosec B603
+        if not validate_index_files(index_prefix_path, "bwa-mem2"):
+            raise RuntimeError(
+                "BWA-MEM2 index files were not created correctly. This usually happens when the build "
+                "process runs out of memory (human transcriptomes can require 32GB+). Increase available RAM "
+                "or pre-build the index in an environment with more memory and retry."
+            )
         logger.info(f"BWA-MEM2 index built successfully: {index_prefix_path}")
         return index_prefix_path
     except subprocess.CalledProcessError as e:
@@ -618,8 +652,12 @@ def validate_index_files(index_prefix: Union[str, Path], tool: str = "bwa") -> b
         return False
 
     for ext in required_extensions:
-        if not (index_path.parent / f"{index_path.name}{ext}").exists():
-            logger.debug(f"Missing index file: {index_path.name}{ext}")
+        candidate = index_path.parent / f"{index_path.name}{ext}"
+        if not candidate.exists():
+            logger.debug(f"Missing index file: {candidate.name}")
+            return False
+        if candidate.stat().st_size == 0:
+            logger.debug(f"Index file is empty: {candidate}")
             return False
 
     return True
@@ -731,6 +769,14 @@ def run_comprehensive_offtarget_analysis(
         # Convert dict results to DataFrame
         df = pd.DataFrame(results)
 
+        if df.empty:
+            # Create empty DataFrame with required schema columns (including species)
+            df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
+        elif "species" not in df.columns:
+            df["species"] = species
+        else:
+            df["species"] = df["species"].fillna(species)
+
         # Validate with Pandera schema
         df = GenomeAlignmentSchema.validate(df, lazy=True)
 
@@ -822,6 +868,7 @@ def run_bwa_alignment_analysis(
             offtarget_hit = OffTargetHit(
                 qname=hit_dict["qname"],
                 qseq=hit_dict["qseq"],
+                species=species,
                 rname=hit_dict["rname"],
                 coord=coord_int,
                 strand=AlignmentStrand(hit_dict["strand"]),
@@ -849,6 +896,11 @@ def run_bwa_alignment_analysis(
     with json_file.open("w") as f:
         json.dump([hit.model_dump() for hit in all_hits], f, indent=2)
 
+    # Derive summary statistics for alignment metrics
+    mean_mapq = statistics.fmean(hit.mapq for hit in all_hits) if all_hits else None
+    mean_mismatches = statistics.fmean(hit.nm for hit in all_hits) if all_hits else None
+    mean_seed_mismatches = statistics.fmean(hit.seed_mismatches for hit in all_hits) if all_hits else None
+
     # Create validated summary using Pydantic model
     summary = AnalysisSummary(
         candidate_id=candidate_id,
@@ -856,6 +908,9 @@ def run_bwa_alignment_analysis(
         mode=AnalysisMode.TRANSCRIPTOME,
         total_sequences=len(sequences),
         total_hits=len(all_hits),
+        mean_mapq=mean_mapq,
+        mean_mismatches=mean_mismatches,
+        mean_seed_mismatches=mean_seed_mismatches,
     )
 
     # Write summary JSON file
@@ -877,12 +932,12 @@ def run_bwa_alignment_analysis(
     return output_path
 
 
-def aggregate_offtarget_results(
+def aggregate_offtarget_results(  # noqa: PLR0912
     results_dir: Union[str, Path],
     output_dir: Union[str, Path],
     genome_species: str,
 ) -> Path:
-    """Aggregate genome/transcriptome off-target analysis results using Pandera.
+    """Aggregate transcriptome off-target analysis results using Pandera.
 
     Uses pandas + Pandera for efficient bulk reading and validation instead of
     manual line-by-line parsing with Pydantic models.
@@ -904,6 +959,14 @@ def aggregate_offtarget_results(
     output_path.mkdir(parents=True, exist_ok=True)
 
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
+    species_file_counts: dict[str, int] = {}
+    missing_species: list[str] = []
+    for species in species_list:
+        species_dir = results_path / species
+        count = len(list(species_dir.glob("*_analysis.tsv"))) if species_dir.exists() else 0
+        species_file_counts[species] = count
+        if count == 0:
+            missing_species.append(species)
 
     # Collect ONLY genome/transcriptome TSV analysis files
     # miRNA files are handled separately by aggregate_mirna_results()
@@ -911,7 +974,7 @@ def aggregate_offtarget_results(
     # Filter out miRNA files explicitly to avoid schema validation errors
     analysis_files = [f for f in analysis_files if "mirna" not in f.name.lower()]
 
-    logger.info(f"Found {len(analysis_files)} genome/transcriptome analysis files to aggregate")
+    logger.info(f"Found {len(analysis_files)} transcriptome analysis files to aggregate")
 
     if analysis_files:
         # Read all files into DataFrames and concatenate (vectorized operation)
@@ -948,15 +1011,25 @@ def aggregate_offtarget_results(
     combined_json = output_path / "combined_offtargets.json"
     combined_df.to_json(combined_json, orient="records", indent=2)
 
+    species_counts = _compute_species_counts(combined_df)
+    if not species_counts:
+        species_counts = dict.fromkeys(species_list, 0) if species_list else {}
+
+    for species in species_list:
+        species_counts.setdefault(species, 0)
+
+    human_hits, other_hits = human_vs_other_totals(species_counts)
+
     logger.info(
-        f"Aggregated {len(combined_df)} genome/transcriptome off-target hits "
-        f"from {len(analysis_files)} files using pandas"
+        f"Aggregated {len(combined_df)} transcriptome off-target hits from {len(analysis_files)} files using pandas"
     )
 
     # Prepare summary metadata
     summary_json = output_path / "combined_summary.json"
 
     # Create validated aggregated summary
+    summary_status = "completed" if not missing_species else "partial"
+
     summary = AggregatedOffTargetSummary(
         species_analyzed=species_list,
         analysis_files_processed=len(analysis_files),
@@ -964,6 +1037,12 @@ def aggregate_offtarget_results(
         combined_tsv=combined_tsv,
         combined_json=combined_json,
         summary_file=summary_json,
+        hits_per_species=species_counts,
+        human_hits=human_hits,
+        other_species_hits=other_hits,
+        species_file_counts=species_file_counts,
+        missing_species=missing_species,
+        status=summary_status,
     )
 
     # Write summary JSON
@@ -976,22 +1055,36 @@ def aggregate_offtarget_results(
         f.write("Off-Target Analysis Aggregation Summary\n")
         f.write("=" * 50 + "\n\n")
 
-        # Check if genome analysis was performed
+        # Check if transcriptome analysis was performed
         if len(analysis_files) == 0:
-            f.write("GENOME/TRANSCRIPTOME ANALYSIS STATUS: NOT PERFORMED\n")
+            f.write("TRANSCRIPTOME ANALYSIS STATUS: NOT PERFORMED\n")
             f.write("-" * 50 + "\n")
-            f.write("Reason: No genome FASTAs or BWA indices were provided.\n")
+            f.write("Reason: No transcriptome FASTAs or BWA indices were provided.\n")
             f.write("Result: Only lightweight miRNA seed match analysis was run.\n\n")
-            f.write("To enable genome/transcriptome off-target analysis:\n")
-            f.write("  • Provide --genome_fastas 'species:path,species2:path2'\n")
+            f.write("To enable transcriptome off-target analysis:\n")
+            f.write("  • Provide --genome_fastas (transcriptome) 'species:path,species2:path2'\n")
             f.write("     OR\n")
             f.write("  • Provide --genome_indices 'species:index,species2:index2'\n\n")
             f.write("=" * 50 + "\n\n")
 
+        if missing_species:
+            warning_list = ", ".join(missing_species)
+            f.write("WARNINGS\n")
+            f.write("-" * 50 + "\n")
+            f.write(
+                "No transcriptome alignment files were produced for the following species: "
+                f"{warning_list}. This usually indicates the BWA-MEM2 indexing stage ran out of memory.\n"
+            )
+            f.write(
+                "Increase --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices on a host with more RAM.\n\n"
+            )
+
         # Results summary
         f.write("RESULTS SUMMARY\n")
         f.write("-" * 50 + "\n")
-        f.write(f"Genome/transcriptome off-target hits: {len(combined_df)}\n")
+        f.write(f"Transcriptome off-target hits: {len(combined_df)}\n")
+        f.write(f"Human hits: {human_hits}\n")
+        f.write(f"Other species hits: {other_hits}\n")
 
         # Show species list or note if empty
         if species_list:
@@ -999,7 +1092,12 @@ def aggregate_offtarget_results(
         else:
             f.write("Species requested for analysis: (none - miRNA-only mode)\n")
 
-        f.write(f"Genome/transcriptome analysis files processed: {len(analysis_files)}\n\n")
+        if species_counts:
+            f.write("Per-species hit counts:\n")
+            for species, count in sorted(species_counts.items()):
+                f.write(f"  {species}: {count}\n")
+
+        f.write(f"Transcriptome analysis files processed: {len(analysis_files)}\n\n")
 
         # Explain what the output files contain
         f.write("OUTPUT FILES\n")
@@ -1009,9 +1107,10 @@ def aggregate_offtarget_results(
             f.write(f"• {combined_tsv.name}: Header only (no hits found)\n")
             f.write(f"• {combined_json.name}: Empty array (no hits found)\n")
             f.write(f"• {summary_json.name}: Metadata only\n\n")
-            f.write("Note: Empty data files indicate NO problematic genome/\n")
-            f.write("transcriptome off-targets were detected - this is GOOD!\n")
-            f.write("Your siRNA candidates are clean at the genome level.\n\n")
+            f.write(
+                "Note: Empty data files indicate NO problematic transcriptome off-targets were detected - this is GOOD!\n"
+            )
+            f.write("Your siRNA candidates are clean at the transcriptome alignment level.\n\n")
             f.write("For miRNA seed match analysis results, see:\n")
             f.write("  ../mirna/mirna_analysis.tsv\n")
             f.write("  ../mirna/mirna_summary.json\n")
@@ -1020,7 +1119,14 @@ def aggregate_offtarget_results(
             f.write(f"• {combined_json.name}: {len(combined_df)} off-target hits (JSON format)\n")
             f.write(f"• {summary_json.name}: Analysis metadata and statistics\n")
 
-    logger.info(f"Wrote aggregated results to {output_path}")
+    if missing_species:
+        logger.warning(
+            "Transcriptome aggregation completed with missing species: %s. "
+            "Likely cause: insufficient memory while building BWA-MEM2 indices.",
+            ", ".join(missing_species),
+        )
+    else:
+        logger.info(f"Wrote aggregated results to {output_path}")
 
     return output_path
 
@@ -1280,12 +1386,14 @@ def aggregate_mirna_results(
     logger.info(f"Aggregated {len(combined_df)} miRNA hits from {len(analysis_files)} files using pandas")
 
     # Calculate statistics using pandas groupby (much faster than loops)
-    species_stats = {}
-    if not combined_df.empty:
-        for species in species_list:
-            species_stats[species] = len(combined_df[combined_df["species"] == species])
-    else:
-        species_stats = dict.fromkeys(species_list, 0)
+    species_stats = _compute_species_counts(combined_df)
+    if not species_stats:
+        species_stats = dict.fromkeys(species_list, 0) if species_list else {}
+
+    for species in species_list:
+        species_stats.setdefault(species, 0)
+
+    human_hits, other_hits = human_vs_other_totals(species_stats)
 
     # Create validated summary using Pydantic model
     summary = AggregatedMiRNASummary(
@@ -1299,6 +1407,8 @@ def aggregate_mirna_results(
         combined_tsv=combined_tsv,
         combined_json=combined_json,
         summary_file=output_path / "combined_mirna_summary.json",
+        human_hits=human_hits,
+        other_species_hits=other_hits,
     )
 
     # Write summary JSON
@@ -1316,6 +1426,8 @@ def aggregate_mirna_results(
         f.write(f"Species analyzed: {', '.join(species_list)}\n")
         f.write(f"Candidates analyzed: {len(candidate_stats)}\n")
         f.write(f"Analysis files processed: {len(analysis_files)}\n")
+        f.write(f"Human hits: {human_hits}\n")
+        f.write(f"Other species hits: {other_hits}\n")
         f.write("\nHits per species:\n")
         for species, count in species_stats.items():
             f.write(f"  {species}: {count}\n")

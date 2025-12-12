@@ -30,18 +30,20 @@ workflow SIRNAFORGE_OFFTARGET {
     //
     // Print parameter summary
     //
-    log.info """\
+    log.info """
         ===============================================
          S I R N A F O R G E   O F F - T A R G E T
         ===============================================
         input                : ${params.input}
         outdir               : ${params.outdir}
-        genome_species       : ${params.genome_species}
-        genome_fastas        : ${params.genome_fastas ?: 'Not provided'}
-        genome_indices       : ${params.genome_indices ?: 'Not provided'}
 
-        transcriptome_indices: ${params.transcriptome_indices ?: 'Not provided'}
-        transcriptome_species: ${params.transcriptome_species ?: 'N/A'}
+        TRANSCRIPTOME ALIGNMENT (OPTIONAL - Resource Intensive)
+        transcriptome_fastas (legacy --genome-fastas)  : ${params.genome_fastas ?: 'Not provided'}
+        transcriptome_indices (legacy --genome-indices): ${params.genome_indices ?: 'Not provided'}
+        supplemental_transcriptome_indices             : ${params.transcriptome_indices ?: 'Not provided'}
+
+        MIRNA ANALYSIS
+        transcriptome_species (legacy genome_species) : ${params.genome_species}
 
         max_hits             : ${params.max_hits}
         bwa_k                : ${params.bwa_k}
@@ -103,12 +105,12 @@ workflow SIRNAFORGE_OFFTARGET {
 
     def has_offtarget_data = params.genome_fastas || params.genome_indices || params.transcriptome_indices
 
-    // If no genomes/transcriptomes specified, skip genome analysis (miRNA-only mode)
+    // If no references specified, skip transcriptome analysis (miRNA-only mode)
     if (!has_offtarget_data) {
-        log.info "No genome FASTAs, genome indices, or transcriptome indices provided"
-        log.info "Genome/transcriptome off-target analysis: DISABLED"
+        log.info "No transcriptome FASTAs, transcriptome indices, or supplemental indices provided"
+        log.info "Transcriptome off-target analysis: DISABLED"
         log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
-        log.info "Provide --genome_fastas, --genome_indices, or --transcriptome_indices to enable alignment"
+        log.info "Provide --genome_fastas (transcriptome), --genome_indices, or --transcriptome_indices to enable alignment"
     }
 
     //

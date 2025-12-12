@@ -17,10 +17,9 @@ make check              # format + test-dev (mutating quick gate)
 
 ### Docker (Full environment)
 ```bash
-make docker-test        # Tests INSIDE container
 make docker-build       # Build Docker image
+make docker-build-test  # and test
 make docker-shell       # Interactive debugging
-make docker-run         # Run workflow smoke test inside container
 ```
 
 ### Test Categories by Tier

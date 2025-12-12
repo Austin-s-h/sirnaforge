@@ -120,6 +120,7 @@ class OffTargetHit(BaseAlignmentHit):
     """
 
     # Target information (specific to genome/transcriptome hits)
+    species: str = Field(description="Reference species identifier for this hit")
     rname: str = Field(description="Reference sequence identifier (chromosome, transcript, etc.)")
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +128,7 @@ class OffTargetHit(BaseAlignmentHit):
         return {
             "qname": self.qname,
             "qseq": self.qseq,
+            "species": self.species,
             "rname": self.rname,
             "coord": self.coord,
             "strand": self.strand.value,
@@ -141,7 +143,7 @@ class OffTargetHit(BaseAlignmentHit):
     @classmethod
     def tsv_header(cls) -> str:
         """Get TSV header line."""
-        return "qname\tqseq\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
+        return "qname\tqseq\tspecies\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
 
 
 class MiRNAHit(BaseAlignmentHit):
@@ -266,6 +268,32 @@ class AggregatedOffTargetSummary(BaseAggregatedSummary):
     """Summary of aggregated off-target results across multiple candidates and genomes."""
 
     total_results: int = Field(ge=0, description="Total off-target hits aggregated")
+    hits_per_species: dict[str, int] = Field(
+        default_factory=dict,
+        description="Hit counts keyed by the species label present in aggregated TSVs",
+    )
+    human_hits: int = Field(
+        default=0,
+        ge=0,
+        description="Total hits assigned to the human species bucket",
+    )
+    other_species_hits: int = Field(
+        default=0,
+        ge=0,
+        description="Hits assigned to non-human species (per-species detail available in hits_per_species)",
+    )
+    species_file_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of *_analysis.tsv files discovered per requested species",
+    )
+    missing_species: list[str] = Field(
+        default_factory=list,
+        description="Species requested for analysis that produced no transcriptome alignment files",
+    )
+    status: str = Field(
+        default="completed",
+        description="Aggregation status (completed, partial, or failed)",
+    )
 
 
 class AggregatedMiRNASummary(BaseAggregatedSummary):
@@ -276,5 +304,15 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
 
     hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
     hits_per_candidate: dict[str, int] = Field(default_factory=dict, description="Hit counts by candidate")
+    human_hits: int = Field(
+        default=0,
+        ge=0,
+        description="miRNA hits bucketed as human (aliases handled via utils.species)",
+    )
+    other_species_hits: int = Field(
+        default=0,
+        ge=0,
+        description="miRNA hits assigned to non-human species",
+    )
 
     total_candidates: int = Field(ge=0, description="Total candidates analyzed")

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/branding/sirnaforge_logo_3.svg" alt="siRNAforge Logo" width="300"/>
+  <img src="docs/branding/sirnaforge_logo_4.png" alt="siRNAforge Logo" width="400"/>
 
   <h1>siRNAforge</h1>
 
@@ -38,6 +38,7 @@
 | **🌡️ Thermodynamic scoring** | ViennaRNA-based secondary structure prediction and stability analysis |
 | **🎯 Transcriptome Off-target analysis** | Transcriptome BWA-MEM2 `transcriptome` search with mismatch tolerance control |
 | **🧬 miRNA seed avoidance** | MirGeneDB, MirBase (TODO) BWA-MEM2 `mirna_seed` search for known matches to miRNA seed regions |
+| **🔤 Smart species handling** | Accepts any format (common names, miRBase codes, scientific names) — auto-normalizes to canonical |
 | **⚙️ Nextflow pipeline** | Scalable, containerized execution for high-throughput analysis |
 | **💉 Chemical modifications** | Track 2'-O-methyl, 2'-fluoro, and phosphorothioate patterns |
 | **📊 Rich output** | Structured CSV, FASTA, and JSON reports with comprehensive metadata |
@@ -187,13 +188,17 @@ Design siRNAs for a single target gene with default parameters.
 
 **🔬 Multi-Species Validation**
 ```bash
-sirnaforge workflow TP53 --genome-species "human,rat,rhesus"
+# Accepts any species format - auto-normalizes to canonical names
+sirnaforge workflow TP53 --species "human,rat,macaque"
+# Also works: --species "hsa,rno,mml" or --species "Homo sapiens,Rattus norvegicus,Macaca mulatta"
 ```
 Check off-target potential across multiple model organisms.
 
 **🧪 miRNA Seed Avoidance**
 ```bash
-sirnaforge workflow BRCA1 --design-mode mirna --mirna-species "human,mouse"
+# Species parameter drives both transcriptome and miRNA analysis
+sirnaforge workflow BRCA1 --species "human,mouse"
+# Override miRNA species independently if needed: --mirna-species "hsa,mmu,rno"
 ```
 Filter candidates that match microRNA seed regions to reduce off-target effects.
 

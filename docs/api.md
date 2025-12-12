@@ -1,6 +1,6 @@
 # Python API Usage
 
-This page shows common usage patterns for the siRNAforge Python API. For complete class and method documentation, see the [Auto-generated API Reference](api_autodoc.rst).
+This page shows common usage patterns for the siRNAforge Python API. For complete class and method documentation, see the [Auto-generated API Reference](api_reference.rst).
 
 ## Basic Usage
 
@@ -11,8 +11,9 @@ from sirnaforge.models.sirna import DesignParameters
 # Configure parameters
 params = DesignParameters(
     sirna_length=21,
-    top_candidates=20,
-    gc_content_range=(35.0, 55.0)
+    top_n=20,
+    gc_min=35.0,
+    gc_max=55.0,
 )
 
 # Design from sequences
@@ -23,7 +24,7 @@ results = designer.design_from_sequences([
 
 # Access results
 for candidate in results.top_candidates:
-    print(f"{candidate.sirna_id}: {candidate.guide_sequence}")
+    print(f"{candidate.id}: {candidate.guide_sequence}")
     print(f"  Score: {candidate.composite_score:.1f}")
     print(f"  GC: {candidate.gc_content:.1f}%")
 ```
@@ -71,7 +72,7 @@ async def analyze_gene(gene: str):
         output_dir=f"results/{gene}",
         top_n_candidates=20,
         gc_min=35.0,
-        gc_max=55.0
+        gc_max=55.0,
     )
     return results
 
@@ -86,7 +87,7 @@ from sirnaforge.models.modifications import (
     StrandMetadata,
     ChemicalModification,
     Provenance,
-    SourceType
+    SourceType,
 )
 
 metadata = StrandMetadata(
@@ -98,8 +99,8 @@ metadata = StrandMetadata(
     ],
     provenance=Provenance(
         source_type=SourceType.DESIGNED,
-        identifier="my_experiment_001"
-    )
+        identifier="my_experiment_001",
+    ),
 )
 ```
 
@@ -137,6 +138,6 @@ except DesignException as e:
 
 ## See Also
 
-- [Auto-generated API Reference](api_autodoc.rst) - Complete class documentation from docstrings
+- [API Reference](api_reference.rst) - Complete class documentation from docstrings
 - [Workflows](workflows.md) - CLI workflows
 - [Scoring](scoring.md) - Understanding metrics

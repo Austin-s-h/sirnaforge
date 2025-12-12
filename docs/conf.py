@@ -37,7 +37,8 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # -- Options for HTML output -------------------------------------------------
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
-html_logo = "branding/sirnaforge_logo_3.svg"
+html_logo = "branding/sirnaforge_logo_4.png"
+html_favicon = "_static/favicon.ico"
 
 # Enhanced HTML theme options
 html_theme_options = {

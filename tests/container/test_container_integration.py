@@ -154,6 +154,7 @@ def test_docker_minimal_workflow():
 @pytest.mark.runs_in_container
 def test_docker_bioinformatics_tools():
     """Test that key bioinformatics tools are available in container."""
+    # TODO: expand this to cover ... more
     tools = [
         ("samtools", ["--version"]),
         ("bwa-mem2", ["version"]),
@@ -206,12 +207,12 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
     This validates:
     - Container environment auto-detection
     - Local profile selection (no Docker-in-Docker)
-    - Gene search functionality
-    - siRNA design pipeline
-    - Off-target analysis with Nextflow local execution
-    - All bioinformatics tools working correctly
+    - Gene search functionality (Ensembl)
+    - siRNA design pipeline (default filtering)
+    - Off-target analysis with Nextflow local execution (bwa-mem2 based)
+    - All bioinformatics tools working correctly (in the container)
 
-    Based on integration/test_workflow_integration.sh patterns.
+    Based on integration/test_workflow_integration.sh patterns. (depreciated)
     """
     # Use /workspace if in container, otherwise tmp_path
     if Path("/workspace").exists() and os.access("/workspace", os.W_OK):
@@ -220,22 +221,10 @@ def test_docker_full_tp53_workflow(tmp_path: Path):
         output_dir = tmp_path / "tp53_workflow_debug"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "sample_transcripts.fasta"
-
     try:
         # Run complete TP53 workflow (similar to test_workflow_integration.sh)
         result = subprocess.run(
-            [
-                "sirnaforge",
-                "workflow",
-                "TP53",
-                "--output-dir",
-                str(output_dir),
-                "--species",
-                "human",  # Single species for genome off-target analysis
-                "--input-fasta",
-                str(input_fasta),
-            ],
+            ["sirnaforge", "workflow", "TP53", "--output-dir", str(output_dir)],
             capture_output=True,
             text=True,
             cwd=output_dir,

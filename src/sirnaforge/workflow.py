@@ -41,6 +41,7 @@ from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -58,6 +59,7 @@ from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirt
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
+from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 
 logger = get_logger(__name__)
@@ -108,13 +110,21 @@ class WorkflowConfig:
             self.nextflow_config["genome_indices"] = genome_indices_override
             override_species = self._extract_species_from_indices(genome_indices_override)
 
-        default_genomes = genome_species or ["human", "rat", "rhesus"]
+        # miRNA genome species: used for miRNA database lookups, not genomic DNA alignment
+        default_mirna_genomes = genome_species or ["human", "rat", "rhesus"]
         if override_species:
-            default_genomes = override_species
+            default_mirna_genomes = override_species
 
-        self.genome_species: list[str] = list(dict.fromkeys(default_genomes))
+        # Normalize all species names to canonical form for consistent comparisons
+        normalized_genomes = [normalize_species_name(s) for s in default_mirna_genomes]
+        self.mirna_genome_species: list[str] = list(dict.fromkeys(normalized_genomes))
         self.mirna_database = mirna_database
-        self.mirna_species: list[str] = list(dict.fromkeys(mirna_species)) if mirna_species else []
+        # Preserve explicit miRNA species order (values already normalized by CLI helpers)
+        if mirna_species:
+            filtered_species = [value for value in mirna_species if value]
+            self.mirna_species = list(dict.fromkeys(filtered_species))
+        else:
+            self.mirna_species = []
         if transcriptome_selection is None and transcriptome_fasta:
             transcriptome_selection = ReferenceSelection(
                 choices=(ReferenceChoice.explicit(transcriptome_fasta, reason="legacy transcriptome argument"),)
@@ -1001,23 +1011,34 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation failed: {exc}")
             return None
 
-        if not transcriptome_result or not transcriptome_result.get("index"):
+        if not transcriptome_result or not transcriptome_result.get("fasta"):
             console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
             return None
 
         species_value = transcriptome_result.get("species")
-        transcriptome_species = species_value if isinstance(species_value, str) else "transcriptome"
-        transcriptome_index = str(transcriptome_result["index"])
+        raw_species = species_value if isinstance(species_value, str) else "transcriptome"
+        # Normalize species name to canonical form (e.g., 'hsa' -> 'human', 'mmu' -> 'mouse')
+        transcriptome_species = normalize_species_name(raw_species)
 
-        console.print(
-            f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
-            f"(index: {transcriptome_result['index'].name})"
-        )
+        # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
+        # Nextflow will build the index in Docker if needed
+        transcriptome_path = transcriptome_result.get("index") or transcriptome_result["fasta"]
+        transcriptome_index = str(transcriptome_path)
+
+        if transcriptome_result.get("index"):
+            console.print(
+                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
+                f"(index: {transcriptome_result['index'].name})"
+            )
+        else:
+            console.print(
+                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} (Nextflow will build index)"
+            )
         return transcriptome_species, transcriptome_index
 
     def _resolve_active_genome_species(self, params: Mapping[str, Any]) -> list[str]:
         """Filter genome species down to those with available indices."""
-        requested = [species.strip() for species in self.config.genome_species if species.strip()]
+        requested = [species.strip() for species in self.config.mirna_genome_species if species.strip()]
         available: set[str] = set()
         for key in ("genome_indices", "genome_fastas"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
@@ -1065,7 +1086,17 @@ class SiRNAWorkflow:
         additional_params: Mapping[str, Any],
         pipeline_revision: str,
     ) -> dict[str, Any]:
-        """Configure cached work and home directories for Nextflow runs."""
+        """Configure cached work and home directories for Nextflow runs.
+
+        Args:
+            nf_config: Nextflow configuration
+            genome_species: Species for miRNA genome lookups (used in cache key)
+            additional_params: Additional pipeline parameters
+            pipeline_revision: Git revision of pipeline
+
+        Returns:
+            Cache metadata dictionary
+        """
         cache_root = resolve_cache_subdir("nextflow")
         home_dir = cache_root / "home"
         work_root = cache_root / "work"
@@ -1186,6 +1217,94 @@ class SiRNAWorkflow:
         except OSError as exc:
             logger.debug(f"Unable to create Nextflow workdir symlink: {exc}")
 
+    def _load_offtarget_aggregates(self, results_dir: Path) -> dict[str, Any]:
+        """Load aggregated Nextflow summary JSON files when available."""
+        aggregated: dict[str, Any] = {}
+        results_path = Path(results_dir)
+        search_roots: list[Path] = []
+        agg_dir = results_path / "aggregated"
+        if agg_dir.exists():
+            search_roots.append(agg_dir)
+        search_roots.append(results_path)
+
+        def _load_json(filename: str) -> dict[str, Any] | None:
+            for root in search_roots:
+                candidate = root / filename
+                if not candidate.exists():
+                    continue
+                try:
+                    with candidate.open() as fh:
+                        payload = json.load(fh)
+                except Exception as exc:  # pragma: no cover - defensive logging path
+                    logger.warning(f"Failed to read aggregated summary {candidate}: {exc}")
+                    return None
+                if isinstance(payload, dict):
+                    return cast(dict[str, Any], payload)
+                logger.warning(f"Aggregated summary {candidate} is not a JSON object; skipping")
+                return None
+            return None
+
+        transcriptome_summary = _load_json("combined_summary.json")
+        if transcriptome_summary:
+            aggregated["transcriptome"] = transcriptome_summary
+
+        mirna_summary = _load_json("combined_mirna_summary.json")
+        if mirna_summary:
+            aggregated["mirna"] = mirna_summary
+
+        return aggregated
+
+    async def _configure_transcriptome_inputs(self, additional_params: dict[str, Any]) -> bool:
+        """Prepare transcriptome inputs for Nextflow runs."""
+        selection = self.config.transcriptome_selection
+        if not selection.enabled:
+            console.print(f"ℹ️  Transcriptome off-target disabled ({selection.disabled_reason})")
+            return False
+        if not self.config.transcriptome_references:
+            return False
+
+        prepared_entries: list[str] = []
+        prepared_species: list[str] = []
+        for choice in selection.choices:
+            materialized = await self._materialize_transcriptome_reference(choice)
+            if not materialized:
+                continue
+            transcriptome_species, transcriptome_index = materialized
+            if transcriptome_species not in self.config.mirna_genome_species:
+                self.config.mirna_genome_species.append(transcriptome_species)
+            prepared_entries.append(f"{transcriptome_species}:{transcriptome_index}")
+            prepared_species.append(transcriptome_species)
+
+        if not prepared_entries:
+            return False
+
+        existing_indices = additional_params.get("transcriptome_indices")
+        merged_entries = [token.strip() for token in existing_indices.split(",")] if existing_indices else []
+        merged_entries = [entry for entry in merged_entries if entry]
+        for entry in prepared_entries:
+            if entry not in merged_entries:
+                merged_entries.append(entry)
+        additional_params["transcriptome_indices"] = ",".join(merged_entries)
+        additional_params["transcriptome_species"] = ",".join(dict.fromkeys(prepared_species))
+        return True
+
+    def _log_nextflow_targets(
+        self,
+        active_species: Sequence[str],
+        has_transcriptome: bool,
+        additional_params: Mapping[str, Any],
+    ) -> None:
+        """Emit console updates about genome and transcriptome targets."""
+        if active_species:
+            console.print(f"🔭 Nextflow transcriptome species: {', '.join(active_species)}")
+        else:
+            console.print("🔭 Nextflow transcriptome species: (none)")
+
+        if has_transcriptome:
+            transcriptome_species = str(additional_params.get("transcriptome_species", ""))
+            pretty = transcriptome_species or "unspecified"
+            console.print(f"🗂️  Transcriptome indices resolved for: {pretty}")
+
     async def _run_nextflow_offtarget_analysis(
         self,
         candidates: list[SiRNACandidate],
@@ -1193,41 +1312,13 @@ class SiRNAWorkflow:
     ) -> dict[str, Any]:
         """Run Nextflow-based off-target analysis."""
         additional_params: dict[str, Any] = dict(self.config.nextflow_config)
-        transcriptome_selection = self.config.transcriptome_selection
-        prepared_entries: list[str] = []
-        prepared_species: list[str] = []
-        if transcriptome_selection.enabled and self.config.transcriptome_references:
-            for choice in transcriptome_selection.choices:
-                materialized = await self._materialize_transcriptome_reference(choice)
-                if not materialized:
-                    continue
-                transcriptome_species, transcriptome_index = materialized
-
-                if transcriptome_species not in self.config.genome_species:
-                    self.config.genome_species.append(transcriptome_species)
-
-                entry = f"{transcriptome_species}:{transcriptome_index}"
-                prepared_entries.append(entry)
-                prepared_species.append(transcriptome_species)
-
-            if prepared_entries:
-                existing_indices = additional_params.get("transcriptome_indices")
-                merged_entries = [token.strip() for token in existing_indices.split(",")] if existing_indices else []
-                merged_entries = [entry for entry in merged_entries if entry]
-                for entry in prepared_entries:
-                    if entry not in merged_entries:
-                        merged_entries.append(entry)
-                additional_params["transcriptome_indices"] = ",".join(merged_entries)
-                unique_species = list(dict.fromkeys(prepared_species))
-                additional_params["transcriptome_species"] = ",".join(unique_species)
-        elif not transcriptome_selection.enabled:
-            console.print(f"ℹ️  Transcriptome off-target disabled ({transcriptome_selection.disabled_reason})")
-
+        has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
         active_species = self._resolve_active_genome_species(additional_params)
-        has_transcriptome = bool(additional_params.get("transcriptome_indices"))
+        has_transcriptome = has_transcriptome or bool(additional_params.get("transcriptome_indices"))
+        self._log_nextflow_targets(active_species, has_transcriptome, additional_params)
 
         if not active_species and not has_transcriptome:
-            console.print("ℹ️  No genome or transcriptome indices configured; skipping Nextflow run")
+            console.print("ℹ️  No transcriptome indices configured; skipping Nextflow run")
             return await self._basic_offtarget_analysis(candidates)
 
         runner, _ = self._setup_nextflow_runner(active_species, additional_params)
@@ -1260,7 +1351,15 @@ class SiRNAWorkflow:
         genome_species: Sequence[str],
         additional_params: Mapping[str, Any],
     ) -> tuple[NextflowRunner, dict[str, Any]]:
-        """Configure Nextflow runner with user settings and cached workdirs."""
+        """Configure Nextflow runner with user settings and cached workdirs.
+
+        Args:
+            genome_species: Species for miRNA genome lookups
+            additional_params: Additional pipeline parameters
+
+        Returns:
+            Configured NextflowRunner and cache metadata
+        """
         # Auto-detect environment to use appropriate profile
         # This will automatically switch to 'local' profile when running inside a container
         nf_config = NextflowConfig.auto_configure()
@@ -1308,24 +1407,27 @@ class SiRNAWorkflow:
         """Process and map Nextflow pipeline results to candidates."""
         console.print("✅ Nextflow pipeline completed successfully")
         parsed = await self._parse_nextflow_results(output_dir)
+        aggregated_views = self._load_offtarget_aggregates(output_dir)
+        run_status = "completed"
+        workflow_warnings: list[str] = []
+
+        tx_summary = aggregated_views.get("transcriptome") if aggregated_views else None
+        if tx_summary:
+            missing_species = cast(list[str], tx_summary.get("missing_species") or [])
+            if missing_species:
+                run_status = "partial"
+                warning_msg = (
+                    "⚠️  No transcriptome alignment files were generated for: "
+                    f"{', '.join(missing_species)}. This usually means the BWA-MEM2 indexing stage ran out of memory. "
+                    "Increase Nextflow --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices."
+                )
+                console.print(warning_msg)
+                workflow_warnings.append(warning_msg)
 
         # Integrate off-target results into candidates with filtering
         filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
         updated_candidates, stats = self._integrate_offtarget_results(candidates, parsed, filter_criteria)
-
-        # Log filtering statistics
-        if stats.get("candidates_with_offtargets", 0) > 0:
-            console.print(f"📊 Off-target analysis: {stats['candidates_with_offtargets']} candidates with hits")
-            if stats.get("failed_perfect_match", 0) > 0:
-                console.print(f"   ❌ {stats['failed_perfect_match']} failed: perfect transcriptome matches")
-            if stats.get("failed_transcriptome_1mm", 0) > 0:
-                console.print(f"   ❌ {stats['failed_transcriptome_1mm']} failed: 1mm transcriptome threshold")
-            if stats.get("failed_transcriptome_2mm", 0) > 0:
-                console.print(f"   ❌ {stats['failed_transcriptome_2mm']} failed: 2mm transcriptome threshold")
-            if stats.get("failed_mirna_seed", 0) > 0:
-                console.print(f"   ❌ {stats['failed_mirna_seed']} failed: miRNA perfect seed matches")
-            if stats.get("failed_high_risk_mirna", 0) > 0:
-                console.print(f"   ❌ {stats['failed_high_risk_mirna']} failed: high-risk miRNA hits")
+        self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
         # Map parsed results for return structure
         mapped = {}
@@ -1342,13 +1444,79 @@ class SiRNAWorkflow:
                 mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
 
         return {
-            "status": "completed",
+            "status": run_status,
             "method": "embedded_nextflow",
             "output_dir": str(output_dir),
             "results": mapped,
             "execution_metadata": results,
             "filtering_stats": stats,
+            "aggregated": aggregated_views,
+            "warnings": workflow_warnings,
         }
+
+    def _log_offtarget_statistics(
+        self,
+        stats: Mapping[str, Any],
+        aggregated_views: Mapping[str, Any],
+        output_dir: Path,
+    ) -> None:
+        """Emit structured console logs for off-target statistics."""
+        candidates_with_hits = stats.get("candidates_with_offtargets", 0)
+        if candidates_with_hits:
+            console.print(f"📊 Off-target analysis: {candidates_with_hits} candidates with hits")
+            summaries = (
+                ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
+                ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
+                ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
+                ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
+                ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
+            )
+            for key, template in summaries:
+                count = stats.get(key, 0)
+                if count:
+                    console.print(f"   {template.format(count)}")
+
+            human_tx = stats.get("human_transcriptome_hits", 0)
+            other_tx = stats.get("other_transcriptome_hits", 0)
+            if human_tx or other_tx:
+                console.print(f"   🧬 Transcriptome hits — human: {human_tx}, other: {other_tx}")
+
+            human_mirna = stats.get("human_mirna_hits", 0)
+            other_mirna = stats.get("other_mirna_hits", 0)
+            if human_mirna or other_mirna:
+                console.print(f"   🌱 miRNA hits — human: {human_mirna}, other: {other_mirna}")
+
+        if aggregated_views:
+            tx_summary = aggregated_views.get("transcriptome")
+            if tx_summary:
+                species_counts = cast(dict[str, int], tx_summary.get("hits_per_species", {}) or {})
+                human_hits = tx_summary.get("human_hits", 0)
+                other_hits = tx_summary.get("other_species_hits", 0)
+                console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
+                if species_counts:
+                    formatted = ", ".join(f"{k}: {v}" for k, v in sorted(species_counts.items()))
+                    console.print(f"      per species: {formatted}")
+                missing_species = cast(list[str], tx_summary.get("missing_species") or [])
+                if missing_species:
+                    console.print(
+                        "      ⚠️ Transcriptome alignment files were missing for: "
+                        f"{', '.join(missing_species)} (likely insufficient memory during BWA indexing)."
+                    )
+
+                species_analyzed = cast(list[str], tx_summary.get("species_analyzed", []) or [])
+                zero_hit_species = [species for species in species_analyzed if species_counts.get(species, 0) == 0]
+                if zero_hit_species and not missing_species:
+                    console.print(f"      ℹ️ No transcriptome hits detected for: {', '.join(zero_hit_species)}")
+
+            mirna_summary = aggregated_views.get("mirna")
+            if mirna_summary:
+                human_hits = mirna_summary.get("human_hits", 0)
+                other_hits = mirna_summary.get("other_species_hits", 0)
+                console.print(f"   🌱 Aggregated miRNA hits — human: {human_hits}, other: {other_hits}")
+
+        trace_file = Path(output_dir) / "pipeline_info" / "execution_trace.txt"
+        if trace_file.exists():
+            console.print(f"   📘 Nextflow execution trace: {trace_file}")
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict[str, Any]:
         """Fallback basic off-target analysis."""
@@ -1381,7 +1549,7 @@ class SiRNAWorkflow:
             json.dump(results, f, indent=2)
 
         console.print(f"📊 Basic off-target analysis completed for {len(candidates)} candidates")
-        return {"status": "completed", "method": "basic", "results": results}
+        return {"status": "completed", "method": "basic", "results": results, "aggregated": {}}
 
     async def _parse_nextflow_results(self, output_dir: Path) -> dict[str, Any]:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis.
@@ -1570,6 +1738,10 @@ class SiRNAWorkflow:
             "failed_transcriptome_2mm": 0,
             "failed_mirna_seed": 0,
             "failed_high_risk_mirna": 0,
+            "human_transcriptome_hits": 0,
+            "other_transcriptome_hits": 0,
+            "human_mirna_hits": 0,
+            "other_mirna_hits": 0,
         }
 
         for candidate in candidates:
@@ -1582,65 +1754,92 @@ class SiRNAWorkflow:
             stats["candidates_with_offtargets"] += 1
 
             # Parse hit details
-            transcriptome_0mm = 0
-            transcriptome_1mm = 0
-            transcriptome_2mm = 0
+            transcriptome_totals = {0: 0, 1: 0, 2: 0}
+            transcriptome_human = {0: 0, 1: 0, 2: 0}
             transcriptome_seed_0mm = 0
+
             mirna_total = 0
-            mirna_0mm_seed = 0
+            mirna_human_total = 0
+            mirna_0mm_seed_total = 0
+            mirna_human_0mm_seed = 0
             mirna_1mm_seed = 0
-            mirna_high_risk = 0
+            mirna_high_risk_total = 0
+            mirna_high_risk_human = 0
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
                 seed_mismatches = int(hit.get("seed_mismatches", 0))
                 offtarget_score = float(hit.get("offtarget_score", 0.0))
+                species_label = hit.get("species")
+                species_is_human = is_human_species(species_label)
 
                 # Check if this is a miRNA hit (has species/database/mirna_id fields)
                 is_mirna = "mirna_id" in hit or "database" in hit
 
                 if is_mirna:
                     mirna_total += 1
+                    if species_is_human:
+                        mirna_human_total += 1
                     if seed_mismatches == 0:
-                        mirna_0mm_seed += 1
+                        mirna_0mm_seed_total += 1
+                        if species_is_human:
+                            mirna_human_0mm_seed += 1
                         # High risk: perfect seed + low penalty score (likely strong binding)
                         if offtarget_score < 5.0:
-                            mirna_high_risk += 1
+                            mirna_high_risk_total += 1
+                            if species_is_human:
+                                mirna_high_risk_human += 1
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
                     # Transcriptome hit
+                    treated_as_human = species_is_human or not species_label
                     if nm == 0:
-                        transcriptome_0mm += 1
+                        transcriptome_totals[0] += 1
+                        if treated_as_human:
+                            transcriptome_human[0] += 1
                     elif nm == 1:
-                        transcriptome_1mm += 1
+                        transcriptome_totals[1] += 1
+                        if treated_as_human:
+                            transcriptome_human[1] += 1
                     elif nm == 2:
-                        transcriptome_2mm += 1
+                        transcriptome_totals[2] += 1
+                        if treated_as_human:
+                            transcriptome_human[2] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
 
+            transcriptome_total_hits = sum(transcriptome_totals.values())
+            human_transcriptome_hits = sum(transcriptome_human.values())
+
             # Update candidate fields
-            candidate.transcriptome_hits_total = transcriptome_0mm + transcriptome_1mm + transcriptome_2mm
-            candidate.transcriptome_hits_0mm = transcriptome_0mm
-            candidate.transcriptome_hits_1mm = transcriptome_1mm
-            candidate.transcriptome_hits_2mm = transcriptome_2mm
+            candidate.transcriptome_hits_total = transcriptome_total_hits
+            candidate.transcriptome_hits_0mm = transcriptome_totals[0]
+            candidate.transcriptome_hits_1mm = transcriptome_totals[1]
+            candidate.transcriptome_hits_2mm = transcriptome_totals[2]
             candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
             candidate.mirna_hits_total = mirna_total
-            candidate.mirna_hits_0mm_seed = mirna_0mm_seed
+            candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total
             candidate.mirna_hits_1mm_seed = mirna_1mm_seed
-            candidate.mirna_hits_high_risk = mirna_high_risk
+            candidate.mirna_hits_high_risk = mirna_high_risk_total
             candidate.off_target_count = len(offtarget_entry.get("hits", []))
             candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
 
+            stats["human_transcriptome_hits"] += human_transcriptome_hits
+            stats["other_transcriptome_hits"] += transcriptome_total_hits - human_transcriptome_hits
+            stats["human_mirna_hits"] += mirna_human_total
+            stats["other_mirna_hits"] += mirna_total - mirna_human_total
+
             # Apply filtering criteria
+            human_total_hits_for_filters = human_transcriptome_hits + mirna_human_total
             should_fail, fail_reason = self._check_offtarget_filters(
-                transcriptome_0mm,
-                transcriptome_1mm,
-                transcriptome_2mm,
-                mirna_0mm_seed,
-                mirna_high_risk,
-                candidate.off_target_count,
+                transcriptome_human[0],
+                transcriptome_human[1],
+                transcriptome_human[2],
+                mirna_human_0mm_seed,
+                mirna_high_risk_human,
+                human_total_hits_for_filters,
                 filter_criteria,
             )
 

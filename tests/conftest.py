@@ -9,10 +9,11 @@ from sirnaforge.core.off_target import build_bwa_index
 
 @pytest.fixture
 def toy_genome_path():
-    """Path to toy genome database for testing off-target analysis.
+    """Path to toy transcriptome database for testing off-target analysis.
 
     This provides a small transcriptome database suitable for testing
-    genome/transcriptome off-target analysis (resource-intensive mode).
+    BWA-based off-target analysis against cDNA sequences (resource-intensive mode).
+    Note: This is transcriptome (cDNA) alignment, not genomic DNA.
     """
     test_data_dir = Path(__file__).parent / "unit" / "data"
     genome_path = test_data_dir / "toy_transcriptome_db.fasta"
@@ -45,13 +46,26 @@ def toy_genome_index_prefix(tmp_path_factory):
 
 
 @pytest.fixture
-def genome_config_for_nextflow(toy_genome_path):
-    """Nextflow-compatible genome configuration for tests.
+def realistic_transcripts_fasta():
+    """Path to the packaged realistic transcript FASTA used across tests."""
+    data_path = Path(__file__).parent / "unit" / "data" / "realistic_transcripts.fasta"
 
-    Enables the optional resource-intensive genome/transcriptome off-target analysis.
-    Without this, only lightweight miRNA seed match analysis runs.
+    if not data_path.exists():
+        pytest.skip(f"Realistic transcript FASTA not found: {data_path}")
+
+    return data_path
+
+
+@pytest.fixture
+def genome_config_for_nextflow(toy_genome_path):
+    """Nextflow-compatible transcriptome configuration for tests.
+
+    Enables the optional resource-intensive transcriptome off-target analysis
+    (BWA alignment against cDNA sequences). Without this, only lightweight
+    miRNA seed match analysis runs.
 
     Returns a dict with genome parameters that can be passed to Nextflow workflows.
+    Note: 'genome' in parameter names refers to the Nextflow convention, not genomic DNA.
     """
     return {
         "--genome_species": "test_species",

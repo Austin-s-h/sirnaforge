@@ -120,7 +120,7 @@ class NextflowRunner:
         Args:
             input_file: Path to input FASTA file
             output_dir: Output directory for results
-            genome_species: List of genome species (defaults to ["human", "rat", "rhesus"])
+            genome_species: List of species for miRNA genome lookups (defaults to ["human", "rat", "rhesus"])
             **kwargs: Additional parameters passed to run_offtarget_analysis
 
         Returns:
@@ -152,7 +152,7 @@ class NextflowRunner:
         Args:
             input_file: Path to input FASTA file
             output_dir: Output directory for results
-            genome_species: List of genome species (defaults to ["human", "rat", "rhesus"])
+            genome_species: List of species for miRNA genome lookups (defaults to ["human", "rat", "rhesus"])
             **kwargs: Additional parameters passed to run_offtarget_analysis
 
         Returns:
@@ -188,7 +188,7 @@ class NextflowRunner:
         Args:
             input_file: Path to siRNA candidates FASTA file
             output_dir: Output directory for results
-            genome_species: List of genome species to analyze against
+            genome_species: List of species for miRNA genome lookups
             additional_params: Additional parameters for the workflow
             show_progress: Whether to show progress indicators
 
