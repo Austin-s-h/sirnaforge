@@ -1,4 +1,4 @@
-# Scoring
+# Scoring Overview
 
 siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. Higher composite scores indicate better predicted efficacy.
 
@@ -30,8 +30,6 @@ The composite score combines multiple factors with research-validated weights:
 ## Asymmetry Score
 
 The most important single predictor of siRNA efficacy.
-
-**Why it matters:** RISC preferentially loads the strand with the less stable 5' end. Higher asymmetry = correct strand selection = better knockdown.
 
 | Score | Interpretation |
 |-------|----------------|

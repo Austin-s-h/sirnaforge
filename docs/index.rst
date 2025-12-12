@@ -7,6 +7,7 @@ siRNAforge Documentation
    :maxdepth: 1
    :caption: 🚀 Getting Started
 
+   installation
    getting_started
 
 .. toctree::
@@ -15,7 +16,9 @@ siRNAforge Documentation
 
    cli_reference
    usage_examples
+   workflows
    gene_search
+   scoring
    thermodynamic_guide
    tutorials/index
 
@@ -23,7 +26,9 @@ siRNAforge Documentation
    :maxdepth: 1
    :caption: 📚 Reference
 
+   api
    api_reference
+   models_and_scoring
    modification_annotation_spec
    changelog
    glossary

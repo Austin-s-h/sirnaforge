@@ -25,7 +25,7 @@ cd sirnaforge
 make dev    # Installs deps + pre-commit hooks
 ```
 
-## Docker (Full Bioinformatics Stack)
+## Docker (Full Bioinformatics Stack) {#docker-full-bioinformatics-stack}
 
 The Docker image includes Nextflow, BWA-MEM2, SAMtools, and ViennaRNA for complete off-target analysis.
 

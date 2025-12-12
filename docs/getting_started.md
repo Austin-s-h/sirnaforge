@@ -1,223 +1,77 @@
 # Getting Started & Quick Reference
 
-Get from installation to your first siRNA analysis in minutes, with essential commands and parameters at your fingertips.
+Launch your first siRNAforge workflow in minutes, then dive deeper through the focused docs sections.
 
-## Installation
+## 1. Install
 
-### Development (Makefile + uv - Recommended)
+- **Python/uv users:** Follow the step-by-step guide in [Installation](installation.md) for pip/uv instructions plus development setup (`make dev`) that matches the project’s CI environment.
+- **Container users:** Pull or build the full bioinformatics image as described in [Installation → Docker](installation.md#docker-full-bioinformatics-stack). The container bundles Nextflow, BWA-MEM2, SAMtools, ViennaRNA, and detects `local` mode automatically.
 
-`````{tab-set}
+> Need to automate lab servers or run air-gapped? The installation guide also documents offline caching, verification commands, and how to run smoke tests with the bundled FASTA files.
 
-````{tab-item} Linux / macOS
+## 2. Run Your First Workflow
+
 ```bash
-# Install uv package manager
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone and setup
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-make dev              # One-command setup: installs dependencies + pre-commit hooks
-```
-````
-
-````{tab-item} Windows
-```powershell
-# Install uv via PowerShell
-irm https://astral.sh/uv/install.ps1 | iex
-
-# Clone and setup
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-uv sync --dev        # Windows: use uv directly (make requires WSL/MinGW)
-```
-````
-
-`````
-
-**Prerequisites:** Python 3.9-3.12, Git, Make (Linux/macOS)
-
-### Production (Docker - Full Stack)
-
-`````{tab-set}
-
-````{tab-item} Pre-built Image
-```bash
-# Pull from GitHub Container Registry
-docker pull ghcr.io/austin-s-h/sirnaforge:latest
-
-# Verify installation
-docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge version
-```
-````
-
-````{tab-item} Build Locally
-```bash
-# Clone and build
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-make docker-build     # Builds complete image with Nextflow, BWA-MEM2, SAMtools, ViennaRNA
-
-# Test the build
-docker run --rm sirnaforge:latest sirnaforge version
-```
-````
-
-`````
-
-**Includes**: Python packages, Nextflow, BWA-MEM2, SAMtools, ViennaRNA, AWS CLI
-
-
-## Your First Analysis
-
-### Verify Installation
-
-`````{tab-set}
-
-````{tab-item} Development (uv/make)
-```bash
-uv run sirnaforge --help
-uv run sirnaforge version
-```
-````
-
-````{tab-item} Docker
-```bash
-docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge --help
-docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge version
-```
-````
-
-`````
-
-### Complete Workflow
-
-`````{tab-set}
-
-````{tab-item} uv
-```bash
-# End-to-end analysis for TP53
-uv run sirnaforge workflow TP53 --output-dir my_first_analysis
-
-# With multi-species off-target validation (any format works)
-uv run sirnaforge workflow TP53 --species "human,mouse,rat" --output-dir my_analysis
-# Equivalent: --species "hsa,mmu,rno" or --species "Homo sapiens,Mus musculus,Rattus norvegicus"
-```
-````
-
-````{tab-item} Docker
-```bash
-# End-to-end analysis for TP53
-docker run --rm \
-  -v $(pwd):/workspace \
-  -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow TP53 --output-dir my_first_analysis
+# End-to-end design + scoring for TP53
+uv run sirnaforge workflow TP53 --output-dir tp53_run
 ```
 
-:::{note}
-**Container Execution Note**: When running inside the container, siRNAforge automatically detects the container environment and uses the `local` profile for Nextflow workflows (avoiding Docker-in-Docker). All bioinformatics tools (BWA-MEM2, SAMtools, ViennaRNA, Nextflow) are pre-installed and ready to use.
-:::
-````
+- Use `docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge workflow …` for the same behavior inside the prebuilt image.
+- The command performs gene search → siRNA design → thermodynamic scoring → filtering and writes CSVs plus logs under `tp53_run/`.
 
-`````
+See the [Workflows overview](workflows.md) for the full output tree, common flags (GC bounds, top-N, verbosity), and Nextflow/off-target hand-offs.
 
-**What this does:**
-1. Search TP53 transcripts from Ensembl
-2. Design siRNA candidates
-3. Score using thermodynamic asymmetry
-4. Rank and filter best candidates
-5. Generate results
+## 3. Customize Inputs & References
 
-### Using Custom Transcripts or Transcriptomes
-
-Want to skip the gene-search step or run offline? Provide your own FASTA input while still leveraging the full workflow:
+Pass alternative sequences or transcriptomes to match your experimental data:
 
 ```bash
 uv run sirnaforge workflow TP53 \
   --input-fasta examples/sample_transcripts.fasta \
   --transcriptome-fasta ensembl_mouse_cdna \
-  --output-dir custom_tp53_run
+  --output-dir tp53_custom
 ```
 
-- `--input-fasta` accepts local files or remote URLs. The workflow copies and validates the sequences before design, but still uses the `GENE_QUERY` argument for naming outputs.
-- `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local path, URL, or presets such as `ensembl_human_cdna`). When omitted the workflow indexes the bundled Ensembl human, mouse, rat, and macaque transcriptomes so off-target analysis still runs.
-- Remote resources are cached under `~/.cache/sirnaforge/`, so subsequent runs reuse downloads automatically.
+- `--input-fasta` accepts local paths or URLs, bypassing the transcript lookup while retaining familiar file naming via the positional gene argument.
+- `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local/remote/preset). Provide it whenever you need species other than the bundled Ensembl set.
+- `--offtarget-indices` and `--species` feed the BWA-MEM2/Nextflow pipeline; details live in [Workflows](workflows.md#nextflow-pipeline).
 
-### Results Structure
-```
-my_first_analysis/
-├── sirnaforge/
-│   ├── TP53_pass.csv        # Best candidates for lab use
-│   └── TP53_all.csv         # All candidates with scores
-├── off_target/
-│   └── input_candidates.fasta      # FASTA passed to Nextflow (includes dirty controls)
-├── transcripts/
-│   ├── TP53_transcripts.fasta      # All retrieved transcripts
-│   ├── TP53_canonical.fasta        # Canonical isoform only
-│   └── temp_for_design.fasta       # Transcripts used for design
-├── logs/
-│   ├── workflow_stream.log         # Console output
-│   └── workflow_summary.json       # High-level summary
-└── orf_reports/
-    └── TP53_orf_validation.txt     # ORF analysis results
-```
+## 4. Inspect Results
 
-### Examine Your Results
+Key files in every workflow run:
+
+| File | Why it matters |
+|------|----------------|
+| `sirnaforge/*_pass.csv` | High-quality candidates ready for experiments |
+| `sirnaforge/*_all.csv` | Full candidate list with all metrics for custom filtering |
+| `logs/workflow_summary.json` | Summary of search/design stats, reference decisions, and QC flags |
+| `off_target/input_candidates.fasta` | FASTA handed to the Nextflow off-target pipeline |
+
+Use standard CLI tools to browse:
 
 ```bash
-# View top candidates
-head -6 my_first_analysis/sirnaforge/TP53_pass.csv
-
-# Check workflow summary
-cat my_first_analysis/logs/workflow_summary.json
+head -6 tp53_run/sirnaforge/TP53_pass.csv
+jq '.' tp53_run/logs/workflow_summary.json | less
 ```
 
-## Understanding Your Results
+For a complete walkthrough of directory contents, refer to [Workflows → Output Structure](workflows.md#output-structure).
 
-### Key Output Files
+## 5. Understand the Scores
 
-| File | Purpose | Use For |
-|------|---------|---------|
-| `*_pass.csv` | High-quality candidates that pass all filters | **Laboratory experiments** |
-| `*_all.csv` | Complete candidate list with detailed scores | Analysis and custom filtering |
-| `workflow_summary.json` | High-level analysis statistics | QC and reporting |
+siRNAforge surfaces the same thermodynamic metrics described in the code under `sirnaforge/core/thermodynamics.py`. Refer to:
 
-### Quality Metrics
+- [Scoring Overview](scoring.md) — optimal ranges, filtering presets, and column descriptions.
+- [Data Models & Scoring Reference](models_and_scoring.md) — Pydantic models, algorithms, and literature citations.
 
-**Key metrics to look for:**
-- `asymmetry_score` ≥0.65 (optimal)
-- `gc_content` 35-60% (balanced)
-- `melting_temp` 55-65°C (effective)
+Typical “green zone” checkpoints:
 
-**Score Ranges:**
-- **Composite Score (7-10)**: Higher is better; combines all factors
-- **Thermodynamic Score (0-1)**: Measures RNA folding favorability and asymmetry
-- **GC Content (35-60%)**: Optimal range 40-55% for stability and accessibility
-- **Asymmetry Score (0.65-1.0)**: Higher values indicate better guide strand selection
+- `composite_score` ≥ 8 for top-tier candidates
+- `asymmetry_score` ≥ 0.65 to ensure the guide strand loads into RISC
+- `gc_content` between 35–60% (optimal 40–55%)
 
-## Essential Commands
+## 6. Next Steps
 
-| Command | Purpose | Example |
-|---------|---------|---------|
-| `workflow` | Complete gene → siRNA pipeline | `sirnaforge workflow TP53 --output-dir results` |
-| `search` | Find gene transcripts | `sirnaforge search BRCA1 -o transcripts.fasta` |
-| `design` | Generate siRNAs from FASTA | `sirnaforge design input.fasta --top-n 20` |
-| `validate` | Check FASTA format | `sirnaforge validate input.fasta` |
-| `version` | Show version | `sirnaforge version` |
-
-### Key Parameters
-
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `--gc-min` / `--gc-max` | 30% / 60% | GC content window |
-| `--length` | 21 | siRNA length in nucleotides |
-| `--top-n` | 10 (`design`), 20 (`workflow`) | Number of candidates retained |
-| `--output-dir` | `sirna_workflow_output` | Output directory for workflows |
-| `--verbose` | `false` | Emit detailed progress messages |
-
-## Next Steps
-
-- **📖 [Usage Examples](usage_examples.md)** - Batch processing, custom parameters, chemical modifications
-- **⚙️ [CLI Reference](cli_reference.md)** - Complete parameter documentation
-- **🧬 [Thermodynamic Guide](thermodynamic_guide.md)** - Understanding scoring metrics
-- **🔧 [Developer Guide](developer/development.md)** - For contributors and developers
+- [Usage Examples](usage_examples.md) for batch automation, miRNA design mode, and modification workflows.
+- [CLI Reference](cli_reference.md) for auto-generated `--help` output from every Typer command.
+- [Thermodynamic Metrics Guide](thermodynamic_guide.md) for deeper interpretation.
+- [Developer Documentation](developer/index.rst) if you plan to extend the codebase.
