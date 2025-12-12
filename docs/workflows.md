@@ -10,7 +10,8 @@ The `workflow` command handles everything: gene search → design → scoring �
 sirnaforge workflow TP53 --output-dir results/
 ```
 
-### Output Structure {#output-structure}
+(output-structure)=
+### Output Structure
 
 ```
 results/
@@ -73,7 +74,8 @@ docker run --rm -v $(pwd):/data -w /data \
 Inside the container, Nextflow uses the `local` profile automatically—no Docker-in-Docker needed.
 :::
 
-## Nextflow Pipeline {#nextflow-pipeline}
+(nextflow-pipeline)=
+## Nextflow Pipeline
 
 For large-scale off-target analysis across multiple genomes:
 
