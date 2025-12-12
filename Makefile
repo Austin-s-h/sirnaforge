@@ -91,7 +91,7 @@ test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow sui
 	$(PYTEST_V) -m "ci and not runs_in_container and not requires_docker and not requires_tools" -n 0 --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
-test-release: test-release-host test-release-container test-release-report ## Release tier - comprehensive validation (host + container tests with combined coverage)
+test-release: docs test-release-host test-release-container test-release-report ## Release tier - comprehensive validation (host + container tests with combined coverage)
 
 test-release-host: ## Host-only release suite (produces base coverage database)
 	@echo "Step 1/3: Running host-based tests with coverage..."
@@ -209,6 +209,7 @@ clean: ## Clean build and cache artifacts
 	rm -rf .coverage .coverage.* htmlcov/ .mypy_cache/ .ruff_cache/
 	rm -rf coverage*.xml pytest-*.xml
 	rm -rf docs/_build/ work/ .nextflow* nextflow_results/
+	rm -rf tp53_workflow_debug workflow_output workflow_test_debug_* docker_results
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 	@echo "Cleaned!"
@@ -220,8 +221,8 @@ version: ## Show version
 # DOCUMENTATION
 #==============================================================================
 
-docs: ## Build documentation
-	uv run sphinx-build -b html docs docs/_build/html
+docs: ## Build documentation (warnings fail the build)
+	uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 	@echo "Docs: docs/_build/html/index.html"
 
 docs-serve: docs ## Serve docs locally

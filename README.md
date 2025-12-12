@@ -3,8 +3,6 @@
 
   <h1>siRNAforge</h1>
 
-  <p><em>From gene to silencing — design high-specificity siRNAs with confidence</em></p>
-
   [![Release](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml)
   [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
   [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
@@ -257,14 +255,6 @@ Python-only features work immediately. Off-target analysis requires Docker or ma
 
 We welcome contributions! siRNAforge uses modern Python tooling with `make` workflows for efficient development.
 
-### Quick Development Setup
-
-```bash
-# One-command setup
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-make dev  # Installs deps + pre-commit hooks
-```
 
 ### Essential Make Commands
 
@@ -345,8 +335,6 @@ siRNAforge integrates several open-source bioinformatics tools:
 - **[BWA-MEM2](https://github.com/bwa-mem2/bwa-mem2)** — High-performance sequence alignment
 - **[Nextflow](https://www.nextflow.io/)** — Scalable workflow orchestration
 - **[BioPython](https://biopython.org/)** — Computational biology utilities
-
----
 
 <div align="center">
   <sub>Built with ❤️ for the research community</sub>

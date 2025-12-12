@@ -1,36 +1,42 @@
 name: 🚀 Release siRNAforge
 
 on:
-    workflow_dispatch:
-        inputs:
-            version:
-              description: 'Release version (e.g., v0.1.0)'
-              required: true
-              type: string
-            prerelease:
-              description: 'Mark as pre-release'
-              required: false
-              default: true
-              type: boolean
-            push_images:
-              description: 'Push Docker images to registries'
-              required: false
-              default: true
-              type: boolean
-            publish_pypi:
-              description: 'Publish package to PyPI (requires Trusted Publisher configured)'
-              required: false
-              default: false
-              type: boolean
-            deploy_docs_release:
-              description: 'Build & deploy docs as part of release'
-              required: false
-              default: true
-              type: boolean
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+    inputs:
+        version:
+          description: 'Release version (e.g., v0.1.0)'
+          required: true
+          type: string
+        prerelease:
+          description: 'Mark as pre-release'
+          required: false
+          default: true
+          type: boolean
+        push_images:
+          description: 'Push Docker images to registries'
+          required: false
+          default: true
+          type: boolean
+        publish_pypi:
+          description: 'Publish package to PyPI (requires Trusted Publisher configured)'
+          required: false
+          default: false
+          type: boolean
+        deploy_docs_release:
+          description: 'Build & deploy docs as part of release'
+          required: false
+          default: true
+          type: boolean
 
 env:
   PYTHON_VERSION: "3.11"
   REGISTRY: ghcr.io
+  INPUT_PRERELEASE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease) || 'true' }}
+  INPUT_PUSH_IMAGES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.push_images) || 'true' }}
+  INPUT_PUBLISH_PYPI: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_pypi) || 'false' }}
+  INPUT_DEPLOY_DOCS_RELEASE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_docs_release) || 'true' }}
 
 permissions:
   contents: write
@@ -57,8 +63,12 @@ jobs:
     - name: 🔍 Validate version format
       id: version
       run: |
-        VERSION="${{ github.event.inputs.version }}"
-        VERSION=${VERSION#v}  # Remove 'v' prefix if present
+        VERSION_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || '' }}"
+        if [ -z "$VERSION_INPUT" ]; then
+          VERSION_INPUT=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+        fi
+
+        VERSION=${VERSION_INPUT#v}  # Remove 'v' prefix if present
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
         if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
@@ -359,7 +369,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [validate-release, build-docker, test-docker-smoke]
-    continue-on-error: ${{ github.event.inputs.prerelease == 'true' }}
+    continue-on-error: ${{ env.INPUT_PRERELEASE == 'true' }}
 
     steps:
     - name: 📥 Checkout code
@@ -396,7 +406,7 @@ jobs:
 
         # Run integration tests - these can fail in pre-release
         echo "🧪 Running integration tests..."
-        if [ "${{ github.event.inputs.prerelease }}" == "true" ]; then
+        if [ "${{ env.INPUT_PRERELEASE }}" == "true" ]; then
           echo "⚠️ Pre-release mode: Integration test failures will not block release"
           uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
         else
@@ -569,7 +579,7 @@ jobs:
 
           # Expected output: siRNAforge v${{ needs.validate-release.outputs.version }}
           ```
-        prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+        prerelease: ${{ env.INPUT_PRERELEASE == 'true' }}
         draft: false
 
   # Optional: Publish to PyPI using Trusted Publishing (OIDC) if enabled
@@ -577,7 +587,7 @@ jobs:
     name: 📦 Publish to PyPI
     runs-on: ubuntu-latest
     needs: [validate-release, run-ci, create-release, build-artifacts]
-    if: ${{ github.event.inputs.publish_pypi == 'true' && needs.run-ci.result == 'success' && needs.create-release.result == 'success' }}
+    if: ${{ env.INPUT_PUBLISH_PYPI == 'true' && needs.run-ci.result == 'success' && needs.create-release.result == 'success' }}
     permissions:
       id-token: write  # Required for PyPI trusted publisher
       contents: read
@@ -607,7 +617,7 @@ jobs:
     name: 📚 Build Release Docs
     runs-on: ubuntu-latest
     needs: [validate-release, run-ci]
-    if: ${{ github.event.inputs.deploy_docs_release == 'true' && needs.run-ci.result == 'success' }}
+    if: ${{ env.INPUT_DEPLOY_DOCS_RELEASE == 'true' && needs.run-ci.result == 'success' }}
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
@@ -639,7 +649,7 @@ jobs:
     name: 🚀 Deploy Release Docs
     runs-on: ubuntu-latest
     needs: [validate-release, build-release-docs]
-    if: ${{ github.event.inputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
+    if: ${{ env.INPUT_DEPLOY_DOCS_RELEASE == 'true' && needs.build-release-docs.result == 'success' }}
     permissions:
       pages: write
       id-token: write
@@ -664,7 +674,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [validate-release, create-release, test-docker-smoke]
-    if: github.event.inputs.push_images == 'true' && needs.test-docker-smoke.result == 'success'
+    if: env.INPUT_PUSH_IMAGES == 'true' && needs.test-docker-smoke.result == 'success'
 
     steps:
     - name: 📥 Checkout code
@@ -693,7 +703,7 @@ jobs:
         docker push "$VERSION_TAG"
 
         # Push latest tag if this is not a prerelease
-        if [ "${{ github.event.inputs.prerelease }}" != "true" ]; then
+        if [ "${{ env.INPUT_PRERELEASE }}" != "true" ]; then
           LATEST_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest"
           docker tag "$VERSION_TAG" "$LATEST_TAG"
           docker push "$LATEST_TAG"
