@@ -46,6 +46,17 @@ def toy_genome_index_prefix(tmp_path_factory):
 
 
 @pytest.fixture
+def realistic_transcripts_fasta():
+    """Path to the packaged realistic transcript FASTA used across tests."""
+    data_path = Path(__file__).parent / "unit" / "data" / "realistic_transcripts.fasta"
+
+    if not data_path.exists():
+        pytest.skip(f"Realistic transcript FASTA not found: {data_path}")
+
+    return data_path
+
+
+@pytest.fixture
 def genome_config_for_nextflow(toy_genome_path):
     """Nextflow-compatible transcriptome configuration for tests.
 

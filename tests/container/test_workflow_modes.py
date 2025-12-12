@@ -180,7 +180,7 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path):
+def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, realistic_transcripts_fasta: Path):
     """Test workflow with --offtarget-indices override.
 
     Validates:
@@ -190,7 +190,7 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path):
     """
     output_dir = _get_persistent_output_dir(tmp_path, "index_override")
 
-    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "realistic_transcripts.fasta"
+    input_fasta = realistic_transcripts_fasta
 
     result = subprocess.run(
         [
@@ -257,7 +257,7 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_mirna_design_mode(tmp_path: Path):
+def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
     """Test miRNA-aware design mode.
 
     Validates:
@@ -267,7 +267,7 @@ def test_mirna_design_mode(tmp_path: Path):
     """
     output_dir = _get_persistent_output_dir(tmp_path, "mirna_mode")
 
-    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "realistic_transcripts.fasta"
+    input_fasta = realistic_transcripts_fasta
 
     result = subprocess.run(
         [
@@ -319,7 +319,7 @@ def test_mirna_design_mode(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_modification_pattern_application(tmp_path: Path):
+def test_modification_pattern_application(tmp_path: Path, realistic_transcripts_fasta: Path):
     """Test workflow with chemical modification patterns.
 
     Validates:
@@ -329,7 +329,7 @@ def test_modification_pattern_application(tmp_path: Path):
     """
     output_dir = _get_persistent_output_dir(tmp_path, "modifications")
 
-    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "realistic_transcripts.fasta"
+    input_fasta = realistic_transcripts_fasta
 
     result = subprocess.run(
         [
@@ -382,7 +382,7 @@ def test_modification_pattern_application(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_multi_species_offtarget(tmp_path: Path):
+def test_multi_species_offtarget(tmp_path: Path, realistic_transcripts_fasta: Path):
     """Test workflow with multi-species off-target analysis.
 
     Validates:
@@ -392,7 +392,7 @@ def test_multi_species_offtarget(tmp_path: Path):
     """
     output_dir = _get_persistent_output_dir(tmp_path, "multi_species")
 
-    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "realistic_transcripts.fasta"
+    input_fasta = realistic_transcripts_fasta
 
     result = subprocess.run(
         [
@@ -431,7 +431,7 @@ def test_multi_species_offtarget(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_gc_range_filtering(tmp_path: Path):
+def test_gc_range_filtering(tmp_path: Path, realistic_transcripts_fasta: Path):
     """Test workflow with custom GC content filters.
 
     Validates:
@@ -441,7 +441,7 @@ def test_gc_range_filtering(tmp_path: Path):
     """
     output_dir = _get_persistent_output_dir(tmp_path, "gc_filtering")
 
-    input_fasta = Path(__file__).resolve().parents[2] / "examples" / "realistic_transcripts.fasta"
+    input_fasta = realistic_transcripts_fasta
 
     # Use strict GC range to force filtering
     result = subprocess.run(

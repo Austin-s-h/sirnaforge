@@ -282,6 +282,18 @@ class AggregatedOffTargetSummary(BaseAggregatedSummary):
         ge=0,
         description="Hits assigned to non-human species (per-species detail available in hits_per_species)",
     )
+    species_file_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of *_analysis.tsv files discovered per requested species",
+    )
+    missing_species: list[str] = Field(
+        default_factory=list,
+        description="Species requested for analysis that produced no transcriptome alignment files",
+    )
+    status: str = Field(
+        default="completed",
+        description="Aggregation status (completed, partial, or failed)",
+    )
 
 
 class AggregatedMiRNASummary(BaseAggregatedSummary):

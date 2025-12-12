@@ -1,6 +1,17 @@
 process OFFTARGET_ANALYSIS {
     tag "$candidate_id-$species"
     label 'process_medium'
+    publishDir "${params.outdir}/alignments", mode: params.publish_dir_mode, saveAs: { producedFile ->
+        def name = producedFile.getName()
+        def tagParts = (task.tag ?: '').tokenize('-')
+        def speciesLabel = tagParts ? tagParts[-1] : 'unspecified'
+
+        if (name == 'versions.yml') {
+            return "metadata/${task.tag}/${name}"
+        }
+
+        return "${speciesLabel}/${name}"
+    }
 
     conda "${moduleDir}/environment.yml"
 

@@ -267,3 +267,90 @@ def test_offtarget_selection_includes_dirty_controls(tmp_path):
     assert primary in selected
     assert dirty in selected
     assert len(selected) == 2
+
+
+def test_load_offtarget_aggregates_reads_summaries(tmp_path):
+    """Aggregated Nextflow summaries should be surfaced for downstream schemas."""
+    config = WorkflowConfig(output_dir=tmp_path / "out_agg", gene_query="tp53")
+    workflow = SiRNAWorkflow(config)
+
+    results_dir = config.output_dir / "off_target" / "results"
+    aggregated_dir = results_dir / "aggregated"
+    aggregated_dir.mkdir(parents=True, exist_ok=True)
+
+    transcriptome_summary = {"total_results": 5, "human_hits": 2, "other_species_hits": 3}
+    mirna_summary = {"total_mirna_hits": 4, "human_hits": 1, "other_species_hits": 3}
+
+    (aggregated_dir / "combined_summary.json").write_text(json.dumps(transcriptome_summary))
+    (aggregated_dir / "combined_mirna_summary.json").write_text(json.dumps(mirna_summary))
+
+    aggregates = workflow._load_offtarget_aggregates(results_dir)
+
+    assert aggregates["transcriptome"]["human_hits"] == 2
+    assert aggregates["mirna"]["other_species_hits"] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_process_nextflow_results_includes_aggregated(monkeypatch, tmp_path):
+    """Workflow summaries must include aggregated human vs other breakdowns."""
+    config = WorkflowConfig(output_dir=tmp_path / "out_process", gene_query="tp53")
+    workflow = SiRNAWorkflow(config)
+
+    candidate = _make_candidate("cand1", "ATGCGATGCGATGCGATGCGC")
+
+    async def fake_parse(_self, output_dir):  # noqa: ARG001
+        return {
+            "status": "completed",
+            "method": "nextflow",
+            "output_dir": str(output_dir),
+            "results": {candidate.id: {"off_target_count": 0, "off_target_score": 0.0, "hits": []}},
+        }
+
+    monkeypatch.setattr(SiRNAWorkflow, "_parse_nextflow_results", fake_parse)
+
+    sentinel = {"transcriptome": {"human_hits": 1, "other_species_hits": 0}}
+    monkeypatch.setattr(SiRNAWorkflow, "_load_offtarget_aggregates", lambda *_: sentinel)
+
+    output_dir = config.output_dir / "off_target" / "results"
+    output = await workflow._process_nextflow_results([candidate], output_dir, {"status": "completed"})
+
+    assert output["aggregated"] == sentinel
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_process_nextflow_results_flags_missing_species(monkeypatch, tmp_path):
+    """Missing transcriptome species should downgrade workflow status to partial."""
+    config = WorkflowConfig(output_dir=tmp_path / "out_process_missing", gene_query="tp53")
+    workflow = SiRNAWorkflow(config)
+
+    candidate = _make_candidate("cand_missing", "ATGCGATGCGATGCGATGCGC")
+
+    async def fake_parse(_self, output_dir):  # noqa: ARG001
+        return {
+            "status": "completed",
+            "method": "nextflow",
+            "output_dir": str(output_dir),
+            "results": {candidate.id: {"off_target_count": 0, "off_target_score": 0.0, "hits": []}},
+        }
+
+    monkeypatch.setattr(SiRNAWorkflow, "_parse_nextflow_results", fake_parse)
+
+    sentinel = {
+        "transcriptome": {
+            "human_hits": 0,
+            "other_species_hits": 0,
+            "missing_species": ["human"],
+            "species_analyzed": ["human"],
+            "hits_per_species": {"human": 0},
+        }
+    }
+    monkeypatch.setattr(SiRNAWorkflow, "_load_offtarget_aggregates", lambda *_: sentinel)
+
+    output_dir = config.output_dir / "off_target" / "results"
+    result = await workflow._process_nextflow_results([candidate], output_dir, {"status": "completed"})
+
+    assert result["status"] == "partial"
+    assert sentinel["transcriptome"] in result["aggregated"].values()
+    assert any("No transcriptome alignment files" in warning for warning in result.get("warnings", []))
