@@ -156,7 +156,7 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
   sirnaforge <command> <args>
 ```
 
-- The image caches Ensembl transcriptomes and miRNA databases (see [Installation → Docker](installation.md#docker-full-bioinformatics-stack)).
+- The image caches Ensembl transcriptomes and miRNA databases (see {ref}`Installation → Docker <docker-full-bioinformatics-stack>`).
 - Replace `--rm` with `--name sirnaforge_batch` for long-lived runs so you can inspect logs mid-execution.
 
 ## See Also

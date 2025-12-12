@@ -5,7 +5,7 @@ Launch your first siRNAforge workflow in minutes, then dive deeper through the f
 ## 1. Install
 
 - **Python/uv users:** Follow the step-by-step guide in [Installation](installation.md) for pip/uv instructions plus development setup (`make dev`) that matches the project’s CI environment.
-- **Container users:** Pull or build the full bioinformatics image as described in [Installation → Docker](installation.md#docker-full-bioinformatics-stack). The container bundles Nextflow, BWA-MEM2, SAMtools, ViennaRNA, and detects `local` mode automatically.
+- **Container users:** Pull or build the full bioinformatics image as described in {ref}`Installation → Docker <docker-full-bioinformatics-stack>`. The container bundles Nextflow, BWA-MEM2, SAMtools, ViennaRNA, and detects `local` mode automatically.
 
 > Need to automate lab servers or run air-gapped? The installation guide also documents offline caching, verification commands, and how to run smoke tests with the bundled FASTA files.
 
@@ -34,7 +34,7 @@ uv run sirnaforge workflow TP53 \
 
 - `--input-fasta` accepts local paths or URLs, bypassing the transcript lookup while retaining familiar file naming via the positional gene argument.
 - `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local/remote/preset). Provide it whenever you need species other than the bundled Ensembl set.
-- `--offtarget-indices` and `--species` feed the BWA-MEM2/Nextflow pipeline; details live in [Workflows](workflows.md#nextflow-pipeline).
+- `--offtarget-indices` and `--species` feed the BWA-MEM2/Nextflow pipeline; details live in {ref}`Workflows → Nextflow Pipeline <nextflow-pipeline>`.
 
 ## 4. Inspect Results
 
@@ -54,7 +54,7 @@ head -6 tp53_run/sirnaforge/TP53_pass.csv
 jq '.' tp53_run/logs/workflow_summary.json | less
 ```
 
-For a complete walkthrough of directory contents, refer to [Workflows → Output Structure](workflows.md#output-structure).
+For a complete walkthrough of directory contents, refer to {ref}`Workflows → Output Structure <output-structure>`.
 
 ## 5. Understand the Scores
 
