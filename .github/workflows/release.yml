@@ -33,10 +33,6 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   REGISTRY: ghcr.io
-  INPUT_PRERELEASE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease) || 'true' }}
-  INPUT_PUSH_IMAGES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.push_images) || 'true' }}
-  INPUT_PUBLISH_PYPI: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_pypi) || 'false' }}
-  INPUT_DEPLOY_DOCS_RELEASE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_docs_release) || 'true' }}
 
 permissions:
   contents: write
@@ -55,6 +51,10 @@ jobs:
       repository-lower: ${{ steps.repo.outputs.repository }}
       owner-lower: ${{ steps.repo.outputs.owner }}
       name-lower: ${{ steps.repo.outputs.name }}
+      prerelease: ${{ steps.release_flags.outputs.prerelease }}
+      push_images: ${{ steps.release_flags.outputs.push_images }}
+      publish_pypi: ${{ steps.release_flags.outputs.publish_pypi }}
+      deploy_docs_release: ${{ steps.release_flags.outputs.deploy_docs_release }}
 
     steps:
     - name: 📥 Checkout code
@@ -132,6 +132,56 @@ jobs:
         DOCKER_SIZE: ${{ steps.stats.outputs.docker_size }}
       run: |
         python .github/scripts/generate_release_notes.py
+
+    - name: ⚙️ Normalize release toggles
+      id: release_flags
+      run: |
+        python <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        defaults = {
+            "prerelease": "true",
+            "push_images": "true",
+            "publish_pypi": "false",
+            "deploy_docs_release": "true",
+        }
+
+        event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+        event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
+        payload = {}
+        if event_path.is_file():
+            payload = json.loads(event_path.read_text(encoding="utf-8"))
+
+        inputs = payload.get("inputs") if event_name == "workflow_dispatch" else {}
+        if not isinstance(inputs, dict):
+            inputs = {}
+
+        resolved = {}
+        for key, default in defaults.items():
+            raw = inputs.get(key)
+            if isinstance(raw, bool):
+                resolved[key] = "true" if raw else "false"
+            elif raw is None or str(raw).strip() == "":
+                resolved[key] = default
+            else:
+                resolved[key] = "true" if str(raw).strip().lower() == "true" else "false"
+
+        output_path = os.environ.get("GITHUB_OUTPUT")
+        if output_path:
+            with open(output_path, "a", encoding="utf-8") as handle:
+                for key, value in resolved.items():
+                    handle.write(f"{key}={value}\n")
+
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as handle:
+                handle.write("## Release toggle configuration\n\n")
+                for key, value in resolved.items():
+                    handle.write(f"- **{key}**: {value}\n")
+                handle.write("\n")
+        PY
 
   # Call the main CI workflow to ensure quality
   run-ci:
@@ -369,7 +419,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [validate-release, build-docker, test-docker-smoke]
-    continue-on-error: ${{ env.INPUT_PRERELEASE == 'true' }}
+    continue-on-error: ${{ needs.validate-release.outputs.prerelease == 'true' }}
 
     steps:
     - name: 📥 Checkout code
@@ -406,7 +456,7 @@ jobs:
 
         # Run integration tests - these can fail in pre-release
         echo "🧪 Running integration tests..."
-        if [ "${{ env.INPUT_PRERELEASE }}" == "true" ]; then
+        if [ "${{ needs.validate-release.outputs.prerelease }}" == "true" ]; then
           echo "⚠️ Pre-release mode: Integration test failures will not block release"
           uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
         else
@@ -579,7 +629,7 @@ jobs:
 
           # Expected output: siRNAforge v${{ needs.validate-release.outputs.version }}
           ```
-        prerelease: ${{ env.INPUT_PRERELEASE == 'true' }}
+        prerelease: ${{ needs.validate-release.outputs.prerelease == 'true' }}
         draft: false
 
   # Optional: Publish to PyPI using Trusted Publishing (OIDC) if enabled
@@ -587,7 +637,7 @@ jobs:
     name: 📦 Publish to PyPI
     runs-on: ubuntu-latest
     needs: [validate-release, run-ci, create-release, build-artifacts]
-    if: ${{ env.INPUT_PUBLISH_PYPI == 'true' && needs.run-ci.result == 'success' && needs.create-release.result == 'success' }}
+    if: ${{ needs.validate-release.outputs.publish_pypi == 'true' && needs.run-ci.result == 'success' && needs.create-release.result == 'success' }}
     permissions:
       id-token: write  # Required for PyPI trusted publisher
       contents: read
@@ -617,7 +667,7 @@ jobs:
     name: 📚 Build Release Docs
     runs-on: ubuntu-latest
     needs: [validate-release, run-ci]
-    if: ${{ env.INPUT_DEPLOY_DOCS_RELEASE == 'true' && needs.run-ci.result == 'success' }}
+    if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.run-ci.result == 'success' }}
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
@@ -649,7 +699,7 @@ jobs:
     name: 🚀 Deploy Release Docs
     runs-on: ubuntu-latest
     needs: [validate-release, build-release-docs]
-    if: ${{ env.INPUT_DEPLOY_DOCS_RELEASE == 'true' && needs.build-release-docs.result == 'success' }}
+    if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
     permissions:
       pages: write
       id-token: write
@@ -674,7 +724,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [validate-release, create-release, test-docker-smoke]
-    if: env.INPUT_PUSH_IMAGES == 'true' && needs.test-docker-smoke.result == 'success'
+    if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-docker-smoke.result == 'success' }}
 
     steps:
     - name: 📥 Checkout code
@@ -703,7 +753,7 @@ jobs:
         docker push "$VERSION_TAG"
 
         # Push latest tag if this is not a prerelease
-        if [ "${{ env.INPUT_PRERELEASE }}" != "true" ]; then
+        if [ "${{ needs.validate-release.outputs.prerelease }}" != "true" ]; then
           LATEST_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest"
           docker tag "$VERSION_TAG" "$LATEST_TAG"
           docker push "$LATEST_TAG"
