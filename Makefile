@@ -27,6 +27,11 @@ DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIR
 DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp'
 DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
+# GitHub Actions checkouts (and many local workspaces) are often owned by a
+# different UID than the container's default non-root user, which can prevent
+# writing coverage/junit outputs into /workspace. Run test containers as root.
+DOCKER_TEST_USER = --user 0:0
+
 # Pytest command shortcuts
 PYTEST = uv run pytest
 PYTEST_V = $(PYTEST) -v
@@ -111,7 +116,7 @@ test-release-container: docker-ensure ## Container release suite (expects .cover
 	fi
 	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c \
 		"pip install --quiet pytest pytest-cov && \
 		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' \
 		--cov=sirnaforge --cov-append --cov-report= \
@@ -161,7 +166,7 @@ docker-ensure: ## Ensure Docker image exists (build if missing)
 
 docker-test: docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c "pip install --quiet pytest && /opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c "pip install --quiet pytest && /opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
 
 docker-build-test: ## Clean debug folder, build Docker image, and run tests
 	@echo "Cleaning debug folders..."
