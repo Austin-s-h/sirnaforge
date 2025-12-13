@@ -347,24 +347,6 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: 🧪 Test Docker image functionality using make
-      run: |
-        # Load the built image
-        docker load --input /tmp/sirnaforge-image.tar
-
-        # Tag the image to match what the Makefile expects (sirnaforge:latest)
-        REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
-        docker tag "$REGISTRY_IMAGE" sirnaforge:latest
-
-        echo "🧪 Tagged image: $REGISTRY_IMAGE -> sirnaforge:latest"
-
-        echo "🧪 Running Docker container validation tests..."
-        # The Docker container uses its own conda environment with all bioinformatics tools
-        # The Makefile automatically handles UV cache mounting based on environment
-        make docker-test
-
-        echo "✅ Docker image tests passed!"
-
     - name: 📤 Upload Docker image artifact
       uses: actions/upload-artifact@v4
       with:
@@ -372,65 +354,13 @@ jobs:
         path: /tmp/sirnaforge-image.tar
         retention-days: 1
 
-
-  # Run Docker integration tests (can fail in pre-release)
-  test-docker-integration:
-    name: 🧪 Docker Integration Tests (Can fail in pre-release)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [validate-release, build-docker, test-docker-smoke]
-    continue-on-error: ${{ needs.validate-release.outputs.prerelease == 'true' }}
-
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: ⚡ Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docker-integration
-
-    - name: 📦 Install test dependencies
-      run: uv sync --group dev
-
-    - name: 📥 Download Docker image
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image-${{ needs.validate-release.outputs.version }}
-        path: /tmp/
-
-    - name: 🐳 Load and run integration tests
-      run: |
-        # Load the image
-        docker load --input /tmp/sirnaforge-image.tar
-
-        # Set environment variable for tests
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
-
-        # Run integration tests - these can fail in pre-release
-        echo "🧪 Running integration tests..."
-        if [ "${{ needs.validate-release.outputs.prerelease }}" == "true" ]; then
-          echo "⚠️ Pre-release mode: Integration test failures will not block release"
-          uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
-        else
-          echo "🔒 Full release mode: Integration tests must pass"
-          uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=3
-        fi
-
   # Create GitHub release after docker build passes
   create-release:
     name: 🏷️ Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, run-ci, build-docker]
-    if: always() && needs.build-docker.result == 'success'
+    needs: [validate-release, test-release]
+    if: always() && needs.test-release.result == 'success'
     outputs:
       release-id: ${{ steps.create.outputs.id }}
       release-url: ${{ steps.create.outputs.html_url }}
@@ -548,13 +478,13 @@ jobs:
       id: deployment
       uses: actions/deploy-pages@v4
 
-  # Publish Docker images only after smoke tests pass and release is created
+  # Publish Docker images only after release tests pass and the release is created
   publish-docker:
     name: 🐳 Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-release, create-release, test-docker-smoke]
-    if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-docker-smoke.result == 'success' }}
+    needs: [validate-release, build-docker, test-release, create-release]
+    if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-release.result == 'success' && needs.create-release.result == 'success' }}
 
     steps:
     - name: 📥 Checkout code
@@ -604,8 +534,8 @@ jobs:
     name: 🧪 Final Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, create-release, publish-docker, test-docker-smoke]
-    if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
+    needs: [validate-release, create-release, publish-docker]
+    if: needs.publish-docker.result == 'success'
 
     steps:
     - name: 🐳 Test published Docker image
@@ -629,8 +559,14 @@ jobs:
     name: ✅ Release Complete
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    needs: [validate-release, create-release, test-docker-smoke, test-docker-integration, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
-    if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
+    needs: [validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
+    if: >-
+      always() &&
+      needs.create-release.result == 'success' &&
+      (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') &&
+      (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') &&
+      (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') &&
+      (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
 
     steps:
     - name: 🎉 Release Status

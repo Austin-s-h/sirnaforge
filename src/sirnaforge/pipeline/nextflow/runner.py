@@ -376,14 +376,27 @@ class NextflowRunner:
             "report_files": len(output_files["html_report"]),
         }
 
+        stdout_text = ""
+        stderr_text = ""
+        if hasattr(result, "stdout") and result.stdout:
+            stdout_text = result.stdout.decode()
+        if hasattr(result, "stderr") and result.stderr:
+            stderr_text = result.stderr.decode()
+
+        # Some Nextflow versions emit run summaries (including parameter dumps) on stderr.
+        # Tests and downstream summaries expect to find those diagnostics under stdout,
+        # so fall back to stderr content when stdout is empty to keep behavior consistent.
+        if not stdout_text.strip() and stderr_text:
+            stdout_text = stderr_text
+
         return {
             "status": "completed",
             "output_dir": str(output_dir),
             "output_files": {k: [str(f) for f in v] for k, v in output_files.items()},
             "result_counts": result_counts,
             "returncode": result.returncode,
-            "stdout": result.stdout.decode() if hasattr(result, "stdout") else "",
-            "stderr": result.stderr.decode() if hasattr(result, "stderr") else "",
+            "stdout": stdout_text,
+            "stderr": stderr_text,
         }
 
     def validate_installation(self) -> dict[str, Union[bool, str]]:
