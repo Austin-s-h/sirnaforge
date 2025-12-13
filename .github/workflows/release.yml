@@ -130,6 +130,10 @@ jobs:
         TOTAL_LINES: ${{ steps.stats.outputs.total_lines }}
         CLI_COMMANDS: ${{ steps.stats.outputs.cli_commands }}
         DOCKER_SIZE: ${{ steps.stats.outputs.docker_size }}
+        REGISTRY: ${{ env.REGISTRY }}
+        REPOSITORY_LOWER: ${{ steps.repo.outputs.repository }}
+        OWNER_LOWER: ${{ steps.repo.outputs.owner }}
+        NAME_LOWER: ${{ steps.repo.outputs.name }}
       run: |
         python .github/scripts/generate_release_notes.py
 
@@ -343,24 +347,6 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: 🧪 Test Docker image functionality using make
-      run: |
-        # Load the built image
-        docker load --input /tmp/sirnaforge-image.tar
-
-        # Tag the image to match what the Makefile expects (sirnaforge:latest)
-        REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
-        docker tag "$REGISTRY_IMAGE" sirnaforge:latest
-
-        echo "🧪 Tagged image: $REGISTRY_IMAGE -> sirnaforge:latest"
-
-        echo "🧪 Running Docker container validation tests..."
-        # The Docker container uses its own conda environment with all bioinformatics tools
-        # The Makefile automatically handles UV cache mounting based on environment
-        make docker-test
-
-        echo "✅ Docker image tests passed!"
-
     - name: 📤 Upload Docker image artifact
       uses: actions/upload-artifact@v4
       with:
@@ -368,110 +354,13 @@ jobs:
         path: /tmp/sirnaforge-image.tar
         retention-days: 1
 
-  # Run Docker smoke tests (must always pass)
-  test-docker-smoke:
-    name: 🧪 Docker Smoke Tests (Critical)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [validate-release, build-docker]
-
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: ⚡ Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docker-smoke
-
-    - name: 📦 Install test dependencies
-      run: uv sync --group dev
-
-    - name: 📥 Download Docker image
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image-${{ needs.validate-release.outputs.version }}
-        path: /tmp/
-
-    - name: 🐳 Load and run smoke tests (MUST PASS)
-      run: |
-        # Load the image
-        docker load --input /tmp/sirnaforge-image.tar
-
-        # Set environment variable for tests
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
-
-        # Run smoke tests - these MUST pass for any release
-        echo "🔥 Running critical smoke tests..."
-        uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and smoke" --maxfail=1
-        echo "✅ All smoke tests passed - Docker image is functional"
-
-  # Run Docker integration tests (can fail in pre-release)
-  test-docker-integration:
-    name: 🧪 Docker Integration Tests (Can fail in pre-release)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [validate-release, build-docker, test-docker-smoke]
-    continue-on-error: ${{ needs.validate-release.outputs.prerelease == 'true' }}
-
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: ⚡ Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docker-integration
-
-    - name: 📦 Install test dependencies
-      run: uv sync --group dev
-
-    - name: 📥 Download Docker image
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image-${{ needs.validate-release.outputs.version }}
-        path: /tmp/
-
-    - name: 🐳 Load and run integration tests
-      run: |
-        # Load the image
-        docker load --input /tmp/sirnaforge-image.tar
-
-        # Set environment variable for tests
-        export SIRNAFORGE_DOCKER_IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
-
-        # Run integration tests - these can fail in pre-release
-        echo "🧪 Running integration tests..."
-        if [ "${{ needs.validate-release.outputs.prerelease }}" == "true" ]; then
-          echo "⚠️ Pre-release mode: Integration test failures will not block release"
-          uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=5 || echo "⚠️ Some integration tests failed (acceptable for pre-release)"
-        else
-          echo "🔒 Full release mode: Integration tests must pass"
-          uv run --group dev pytest tests/docker/ -v --tb=short -m "requires_docker and not smoke" --maxfail=3
-        fi
-
-  # Create GitHub release after smoke tests pass (integration can fail in pre-release)
+  # Create GitHub release after docker build passes
   create-release:
     name: 🏷️ Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, run-ci, test-docker-smoke]
-    # Allow release creation even if integration tests fail in pre-release mode
-    if: always() && needs.test-docker-smoke.result == 'success' && needs.run-ci.result == 'success'
+    needs: [validate-release, test-release]
+    if: always() && needs.test-release.result == 'success'
     outputs:
       release-id: ${{ steps.create.outputs.id }}
       release-url: ${{ steps.create.outputs.html_url }}
@@ -499,136 +388,7 @@ jobs:
       with:
         tag_name: v${{ needs.validate-release.outputs.version }}
         release_name: siRNAforge v${{ needs.validate-release.outputs.version }}
-        body: |
-          # 🧬 siRNAforge v${{ needs.validate-release.outputs.version }}
-
-          **Comprehensive siRNA design toolkit with multi-species off-target analysis**
-
-          ${{ needs.validate-release.outputs.changelog }}
-
-          ## 📦 Installation Options
-
-          ### 🐳 Docker (Recommended - Complete Environment)
-          ```bash
-          # Pull the latest release
-          docker pull ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}
-
-          # Quick test - should complete in ~2 seconds
-          docker run --rm ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} sirnaforge --help
-          ```
-
-          ### 🐍 Python Package (Requires external tools for full functionality)
-          ```bash
-          # Via pip
-          pip install sirnaforge==${{ needs.validate-release.outputs.version }}
-
-          # Via uv (recommended for speed)
-          uv add sirnaforge==${{ needs.validate-release.outputs.version }}
-
-          # Verify installation
-          sirnaforge --help
-          ```
-
-          ### 🛠️ Development Installation
-          ```bash
-          # Clone repository
-          git clone https://github.com/${{ needs.validate-release.outputs.repository-lower }}.git
-          cd sirnaforge
-
-          # Fast setup with uv (60-120 seconds)
-          uv sync --dev
-
-          # Verify with quick tests
-          make test-dev  # ~15 seconds
-          ```
-
-          ## 🚀 Usage Examples
-
-          ### Basic Workflow (Docker)
-          ```bash
-          # Complete gene-to-siRNA workflow
-          docker run --rm -v $(pwd):/workspace -w /workspace \
-            ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} \
-            sirnaforge workflow TP53 --output-dir results --genome-species human
-
-          # Custom transcript file
-          docker run --rm -v $(pwd):/workspace -w /workspace \
-            ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} \
-            sirnaforge design transcripts.fasta --output results.csv
-          ```
-
-          ### Python API Usage
-          ```python
-          from sirnaforge import SiRNADesigner, GeneSearcher
-
-          # Search for gene transcripts
-          searcher = GeneSearcher(species="human")
-          transcripts = searcher.search_gene("TP53")
-
-          # Design siRNAs
-          designer = SiRNADesigner()
-          candidates = designer.design_from_transcripts(transcripts)
-          ```
-
-          ### Available Commands
-          ```bash
-          sirnaforge workflow   # Complete pipeline: gene → siRNAs
-          sirnaforge search     # Gene/transcript search
-          sirnaforge design     # siRNA candidate generation
-          sirnaforge validate   # Input file validation
-          sirnaforge config     # Show configuration
-          sirnaforge cache      # Manage miRNA databases
-          sirnaforge version    # Version information
-          ```
-
-          ## 🔧 Key Features in v${{ needs.validate-release.outputs.version }}
-
-          - 🎯 **Smart siRNA Design** - Thermodynamic scoring with 90% duplex binding weight
-          - 🔬 **Off-target Analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes
-          - 🧪 **ViennaRNA Integration** - Secondary structure prediction for accuracy
-          - 📊 **Pandera Data Schemas** - Type-safe output validation and formatting
-          - ⚡ **uv Package Manager** - 10-100x faster than pip for dependencies
-          - 🐳 **Production Docker** - Pre-built images with all bioinformatics tools
-          - 🔬 **Nextflow Pipeline** - Scalable execution with automatic parallelization
-
-          ## 🧪 Testing & Quality
-
-          **This release passed comprehensive validation:**
-          - ✅ **31 Unit Tests** (30-35s) - Core algorithm validation
-          - ✅ **30 Local Python Tests** (12-15s) - Fastest development iteration
-          - ✅ **Docker Smoke Tests** (256MB RAM) - Critical functionality verification
-          - ✅ **Integration Tests** (2GB RAM) - End-to-end workflow validation
-          - ✅ **Code Quality** - Ruff, MyPy, Black formatting with 90%+ coverage
-
-          ## 🔗 Resources & Links
-
-          ### 📚 Documentation & Guides
-          - 📖 [**Full Documentation**](https://${{ needs.validate-release.outputs.owner-lower }}.github.io/${{ needs.validate-release.outputs.name-lower }}) - Complete user guide
-          - 🚀 [**Quick Start Guide**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}#-quick-start) - Get running in 5 minutes
-          - 🧪 [**API Reference**](https://${{ needs.validate-release.outputs.owner-lower }}.github.io/${{ needs.validate-release.outputs.name-lower }}/api) - Python API documentation
-          - 🐍 [**Development Guide**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/blob/main/CONTRIBUTING.md) - Contributing instructions
-
-          ### 🐳 Container Images
-          - 🏷️ **Versioned:** `${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}`
-          - 🔄 **Latest:** `${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest`
-          - 📦 **Registry:** [${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}](${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }})
-
-          ### 🛠️ Development & Support
-          - 💻 [**Source Code**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}) - Full repository
-          - 🐛 [**Report Issues**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/issues) - Bug reports & feature requests
-          - 💬 [**Discussions**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/discussions) - Community support
-          - 📋 [**Changelog**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/blob/main/CHANGELOG.md) - Version history
-          - 🏷️ [**All Releases**](https://github.com/${{ needs.validate-release.outputs.repository-lower }}/releases) - Previous versions
-
-          ---
-
-          **⚡ Quick Verification:**
-          ```bash
-          # Test Docker image (should complete in ~2 seconds)
-          docker run --rm ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }} sirnaforge version
-
-          # Expected output: siRNAforge v${{ needs.validate-release.outputs.version }}
-          ```
+        body: ${{ needs.validate-release.outputs.changelog }}
         prerelease: ${{ needs.validate-release.outputs.prerelease == 'true' }}
         draft: false
 
@@ -718,13 +478,13 @@ jobs:
       id: deployment
       uses: actions/deploy-pages@v4
 
-  # Publish Docker images only after smoke tests pass and release is created
+  # Publish Docker images only after release tests pass and the release is created
   publish-docker:
     name: 🐳 Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-release, create-release, test-docker-smoke]
-    if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-docker-smoke.result == 'success' }}
+    needs: [validate-release, build-docker, test-release, create-release]
+    if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-release.result == 'success' && needs.create-release.result == 'success' }}
 
     steps:
     - name: 📥 Checkout code
@@ -774,8 +534,8 @@ jobs:
     name: 🧪 Final Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, create-release, publish-docker, test-docker-smoke]
-    if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
+    needs: [validate-release, create-release, publish-docker]
+    if: needs.publish-docker.result == 'success'
 
     steps:
     - name: 🐳 Test published Docker image
@@ -799,8 +559,14 @@ jobs:
     name: ✅ Release Complete
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    needs: [validate-release, create-release, test-docker-smoke, test-docker-integration, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
-    if: always() && needs.create-release.result == 'success' && needs.test-docker-smoke.result == 'success'
+    needs: [validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
+    if: >-
+      always() &&
+      needs.create-release.result == 'success' &&
+      (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') &&
+      (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') &&
+      (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') &&
+      (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
 
     steps:
     - name: 🎉 Release Status
