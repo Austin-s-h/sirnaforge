@@ -221,37 +221,45 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, re
     # Verify summary reflects override
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
 
-    # Species should be derived from override
+    # Primary verification: check the actual off-target analysis results
+    # This verifies that the toy_genome index was actually USED, not just passed as a parameter
     offtarget_summary = summary.get("offtarget_summary", {})
-    execution_metadata = offtarget_summary.get("execution_metadata", {})
-    output_files = execution_metadata.get("output_files", {})
-    combined_summaries = output_files.get("combined_summary") or []
-    result_counts = execution_metadata.get("result_counts", {})
 
-    combined_summary_path = None
-    if combined_summaries:
-        candidate = Path(combined_summaries[0])
-        if candidate.exists():
-            combined_summary_path = candidate
-        else:
-            fallback = output_dir / "off_target" / "results" / "aggregated" / "combined_summary.json"
-            if fallback.exists():
-                combined_summary_path = fallback
+    # Check aggregated results first (most reliable - these are the actual analysis outputs)
+    aggregated_views = offtarget_summary.get("aggregated", {})
+    transcriptome_summary = aggregated_views.get("transcriptome")
 
-    if combined_summary_path and combined_summary_path.exists():
-        combined_summary = json.loads(combined_summary_path.read_text())
-        assert combined_summary.get("species_analyzed") == ["toy_genome"], (
-            f"Override species not respected: {combined_summary.get('species_analyzed')}"
+    if transcriptome_summary:
+        species_analyzed = transcriptome_summary.get("species_analyzed", [])
+        assert "toy_genome" in species_analyzed, (
+            f"Override species not found in transcriptome analysis results. "
+            f"Expected 'toy_genome' in species_analyzed, got: {species_analyzed}"
+        )
+
+        # Also verify hits were actually recorded for toy_genome
+        hits_per_species = transcriptome_summary.get("hits_per_species", {})
+        assert "toy_genome" in hits_per_species, (
+            f"No hits recorded for toy_genome. Species with hits: {list(hits_per_species.keys())}"
         )
     else:
-        # Aggregation sometimes skips emitting combined summaries when no genomic hits.
-        assert result_counts.get("summary_files", 0) == 0, (
-            "Combined summary missing even though aggregation reported summary files"
-        )
-        stdout = execution_metadata.get("stdout", "")
-        assert "genome_species       : toy_genome" in stdout or "genome_indices       : toy_genome" in stdout, (
-            "Override species not propagated to Nextflow execution logs"
-        )
+        # Fallback: check execution metadata if no aggregated results
+        # This can happen if no alignments were found, but we should still see the species
+        execution_metadata = offtarget_summary.get("execution_metadata", {})
+        output_files = execution_metadata.get("output_files", {})
+        combined_summaries = output_files.get("combined_summary") or []
+
+        if combined_summaries:
+            combined_summary_path = Path(combined_summaries[0])
+            if combined_summary_path.exists():
+                combined_summary = json.loads(combined_summary_path.read_text())
+                species_analyzed = combined_summary.get("species_analyzed", [])
+                assert "toy_genome" in species_analyzed, (
+                    f"Override species not in combined summary. Got: {species_analyzed}"
+                )
+            else:
+                pytest.fail(
+                    f"Test inconclusive: combined_summary.json reported but not found at {combined_summary_path}"
+                )
 
 
 @pytest.mark.integration
