@@ -333,31 +333,51 @@ def test_docker_login_shell_path():
     # Test 1: Non-login shell (baseline - should always work)
     result = subprocess.run(
         ["/bin/bash", "-c", "command -v sirnaforge && command -v nextflow"],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, (
-        f"Non-login shell should find tools.\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}\n"
-        f"PATH: {os.environ.get('PATH', 'NOT SET')}"
-    )
+    if result.returncode != 0:
+        # Get PATH from subprocess for debugging
+        path_result = subprocess.run(
+            ["/bin/bash", "-c", "echo $PATH"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        pytest.fail(
+            f"Non-login shell should find tools.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}\n"
+            f"Subprocess PATH: {path_result.stdout.strip()}"
+        )
 
     # Test 2: Login shell (the fix target)
     result = subprocess.run(
         ["/bin/bash", "-lc", "command -v sirnaforge && command -v nextflow"],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, (
-        f"Login shell should find tools after fix (Issue #37).\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}\n"
-        f"Check if /etc/profile.d/conda-path.sh is installed and executable."
-    )
+    if result.returncode != 0:
+        # Get PATH from subprocess for debugging
+        path_result = subprocess.run(
+            ["/bin/bash", "-lc", "echo $PATH"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        pytest.fail(
+            f"Login shell should find tools after fix (Issue #37).\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}\n"
+            f"Subprocess PATH: {path_result.stdout.strip()}\n"
+            f"Check if /etc/profile.d/conda-path.sh is installed and executable."
+        )
 
     # Test 3: Verify PATH contains conda directories in login shell
     result = subprocess.run(
         ["/bin/bash", "-lc", "echo $PATH"],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
     )
     assert result.returncode == 0, "Failed to get PATH from login shell"
