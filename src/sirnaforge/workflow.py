@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+from Bio.Seq import Seq
 from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
@@ -38,6 +39,7 @@ from sirnaforge.config import (
 )
 from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
 from sirnaforge.core.off_target import OffTargetAnalysisManager
+from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
@@ -2210,30 +2212,71 @@ async def run_offtarget_only_workflow(
     console.print(f"📄 Loaded {len(sequences)} siRNA candidates from {input_fasta_path.name}")
 
     # Convert sequences to SiRNACandidate objects for off-target analysis
-    # We create minimal candidate objects with just ID and guide sequence
+    # Calculate metrics for pre-designed candidates using the same methods as design workflow
     candidates: list[SiRNACandidate] = []
     for i, (header, seq) in enumerate(sequences):
         # Extract ID from header (first token)
         candidate_id = header.split()[0] if header else f"candidate_{i}"
 
-        # Create minimal candidate object with required fields
-        # For passenger sequence, we use a placeholder since it's not provided for pre-designed guides
-        passenger_placeholder = "A" * len(seq)  # Valid placeholder sequence
+        # The input guide sequence is the antisense strand (what targets the mRNA)
+        # Generate the sense/passenger strand as the reverse complement
+        guide_sequence = seq.upper()
+        passenger_sequence = str(Seq(guide_sequence).reverse_complement())
 
-        # Note: Scoring metrics (gc_content, asymmetry_score, etc.) are set to 0.0 as placeholders
-        # since these are pre-designed candidates where only the guide sequence is known.
-        # The off-target analysis will populate relevant fields (off_target_count, off_target_penalty).
+        # Calculate GC content
+        gc_count = guide_sequence.count("G") + guide_sequence.count("C")
+        gc_content = (gc_count / len(guide_sequence)) * 100 if len(guide_sequence) > 0 else 0.0
+
+        # Calculate thermodynamic properties
+        asymmetry_score = 0.0
+        duplex_stability = 0.0
+        try:
+            calc = ThermodynamicCalculator()
+
+            # Create a temporary candidate for thermodynamic calculations
+            temp_candidate = SiRNACandidate(
+                id=candidate_id,
+                transcript_id="pre_designed",
+                position=1,
+                guide_sequence=guide_sequence,
+                passenger_sequence=passenger_sequence,
+                length=len(guide_sequence),
+                gc_content=gc_content,
+                asymmetry_score=0.0,
+                paired_fraction=0.0,
+                duplex_stability=0.0,
+                off_target_count=0,
+                off_target_penalty=0.0,
+                transcript_hit_count=0,
+                transcript_hit_fraction=0.0,
+                composite_score=0.0,
+                passes_filters=True,
+            )
+
+            # Calculate asymmetry score (5' vs 3' end stability)
+            dg_5p, dg_3p, asymmetry_score = calc.calculate_asymmetry_score(temp_candidate)
+
+            # Calculate duplex stability
+            duplex_stability = calc.calculate_duplex_stability(guide_sequence, passenger_sequence)
+
+        except Exception as e:
+            # If thermodynamic calculations fail, use default values
+            logger.warning(f"Failed to calculate thermodynamics for {candidate_id}: {e}")
+            asymmetry_score = 0.0
+            duplex_stability = 0.0
+
+        # Create final candidate with computed metrics
         candidate = SiRNACandidate(
             id=candidate_id,
             transcript_id="pre_designed",  # Placeholder since these are pre-designed
             position=1,  # Must be >= 1 per validation
-            guide_sequence=seq,
-            passenger_sequence=passenger_placeholder,  # Placeholder - not provided for pre-designed
-            length=len(seq),  # Required field
-            gc_content=0.0,  # Placeholder - will be computed if needed
-            asymmetry_score=0.0,  # Placeholder - not applicable for pre-designed guides
-            paired_fraction=0.0,  # Placeholder - not applicable for pre-designed guides
-            duplex_stability=0.0,  # Placeholder - not applicable for pre-designed guides
+            guide_sequence=guide_sequence,
+            passenger_sequence=passenger_sequence,  # Computed as reverse complement
+            length=len(guide_sequence),
+            gc_content=gc_content,  # Computed from guide sequence
+            asymmetry_score=asymmetry_score,  # Computed thermodynamically
+            paired_fraction=0.0,  # Not applicable for pre-designed guides
+            duplex_stability=duplex_stability,  # Computed thermodynamically
             off_target_count=0,  # Will be populated by off-target analysis
             off_target_penalty=0.0,  # Will be populated by off-target analysis
             transcript_hit_count=0,  # Will be populated by off-target analysis

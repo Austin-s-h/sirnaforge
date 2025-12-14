@@ -706,7 +706,7 @@ def offtarget(
         ...,
         "--input-candidates-fasta",
         "-i",
-        help="FASTA file containing pre-designed 21-nt siRNA guide sequences",
+        help="FASTA file containing pre-designed siRNA guide sequences (any length)",
         exists=True,
         file_okay=True,
         dir_okay=False,
@@ -768,16 +768,16 @@ def offtarget(
     ),
 ) -> None:
     """Run off-target analysis on pre-designed siRNA candidates.
-    
-    This command accepts a FASTA file containing pre-designed 21-nt siRNA guide sequences
-    and runs comprehensive off-target analysis including:
+
+    This command accepts a FASTA file containing pre-designed siRNA guide sequences
+    of any length and runs comprehensive off-target analysis including:
     - Transcriptome alignment (BWA-MEM2)
     - miRNA seed match analysis
     - Off-target hit classification and scoring
-    
+
     The embedded Nextflow pipeline is used for parallel processing across species.
     """
-    # Validate input FASTA contains 21-nt sequences
+    # Validate input FASTA contains sequences (any length accepted)
     try:
         sequences = FastaUtils.read_fasta(input_candidates_fasta)
 
@@ -785,22 +785,15 @@ def offtarget(
             console.print("❌ [red]Error:[/red] Input FASTA file is empty", style="red")
             raise typer.Exit(1)
 
-        # Check sequence lengths
-        invalid_sequences = []
-        for header, seq in sequences:
-            if len(seq) != 21:
-                invalid_sequences.append((header, len(seq)))
+        # Report sequence statistics without enforcing length constraints
+        seq_lengths = [len(seq) for _, seq in sequences]
+        min_len = min(seq_lengths)
+        max_len = max(seq_lengths)
 
-        if invalid_sequences:
-            console.print("❌ [red]Error:[/red] All sequences must be exactly 21 nucleotides long", style="red")
-            console.print(f"Found {len(invalid_sequences)} sequences with incorrect lengths:")
-            for header, length in invalid_sequences[:5]:  # Show first 5
-                console.print(f"  • {header}: {length} nt")
-            if len(invalid_sequences) > 5:
-                console.print(f"  ... and {len(invalid_sequences) - 5} more")
-            raise typer.Exit(1)
-
-        console.print(f"✅ Validated {len(sequences)} siRNA candidates (all 21 nt)")
+        if min_len == max_len:
+            console.print(f"✅ Validated {len(sequences)} siRNA candidates (all {min_len} nt)")
+        else:
+            console.print(f"✅ Validated {len(sequences)} siRNA candidates ({min_len}-{max_len} nt)")
 
     except Exception as e:
         if isinstance(e, typer.Exit):
