@@ -85,6 +85,7 @@ class WorkflowConfig:
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
         transcriptome_fasta: str | None = None,
+        transcriptome_filter: str | None = None,
         transcriptome_selection: ReferenceSelection | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
@@ -127,6 +128,8 @@ class WorkflowConfig:
             self.mirna_species = list(dict.fromkeys(filtered_species))
         else:
             self.mirna_species = []
+        # Store transcriptome filter for later use
+        self.transcriptome_filter = transcriptome_filter
         if transcriptome_selection is None and transcriptome_fasta:
             transcriptome_selection = ReferenceSelection(
                 choices=(ReferenceChoice.explicit(transcriptome_fasta, reason="legacy transcriptome argument"),)
@@ -958,7 +961,9 @@ class SiRNAWorkflow:
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
         return input_fasta
 
-    async def _prepare_transcriptome_database(self, transcriptome_ref: str) -> dict[str, Any] | None:
+    async def _prepare_transcriptome_database(
+        self, transcriptome_ref: str, filter_spec: list[str] | None = None
+    ) -> dict[str, Any] | None:
         """Prepare transcriptome database from user-provided reference.
 
         Args:
@@ -966,6 +971,7 @@ class SiRNAWorkflow:
                 - Pre-configured source name (e.g., 'ensembl_human_cdna')
                 - Local file path
                 - HTTP(S)/FTP URL
+            filter_spec: Optional list of filter names (e.g., ['protein_coding', 'canonical_only'])
 
         Returns:
             Dictionary with 'fasta' and 'index' paths, or None if preparation failed
@@ -976,7 +982,16 @@ class SiRNAWorkflow:
             # Check if it's a pre-configured source
             if transcriptome_ref in manager.SOURCES:
                 logger.info(f"Using pre-configured transcriptome source: {transcriptome_ref}")
-                raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+
+                # Apply filters if specified
+                if filter_spec and len(filter_spec) > 0:
+                    logger.info(f"Applying filters: {', '.join(filter_spec)}")
+                    raw_result = manager.get_filtered_transcriptome(
+                        transcriptome_ref, filters=filter_spec, build_index=True
+                    )
+                else:
+                    raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+
                 if raw_result is None:
                     return None
 
@@ -987,6 +1002,8 @@ class SiRNAWorkflow:
 
             # Otherwise treat as custom path/URL
             logger.info(f"Processing custom transcriptome reference: {transcriptome_ref}")
+            if filter_spec and len(filter_spec) > 0:
+                logger.warning("Filtering is not supported for custom transcriptome paths; ignoring filters")
             raw_custom = manager.get_custom_transcriptome(transcriptome_ref, build_index=True)
             if raw_custom is None:
                 return None
@@ -1006,8 +1023,24 @@ class SiRNAWorkflow:
             return None
 
         console.print(f"📚 Transcriptome reference: {choice.value} ({choice.state.value})")
+
+        # Parse filter specification from config
+        from sirnaforge.data.transcriptome_filter import get_filter_spec  # noqa: PLC0415
+
+        filter_spec: list[str] | None = None
+        if self.config.transcriptome_filter:
+            try:
+                filter_spec = get_filter_spec(self.config.transcriptome_filter)
+                if filter_spec:
+                    console.print(f"🔍 Applying transcriptome filters: {', '.join(filter_spec)}")
+            except ValueError as exc:
+                logger.error(f"Invalid transcriptome filter specification: {exc}")
+                console.print(f"⚠️  Invalid filter specification: {exc}")
+                # Continue without filters rather than failing
+                filter_spec = None
+
         try:
-            transcriptome_result = await self._prepare_transcriptome_database(choice.value)
+            transcriptome_result = await self._prepare_transcriptome_database(choice.value, filter_spec)
         except Exception as exc:  # pragma: no cover - defensive logging path
             logger.exception("Failed to prepare transcriptome database")
             console.print(f"⚠️  Transcriptome preparation failed: {exc}")
@@ -2034,6 +2067,7 @@ async def run_sirna_workflow(
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
+    transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
@@ -2061,6 +2095,7 @@ async def run_sirna_workflow(
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
+        transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
@@ -2133,6 +2168,7 @@ async def run_sirna_workflow(
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
+        transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
         log_file=log_file,
         write_json_summary=write_json_summary,
@@ -2165,6 +2201,7 @@ async def run_offtarget_only_workflow(
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
+    transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     log_file: str | None = None,
 ) -> dict[str, Any]:
@@ -2183,6 +2220,7 @@ async def run_offtarget_only_workflow(
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
+        transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         log_file: Path to centralized log file
 
@@ -2325,6 +2363,7 @@ async def run_offtarget_only_workflow(
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
+        transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
         log_file=log_file,
         write_json_summary=False,  # Skip JSON summary for off-target-only

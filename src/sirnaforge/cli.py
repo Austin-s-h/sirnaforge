@@ -433,6 +433,17 @@ def workflow(  # noqa: PLR0912
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
         ),
     ),
+    transcriptome_filter: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-filter",
+        help=(
+            "Filter transcriptome to reduce size and memory requirements. "
+            "Comma-separated filter names: 'protein_coding' (only protein-coding genes), "
+            "'canonical_only' (only canonical isoforms). "
+            "Example: --transcriptome-filter protein_coding,canonical_only. "
+            "Filtered versions are cached separately with automatic indexing."
+        ),
+    ),
     offtarget_indices: Optional[str] = typer.Option(
         None,
         "--offtarget-indices",
@@ -634,6 +645,7 @@ def workflow(  # noqa: PLR0912
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     gc_min=gc_min,
                     gc_max=gc_max,
@@ -745,6 +757,15 @@ def offtarget(
         help=(
             "Override or extend transcriptome references for off-target analysis. "
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+        ),
+    ),
+    transcriptome_filter: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-filter",
+        help=(
+            "Filter transcriptome to reduce size and memory requirements. "
+            "Comma-separated filter names: 'protein_coding', 'canonical_only'. "
+            "Example: --transcriptome-filter protein_coding,canonical_only."
         ),
     ),
     offtarget_indices: Optional[str] = typer.Option(
@@ -921,6 +942,7 @@ def offtarget(
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     log_file=effective_log,
                 )
