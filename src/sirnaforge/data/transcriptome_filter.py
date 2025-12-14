@@ -41,7 +41,8 @@ class TranscriptFilter:
         metadata: dict[str, str] = {}
 
         # Extract fields in format "key:value"
-        # Common fields: gene_biotype, transcript_biotype, gene_symbol, description
+        # Pattern matches: word_key:value_with_spaces (stops at next key: or end)
+        # Example: "gene_biotype:protein_coding" or "description:text with spaces"
         for match in re.finditer(r"(\w+):([^\s]+(?:\s+[^\s:]+)*?)(?=\s+\w+:|$)", description):
             key = match.group(1)
             value = match.group(2).strip()

@@ -8,6 +8,7 @@ import pytest
 from pathlib import Path
 
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
+from sirnaforge.data.transcriptome_filter import TranscriptFilter
 from sirnaforge.core.off_target import build_bwa_index, validate_index_files
 
 
@@ -81,8 +82,6 @@ class TestTranscriptomeFiltering:
 
     def test_filter_protein_coding(self, tiny_transcriptome, tmp_path):
         """Test filtering for protein-coding transcripts."""
-        from sirnaforge.data.transcriptome_filter import TranscriptFilter
-        
         output = tmp_path / "filtered.fa"
         kept = TranscriptFilter.apply_protein_coding_filter(tiny_transcriptome, output)
         
@@ -97,8 +96,6 @@ class TestTranscriptomeFiltering:
 
     def test_filter_canonical(self, tiny_transcriptome, tmp_path):
         """Test filtering for canonical transcripts."""
-        from sirnaforge.data.transcriptome_filter import TranscriptFilter
-        
         output = tmp_path / "canonical.fa"
         kept = TranscriptFilter.apply_canonical_filter(tiny_transcriptome, output)
         
@@ -111,8 +108,6 @@ class TestTranscriptomeFiltering:
 
     def test_combined_filters(self, tiny_transcriptome, tmp_path):
         """Test applying multiple filters."""
-        from sirnaforge.data.transcriptome_filter import TranscriptFilter
-        
         output = tmp_path / "filtered.fa"
         filters = ["protein_coding", "canonical_only"]
         kept = TranscriptFilter.apply_combined_filter(tiny_transcriptome, output, filters)
@@ -138,8 +133,6 @@ class TestTranscriptomeFiltering:
         cached_fasta.write_text(tiny_transcriptome.read_text())
         
         # Simulate filtering and indexing
-        from sirnaforge.data.transcriptome_filter import TranscriptFilter
-        
         filtered = cache_dir / "filtered.fa"
         TranscriptFilter.apply_protein_coding_filter(cached_fasta, filtered)
         

@@ -208,7 +208,8 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             Dictionary with 'fasta' and optionally 'index' paths, or None if failed
         """
         if source_name not in self.SOURCES:
-            logger.error(f"Unknown transcriptome source: {source_name}")
+            available = ", ".join(self.SOURCES.keys())
+            logger.error(f"Unknown transcriptome source: {source_name}. Available: {available}")
             return None
 
         source = self.SOURCES[source_name]
