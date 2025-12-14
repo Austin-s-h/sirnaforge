@@ -2217,9 +2217,12 @@ async def run_offtarget_only_workflow(
         candidate_id = header.split()[0] if header else f"candidate_{i}"
 
         # Create minimal candidate object with required fields
-        # For passenger sequence, we reverse complement the guide (placeholder)
+        # For passenger sequence, we use a placeholder since it's not provided for pre-designed guides
         passenger_placeholder = "A" * len(seq)  # Valid placeholder sequence
 
+        # Note: Scoring metrics (gc_content, asymmetry_score, etc.) are set to 0.0 as placeholders
+        # since these are pre-designed candidates where only the guide sequence is known.
+        # The off-target analysis will populate relevant fields (off_target_count, off_target_penalty).
         candidate = SiRNACandidate(
             id=candidate_id,
             transcript_id="pre_designed",  # Placeholder since these are pre-designed
@@ -2227,15 +2230,15 @@ async def run_offtarget_only_workflow(
             guide_sequence=seq,
             passenger_sequence=passenger_placeholder,  # Placeholder - not provided for pre-designed
             length=len(seq),  # Required field
-            gc_content=0.0,  # Will be computed if needed
-            asymmetry_score=0.0,
-            paired_fraction=0.0,
-            duplex_stability=0.0,
-            off_target_count=0,
-            off_target_penalty=0.0,
-            transcript_hit_count=0,
-            transcript_hit_fraction=0.0,
-            composite_score=0.0,
+            gc_content=0.0,  # Placeholder - will be computed if needed
+            asymmetry_score=0.0,  # Placeholder - not applicable for pre-designed guides
+            paired_fraction=0.0,  # Placeholder - not applicable for pre-designed guides
+            duplex_stability=0.0,  # Placeholder - not applicable for pre-designed guides
+            off_target_count=0,  # Will be populated by off-target analysis
+            off_target_penalty=0.0,  # Will be populated by off-target analysis
+            transcript_hit_count=0,  # Will be populated by off-target analysis
+            transcript_hit_fraction=0.0,  # Will be populated by off-target analysis
+            composite_score=0.0,  # Not computed for pre-designed guides
             passes_filters=True,  # Assume valid since user provided them
         )
         candidates.append(candidate)
