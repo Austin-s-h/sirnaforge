@@ -323,17 +323,17 @@ def _verify_workflow_outputs(output_dir: Path, result: "subprocess.CompletedProc
 @pytest.mark.runs_in_container
 def test_docker_login_shell_path():
     """Test that login shells preserve PATH and can find sirnaforge/nextflow (Issue #37).
-    
+
     This test verifies the fix for Docker login shell PATH reset issue where
     /bin/bash -lc would drop /opt/conda/bin from PATH.
-    
+
     The test runs inside the container and simulates what users would do with
     docker run ... /bin/bash -lc commands.
     """
     # Test 1: Non-login shell (baseline - should always work)
     result = subprocess.run(
         ["/bin/bash", "-c", "command -v sirnaforge && command -v nextflow"],
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
     )
     assert result.returncode == 0, (
@@ -341,11 +341,11 @@ def test_docker_login_shell_path():
         f"stdout: {result.stdout}\nstderr: {result.stderr}\n"
         f"PATH: {os.environ.get('PATH', 'NOT SET')}"
     )
-    
+
     # Test 2: Login shell (the fix target)
     result = subprocess.run(
         ["/bin/bash", "-lc", "command -v sirnaforge && command -v nextflow"],
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
     )
     assert result.returncode == 0, (
@@ -353,16 +353,13 @@ def test_docker_login_shell_path():
         f"stdout: {result.stdout}\nstderr: {result.stderr}\n"
         f"Check if /etc/profile.d/conda-path.sh is installed and executable."
     )
-    
+
     # Test 3: Verify PATH contains conda directories in login shell
     result = subprocess.run(
         ["/bin/bash", "-lc", "echo $PATH"],
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
     )
     assert result.returncode == 0, "Failed to get PATH from login shell"
     path = result.stdout.strip()
-    assert "/opt/conda/bin" in path, (
-        f"Login shell PATH should contain /opt/conda/bin.\n"
-        f"Actual PATH: {path}"
-    )
+    assert "/opt/conda/bin" in path, f"Login shell PATH should contain /opt/conda/bin.\nActual PATH: {path}"
