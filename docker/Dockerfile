@@ -113,6 +113,11 @@ RUN mkdir -p /home/sirnauser/.nextflow && chown -R sirnauser:sirnauser /home/sir
 COPY --chown=sirnauser:sirnauser docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER root
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Install conda-path.sh to /etc/profile.d/ to preserve PATH in login shells
+COPY docker/conda-path.sh /etc/profile.d/conda-path.sh
+RUN chmod 644 /etc/profile.d/conda-path.sh
+
 USER sirnauser
 
 # Health check - verify all major components

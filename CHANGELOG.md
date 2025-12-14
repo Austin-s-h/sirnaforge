@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 🐛 Bug Fixes
+- **Docker Login Shell PATH**: Fixed issue #37 where login shells (`/bin/bash -lc`) would reset PATH and drop `/opt/conda/bin`, making `sirnaforge` and `nextflow` unavailable
+  - Added `/etc/profile.d/conda-path.sh` to preserve conda toolchain paths in login shells
+  - Non-login shells continue to work as before
+  - Added regression test `test_docker_login_shell_path()` to container test suite
+  - Added standalone test script `scripts/test-docker-login-shell.sh` for manual verification
+
 ## [0.3.1] - 2025-12-04
 
 ### ✨ Added
