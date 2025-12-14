@@ -21,14 +21,6 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from sirnaforge.config import (
-    DEFAULT_MIRNA_CANONICAL_SPECIES,
-    DEFAULT_TRANSCRIPTOME_SOURCES,
-    ReferencePolicyResolver,
-    WorkflowInputSpec,
-)
-from sirnaforge.data.mirna_manager import MiRNADatabaseManager
-
 # Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
 try:
     import rich.console
@@ -49,18 +41,25 @@ except (ImportError, AttributeError):  # Narrow exceptions
     pass
 
 from sirnaforge import __author__, __version__
+from sirnaforge.config import (
+    DEFAULT_MIRNA_CANONICAL_SPECIES,
+    DEFAULT_TRANSCRIPTOME_SOURCES,
+    ReferencePolicyResolver,
+    WorkflowInputSpec,
+)
 from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.data.base import DatabaseType
+from sirnaforge.data.base import DatabaseType, FastaUtils
 from sirnaforge.data.gene_search import (
     GeneSearcher,
     search_gene_sync,
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
+from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.utils.logging_utils import configure_logging
-from sirnaforge.workflow import run_sirna_workflow
+from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
 
 app = typer.Typer(
     name="sirnaforge",
@@ -696,6 +695,273 @@ def workflow(  # noqa: PLR0912
 
     except Exception as e:
         console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+
+@app_command()
+def offtarget(
+    input_candidates_fasta: Path = typer.Option(
+        ...,
+        "--input-candidates-fasta",
+        "-i",
+        help="FASTA file containing pre-designed 21-nt siRNA guide sequences",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    output_dir: Path = typer.Option(
+        Path("offtarget_output"),
+        "--output-dir",
+        "-o",
+        help="Output directory for off-target analysis results",
+    ),
+    species: str = typer.Option(
+        DEFAULT_SPECIES_ARGUMENT,
+        "--species",
+        help=(
+            "Comma-separated canonical species identifiers for off-target analysis. "
+            "Drives transcriptome fetching from Ensembl and miRNA database lookups. "
+            "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
+        ),
+    ),
+    mirna_db: str = typer.Option(
+        "mirgenedb",
+        "--mirna-db",
+        help="miRNA reference database to use for seed analysis",
+    ),
+    mirna_species: Optional[str] = typer.Option(
+        None,
+        "--mirna-species",
+        help=(
+            "Override miRNA species identifiers (comma-separated). "
+            "When omitted, automatically maps from --species."
+        ),
+    ),
+    transcriptome_fasta: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-fasta",
+        help=(
+            "Override or extend transcriptome references for off-target analysis. "
+            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+        ),
+    ),
+    offtarget_indices: Optional[str] = typer.Option(
+        None,
+        "--offtarget-indices",
+        help=(
+            "Comma-separated overrides for genome indices used in off-target analysis. "
+            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39."
+        ),
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+    log_file: Optional[Path] = typer.Option(
+        None,
+        "--log-file",
+        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
+) -> None:
+    """Run off-target analysis on pre-designed siRNA candidates.
+    
+    This command accepts a FASTA file containing pre-designed 21-nt siRNA guide sequences
+    and runs comprehensive off-target analysis including:
+    - Transcriptome alignment (BWA-MEM2)
+    - miRNA seed match analysis
+    - Off-target hit classification and scoring
+    
+    The embedded Nextflow pipeline is used for parallel processing across species.
+    """
+    # Validate input FASTA contains 21-nt sequences
+    try:
+        sequences = FastaUtils.read_fasta(input_candidates_fasta)
+
+        if not sequences:
+            console.print("❌ [red]Error:[/red] Input FASTA file is empty", style="red")
+            raise typer.Exit(1)
+
+        # Check sequence lengths
+        invalid_sequences = []
+        for header, seq in sequences:
+            if len(seq) != 21:
+                invalid_sequences.append((header, len(seq)))
+
+        if invalid_sequences:
+            console.print("❌ [red]Error:[/red] All sequences must be exactly 21 nucleotides long", style="red")
+            console.print(f"Found {len(invalid_sequences)} sequences with incorrect lengths:")
+            for header, length in invalid_sequences[:5]:  # Show first 5
+                console.print(f"  • {header}: {length} nt")
+            if len(invalid_sequences) > 5:
+                console.print(f"  ... and {len(invalid_sequences) - 5} more")
+            raise typer.Exit(1)
+
+        console.print(f"✅ Validated {len(sequences)} siRNA candidates (all 21 nt)")
+
+    except Exception as e:
+        if isinstance(e, typer.Exit):
+            raise
+        console.print(f"❌ [red]Error validating input FASTA:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    # Parse and validate species
+    requested_species = [token.strip() for token in species.split(",") if token.strip()]
+    if not requested_species:
+        console.print("❌ Error: at least one species must be provided", style="red")
+        raise typer.Exit(1)
+
+    # Validate and resolve miRNA database configuration
+    source_normalized = mirna_db.lower()
+
+    if not MiRNADatabaseManager.is_supported_source(source_normalized):
+        valid_sources = ", ".join(MiRNADatabaseManager.get_available_sources())
+        console.print(f"❌ Error: unknown miRNA database '{mirna_db}'. Supported sources: {valid_sources}", style="red")
+        raise typer.Exit(1)
+
+    mirna_overrides = None
+    if mirna_species:
+        mirna_overrides = [token.strip() for token in mirna_species.split(",") if token.strip()]
+        if not mirna_overrides:
+            console.print("❌ Error: --mirna-species override must contain at least one value", style="red")
+            raise typer.Exit(1)
+
+    try:
+        species_resolution = MiRNADatabaseManager.resolve_species_selection(
+            requested_species,
+            source_normalized,
+            mirna_overrides=mirna_overrides,
+        )
+    except ValueError as exc:
+        supported = MiRNADatabaseManager.get_supported_canonical_species_for_source(source_normalized)
+        console.print(
+            f"❌ Error: {exc}. Supported canonical species: {', '.join(supported)}",
+            style="red",
+        )
+        raise typer.Exit(1)
+
+    canonical_species = species_resolution["canonical"]
+    species_list = species_resolution["genome"]
+    mirna_species_list = species_resolution["mirna"]
+
+    # Parse genome indices override
+    override_species = None
+    if offtarget_indices:
+        entries = [token.strip() for token in offtarget_indices.split(",") if token.strip()]
+        bad_entries = [entry for entry in entries if ":" not in entry]
+        if bad_entries:
+            console.print(
+                "❌ Error: --offtarget-indices entries must be in species:/index_prefix form",
+                style="red",
+            )
+            raise typer.Exit(1)
+        override_species = []
+        for entry in entries:
+            species_token = entry.split(":", 1)[0].strip() or entry
+            if species_token and species_token not in override_species:
+                override_species.append(species_token)
+
+    if not mirna_species_list:
+        console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
+        raise typer.Exit(1)
+
+    # Resolve transcriptome policy
+    transcriptome_spec = WorkflowInputSpec(
+        input_fasta=None,  # Not using input transcripts for off-target-only
+        transcriptome_argument=transcriptome_fasta,
+        default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+        design_only=False,
+    )
+    transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
+
+    if transcriptome_selection.enabled:
+        rendered_choices = [
+            f"{choice.value} ({choice.state.value})" for choice in transcriptome_selection.choices if choice.value
+        ]
+        transcriptome_label = ", ".join(rendered_choices)
+    else:
+        reason = transcriptome_selection.disabled_reason or "not available"
+        transcriptome_label = f"disabled ({reason})"
+
+    genome_species_for_workflow = override_species or species_list
+    offtarget_override_label = offtarget_indices or "cached defaults"
+
+    console.print(
+        Panel.fit(
+            f"🎯 [bold blue]Off-Target Analysis (Pre-Designed siRNAs)[/bold blue]\n"
+            f"Input Candidates: [cyan]{input_candidates_fasta.name}[/cyan]\n"
+            f"Candidate Count: [yellow]{len(sequences)}[/yellow]\n"
+            f"Output Directory: [cyan]{output_dir}[/cyan]\n"
+            f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
+            f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
+            f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
+            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]",
+            title="Off-Target Configuration",
+        )
+    )
+
+    try:
+        # Run off-target-only workflow
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running off-target analysis...", total=None)
+
+            # Configure logging
+            effective_log = str(log_file) if log_file else str(Path(output_dir) / "logs" / "sirnaforge.log")
+            configure_logging(log_file=effective_log, level=os.getenv("SIRNAFORGE_LOG_LEVEL"))
+
+            # Run workflow
+            results = asyncio.run(
+                run_offtarget_only_workflow(
+                    input_candidates_fasta=str(input_candidates_fasta),
+                    output_dir=str(output_dir),
+                    genome_species=genome_species_for_workflow,
+                    genome_indices_override=offtarget_indices,
+                    mirna_database=source_normalized,
+                    mirna_species=mirna_species_list,
+                    transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_selection=transcriptome_selection,
+                    log_file=effective_log,
+                )
+            )
+
+            progress.remove_task(task)
+
+        # Display results summary
+        console.print("\n✅ [bold green]Off-target analysis completed successfully![/bold green]")
+
+        offtarget_summary = results.get("offtarget_summary", {})
+
+        summary_table = Table(title="📊 Off-Target Results Summary")
+        summary_table.add_column("Metric", style="cyan")
+        summary_table.add_column("Value", style="white")
+
+        summary_table.add_row("Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial")
+        summary_table.add_row("Method", offtarget_summary.get("method", "N/A"))
+        summary_table.add_row("Candidates Analyzed", str(len(sequences)))
+
+        console.print(summary_table)
+
+        # Output locations
+        console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
+        console.print("📂 Key files:")
+        console.print("   • Input candidates: [blue]input_candidates.fasta[/blue]")
+        console.print("   • Off-target results: [blue]results/[/blue]")
+        console.print("   • Console log: [blue]logs/sirnaforge.log[/blue]")
+
+        if offtarget_summary.get("method") == "embedded_nextflow":
+            console.print("   • Full off-target report: [blue]results/offtarget_report.html[/blue]")
+
+    except Exception as e:
+        console.print(f"❌ [red]Off-target analysis error:[/red] {str(e)}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)

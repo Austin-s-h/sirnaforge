@@ -2153,3 +2153,160 @@ if __name__ == "__main__":
             print(f"Workflow completed: {results}")
 
     asyncio.run(main())
+
+
+async def run_offtarget_only_workflow(
+    input_candidates_fasta: str,
+    output_dir: str,
+    genome_species: list[str] | None = None,
+    genome_indices_override: str | None = None,
+    mirna_database: str = "mirgenedb",
+    mirna_species: Sequence[str] | None = None,
+    transcriptome_fasta: str | None = None,
+    transcriptome_selection: ReferenceSelection | None = None,
+    log_file: str | None = None,
+) -> dict[str, Any]:
+    """Run off-target-only workflow for pre-designed siRNA candidates.
+
+    This is a simplified workflow that only runs the off-target analysis stage
+    without transcript retrieval, ORF validation, or siRNA design. It accepts
+    pre-designed 21-nt siRNA guide sequences and runs comprehensive off-target
+    analysis using the embedded Nextflow pipeline.
+
+    Args:
+        input_candidates_fasta: Path to FASTA file with 21-nt siRNA guide sequences
+        output_dir: Directory for output files
+        genome_species: Species genomes for off-target analysis
+        genome_indices_override: Comma-separated species:/index_prefix overrides
+        mirna_database: miRNA reference database identifier
+        mirna_species: miRNA reference species identifiers
+        transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
+        transcriptome_selection: Pre-resolved transcriptome selection metadata
+        log_file: Path to centralized log file
+
+    Returns:
+        Dictionary with off-target analysis results
+    """
+    console.print("\n🎯 [bold cyan]Starting Off-Target Analysis (Pre-Designed siRNAs)[/bold cyan]")
+    console.print(f"Input Candidates: [yellow]{input_candidates_fasta}[/yellow]")
+    console.print(f"Output Directory: [blue]{output_dir}[/blue]")
+
+    start_time = time.perf_counter()
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Create output structure
+    (output_path / "results").mkdir(exist_ok=True)
+    (output_path / "logs").mkdir(exist_ok=True)
+
+    # Parse input candidates
+    input_fasta_path = Path(input_candidates_fasta)
+    sequences = FastaUtils.read_fasta(input_fasta_path)
+
+    if not sequences:
+        raise ValueError("Input FASTA file is empty")
+
+    console.print(f"📄 Loaded {len(sequences)} siRNA candidates from {input_fasta_path.name}")
+
+    # Convert sequences to SiRNACandidate objects for off-target analysis
+    # We create minimal candidate objects with just ID and guide sequence
+    candidates: list[SiRNACandidate] = []
+    for i, (header, seq) in enumerate(sequences):
+        # Extract ID from header (first token)
+        candidate_id = header.split()[0] if header else f"candidate_{i}"
+
+        # Create minimal candidate object
+        candidate = SiRNACandidate(
+            id=candidate_id,
+            transcript_id="pre_designed",  # Placeholder since these are pre-designed
+            position=0,  # Not applicable for pre-designed guides
+            guide_sequence=seq,
+            passenger_sequence="",  # Not provided for pre-designed guides
+            gc_content=0.0,  # Will be computed if needed
+            asymmetry_score=0.0,
+            paired_fraction=0.0,
+            duplex_stability=0.0,
+            off_target_count=0,
+            off_target_penalty=0.0,
+            transcript_hit_count=0,
+            transcript_hit_fraction=0.0,
+            composite_score=0.0,
+            passes_filters=True,  # Assume valid since user provided them
+        )
+        candidates.append(candidate)
+
+    # Prepare candidates FASTA for off-target analysis
+    candidates_fasta = output_path / "input_candidates.fasta"
+    candidate_sequences = [(c.id, c.guide_sequence) for c in candidates]
+    FastaUtils.save_sequences_fasta(candidate_sequences, candidates_fasta)
+
+    console.print(f"📝 Prepared {len(candidates)} candidates for off-target analysis")
+
+    # Set up Nextflow configuration
+    nextflow_config: dict[str, Any] = {}
+    if genome_indices_override:
+        nextflow_config["genome_indices"] = genome_indices_override
+
+    # Resolve transcriptome policy
+    if transcriptome_selection is None and transcriptome_fasta:
+        input_spec = WorkflowInputSpec(
+            input_fasta=None,
+            transcriptome_argument=transcriptome_fasta,
+            default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+            design_only=False,
+        )
+        resolver = ReferencePolicyResolver(input_spec)
+        transcriptome_selection = resolver.resolve_transcriptomes()
+
+    if transcriptome_selection is None:
+        transcriptome_selection = ReferenceSelection.disabled("no transcriptome configured")
+
+    # Create a minimal workflow config for off-target analysis
+    workflow_config = WorkflowConfig(
+        output_dir=output_path,
+        gene_query="offtarget_only",  # Placeholder name
+        input_fasta=None,
+        database=DatabaseType.ENSEMBL,  # Not used, but required
+        design_params=DesignParameters(),  # Minimal params
+        nextflow_config=nextflow_config,
+        genome_indices_override=genome_indices_override,
+        genome_species=genome_species or ["human", "rat", "rhesus"],
+        mirna_database=mirna_database,
+        mirna_species=mirna_species,
+        transcriptome_fasta=transcriptome_fasta,
+        transcriptome_selection=transcriptome_selection,
+        log_file=log_file,
+        write_json_summary=False,  # Skip JSON summary for off-target-only
+    )
+
+    # Create workflow instance
+    workflow = SiRNAWorkflow(workflow_config)
+
+    # Run off-target analysis
+    with Progress(console=console) as progress:
+        task = progress.add_task("[cyan]Running off-target analysis...", total=None)
+
+        offtarget_results = await workflow._run_nextflow_offtarget_analysis(
+            candidates=candidates,
+            input_fasta=candidates_fasta,
+        )
+
+        progress.remove_task(task)
+
+    total_time = max(0.0, time.perf_counter() - start_time)
+
+    # Compile results
+    final_results: dict[str, Any] = {
+        "workflow_type": "offtarget_only",
+        "input_candidates": str(input_candidates_fasta),
+        "candidate_count": len(candidates),
+        "output_dir": str(output_path),
+        "processing_time": total_time,
+        "offtarget_summary": offtarget_results,
+    }
+
+    console.print(f"\n✅ [bold green]Off-target analysis completed in {total_time:.2f}s[/bold green]")
+    console.print(f"📊 Results saved to: [blue]{output_path}[/blue]")
+
+    return final_results
