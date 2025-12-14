@@ -155,6 +155,24 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         meta.extra["index_path"] = str(index_path)
         meta.extra["index_built_at"] = datetime.now().isoformat()
 
+    def _is_index_complete(self, index_prefix: Path) -> bool:
+        """Check if all required BWA-MEM2 index files exist and are non-empty.
+
+        Args:
+            index_prefix: Path prefix for index files
+
+        Returns:
+            True if all index files are complete, False otherwise
+        """
+        try:
+            # Late import to avoid circular dependency
+            from sirnaforge.core.off_target import validate_index_files  # noqa: PLC0415
+
+            return validate_index_files(index_prefix, tool="bwa-mem2")
+        except Exception as e:
+            logger.debug(f"Index validation failed: {e}")
+            return False
+
     def _build_index(self, fasta_path: Path, index_prefix: Path) -> bool:
         """Build BWA-MEM2 index for transcriptome FASTA.
 
@@ -207,13 +225,17 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             # Check if index exists and is needed
             if build_index and self.auto_build_indices:
                 index_path = self._get_index_path(meta)
-                if index_path and index_path.with_suffix(".amb").exists():
+                # Cache-first: validate complete index before attempting rebuild
+                if index_path and self._is_index_complete(index_path):
+                    logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
                     return {"fasta": cache_file, "index": index_path}
-                # Index missing, build it
+                # Index missing or incomplete, build it
+                logger.info(f"⚠️  Index incomplete or missing, building: {index_prefix}")
                 if self._build_index(cache_file, index_prefix):
                     self._set_index_path(meta, index_prefix)
                     self._save_metadata()
                     return {"fasta": cache_file, "index": index_prefix}
+                logger.warning("Index build failed, returning FASTA without index")
                 return {"fasta": cache_file}
             return {"fasta": cache_file}
 
@@ -297,12 +319,17 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
                 if build_index and self.auto_build_indices:
                     index_path = self._get_index_path(meta)
-                    if index_path and index_path.with_suffix(".amb").exists():
+                    # Cache-first: validate complete index before attempting rebuild
+                    if index_path and self._is_index_complete(index_path):
+                        logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
                         return {"fasta": cache_file, "index": index_path}
+                    # Index missing or incomplete, build it
+                    logger.info(f"⚠️  Index incomplete or missing, building: {index_prefix}")
                     if self._build_index(cache_file, index_prefix):
                         self._set_index_path(meta, index_prefix)
                         self._save_metadata()
                         return {"fasta": cache_file, "index": index_prefix}
+                    logger.warning("Index build failed, returning FASTA without index")
                     return {"fasta": cache_file}
                 return {"fasta": cache_file}
 
@@ -379,16 +406,22 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
             # Build index if needed
             if build_index and self.auto_build_indices:
-                if not index_prefix.with_suffix(".amb").exists():
-                    if self._build_index(input_path, index_prefix):
-                        self._set_index_path(self.metadata[cache_key], index_prefix)
-                        self._save_metadata()
-                        return {"fasta": input_path, "index": index_prefix}
-                    return {"fasta": input_path}
-                # Index exists - update metadata
-                self._set_index_path(self.metadata[cache_key], index_prefix)
-                self._save_metadata()
-                return {"fasta": input_path, "index": index_prefix}
+                meta = self.metadata[cache_key]
+                index_path = self._get_index_path(meta) or index_prefix
+                # Cache-first: validate complete index before attempting rebuild
+                if self._is_index_complete(index_path):
+                    logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
+                    self._set_index_path(meta, index_path)
+                    self._save_metadata()
+                    return {"fasta": input_path, "index": index_path}
+                # Index missing or incomplete, build it
+                logger.info(f"⚠️  Index incomplete or missing, building: {index_prefix}")
+                if self._build_index(input_path, index_prefix):
+                    self._set_index_path(meta, index_prefix)
+                    self._save_metadata()
+                    return {"fasta": input_path, "index": index_prefix}
+                logger.warning("Index build failed, returning FASTA without index")
+                return {"fasta": input_path}
             return {"fasta": input_path}
 
         cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
@@ -422,16 +455,23 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         # Build index if requested
         if build_index and self.auto_build_indices:
-            if not index_prefix.with_suffix(".amb").exists():
-                if self._build_index(cache_file, index_prefix):
-                    self._set_index_path(self.metadata[cache_key], index_prefix)
-                    self._save_metadata()
-                    return {"fasta": cache_file, "index": index_prefix}
+            meta = self.metadata[cache_key]
+            index_path = self._get_index_path(meta) or index_prefix
+            # Cache-first: validate complete index before attempting rebuild
+            if self._is_index_complete(index_path):
+                logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
+                self._set_index_path(meta, index_path)
                 self._save_metadata()
-                return {"fasta": cache_file}
-            self._set_index_path(self.metadata[cache_key], index_prefix)
+                return {"fasta": cache_file, "index": index_path}
+            # Index missing or incomplete, build it
+            logger.info(f"⚠️  Index incomplete or missing, building: {index_prefix}")
+            if self._build_index(cache_file, index_prefix):
+                self._set_index_path(meta, index_prefix)
+                self._save_metadata()
+                return {"fasta": cache_file, "index": index_prefix}
+            logger.warning("Index build failed, returning FASTA without index")
             self._save_metadata()
-            return {"fasta": cache_file, "index": index_prefix}
+            return {"fasta": cache_file}
         self._save_metadata()
         return {"fasta": cache_file}
 
