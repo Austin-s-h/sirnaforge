@@ -433,6 +433,17 @@ def workflow(  # noqa: PLR0912
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
         ),
     ),
+    transcriptome_filter: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-filter",
+        help=(
+            "Filter transcriptome to reduce size and memory requirements. "
+            "Comma-separated filter names: 'protein_coding' (only protein-coding genes), "
+            "'canonical_only' (only canonical isoforms). "
+            "Example: --transcriptome-filter protein_coding,canonical_only. "
+            "Filtered versions are cached separately with automatic indexing."
+        ),
+    ),
     offtarget_indices: Optional[str] = typer.Option(
         None,
         "--offtarget-indices",
@@ -634,6 +645,7 @@ def workflow(  # noqa: PLR0912
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     gc_min=gc_min,
                     gc_max=gc_max,
@@ -745,6 +757,15 @@ def offtarget(
         help=(
             "Override or extend transcriptome references for off-target analysis. "
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+        ),
+    ),
+    transcriptome_filter: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-filter",
+        help=(
+            "Filter transcriptome to reduce size and memory requirements. "
+            "Comma-separated filter names: 'protein_coding', 'canonical_only'. "
+            "Example: --transcriptome-filter protein_coding,canonical_only."
         ),
     ),
     offtarget_indices: Optional[str] = typer.Option(
@@ -921,6 +942,7 @@ def offtarget(
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     log_file=effective_log,
                 )
@@ -1294,39 +1316,77 @@ def config() -> None:
 
 @app_command()
 def cache(
-    clear: bool = typer.Option(False, "--clear", help="Clear all cached miRNA databases"),
+    clear: bool = typer.Option(False, "--clear", help="Clear all cached databases (miRNA + transcriptomes)"),
+    clear_mirna: bool = typer.Option(False, "--clear-mirna", help="Clear only miRNA databases"),
+    clear_transcriptome: bool = typer.Option(False, "--clear-transcriptome", help="Clear only transcriptomes"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without actually deleting"),
-    info: bool = typer.Option(False, "--info", help="Show cache information"),
+    info: bool = typer.Option(False, "--info", help="Show cache information for all databases"),
 ) -> None:
-    """Manage miRNA database cache."""
-    if not any([clear, dry_run, info]):
-        console.print("❓ [yellow]No action specified. Use --clear, --dry-run, or --info[/yellow]")
+    """Manage reference database cache (miRNA + transcriptomes)."""
+    from sirnaforge.utils.unified_cache import UnifiedCacheManager  # noqa: PLC0415
+
+    if not any([clear, clear_mirna, clear_transcriptome, dry_run, info]):
+        console.print("❓ [yellow]No action specified. Use --info, --clear, or specific clear options[/yellow]")
         console.print("   Example: sirnaforge cache --info")
+        console.print("   Example: sirnaforge cache --clear-transcriptome --dry-run")
         return
 
-    manager = MiRNADatabaseManager()
+    manager = UnifiedCacheManager()
 
     if info or dry_run:
-        cache_info = manager.cache_info()
-        console.print("📊 [bold blue]Cache Information:[/bold blue]")
-        console.print(f"  Directory: [cyan]{cache_info['cache_directory']}[/cyan]")
-        console.print(f"  Files: [green]{cache_info['total_files']}[/green]")
-        console.print(f"  Size: [yellow]{cache_info['total_size_mb']:.2f} MB[/yellow]")
-        console.print(f"  TTL: [magenta]{cache_info['cache_ttl_days']} days[/magenta]")
+        # Display cache information using unified manager
+        cache_info = manager.get_info()
+        
+        if "mirna" in cache_info:
+            stats = cache_info["mirna"]
+            console.print("\n📊 [bold blue]miRNA Database Cache:[/bold blue]")
+            console.print(f"  Directory: [cyan]{stats['cache_directory']}[/cyan]")
+            console.print(f"  Files: [green]{stats['total_files']}[/green]")
+            console.print(f"  Size: [yellow]{stats['total_size_mb']:.2f} MB[/yellow]")
+            console.print(f"  TTL: [magenta]{stats['cache_ttl_days']} days[/magenta]")
+
+        if "transcriptome" in cache_info:
+            stats = cache_info["transcriptome"]
+            console.print("\n📚 [bold blue]Transcriptome Cache:[/bold blue]")
+            console.print(f"  Directory: [cyan]{stats['cache_directory']}[/cyan]")
+            console.print(f"  Files: [green]{stats['total_files']}[/green]")
+            console.print(f"  Size: [yellow]{stats['total_size_mb']:.2f} MB[/yellow]")
+            console.print(f"  TTL: [magenta]{stats['cache_ttl_days']} days[/magenta]")
+
+        # Show total
+        totals = manager.get_total_stats()
+        console.print("\n📈 [bold cyan]Total Cache:[/bold cyan]")
+        console.print(f"  Files: [green]{totals['total_files']}[/green]")
+        console.print(f"  Size: [yellow]{totals['total_size_mb']:.2f} MB[/yellow]")
 
     if dry_run:
-        result = manager.clear_cache(confirm=False)
-        console.print("\n🔍 [bold yellow]Clear Preview:[/bold yellow]")
-        console.print(f"  Files to delete: [red]{result['files_deleted']}[/red]")
-        console.print(f"  Size to free: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
-        console.print(f"  Status: [dim]{result['status']}[/dim]")
+        console.print("\n🔍 [bold yellow]Clear Preview (dry run):[/bold yellow]")
+        
+        results = manager.clear(
+            clear_mirna=clear or clear_mirna,
+            clear_transcriptome=clear or clear_transcriptome,
+            dry_run=True,
+        )
+        
+        for component, result in results.items():
+            console.print(f"\n  {component.title()}:")
+            console.print(f"    Files to delete: [red]{result['files_deleted']}[/red]")
+            console.print(f"    Size to free: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
 
-    elif clear:
-        result = manager.clear_cache(confirm=True)
-        console.print("🧹 [bold green]Cache Cleared:[/bold green]")
-        console.print(f"  Files deleted: [red]{result['files_deleted']}[/red]")
-        console.print(f"  Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
-        console.print(f"  Status: [green]{result['status']}[/green]")
+    elif clear or clear_mirna or clear_transcriptome:
+        console.print("\n🧹 [bold green]Clearing Cache:[/bold green]")
+        
+        results = manager.clear(
+            clear_mirna=clear or clear_mirna,
+            clear_transcriptome=clear or clear_transcriptome,
+            dry_run=False,
+        )
+        
+        for component, result in results.items():
+            console.print(f"\n  {component.title()}:")
+            console.print(f"    Files deleted: [red]{result['files_deleted']}[/red]")
+            console.print(f"    Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
+            console.print(f"    Status: [green]{result['status']}[/green]")
 
 
 # Create sequences subcommand group
