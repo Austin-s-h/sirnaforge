@@ -2216,13 +2216,17 @@ async def run_offtarget_only_workflow(
         # Extract ID from header (first token)
         candidate_id = header.split()[0] if header else f"candidate_{i}"
 
-        # Create minimal candidate object
+        # Create minimal candidate object with required fields
+        # For passenger sequence, we reverse complement the guide (placeholder)
+        passenger_placeholder = "A" * len(seq)  # Valid placeholder sequence
+
         candidate = SiRNACandidate(
             id=candidate_id,
             transcript_id="pre_designed",  # Placeholder since these are pre-designed
-            position=0,  # Not applicable for pre-designed guides
+            position=1,  # Must be >= 1 per validation
             guide_sequence=seq,
-            passenger_sequence="",  # Not provided for pre-designed guides
+            passenger_sequence=passenger_placeholder,  # Placeholder - not provided for pre-designed
+            length=len(seq),  # Required field
             gc_content=0.0,  # Will be computed if needed
             asymmetry_score=0.0,
             paired_fraction=0.0,
