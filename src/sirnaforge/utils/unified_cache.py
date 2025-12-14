@@ -6,8 +6,7 @@ using composition and protocol-based design.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol, TypedDict
+from typing import Protocol, TypedDict, Union, cast
 
 
 class CacheStats(TypedDict):
@@ -47,7 +46,7 @@ class UnifiedCacheManager:
     into a single, easy-to-use interface.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with all cache components."""
         from sirnaforge.data.mirna_manager import MiRNADatabaseManager  # noqa: PLC0415
         from sirnaforge.data.transcriptome_manager import TranscriptomeManager  # noqa: PLC0415
@@ -65,9 +64,9 @@ class UnifiedCacheManager:
         Returns:
             Dictionary mapping component name to cache stats
         """
-        info = {}
+        info: dict[str, CacheStats] = {}
         if include_mirna:
-            info["mirna"] = self.mirna.cache_info()
+            info["mirna"] = cast(CacheStats, self.mirna.cache_info())
         if include_transcriptome:
             info["transcriptome"] = self._get_transcriptome_stats()
         return info
@@ -95,10 +94,10 @@ class UnifiedCacheManager:
         Returns:
             Dictionary mapping component name to clear results
         """
-        results = {}
+        results: dict[str, ClearResult] = {}
 
         if clear_mirna:
-            results["mirna"] = self.mirna.clear_cache(confirm=not dry_run)
+            results["mirna"] = cast(ClearResult, self.mirna.clear_cache(confirm=not dry_run))
 
         if clear_transcriptome:
             results["transcriptome"] = self._clear_transcriptome(dry_run)
@@ -130,7 +129,7 @@ class UnifiedCacheManager:
             status=status,
         )
 
-    def get_total_stats(self) -> dict[str, float | int]:
+    def get_total_stats(self) -> dict[str, Union[float, int]]:
         """Get combined statistics across all caches."""
         info = self.get_info()
         total_files = sum(stats["total_files"] for stats in info.values())

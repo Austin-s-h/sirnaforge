@@ -13,7 +13,7 @@ import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -128,7 +128,7 @@ class TranscriptFilter:
 
         logger.info(
             f"Filtered {input_fasta.name} with '{filter_name}': "
-            f"kept {kept_count}/{total_count} sequences ({kept_count/total_count*100:.1f}%)"
+            f"kept {kept_count}/{total_count} sequences ({kept_count / total_count * 100:.1f}%)"
         )
 
         return kept_count

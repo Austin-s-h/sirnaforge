@@ -7,6 +7,11 @@
 DOCKER_IMAGE = sirnaforge
 VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
 
+# Host user mapping (prevents root-owned outputs on bind mounts)
+HOST_UID = $(shell id -u)
+HOST_GID = $(shell id -g)
+DOCKER_HOST_USER = --user $(HOST_UID):$(HOST_GID)
+
 # Docker configuration
 UV_CACHE_MOUNT = $(shell \
 	if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then echo ""; \
@@ -16,15 +21,12 @@ UV_CACHE_MOUNT = $(shell \
 
 # SiRNAforge data cache mounts (transcriptomes and miRNA databases)
 SIRNAFORGE_CACHE_DIR = $(shell echo "$$HOME/.cache/sirnaforge")
-SIRNAFORGE_CACHE_MOUNT = $(shell \
-	if [ -d "$(SIRNAFORGE_CACHE_DIR)" ]; then \
-		echo "-v $(SIRNAFORGE_CACHE_DIR):/home/sirnauser/.cache/sirnaforge"; \
-	else echo ""; fi)
+SIRNAFORGE_CACHE_MOUNT = -v $(SIRNAFORGE_CACHE_DIR):/home/sirnauser/.cache/sirnaforge
 
 DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIRNAFORGE_CACHE_MOUNT)
 # Propagate CI-related env vars into the container so tests can reliably
 # skip known-flaky network flows in CI (e.g., Ensembl blocks runner IPs).
-DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp'
+DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home
 DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
 # GitHub Actions checkouts (and many local workspaces) are often owned by a
@@ -62,6 +64,7 @@ help: ## Show available commands
 	@echo "  make docker-test      Run container validation tests INSIDE Docker"
 	@echo "  make docker-build     Build Docker image"
 	@echo "  make docker-shell     Interactive shell in Docker"
+	@echo "  make docker-nextflow-help Show embedded Nextflow pipeline help"
 	@echo "  make cache-info       Show data cache locations and status"
 	@echo ""
 	@echo "Code Quality"
@@ -109,19 +112,26 @@ test-release-host: ## Host-only release suite (produces base coverage database)
 		--junitxml=pytest-host-report.xml
 	@echo ""
 
-test-release-container: docker-ensure ## Container release suite (expects .coverage from host stage)
+test-release-container: cache-ensure docker-ensure ## Container release suite (expects .coverage from host stage)
 	@if [ ! -f ".coverage" ]; then \
 		echo "Missing .coverage from host tests. Run 'make test-release-host' first or provide the artifact before running container tests."; \
 		exit 1; \
 	fi
 	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c \
-		"pip install --quiet pytest pytest-cov && \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+		"shopt -s nullglob; \
+		pip install --quiet pytest pytest-cov; \
+		set +e; \
 		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' \
 		--cov=sirnaforge --cov-append --cov-report= \
 		--junitxml=/workspace/pytest-container-report.xml \
-		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
+		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
+		status=\$$?; \
+		set -e; \
+		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \
+		chown \$$HOST_UID:\$$HOST_GID /workspace/.coverage* /workspace/coverage*.xml /workspace/pytest-*.xml 2>/dev/null || true; \
+		exit \$$status"
 	@echo ""
 
 test-release-report: ## Generate coverage rollups used for release verification artifacts
@@ -164,9 +174,21 @@ docker-build: ## Build Docker image
 docker-ensure: ## Ensure Docker image exists (build if missing)
 	@docker image inspect $(DOCKER_IMAGE):latest >/dev/null 2>&1 || $(MAKE) docker-build
 
-docker-test: docker-ensure ## Run tests INSIDE Docker container (validates image)
+cache-ensure: ## Ensure the host cache directory exists
+	@mkdir -p "$(SIRNAFORGE_CACHE_DIR)"
+
+docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' $(DOCKER_IMAGE):latest bash -c "pip install --quiet pytest && /opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'"
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+		"shopt -s nullglob; \
+		pip install --quiet pytest; \
+		set +e; \
+		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
+		status=\$$?; \
+		set -e; \
+		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \
+		chown \$$HOST_UID:\$$HOST_GID /workspace/.coverage* /workspace/coverage*.xml /workspace/pytest-*.xml 2>/dev/null || true; \
+		exit \$$status"
 
 docker-build-test: ## Clean debug folder, build Docker image, and run tests
 	@echo "Cleaning debug folders..."
@@ -177,11 +199,17 @@ docker-build-test: ## Clean debug folder, build Docker image, and run tests
 	@$(MAKE) docker-test
 
 docker-shell: docker-ensure ## Interactive shell in Docker
-	docker run -it $(DOCKER_MOUNT_FLAGS) $(DOCKER_IMAGE):latest bash
+	docker run -it $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_IMAGE):latest bash
 
 docker-run: GENE ?= TP53  ## Run workflow in Docker (usage: make docker-run GENE=TP53)
-docker-run: docker-ensure
-	$(DOCKER_RUN) sirnaforge workflow $(GENE) --output-dir docker_results
+docker-run: cache-ensure docker-ensure
+	$(DOCKER_RUN) $(DOCKER_HOST_USER) sirnaforge workflow $(GENE) --output-dir docker_results
+
+docker-nextflow-help: cache-ensure docker-ensure ## Show embedded Nextflow pipeline help inside the container
+	docker run --rm $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest bash -c \
+		"PIPELINE_NF=\$$(python -c 'from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())') && \
+		echo \"Embedded pipeline: \$$PIPELINE_NF\" && \
+		nextflow run \"\$$PIPELINE_NF\" --help"
 
 # Aliases
 docker: docker-build

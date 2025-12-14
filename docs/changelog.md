@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dirty Control Candidates**: `workflow.py` now reuses the harshest rejected guides as "dirty controls" (see `sirnaforge/utils/control_candidates.py`) so every workflow/Nextflow run emits at least one known-bad sequence for health monitoring.
 
 ### 🔧 Improvements
-- **Resilient Aggregation**: Nextflow modules (`modules/local/aggregate_results.nf`, `mirna_offtarget_analysis.nf`, `split_candidates.nf`, etc.) plus `pipeline/nextflow_cli.py` were rewritten to keep TSV/JSON artefacts in sync even when some per-genome or miRNA analyses are skipped.
+- **Resilient Aggregation**: Embedded Nextflow modules (`src/sirnaforge/pipeline/nextflow/workflows/modules/local/aggregate_results.nf`, `mirna_seed_analysis.nf`, etc.) plus `src/sirnaforge/pipeline/nextflow_cli.py` keep TSV/JSON artefacts in sync even when some per-genome or miRNA analyses are skipped.
 - **Deterministic Cache & Defaults**: Centralized cache helpers document where transcriptome/miRNA assets live, and the CLI now enforces valid GC/length ranges with automatic transcriptome fallbacks when `--transcriptome` is omitted.
 
 ### 🐛 Bug Fixes

@@ -46,6 +46,7 @@ from sirnaforge.config import (
     DEFAULT_TRANSCRIPTOME_SOURCES,
     ReferencePolicyResolver,
     WorkflowInputSpec,
+    render_reference_selection_label,
 )
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType, FastaUtils
@@ -55,9 +56,9 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
-from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
+from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
 
@@ -78,7 +79,18 @@ DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
 def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
-    """Filter transcripts based on type and canonical status."""
+    """Filter transcript records by type and canonical status.
+
+    Args:
+        transcripts: Iterable of transcript-like objects that expose
+            ``transcript_type`` and ``is_canonical`` attributes.
+        include_types: Optional iterable of transcript types to keep.
+        exclude_types: Optional iterable of transcript types to drop.
+        canonical_only: When True, keep only canonical isoforms.
+
+    Returns:
+        A list of transcripts that match the requested filters.
+    """
     filtered = transcripts
 
     if canonical_only:
@@ -94,7 +106,19 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
 
 
 def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # type: ignore
-    """Extract canonical transcripts to a separate file."""
+    """Write canonical isoforms to a separate FASTA file.
+
+    Args:
+        transcripts: Iterable of transcript-like objects (must expose
+            ``is_canonical`` and sequence attributes used by the underlying
+            save routine).
+        gene_name: Name used to derive the output FASTA filename.
+        output_dir: Directory to write the FASTA file into (defaults to CWD).
+
+    Returns:
+        A tuple of ``(canonical_fasta_path, count)`` where the path is None
+        when no canonical isoforms are available.
+    """
     canonical = [t for t in transcripts if t.is_canonical]
 
     if not canonical:
@@ -119,7 +143,25 @@ def _resolve_design_mode(
     overhang: str,
     modification_pattern: str,
 ) -> tuple[DesignMode, float, float, str, str]:
-    """Normalize design mode and apply MIRNA defaults when appropriate."""
+    """Normalize design mode and apply miRNA-aware defaults.
+
+    The miRNA design mode has a different default GC range, overhang, and
+    modification pattern. To preserve user intent, those defaults are only
+    applied when the corresponding option is still set to its siRNA default.
+
+    Args:
+        design_mode: Raw user input (e.g., ``sirna`` or ``mirna``).
+        gc_min: Minimum GC percentage.
+        gc_max: Maximum GC percentage.
+        overhang: Overhang string.
+        modification_pattern: Name of the chemical modification pattern.
+
+    Returns:
+        ``(mode_enum, gc_min, gc_max, overhang, modification_pattern)``.
+
+    Raises:
+        ValueError: If ``design_mode`` cannot be parsed.
+    """
     try:
         mode_enum = DesignMode(design_mode.lower())
     except ValueError as exc:
@@ -197,7 +239,12 @@ def search(  # noqa: PLR0912
         help="Enable verbose output",
     ),
 ) -> None:
-    """Search for gene transcripts and retrieve sequences."""
+    """Search transcript references and optionally fetch sequences.
+
+    This command queries Ensembl/RefSeq/Gencode (depending on flags) for a gene
+    or transcript identifier. When sequences are fetched, it writes them to a
+    FASTA file and can optionally also emit a canonical-only FASTA.
+    """
     try:
         # imports moved to top
 
@@ -503,7 +550,12 @@ def workflow(  # noqa: PLR0912
         help="Write logs/workflow_summary.json (disable to skip JSON output)",
     ),
 ) -> None:
-    """Run complete siRNA design workflow from gene query to off-target analysis."""
+    """Run the end-to-end workflow: transcripts → siRNA design → off-target.
+
+    This is the main orchestration command. It resolves transcriptome and miRNA
+    reference policies, designs candidates, and then runs off-target analysis on
+    the selected top candidates.
+    """
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
@@ -520,57 +572,17 @@ def workflow(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
-    source_normalized = mirna_db.lower()
-    if not MiRNADatabaseManager.is_supported_source(source_normalized):
-        valid_sources = ", ".join(MiRNADatabaseManager.get_available_sources())
-        console.print(f"❌ Error: unknown miRNA database '{mirna_db}'. Supported sources: {valid_sources}", style="red")
-        raise typer.Exit(1)
-
-    requested_species = [token.strip() for token in species.split(",") if token.strip()]
-    if not requested_species:
-        console.print("❌ Error: at least one species must be provided", style="red")
-        raise typer.Exit(1)
-
-    mirna_overrides = None
-    if mirna_species:
-        mirna_overrides = [token.strip() for token in mirna_species.split(",") if token.strip()]
-        if not mirna_overrides:
-            console.print("❌ Error: --mirna-species override must contain at least one value", style="red")
-            raise typer.Exit(1)
-
     try:
-        species_resolution = MiRNADatabaseManager.resolve_species_selection(
-            requested_species,
-            source_normalized,
-            mirna_overrides=mirna_overrides,
-        )
+        resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
+        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
     except ValueError as exc:
-        supported = MiRNADatabaseManager.get_supported_canonical_species_for_source(source_normalized)
-        console.print(
-            f"❌ Error: {exc}. Supported canonical species: {', '.join(supported)}",
-            style="red",
-        )
+        console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
-    canonical_species = species_resolution["canonical"]
-    species_list = species_resolution["genome"]
-    mirna_species_list = species_resolution["mirna"]
-
-    override_species = None
-    if offtarget_indices:
-        entries = [token.strip() for token in offtarget_indices.split(",") if token.strip()]
-        bad_entries = [entry for entry in entries if ":" not in entry]
-        if bad_entries:
-            console.print(
-                "❌ Error: --offtarget-indices entries must be in species:/index_prefix form",
-                style="red",
-            )
-            raise typer.Exit(1)
-        override_species = []
-        for entry in entries:
-            species_token = entry.split(":", 1)[0].strip() or entry
-            if species_token and species_token not in override_species:
-                override_species.append(species_token)
+    source_normalized = resolved_species.source_normalized
+    canonical_species = resolved_species.canonical_species
+    species_list = resolved_species.genome_species
+    mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
         console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
@@ -588,14 +600,7 @@ def workflow(  # noqa: PLR0912
         design_only=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
-    if transcriptome_selection.enabled:
-        rendered_choices = [
-            f"{choice.value} ({choice.state.value})" for choice in transcriptome_selection.choices if choice.value
-        ]
-        transcriptome_label = ", ".join(rendered_choices)
-    else:
-        reason = transcriptome_selection.disabled_reason or "not available"
-        transcriptome_label = f"disabled ({reason})"
+    transcriptome_label = render_reference_selection_label(transcriptome_selection)
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
 
@@ -746,10 +751,7 @@ def offtarget(
     mirna_species: Optional[str] = typer.Option(
         None,
         "--mirna-species",
-        help=(
-            "Override miRNA species identifiers (comma-separated). "
-            "When omitted, automatically maps from --species."
-        ),
+        help=("Override miRNA species identifiers (comma-separated). When omitted, automatically maps from --species."),
     ),
     transcriptome_fasta: Optional[str] = typer.Option(
         None,
@@ -797,6 +799,11 @@ def offtarget(
     - Off-target hit classification and scoring
 
     The embedded Nextflow pipeline is used for parallel processing across species.
+
+    Notes:
+        - ``--species`` drives transcriptome fetching and miRNA lookup.
+        - ``--offtarget-indices`` can override the indices used for alignment
+          using ``species:/abs/path/index_prefix`` entries.
     """
     # Validate input FASTA contains sequences (any length accepted)
     try:
@@ -824,61 +831,17 @@ def offtarget(
             console.print_exception()
         raise typer.Exit(1)
 
-    # Parse and validate species
-    requested_species = [token.strip() for token in species.split(",") if token.strip()]
-    if not requested_species:
-        console.print("❌ Error: at least one species must be provided", style="red")
-        raise typer.Exit(1)
-
-    # Validate and resolve miRNA database configuration
-    source_normalized = mirna_db.lower()
-
-    if not MiRNADatabaseManager.is_supported_source(source_normalized):
-        valid_sources = ", ".join(MiRNADatabaseManager.get_available_sources())
-        console.print(f"❌ Error: unknown miRNA database '{mirna_db}'. Supported sources: {valid_sources}", style="red")
-        raise typer.Exit(1)
-
-    mirna_overrides = None
-    if mirna_species:
-        mirna_overrides = [token.strip() for token in mirna_species.split(",") if token.strip()]
-        if not mirna_overrides:
-            console.print("❌ Error: --mirna-species override must contain at least one value", style="red")
-            raise typer.Exit(1)
-
     try:
-        species_resolution = MiRNADatabaseManager.resolve_species_selection(
-            requested_species,
-            source_normalized,
-            mirna_overrides=mirna_overrides,
-        )
+        resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
+        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
     except ValueError as exc:
-        supported = MiRNADatabaseManager.get_supported_canonical_species_for_source(source_normalized)
-        console.print(
-            f"❌ Error: {exc}. Supported canonical species: {', '.join(supported)}",
-            style="red",
-        )
+        console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
-    canonical_species = species_resolution["canonical"]
-    species_list = species_resolution["genome"]
-    mirna_species_list = species_resolution["mirna"]
-
-    # Parse genome indices override
-    override_species = None
-    if offtarget_indices:
-        entries = [token.strip() for token in offtarget_indices.split(",") if token.strip()]
-        bad_entries = [entry for entry in entries if ":" not in entry]
-        if bad_entries:
-            console.print(
-                "❌ Error: --offtarget-indices entries must be in species:/index_prefix form",
-                style="red",
-            )
-            raise typer.Exit(1)
-        override_species = []
-        for entry in entries:
-            species_token = entry.split(":", 1)[0].strip() or entry
-            if species_token and species_token not in override_species:
-                override_species.append(species_token)
+    source_normalized = resolved_species.source_normalized
+    canonical_species = resolved_species.canonical_species
+    species_list = resolved_species.genome_species
+    mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
         console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
@@ -892,15 +855,7 @@ def offtarget(
         design_only=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
-
-    if transcriptome_selection.enabled:
-        rendered_choices = [
-            f"{choice.value} ({choice.state.value})" for choice in transcriptome_selection.choices if choice.value
-        ]
-        transcriptome_label = ", ".join(rendered_choices)
-    else:
-        reason = transcriptome_selection.disabled_reason or "not available"
-        transcriptome_label = f"disabled ({reason})"
+    transcriptome_label = render_reference_selection_label(transcriptome_selection)
 
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
@@ -959,7 +914,9 @@ def offtarget(
         summary_table.add_column("Metric", style="cyan")
         summary_table.add_column("Value", style="white")
 
-        summary_table.add_row("Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial")
+        summary_table.add_row(
+            "Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial"
+        )
         summary_table.add_row("Method", offtarget_summary.get("method", "N/A"))
         summary_table.add_row("Candidates Analyzed", str(len(sequences)))
 
@@ -1075,7 +1032,11 @@ def design(  # noqa: PLR0912
         help="Enable verbose output",
     ),
 ) -> None:
-    """Design siRNA candidates from transcript sequences."""
+    """Design siRNA candidates from a transcript FASTA file.
+
+    Outputs a TSV/CSV-like table of candidates, optionally including secondary
+    structure scoring, off-target checks, and chemical modification annotations.
+    """
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
@@ -1218,7 +1179,11 @@ def validate(
         dir_okay=False,
     ),
 ) -> None:
-    """Validate input FASTA file format and content."""
+    """Validate a FASTA file and report basic statistics.
+
+    This performs lightweight validation (parseable FASTA, presence of
+    sequences, and common issues like short/ambiguous sequences).
+    """
     try:
         with console.status("Validating FASTA file..."):
             sequences = list(SeqIO.parse(input_file, "fasta"))
@@ -1267,7 +1232,7 @@ def validate(
 
 @app_command()
 def version() -> None:
-    """Show version information."""
+    """Show CLI version and author information."""
     try:
         # Prefer Docker build-time APP_VERSION when the image is built with a VERSION arg
         app_version = os.environ.get("APP_VERSION") if "APP_VERSION" in os.environ else __version__
@@ -1287,7 +1252,7 @@ def version() -> None:
 
 @app_command()
 def config() -> None:
-    """Show default configuration parameters."""
+    """Print the default design parameter values."""
     default_params = DesignParameters()
 
     console.print("[bold blue]Default Design Parameters:[/bold blue]\n")
@@ -1322,7 +1287,11 @@ def cache(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without actually deleting"),
     info: bool = typer.Option(False, "--info", help="Show cache information for all databases"),
 ) -> None:
-    """Manage reference database cache (miRNA + transcriptomes)."""
+    """Inspect and clear the unified reference cache.
+
+    This command can display cache statistics and/or delete cached assets for
+    miRNA databases and transcriptomes.
+    """
     from sirnaforge.utils.unified_cache import UnifiedCacheManager  # noqa: PLC0415
 
     if not any([clear, clear_mirna, clear_transcriptome, dry_run, info]):
@@ -1336,7 +1305,7 @@ def cache(
     if info or dry_run:
         # Display cache information using unified manager
         cache_info = manager.get_info()
-        
+
         if "mirna" in cache_info:
             stats = cache_info["mirna"]
             console.print("\n📊 [bold blue]miRNA Database Cache:[/bold blue]")
@@ -1361,13 +1330,13 @@ def cache(
 
     if dry_run:
         console.print("\n🔍 [bold yellow]Clear Preview (dry run):[/bold yellow]")
-        
+
         results = manager.clear(
             clear_mirna=clear or clear_mirna,
             clear_transcriptome=clear or clear_transcriptome,
             dry_run=True,
         )
-        
+
         for component, result in results.items():
             console.print(f"\n  {component.title()}:")
             console.print(f"    Files to delete: [red]{result['files_deleted']}[/red]")
@@ -1375,13 +1344,13 @@ def cache(
 
     elif clear or clear_mirna or clear_transcriptome:
         console.print("\n🧹 [bold green]Clearing Cache:[/bold green]")
-        
+
         results = manager.clear(
             clear_mirna=clear or clear_mirna,
             clear_transcriptome=clear or clear_transcriptome,
             dry_run=False,
         )
-        
+
         for component, result in results.items():
             console.print(f"\n  {component.title()}:")
             console.print(f"    Files deleted: [red]{result['files_deleted']}[/red]")
@@ -1396,10 +1365,15 @@ sequences_command: CommandDecorator = sequences_app.command
 
 
 class SequencesShowError(RuntimeError):
-    """Custom error for sequence display operations."""
+    """Raised when sequence display/formatting input is invalid."""
 
 
 def _load_fasta_records(input_file: Path) -> list[SeqRecord]:
+    """Load FASTA records from disk.
+
+    Raises:
+        SequencesShowError: If the file contains no records.
+    """
     records = list(SeqIO.parse(input_file, "fasta"))
     if not records:
         raise SequencesShowError("No sequences found in file")
@@ -1407,6 +1381,11 @@ def _load_fasta_records(input_file: Path) -> list[SeqRecord]:
 
 
 def _filter_records_by_id(records: list[SeqRecord], sequence_id: str) -> list[SeqRecord]:
+    """Filter FASTA records by record id.
+
+    Raises:
+        SequencesShowError: If no matching records are found.
+    """
     filtered = [record for record in records if record.id == sequence_id]
     if not filtered:
         raise SequencesShowError(f"Sequence ID '{sequence_id}' not found")
@@ -1414,6 +1393,7 @@ def _filter_records_by_id(records: list[SeqRecord], sequence_id: str) -> list[Se
 
 
 def _metadata_value_to_json(value: Any) -> Any:
+    """Convert parsed FASTA header metadata into JSON-serializable values."""
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     if hasattr(value, "value"):
@@ -1424,6 +1404,7 @@ def _metadata_value_to_json(value: Any) -> Any:
 
 
 def _records_to_json(records: list[SeqRecord]) -> str:
+    """Render FASTA record header metadata as a JSON string."""
     payload = []
     for record in records:
         metadata = parse_header(record)
@@ -1432,6 +1413,7 @@ def _records_to_json(records: list[SeqRecord]) -> str:
 
 
 def _summarize_modifications(metadata: dict[str, Any]) -> str:
+    """Summarize chemical modifications from parsed header metadata."""
     mods = metadata.get("chem_mods") or []
     summary = []
     for mod in mods:
@@ -1443,12 +1425,14 @@ def _summarize_modifications(metadata: dict[str, Any]) -> str:
 
 
 def _print_records_fasta(records: list[SeqRecord]) -> None:
+    """Print records as FASTA to stdout."""
     for record in records:
         console.print(f">{record.description}")
         console.print(str(record.seq))
 
 
 def _print_records_table(records: list[SeqRecord], input_file: Path) -> None:
+    """Print records as a Rich table with parsed header metadata."""
     table = Table(title=f"📋 Sequences from {input_file.name}")
     table.add_column("ID", style="cyan")
     table.add_column("Sequence", style="green")
@@ -1503,7 +1487,11 @@ def sequences_show(
         help="Output format (table, json, fasta)",
     ),
 ) -> None:
-    """Show sequences with their metadata from FASTA file."""
+    """Show sequences from a FASTA file in table, JSON, or FASTA format.
+
+    Use ``--id`` to select a single record. ``--format`` controls output:
+    ``table`` (default), ``json`` (header metadata only), or ``fasta``.
+    """
     format_normalized = format.lower()
     try:
         records = _load_fasta_records(input_file)
@@ -1559,7 +1547,11 @@ def sequences_annotate(
         help="Enable verbose output",
     ),
 ) -> None:
-    """Merge metadata from JSON into FASTA headers."""
+    """Merge metadata from a JSON file into FASTA headers.
+
+    The JSON is expected to conform to the project metadata schema used by the
+    modification/annotation utilities.
+    """
     try:
         # Determine output path
         if output is None:

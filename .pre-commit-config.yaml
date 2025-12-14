@@ -33,7 +33,7 @@ repos:
 
       - id: nextflow-lint
         name: nextflow-lint
-        entry: bash -c 'if command -v nextflow >/dev/null 2>&1; then find nextflow_pipeline -name "*.nf" -exec nextflow lint {} \; 2>/dev/null || true; else echo "⚠️  Nextflow not found, skipping lint"; fi'
+        entry: bash -c 'if command -v nextflow >/dev/null 2>&1; then find src/sirnaforge/pipeline/nextflow/workflows -name "*.nf" -exec nextflow lint {} \; 2>/dev/null || true; else echo "⚠️  Nextflow not found, skipping lint"; fi'
         language: system
         files: \.nf$
         pass_filenames: false

@@ -137,6 +137,16 @@ class ReferencePolicyResolver:
         return ReferenceSelection.disabled("no transcriptome defaults configured")
 
 
+def render_reference_selection_label(selection: ReferenceSelection) -> str:
+    """Render a stable, human-readable label for CLI/config summaries."""
+    if selection.enabled:
+        rendered_choices = [f"{choice.value} ({choice.state.value})" for choice in selection.choices if choice.value]
+        return ", ".join(rendered_choices)
+
+    reason = selection.disabled_reason or "not available"
+    return f"disabled ({reason})"
+
+
 __all__ = [
     "DEFAULT_TRANSCRIPTOME_SOURCE",
     "DEFAULT_TRANSCRIPTOME_SOURCES",
@@ -147,4 +157,5 @@ __all__ = [
     "ReferencePolicyResolver",
     "ReferenceState",
     "WorkflowInputSpec",
+    "render_reference_selection_label",
 ]

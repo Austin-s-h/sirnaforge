@@ -5,11 +5,10 @@ Run with: make test-release
 """
 
 import pytest
-from pathlib import Path
 
-from sirnaforge.data.transcriptome_manager import TranscriptomeManager
-from sirnaforge.data.transcriptome_filter import TranscriptFilter
 from sirnaforge.core.off_target import build_bwa_index, validate_index_files
+from sirnaforge.data.transcriptome_filter import TranscriptFilter
+from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 
 
 @pytest.fixture
@@ -34,10 +33,10 @@ class TestBWAIndexBuilding:
     def test_build_index_from_tiny_fasta(self, tiny_transcriptome, tmp_path):
         """Test building BWA-MEM2 index from small FASTA."""
         index_prefix = tmp_path / "test_index"
-        
+
         # Build index
         result = build_bwa_index(tiny_transcriptome, index_prefix)
-        
+
         # Verify index files exist
         assert result == index_prefix
         assert validate_index_files(index_prefix, tool="bwa-mem2")
@@ -45,30 +44,30 @@ class TestBWAIndexBuilding:
     def test_index_validation(self, tiny_transcriptome, tmp_path):
         """Test index file validation."""
         index_prefix = tmp_path / "test_index"
-        
+
         # Before building, validation should fail
         assert not validate_index_files(index_prefix, tool="bwa-mem2")
-        
+
         # Build index
         build_bwa_index(tiny_transcriptome, index_prefix)
-        
+
         # After building, validation should pass
         assert validate_index_files(index_prefix, tool="bwa-mem2")
 
     def test_index_cache_reuse(self, tiny_transcriptome, tmp_path, monkeypatch):
         """Test that cached indices are reused without rebuilding."""
         manager = TranscriptomeManager()
-        
+
         # Use temp directory for cache
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         monkeypatch.setattr(manager, "cache_dir", cache_dir)
-        
+
         # First call should build index
         result1 = manager.get_custom_transcriptome(tiny_transcriptome, build_index=True)
         assert result1 is not None
         assert "index" in result1
-        
+
         # Second call should reuse cached index (no rebuild)
         result2 = manager.get_custom_transcriptome(tiny_transcriptome, build_index=True)
         assert result2 is not None
@@ -84,10 +83,10 @@ class TestTranscriptomeFiltering:
         """Test filtering for protein-coding transcripts."""
         output = tmp_path / "filtered.fa"
         kept = TranscriptFilter.apply_protein_coding_filter(tiny_transcriptome, output)
-        
+
         # Should keep 2 protein_coding transcripts
         assert kept == 2
-        
+
         # Verify output
         content = output.read_text()
         assert "ENST001" in content
@@ -98,10 +97,10 @@ class TestTranscriptomeFiltering:
         """Test filtering for canonical transcripts."""
         output = tmp_path / "canonical.fa"
         kept = TranscriptFilter.apply_canonical_filter(tiny_transcriptome, output)
-        
+
         # Should keep 1 canonical transcript
         assert kept == 1
-        
+
         # Verify output
         content = output.read_text()
         assert "ENST003" in content
@@ -111,10 +110,10 @@ class TestTranscriptomeFiltering:
         output = tmp_path / "filtered.fa"
         filters = ["protein_coding", "canonical_only"]
         kept = TranscriptFilter.apply_combined_filter(tiny_transcriptome, output, filters)
-        
+
         # Should keep 1 transcript (protein_coding AND canonical)
         assert kept == 1
-        
+
         # Verify output
         content = output.read_text()
         assert "ENST003" in content
@@ -122,23 +121,23 @@ class TestTranscriptomeFiltering:
     def test_filtered_transcriptome_indexing(self, tiny_transcriptome, tmp_path, monkeypatch):
         """Test that filtered transcriptomes can be indexed."""
         manager = TranscriptomeManager()
-        
+
         # Use temp directory for cache
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         monkeypatch.setattr(manager, "cache_dir", cache_dir)
-        
+
         # Copy to cache as a "source"
         cached_fasta = cache_dir / "test.fa"
         cached_fasta.write_text(tiny_transcriptome.read_text())
-        
+
         # Simulate filtering and indexing
         filtered = cache_dir / "filtered.fa"
         TranscriptFilter.apply_protein_coding_filter(cached_fasta, filtered)
-        
+
         # Build index on filtered FASTA
         index_prefix = cache_dir / "filtered_index"
-        result = build_bwa_index(filtered, index_prefix)
-        
+        _ = build_bwa_index(filtered, index_prefix)
+
         # Verify index was built successfully
         assert validate_index_files(index_prefix, tool="bwa-mem2")

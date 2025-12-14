@@ -27,7 +27,8 @@ uv run --group pipeline nextflow -version
 
 # Lint Nextflow scripts
 echo "🔍 Linting Nextflow scripts..."
-uv run --group pipeline nextflow lint nextflow_pipeline/main.nf
+PIPELINE_NF=$(uv run --group pipeline python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
+uv run --group pipeline nextflow lint "$PIPELINE_NF"
 
 # Test basic Nextflow functionality
 echo "🧪 Testing Nextflow basic functionality..."
@@ -43,8 +44,19 @@ fi
 
 # Test our pipeline syntax (dry run)
 echo "🔬 Testing SIRNAforge pipeline syntax with built-in defaults..."
-uv run --group pipeline nextflow run nextflow_pipeline/main.nf \
-    --input nextflow_pipeline/candidates.fasta \
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+CANDIDATES_FASTA="$TMPDIR/candidates.fasta"
+cat > "$CANDIDATES_FASTA" <<'EOF'
+>candidate_1
+GGAUCUUCUUAGCUUACGAUU
+>candidate_2
+GCUAUGCUUACGGAUCUUCUU
+EOF
+
+uv run --group pipeline nextflow run "$PIPELINE_NF" \
+    --input "$CANDIDATES_FASTA" \
     --outdir test_results \
     -profile test \
     -stub-run || echo "⚠️  Pipeline syntax test failed - this may be expected if dependencies are missing"

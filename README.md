@@ -202,9 +202,12 @@ Filter candidates that match microRNA seed regions to reduce off-target effects.
 
 **⚙️ High-Throughput Analysis**
 ```bash
-nextflow run nextflow_pipeline/main.nf --gene_list genes.txt
+# Batch multiple genes (off-target step uses the embedded Nextflow pipeline)
+for gene in TP53 BRCA1 EGFR KRAS; do
+  sirnaforge workflow "$gene" --output-dir "batch_results/$gene"
+done
 ```
-Process hundreds of genes with containerized Nextflow pipeline.
+Process many genes in batch while reusing the same embedded Nextflow off-target engine.
 
 **💊 Chemical Modifications**
 ```bash
