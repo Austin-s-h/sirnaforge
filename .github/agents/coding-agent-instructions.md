@@ -5,7 +5,7 @@
 - Outputs flow: gene search → transcript validation → siRNA design (`core/design.py`) → thermodynamic scoring (`core/thermodynamics.py`) → optional off-target + Nextflow (`core/off_target.py`, `pipeline/`). Reuse the Pydantic models in `models/` and Pandera schemas in `validation/` instead of rolling new dict structures.
 - Gene/ORF retrieval (`data/gene_search.py`, `data/orf_analysis.py`) talks to Ensembl/NCBI; inject fixtures or cached FASTA files (`examples/`, `tests/data/`) when you need deterministic tests.
 
-## Source Layout &amp; Conventions
+## Source Layout & Conventions
 - Strict `src/` layout; new packages go under `src/sirnaforge/` and must be wired through `workflow.py` so the CLI stays thin.
 - CLI subcommands live in a single Typer app; expose new flows by adding `@app.command` functions that delegate to orchestration functions in `workflow.py`.
 - Examples and documentation leverage `examples/*.py` and `examples/modification_patterns/*.json`; prefer reusing these assets (also mirrored in `docs/usage_examples.md`).
@@ -15,7 +15,7 @@
 - Daily commands run through `uv`: `uv run sirnaforge workflow TP53 --output-dir results`, `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
 - Packaging is Hatchling-only (`pyproject.toml`, `uv.lock`); avoid introducing `setup.py` or ad-hoc requirements files.
 
-## CI &amp; Make Commands
+## CI & Make Commands
 - `make lint` runs Ruff check/format (check-only) plus mypy; `make format` applies Ruff format/fixes. `make check` chains `format` then `test-dev`, so expect unstaged formatting edits.
 - Test tiers map to pytest markers defined in `pyproject.toml`: `make test-dev` (`-m dev`), `make test-ci` (smoke + coverage, host-only), `make test-release` (host + Docker, merges coverage), `make test` (all, tolerant of skips).
 - Requirement slices: `make test-requires-docker`, `make test-requires-nextflow`, `make test-requires-network`; use these before touching external tooling.
@@ -28,12 +28,12 @@
 - Broader gates: `make test-ci`, `make test-release`, or marker slices (`make test-requires-docker`, `make test-requires-nextflow`, `make test-requires-network`).
 - Container validation: `make docker-build`, `make docker-test`, `make docker-run GENE=TP53`; anything in `tests/container/` assumes BWA-MEM2/SAMtools/ViennaRNA and only passes inside Docker.
 
-## Pipelines &amp; External Integrations
+## Pipelines & External Integrations
 - Nextflow pipeline assets live in `nextflow_pipeline/`; drive them via Nextflow CLI or Docker, not by importing modules into Python.
 - Off-target steps require BWA-MEM2, SAMtools, ViennaRNA; these are pinned in `docker/Dockerfile`. On bare metal they are optional, so gate calls behind capability checks.
 - Workflow outputs go under `workflow_output/` or debugging dirs like `tp53_workflow_debug/`. Preserve this structure when adding new reporters so downstream tools keep working.
 
-## Documentation &amp; Support Files
+## Documentation & Support Files
 - Sphinx docs are under `docs/`; run `make docs` or `make docs-serve` whenever you touch `.rst` files (notably `docs/cli_reference.md`, `docs/developer/testing_guide.md`).
 - `examples/complete_workflow_example.py` and `docs/tutorials/python_api.md` are the canonical references for end-to-end usage—keep them updated when signatures change.
 
