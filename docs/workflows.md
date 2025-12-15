@@ -77,17 +77,22 @@ Inside the container, Nextflow uses the `local` profile automatically—no Docke
 (nextflow-pipeline)=
 ## Nextflow Pipeline
 
-For large-scale off-target analysis across multiple genomes:
+siRNAforge runs off-target analysis via an embedded Nextflow workflow.
 
 ```bash
-# Generate candidates first
+# Full workflow (includes embedded Nextflow off-target analysis)
 sirnaforge workflow TP53 --output-dir results/
 
-# Run Nextflow pipeline
-nextflow run nextflow_pipeline/main.nf \
-  --candidates results/off_target/input_candidates.fasta \
-  --outdir nextflow_results/ \
-  --genome_species "human,mouse"
+# Off-target only (runs the embedded Nextflow workflow)
+sirnaforge offtarget \
+  --input-candidates-fasta results/off_target/input_candidates.fasta \
+  --output-dir results/off_target \
+  --species "human,mouse"
 ```
 
-See [nextflow_pipeline/README.md](https://github.com/austin-s-h/sirnaforge/blob/master/nextflow_pipeline/README.md) for configuration options.
+Advanced: discover and run the embedded pipeline directly:
+
+```bash
+PIPELINE_NF=$(uv run python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
+nextflow run "$PIPELINE_NF" --help
+```

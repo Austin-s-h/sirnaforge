@@ -23,7 +23,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     ch_versions = Channel.empty()
 
     //
-    // MODULE: ALWAYS run miRNA seed match analysis (lightweight, <1GB RAM)
+    // MODULE: ALWAYS run miRNA seed match analysis (lightweight, <4GB RAM)
     // Efficient batch mode: one process for all candidates
     //
     MIRNA_SEED_ANALYSIS(
@@ -94,20 +94,29 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     //
     // Collect all analysis results for aggregation
     //
-    ch_all_analysis = OFFTARGET_ANALYSIS.out.analysis.collect().ifEmpty([])
-    ch_all_summary = OFFTARGET_ANALYSIS.out.summary.collect().ifEmpty([])
+    ch_genome_analysis_files = OFFTARGET_ANALYSIS.out.analysis.toList().ifEmpty { [] }
+    ch_genome_summary_files  = OFFTARGET_ANALYSIS.out.summary.toList().ifEmpty { [] }
 
-    // Add miRNA analysis results to the collection
-    ch_all_analysis = ch_all_analysis.mix(MIRNA_SEED_ANALYSIS.out.analysis)
-    ch_all_summary = ch_all_summary.mix(MIRNA_SEED_ANALYSIS.out.summary)
+    ch_mirna_analysis_files = MIRNA_SEED_ANALYSIS.out.analysis.toList()
+    ch_mirna_summary_files  = MIRNA_SEED_ANALYSIS.out.summary.toList()
+
+    // Build a SINGLE list of staged inputs so AGGREGATE_RESULTS runs once
+    // (Using mix() here would create multiple invocations and can overwrite published outputs.)
+    ch_all_analysis = ch_genome_analysis_files
+        .combine(ch_mirna_analysis_files)
+        .map { genome_files, mirna_files -> genome_files + mirna_files }
+
+    ch_all_summary = ch_genome_summary_files
+        .combine(ch_mirna_summary_files)
+        .map { genome_files, mirna_files -> genome_files + mirna_files }
 
     // Extract species list for aggregation
     ch_genome_species = ch_genome_indices
         .map { species, index_path -> species }
         .unique()
-        .collect()
+        .toList()
         .map { species_list -> species_list.join(',') }
-        .ifEmpty('')
+        .ifEmpty { '' }
 
     //
     // MODULE: Aggregate all results
@@ -117,11 +126,11 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         ch_all_summary,
         ch_genome_species
     )
-    ch_versions = ch_versions.mix(AGGREGATE_RESULTS.out.versions.ifEmpty([]))
+    ch_versions = ch_versions.mix(AGGREGATE_RESULTS.out.versions)
 
     emit:
-    combined_analyses    = AGGREGATE_RESULTS.out.combined_analyses.ifEmpty([])
-    combined_summary     = AGGREGATE_RESULTS.out.combined_summary.ifEmpty([])
-    final_summary        = AGGREGATE_RESULTS.out.final_summary.ifEmpty([])
+    combined_analyses    = AGGREGATE_RESULTS.out.combined_analyses
+    combined_summary     = AGGREGATE_RESULTS.out.combined_summary
+    final_summary        = AGGREGATE_RESULTS.out.final_summary
     versions            = ch_versions
 }

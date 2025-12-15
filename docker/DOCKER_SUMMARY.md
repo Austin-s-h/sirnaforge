@@ -45,7 +45,14 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:0.2.0 \
 
 # Interactive development shell
 docker run -it -v $(pwd):/workspace -w /workspace sirnaforge:0.2.0 bash
+
+# Login shell for "activation" semantics (✅ Fixed in v0.3.2+)
+# Both login (-lc) and non-login (-c) shells now work correctly
+docker run --rm sirnaforge:latest /bin/bash -lc 'sirnaforge version'
+docker run --rm sirnaforge:latest /bin/bash -c 'sirnaforge version'
 ```
+
+> **Note**: Prior to v0.3.2, login shells (`/bin/bash -lc`) would reset PATH and lose access to `sirnaforge` and `nextflow`. This is now fixed via `/etc/profile.d/conda-path.sh` (see Issue #37).
 
 #### Production Deployments
 - **AWS Batch**: Push image to ECR, configure Nextflow

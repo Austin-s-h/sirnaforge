@@ -114,10 +114,99 @@ make help       # Show all available commands
 
 ## Development Workflow
 
+## Branching & Release Strategy
+
+siRNAforge follows a simple two-branch model that keeps `master` stable while enabling fast iteration on `dev`.
+
+- `dev`: active integration branch (unstable, where PRs land)
+- `master`: stable production branch (release-ready only)
+
+This structure helps prevent accidental “production releases” from everyday feature merges while still allowing frequent Docker image publishing for preview/testing.
+
+```{raw} html
+<div class="mermaid">
+flowchart LR
+    subgraph Work[Daily Development]
+        F1[feature/*] --> PR1[PR to dev]
+        PR1 --> D[dev]
+        D --> CI1[CI checks]
+    end
+
+    subgraph Release[Stable Release]
+        D --> PR2[Release PR: dev → master]
+        PR2 --> M[master]
+        M --> CI2[CI + Release workflow]
+        CI2 --> DOCKER_STABLE[Publish Docker (version + latest)]
+    end
+
+    subgraph Pre[Pre-release / Preview]
+        D --> CI3[CI + Dev publish]
+        CI3 --> DOCKER_DEV[Publish Docker (dev tag)]
+    end
+</div>
+```
+
+### How to Work Day-to-Day
+
+1. Branch from `dev`: `feature/<name>` or `fix/<name>`
+2. Open PR into `dev` (CI must pass)
+3. Cut a stable release by opening a PR from `dev` into `master`
+
+### Hygiene Rules (Recommended)
+
+These conventions keep the repo clean and make it obvious what is safe to deploy.
+
+- **Do not use version branches** (e.g. `v0.3.3`). Use Git tags (`v0.3.3`) for versions; use branches for ongoing work.
+- **Branch naming**:
+    - `feature/<short-description>` for new capabilities
+    - `fix/<short-description>` for bug fixes
+    - `chore/<short-description>` for maintenance (deps, CI, docs)
+- **PR targets**:
+    - Most PRs merge into `dev`
+    - Only “release PRs” merge `dev` → `master`
+- **Keep branches fresh**: before starting work, update `dev` (`git checkout dev && git pull`). Rebase or merge `dev` into your feature branch if it drifts.
+- **Delete merged branches**: once a PR is merged, delete the source branch (feature/fix/chore) to avoid clutter.
+
+### Version & Tag Hygiene
+
+- Treat `master` as “release-ready”: changes merged to `master` should be intentional and reviewed.
+- Prefer tagging releases as `vX.Y.Z` (tags, not branches). The release workflow already creates and pushes tags.
+- If you need pre-release identifiers, prefer PEP 440 formats like `X.Y.Zrc1` (avoid hyphenated variants like `X.Y.Z-rc1`).
+
+### Recommended GitHub Branch Protection
+
+For `master` (stable):
+- Require pull requests (no direct pushes)
+- Require status checks (CI must pass)
+- Require at least one review
+- Block force pushes
+
+For `dev` (integration):
+- Require pull requests
+- Require status checks
+
+### Versioning Guidance (PEP 440)
+
+- Stable releases: `X.Y.Z` (published to PyPI)
+- Pre-releases: `X.Y.ZrcN` / `X.Y.ZaN` / `X.Y.ZbN` (published to TestPyPI by default)
+
+### Docker Image Tags (Recommended)
+
+- `ghcr.io/<owner>/<repo>:dev`: latest image from the `dev` branch (unstable)
+- `ghcr.io/<owner>/<repo>:sha-<shortsha>`: immutable image for a specific commit (useful for debugging)
+- `ghcr.io/<owner>/<repo>:<version>` and `:latest`: stable release images published from `master`
+
+**Consumption guidance**:
+- For active development/testing: use `:dev` (fast-moving)
+- For reproducible experiments: use `:sha-<shortsha>`
+- For production: use `:<version>` (preferred) or `:latest` (convenience)
+
 ### Typical Development Cycle
 
 ```bash
-# 1. Create feature branch
+# 1. Create feature branch from dev
+git checkout dev
+git pull
 git checkout -b feature/my-feature
 
 # 2. Make changes and iterate quickly

@@ -10,6 +10,7 @@ from .reference_policy import (
     ReferenceSelection,
     ReferenceState,
     WorkflowInputSpec,
+    render_reference_selection_label,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "ReferenceSelection",
     "ReferenceState",
     "WorkflowInputSpec",
+    "render_reference_selection_label",
 ]

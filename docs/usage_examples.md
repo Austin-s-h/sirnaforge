@@ -137,13 +137,13 @@ uv run sirnaforge workflow MIR21 \
 ```bash
 uv run sirnaforge workflow TP53 --output-dir tp53_nextflow
 
-nextflow run nextflow_pipeline/main.nf \
-  --candidates tp53_nextflow/off_target/input_candidates.fasta \
-  --outdir tp53_nextflow/off_target_results \
-  --genome_species "human,mouse"
+uv run sirnaforge offtarget \
+  --input-candidates-fasta tp53_nextflow/off_target/input_candidates.fasta \
+  --output-dir tp53_nextflow/off_target_results \
+  --species "human,mouse"
 ```
 
-- `off_target/input_candidates.fasta` contains both high-confidence and dirty-control guides—the exact payload expected by `nextflow_pipeline/modules/local/offtarget_align.nf`.
+- `off_target/input_candidates.fasta` contains both high-confidence and dirty-control guides.
 - Override indices with `--offtarget-indices human:/refs/hg38 mouse:/refs/mm39` for custom BWA-MEM2 builds.
 
 ## Docker-Friendly Pattern

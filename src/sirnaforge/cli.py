@@ -21,14 +21,6 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from sirnaforge.config import (
-    DEFAULT_MIRNA_CANONICAL_SPECIES,
-    DEFAULT_TRANSCRIPTOME_SOURCES,
-    ReferencePolicyResolver,
-    WorkflowInputSpec,
-)
-from sirnaforge.data.mirna_manager import MiRNADatabaseManager
-
 # Monkey patch Rich console (best-effort). If this fails we continue with default behavior.
 try:
     import rich.console
@@ -49,8 +41,15 @@ except (ImportError, AttributeError):  # Narrow exceptions
     pass
 
 from sirnaforge import __author__, __version__
+from sirnaforge.config import (
+    DEFAULT_MIRNA_CANONICAL_SPECIES,
+    DEFAULT_TRANSCRIPTOME_SOURCES,
+    ReferencePolicyResolver,
+    WorkflowInputSpec,
+    render_reference_selection_label,
+)
 from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.data.base import DatabaseType
+from sirnaforge.data.base import DatabaseType, FastaUtils
 from sirnaforge.data.gene_search import (
     GeneSearcher,
     search_gene_sync,
@@ -59,8 +58,9 @@ from sirnaforge.data.gene_search import (
 )
 from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
+from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
-from sirnaforge.workflow import run_sirna_workflow
+from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
 
 app = typer.Typer(
     name="sirnaforge",
@@ -79,7 +79,18 @@ DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
 def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
-    """Filter transcripts based on type and canonical status."""
+    """Filter transcript records by type and canonical status.
+
+    Args:
+        transcripts: Iterable of transcript-like objects that expose
+            ``transcript_type`` and ``is_canonical`` attributes.
+        include_types: Optional iterable of transcript types to keep.
+        exclude_types: Optional iterable of transcript types to drop.
+        canonical_only: When True, keep only canonical isoforms.
+
+    Returns:
+        A list of transcripts that match the requested filters.
+    """
     filtered = transcripts
 
     if canonical_only:
@@ -95,7 +106,19 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
 
 
 def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # type: ignore
-    """Extract canonical transcripts to a separate file."""
+    """Write canonical isoforms to a separate FASTA file.
+
+    Args:
+        transcripts: Iterable of transcript-like objects (must expose
+            ``is_canonical`` and sequence attributes used by the underlying
+            save routine).
+        gene_name: Name used to derive the output FASTA filename.
+        output_dir: Directory to write the FASTA file into (defaults to CWD).
+
+    Returns:
+        A tuple of ``(canonical_fasta_path, count)`` where the path is None
+        when no canonical isoforms are available.
+    """
     canonical = [t for t in transcripts if t.is_canonical]
 
     if not canonical:
@@ -120,7 +143,25 @@ def _resolve_design_mode(
     overhang: str,
     modification_pattern: str,
 ) -> tuple[DesignMode, float, float, str, str]:
-    """Normalize design mode and apply MIRNA defaults when appropriate."""
+    """Normalize design mode and apply miRNA-aware defaults.
+
+    The miRNA design mode has a different default GC range, overhang, and
+    modification pattern. To preserve user intent, those defaults are only
+    applied when the corresponding option is still set to its siRNA default.
+
+    Args:
+        design_mode: Raw user input (e.g., ``sirna`` or ``mirna``).
+        gc_min: Minimum GC percentage.
+        gc_max: Maximum GC percentage.
+        overhang: Overhang string.
+        modification_pattern: Name of the chemical modification pattern.
+
+    Returns:
+        ``(mode_enum, gc_min, gc_max, overhang, modification_pattern)``.
+
+    Raises:
+        ValueError: If ``design_mode`` cannot be parsed.
+    """
     try:
         mode_enum = DesignMode(design_mode.lower())
     except ValueError as exc:
@@ -198,7 +239,12 @@ def search(  # noqa: PLR0912
         help="Enable verbose output",
     ),
 ) -> None:
-    """Search for gene transcripts and retrieve sequences."""
+    """Search transcript references and optionally fetch sequences.
+
+    This command queries Ensembl/RefSeq/Gencode (depending on flags) for a gene
+    or transcript identifier. When sequences are fetched, it writes them to a
+    FASTA file and can optionally also emit a canonical-only FASTA.
+    """
     try:
         # imports moved to top
 
@@ -434,6 +480,17 @@ def workflow(  # noqa: PLR0912
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
         ),
     ),
+    transcriptome_filter: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-filter",
+        help=(
+            "Filter transcriptome to reduce size and memory requirements. "
+            "Comma-separated filter names: 'protein_coding' (only protein-coding genes), "
+            "'canonical_only' (only canonical isoforms). "
+            "Example: --transcriptome-filter protein_coding,canonical_only. "
+            "Filtered versions are cached separately with automatic indexing."
+        ),
+    ),
     offtarget_indices: Optional[str] = typer.Option(
         None,
         "--offtarget-indices",
@@ -493,7 +550,12 @@ def workflow(  # noqa: PLR0912
         help="Write logs/workflow_summary.json (disable to skip JSON output)",
     ),
 ) -> None:
-    """Run complete siRNA design workflow from gene query to off-target analysis."""
+    """Run the end-to-end workflow: transcripts → siRNA design → off-target.
+
+    This is the main orchestration command. It resolves transcriptome and miRNA
+    reference policies, designs candidates, and then runs off-target analysis on
+    the selected top candidates.
+    """
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
@@ -510,57 +572,17 @@ def workflow(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
-    source_normalized = mirna_db.lower()
-    if not MiRNADatabaseManager.is_supported_source(source_normalized):
-        valid_sources = ", ".join(MiRNADatabaseManager.get_available_sources())
-        console.print(f"❌ Error: unknown miRNA database '{mirna_db}'. Supported sources: {valid_sources}", style="red")
-        raise typer.Exit(1)
-
-    requested_species = [token.strip() for token in species.split(",") if token.strip()]
-    if not requested_species:
-        console.print("❌ Error: at least one species must be provided", style="red")
-        raise typer.Exit(1)
-
-    mirna_overrides = None
-    if mirna_species:
-        mirna_overrides = [token.strip() for token in mirna_species.split(",") if token.strip()]
-        if not mirna_overrides:
-            console.print("❌ Error: --mirna-species override must contain at least one value", style="red")
-            raise typer.Exit(1)
-
     try:
-        species_resolution = MiRNADatabaseManager.resolve_species_selection(
-            requested_species,
-            source_normalized,
-            mirna_overrides=mirna_overrides,
-        )
+        resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
+        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
     except ValueError as exc:
-        supported = MiRNADatabaseManager.get_supported_canonical_species_for_source(source_normalized)
-        console.print(
-            f"❌ Error: {exc}. Supported canonical species: {', '.join(supported)}",
-            style="red",
-        )
+        console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
-    canonical_species = species_resolution["canonical"]
-    species_list = species_resolution["genome"]
-    mirna_species_list = species_resolution["mirna"]
-
-    override_species = None
-    if offtarget_indices:
-        entries = [token.strip() for token in offtarget_indices.split(",") if token.strip()]
-        bad_entries = [entry for entry in entries if ":" not in entry]
-        if bad_entries:
-            console.print(
-                "❌ Error: --offtarget-indices entries must be in species:/index_prefix form",
-                style="red",
-            )
-            raise typer.Exit(1)
-        override_species = []
-        for entry in entries:
-            species_token = entry.split(":", 1)[0].strip() or entry
-            if species_token and species_token not in override_species:
-                override_species.append(species_token)
+    source_normalized = resolved_species.source_normalized
+    canonical_species = resolved_species.canonical_species
+    species_list = resolved_species.genome_species
+    mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
         console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
@@ -578,14 +600,7 @@ def workflow(  # noqa: PLR0912
         design_only=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
-    if transcriptome_selection.enabled:
-        rendered_choices = [
-            f"{choice.value} ({choice.state.value})" for choice in transcriptome_selection.choices if choice.value
-        ]
-        transcriptome_label = ", ".join(rendered_choices)
-    else:
-        reason = transcriptome_selection.disabled_reason or "not available"
-        transcriptome_label = f"disabled ({reason})"
+    transcriptome_label = render_reference_selection_label(transcriptome_selection)
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
 
@@ -635,6 +650,7 @@ def workflow(  # noqa: PLR0912
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     gc_min=gc_min,
                     gc_max=gc_max,
@@ -696,6 +712,228 @@ def workflow(  # noqa: PLR0912
 
     except Exception as e:
         console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+
+@app_command()
+def offtarget(
+    input_candidates_fasta: Path = typer.Option(
+        ...,
+        "--input-candidates-fasta",
+        "-i",
+        help="FASTA file containing pre-designed siRNA guide sequences (any length)",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    output_dir: Path = typer.Option(
+        Path("offtarget_output"),
+        "--output-dir",
+        "-o",
+        help="Output directory for off-target analysis results",
+    ),
+    species: str = typer.Option(
+        DEFAULT_SPECIES_ARGUMENT,
+        "--species",
+        help=(
+            "Comma-separated canonical species identifiers for off-target analysis. "
+            "Drives transcriptome fetching from Ensembl and miRNA database lookups. "
+            "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
+        ),
+    ),
+    mirna_db: str = typer.Option(
+        "mirgenedb",
+        "--mirna-db",
+        help="miRNA reference database to use for seed analysis",
+    ),
+    mirna_species: Optional[str] = typer.Option(
+        None,
+        "--mirna-species",
+        help=("Override miRNA species identifiers (comma-separated). When omitted, automatically maps from --species."),
+    ),
+    transcriptome_fasta: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-fasta",
+        help=(
+            "Override or extend transcriptome references for off-target analysis. "
+            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+        ),
+    ),
+    transcriptome_filter: Optional[str] = typer.Option(
+        None,
+        "--transcriptome-filter",
+        help=(
+            "Filter transcriptome to reduce size and memory requirements. "
+            "Comma-separated filter names: 'protein_coding', 'canonical_only'. "
+            "Example: --transcriptome-filter protein_coding,canonical_only."
+        ),
+    ),
+    offtarget_indices: Optional[str] = typer.Option(
+        None,
+        "--offtarget-indices",
+        help=(
+            "Comma-separated overrides for genome indices used in off-target analysis. "
+            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39."
+        ),
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+    log_file: Optional[Path] = typer.Option(
+        None,
+        "--log-file",
+        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
+) -> None:
+    """Run off-target analysis on pre-designed siRNA candidates.
+
+    This command accepts a FASTA file containing pre-designed siRNA guide sequences
+    of any length and runs comprehensive off-target analysis including:
+    - Transcriptome alignment (BWA-MEM2)
+    - miRNA seed match analysis
+    - Off-target hit classification and scoring
+
+    The embedded Nextflow pipeline is used for parallel processing across species.
+
+    Notes:
+        - ``--species`` drives transcriptome fetching and miRNA lookup.
+        - ``--offtarget-indices`` can override the indices used for alignment
+          using ``species:/abs/path/index_prefix`` entries.
+    """
+    # Validate input FASTA contains sequences (any length accepted)
+    try:
+        sequences = FastaUtils.read_fasta(input_candidates_fasta)
+
+        if not sequences:
+            console.print("❌ [red]Error:[/red] Input FASTA file is empty", style="red")
+            raise typer.Exit(1)
+
+        # Report sequence statistics without enforcing length constraints
+        seq_lengths = [len(seq) for _, seq in sequences]
+        min_len = min(seq_lengths)
+        max_len = max(seq_lengths)
+
+        if min_len == max_len:
+            console.print(f"✅ Validated {len(sequences)} siRNA candidates (all {min_len} nt)")
+        else:
+            console.print(f"✅ Validated {len(sequences)} siRNA candidates ({min_len}-{max_len} nt)")
+
+    except Exception as e:
+        if isinstance(e, typer.Exit):
+            raise
+        console.print(f"❌ [red]Error validating input FASTA:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
+        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
+    except ValueError as exc:
+        console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+
+    source_normalized = resolved_species.source_normalized
+    canonical_species = resolved_species.canonical_species
+    species_list = resolved_species.genome_species
+    mirna_species_list = resolved_species.mirna_species
+
+    if not mirna_species_list:
+        console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
+        raise typer.Exit(1)
+
+    # Resolve transcriptome policy
+    transcriptome_spec = WorkflowInputSpec(
+        input_fasta=None,  # Not using input transcripts for off-target-only
+        transcriptome_argument=transcriptome_fasta,
+        default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+        design_only=False,
+    )
+    transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
+    transcriptome_label = render_reference_selection_label(transcriptome_selection)
+
+    genome_species_for_workflow = override_species or species_list
+    offtarget_override_label = offtarget_indices or "cached defaults"
+
+    console.print(
+        Panel.fit(
+            f"🎯 [bold blue]Off-Target Analysis (Pre-Designed siRNAs)[/bold blue]\n"
+            f"Input Candidates: [cyan]{input_candidates_fasta.name}[/cyan]\n"
+            f"Candidate Count: [yellow]{len(sequences)}[/yellow]\n"
+            f"Output Directory: [cyan]{output_dir}[/cyan]\n"
+            f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
+            f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
+            f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
+            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]",
+            title="Off-Target Configuration",
+        )
+    )
+
+    try:
+        # Run off-target-only workflow
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running off-target analysis...", total=None)
+
+            # Configure logging
+            effective_log = str(log_file) if log_file else str(Path(output_dir) / "logs" / "sirnaforge.log")
+            configure_logging(log_file=effective_log, level=os.getenv("SIRNAFORGE_LOG_LEVEL"))
+
+            # Run workflow
+            results = asyncio.run(
+                run_offtarget_only_workflow(
+                    input_candidates_fasta=str(input_candidates_fasta),
+                    output_dir=str(output_dir),
+                    genome_species=genome_species_for_workflow,
+                    genome_indices_override=offtarget_indices,
+                    mirna_database=source_normalized,
+                    mirna_species=mirna_species_list,
+                    transcriptome_fasta=transcriptome_fasta,
+                    transcriptome_filter=transcriptome_filter,
+                    transcriptome_selection=transcriptome_selection,
+                    log_file=effective_log,
+                )
+            )
+
+            progress.remove_task(task)
+
+        # Display results summary
+        console.print("\n✅ [bold green]Off-target analysis completed successfully![/bold green]")
+
+        offtarget_summary = results.get("offtarget_summary", {})
+
+        summary_table = Table(title="📊 Off-Target Results Summary")
+        summary_table.add_column("Metric", style="cyan")
+        summary_table.add_column("Value", style="white")
+
+        summary_table.add_row(
+            "Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial"
+        )
+        summary_table.add_row("Method", offtarget_summary.get("method", "N/A"))
+        summary_table.add_row("Candidates Analyzed", str(len(sequences)))
+
+        console.print(summary_table)
+
+        # Output locations
+        console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
+        console.print("📂 Key files:")
+        console.print("   • Input candidates: [blue]input_candidates.fasta[/blue]")
+        console.print("   • Off-target results: [blue]results/[/blue]")
+        console.print("   • Console log: [blue]logs/sirnaforge.log[/blue]")
+
+        if offtarget_summary.get("method") == "embedded_nextflow":
+            console.print("   • Full off-target report: [blue]results/offtarget_report.html[/blue]")
+
+    except Exception as e:
+        console.print(f"❌ [red]Off-target analysis error:[/red] {str(e)}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -794,7 +1032,11 @@ def design(  # noqa: PLR0912
         help="Enable verbose output",
     ),
 ) -> None:
-    """Design siRNA candidates from transcript sequences."""
+    """Design siRNA candidates from a transcript FASTA file.
+
+    Outputs a TSV/CSV-like table of candidates, optionally including secondary
+    structure scoring, off-target checks, and chemical modification annotations.
+    """
     if gc_min >= gc_max:
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
@@ -937,7 +1179,11 @@ def validate(
         dir_okay=False,
     ),
 ) -> None:
-    """Validate input FASTA file format and content."""
+    """Validate a FASTA file and report basic statistics.
+
+    This performs lightweight validation (parseable FASTA, presence of
+    sequences, and common issues like short/ambiguous sequences).
+    """
     try:
         with console.status("Validating FASTA file..."):
             sequences = list(SeqIO.parse(input_file, "fasta"))
@@ -986,7 +1232,7 @@ def validate(
 
 @app_command()
 def version() -> None:
-    """Show version information."""
+    """Show CLI version and author information."""
     try:
         # Prefer Docker build-time APP_VERSION when the image is built with a VERSION arg
         app_version = os.environ.get("APP_VERSION") if "APP_VERSION" in os.environ else __version__
@@ -1006,7 +1252,7 @@ def version() -> None:
 
 @app_command()
 def config() -> None:
-    """Show default configuration parameters."""
+    """Print the default design parameter values."""
     default_params = DesignParameters()
 
     console.print("[bold blue]Default Design Parameters:[/bold blue]\n")
@@ -1035,39 +1281,81 @@ def config() -> None:
 
 @app_command()
 def cache(
-    clear: bool = typer.Option(False, "--clear", help="Clear all cached miRNA databases"),
+    clear: bool = typer.Option(False, "--clear", help="Clear all cached databases (miRNA + transcriptomes)"),
+    clear_mirna: bool = typer.Option(False, "--clear-mirna", help="Clear only miRNA databases"),
+    clear_transcriptome: bool = typer.Option(False, "--clear-transcriptome", help="Clear only transcriptomes"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without actually deleting"),
-    info: bool = typer.Option(False, "--info", help="Show cache information"),
+    info: bool = typer.Option(False, "--info", help="Show cache information for all databases"),
 ) -> None:
-    """Manage miRNA database cache."""
-    if not any([clear, dry_run, info]):
-        console.print("❓ [yellow]No action specified. Use --clear, --dry-run, or --info[/yellow]")
+    """Inspect and clear the unified reference cache.
+
+    This command can display cache statistics and/or delete cached assets for
+    miRNA databases and transcriptomes.
+    """
+    from sirnaforge.utils.unified_cache import UnifiedCacheManager  # noqa: PLC0415
+
+    if not any([clear, clear_mirna, clear_transcriptome, dry_run, info]):
+        console.print("❓ [yellow]No action specified. Use --info, --clear, or specific clear options[/yellow]")
         console.print("   Example: sirnaforge cache --info")
+        console.print("   Example: sirnaforge cache --clear-transcriptome --dry-run")
         return
 
-    manager = MiRNADatabaseManager()
+    manager = UnifiedCacheManager()
 
     if info or dry_run:
-        cache_info = manager.cache_info()
-        console.print("📊 [bold blue]Cache Information:[/bold blue]")
-        console.print(f"  Directory: [cyan]{cache_info['cache_directory']}[/cyan]")
-        console.print(f"  Files: [green]{cache_info['total_files']}[/green]")
-        console.print(f"  Size: [yellow]{cache_info['total_size_mb']:.2f} MB[/yellow]")
-        console.print(f"  TTL: [magenta]{cache_info['cache_ttl_days']} days[/magenta]")
+        # Display cache information using unified manager
+        cache_info = manager.get_info()
+
+        if "mirna" in cache_info:
+            stats = cache_info["mirna"]
+            console.print("\n📊 [bold blue]miRNA Database Cache:[/bold blue]")
+            console.print(f"  Directory: [cyan]{stats['cache_directory']}[/cyan]")
+            console.print(f"  Files: [green]{stats['total_files']}[/green]")
+            console.print(f"  Size: [yellow]{stats['total_size_mb']:.2f} MB[/yellow]")
+            console.print(f"  TTL: [magenta]{stats['cache_ttl_days']} days[/magenta]")
+
+        if "transcriptome" in cache_info:
+            stats = cache_info["transcriptome"]
+            console.print("\n📚 [bold blue]Transcriptome Cache:[/bold blue]")
+            console.print(f"  Directory: [cyan]{stats['cache_directory']}[/cyan]")
+            console.print(f"  Files: [green]{stats['total_files']}[/green]")
+            console.print(f"  Size: [yellow]{stats['total_size_mb']:.2f} MB[/yellow]")
+            console.print(f"  TTL: [magenta]{stats['cache_ttl_days']} days[/magenta]")
+
+        # Show total
+        totals = manager.get_total_stats()
+        console.print("\n📈 [bold cyan]Total Cache:[/bold cyan]")
+        console.print(f"  Files: [green]{totals['total_files']}[/green]")
+        console.print(f"  Size: [yellow]{totals['total_size_mb']:.2f} MB[/yellow]")
 
     if dry_run:
-        result = manager.clear_cache(confirm=False)
-        console.print("\n🔍 [bold yellow]Clear Preview:[/bold yellow]")
-        console.print(f"  Files to delete: [red]{result['files_deleted']}[/red]")
-        console.print(f"  Size to free: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
-        console.print(f"  Status: [dim]{result['status']}[/dim]")
+        console.print("\n🔍 [bold yellow]Clear Preview (dry run):[/bold yellow]")
 
-    elif clear:
-        result = manager.clear_cache(confirm=True)
-        console.print("🧹 [bold green]Cache Cleared:[/bold green]")
-        console.print(f"  Files deleted: [red]{result['files_deleted']}[/red]")
-        console.print(f"  Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
-        console.print(f"  Status: [green]{result['status']}[/green]")
+        results = manager.clear(
+            clear_mirna=clear or clear_mirna,
+            clear_transcriptome=clear or clear_transcriptome,
+            dry_run=True,
+        )
+
+        for component, result in results.items():
+            console.print(f"\n  {component.title()}:")
+            console.print(f"    Files to delete: [red]{result['files_deleted']}[/red]")
+            console.print(f"    Size to free: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
+
+    elif clear or clear_mirna or clear_transcriptome:
+        console.print("\n🧹 [bold green]Clearing Cache:[/bold green]")
+
+        results = manager.clear(
+            clear_mirna=clear or clear_mirna,
+            clear_transcriptome=clear or clear_transcriptome,
+            dry_run=False,
+        )
+
+        for component, result in results.items():
+            console.print(f"\n  {component.title()}:")
+            console.print(f"    Files deleted: [red]{result['files_deleted']}[/red]")
+            console.print(f"    Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
+            console.print(f"    Status: [green]{result['status']}[/green]")
 
 
 # Create sequences subcommand group
@@ -1077,10 +1365,15 @@ sequences_command: CommandDecorator = sequences_app.command
 
 
 class SequencesShowError(RuntimeError):
-    """Custom error for sequence display operations."""
+    """Raised when sequence display/formatting input is invalid."""
 
 
 def _load_fasta_records(input_file: Path) -> list[SeqRecord]:
+    """Load FASTA records from disk.
+
+    Raises:
+        SequencesShowError: If the file contains no records.
+    """
     records = list(SeqIO.parse(input_file, "fasta"))
     if not records:
         raise SequencesShowError("No sequences found in file")
@@ -1088,6 +1381,11 @@ def _load_fasta_records(input_file: Path) -> list[SeqRecord]:
 
 
 def _filter_records_by_id(records: list[SeqRecord], sequence_id: str) -> list[SeqRecord]:
+    """Filter FASTA records by record id.
+
+    Raises:
+        SequencesShowError: If no matching records are found.
+    """
     filtered = [record for record in records if record.id == sequence_id]
     if not filtered:
         raise SequencesShowError(f"Sequence ID '{sequence_id}' not found")
@@ -1095,6 +1393,7 @@ def _filter_records_by_id(records: list[SeqRecord], sequence_id: str) -> list[Se
 
 
 def _metadata_value_to_json(value: Any) -> Any:
+    """Convert parsed FASTA header metadata into JSON-serializable values."""
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     if hasattr(value, "value"):
@@ -1105,6 +1404,7 @@ def _metadata_value_to_json(value: Any) -> Any:
 
 
 def _records_to_json(records: list[SeqRecord]) -> str:
+    """Render FASTA record header metadata as a JSON string."""
     payload = []
     for record in records:
         metadata = parse_header(record)
@@ -1113,6 +1413,7 @@ def _records_to_json(records: list[SeqRecord]) -> str:
 
 
 def _summarize_modifications(metadata: dict[str, Any]) -> str:
+    """Summarize chemical modifications from parsed header metadata."""
     mods = metadata.get("chem_mods") or []
     summary = []
     for mod in mods:
@@ -1124,12 +1425,14 @@ def _summarize_modifications(metadata: dict[str, Any]) -> str:
 
 
 def _print_records_fasta(records: list[SeqRecord]) -> None:
+    """Print records as FASTA to stdout."""
     for record in records:
         console.print(f">{record.description}")
         console.print(str(record.seq))
 
 
 def _print_records_table(records: list[SeqRecord], input_file: Path) -> None:
+    """Print records as a Rich table with parsed header metadata."""
     table = Table(title=f"📋 Sequences from {input_file.name}")
     table.add_column("ID", style="cyan")
     table.add_column("Sequence", style="green")
@@ -1184,7 +1487,11 @@ def sequences_show(
         help="Output format (table, json, fasta)",
     ),
 ) -> None:
-    """Show sequences with their metadata from FASTA file."""
+    """Show sequences from a FASTA file in table, JSON, or FASTA format.
+
+    Use ``--id`` to select a single record. ``--format`` controls output:
+    ``table`` (default), ``json`` (header metadata only), or ``fasta``.
+    """
     format_normalized = format.lower()
     try:
         records = _load_fasta_records(input_file)
@@ -1240,7 +1547,11 @@ def sequences_annotate(
         help="Enable verbose output",
     ),
 ) -> None:
-    """Merge metadata from JSON into FASTA headers."""
+    """Merge metadata from a JSON file into FASTA headers.
+
+    The JSON is expected to conform to the project metadata schema used by the
+    modification/annotation utilities.
+    """
     try:
         # Determine output path
         if output is None:

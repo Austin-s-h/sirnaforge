@@ -1,7 +1,7 @@
 # Genome configuration file used by the siRNA off-target pipeline
 # Provide per-species index_prefix (required) and optional container image (for dockerized execution)
 
-# Default configuration uses repository-local relative paths under nextflow_pipeline/genomes_indices
+# Default configuration uses repository-local relative paths under the shipped pipeline resources.
 # You can either build indexes in these locations, or edit this file to point to your system-wide indexes,
 # or pass --genome_indices "human:/abs/path/to/index,rat:/abs/path" to the Nextflow run command.
 

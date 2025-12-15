@@ -29,7 +29,7 @@
 - Container validation: `make docker-build`, `make docker-test`, `make docker-run GENE=TP53`; anything in `tests/container/` assumes BWA-MEM2/SAMtools/ViennaRNA and only passes inside Docker.
 
 ## Pipelines & External Integrations
-- Nextflow pipeline assets live under `src/sirnaforge/pipeline/nextflow/workflows/` and are typically executed via `NextflowRunner` (Python) or via `nextflow run <embedded main.nf>`.
+- Nextflow pipeline assets live in `nextflow_pipeline/`; drive them via Nextflow CLI or Docker, not by importing modules into Python.
 - Off-target steps require BWA-MEM2, SAMtools, ViennaRNA; these are pinned in `docker/Dockerfile`. On bare metal they are optional, so gate calls behind capability checks.
 - Workflow outputs go under `workflow_output/` or debugging dirs like `tp53_workflow_debug/`. Preserve this structure when adding new reporters so downstream tools keep working.
 

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+from Bio.Seq import Seq
 from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
@@ -38,6 +39,7 @@ from sirnaforge.config import (
 )
 from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
 from sirnaforge.core.off_target import OffTargetAnalysisManager
+from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
@@ -83,6 +85,7 @@ class WorkflowConfig:
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
         transcriptome_fasta: str | None = None,
+        transcriptome_filter: str | None = None,
         transcriptome_selection: ReferenceSelection | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
@@ -125,6 +128,8 @@ class WorkflowConfig:
             self.mirna_species = list(dict.fromkeys(filtered_species))
         else:
             self.mirna_species = []
+        # Store transcriptome filter for later use
+        self.transcriptome_filter = transcriptome_filter
         if transcriptome_selection is None and transcriptome_fasta:
             transcriptome_selection = ReferenceSelection(
                 choices=(ReferenceChoice.explicit(transcriptome_fasta, reason="legacy transcriptome argument"),)
@@ -956,7 +961,9 @@ class SiRNAWorkflow:
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
         return input_fasta
 
-    async def _prepare_transcriptome_database(self, transcriptome_ref: str) -> dict[str, Any] | None:
+    async def _prepare_transcriptome_database(
+        self, transcriptome_ref: str, filter_spec: list[str] | None = None
+    ) -> dict[str, Any] | None:
         """Prepare transcriptome database from user-provided reference.
 
         Args:
@@ -964,6 +971,7 @@ class SiRNAWorkflow:
                 - Pre-configured source name (e.g., 'ensembl_human_cdna')
                 - Local file path
                 - HTTP(S)/FTP URL
+            filter_spec: Optional list of filter names (e.g., ['protein_coding', 'canonical_only'])
 
         Returns:
             Dictionary with 'fasta' and 'index' paths, or None if preparation failed
@@ -974,7 +982,16 @@ class SiRNAWorkflow:
             # Check if it's a pre-configured source
             if transcriptome_ref in manager.SOURCES:
                 logger.info(f"Using pre-configured transcriptome source: {transcriptome_ref}")
-                raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+
+                # Apply filters if specified
+                if filter_spec and len(filter_spec) > 0:
+                    logger.info(f"Applying filters: {', '.join(filter_spec)}")
+                    raw_result = manager.get_filtered_transcriptome(
+                        transcriptome_ref, filters=filter_spec, build_index=True
+                    )
+                else:
+                    raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+
                 if raw_result is None:
                     return None
 
@@ -985,6 +1002,8 @@ class SiRNAWorkflow:
 
             # Otherwise treat as custom path/URL
             logger.info(f"Processing custom transcriptome reference: {transcriptome_ref}")
+            if filter_spec and len(filter_spec) > 0:
+                logger.warning("Filtering is not supported for custom transcriptome paths; ignoring filters")
             raw_custom = manager.get_custom_transcriptome(transcriptome_ref, build_index=True)
             if raw_custom is None:
                 return None
@@ -1004,8 +1023,24 @@ class SiRNAWorkflow:
             return None
 
         console.print(f"📚 Transcriptome reference: {choice.value} ({choice.state.value})")
+
+        # Parse filter specification from config
+        from sirnaforge.data.transcriptome_filter import get_filter_spec  # noqa: PLC0415
+
+        filter_spec: list[str] | None = None
+        if self.config.transcriptome_filter:
+            try:
+                filter_spec = get_filter_spec(self.config.transcriptome_filter)
+                if filter_spec:
+                    console.print(f"🔍 Applying transcriptome filters: {', '.join(filter_spec)}")
+            except ValueError as exc:
+                logger.error(f"Invalid transcriptome filter specification: {exc}")
+                console.print(f"⚠️  Invalid filter specification: {exc}")
+                # Continue without filters rather than failing
+                filter_spec = None
+
         try:
-            transcriptome_result = await self._prepare_transcriptome_database(choice.value)
+            transcriptome_result = await self._prepare_transcriptome_database(choice.value, filter_spec)
         except Exception as exc:  # pragma: no cover - defensive logging path
             logger.exception("Failed to prepare transcriptome database")
             console.print(f"⚠️  Transcriptome preparation failed: {exc}")
@@ -2032,6 +2067,7 @@ async def run_sirna_workflow(
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
+    transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
@@ -2059,6 +2095,7 @@ async def run_sirna_workflow(
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
+        transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
@@ -2131,6 +2168,7 @@ async def run_sirna_workflow(
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
+        transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
         log_file=log_file,
         write_json_summary=write_json_summary,
@@ -2153,3 +2191,211 @@ if __name__ == "__main__":
             print(f"Workflow completed: {results}")
 
     asyncio.run(main())
+
+
+async def run_offtarget_only_workflow(
+    input_candidates_fasta: str,
+    output_dir: str,
+    genome_species: list[str] | None = None,
+    genome_indices_override: str | None = None,
+    mirna_database: str = "mirgenedb",
+    mirna_species: Sequence[str] | None = None,
+    transcriptome_fasta: str | None = None,
+    transcriptome_filter: str | None = None,
+    transcriptome_selection: ReferenceSelection | None = None,
+    log_file: str | None = None,
+) -> dict[str, Any]:
+    """Run off-target-only workflow for pre-designed siRNA candidates.
+
+    This is a simplified workflow that only runs the off-target analysis stage
+    without transcript retrieval, ORF validation, or siRNA design. It accepts
+    pre-designed 21-nt siRNA guide sequences and runs comprehensive off-target
+    analysis using the embedded Nextflow pipeline.
+
+    Args:
+        input_candidates_fasta: Path to FASTA file with 21-nt siRNA guide sequences
+        output_dir: Directory for output files
+        genome_species: Species genomes for off-target analysis
+        genome_indices_override: Comma-separated species:/index_prefix overrides
+        mirna_database: miRNA reference database identifier
+        mirna_species: miRNA reference species identifiers
+        transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
+        transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
+        transcriptome_selection: Pre-resolved transcriptome selection metadata
+        log_file: Path to centralized log file
+
+    Returns:
+        Dictionary with off-target analysis results
+    """
+    console.print("\n🎯 [bold cyan]Starting Off-Target Analysis (Pre-Designed siRNAs)[/bold cyan]")
+    console.print(f"Input Candidates: [yellow]{input_candidates_fasta}[/yellow]")
+    console.print(f"Output Directory: [blue]{output_dir}[/blue]")
+
+    start_time = time.perf_counter()
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Create output structure
+    (output_path / "results").mkdir(exist_ok=True)
+    (output_path / "logs").mkdir(exist_ok=True)
+
+    # Parse input candidates
+    input_fasta_path = Path(input_candidates_fasta)
+    sequences = FastaUtils.read_fasta(input_fasta_path)
+
+    if not sequences:
+        raise ValueError("Input FASTA file is empty")
+
+    console.print(f"📄 Loaded {len(sequences)} siRNA candidates from {input_fasta_path.name}")
+
+    # Convert sequences to SiRNACandidate objects for off-target analysis
+    # Calculate metrics for pre-designed candidates using the same methods as design workflow
+    candidates: list[SiRNACandidate] = []
+    for i, (header, seq) in enumerate(sequences):
+        # Extract ID from header (first token)
+        candidate_id = header.split()[0] if header else f"candidate_{i}"
+
+        # The input guide sequence is the antisense strand (what targets the mRNA)
+        # Generate the sense/passenger strand as the reverse complement
+        guide_sequence = seq.upper()
+        passenger_sequence = str(Seq(guide_sequence).reverse_complement())
+
+        # Calculate GC content
+        gc_count = guide_sequence.count("G") + guide_sequence.count("C")
+        gc_content = (gc_count / len(guide_sequence)) * 100 if len(guide_sequence) > 0 else 0.0
+
+        # Calculate thermodynamic properties
+        asymmetry_score = 0.0
+        duplex_stability = 0.0
+        try:
+            calc = ThermodynamicCalculator()
+
+            # Create a temporary candidate for thermodynamic calculations
+            temp_candidate = SiRNACandidate(
+                id=candidate_id,
+                transcript_id="pre_designed",
+                position=1,
+                guide_sequence=guide_sequence,
+                passenger_sequence=passenger_sequence,
+                length=len(guide_sequence),
+                gc_content=gc_content,
+                asymmetry_score=0.0,
+                paired_fraction=0.0,
+                duplex_stability=0.0,
+                off_target_count=0,
+                off_target_penalty=0.0,
+                transcript_hit_count=0,
+                transcript_hit_fraction=0.0,
+                composite_score=0.0,
+                passes_filters=True,
+            )
+
+            # Calculate asymmetry score (5' vs 3' end stability)
+            dg_5p, dg_3p, asymmetry_score = calc.calculate_asymmetry_score(temp_candidate)
+
+            # Calculate duplex stability
+            duplex_stability = calc.calculate_duplex_stability(guide_sequence, passenger_sequence)
+
+        except Exception as e:
+            # If thermodynamic calculations fail, use default values
+            logger.warning(f"Failed to calculate thermodynamics for {candidate_id}: {e}")
+            asymmetry_score = 0.0
+            duplex_stability = 0.0
+
+        # Create final candidate with computed metrics
+        candidate = SiRNACandidate(
+            id=candidate_id,
+            transcript_id="pre_designed",  # Placeholder since these are pre-designed
+            position=1,  # Must be >= 1 per validation
+            guide_sequence=guide_sequence,
+            passenger_sequence=passenger_sequence,  # Computed as reverse complement
+            length=len(guide_sequence),
+            gc_content=gc_content,  # Computed from guide sequence
+            asymmetry_score=asymmetry_score,  # Computed thermodynamically
+            paired_fraction=0.0,  # Not applicable for pre-designed guides
+            duplex_stability=duplex_stability,  # Computed thermodynamically
+            off_target_count=0,  # Will be populated by off-target analysis
+            off_target_penalty=0.0,  # Will be populated by off-target analysis
+            transcript_hit_count=0,  # Will be populated by off-target analysis
+            transcript_hit_fraction=0.0,  # Will be populated by off-target analysis
+            composite_score=0.0,  # Not computed for pre-designed guides
+            passes_filters=True,  # Assume valid since user provided them
+        )
+        candidates.append(candidate)
+
+    # Prepare candidates FASTA for off-target analysis
+    candidates_fasta = output_path / "input_candidates.fasta"
+    candidate_sequences = [(c.id, c.guide_sequence) for c in candidates]
+    FastaUtils.save_sequences_fasta(candidate_sequences, candidates_fasta)
+
+    console.print(f"📝 Prepared {len(candidates)} candidates for off-target analysis")
+
+    # Set up Nextflow configuration
+    nextflow_config: dict[str, Any] = {}
+    if genome_indices_override:
+        nextflow_config["genome_indices"] = genome_indices_override
+
+    # Resolve transcriptome policy
+    if transcriptome_selection is None and transcriptome_fasta:
+        input_spec = WorkflowInputSpec(
+            input_fasta=None,
+            transcriptome_argument=transcriptome_fasta,
+            default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+            design_only=False,
+        )
+        resolver = ReferencePolicyResolver(input_spec)
+        transcriptome_selection = resolver.resolve_transcriptomes()
+
+    if transcriptome_selection is None:
+        transcriptome_selection = ReferenceSelection.disabled("no transcriptome configured")
+
+    # Create a minimal workflow config for off-target analysis
+    workflow_config = WorkflowConfig(
+        output_dir=output_path,
+        gene_query="offtarget_only",  # Placeholder name
+        input_fasta=None,
+        database=DatabaseType.ENSEMBL,  # Not used, but required
+        design_params=DesignParameters(),  # Minimal params
+        nextflow_config=nextflow_config,
+        genome_indices_override=genome_indices_override,
+        genome_species=genome_species or ["human", "rat", "rhesus"],
+        mirna_database=mirna_database,
+        mirna_species=mirna_species,
+        transcriptome_fasta=transcriptome_fasta,
+        transcriptome_filter=transcriptome_filter,
+        transcriptome_selection=transcriptome_selection,
+        log_file=log_file,
+        write_json_summary=False,  # Skip JSON summary for off-target-only
+    )
+
+    # Create workflow instance
+    workflow = SiRNAWorkflow(workflow_config)
+
+    # Run off-target analysis
+    with Progress(console=console) as progress:
+        task = progress.add_task("[cyan]Running off-target analysis...", total=None)
+
+        offtarget_results = await workflow._run_nextflow_offtarget_analysis(
+            candidates=candidates,
+            input_fasta=candidates_fasta,
+        )
+
+        progress.remove_task(task)
+
+    total_time = max(0.0, time.perf_counter() - start_time)
+
+    # Compile results
+    final_results: dict[str, Any] = {
+        "workflow_type": "offtarget_only",
+        "input_candidates": str(input_candidates_fasta),
+        "candidate_count": len(candidates),
+        "output_dir": str(output_path),
+        "processing_time": total_time,
+        "offtarget_summary": offtarget_results,
+    }
+
+    console.print(f"\n✅ [bold green]Off-target analysis completed in {total_time:.2f}s[/bold green]")
+    console.print(f"📊 Results saved to: [blue]{output_path}[/blue]")
+
+    return final_results
