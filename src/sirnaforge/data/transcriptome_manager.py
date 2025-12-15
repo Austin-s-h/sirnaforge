@@ -194,6 +194,22 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             logger.error(f"❌ Failed to build BWA-MEM2 index: {e}")
             return False
 
+    def _ensure_index_marker(self, index_prefix: Path) -> None:
+        """Ensure the index prefix path exists as a filesystem entry.
+
+        BWA(-MEM2) produces multiple files that share a prefix (e.g. <prefix>.amb,
+        <prefix>.ann, ...). The prefix itself is not a file created by the tool.
+
+        Some higher-level code/tests treat the prefix as a `Path` and call
+        `.exists()`. Creating a tiny marker file at the prefix path makes that
+        check meaningful without changing the prefix semantics.
+        """
+        try:
+            index_prefix.parent.mkdir(parents=True, exist_ok=True)
+            index_prefix.touch(exist_ok=True)
+        except Exception as e:
+            logger.debug(f"Could not create index marker for {index_prefix}: {e}")
+
     def get_transcriptome(  # noqa: PLR0911
         self, source_name: str, force_refresh: bool = False, build_index: bool = True
     ) -> Optional[dict[str, Path]]:
@@ -440,11 +456,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         index_path = self._get_index_path(meta) or index_prefix
 
         if self._is_index_complete(index_path):
+            self._ensure_index_marker(index_path)
             logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
             return {"fasta": fasta, "index": index_path}
 
         logger.info(f"⚠️  Building index: {index_prefix}")
         if self._build_index(fasta, index_prefix):
+            self._ensure_index_marker(index_prefix)
             self._set_index_path(meta, index_prefix)
             self._save_metadata()
             return {"fasta": fasta, "index": index_prefix}
@@ -499,6 +517,8 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
                 # Remove index files if they exist
                 index_path = self._get_index_path(meta)
                 if index_path:
+                    # Remove marker file for the index prefix (if present)
+                    index_path.unlink(missing_ok=True)
                     for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
                         index_file = index_path.with_suffix(ext)
                         if index_file.exists():
