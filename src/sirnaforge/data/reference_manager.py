@@ -10,14 +10,14 @@ import hashlib
 import html
 import json
 import logging
-import os
-import tempfile
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar, Union
+
+from sirnaforge.utils.cache_utils import resolve_cache_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -113,52 +113,12 @@ class ReferenceManager(ABC, Generic[SourceT]):
     def _resolve_cache_directory(self, cache_dir: Optional[Union[str, Path]], cache_subdir: str) -> Path:
         """Resolve cache directory with fallback locations.
 
-        Args:
-            cache_dir: User-specified cache directory (overrides defaults)
-            cache_subdir: Subdirectory name (e.g., 'mirna', 'transcriptomes')
-
-        Returns:
-            Resolved cache directory path
-
-        Raises:
-            RuntimeError: If no writable cache directory can be created
+        Single source of truth lives in `sirnaforge.utils.cache_utils.resolve_cache_subdir`.
+        This method delegates to it for consistency across subsystems.
         """
-        fallback_locations: list[Path] = []
-        env_override = os.getenv("SIRNAFORGE_CACHE_DIR")
-
         if cache_dir is not None:
-            fallback_locations.append(Path(cache_dir))
-        else:
-            if env_override:
-                fallback_locations.append(Path(env_override) / cache_subdir)
-
-            xdg_cache = os.getenv("XDG_CACHE_HOME")
-            if xdg_cache:
-                fallback_locations.append(Path(xdg_cache) / "sirnaforge" / cache_subdir)
-
-            fallback_locations.append(Path.home() / ".cache" / "sirnaforge" / cache_subdir)
-            fallback_locations.append(Path.cwd() / ".sirnaforge_cache" / cache_subdir)
-            fallback_locations.append(Path(tempfile.gettempdir()) / "sirnaforge" / cache_subdir)
-
-        cache_path: Optional[Path] = None
-        first_error: Optional[Exception] = None
-
-        for candidate in fallback_locations:
-            try:
-                candidate.mkdir(parents=True, exist_ok=True)
-                cache_path = candidate
-                break
-            except PermissionError as exc:
-                logger.warning("Cannot create cache directory at %s; trying next option", candidate)
-                if first_error is None:
-                    first_error = exc
-
-        if cache_path is None:
-            if cache_dir is not None and first_error is not None:
-                raise first_error
-            raise RuntimeError(f"Cannot create a writable cache directory for {cache_subdir}")
-
-        return cache_path
+            return resolve_cache_subdir(cache_subdir, override=cache_dir)
+        return resolve_cache_subdir(cache_subdir)
 
     def _load_metadata(self) -> None:
         """Load cache metadata from disk."""
@@ -185,10 +145,53 @@ class ReferenceManager(ABC, Generic[SourceT]):
         """Save cache metadata to disk."""
         try:
             data = {key: meta.to_dict() for key, meta in self.metadata.items()}
-            with self.metadata_file.open("w") as f:
+            # Compute from cache_dir so callers/tests that monkeypatch cache_dir stay consistent.
+            metadata_path = self.cache_dir / "cache_metadata.json"
+            self.metadata_file = metadata_path
+            with metadata_path.open("w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save cache metadata: {e}")
+
+    def clear_cache(self, confirm: bool = False) -> dict[str, Any]:
+        """Clear all cached files for this manager.
+
+        By default this only reports what would be removed. Set `confirm=True`
+        to actually delete files.
+        """
+        if not self.cache_dir.exists():
+            return {
+                "cache_directory": str(self.cache_dir),
+                "files_deleted": 0,
+                "size_freed_mb": 0.0,
+                "status": "Cache directory does not exist",
+            }
+
+        files = [p for p in self.cache_dir.glob("*") if p.is_file()]
+        total_size = sum(p.stat().st_size for p in files)
+        if not confirm:
+            return {
+                "cache_directory": str(self.cache_dir),
+                "files_deleted": len(files),
+                "size_freed_mb": total_size / (1024 * 1024),
+                "status": f"Would delete {len(files)} files ({total_size / (1024 * 1024):.2f} MB)",
+            }
+
+        deleted = 0
+        for file_path in files:
+            try:
+                file_path.unlink()
+                deleted += 1
+            except FileNotFoundError:
+                continue
+
+        self.metadata.clear()
+        return {
+            "cache_directory": str(self.cache_dir),
+            "files_deleted": deleted,
+            "size_freed_mb": total_size / (1024 * 1024),
+            "status": "Cache cleared successfully",
+        }
 
     def _compute_file_checksum(self, file_path: Path) -> str:
         """Compute MD5 checksum of a file."""

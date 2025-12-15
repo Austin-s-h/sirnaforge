@@ -105,28 +105,16 @@ class UnifiedCacheManager:
         return results
 
     def _clear_transcriptome(self, dry_run: bool) -> ClearResult:
-        """Clear transcriptome cache."""
-        cache_dir = self.transcriptome.cache_dir
-        fasta_files = list(cache_dir.glob("*.fa"))
-        index_files = list(cache_dir.glob("*_index*"))
-        all_files = [f for f in fasta_files + index_files if f.is_file()]
+        """Clear transcriptome cache.
 
-        total_size = sum(f.stat().st_size for f in all_files)
-        count = len(all_files)
-
-        if not dry_run:
-            for f in all_files:
-                f.unlink()
-            self.transcriptome.metadata.clear()
-            self.transcriptome._save_metadata()
-            status = "cleared"
-        else:
-            status = "dry run - no files deleted"
-
+        Delegates to TranscriptomeManager.clear_cache so cache deletion
+        behavior stays centralized.
+        """
+        result = self.transcriptome.clear_cache(confirm=not dry_run)
         return ClearResult(
-            files_deleted=count,
-            size_freed_mb=total_size / (1024 * 1024),
-            status=status,
+            files_deleted=int(result.get("files_deleted", 0)),
+            size_freed_mb=float(result.get("size_freed_mb", 0.0)),
+            status="dry run - no files deleted" if dry_run else "cleared",
         )
 
     def get_total_stats(self) -> dict[str, Union[float, int]]:

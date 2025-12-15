@@ -10,6 +10,8 @@ from sirnaforge.core.off_target import build_bwa_index, validate_index_files
 from sirnaforge.data.transcriptome_filter import TranscriptFilter
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 
+pytestmark = [pytest.mark.runs_in_container]
+
 
 @pytest.fixture
 def tiny_transcriptome(tmp_path):
@@ -26,7 +28,8 @@ def tiny_transcriptome(tmp_path):
     return fasta
 
 
-@pytest.mark.requires_docker
+@pytest.mark.integration
+@pytest.mark.requires_tools
 class TestBWAIndexBuilding:
     """Test BWA-MEM2 index building in container environment."""
 
@@ -75,7 +78,7 @@ class TestBWAIndexBuilding:
         assert result1["index"] == result2["index"]
 
 
-@pytest.mark.requires_docker
+@pytest.mark.integration
 class TestTranscriptomeFiltering:
     """Test transcriptome filtering with real FASTA files."""
 

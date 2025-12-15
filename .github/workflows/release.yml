@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
         version:
-          description: 'Release version (e.g., v0.1.0)'
+          description: 'Release version (e.g., v0.3.4 or v0.3.4rc1)'
           required: true
           type: string
         prerelease:
@@ -19,13 +19,8 @@ on:
           required: false
           default: true
           type: boolean
-        publish_pypi:
-          description: 'Publish package to PyPI (requires Trusted Publisher configured)'
-          required: false
-          default: false
-          type: boolean
         deploy_docs_release:
-          description: 'Build & deploy docs as part of release'
+          description: 'Build & deploy docs'
           required: false
           default: true
           type: boolean
@@ -53,7 +48,6 @@ jobs:
       name-lower: ${{ steps.repo.outputs.name }}
       prerelease: ${{ steps.release_flags.outputs.prerelease }}
       push_images: ${{ steps.release_flags.outputs.push_images }}
-      publish_pypi: ${{ steps.release_flags.outputs.publish_pypi }}
       deploy_docs_release: ${{ steps.release_flags.outputs.deploy_docs_release }}
 
     steps:
@@ -71,9 +65,11 @@ jobs:
         VERSION=${VERSION_INPUT#v}  # Remove 'v' prefix if present
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-        if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+        # PyPI versions must be PEP 440 compatible.
+        # Accepts: X.Y.Z, X.Y.ZrcN, X.Y.ZaN, X.Y.ZbN, X.Y.Z.postN, X.Y.Z.devN, and optional local +tag.
+        if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.post[0-9]+|\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
           echo "❌ Invalid version format: $VERSION"
-          echo "Expected format: X.Y.Z or X.Y.Z-suffix"
+          echo "Expected format (PEP 440-ish): X.Y.Z, X.Y.ZrcN, X.Y.ZaN, X.Y.ZbN, X.Y.Z.postN, X.Y.Z.devN (optional +local)"
           exit 1
         fi
         echo "✅ Version format valid: $VERSION"
@@ -148,7 +144,6 @@ jobs:
         defaults = {
             "prerelease": "true",
             "push_images": "true",
-            "publish_pypi": "false",
             "deploy_docs_release": "true",
         }
 
@@ -397,7 +392,7 @@ jobs:
     name: 📦 Publish to PyPI
     runs-on: ubuntu-latest
     needs: [validate-release, run-ci, create-release, build-artifacts]
-    if: ${{ needs.validate-release.outputs.publish_pypi == 'true' && needs.run-ci.result == 'success' && needs.create-release.result == 'success' }}
+    if: ${{ needs.run-ci.result == 'success' && needs.create-release.result == 'success' && needs.build-artifacts.result == 'success' }}
     permissions:
       id-token: write  # Required for PyPI trusted publisher
       contents: read
@@ -410,17 +405,30 @@ jobs:
           name: python-dist-${{ needs.validate-release.outputs.version }}
           path: dist/
 
+      - name: 🚀 Publish to TestPyPI (Trusted Publisher)
+        if: ${{ needs.validate-release.outputs.prerelease == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          print-hash: true
+          verbose: true
+          skip-existing: true
+
       - name: 🚀 Publish to PyPI (Trusted Publisher)
+        if: ${{ needs.validate-release.outputs.prerelease != 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           print-hash: true
           verbose: true
           skip-existing: true
-          # repository-url: https://test.pypi.org/legacy/  # Uncomment to test against TestPyPI first
 
       - name: ✅ Publish summary
         run: |
-          echo "Published version v${{ needs.validate-release.outputs.version }} to PyPI (if not existing)."
+          if [ "${{ needs.validate-release.outputs.prerelease }}" = "true" ]; then
+            echo "Published version v${{ needs.validate-release.outputs.version }} to TestPyPI (pre-release)."
+          else
+            echo "Published version v${{ needs.validate-release.outputs.version }} to PyPI."
+          fi
 
   # Optional: Build and deploy docs for the release
   build-release-docs:
