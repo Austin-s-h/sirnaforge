@@ -369,6 +369,21 @@ class SiRNACandidate(BaseModel):
     )
     quality_issues: list[str] = Field(default_factory=list, description="List of detected quality concerns")
 
+    # Variant-specific fields (populated when variant targeting/avoidance is enabled)
+    overlapped_variants: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Variants that overlap this siRNA candidate position (serialized VariantRecord)",
+    )
+    allele_specific: bool = Field(
+        default=False, description="Whether this candidate is specific to a particular allele (ref or alt)"
+    )
+    targeted_alleles: list[str] = Field(
+        default_factory=list, description="Which alleles this candidate targets (e.g., ['ref'], ['alt'], or ['ref', 'alt'])"
+    )
+    variant_mode: Optional[str] = Field(
+        default=None, description="Variant handling mode used: 'target', 'avoid', or 'both'"
+    )
+
     # Optional chemical modification metadata
     guide_metadata: Optional[StrandMetadata] = Field(
         default=None,
