@@ -57,6 +57,7 @@ from sirnaforge.data.gene_search import (
     search_multiple_databases_sync,
 )
 from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
+from sirnaforge.models.variant import VariantMode
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
@@ -552,8 +553,8 @@ def workflow(  # noqa: PLR0912
             "Variants are filtered by --min-af and --clinvar-filter-levels."
         ),
     ),
-    variant_mode: str = typer.Option(
-        "avoid",
+    variant_mode: VariantMode = typer.Option(
+        VariantMode.AVOID,
         "--variant-mode",
         help=(
             "How to handle variants in siRNA design: "
