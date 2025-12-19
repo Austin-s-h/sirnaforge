@@ -378,7 +378,8 @@ class SiRNACandidate(BaseModel):
         default=False, description="Whether this candidate is specific to a particular allele (ref or alt)"
     )
     targeted_alleles: list[str] = Field(
-        default_factory=list, description="Which alleles this candidate targets (e.g., ['ref'], ['alt'], or ['ref', 'alt'])"
+        default_factory=list,
+        description="Which alleles this candidate targets (e.g., ['ref'], ['alt'], or ['ref', 'alt'])",
     )
     variant_mode: Optional[str] = Field(
         default=None, description="Variant handling mode used: 'target', 'avoid', or 'both'"

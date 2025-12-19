@@ -68,9 +68,10 @@ class VariantResolver:
             VariantSource.DBSNP,
         ]
         self.timeout = timeout
-        
+
         # Import VariantMode for filtering
         from sirnaforge.models.variant import VariantMode as VM
+
         self.variant_mode = VM(variant_mode) if variant_mode else None
 
         # Initialize Parquet-based cache
@@ -323,17 +324,17 @@ class VariantResolver:
                         populations = data.get("populations", [])
                         af = None
                         population_afs = {}
-                        
+
                         for pop in populations:
                             pop_name = pop.get("population", "")
                             freq = pop.get("frequency")
-                            
+
                             if freq is not None:
                                 # Extract global gnomAD AF
                                 if "gnomad" in pop_name.lower() and ":" not in pop_name:
                                     if af is None:
                                         af = freq
-                                
+
                                 # Extract population-specific AFs from gnomAD
                                 # Format examples: "1000GENOMES:phase_3:AFR", "gnomAD:AFR"
                                 if ":" in pop_name:

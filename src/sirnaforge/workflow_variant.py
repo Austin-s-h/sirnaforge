@@ -151,9 +151,7 @@ def _deduplicate_variants(variants: list[VariantRecord]) -> list[VariantRecord]:
             priority_order = ["clinvar", "ensembl", "dbsnp", "local-vcf"]
             if existing_priority and new_priority:
                 existing_idx = (
-                    priority_order.index(existing_priority.value)
-                    if existing_priority.value in priority_order
-                    else 999
+                    priority_order.index(existing_priority.value) if existing_priority.value in priority_order else 999
                 )
                 new_idx = priority_order.index(new_priority.value) if new_priority.value in priority_order else 999
 

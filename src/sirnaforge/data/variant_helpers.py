@@ -1,7 +1,5 @@
 """Helper functions for generating sequence contexts with variant alleles."""
 
-
-
 from sirnaforge.models.variant import VariantRecord
 from sirnaforge.utils.logging_utils import get_logger
 
@@ -53,7 +51,9 @@ def generate_contexts_for_variant(
 
     # Generate alternate context by replacing ref allele with alt allele
     alt_context = (
-        reference_sequence[start:variant_transcript_pos] + variant.alt + reference_sequence[variant_transcript_pos + len(variant.ref) : end]
+        reference_sequence[start:variant_transcript_pos]
+        + variant.alt
+        + reference_sequence[variant_transcript_pos + len(variant.ref) : end]
     )
     alt_relative_pos = variant_transcript_pos - start
 
