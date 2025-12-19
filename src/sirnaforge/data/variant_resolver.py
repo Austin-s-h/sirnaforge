@@ -38,6 +38,7 @@ class VariantResolver:
         source_priority: Optional[list[VariantSource]] = None,
         cache_dir: Optional[Path] = None,
         timeout: int = 30,
+        variant_mode: Optional[str] = None,
     ):
         """Initialize variant resolver.
 
@@ -48,6 +49,9 @@ class VariantResolver:
             source_priority: Source priority list (default: ClinVar > Ensembl > dbSNP)
             cache_dir: Cache directory for variant data
             timeout: HTTP request timeout in seconds
+            variant_mode: Variant mode for AF filtering ('avoid', 'target', 'both').
+                         In 'avoid' mode, uses max population AF if available to avoid SNPs
+                         prevalent in any geographic group (e.g., >10% in one population).
         """
         if assembly != "GRCh38":
             raise ValueError(f"Only GRCh38 assembly is supported, got: {assembly}")
@@ -64,6 +68,10 @@ class VariantResolver:
             VariantSource.DBSNP,
         ]
         self.timeout = timeout
+        
+        # Import VariantMode for filtering
+        from sirnaforge.models.variant import VariantMode as VM
+        self.variant_mode = VM(variant_mode) if variant_mode else None
 
         # Initialize Parquet-based cache
         self.cache_dir = cache_dir or resolve_cache_subdir("variants")
@@ -314,11 +322,29 @@ class VariantResolver:
                         # Extract allele frequency from gnomAD if available
                         populations = data.get("populations", [])
                         af = None
+                        population_afs = {}
+                        
                         for pop in populations:
-                            if "gnomad" in pop.get("population", "").lower():
-                                af = pop.get("frequency")
-                                if af:
-                                    break
+                            pop_name = pop.get("population", "")
+                            freq = pop.get("frequency")
+                            
+                            if freq is not None:
+                                # Extract global gnomAD AF
+                                if "gnomad" in pop_name.lower() and ":" not in pop_name:
+                                    if af is None:
+                                        af = freq
+                                
+                                # Extract population-specific AFs from gnomAD
+                                # Format examples: "1000GENOMES:phase_3:AFR", "gnomAD:AFR"
+                                if ":" in pop_name:
+                                    parts = pop_name.split(":")
+                                    # Get the last part which is usually the population code
+                                    pop_code = parts[-1].upper()
+                                    # Standard population codes: AFR, AMR, EAS, EUR, SAS, etc.
+                                    if pop_code in ["AFR", "AMR", "EAS", "EUR", "SAS", "FIN", "ASJ", "OTH"]:
+                                        # Keep the maximum AF if we see multiple sources for same population
+                                        if pop_code not in population_afs or freq > population_afs[pop_code]:
+                                            population_afs[pop_code] = freq
 
                         # Get first allele information
                         mappings = data.get("mappings", [])
@@ -346,6 +372,7 @@ class VariantResolver:
                             assembly=self.assembly,
                             sources=[VariantSource.ENSEMBL],
                             af=af,
+                            population_afs=population_afs,
                             annotations={"ensembl_data": data},
                             provenance={"source": "Ensembl Variation API"},
                         )
@@ -404,9 +431,24 @@ class VariantResolver:
         Returns:
             True if variant passes all filters
         """
+        # Get effective AF based on variant mode
+        if self.variant_mode:
+            effective_af = variant.get_effective_af_for_mode(self.variant_mode)
+        else:
+            effective_af = variant.af
+
         # AF filter
-        if variant.af is not None and variant.af < self.min_af:
-            logger.debug(f"Variant filtered: AF {variant.af} < {self.min_af}")
+        if effective_af is not None and effective_af < self.min_af:
+            max_pop_af = variant.get_max_population_af()
+            if max_pop_af and max_pop_af != effective_af:
+                global_af_str = f"{variant.af:.4f}" if variant.af is not None else "N/A"
+                logger.debug(
+                    f"Variant filtered: effective AF {effective_af:.4f} < {self.min_af} "
+                    f"(global AF: {global_af_str}, "
+                    f"max population AF: {max_pop_af:.4f})"
+                )
+            else:
+                logger.debug(f"Variant filtered: AF {effective_af:.4f} < {self.min_af}")
             return False
 
         # ClinVar significance filter
@@ -536,6 +578,7 @@ def resolve_variant_sync(
     min_af: float = 0.01,
     clinvar_filters: Optional[list[ClinVarSignificance]] = None,
     cache_dir: Optional[Path] = None,
+    variant_mode: Optional[str] = None,
 ) -> Optional[VariantRecord]:
     """Synchronous wrapper for variant resolution.
 
@@ -544,10 +587,16 @@ def resolve_variant_sync(
         min_af: Minimum allele frequency
         clinvar_filters: Allowed ClinVar significance levels
         cache_dir: Cache directory
+        variant_mode: Variant mode for AF filtering ('avoid', 'target', 'both')
 
     Returns:
         VariantRecord if found and passes filters, None otherwise
     """
-    resolver = VariantResolver(min_af=min_af, clinvar_filters=clinvar_filters, cache_dir=cache_dir)
+    resolver = VariantResolver(
+        min_af=min_af,
+        clinvar_filters=clinvar_filters,
+        cache_dir=cache_dir,
+        variant_mode=variant_mode,
+    )
     query = resolver.parse_identifier(variant_id)
     return asyncio.run(resolver.resolve_variant(query))

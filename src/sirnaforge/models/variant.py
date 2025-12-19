@@ -62,7 +62,13 @@ class VariantRecord(BaseModel):
 
     # Population frequency
     af: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0, description="Allele frequency (from gnomAD/Ensembl/dbSNP)"
+        default=None, ge=0.0, le=1.0, description="Global allele frequency (from gnomAD/Ensembl/dbSNP)"
+    )
+
+    # Population-specific allele frequencies (optional, for geographic targeting)
+    population_afs: dict[str, float] = Field(
+        default_factory=dict,
+        description="Population-specific allele frequencies (e.g., {'AFR': 0.15, 'EUR': 0.02, 'EAS': 0.08})",
     )
 
     # Functional annotations
@@ -78,6 +84,40 @@ class VariantRecord(BaseModel):
     def to_vcf_style(self) -> str:
         """Return variant in VCF-style coordinate format: chr:pos:ref:alt."""
         return f"{self.chr}:{self.pos}:{self.ref}:{self.alt}"
+
+    def get_max_population_af(self) -> Optional[float]:
+        """Get the maximum allele frequency across all populations.
+
+        Returns:
+            Maximum population-specific AF, or None if no population data available
+        """
+        if not self.population_afs:
+            return None
+        return max(self.population_afs.values())
+
+    def get_effective_af_for_mode(self, mode: "VariantMode") -> Optional[float]:  # noqa: F821
+        """Get the effective allele frequency based on variant mode.
+
+        For 'avoid' mode: Use max population AF if available (to avoid SNPs
+        prevalent in any geographic group), otherwise use global AF.
+
+        For 'target' or 'both' modes: Use global AF (targets most common alleles).
+
+        Args:
+            mode: Variant mode (target/avoid/both)
+
+        Returns:
+            Effective allele frequency for filtering, or None if no AF data
+        """
+        if mode == VariantMode.AVOID:
+            # In avoid mode, use max population AF to avoid SNPs prevalent
+            # in any geographic group (e.g., >10% in one population even if
+            # global AF is only 1%)
+            max_pop_af = self.get_max_population_af()
+            if max_pop_af is not None:
+                return max_pop_af
+        # For target/both modes, or if no population data, use global AF
+        return self.af
 
     def get_primary_source(self) -> Optional[VariantSource]:
         """Get the highest priority source for this variant."""

@@ -1,9 +1,7 @@
 """Workflow integration for variant targeting."""
 
-import asyncio
 import json
 from pathlib import Path
-from typing import Optional
 
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord
@@ -76,12 +74,13 @@ async def resolve_workflow_variants(
 
     logger.info(f"Resolving variants for {gene_name}")
 
-    # Initialize resolver
+    # Initialize resolver with variant mode for proper AF filtering
     resolver = VariantResolver(
         min_af=config.min_af,
         clinvar_filters=config.clinvar_filter_levels,
         assembly=config.assembly,
         cache_dir=config.cache_dir,
+        variant_mode=config.variant_mode.value,  # Pass mode for population AF handling
     )
 
     resolved_variants: list[VariantRecord] = []
