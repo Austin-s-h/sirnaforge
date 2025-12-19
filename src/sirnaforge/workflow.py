@@ -2074,6 +2074,13 @@ async def run_sirna_workflow(
     sirna_length: int = 21,
     modification_pattern: str = "standard_2ome",
     overhang: str = "dTdT",
+    # Variant targeting parameters
+    variant_ids: list[str] | None = None,
+    variant_vcf_file: Path | None = None,
+    variant_mode: str = "avoid",
+    variant_min_af: float = 0.01,
+    variant_clinvar_filters: str = "Pathogenic,Likely pathogenic",
+    variant_assembly: str = "GRCh38",
     log_file: str | None = None,
     write_json_summary: bool = True,
     num_threads: int | None = None,

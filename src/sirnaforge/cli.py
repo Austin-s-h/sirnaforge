@@ -711,6 +711,13 @@ def workflow(  # noqa: PLR0912
                     sirna_length=sirna_length,
                     modification_pattern=modification_pattern,
                     overhang=overhang,
+                    # Variant parameters
+                    variant_ids=list(snp) if snp else None,
+                    variant_vcf_file=snp_file,
+                    variant_mode=variant_mode.value,
+                    variant_min_af=min_af,
+                    variant_clinvar_filters=clinvar_filter_levels,
+                    variant_assembly=variant_assembly,
                     log_file=effective_log,
                     write_json_summary=json_summary,
                 )
