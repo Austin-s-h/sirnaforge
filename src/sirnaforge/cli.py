@@ -533,6 +533,59 @@ def workflow(  # noqa: PLR0912
         "--overhang",
         help="Overhang sequence (dTdT for DNA, UU for RNA)",
     ),
+    # Variant targeting parameters
+    snp: list[str] = typer.Option(
+        [],
+        "--snp",
+        help=(
+            "Variant identifier(s) for SNP targeting/avoidance. "
+            "Accepts rsID (rs12345), coordinate (chr17:7577121:G:A), or HGVS (NM_000546.6:c.215C>G). "
+            "Can be specified multiple times. All variants must be on GRCh38 assembly."
+        ),
+    ),
+    snp_file: Optional[Path] = typer.Option(
+        None,
+        "--snp-file",
+        help=(
+            "VCF file containing variants for targeting/avoidance. "
+            "Preferably bgzip-compressed with tabix index (.vcf.gz + .tbi) for performance. "
+            "Variants are filtered by --min-af and --clinvar-filter-levels."
+        ),
+    ),
+    variant_mode: str = typer.Option(
+        "avoid",
+        "--variant-mode",
+        help=(
+            "How to handle variants in siRNA design: "
+            "'avoid' = exclude candidates overlapping variants (default), "
+            "'target' = design siRNAs specifically targeting variant alleles, "
+            "'both' = generate candidates for both reference and alternate alleles."
+        ),
+    ),
+    min_af: float = typer.Option(
+        0.01,
+        "--min-af",
+        min=0.0,
+        max=1.0,
+        help=(
+            "Minimum allele frequency threshold for variant inclusion. "
+            "Variants with AF below this value are excluded (default: 0.01 = 1%%)."
+        ),
+    ),
+    clinvar_filter_levels: str = typer.Option(
+        "Pathogenic,Likely pathogenic",
+        "--clinvar-filter-levels",
+        help=(
+            "Comma-separated ClinVar clinical significance levels to include. "
+            "Default: 'Pathogenic,Likely pathogenic'. "
+            "Other options: 'Benign', 'Likely benign', 'Uncertain significance'."
+        ),
+    ),
+    variant_assembly: str = typer.Option(
+        "GRCh38",
+        "--variant-assembly",
+        help="Reference genome assembly for variants (only GRCh38 supported)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
