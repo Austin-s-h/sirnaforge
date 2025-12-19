@@ -1,7 +1,6 @@
 """Variant resolution from multiple databases (ClinVar, Ensembl, dbSNP) with caching."""
 
 import asyncio
-import json
 import re
 from pathlib import Path
 from typing import Optional
@@ -9,6 +8,7 @@ from typing import Optional
 import aiohttp
 import pysam
 
+from sirnaforge.data.variant_cache import VariantParquetCache
 from sirnaforge.models.variant import (
     ClinVarSignificance,
     VariantQuery,
@@ -65,10 +65,13 @@ class VariantResolver:
         ]
         self.timeout = timeout
 
-        # Initialize cache
+        # Initialize Parquet-based cache
         self.cache_dir = cache_dir or resolve_cache_subdir("variants")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Variant cache directory: {self.cache_dir}")
+
+        # Use Parquet cache
+        self.cache = VariantParquetCache(self.cache_dir)
+        logger.info(f"Variant cache at {self.cache_dir}")
 
     def parse_identifier(self, input_str: str) -> VariantQuery:
         """Parse variant identifier string into VariantQuery.
@@ -443,15 +446,7 @@ class VariantResolver:
         Returns:
             VariantRecord if found in cache, None otherwise
         """
-        cache_file = self.cache_dir / f"{cache_key}.json"
-        if cache_file.exists():
-            try:
-                with cache_file.open("r") as f:
-                    data = json.load(f)
-                    return VariantRecord(**data)
-            except Exception as e:
-                logger.warning(f"Failed to load variant from cache: {e}")
-        return None
+        return self.cache.get(cache_key)
 
     def _put_to_cache(self, cache_key: str, variant: VariantRecord) -> None:
         """Store variant in cache.
@@ -460,12 +455,7 @@ class VariantResolver:
             cache_key: Cache key
             variant: Variant record to cache
         """
-        cache_file = self.cache_dir / f"{cache_key}.json"
-        try:
-            with cache_file.open("w") as f:
-                json.dump(variant.model_dump(), f, indent=2)
-        except Exception as e:
-            logger.warning(f"Failed to cache variant: {e}")
+        self.cache.put(cache_key, variant)
 
     def read_vcf(self, vcf_path: Path) -> list[VariantRecord]:
         """Read variants from VCF file (supports bgzip+tabix).

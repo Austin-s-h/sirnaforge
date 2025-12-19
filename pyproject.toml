@@ -42,6 +42,7 @@ dependencies = [
   "nextflow>=25.04.0",
   "pandera>=0.26.0",
   "psutil>=6.0.0",
+  "pyarrow>=18.0.0",
 ]
 
 [dependency-groups]
