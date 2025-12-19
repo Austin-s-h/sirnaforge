@@ -42,8 +42,6 @@ def test_snp_avoid_mode_tp53():
                 "avoid",
                 "--min-af",
                 "0.01",
-                "--top-n",
-                "5",  # Limit for faster test
                 "--species",
                 "human",
             ]
@@ -122,8 +120,6 @@ def test_snp_target_mode_tp53():
                 "target",
                 "--min-af",
                 "0.001",  # Lower threshold for targeting rare pathogenic variants
-                "--top-n",
-                "5",
                 "--species",
                 "human",
                 "--clinvar-filter-levels",
@@ -194,8 +190,6 @@ def test_snp_both_mode_tp53():
                 "both",
                 "--min-af",
                 "0.001",
-                "--top-n",
-                "5",
                 "--species",
                 "human",
             ]
@@ -254,8 +248,6 @@ def test_variant_coordinate_format():
                 variant_coord,
                 "--variant-mode",
                 "avoid",
-                "--top-n",
-                "3",
                 "--species",
                 "human",
             ]
@@ -300,8 +292,6 @@ def test_multiple_variants():
                 "rs11540652",  # Another TP53 variant
                 "--variant-mode",
                 "avoid",
-                "--top-n",
-                "3",
                 "--species",
                 "human",
             ]
