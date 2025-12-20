@@ -1,5 +1,7 @@
 """Unit tests for Parquet-based variant cache."""
 
+from pathlib import Path
+
 from sirnaforge.data.variant_cache import VariantParquetCache
 from sirnaforge.models.variant import ClinVarSignificance, VariantRecord, VariantSource
 
@@ -7,14 +9,14 @@ from sirnaforge.models.variant import ClinVarSignificance, VariantRecord, Varian
 class TestVariantParquetCache:
     """Tests for VariantParquetCache."""
 
-    def test_init_creates_empty_cache(self, tmp_path):
+    def test_init_creates_empty_cache(self, tmp_path: Path):
         """Test that initialization creates an empty cache file."""
         cache = VariantParquetCache(tmp_path)
 
         assert cache.cache_file.exists()
         assert cache.cache_dir == tmp_path
 
-    def test_put_and_get(self, tmp_path):
+    def test_put_and_get(self, tmp_path: Path):
         """Test storing and retrieving a variant."""
         cache = VariantParquetCache(tmp_path)
 
@@ -43,7 +45,7 @@ class TestVariantParquetCache:
         assert retrieved.alt == "A"
         assert retrieved.af == 0.05
 
-    def test_get_nonexistent_key(self, tmp_path):
+    def test_get_nonexistent_key(self, tmp_path: Path):
         """Test that getting a nonexistent key returns None."""
         cache = VariantParquetCache(tmp_path)
 
@@ -51,7 +53,7 @@ class TestVariantParquetCache:
 
         assert result is None
 
-    def test_update_existing_entry(self, tmp_path):
+    def test_update_existing_entry(self, tmp_path: Path):
         """Test that putting the same key updates the entry."""
         cache = VariantParquetCache(tmp_path)
 
@@ -86,7 +88,7 @@ class TestVariantParquetCache:
         stats = cache.get_stats()
         assert stats["total_entries"] == 1
 
-    def test_multiple_variants(self, tmp_path):
+    def test_multiple_variants(self, tmp_path: Path):
         """Test storing and retrieving multiple variants."""
         cache = VariantParquetCache(tmp_path)
 
@@ -101,7 +103,7 @@ class TestVariantParquetCache:
             assert retrieved is not None
             assert retrieved.id == f"rs{i}"
 
-    def test_get_stats(self, tmp_path):
+    def test_get_stats(self, tmp_path: Path):
         """Test getting cache statistics."""
         cache = VariantParquetCache(tmp_path)
 
@@ -126,7 +128,7 @@ class TestVariantParquetCache:
         assert stats["stale_entries"] == 0
         assert "cache_size_mb" in stats
 
-    def test_clear_cache(self, tmp_path):
+    def test_clear_cache(self, tmp_path: Path):
         """Test clearing the cache."""
         cache = VariantParquetCache(tmp_path)
 
@@ -151,7 +153,7 @@ class TestVariantParquetCache:
         # Entries should not be retrievable
         assert cache.get("key_0") is None
 
-    def test_cache_with_complex_annotations(self, tmp_path):
+    def test_cache_with_complex_annotations(self, tmp_path: Path):
         """Test caching variants with complex annotation dictionaries."""
         cache = VariantParquetCache(tmp_path)
 
@@ -180,7 +182,7 @@ class TestVariantParquetCache:
         assert retrieved.annotations["gene"] == "TP53"
         assert retrieved.provenance["source"] == "test"
 
-    def test_ttl_not_enforced_on_get(self, tmp_path):
+    def test_ttl_not_enforced_on_get(self, tmp_path: Path):
         """Test that TTL is checked but old entries are not deleted on get."""
         # Use short TTL for testing
         cache = VariantParquetCache(tmp_path, ttl_days=0)
