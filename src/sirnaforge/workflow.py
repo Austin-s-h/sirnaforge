@@ -63,6 +63,8 @@ from sirnaforge.utils.modification_patterns import apply_modifications_to_candid
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
+from sirnaforge.workflow_variant import VariantWorkflowConfig, parse_clinvar_filter_string, resolve_workflow_variants
+from sirnaforge.models.variant import VariantRecord
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -93,6 +95,7 @@ class WorkflowConfig:
         num_threads: int | None = None,
         input_source: InputSource | None = None,
         keep_nextflow_work: bool = False,
+        variant_config: VariantWorkflowConfig | None = None,
     ):
         """Initialize workflow configuration."""
         self.output_dir = Path(output_dir)
@@ -147,6 +150,8 @@ class WorkflowConfig:
         # Parallelism for design stage (cap at 4 CPUs for better efficiency)
         requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
         self.num_threads = max(1, min(4, requested_threads))
+        # Variant targeting configuration
+        self.variant_config = variant_config
 
         if self.mirna_database and self.mirna_species:
             self.nextflow_config.setdefault("mirna_db", self.mirna_database)
@@ -206,12 +211,22 @@ class SiRNAWorkflow:
         _ = self.validation.validate_input_parameters(self.config.design_params)
 
         with Progress(console=console) as progress:
-            main_task = progress.add_task("[cyan]Overall Progress", total=5)
+            main_task = progress.add_task("[cyan]Overall Progress", total=6)
 
             # Step 1: Transcript Retrieval
             progress.update(main_task, description="[cyan]Retrieving transcripts...")
             transcripts = await self.step1_retrieve_transcripts(progress)
             progress.advance(main_task)
+
+            # Step 1.5: Variant Resolution (if configured)
+            variants: list[VariantRecord] = []
+            if self.config.variant_config and self.config.variant_config.has_variants:
+                progress.update(main_task, description="[cyan]Resolving variants...")
+                variants = await self.step1_5_resolve_variants(progress)
+                progress.advance(main_task)
+            else:
+                # Skip variant resolution step
+                progress.advance(main_task)
 
             # Step 2: ORF Validation
             progress.update(main_task, description="[cyan]Validating ORFs...")
@@ -397,6 +412,45 @@ class SiRNAWorkflow:
         _ = self.validation.validate_transcripts(protein_transcripts)
 
         return protein_transcripts
+
+    async def step1_5_resolve_variants(self, progress: Progress) -> list[VariantRecord]:
+        """Step 1.5: Resolve variants for targeting or avoidance.
+
+        This step is run after transcript retrieval and before ORF validation and siRNA design.
+        Variants are resolved using ClinVar, Ensembl Variation, and/or VCF files.
+
+        Args:
+            progress: Rich progress tracker
+
+        Returns:
+            List of resolved VariantRecords that passed filters
+        """
+        if not self.config.variant_config or not self.config.variant_config.has_variants:
+            return []
+
+        task = progress.add_task("[yellow]Resolving variants...", total=2)
+
+        # Resolve variants using the workflow variant module
+        variants = await resolve_workflow_variants(
+            config=self.config.variant_config,
+            gene_name=self.config.gene_query,
+            output_dir=self.config.output_dir,
+        )
+        progress.advance(task)
+
+        if variants:
+            console.print(
+                f"🧬 Resolved {len(variants)} variant(s) for {self.config.variant_config.variant_mode.value} mode"
+            )
+            for variant in variants[:5]:  # Show first 5
+                console.print(f"  • {variant.id or variant.to_vcf_style()}")
+            if len(variants) > 5:
+                console.print(f"  ... and {len(variants) - 5} more")
+        else:
+            console.print("⚠️  No variants passed filters")
+
+        progress.advance(task)
+        return variants
 
     async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict[str, Any]:
         """Step 2: Validate ORFs and generate validation report."""
@@ -2109,6 +2163,12 @@ async def run_sirna_workflow(
         sirna_length: siRNA length in nucleotides
         modification_pattern: Chemical modification pattern
         overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
+        variant_vcf_file: Path to VCF file containing variants to target or avoid
+        variant_mode: How to handle variants (avoid/target/both) - default is avoid
+        variant_min_af: Minimum allele frequency threshold for variant filtering (default: 0.01)
+        variant_clinvar_filters: Comma-separated ClinVar significance levels to include (default: Pathogenic,Likely pathogenic)
+        variant_assembly: Reference genome assembly for variants (only GRCh38 supported)
         log_file: Path to centralized log file
         write_json_summary: Write logs/workflow_summary.json
         num_threads: Optional override for design parallelism
@@ -2164,6 +2224,29 @@ async def run_sirna_workflow(
         resolver = ReferencePolicyResolver(input_spec)
         transcriptome_selection = resolver.resolve_transcriptomes()
 
+    # Configure variant targeting if specified
+    variant_config_obj: VariantWorkflowConfig | None = None
+    if variant_ids or variant_vcf_file:
+        from sirnaforge.models.variant import VariantMode
+
+        # Parse variant mode
+        try:
+            variant_mode_enum = VariantMode(variant_mode.lower())
+        except ValueError:
+            variant_mode_enum = VariantMode.AVOID
+
+        # Parse ClinVar filters
+        clinvar_filters = parse_clinvar_filter_string(variant_clinvar_filters)
+
+        variant_config_obj = VariantWorkflowConfig(
+            variant_ids=variant_ids,
+            vcf_file=Path(variant_vcf_file) if variant_vcf_file else None,
+            variant_mode=variant_mode_enum,
+            min_af=variant_min_af,
+            clinvar_filter_levels=clinvar_filters,
+            assembly=variant_assembly,
+        )
+
     config = WorkflowConfig(
         output_dir=output_path,
         gene_query=gene_query,
@@ -2182,6 +2265,7 @@ async def run_sirna_workflow(
         num_threads=num_threads,
         input_source=resolved_input,
         keep_nextflow_work=keep_nextflow_work,
+        variant_config=variant_config_obj,
     )
 
     # Run workflow
