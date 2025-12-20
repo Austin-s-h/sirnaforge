@@ -55,6 +55,7 @@ from sirnaforge.models.sirna import (
     SiRNACandidate,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
+from sirnaforge.models.variant import VariantMode, VariantRecord
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
@@ -64,7 +65,6 @@ from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
 from sirnaforge.workflow_variant import VariantWorkflowConfig, parse_clinvar_filter_string, resolve_workflow_variants
-from sirnaforge.models.variant import VariantRecord
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -219,13 +219,14 @@ class SiRNAWorkflow:
             progress.advance(main_task)
 
             # Step 1.5: Variant Resolution (if configured)
-            variants: list[VariantRecord] = []
+            # Save resolved variants on the workflow instance for later use
             if self.config.variant_config and self.config.variant_config.has_variants:
                 progress.update(main_task, description="[cyan]Resolving variants...")
-                variants = await self.step1_5_resolve_variants(progress)
+                self.resolved_variants = await self.step1_5_resolve_variants(progress)
                 progress.advance(main_task)
             else:
                 # Skip variant resolution step
+                self.resolved_variants = []
                 progress.advance(main_task)
 
             # Step 2: ORF Validation
@@ -2227,8 +2228,6 @@ async def run_sirna_workflow(
     # Configure variant targeting if specified
     variant_config_obj: VariantWorkflowConfig | None = None
     if variant_ids or variant_vcf_file:
-        from sirnaforge.models.variant import VariantMode
-
         # Parse variant mode
         try:
             variant_mode_enum = VariantMode(variant_mode.lower())

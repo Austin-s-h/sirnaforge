@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -84,7 +84,7 @@ class VariantParquetCache:
             # Check TTL
             row = matches.iloc[0]
             cached_at = pd.to_datetime(row["cached_at"])
-            age = datetime.now() - cached_at
+            age = datetime.now() - cached_at.to_pydatetime()
 
             if age > timedelta(days=self.ttl_days):
                 logger.debug(f"Cache entry for {cache_key} is stale (age: {age.days} days)")
@@ -92,17 +92,21 @@ class VariantParquetCache:
                 return None
 
             # Reconstruct VariantRecord
-            sources = eval(row["sources"]) if isinstance(row["sources"], str) else row["sources"]
-            annotations = eval(row["annotations"]) if isinstance(row["annotations"], str) else row["annotations"]
-            provenance = eval(row["provenance"]) if isinstance(row["provenance"], str) else row["provenance"]
+            sources_str = str(row["sources"])
+            annotations_str = str(row["annotations"])
+            provenance_str = str(row["provenance"])
+
+            sources = eval(sources_str) if sources_str != "nan" else []
+            annotations = eval(annotations_str) if annotations_str != "nan" else {}
+            provenance = eval(provenance_str) if provenance_str != "nan" else {}
 
             variant = VariantRecord(
                 id=row["id"] if pd.notna(row["id"]) else None,
-                chr=row["chr"],
+                chr=str(row["chr"]),
                 pos=int(row["pos"]),
-                ref=row["ref"],
-                alt=row["alt"],
-                assembly=row["assembly"],
+                ref=str(row["ref"]),
+                alt=str(row["alt"]),
+                assembly=str(row["assembly"]),
                 sources=[VariantSource(s) for s in sources],
                 clinvar_significance=row["clinvar_significance"] if pd.notna(row["clinvar_significance"]) else None,
                 af=float(row["af"]) if pd.notna(row["af"]) else None,
@@ -132,7 +136,7 @@ class VariantParquetCache:
             df = df[df["cache_key"] != cache_key]
 
             # Create new row
-            new_row = {
+            new_row: dict[str, Any] = {
                 "cache_key": cache_key,
                 "id": variant.id,
                 "chr": variant.chr,
@@ -193,7 +197,7 @@ class VariantParquetCache:
             logger.warning(f"Error cleaning up cache: {e}")
             return 0
 
-    def get_stats(self) -> dict[str, int]:
+    def get_stats(self) -> dict[str, Any]:
         """Get cache statistics.
 
         Returns:

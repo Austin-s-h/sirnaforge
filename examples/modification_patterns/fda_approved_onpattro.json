@@ -6,7 +6,7 @@
   "target_transcript": "NM_000371",
   "patent": "US10060921B2",
   "patent_url": "https://patents.google.com/patent/US10060921B2",
-  
+
   "sequences": {
     "patisiran_ttr_guide": {
       "id": "patisiran_ttr_guide",
@@ -51,7 +51,7 @@
       "notes": "Passenger strand complementary to guide. Designed to be preferentially degraded."
     }
   },
-  
+
   "clinical_data": {
     "efficacy": "Significant reduction in serum TTR levels",
     "safety": "Generally well tolerated with manageable infusion-related reactions",
@@ -59,14 +59,14 @@
     "dosing": "0.3 mg/kg every 3 weeks via IV infusion",
     "target_tissue": "Liver (hepatocytes)"
   },
-  
+
   "modification_rationale": {
     "guide_pattern": "Strategic 2'-O-methyl modifications at positions 1,4,6,11,13,16,19 provide optimal balance of stability and RISC loading efficiency",
     "passenger_pattern": "Limited modifications on passenger strand reduce its activity and promote degradation",
     "overhang": "dTdT DNA overhangs provide nuclease resistance and are compatible with LNP delivery",
     "overall_strategy": "Pattern optimized through extensive medicinal chemistry to achieve therapeutic efficacy with acceptable safety profile"
   },
-  
+
   "references": [
     {
       "type": "publication",
@@ -83,7 +83,7 @@
       "url": "https://patents.google.com/patent/US10060921B2"
     }
   ],
-  
+
   "notes": [
     "First FDA-approved RNAi therapeutic - landmark achievement",
     "Modification pattern validated in clinical trials",

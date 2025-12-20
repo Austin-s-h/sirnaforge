@@ -98,7 +98,7 @@ class TestVariantParquetCache:
             cache.put(f"key_{i}", variant)
 
         # Retrieve all
-        for i, variant in enumerate(variants):
+        for i, _variant in enumerate(variants):
             retrieved = cache.get(f"key_{i}")
             assert retrieved is not None
             assert retrieved.id == f"rs{i}"

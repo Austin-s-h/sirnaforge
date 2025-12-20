@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- Drop support for Python 3.9; minimum supported Python is now 3.10. This
+  enables PEP 604 union syntax (e.g. `list[str] | None`) and other modern
+  typing features. Update developer environments, CI, and pre-commit hooks to
+  use Python 3.10 or later.
+
 ## [0.3.3] - 2025-12-15
 
 ### 🐛 Bug Fixes

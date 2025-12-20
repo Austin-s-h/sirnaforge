@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord
@@ -176,7 +177,7 @@ def _save_variant_report(
         gene_name: Gene name
         config: Variant workflow configuration
     """
-    report = {
+    report: dict[str, Any] = {
         "gene": gene_name,
         "variant_mode": config.variant_mode.value,
         "filters": {
@@ -189,22 +190,28 @@ def _save_variant_report(
             "sources": _count_by_source(variants),
             "chromosomes": _count_by_chromosome(variants),
         },
-        "variants": [
-            {
-                "id": v.id,
-                "chr": v.chr,
-                "pos": v.pos,
-                "ref": v.ref,
-                "alt": v.alt,
-                "sources": [s.value for s in v.sources],
-                "primary_source": v.get_primary_source().value if v.get_primary_source() else None,
-                "clinvar_significance": v.clinvar_significance.value if v.clinvar_significance else None,
-                "af": v.af,
-                "vcf_style": v.to_vcf_style(),
-            }
-            for v in variants
-        ],
+        # Build variant entries with guarded access to Optional fields to satisfy mypy
+        "variants": [],
     }
+
+    variant_entries: list[dict] = []
+    for v in variants:
+        ps = v.get_primary_source()
+        entry = {
+            "id": v.id,
+            "chr": v.chr,
+            "pos": v.pos,
+            "ref": v.ref,
+            "alt": v.alt,
+            "sources": [s.value for s in v.sources],
+            "primary_source": ps.value if ps else None,
+            "clinvar_significance": v.clinvar_significance.value if v.clinvar_significance else None,
+            "af": v.af,
+            "vcf_style": v.to_vcf_style(),
+        }
+        variant_entries.append(entry)
+
+    report["variants"] = variant_entries
 
     with output_path.open("w") as f:
         json.dump(report, f, indent=2)

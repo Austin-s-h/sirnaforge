@@ -1,5 +1,6 @@
 """Helper functions for generating sequence contexts with variant alleles."""
 
+from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.models.variant import VariantRecord
 from sirnaforge.utils.logging_utils import get_logger
 
@@ -106,7 +107,7 @@ def check_candidate_overlaps_variant(
 
 
 def annotate_candidate_with_variant(
-    candidate: "SiRNACandidate",  # type: ignore # noqa: F821
+    candidate: SiRNACandidate,
     variant: VariantRecord,
     allele: str,
     variant_mode: str,

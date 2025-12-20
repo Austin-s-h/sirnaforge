@@ -3,7 +3,7 @@
 import asyncio
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import aiohttp
 import pysam
@@ -225,7 +225,7 @@ class VariantResolver:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 # Search ClinVar
                 search_url = f"{base_url}/esearch.fcgi"
-                params = {"db": "clinvar", "term": search_term, "retmode": "json", "retmax": 1}
+                params: dict[str, str] = {"db": "clinvar", "term": search_term, "retmode": "json", "retmax": "1"}
 
                 async with session.get(search_url, params=params) as response:
                     if response.status != 200:
@@ -241,9 +241,9 @@ class VariantResolver:
                     # Fetch variant details
                     clinvar_id = id_list[0]
                     fetch_url = f"{base_url}/esummary.fcgi"
-                    params = {"db": "clinvar", "id": clinvar_id, "retmode": "json"}
+                    params2: dict[str, str] = {"db": "clinvar", "id": clinvar_id, "retmode": "json"}
 
-                    async with session.get(fetch_url, params=params) as fetch_response:
+                    async with session.get(fetch_url, params=params2) as fetch_response:
                         if fetch_response.status != 200:
                             return None
 
@@ -323,7 +323,7 @@ class VariantResolver:
                         # Extract allele frequency from gnomAD if available
                         populations = data.get("populations", [])
                         af = None
-                        population_afs = {}
+                        population_afs: dict[str, float] = {}
 
                         for pop in populations:
                             pop_name = pop.get("population", "")
@@ -358,7 +358,7 @@ class VariantResolver:
                         if not match:
                             return None
 
-                        chrom, start, end = match.groups()
+                        chrom, start, _ = match.groups()
                         allele_string = mapping.get("allele_string", "")
                         alleles = allele_string.split("/")
                         if len(alleles) < 2:
@@ -382,24 +382,29 @@ class VariantResolver:
                     if not data or not isinstance(data, list) or len(data) == 0:
                         return None
 
-                    first_var = data[0]
-                    var_id = first_var.get("id", "unknown")
-                    chrom = first_var.get("seq_region_name", query.chr.replace("chr", ""))
-                    pos = first_var.get("start", query.pos)
-                    alleles = first_var.get("alleles", "").split("/")
+                    first_var2: dict[str, Any] = data[0]
+                    var_id2: str = first_var2.get("id", "unknown")
+                    chrom2: str = first_var2.get("seq_region_name", query.chr.replace("chr", "") if query.chr else "")
+                    start_val = first_var2.get("start")
+                    if isinstance(start_val, (int, str)) and start_val is not None:
+                        pos2 = int(start_val)
+                    else:
+                        pos2 = int(query.pos) if query.pos is not None else 0
+                    alleles_str2: str = first_var2.get("alleles", "")
+                    alleles2: list[str] = alleles_str2.split("/")
 
-                    if len(alleles) < 2:
+                    if len(alleles2) < 2:
                         return None
 
                     return VariantRecord(
-                        id=var_id,
-                        chr=f"chr{chrom}",
-                        pos=pos,
-                        ref=alleles[0],
-                        alt=alleles[1],
+                        id=var_id2,
+                        chr=f"chr{chrom2}",
+                        pos=pos2,
+                        ref=alleles2[0],
+                        alt=alleles2[1],
                         assembly=self.assembly,
                         sources=[VariantSource.ENSEMBL],
-                        annotations={"ensembl_data": first_var},
+                        annotations={"ensembl_data": first_var2},
                         provenance={"source": "Ensembl Variation API"},
                     )
 
@@ -469,7 +474,7 @@ class VariantResolver:
         Returns:
             Cache key string
         """
-        cache_data = {
+        cache_data: dict[str, Any] = {
             "query": query.raw_input,
             "assembly": self.assembly,
             "min_af": self.min_af,
@@ -526,7 +531,7 @@ class VariantResolver:
                 # Process each alternate allele
                 for alt in record.alts or []:
                     # Extract AF if available
-                    af = None
+                    af: Optional[float] = None
                     if "AF" in record.info:
                         af_values = record.info["AF"]
                         af = af_values[0] if isinstance(af_values, (list, tuple)) else af_values
@@ -534,8 +539,8 @@ class VariantResolver:
                         # Calculate AF from AC/AN
                         ac = record.info["AC"]
                         an = record.info["AN"]
-                        ac_val = ac[0] if isinstance(ac, (list, tuple)) else ac
-                        an_val = an[0] if isinstance(an, (list, tuple)) else an
+                        ac_val: float = ac[0] if isinstance(ac, (list, tuple)) else ac
+                        an_val: float = an[0] if isinstance(an, (list, tuple)) else an
                         if an_val > 0:
                             af = ac_val / an_val
 
@@ -548,8 +553,8 @@ class VariantResolver:
                         id=record.id or None,
                         chr=chrom,
                         pos=record.pos,
-                        ref=record.ref,
-                        alt=alt,
+                        ref=str(record.ref),
+                        alt=str(alt),
                         assembly=self.assembly,
                         sources=[VariantSource.LOCAL_VCF],
                         af=af,
