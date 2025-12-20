@@ -386,7 +386,7 @@ class VariantResolver:
                     var_id2: str = first_var2.get("id", "unknown")
                     chrom2: str = first_var2.get("seq_region_name", query.chr.replace("chr", "") if query.chr else "")
                     start_val = first_var2.get("start")
-                    if isinstance(start_val, (int, str)) and start_val is not None:
+                    if isinstance(start_val, int | str) and start_val is not None:
                         pos2 = int(start_val)
                     else:
                         pos2 = int(query.pos) if query.pos is not None else 0
@@ -534,13 +534,13 @@ class VariantResolver:
                     af: float | None = None
                     if "AF" in record.info:
                         af_values = record.info["AF"]
-                        af = af_values[0] if isinstance(af_values, (list, tuple)) else af_values
+                        af = af_values[0] if isinstance(af_values, list | tuple) else af_values
                     elif "AC" in record.info and "AN" in record.info:
                         # Calculate AF from AC/AN
                         ac = record.info["AC"]
                         an = record.info["AN"]
-                        ac_val: float = ac[0] if isinstance(ac, (list, tuple)) else ac
-                        an_val: float = an[0] if isinstance(an, (list, tuple)) else an
+                        ac_val: float = ac[0] if isinstance(ac, list | tuple) else ac
+                        an_val: float = an[0] if isinstance(an, list | tuple) else an
                         if an_val > 0:
                             af = ac_val / an_val
 

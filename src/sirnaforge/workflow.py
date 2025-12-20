@@ -795,9 +795,9 @@ class SiRNAWorkflow:
             def _normalize_pass(value: Any) -> str:
                 normalized = "FAIL"
                 try:
-                    if value is True or (isinstance(value, (int, float)) and value == 1):
+                    if value is True or (isinstance(value, int | float) and value == 1):
                         normalized = "PASS"
-                    elif value is False or (isinstance(value, (int, float)) and value == 0):
+                    elif value is False or (isinstance(value, int | float) and value == 0):
                         normalized = "FAIL"
                     elif isinstance(value, str):
                         cleaned = value.strip().upper()
@@ -1152,7 +1152,7 @@ class SiRNAWorkflow:
         values: list[str]
         if isinstance(raw_value, str):
             values = [raw_value]
-        elif isinstance(raw_value, (list, tuple, set)):
+        elif isinstance(raw_value, list | tuple | set):
             iterable = cast(Iterable[Any], raw_value)
             values = [str(entry) for entry in iterable]
         else:
@@ -1239,7 +1239,7 @@ class SiRNAWorkflow:
             value = params[key]
             if isinstance(value, Path):
                 normalized[key] = str(value)
-            elif isinstance(value, (list, tuple, set)):
+            elif isinstance(value, list | tuple | set):
                 iterable = cast(Iterable[Any], value)
                 normalized[key] = [SiRNAWorkflow._stringify_param(entry) for entry in iterable]
             else:
@@ -1250,7 +1250,7 @@ class SiRNAWorkflow:
     def _stringify_param(value: Any) -> Any:
         if isinstance(value, Path):
             return str(value)
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, list | tuple | set):
             iterable = cast(Iterable[Any], value)
             return [SiRNAWorkflow._stringify_param(entry) for entry in iterable]
         return value

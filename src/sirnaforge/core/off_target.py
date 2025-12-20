@@ -413,7 +413,7 @@ class OffTargetAnalysisManager:
         if not self.mirna_index:
             raise ValueError("miRNA index not provided")
 
-        if isinstance(sequences, (str, Path)):
+        if isinstance(sequences, str | Path):
             sequences = parse_fasta_file(sequences)
 
         analyzer = BwaAnalyzer(self.mirna_index, mode="mirna_seed")
@@ -435,7 +435,7 @@ class OffTargetAnalysisManager:
         if not self.transcriptome_index:
             raise ValueError("Transcriptome index not provided")
 
-        if isinstance(sequences, (str, Path)):
+        if isinstance(sequences, str | Path):
             sequences = parse_fasta_file(sequences)
 
         analyzer = BwaAnalyzer(self.transcriptome_index, mode="transcriptome")
