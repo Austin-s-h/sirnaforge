@@ -1,6 +1,6 @@
 # Comprehensive Docker image for siRNAforge
 # Includes all dependencies: Python, bioinformatics tools, and workflow management
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 ARG VERSION=0.0.0+local
 ENV BUILD_VERSION=${VERSION}
 
@@ -55,7 +55,7 @@ RUN micromamba install --prefix /opt/conda --file /tmp/environment.yml -y && \
     micromamba clean --all --yes
 
 # Unit test stage (fast) - runs unit tests using the builder image
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS unit-test
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS unit-test
 ARG VERSION=0.0.0+local
 ENV BUILD_VERSION=${VERSION}
 USER root

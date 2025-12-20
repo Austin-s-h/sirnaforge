@@ -30,9 +30,10 @@ DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS
 DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
 # GitHub Actions checkouts (and many local workspaces) are often owned by a
-# different UID than the container's default non-root user, which can prevent
-# writing coverage/junit outputs into /workspace. Run test containers as root.
-DOCKER_TEST_USER = --user 0:0
+# different UID than the container's default non-root user. Use the host
+# user mapping when running tests in the container so files created by the
+# container are owned by the host user (avoids root-owned debug artifacts).
+DOCKER_TEST_USER = $(DOCKER_HOST_USER)
 
 # Pytest command shortcuts
 PYTEST = uv run pytest
