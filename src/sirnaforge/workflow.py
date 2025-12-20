@@ -2142,6 +2142,7 @@ async def run_sirna_workflow(
     allow_transcriptome_with_input_fasta: bool = False,
     default_transcriptome_sources: Sequence[str] = DEFAULT_TRANSCRIPTOME_SOURCES,
     keep_nextflow_work: bool = False,
+    nextflow_docker_image: str | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -2176,6 +2177,7 @@ async def run_sirna_workflow(
         allow_transcriptome_with_input_fasta: Force transcriptome analysis even when using input FASTA
         default_transcriptome_sources: Ordered list of transcriptome identifiers evaluated by default
         keep_nextflow_work: Keep Nextflow work directory symlink in output
+        nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
 
     Returns:
         Dictionary with complete workflow results
@@ -2246,6 +2248,10 @@ async def run_sirna_workflow(
             assembly=variant_assembly,
         )
 
+    nextflow_config_overrides: dict[str, Any] = {}
+    if nextflow_docker_image:
+        nextflow_config_overrides["docker_image"] = nextflow_docker_image
+
     config = WorkflowConfig(
         output_dir=output_path,
         gene_query=gene_query,
@@ -2265,6 +2271,7 @@ async def run_sirna_workflow(
         input_source=resolved_input,
         keep_nextflow_work=keep_nextflow_work,
         variant_config=variant_config_obj,
+        nextflow_config=nextflow_config_overrides,
     )
 
     # Run workflow
@@ -2294,6 +2301,7 @@ async def run_offtarget_only_workflow(
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     log_file: str | None = None,
+    nextflow_docker_image: str | None = None,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
 
@@ -2313,6 +2321,7 @@ async def run_offtarget_only_workflow(
         transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         log_file: Path to centralized log file
+        nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
 
     Returns:
         Dictionary with off-target analysis results
@@ -2425,6 +2434,8 @@ async def run_offtarget_only_workflow(
     nextflow_config: dict[str, Any] = {}
     if genome_indices_override:
         nextflow_config["genome_indices"] = genome_indices_override
+    if nextflow_docker_image:
+        nextflow_config["docker_image"] = nextflow_docker_image
 
     # Resolve transcriptome policy
     if transcriptome_selection is None and transcriptome_fasta:

@@ -6,6 +6,9 @@
 # Variables
 DOCKER_IMAGE = sirnaforge
 VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
+NEXTFLOW_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)
+SIRNAFORGE_NEXTFLOW_IMAGE ?= $(NEXTFLOW_IMAGE)
+export SIRNAFORGE_NEXTFLOW_IMAGE
 
 # Host user mapping (prevents root-owned outputs on bind mounts)
 HOST_UID = $(shell id -u)
@@ -26,7 +29,7 @@ SIRNAFORGE_CACHE_MOUNT = -v $(SIRNAFORGE_CACHE_DIR):/home/sirnauser/.cache/sirna
 DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIRNAFORGE_CACHE_MOUNT)
 # Propagate CI-related env vars into the container so tests can reliably
 # skip known-flaky network flows in CI (e.g., Ensembl blocks runner IPs).
-DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home
+DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE
 DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
 # GitHub Actions checkouts (and many local workspaces) are often owned by a
@@ -120,7 +123,7 @@ test-release-container: cache-ensure docker-ensure ## Container release suite (e
 	fi
 	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
 		pip install --quiet pytest pytest-cov; \
 		set +e; \
@@ -180,7 +183,7 @@ cache-ensure: ## Ensure the host cache directory exists
 
 docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
 		pip install --quiet pytest; \
 		set +e; \

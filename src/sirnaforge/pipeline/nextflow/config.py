@@ -31,6 +31,8 @@ from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_SIRNAFORGE_DOCKER_IMAGE = "ghcr.io/austin-s-h/sirnaforge:latest"
+
 
 class EnvironmentInfo(BaseModel):
     """Information about the current execution environment."""
@@ -89,13 +91,14 @@ def _validate_command_args(cmd: list[str]) -> None:
 class NextflowConfig:
     """Configuration manager for Nextflow workflows."""
 
+    DEFAULT_SIRNAFORGE_DOCKER_IMAGE = "ghcr.io/austin-s-h/sirnaforge:latest"
     MEMORY_BUFFER_GB = 0.5
     MIN_MEMORY_GB = 1
     _UNLIMITED_MEMORY_THRESHOLD_BYTES = 1 << 60  # Treat extremely large limits as "unbounded"
 
     def __init__(
         self,
-        docker_image: str = "ghcr.io/austin-s-h/sirnaforge:latest",
+        docker_image: str = DEFAULT_SIRNAFORGE_DOCKER_IMAGE,
         profile: str = "docker",
         work_dir: Path | None = None,
         nxf_home: Path | None = None,
