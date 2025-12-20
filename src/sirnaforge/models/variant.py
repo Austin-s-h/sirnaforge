@@ -1,7 +1,7 @@
 """Pydantic models for genomic variant data structures."""
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,7 +41,7 @@ class VariantRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Core variant identity
-    id: Optional[str] = Field(default=None, description="Variant identifier (e.g., rs12345, ClinVar accession)")
+    id: str | None = Field(default=None, description="Variant identifier (e.g., rs12345, ClinVar accession)")
     chr: str = Field(description="Chromosome (normalized to 'chrN' format for GRCh38)")
     pos: int = Field(ge=1, description="1-based genomic position")
     ref: str = Field(min_length=1, description="Reference allele")
@@ -56,12 +56,12 @@ class VariantRecord(BaseModel):
     )
 
     # ClinVar annotations
-    clinvar_significance: Optional[ClinVarSignificance] = Field(
+    clinvar_significance: ClinVarSignificance | None = Field(
         default=None, description="ClinVar clinical significance classification"
     )
 
     # Population frequency
-    af: Optional[float] = Field(
+    af: float | None = Field(
         default=None, ge=0.0, le=1.0, description="Global allele frequency (from gnomAD/Ensembl/dbSNP)"
     )
 
@@ -85,7 +85,7 @@ class VariantRecord(BaseModel):
         """Return variant in VCF-style coordinate format: chr:pos:ref:alt."""
         return f"{self.chr}:{self.pos}:{self.ref}:{self.alt}"
 
-    def get_max_population_af(self) -> Optional[float]:
+    def get_max_population_af(self) -> float | None:
         """Get the maximum allele frequency across all populations.
 
         Returns:
@@ -95,7 +95,7 @@ class VariantRecord(BaseModel):
             return None
         return max(self.population_afs.values())
 
-    def get_effective_af_for_mode(self, mode: "VariantMode") -> Optional[float]:  # noqa: F821
+    def get_effective_af_for_mode(self, mode: "VariantMode") -> float | None:  # noqa: F821
         """Get the effective allele frequency based on variant mode.
 
         For 'avoid' mode: Use max population AF if available (to avoid SNPs
@@ -119,7 +119,7 @@ class VariantRecord(BaseModel):
         # For target/both modes, or if no population data, use global AF
         return self.af
 
-    def get_primary_source(self) -> Optional[VariantSource]:
+    def get_primary_source(self) -> VariantSource | None:
         """Get the highest priority source for this variant."""
         priority_order = [VariantSource.CLINVAR, VariantSource.ENSEMBL, VariantSource.DBSNP, VariantSource.LOCAL_VCF]
         for source in priority_order:
@@ -145,12 +145,12 @@ class VariantQuery(BaseModel):
     query_type: VariantQueryType = Field(description="Detected query type")
 
     # Parsed components (populated based on query type)
-    rsid: Optional[str] = Field(default=None, description="rsID if query_type is RSID")
-    chr: Optional[str] = Field(default=None, description="Chromosome if coordinate or HGVS")
-    pos: Optional[int] = Field(default=None, ge=1, description="Position if coordinate")
-    ref: Optional[str] = Field(default=None, description="Reference allele if coordinate")
-    alt: Optional[str] = Field(default=None, description="Alternate allele if coordinate")
-    hgvs: Optional[str] = Field(default=None, description="HGVS string if query_type is HGVS")
+    rsid: str | None = Field(default=None, description="rsID if query_type is RSID")
+    chr: str | None = Field(default=None, description="Chromosome if coordinate or HGVS")
+    pos: int | None = Field(default=None, ge=1, description="Position if coordinate")
+    ref: str | None = Field(default=None, description="Reference allele if coordinate")
+    alt: str | None = Field(default=None, description="Alternate allele if coordinate")
+    hgvs: str | None = Field(default=None, description="HGVS string if query_type is HGVS")
 
     # Assembly
     assembly: str = Field(default="GRCh38", description="Target assembly (only GRCh38 supported)")

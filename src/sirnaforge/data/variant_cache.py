@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -60,7 +60,7 @@ class VariantParquetCache:
         empty_df.to_parquet(self.cache_file, index=False, engine="pyarrow", compression="snappy")
         logger.info(f"Initialized empty variant cache at {self.cache_file}")
 
-    def get(self, cache_key: str) -> Optional[VariantRecord]:
+    def get(self, cache_key: str) -> VariantRecord | None:
         """Retrieve a variant from cache by key.
 
         Args:

@@ -3,7 +3,7 @@
 import asyncio
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 import pysam
@@ -34,12 +34,12 @@ class VariantResolver:
     def __init__(
         self,
         min_af: float = 0.01,
-        clinvar_filters: Optional[list[ClinVarSignificance]] = None,
+        clinvar_filters: list[ClinVarSignificance] | None = None,
         assembly: str = "GRCh38",
-        source_priority: Optional[list[VariantSource]] = None,
-        cache_dir: Optional[Path] = None,
+        source_priority: list[VariantSource] | None = None,
+        cache_dir: Path | None = None,
         timeout: int = 30,
-        variant_mode: Optional[str] = None,
+        variant_mode: str | None = None,
     ):
         """Initialize variant resolver.
 
@@ -142,7 +142,7 @@ class VariantResolver:
             "Supported formats: rsID (rs12345), coordinate (chr17:7577121:G:A), HGVS (NM_000546.6:c.215C>G)"
         )
 
-    async def resolve_variant(self, query: VariantQuery) -> Optional[VariantRecord]:
+    async def resolve_variant(self, query: VariantQuery) -> VariantRecord | None:
         """Resolve a variant query to a VariantRecord.
 
         Tries sources in priority order: ClinVar -> Ensembl -> dbSNP
@@ -163,7 +163,7 @@ class VariantResolver:
             return cached
 
         # Try sources in priority order
-        variant: Optional[VariantRecord] = None
+        variant: VariantRecord | None = None
         for source in self.source_priority:
             try:
                 if source == VariantSource.CLINVAR:
@@ -193,7 +193,7 @@ class VariantResolver:
         self._put_to_cache(cache_key, variant)
         return variant
 
-    async def _query_clinvar(self, query: VariantQuery) -> Optional[VariantRecord]:  # noqa: PLR0911
+    async def _query_clinvar(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911
         """Query ClinVar for variant information.
 
         Uses ClinVar E-utilities API for GRCh38.
@@ -282,7 +282,7 @@ class VariantResolver:
             logger.warning(f"ClinVar query failed: {e}")
             return None
 
-    async def _query_ensembl(self, query: VariantQuery) -> Optional[VariantRecord]:  # noqa: PLR0911, PLR0912
+    async def _query_ensembl(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911, PLR0912
         """Query Ensembl Variation API for variant information.
 
         Args:
@@ -412,7 +412,7 @@ class VariantResolver:
             logger.warning(f"Ensembl query failed: {e}")
             return None
 
-    async def _query_dbsnp(self, query: VariantQuery) -> Optional[VariantRecord]:
+    async def _query_dbsnp(self, query: VariantQuery) -> VariantRecord | None:
         """Query dbSNP for variant information.
 
         Note: This is a placeholder. Full dbSNP API integration would require
@@ -482,7 +482,7 @@ class VariantResolver:
         }
         return stable_cache_key(cache_data)
 
-    def _get_from_cache(self, cache_key: str) -> Optional[VariantRecord]:
+    def _get_from_cache(self, cache_key: str) -> VariantRecord | None:
         """Retrieve variant from cache.
 
         Args:
@@ -531,7 +531,7 @@ class VariantResolver:
                 # Process each alternate allele
                 for alt in record.alts or []:
                     # Extract AF if available
-                    af: Optional[float] = None
+                    af: float | None = None
                     if "AF" in record.info:
                         af_values = record.info["AF"]
                         af = af_values[0] if isinstance(af_values, (list, tuple)) else af_values
@@ -579,10 +579,10 @@ class VariantResolver:
 def resolve_variant_sync(
     variant_id: str,
     min_af: float = 0.01,
-    clinvar_filters: Optional[list[ClinVarSignificance]] = None,
-    cache_dir: Optional[Path] = None,
-    variant_mode: Optional[str] = None,
-) -> Optional[VariantRecord]:
+    clinvar_filters: list[ClinVarSignificance] | None = None,
+    cache_dir: Path | None = None,
+    variant_mode: str | None = None,
+) -> VariantRecord | None:
     """Synchronous wrapper for variant resolution.
 
     Args:

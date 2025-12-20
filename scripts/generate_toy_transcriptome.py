@@ -11,7 +11,6 @@ This creates a ~2MB FASTA file with:
 import random
 import sys
 from pathlib import Path
-from typing import Optional
 
 # siRNA candidates from smoke test data (DNA versions)
 SMOKE_TEST_SIRNAS = [
@@ -42,7 +41,7 @@ def introduce_mismatches(sequence: str, num_mismatches: int) -> str:
     return "".join(seq_list)
 
 
-def generate_transcript_like_sequence(length: int, sirna_targets: Optional[list[str]] = None) -> str:
+def generate_transcript_like_sequence(length: int, sirna_targets: list[str] | None = None) -> str:
     """Generate a transcript-like sequence with optional embedded siRNA targets."""
     sequence = ""
     remaining_length = length

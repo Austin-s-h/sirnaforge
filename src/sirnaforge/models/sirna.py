@@ -1,7 +1,8 @@
 """Pydantic models for siRNA design data structures."""
 
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, Callable, Optional, TypeVar, Union
+from typing import Any, TypeVar
 
 import pandas as pd
 import pandera as pa
@@ -52,37 +53,35 @@ class FilterCriteria(BaseModel):
     )
 
     # Minimum Free Energy filters (optimal: -2 to -8 kcal/mol)
-    mfe_min: Optional[float] = Field(
+    mfe_min: float | None = Field(
         default=-8.0, description="Minimum MFE threshold in kcal/mol (more negative = too stable)"
     )
-    mfe_max: Optional[float] = Field(
+    mfe_max: float | None = Field(
         default=-2.0, description="Maximum MFE threshold in kcal/mol (less negative = too unstable)"
     )
 
     # Duplex stability filters (optimal: -15 to -25 kcal/mol)
-    duplex_stability_min: Optional[float] = Field(
+    duplex_stability_min: float | None = Field(
         default=-25.0, description="Minimum duplex ΔG threshold in kcal/mol (more negative = too stable)"
     )
-    duplex_stability_max: Optional[float] = Field(
+    duplex_stability_max: float | None = Field(
         default=-15.0, description="Maximum duplex ΔG threshold in kcal/mol (less negative = too unstable)"
     )
 
     # Melting temperature filters (optimal: 60-78°C for human cells)
-    melting_temp_min: Optional[float] = Field(default=60.0, description="Minimum melting temperature in °C")
-    melting_temp_max: Optional[float] = Field(default=78.0, description="Maximum melting temperature in °C")
+    melting_temp_min: float | None = Field(default=60.0, description="Minimum melting temperature in °C")
+    melting_temp_max: float | None = Field(default=78.0, description="Maximum melting temperature in °C")
 
     # End asymmetry filters (optimal: +2 to +6 kcal/mol)
-    delta_dg_end_min: Optional[float] = Field(
+    delta_dg_end_min: float | None = Field(
         default=2.0, description="Minimum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
     )
-    delta_dg_end_max: Optional[float] = Field(
+    delta_dg_end_max: float | None = Field(
         default=6.0, description="Maximum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
     )
 
     # Off-target filters
-    max_off_target_count: Optional[int] = Field(
-        default=3, ge=0, description="Maximum allowed off-target sites (goal: ≤3)"
-    )
+    max_off_target_count: int | None = Field(default=3, ge=0, description="Maximum allowed off-target sites (goal: ≤3)")
 
     @field_validator_typed("gc_max")
     @classmethod
@@ -100,26 +99,26 @@ class OffTargetFilterCriteria(BaseModel):
     """
 
     # Transcriptome off-target thresholds
-    max_transcriptome_hits_0mm: Optional[int] = Field(
+    max_transcriptome_hits_0mm: int | None = Field(
         default=1,
         ge=0,
         description="Maximum perfect match transcriptome hits. 1 hit may indicate ontarget effect.",
     )
-    max_transcriptome_hits_1mm: Optional[int] = Field(
+    max_transcriptome_hits_1mm: int | None = Field(
         default=10, ge=0, description="Maximum 1-mismatch transcriptome hits (typical: 5-10, None = no limit)"
     )
-    max_transcriptome_hits_2mm: Optional[int] = Field(
+    max_transcriptome_hits_2mm: int | None = Field(
         default=50, ge=0, description="Maximum 2-mismatch transcriptome hits (typical: 20-50, None = no limit)"
     )
-    max_transcriptome_seed_perfect: Optional[int] = Field(
+    max_transcriptome_seed_perfect: int | None = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
     )
 
     # miRNA off-target thresholds
-    max_mirna_perfect_seed: Optional[int] = Field(
+    max_mirna_perfect_seed: int | None = Field(
         default=0, ge=0, description="Maximum perfect miRNA seed matches (typical: 3-5, None = no limit)"
     )
-    max_mirna_1mm_seed: Optional[int] = Field(
+    max_mirna_1mm_seed: int | None = Field(
         default=10, ge=0, description="Maximum 1-mismatch miRNA seed hits (typical: 10-20, None = no limit)"
     )
     fail_on_high_risk_mirna: bool = Field(
@@ -127,7 +126,7 @@ class OffTargetFilterCriteria(BaseModel):
     )
 
     # Combined off-target threshold
-    max_total_offtarget_hits: Optional[int] = Field(
+    max_total_offtarget_hits: int | None = Field(
         default=None, ge=0, description="Maximum total off-target hits (transcriptome + miRNA, None = no limit)"
     )
 
@@ -249,9 +248,9 @@ class DesignParameters(BaseModel):
 
     # File paths (optional)
     # TODO: review snp incorporation feature
-    snp_file: Optional[str] = Field(default=None, description="Path to SNP VCF file for avoidance")
+    snp_file: str | None = Field(default=None, description="Path to SNP VCF file for avoidance")
     # Review genome index passing / FASTA selection
-    genome_index: Optional[str] = Field(default=None, description="Path to BWA genome index for off-target search")
+    genome_index: str | None = Field(default=None, description="Path to BWA genome index for off-target search")
 
 
 class SequenceType(str, Enum):
@@ -287,11 +286,11 @@ class SiRNACandidate(BaseModel):
     asymmetry_score: float = Field(
         ge=0, le=1, description="Thermodynamic asymmetry score for RISC loading (optimal: ≥0.65)"
     )
-    duplex_stability: Optional[float] = Field(default=None, description="Duplex formation ΔG in kcal/mol")
+    duplex_stability: float | None = Field(default=None, description="Duplex formation ΔG in kcal/mol")
 
     # Secondary structure
-    structure: Optional[str] = Field(default=None, description="RNA secondary structure (dot-bracket notation)")
-    mfe: Optional[float] = Field(default=None, description="Minimum free energy in kcal/mol (optimal: -2 to -8)")
+    structure: str | None = Field(default=None, description="RNA secondary structure (dot-bracket notation)")
+    mfe: float | None = Field(default=None, description="Minimum free energy in kcal/mol (optimal: -2 to -8)")
     paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.6)")
 
     # Off-target analysis
@@ -316,26 +315,26 @@ class SiRNACandidate(BaseModel):
     )
 
     # miRNA-specific fields (populated when design_mode == "mirna")
-    guide_pos1_base: Optional[str] = Field(
+    guide_pos1_base: str | None = Field(
         default=None, description="Nucleotide at guide position 1 (for Argonaute selection scoring)"
     )
-    pos1_pairing_state: Optional[str] = Field(
+    pos1_pairing_state: str | None = Field(
         default=None, description="Pairing state at position 1: perfect, wobble, or mismatch"
     )
-    seed_class: Optional[str] = Field(default=None, description="Seed match class: 6mer, 7mer-m8, 7mer-a1, or 8mer")
-    supp_13_16_score: Optional[float] = Field(
+    seed_class: str | None = Field(default=None, description="Seed match class: 6mer, 7mer-m8, 7mer-a1, or 8mer")
+    supp_13_16_score: float | None = Field(
         default=None, ge=0, le=1, description="3' supplementary pairing score (positions 13-16)"
     )
-    seed_7mer_hits: Optional[int] = Field(
+    seed_7mer_hits: int | None = Field(
         default=None, ge=0, description="Number of 7mer seed matches in off-target analysis"
     )
-    seed_8mer_hits: Optional[int] = Field(
+    seed_8mer_hits: int | None = Field(
         default=None, ge=0, description="Number of 8mer seed matches in off-target analysis"
     )
-    seed_hits_weighted: Optional[float] = Field(
+    seed_hits_weighted: float | None = Field(
         default=None, ge=0, description="Weighted seed hits by 3' UTR abundance (if expression data provided)"
     )
-    off_target_seed_risk_class: Optional[str] = Field(
+    off_target_seed_risk_class: str | None = Field(
         default=None, description="Off-target risk classification: low, medium, high"
     )
 
@@ -364,7 +363,7 @@ class SiRNACandidate(BaseModel):
         DIRTY_CONTROL = "DIRTY_CONTROL"
 
     # Either True (passed) or one of the FilterStatus reasons (failed)
-    passes_filters: Union[bool, FilterStatus] = Field(
+    passes_filters: bool | FilterStatus = Field(
         default=True, description="PASS if all filters passed, otherwise specific failure reason"
     )
     quality_issues: list[str] = Field(default_factory=list, description="List of detected quality concerns")
@@ -381,16 +380,16 @@ class SiRNACandidate(BaseModel):
         default_factory=list,
         description="Which alleles this candidate targets (e.g., ['ref'], ['alt'], or ['ref', 'alt'])",
     )
-    variant_mode: Optional[str] = Field(
+    variant_mode: str | None = Field(
         default=None, description="Variant handling mode used: 'target', 'avoid', or 'both'"
     )
 
     # Optional chemical modification metadata
-    guide_metadata: Optional[StrandMetadata] = Field(
+    guide_metadata: StrandMetadata | None = Field(
         default=None,
         description="Optional StrandMetadata for guide strand with chemical modifications",
     )
-    passenger_metadata: Optional[StrandMetadata] = Field(
+    passenger_metadata: StrandMetadata | None = Field(
         default=None,
         description="Optional StrandMetadata for passenger strand with chemical modifications",
     )

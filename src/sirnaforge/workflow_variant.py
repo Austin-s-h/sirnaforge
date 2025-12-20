@@ -194,10 +194,10 @@ def _save_variant_report(
         "variants": [],
     }
 
-    variant_entries: list[dict] = []
+    variant_entries: list[dict[str, Any]] = []
     for v in variants:
         ps = v.get_primary_source()
-        entry = {
+        entry: dict[str, Any] = {
             "id": v.id,
             "chr": v.chr,
             "pos": v.pos,
@@ -250,7 +250,7 @@ def parse_clinvar_filter_string(filter_string: str) -> list[ClinVarSignificance]
         ValueError: If any significance level is invalid
     """
     levels = [s.strip() for s in filter_string.split(",")]
-    result = []
+    result: list[ClinVarSignificance] = []
 
     for level in levels:
         try:

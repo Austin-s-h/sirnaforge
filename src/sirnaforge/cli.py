@@ -9,9 +9,10 @@ os.environ.setdefault("TERM", "dumb")
 
 import asyncio
 import json
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
 from Bio import SeqIO
@@ -416,7 +417,7 @@ def search(  # noqa: PLR0912
 @app_command()
 def workflow(  # noqa: PLR0912
     gene_query: str = typer.Argument(..., help="Gene name or ID to analyze"),
-    input_fasta: Optional[str] = typer.Option(
+    input_fasta: str | None = typer.Option(
         None,
         "--input-fasta",
         help="Local path or remote URI to an input FASTA file (http/https/ftp)",
@@ -461,7 +462,7 @@ def workflow(  # noqa: PLR0912
         "--mirna-db",
         help="miRNA reference database to use for seed analysis",
     ),
-    mirna_species: Optional[str] = typer.Option(
+    mirna_species: str | None = typer.Option(
         None,
         "--mirna-species",
         help=(
@@ -470,7 +471,7 @@ def workflow(  # noqa: PLR0912
             "Use this for surgical control of miRNA database queries."
         ),
     ),
-    transcriptome_fasta: Optional[str] = typer.Option(
+    transcriptome_fasta: str | None = typer.Option(
         None,
         "--transcriptome-fasta",
         help=(
@@ -481,7 +482,7 @@ def workflow(  # noqa: PLR0912
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
         ),
     ),
-    transcriptome_filter: Optional[str] = typer.Option(
+    transcriptome_filter: str | None = typer.Option(
         None,
         "--transcriptome-filter",
         help=(
@@ -492,7 +493,7 @@ def workflow(  # noqa: PLR0912
             "Filtered versions are cached separately with automatic indexing."
         ),
     ),
-    offtarget_indices: Optional[str] = typer.Option(
+    offtarget_indices: str | None = typer.Option(
         None,
         "--offtarget-indices",
         help=(
@@ -544,7 +545,7 @@ def workflow(  # noqa: PLR0912
             "Can be specified multiple times. All variants must be on GRCh38 assembly."
         ),
     ),
-    snp_file: Optional[Path] = typer.Option(
+    snp_file: Path | None = typer.Option(
         None,
         "--snp-file",
         help=(
@@ -593,7 +594,7 @@ def workflow(  # noqa: PLR0912
         "-v",
         help="Enable verbose output",
     ),
-    log_file: Optional[Path] = typer.Option(
+    log_file: Path | None = typer.Option(
         None,
         "--log-file",
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
@@ -809,12 +810,12 @@ def offtarget(
         "--mirna-db",
         help="miRNA reference database to use for seed analysis",
     ),
-    mirna_species: Optional[str] = typer.Option(
+    mirna_species: str | None = typer.Option(
         None,
         "--mirna-species",
         help=("Override miRNA species identifiers (comma-separated). When omitted, automatically maps from --species."),
     ),
-    transcriptome_fasta: Optional[str] = typer.Option(
+    transcriptome_fasta: str | None = typer.Option(
         None,
         "--transcriptome-fasta",
         help=(
@@ -822,7 +823,7 @@ def offtarget(
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
         ),
     ),
-    transcriptome_filter: Optional[str] = typer.Option(
+    transcriptome_filter: str | None = typer.Option(
         None,
         "--transcriptome-filter",
         help=(
@@ -831,7 +832,7 @@ def offtarget(
             "Example: --transcriptome-filter protein_coding,canonical_only."
         ),
     ),
-    offtarget_indices: Optional[str] = typer.Option(
+    offtarget_indices: str | None = typer.Option(
         None,
         "--offtarget-indices",
         help=(
@@ -845,7 +846,7 @@ def offtarget(
         "-v",
         help="Enable verbose output",
     ),
-    log_file: Optional[Path] = typer.Option(
+    log_file: Path | None = typer.Option(
         None,
         "--log-file",
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
@@ -1055,12 +1056,12 @@ def design(  # noqa: PLR0912
         min=1,
         help="Maximum consecutive identical nucleotides",
     ),
-    genome_index: Optional[Path] = typer.Option(
+    genome_index: Path | None = typer.Option(
         None,
         "--genome-index",
         help="Genome index for off-target analysis",
     ),
-    snp_file: Optional[Path] = typer.Option(
+    snp_file: Path | None = typer.Option(
         None,
         "--snp-file",
         help="VCF file with SNPs to avoid",
@@ -1536,7 +1537,7 @@ def sequences_show(
         file_okay=True,
         dir_okay=False,
     ),
-    sequence_id: Optional[str] = typer.Option(
+    sequence_id: str | None = typer.Option(
         None,
         "--id",
         help="Show only this sequence ID",
@@ -1595,7 +1596,7 @@ def sequences_annotate(
         file_okay=True,
         dir_okay=False,
     ),
-    output: Optional[Path] = typer.Option(
+    output: Path | None = typer.Option(
         None,
         "--output",
         "-o",

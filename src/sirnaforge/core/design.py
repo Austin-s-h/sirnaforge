@@ -3,7 +3,6 @@
 import math
 import sys
 import time
-from typing import Optional, Union
 
 import Bio
 from Bio import SeqIO
@@ -174,7 +173,7 @@ class SiRNADesigner:
 
             # Early filtering for computational efficiency
             gc_content = self._calculate_gc_content(guide_seq)
-            fail_reason: Optional[SiRNACandidate.FilterStatus] = None
+            fail_reason: SiRNACandidate.FilterStatus | None = None
             if not (filters.gc_min <= gc_content <= filters.gc_max):
                 fail_reason = SiRNACandidate.FilterStatus.GC_OUT_OF_RANGE
             elif self._has_poly_runs(guide_seq, filters.max_poly_runs):
@@ -220,7 +219,7 @@ class SiRNADesigner:
 
         for candidate in candidates:
             issues: list[str] = []
-            status: Union[bool, _ModelCandidate.FilterStatus] = True
+            status: bool | _ModelCandidate.FilterStatus = True
 
             # Note: GC content and poly-run filtering already done in _enumerate_candidates
             # This is mainly for any additional filters or post-processing
@@ -306,7 +305,7 @@ class SiRNADesigner:
 
         return candidates
 
-    def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, Optional[float]]:
+    def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, float | None]:
         """Compute duplex stability ΔG and a normalized score in [0,1].
 
         Mapping: dg in [-40, -5] kcal/mol -> score in [1, 0]. Clamp outside this range.

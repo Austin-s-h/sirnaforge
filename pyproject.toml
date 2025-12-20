@@ -24,7 +24,7 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.10, <3.13"
-version = "0.3.3"
+version = "0.4.0"
 
 dependencies = [
   "biopython>=1.84",
@@ -162,7 +162,7 @@ exclude = [
   "venv",
 ]
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 ignore = [
@@ -196,38 +196,6 @@ select = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-# Black configuration
-[tool.black]
-exclude = '''
-/(
-    \.bzr
-  | \.direnv
-  | \.eggs
-  | \.git
-  | \.git-rewrite-history
-  | \.hg
-  | \.mypy_cache
-  | \.nox
-  | \.pants\.d
-  | \.pytype
-  | \.ruff_cache
-  | \.svn
-  | \.tox
-  | \.venv
-  | __pypackages__
-  | _build
-  | buck-out
-  | build
-  | dist
-  | node_modules
-  | venv
-  | .*\.(fasta|fa|fastq|fq|vcf|gff|gff3|gtf|bed|sam|bam|bcf|wig|bigwig|bigbed|2bit|gbk|gb|genbank|embl|sff|ab1|scf|qual|phylip|nexus|clustal|aln|msf|pir|stockholm)$
-)/
-'''
-include = '\.pyi?$'
-line-length = 120
-target-version = ['py310']
-
 # MyPy configuration
 [tool.mypy]
 check_untyped_defs = true
@@ -239,7 +207,6 @@ ignore_missing_imports = true
 mypy_path = "src"
 no_implicit_optional = true
 pretty = true
-# Use Python 3.10 features (PEP 604 union syntax) for type checking
 python_version = "3.10"
 show_error_codes = true
 strict_equality = true
