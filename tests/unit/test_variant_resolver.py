@@ -7,6 +7,7 @@ from sirnaforge.models.variant import (
     ClinVarSignificance,
     VariantQuery,
     VariantQueryType,
+    VariantRecord,
     VariantSource,
 )
 
@@ -117,9 +118,6 @@ class TestVariantResolverFiltering:
     def test_af_filter_pass(self):
         """Test variants passing AF filter."""
         resolver = VariantResolver(min_af=0.01)
-
-        from sirnaforge.models.variant import VariantRecord
-
         # AF above threshold
         variant = VariantRecord(
             chr="chr1",
@@ -152,9 +150,6 @@ class TestVariantResolverFiltering:
     def test_af_filter_fail(self):
         """Test variants failing AF filter."""
         resolver = VariantResolver(min_af=0.01)
-
-        from sirnaforge.models.variant import VariantRecord
-
         variant = VariantRecord(
             chr="chr1",
             pos=100,
@@ -169,8 +164,6 @@ class TestVariantResolverFiltering:
         resolver = VariantResolver(
             clinvar_filters=[ClinVarSignificance.PATHOGENIC, ClinVarSignificance.LIKELY_PATHOGENIC]
         )
-
-        from sirnaforge.models.variant import VariantRecord
 
         variant = VariantRecord(
             chr="chr1",
@@ -187,9 +180,6 @@ class TestVariantResolverFiltering:
         resolver = VariantResolver(
             clinvar_filters=[ClinVarSignificance.PATHOGENIC, ClinVarSignificance.LIKELY_PATHOGENIC]
         )
-
-        from sirnaforge.models.variant import VariantRecord
-
         variant = VariantRecord(
             chr="chr1",
             pos=100,
@@ -205,9 +195,6 @@ class TestVariantResolverFiltering:
         resolver = VariantResolver(
             clinvar_filters=[ClinVarSignificance.PATHOGENIC, ClinVarSignificance.LIKELY_PATHOGENIC]
         )
-
-        from sirnaforge.models.variant import VariantRecord
-
         # Variant from Ensembl, not ClinVar - should pass regardless of significance
         variant = VariantRecord(
             chr="chr1",
@@ -242,8 +229,6 @@ class TestVariantResolverCache:
 
     def test_cache_put_and_get(self, tmp_path):
         """Test caching and retrieving variants."""
-        from sirnaforge.models.variant import VariantRecord
-
         resolver = VariantResolver(cache_dir=tmp_path)
 
         variant = VariantRecord(

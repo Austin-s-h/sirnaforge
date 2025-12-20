@@ -5,6 +5,9 @@ import pytest
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord, VariantSource
 from sirnaforge.workflow_variant import (
     VariantWorkflowConfig,
+    _count_by_chromosome,
+    _count_by_source,
+    _deduplicate_variants,
     parse_clinvar_filter_string,
 )
 
@@ -95,8 +98,6 @@ class TestVariantDeduplication:
 
     def test_deduplicate_variants(self):
         """Test deduplication of variants."""
-        from sirnaforge.workflow_variant import _deduplicate_variants
-
         variants = [
             VariantRecord(
                 id="rs1234",
@@ -140,8 +141,6 @@ class TestVariantCounting:
 
     def test_count_by_source(self):
         """Test counting variants by source."""
-        from sirnaforge.workflow_variant import _count_by_source
-
         variants = [
             VariantRecord(chr="chr1", pos=100, ref="A", alt="T", sources=[VariantSource.CLINVAR]),
             VariantRecord(chr="chr1", pos=200, ref="G", alt="C", sources=[VariantSource.CLINVAR]),
@@ -155,8 +154,6 @@ class TestVariantCounting:
 
     def test_count_by_chromosome(self):
         """Test counting variants by chromosome."""
-        from sirnaforge.workflow_variant import _count_by_chromosome
-
         variants = [
             VariantRecord(chr="chr1", pos=100, ref="A", alt="T"),
             VariantRecord(chr="chr1", pos=200, ref="G", alt="C"),

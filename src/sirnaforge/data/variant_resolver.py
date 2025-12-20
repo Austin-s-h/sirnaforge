@@ -16,6 +16,7 @@ from sirnaforge.models.variant import (
     VariantRecord,
     VariantSource,
 )
+from sirnaforge.models.variant import VariantMode as VM
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.logging_utils import get_logger
 
@@ -70,7 +71,6 @@ class VariantResolver:
         self.timeout = timeout
 
         # Import VariantMode for filtering
-        from sirnaforge.models.variant import VariantMode as VM
 
         self.variant_mode = VM(variant_mode) if variant_mode else None
 
@@ -331,9 +331,8 @@ class VariantResolver:
 
                             if freq is not None:
                                 # Extract global gnomAD AF
-                                if "gnomad" in pop_name.lower() and ":" not in pop_name:
-                                    if af is None:
-                                        af = freq
+                                if "gnomad" in pop_name.lower() and ":" not in pop_name and af is None:
+                                    af = freq
 
                                 # Extract population-specific AFs from gnomAD
                                 # Format examples: "1000GENOMES:phase_3:AFR", "gnomAD:AFR"
@@ -342,10 +341,11 @@ class VariantResolver:
                                     # Get the last part which is usually the population code
                                     pop_code = parts[-1].upper()
                                     # Standard population codes: AFR, AMR, EAS, EUR, SAS, etc.
-                                    if pop_code in ["AFR", "AMR", "EAS", "EUR", "SAS", "FIN", "ASJ", "OTH"]:
+                                    if pop_code in ["AFR", "AMR", "EAS", "EUR", "SAS", "FIN", "ASJ", "OTH"] and (
+                                        pop_code not in population_afs or freq > population_afs[pop_code]
+                                    ):
                                         # Keep the maximum AF if we see multiple sources for same population
-                                        if pop_code not in population_afs or freq > population_afs[pop_code]:
-                                            population_afs[pop_code] = freq
+                                        population_afs[pop_code] = freq
 
                         # Get first allele information
                         mappings = data.get("mappings", [])
@@ -433,10 +433,7 @@ class VariantResolver:
             True if variant passes all filters
         """
         # Get effective AF based on variant mode
-        if self.variant_mode:
-            effective_af = variant.get_effective_af_for_mode(self.variant_mode)
-        else:
-            effective_af = variant.af
+        effective_af = variant.get_effective_af_for_mode(self.variant_mode) if self.variant_mode else variant.af
 
         # AF filter
         if effective_af is not None and effective_af < self.min_af:

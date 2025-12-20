@@ -1,7 +1,6 @@
 """Tests for population-specific allele frequency handling."""
 
-import pytest
-
+from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import VariantMode, VariantRecord, VariantSource
 
 
@@ -96,8 +95,6 @@ class TestAvoidModeFiltering:
 
     def test_avoid_mode_filters_high_population_af(self):
         """Test that avoid mode filters variants with high population AF."""
-        from sirnaforge.data.variant_resolver import VariantResolver
-
         resolver = VariantResolver(
             min_af=0.05,
             variant_mode="avoid",
@@ -120,8 +117,6 @@ class TestAvoidModeFiltering:
 
     def test_avoid_mode_without_population_data_uses_global(self):
         """Test that avoid mode falls back to global AF without population data."""
-        from sirnaforge.data.variant_resolver import VariantResolver
-
         resolver = VariantResolver(
             min_af=0.05,
             variant_mode="avoid",
@@ -144,8 +139,6 @@ class TestTargetModeFiltering:
 
     def test_target_mode_uses_global_af(self):
         """Test that target mode uses global AF regardless of population data."""
-        from sirnaforge.data.variant_resolver import VariantResolver
-
         resolver = VariantResolver(
             min_af=0.05,
             variant_mode="target",
@@ -165,8 +158,6 @@ class TestTargetModeFiltering:
 
     def test_target_mode_targets_common_variants(self):
         """Test that target mode correctly filters for common variants."""
-        from sirnaforge.data.variant_resolver import VariantResolver
-
         resolver = VariantResolver(
             min_af=0.05,
             variant_mode="target",

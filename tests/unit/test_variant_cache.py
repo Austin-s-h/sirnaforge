@@ -1,7 +1,5 @@
 """Unit tests for Parquet-based variant cache."""
 
-import pytest
-
 from sirnaforge.data.variant_cache import VariantParquetCache
 from sirnaforge.models.variant import ClinVarSignificance, VariantRecord, VariantSource
 
@@ -99,7 +97,7 @@ class TestVariantParquetCache:
 
         # Retrieve all
         for i, variant in enumerate(variants):
-            retrieved = cache.get(f"key_{i}")
+            retrieved = cache.get(f"key_{i}: variant_{variant}")
             assert retrieved is not None
             assert retrieved.id == f"rs{i}"
 
