@@ -4,6 +4,7 @@ import asyncio
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 import pysam
@@ -321,7 +322,10 @@ class VariantResolver:
 
                 # Build API endpoint based on query type
                 if query.query_type == VariantQueryType.RSID and query.rsid:
-                    url = f"{base_url}/variation/human/{query.rsid}"
+                    # Use structured URL building for better maintainability
+                    base_endpoint = f"{base_url}/variation/human/{query.rsid}"
+                    params = {"pops": "1"}  # Include population frequency data
+                    url = f"{base_endpoint}?{urlencode(params)}"
                 elif query.query_type == VariantQueryType.COORDINATE and query.chr and query.pos:
                     # Ensembl region endpoint
                     chrom = query.chr.replace("chr", "")
@@ -353,42 +357,54 @@ class VariantResolver:
                         af = None
                         population_afs: dict[str, float] = {}
 
+                        # Get first allele information from mappings
+                        if not ensembl_response.mappings:
+                            return None
+
+                        mapping = ensembl_response.mappings[0]
+                        allele_string = mapping.allele_string
+                        alleles = allele_string.split("/")
+                        if len(alleles) < 2:
+                            return None
+
+                        # Get the reference and alternate alleles
+                        alleles[0]
+                        alt_alleles = set(alleles[1:])  # All alleles except reference
+
                         for pop in ensembl_response.populations:
                             if pop is None:
                                 continue
                             pop_name = pop.population
                             freq = pop.frequency
+                            pop_allele = pop.allele
 
-                            if freq is not None:
-                                # Extract global gnomAD AF - look for any gnomAD entry without colon
-                                if "gnomad" in pop_name.lower() and ":" not in pop_name and af is None:
+                            if freq is not None and pop_allele in alt_alleles:
+                                # Extract global gnomAD AF - look for gnomAD ALL population
+                                if pop_name.lower() == "gnomade:all" and (af is None or freq > af):
                                     af = freq
-
                                 # Extract population-specific AFs from gnomAD
-                                # Format examples: "1000GENOMES:phase_3:AFR", "gnomAD:AFR", "TOPMED:AFR"
-                                if ":" in pop_name:
-                                    parts = pop_name.split(":")
-                                    # Get the last part which is usually the population code
-                                    pop_code = parts[-1].upper()
-                                    # Standard population codes
-                                    if pop_code in [
-                                        "AFR",
-                                        "AMR",
-                                        "EAS",
-                                        "EUR",
-                                        "SAS",
-                                        "FIN",
-                                        "ASJ",
-                                        "OTH",
-                                        "NFE",
-                                        "SAS",
-                                        "EAS",
-                                        "AMR",
-                                        "AFR",
-                                        "OTH",
-                                    ] and (pop_code not in population_afs or freq > population_afs[pop_code]):
-                                        # Keep the maximum AF if we see multiple sources for same population
-                                        population_afs[pop_code] = freq
+                                # Handle Ensembl's population format: "gnomADe:{code}"
+                                if ":" in pop_name and pop_name.lower().startswith("gnomade:"):
+                                    pop_code = pop_name.split(":")[-1].upper()
+                                    # Map Ensembl population codes to standard codes
+                                    pop_mapping = {
+                                        "AFR": "AFR",
+                                        "AMR": "AMR",
+                                        "EAS": "EAS",
+                                        "EUR": "EUR",
+                                        "SAS": "SAS",
+                                        "FIN": "FIN",
+                                        "ASJ": "ASJ",
+                                        "OTH": "OTH",
+                                        "NFE": "NFE",
+                                        "MID": "MID",
+                                        "ALL": "ALL",
+                                        "REMAINING": "OTH",
+                                    }
+                                    standard_code = pop_mapping.get(pop_code, pop_code)
+                                    if standard_code not in population_afs or freq > population_afs[standard_code]:
+                                        # Keep the maximum AF across all alternate alleles for this population
+                                        population_afs[standard_code] = freq
 
                         # If no global AF found, try to get it from other sources
                         if af is None and ensembl_response.populations:

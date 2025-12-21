@@ -65,8 +65,9 @@ class EnsemblPopulationFrequency(BaseModel):
 
     population: str = Field(description="Population identifier (e.g., 'AFR', 'EUR', '1000GENOMES:phase_3:AFR')")
     frequency: float | None = Field(description="Allele frequency in this population", ge=0.0, le=1.0)
-    allele_count: int | None = Field(description="Count of alleles observed", ge=0)
-    allele_number: int | None = Field(description="Total number of alleles", ge=0)
+    allele_count: int | None = Field(default=None, description="Count of alleles observed", ge=0)
+    allele_number: int | None = Field(default=None, description="Total number of alleles", ge=0)
+    allele: str | None = Field(default=None, description="Allele for which frequency is reported")
 
 
 class EnsemblVariationResponse(BaseModel):
