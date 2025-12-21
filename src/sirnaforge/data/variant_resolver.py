@@ -330,22 +330,49 @@ class VariantResolver:
                             freq = pop.get("frequency")
 
                             if freq is not None:
-                                # Extract global gnomAD AF
+                                # Extract global gnomAD AF - look for any gnomAD entry without colon
                                 if "gnomad" in pop_name.lower() and ":" not in pop_name and af is None:
                                     af = freq
 
                                 # Extract population-specific AFs from gnomAD
-                                # Format examples: "1000GENOMES:phase_3:AFR", "gnomAD:AFR"
+                                # Format examples: "1000GENOMES:phase_3:AFR", "gnomAD:AFR", "TOPMED:AFR"
                                 if ":" in pop_name:
                                     parts = pop_name.split(":")
                                     # Get the last part which is usually the population code
                                     pop_code = parts[-1].upper()
-                                    # Standard population codes: AFR, AMR, EAS, EUR, SAS, etc.
-                                    if pop_code in ["AFR", "AMR", "EAS", "EUR", "SAS", "FIN", "ASJ", "OTH"] and (
-                                        pop_code not in population_afs or freq > population_afs[pop_code]
-                                    ):
+                                    # Standard population codes: TODO: ref
+                                    if pop_code in [
+                                        "AFR",
+                                        "AMR",
+                                        "EAS",
+                                        "EUR",
+                                        "SAS",
+                                        "FIN",
+                                        "ASJ",
+                                        "OTH",
+                                        "NFE",
+                                        "SAS",
+                                        "EAS",
+                                        "AMR",
+                                        "AFR",
+                                        "OTH",
+                                    ] and (pop_code not in population_afs or freq > population_afs[pop_code]):
                                         # Keep the maximum AF if we see multiple sources for same population
                                         population_afs[pop_code] = freq
+
+                        # If no global AF found, try to get it from other sources
+                        if af is None and populations:
+                            # Try to find any frequency that looks like a global AF
+                            for pop in populations:
+                                pop_name = pop.get("population", "").lower()
+                                freq = pop.get("frequency")
+
+                                # Look for common global AF indicators
+                                if freq is not None and any(
+                                    indicator in pop_name for indicator in ["1000genomes", "1kg", "global", "all"]
+                                ):
+                                    af = freq
+                                    break
 
                         # Get first allele information
                         mappings = data.get("mappings", [])
@@ -440,8 +467,10 @@ class VariantResolver:
         # Get effective AF based on variant mode
         effective_af = variant.get_effective_af_for_mode(self.variant_mode) if self.variant_mode else variant.af
 
-        # AF filter
-        if effective_af is not None and effective_af < self.min_af:
+        # AF filter - warn if no AF data but don't fail
+        if effective_af is None:
+            logger.warning(f"Variant {variant.to_vcf_style()} has no allele frequency data, skipping AF filter")
+        elif effective_af < self.min_af:
             max_pop_af = variant.get_max_population_af()
             if max_pop_af and max_pop_af != effective_af:
                 global_af_str = f"{variant.af:.4f}" if variant.af is not None else "N/A"
