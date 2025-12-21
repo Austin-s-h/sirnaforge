@@ -4,6 +4,10 @@ import pytest
 
 from sirnaforge.models.variant import (
     ClinVarSignificance,
+    ClinVarVariationResponse,
+    EnsemblMapping,
+    EnsemblPopulationFrequency,
+    EnsemblVariationResponse,
     VariantMode,
     VariantQuery,
     VariantQueryType,
@@ -194,3 +198,210 @@ class TestVariantQuery:
         )
 
         assert query.assembly == "GRCh38"
+
+
+class TestEnsemblMapping:
+    """Tests for EnsemblMapping model."""
+
+    def test_ensembl_mapping_creation(self):
+        """Test creating a valid EnsemblMapping."""
+        mapping = EnsemblMapping(
+            location="17:7673802-7673802",
+            allele_string="C/A",
+            assembly_name="GRCh38",
+            seq_region_name="17",
+            strand=1,
+            start=7673802,
+            end=7673802,
+            coord_system="chromosome",
+        )
+
+        assert mapping.location == "17:7673802-7673802"
+        assert mapping.allele_string == "C/A"
+        assert mapping.assembly_name == "GRCh38"
+        assert mapping.seq_region_name == "17"
+        assert mapping.strand == 1
+        assert mapping.start == 7673802
+        assert mapping.end == 7673802
+
+    def test_ensembl_mapping_extra_fields(self):
+        """Test EnsemblMapping allows extra fields."""
+        mapping = EnsemblMapping(
+            location="17:7673802-7673802",
+            allele_string="C/A",
+            assembly_name="GRCh38",
+            seq_region_name="17",
+            strand=1,
+            start=7673802,
+            end=7673802,
+            coord_system="chromosome",
+            extra_field="extra_value",  # Should be allowed
+        )
+
+        assert mapping.extra_field == "extra_value"
+
+
+class TestEnsemblPopulationFrequency:
+    """Tests for EnsemblPopulationFrequency model."""
+
+    def test_population_frequency_creation(self):
+        """Test creating a valid EnsemblPopulationFrequency."""
+        freq = EnsemblPopulationFrequency(
+            population="AFR",
+            frequency=0.15,
+            allele_count=30,
+            allele_number=200,
+        )
+
+        assert freq.population == "AFR"
+        assert freq.frequency == 0.15
+        assert freq.allele_count == 30
+        assert freq.allele_number == 200
+
+    def test_population_frequency_optional_fields(self):
+        """Test EnsemblPopulationFrequency with optional fields."""
+        freq = EnsemblPopulationFrequency(
+            population="EUR",
+            frequency=None,
+            allele_count=None,
+            allele_number=None,
+        )
+
+        assert freq.population == "EUR"
+        assert freq.frequency is None
+        assert freq.allele_count is None
+        assert freq.allele_number is None
+
+    def test_population_frequency_validation(self):
+        """Test EnsemblPopulationFrequency field validation."""
+        with pytest.raises(ValueError):
+            EnsemblPopulationFrequency(
+                population="AFR",
+                frequency=1.5,  # Invalid: > 1.0
+            )
+
+        with pytest.raises(ValueError):
+            EnsemblPopulationFrequency(
+                population="AFR",
+                frequency=-0.1,  # Invalid: < 0.0
+            )
+
+
+class TestEnsemblVariationResponse:
+    """Tests for EnsemblVariationResponse model."""
+
+    def test_ensembl_response_creation(self):
+        """Test creating a valid EnsemblVariationResponse."""
+        response = EnsemblVariationResponse(
+            name="rs28934576",
+            var_class="SNP",
+            source="Variants (including SNPs and indels) imported from dbSNP",
+            most_severe_consequence="missense_variant",
+            MAF=0.001,
+            minor_allele="A",
+            ambiguity="N",
+            mappings=[
+                EnsemblMapping(
+                    location="17:7673802-7673802",
+                    allele_string="C/A",
+                    assembly_name="GRCh38",
+                    seq_region_name="17",
+                    strand=1,
+                    start=7673802,
+                    end=7673802,
+                    coord_system="chromosome",
+                )
+            ],
+            clinical_significance=["pathogenic"],
+            synonyms=["RCV000376655"],
+            evidence=["Frequency", "1000Genomes"],
+            populations=[],
+        )
+
+        assert response.name == "rs28934576"
+        assert response.var_class == "SNP"
+        assert response.MAF == 0.001
+        assert len(response.mappings) == 1
+        assert response.clinical_significance == ["pathogenic"]
+
+    def test_ensembl_response_extra_fields(self):
+        """Test EnsemblVariationResponse allows extra fields."""
+        response = EnsemblVariationResponse(
+            name="rs28934576",
+            var_class="SNP",
+            source="dbSNP",
+            most_severe_consequence=None,
+            MAF=None,
+            minor_allele=None,
+            ambiguity="N",
+            mappings=[],
+            clinical_significance=None,
+            synonyms=None,
+            evidence=None,
+            populations=[],
+            extra_api_field="extra_value",  # Should be allowed
+        )
+
+        assert response.extra_api_field == "extra_value"
+
+
+class TestClinVarVariationResponse:
+    """Tests for ClinVarVariationResponse model."""
+
+    def test_clinvar_response_creation(self):
+        """Test creating a valid ClinVarVariationResponse."""
+        response = ClinVarVariationResponse(
+            uid="376655",
+            obj_type="single nucleotide variant",
+            accession="VCV000376655",
+            title="NM_000546.6(TP53):c.818G>T (p.Arg273Leu)",
+            germline_classification={
+                "description": "Pathogenic",
+                "last_evaluated": "2024/09/29 00:00",
+                "review_status": "criteria provided, multiple submitters, no conflicts",
+            },
+            clinical_impact_classification=None,
+            variation_set=[],
+            genes=[],
+            molecular_consequence_list=["missense variant"],
+        )
+
+        assert response.uid == "376655"
+        assert response.accession == "VCV000376655"
+        assert response.title == "NM_000546.6(TP53):c.818G>T (p.Arg273Leu)"
+        assert response.germline_classification["description"] == "Pathogenic"
+
+    def test_clinvar_response_minimal(self):
+        """Test ClinVarVariationResponse with minimal required fields."""
+        response = ClinVarVariationResponse(
+            uid="376655",
+            obj_type=None,
+            accession=None,
+            title=None,
+            germline_classification=None,
+            clinical_impact_classification=None,
+            variation_set=None,
+            genes=None,
+            molecular_consequence_list=None,
+        )
+
+        assert response.uid == "376655"
+        assert response.obj_type is None
+        assert response.germline_classification is None
+
+    def test_clinvar_response_extra_fields(self):
+        """Test ClinVarVariationResponse allows extra fields."""
+        response = ClinVarVariationResponse(
+            uid="376655",
+            obj_type="single nucleotide variant",
+            accession="VCV000376655",
+            title="Test variant",
+            germline_classification=None,
+            clinical_impact_classification=None,
+            variation_set=None,
+            genes=None,
+            molecular_consequence_list=None,
+            extra_api_field="extra_value",  # Should be allowed
+        )
+
+        assert response.extra_api_field == "extra_value"

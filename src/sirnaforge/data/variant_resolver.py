@@ -11,6 +11,8 @@ import pysam
 from sirnaforge.data.variant_cache import VariantParquetCache
 from sirnaforge.models.variant import (
     ClinVarSignificance,
+    ClinVarVariationResponse,
+    EnsemblVariationResponse,
     VariantQuery,
     VariantQueryType,
     VariantRecord,
@@ -193,7 +195,7 @@ class VariantResolver:
         self._put_to_cache(cache_key, variant)
         return variant
 
-    async def _query_clinvar(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911
+    async def _query_clinvar(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911, PLR0912
         """Query ClinVar for variant information.
 
         Uses ClinVar E-utilities API for GRCh38.
@@ -250,24 +252,43 @@ class VariantResolver:
                         summary_data = await fetch_response.json()
                         result = summary_data.get("result", {}).get(clinvar_id, {})
 
-                        # Parse ClinVar response (simplified)
-                        # Note: This is a basic implementation. Full ClinVar parsing is complex.
-                        clinical_significance = result.get("clinical_significance", {}).get("description", "Unknown")
+                        # Validate and parse response with Pydantic model
+                        try:
+                            clinvar_response = ClinVarVariationResponse(**result)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse ClinVar response: {e}")
+                            return None
+
+                        # Extract clinical significance
+                        clinical_significance = None
+                        if clinvar_response.germline_classification:
+                            clinical_significance = clinvar_response.germline_classification.get("description")
 
                         # Map to ClinVarSignificance enum
                         try:
-                            sig_enum = ClinVarSignificance(clinical_significance)
+                            sig_enum = ClinVarSignificance(clinical_significance) if clinical_significance else None
                         except ValueError:
                             sig_enum = ClinVarSignificance.OTHER
 
-                        # Extract coordinates if available
+                        # Extract coordinates from variation_set if available
                         chr_val = query.chr or "unknown"
                         pos_val = query.pos or 0
                         ref_val = query.ref or ""
                         alt_val = query.alt or ""
 
+                        # Try to extract from variation_set
+                        if clinvar_response.variation_set:
+                            for var_set in clinvar_response.variation_set:
+                                if "variation_loc" in var_set:
+                                    for loc in var_set["variation_loc"]:
+                                        if loc.get("assembly_name") == "GRCh38":
+                                            chr_val = f"chr{loc.get('chr', chr_val)}"
+                                            pos_val = int(loc.get("start", pos_val))
+                                            break
+                                    break
+
                         return VariantRecord(
-                            id=query.rsid or f"clinvar_{clinvar_id}",
+                            id=query.rsid or f"clinvar_{clinvar_response.uid}",
                             chr=chr_val,
                             pos=pos_val,
                             ref=ref_val,
@@ -275,7 +296,8 @@ class VariantResolver:
                             assembly=self.assembly,
                             sources=[VariantSource.CLINVAR],
                             clinvar_significance=sig_enum,
-                            provenance={"clinvar_id": clinvar_id, "source": "ClinVar E-utilities"},
+                            annotations={"clinvar_data": clinvar_response.model_dump()},
+                            provenance={"clinvar_id": clinvar_response.uid, "source": "ClinVar E-utilities"},
                         )
 
         except Exception as e:
@@ -320,14 +342,22 @@ class VariantResolver:
                         if not data or "error" in data:
                             return None
 
-                        # Extract allele frequency from gnomAD if available
-                        populations = data.get("populations", [])
+                        # Validate and parse response with Pydantic model
+                        try:
+                            ensembl_response = EnsemblVariationResponse(**data)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse Ensembl response: {e}")
+                            return None
+
+                        # Extract allele frequency from populations if available
                         af = None
                         population_afs: dict[str, float] = {}
 
-                        for pop in populations:
-                            pop_name = pop.get("population", "")
-                            freq = pop.get("frequency")
+                        for pop in ensembl_response.populations:
+                            if pop is None:
+                                continue
+                            pop_name = pop.population
+                            freq = pop.frequency
 
                             if freq is not None:
                                 # Extract global gnomAD AF - look for any gnomAD entry without colon
@@ -340,7 +370,7 @@ class VariantResolver:
                                     parts = pop_name.split(":")
                                     # Get the last part which is usually the population code
                                     pop_code = parts[-1].upper()
-                                    # Standard population codes: TODO: ref
+                                    # Standard population codes
                                     if pop_code in [
                                         "AFR",
                                         "AMR",
@@ -361,11 +391,13 @@ class VariantResolver:
                                         population_afs[pop_code] = freq
 
                         # If no global AF found, try to get it from other sources
-                        if af is None and populations:
+                        if af is None and ensembl_response.populations:
                             # Try to find any frequency that looks like a global AF
-                            for pop in populations:
-                                pop_name = pop.get("population", "").lower()
-                                freq = pop.get("frequency")
+                            for pop in ensembl_response.populations:
+                                if pop is None:
+                                    continue
+                                pop_name = pop.population.lower()
+                                freq = pop.frequency
 
                                 # Look for common global AF indicators
                                 if freq is not None and any(
@@ -374,34 +406,27 @@ class VariantResolver:
                                     af = freq
                                     break
 
-                        # Get first allele information
-                        mappings = data.get("mappings", [])
-                        if not mappings:
+                        # Get first allele information from mappings
+                        if not ensembl_response.mappings:
                             return None
 
-                        mapping = mappings[0]
-                        location = mapping.get("location", "")
-                        match = re.match(r"(\d+|X|Y|MT):(\d+)-(\d+)", location)
-                        if not match:
-                            return None
-
-                        chrom, start, _ = match.groups()
-                        allele_string = mapping.get("allele_string", "")
+                        mapping = ensembl_response.mappings[0]
+                        allele_string = mapping.allele_string
                         alleles = allele_string.split("/")
                         if len(alleles) < 2:
                             return None
 
                         return VariantRecord(
-                            id=query.rsid,
-                            chr=f"chr{chrom}",
-                            pos=int(start),
+                            id=ensembl_response.name,
+                            chr=f"chr{mapping.seq_region_name}",
+                            pos=mapping.start,
                             ref=alleles[0],
                             alt=alleles[1],
                             assembly=self.assembly,
                             sources=[VariantSource.ENSEMBL],
                             af=af,
                             population_afs=population_afs,
-                            annotations={"ensembl_data": data},
+                            annotations={"ensembl_data": ensembl_response.model_dump()},
                             provenance={"source": "Ensembl Variation API"},
                         )
 

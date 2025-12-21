@@ -35,6 +35,85 @@ class ClinVarSignificance(str, Enum):
     OTHER = "Other"
 
 
+class EnsemblMapping(BaseModel):
+    """Ensembl variation mapping information.
+
+    Represents genomic mapping data for a variant from the Ensembl Variation API.
+    Contains coordinate and allele information for a specific genomic location.
+    """
+
+    model_config = ConfigDict(extra="allow")  # Allow additional fields from API
+
+    location: str = Field(description="Genomic location in chr:start-end format")
+    allele_string: str = Field(description="Allele string (e.g., 'C/A' or 'C/A/G/T')")
+    assembly_name: str = Field(description="Genome assembly name (e.g., 'GRCh38')")
+    seq_region_name: str = Field(description="Sequence region (chromosome) name")
+    strand: int = Field(description="Strand orientation (1 = forward, -1 = reverse)")
+    start: int = Field(description="Start position (1-based)")
+    end: int = Field(description="End position (1-based)")
+    coord_system: str = Field(description="Coordinate system (e.g., 'chromosome')")
+
+
+class EnsemblPopulationFrequency(BaseModel):
+    """Population frequency data from Ensembl.
+
+    Contains allele frequency information for a specific population from
+    sources like 1000 Genomes, gnomAD, ExAC, etc.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    population: str = Field(description="Population identifier (e.g., 'AFR', 'EUR', '1000GENOMES:phase_3:AFR')")
+    frequency: float | None = Field(description="Allele frequency in this population", ge=0.0, le=1.0)
+    allele_count: int | None = Field(description="Count of alleles observed", ge=0)
+    allele_number: int | None = Field(description="Total number of alleles", ge=0)
+
+
+class EnsemblVariationResponse(BaseModel):
+    """Response model for Ensembl Variation API.
+
+    Represents the complete response from the Ensembl REST API variation endpoint.
+    Contains variant metadata, mappings, frequencies, and clinical information.
+    """
+
+    model_config = ConfigDict(extra="allow")  # Allow additional fields
+
+    name: str = Field(description="Variant name (rsID)")
+    var_class: str = Field(description="Variant class (SNP, insertion, deletion, etc.)")
+    source: str = Field(description="Data source description")
+    most_severe_consequence: str | None = Field(description="Most severe functional consequence")
+    MAF: float | None = Field(description="Minor allele frequency", ge=0.0, le=1.0)
+    minor_allele: str | None = Field(description="Minor allele")
+    ambiguity: str = Field(description="IUPAC ambiguity code")
+    mappings: list[EnsemblMapping] = Field(description="Genomic mappings")
+    clinical_significance: list[str] | None = Field(description="Clinical significance terms")
+    synonyms: list[str] | None = Field(description="Alternative identifiers")
+    evidence: list[str] | None = Field(description="Supporting evidence types")
+    populations: list[EnsemblPopulationFrequency | None] = Field(
+        default_factory=list, description="Population frequency data"
+    )
+
+
+class ClinVarVariationResponse(BaseModel):
+    """Response model for ClinVar variation summary.
+
+    Represents the response from NCBI ClinVar E-utilities esummary endpoint.
+    Contains clinical significance, variation details, and associated conditions.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    uid: str = Field(description="ClinVar variation ID")
+    obj_type: str | None = Field(description="Object type (e.g., 'single nucleotide variant')")
+    accession: str | None = Field(description="Accession number (e.g., 'VCV000376655')")
+    title: str | None = Field(description="Variation title with HGVS notation")
+    germline_classification: dict | None = Field(description="Germline classification data")
+    clinical_impact_classification: dict | None = Field(description="Clinical impact classification")
+    variation_set: list[dict] | None = Field(description="Variation set information")
+    genes: list[dict] | None = Field(description="Associated genes")
+    molecular_consequence_list: list[str] | None = Field(description="Molecular consequences")
+
+
 class VariantRecord(BaseModel):
     """Complete variant record with annotations from multiple sources."""
 
