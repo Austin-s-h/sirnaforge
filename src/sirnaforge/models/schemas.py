@@ -9,7 +9,8 @@ type safety, error reporting, and maintainability.
 Use schemas: MySchema.validate(df) - validation errors provide detailed feedback.
 """
 
-from typing import Any, Callable, TypeVar, cast
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
 
 import pandas as pd
 import pandera.pandas as pa

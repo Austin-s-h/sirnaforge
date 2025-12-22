@@ -70,7 +70,7 @@ async def design_with_modifications(gene, output_dir):
         output_dir=output_dir,
         top_n_candidates=20
     )
-    
+
     # Step 2: Apply modifications to top candidates
     metadata = {}
     for candidate in results["design_summary"]["top_candidates"]:
@@ -84,11 +84,11 @@ async def design_with_modifications(gene, output_dir):
             )
         )
         metadata[f"{candidate.id}_guide"] = guide_metadata
-    
+
     # Step 3: Save metadata
     json_path = Path(output_dir) / "sirnaforge" / "modifications.json"
     save_metadata_json(metadata, json_path)
-    
+
     return results, metadata
 
 def apply_modification_pattern(sequence, pattern="standard_2ome"):
@@ -126,7 +126,7 @@ def create_candidate_with_modifications(
     guide_seq, passenger_seq, position, transcript_id, score
 ):
     """Create candidate with embedded modification metadata."""
-    
+
     # Create modification metadata
     guide_metadata = StrandMetadata(
         id=f"candidate_{position}_guide",
@@ -139,7 +139,7 @@ def create_candidate_with_modifications(
             )
         ]
     )
-    
+
     # Create candidate with metadata
     return SiRNACandidate(
         id=f"candidate_{position}",
@@ -171,10 +171,10 @@ Store minimal info during design, enrich during export.
 ```python
 class ModificationAnnotator:
     """Helper class for adding modifications to candidates."""
-    
+
     def __init__(self, pattern_library_path):
         self.patterns = self._load_patterns(pattern_library_path)
-    
+
     def _load_patterns(self, path):
         """Load modification patterns from JSON."""
         patterns = {}
@@ -184,18 +184,18 @@ class ModificationAnnotator:
                 if "pattern_name" in data:
                     patterns[data["pattern_name"]] = data
         return patterns
-    
+
     def annotate_candidates(
         self,
         candidates: list[SiRNACandidate],
         pattern_name: str = "standard_2ome"
     ) -> dict[str, StrandMetadata]:
         """Apply modification pattern to list of candidates."""
-        
+
         pattern = self.patterns.get(pattern_name)
         if not pattern:
             raise ValueError(f"Pattern {pattern_name} not found")
-        
+
         metadata = {}
         for candidate in candidates:
             # Create guide metadata
@@ -205,9 +205,9 @@ class ModificationAnnotator:
                 pattern["guide_modifications"]
             )
             metadata[f"{candidate.id}_guide"] = guide_metadata
-        
+
         return metadata
-    
+
     def _create_metadata_from_pattern(self, sequence, sid, pattern_spec):
         """Create StrandMetadata from pattern specification."""
         modifications = []
@@ -220,14 +220,14 @@ class ModificationAnnotator:
             modifications.append(
                 ChemicalModification(type=mod_type, positions=positions)
             )
-        
+
         return StrandMetadata(
             id=f"{sid}_guide",
             sequence=sequence,
             overhang="dTdT",
             chem_mods=modifications
         )
-    
+
     def _apply_position_strategy(self, sequence, strategy, positions):
         """Calculate positions based on strategy."""
         if strategy == "alternating":
@@ -332,10 +332,10 @@ Test your modification integration:
 def test_modification_application():
     """Test that modifications are correctly applied."""
     sequence = "AUCGAUCGAUCGAUCGAUCGA"
-    
+
     # Apply pattern
     metadata = apply_pattern(sequence, "standard_2ome")
-    
+
     # Validate
     assert len(metadata.chem_mods) > 0
     assert all(pos <= len(sequence) for mod in metadata.chem_mods for pos in mod.positions)
@@ -356,11 +356,11 @@ def batch_annotate(input_dir, pattern_name="standard_2ome"):
     for fasta_file in Path(input_dir).glob("*.fasta"):
         # Create metadata for sequences
         metadata = create_metadata_from_fasta(fasta_file, pattern_name)
-        
+
         # Save JSON
         json_path = fasta_file.with_suffix(".json")
         save_metadata_json(metadata, json_path)
-        
+
         # Create annotated FASTA
         output_path = fasta_file.parent / f"{fasta_file.stem}_annotated.fasta"
         merge_metadata_into_fasta(fasta_file, json_path, output_path)
@@ -374,7 +374,7 @@ Generate synthesis order from annotated candidates:
 def generate_synthesis_order(metadata_dict, vendor="IDT"):
     """Generate synthesis order format for vendor."""
     order = []
-    
+
     for strand_id, metadata in metadata_dict.items():
         entry = {
             "name": strand_id,
@@ -383,7 +383,7 @@ def generate_synthesis_order(metadata_dict, vendor="IDT"):
             "purification": "HPLC",
             "modifications": []
         }
-        
+
         # Format modifications for vendor
         for mod in metadata.chem_mods:
             for pos in mod.positions:
@@ -392,9 +392,9 @@ def generate_synthesis_order(metadata_dict, vendor="IDT"):
                     "type": mod.type,
                     "base": metadata.sequence[pos-1]
                 })
-        
+
         order.append(entry)
-    
+
     return order
 ```
 
@@ -406,7 +406,7 @@ Estimate synthesis costs based on modifications:
 def estimate_cost(metadata: StrandMetadata) -> float:
     """Estimate synthesis cost based on modifications."""
     base_cost = 300.0  # Base cost for unmodified 21-mer
-    
+
     # Cost per modification type
     costs = {
         "2OMe": 20.0,
@@ -414,15 +414,15 @@ def estimate_cost(metadata: StrandMetadata) -> float:
         "PS": 25.0,
         "LNA": 50.0
     }
-    
+
     total_cost = base_cost
     for mod in metadata.chem_mods:
         mod_cost = costs.get(mod.type, 30.0)
         total_cost += len(mod.positions) * mod_cost
-    
+
     # HPLC purification
     total_cost += 150.0
-    
+
     return total_cost
 ```
 
@@ -539,5 +539,5 @@ merge_metadata_into_fasta(candidates_fasta, json_path, annotated_fasta)
 
 ---
 
-**Last Updated:** 2025-10-24  
+**Last Updated:** 2025-10-24
 **Maintainer:** siRNAforge Development Team

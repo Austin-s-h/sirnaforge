@@ -9,9 +9,11 @@ os.environ.setdefault("TERM", "dumb")
 
 import asyncio
 import json
+import logging
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
 from Bio import SeqIO
@@ -57,7 +59,9 @@ from sirnaforge.data.gene_search import (
     search_multiple_databases_sync,
 )
 from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
+from sirnaforge.models.variant import VariantMode
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
+from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
@@ -415,7 +419,7 @@ def search(  # noqa: PLR0912
 @app_command()
 def workflow(  # noqa: PLR0912
     gene_query: str = typer.Argument(..., help="Gene name or ID to analyze"),
-    input_fasta: Optional[str] = typer.Option(
+    input_fasta: str | None = typer.Option(
         None,
         "--input-fasta",
         help="Local path or remote URI to an input FASTA file (http/https/ftp)",
@@ -460,7 +464,7 @@ def workflow(  # noqa: PLR0912
         "--mirna-db",
         help="miRNA reference database to use for seed analysis",
     ),
-    mirna_species: Optional[str] = typer.Option(
+    mirna_species: str | None = typer.Option(
         None,
         "--mirna-species",
         help=(
@@ -469,7 +473,7 @@ def workflow(  # noqa: PLR0912
             "Use this for surgical control of miRNA database queries."
         ),
     ),
-    transcriptome_fasta: Optional[str] = typer.Option(
+    transcriptome_fasta: str | None = typer.Option(
         None,
         "--transcriptome-fasta",
         help=(
@@ -480,7 +484,7 @@ def workflow(  # noqa: PLR0912
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
         ),
     ),
-    transcriptome_filter: Optional[str] = typer.Option(
+    transcriptome_filter: str | None = typer.Option(
         None,
         "--transcriptome-filter",
         help=(
@@ -491,7 +495,7 @@ def workflow(  # noqa: PLR0912
             "Filtered versions are cached separately with automatic indexing."
         ),
     ),
-    offtarget_indices: Optional[str] = typer.Option(
+    offtarget_indices: str | None = typer.Option(
         None,
         "--offtarget-indices",
         help=(
@@ -533,16 +537,75 @@ def workflow(  # noqa: PLR0912
         "--overhang",
         help="Overhang sequence (dTdT for DNA, UU for RNA)",
     ),
+    # Variant targeting parameters
+    snp: list[str] = typer.Option(
+        [],
+        "--snp",
+        help=(
+            "Variant identifier(s) for SNP targeting/avoidance. "
+            "Accepts rsID (rs12345), coordinate (chr17:7577121:G:A), or HGVS (NM_000546.6:c.215C>G). "
+            "Can be specified multiple times. All variants must be on GRCh38 assembly."
+        ),
+    ),
+    snp_file: Path | None = typer.Option(
+        None,
+        "--snp-file",
+        help=(
+            "VCF file containing variants for targeting/avoidance. "
+            "Preferably bgzip-compressed with tabix index (.vcf.gz + .tbi) for performance. "
+            "Variants are filtered by --min-af and --clinvar-filter-levels."
+        ),
+    ),
+    variant_mode: VariantMode = typer.Option(
+        VariantMode.AVOID,
+        "--variant-mode",
+        help=(
+            "How to handle variants in siRNA design: "
+            "'avoid' = exclude candidates overlapping variants (default), "
+            "'target' = design siRNAs specifically targeting variant alleles, "
+            "'both' = generate candidates for both reference and alternate alleles."
+        ),
+    ),
+    min_af: float = typer.Option(
+        0.01,
+        "--min-af",
+        min=0.0,
+        max=1.0,
+        help=(
+            "Minimum allele frequency threshold for variant inclusion. "
+            "Variants with AF below this value are excluded (default: 0.01 = 1%%)."
+        ),
+    ),
+    clinvar_filter_levels: str = typer.Option(
+        "Pathogenic,Likely pathogenic",
+        "--clinvar-filter-levels",
+        help=(
+            "Comma-separated ClinVar clinical significance levels to include. "
+            "Default: 'Pathogenic,Likely pathogenic'. "
+            "Other options: 'Benign', 'Likely benign', 'Uncertain significance'."
+        ),
+    ),
+    variant_assembly: str = typer.Option(
+        "GRCh38",
+        "--variant-assembly",
+        help="Reference genome assembly for variants (only GRCh38 supported)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
         "-v",
         help="Enable verbose output",
     ),
-    log_file: Optional[Path] = typer.Option(
+    log_file: Path | None = typer.Option(
         None,
         "--log-file",
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
+    nextflow_docker_image: str | None = typer.Option(
+        None,
+        "--nextflow-docker-image",
+        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
+        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
     ),
     json_summary: bool = typer.Option(
         True,
@@ -556,7 +619,14 @@ def workflow(  # noqa: PLR0912
     reference policies, designs candidates, and then runs off-target analysis on
     the selected top candidates.
     """
+    log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
+    log_destination.parent.mkdir(parents=True, exist_ok=True)
+    configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
+    effective_log = str(log_destination)
+    logger = logging.getLogger(__name__)
+
     if gc_min >= gc_max:
+        logger.error("Invalid GC range: gc_min=%s, gc_max=%s", gc_min, gc_max)
         console.print("❌ Error: gc-min must be less than gc-max", style="red")
         raise typer.Exit(1)
 
@@ -569,6 +639,7 @@ def workflow(  # noqa: PLR0912
             modification_pattern,
         )
     except ValueError as exc:
+        logger.error("Invalid design mode: %s", exc)
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
@@ -576,6 +647,7 @@ def workflow(  # noqa: PLR0912
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
         override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
     except ValueError as exc:
+        logger.error("Species resolution failed: %s", exc)
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
@@ -585,6 +657,12 @@ def workflow(  # noqa: PLR0912
     mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
+        logger.error(
+            "Failed to resolve miRNA species for species=%s mirna_db=%s mirna_overrides=%s",
+            species,
+            mirna_db,
+            mirna_species,
+        )
         console.print("❌ Error: failed to resolve miRNA species for selected inputs", style="red")
         raise typer.Exit(1)
 
@@ -603,6 +681,7 @@ def workflow(  # noqa: PLR0912
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
+    nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 
     console.print(
         Panel.fit(
@@ -618,6 +697,7 @@ def workflow(  # noqa: PLR0912
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
             f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Workflow Configuration",
@@ -632,10 +712,6 @@ def workflow(  # noqa: PLR0912
             console=console,
         ) as progress:
             task = progress.add_task("Running complete siRNA design workflow...", total=None)
-
-            # Configure logging to file inside the output dir by default if not provided
-            effective_log = str(log_file) if log_file else str(Path(output_dir) / "logs" / "sirnaforge.log")
-            configure_logging(log_file=effective_log, level=os.getenv("SIRNAFORGE_LOG_LEVEL"))
 
             results = asyncio.run(
                 run_sirna_workflow(
@@ -657,8 +733,16 @@ def workflow(  # noqa: PLR0912
                     sirna_length=sirna_length,
                     modification_pattern=modification_pattern,
                     overhang=overhang,
+                    # Variant parameters
+                    variant_ids=list(snp) if snp else None,
+                    variant_vcf_file=snp_file,
+                    variant_mode=variant_mode.value,
+                    variant_min_af=min_af,
+                    variant_clinvar_filters=clinvar_filter_levels,
+                    variant_assembly=variant_assembly,
                     log_file=effective_log,
                     write_json_summary=json_summary,
+                    nextflow_docker_image=nextflow_docker_image,
                 )
             )
 
@@ -711,6 +795,7 @@ def workflow(  # noqa: PLR0912
             console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
 
     except Exception as e:
+        logger.exception("Workflow execution failed")
         console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
         if verbose:
             console.print_exception()
@@ -748,12 +833,12 @@ def offtarget(
         "--mirna-db",
         help="miRNA reference database to use for seed analysis",
     ),
-    mirna_species: Optional[str] = typer.Option(
+    mirna_species: str | None = typer.Option(
         None,
         "--mirna-species",
         help=("Override miRNA species identifiers (comma-separated). When omitted, automatically maps from --species."),
     ),
-    transcriptome_fasta: Optional[str] = typer.Option(
+    transcriptome_fasta: str | None = typer.Option(
         None,
         "--transcriptome-fasta",
         help=(
@@ -761,7 +846,7 @@ def offtarget(
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
         ),
     ),
-    transcriptome_filter: Optional[str] = typer.Option(
+    transcriptome_filter: str | None = typer.Option(
         None,
         "--transcriptome-filter",
         help=(
@@ -770,7 +855,7 @@ def offtarget(
             "Example: --transcriptome-filter protein_coding,canonical_only."
         ),
     ),
-    offtarget_indices: Optional[str] = typer.Option(
+    offtarget_indices: str | None = typer.Option(
         None,
         "--offtarget-indices",
         help=(
@@ -784,10 +869,16 @@ def offtarget(
         "-v",
         help="Enable verbose output",
     ),
-    log_file: Optional[Path] = typer.Option(
+    log_file: Path | None = typer.Option(
         None,
         "--log-file",
         help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
+    nextflow_docker_image: str | None = typer.Option(
+        None,
+        "--nextflow-docker-image",
+        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
+        help=(f"Override the Docker image used by Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
     ),
 ) -> None:
     """Run off-target analysis on pre-designed siRNA candidates.
@@ -859,6 +950,7 @@ def offtarget(
 
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
+    nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 
     console.print(
         Panel.fit(
@@ -869,7 +961,8 @@ def offtarget(
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
-            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]",
+            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]",
             title="Off-Target Configuration",
         )
     )
@@ -900,6 +993,7 @@ def offtarget(
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     log_file=effective_log,
+                    nextflow_docker_image=nextflow_docker_image,
                 )
             )
 
@@ -994,12 +1088,12 @@ def design(  # noqa: PLR0912
         min=1,
         help="Maximum consecutive identical nucleotides",
     ),
-    genome_index: Optional[Path] = typer.Option(
+    genome_index: Path | None = typer.Option(
         None,
         "--genome-index",
         help="Genome index for off-target analysis",
     ),
-    snp_file: Optional[Path] = typer.Option(
+    snp_file: Path | None = typer.Option(
         None,
         "--snp-file",
         help="VCF file with SNPs to avoid",
@@ -1475,7 +1569,7 @@ def sequences_show(
         file_okay=True,
         dir_okay=False,
     ),
-    sequence_id: Optional[str] = typer.Option(
+    sequence_id: str | None = typer.Option(
         None,
         "--id",
         help="Show only this sequence ID",
@@ -1534,7 +1628,7 @@ def sequences_annotate(
         file_okay=True,
         dir_okay=False,
     ),
-    output: Optional[Path] = typer.Option(
+    output: Path | None = typer.Option(
         None,
         "--output",
         "-o",

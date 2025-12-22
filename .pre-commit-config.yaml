@@ -20,7 +20,9 @@ repos:
     hooks:
       - id: mypy
         name: mypy
-        entry: uv run --group dev mypy src
+        # Use the same mypy invocation as the Makefile so pre-commit runs
+        # mypy through the project's uv-managed environment.
+        entry: uv run mypy src
         language: system
         pass_filenames: false
       - id: pytest-check

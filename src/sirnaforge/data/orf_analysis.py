@@ -1,7 +1,5 @@
 """ORF analysis and sequence validation for transcript sequences."""
 
-from typing import Optional
-
 from pydantic import BaseModel, ConfigDict
 
 from sirnaforge.data.base import (
@@ -41,18 +39,16 @@ class SequenceAnalysis(BaseModel):
     sequence_length: int
     gc_content: float
     orfs: list[ORFInfo]
-    longest_orf: Optional[ORFInfo] = None
+    longest_orf: ORFInfo | None = None
     has_valid_orf: bool = False
-    cds_sequence: Optional[str] = None
-    protein_sequence: Optional[str] = None
+    cds_sequence: str | None = None
+    protein_sequence: str | None = None
     # Rudimentary UTR/CDS characterization
-    cds_start: Optional[int] = None  # 0-based start index within transcript sequence
-    cds_end: Optional[int] = None  # 0-based end index (exclusive)
-    utr5_length: Optional[int] = None
-    utr3_length: Optional[int] = None
-    sequence_region: Optional[str] = (
-        None  # e.g., cds_only, cds_with_utr5, cds_with_utr3, cds_with_utr5_and_utr3, no_cds
-    )
+    cds_start: int | None = None  # 0-based start index within transcript sequence
+    cds_end: int | None = None  # 0-based end index (exclusive)
+    utr5_length: int | None = None
+    utr3_length: int | None = None
+    sequence_region: str | None = None  # e.g., cds_only, cds_with_utr5, cds_with_utr3, cds_with_utr5_and_utr3, no_cds
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -60,7 +56,7 @@ class SequenceAnalysis(BaseModel):
 class ORFAnalyzer:
     """Analyze ORFs in transcript sequences and validate sequence types."""
 
-    def __init__(self, database_client: Optional[AbstractDatabaseClient] = None):
+    def __init__(self, database_client: AbstractDatabaseClient | None = None):
         """Initialize ORF analyzer.
 
         Args:
@@ -199,7 +195,7 @@ class ORFAnalyzer:
 
         return protein
 
-    async def get_additional_sequence(self, transcript_id: str, sequence_type: SequenceType) -> Optional[str]:
+    async def get_additional_sequence(self, transcript_id: str, sequence_type: SequenceType) -> str | None:
         """Retrieve specific sequence type using the database client if available.
 
         Args:
@@ -250,10 +246,10 @@ class ORFAnalyzer:
                 )
 
         # Compute CDS/UTR characterization quickly using CDS match if available, else longest ORF
-        cds_start: Optional[int] = None
-        cds_end: Optional[int] = None
-        utr5_length: Optional[int] = None
-        utr3_length: Optional[int] = None
+        cds_start: int | None = None
+        cds_end: int | None = None
+        utr5_length: int | None = None
+        utr3_length: int | None = None
         if transcript.sequence:
             seq_len = len(transcript.sequence)
             if cds_sequence and cds_sequence in transcript.sequence:
@@ -310,9 +306,9 @@ class ORFAnalyzer:
     def _determine_sequence_type(
         self,
         transcript: TranscriptInfo,
-        cds_sequence: Optional[str],
-        cds_start: Optional[int],
-        cds_end: Optional[int],
+        cds_sequence: str | None,
+        cds_start: int | None,
+        cds_end: int | None,
     ) -> SequenceType:
         """Determine what type of sequence we're dealing with."""
         # If we have a CDS sequence and it matches our sequence exactly, it's CDS
@@ -398,7 +394,7 @@ class ORFAnalyzer:
 
 
 # Convenience functions
-def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None) -> ORFAnalyzer:
+def create_orf_analyzer(database_client: AbstractDatabaseClient | None = None) -> ORFAnalyzer:
     """Create an ORF analyzer with optional database client.
 
     Args:
@@ -411,7 +407,7 @@ def create_orf_analyzer(database_client: Optional[AbstractDatabaseClient] = None
 
 
 async def analyze_multiple_transcript_orfs(
-    transcripts: list[TranscriptInfo], database_client: Optional[AbstractDatabaseClient] = None
+    transcripts: list[TranscriptInfo], database_client: AbstractDatabaseClient | None = None
 ) -> dict[str, SequenceAnalysis]:
     """Analyze ORFs in multiple transcripts.
 

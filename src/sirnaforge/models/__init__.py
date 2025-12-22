@@ -30,6 +30,14 @@ from .sirna import (
     SequenceType,
     SiRNACandidate,
 )
+from .variant import (
+    ClinVarSignificance,
+    VariantMode,
+    VariantQuery,
+    VariantQueryType,
+    VariantRecord,
+    VariantSource,
+)
 
 __all__ = [
     # siRNA design models
@@ -59,4 +67,11 @@ __all__ = [
     "AlignmentStrand",
     "AnalysisMode",
     "MiRNADatabase",
+    # Variant models
+    "VariantRecord",
+    "VariantQuery",
+    "VariantQueryType",
+    "VariantMode",
+    "VariantSource",
+    "ClinVarSignificance",
 ]

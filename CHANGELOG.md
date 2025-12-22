@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-12-20
+
+### Breaking
+
+- Drop support for Python 3.9; minimum supported Python is now 3.10. This
+  enables PEP 604 union syntax (e.g. `list[str] | None`) and other modern
+  typing features. Update developer environments, CI, and pre-commit hooks to
+  use Python 3.10 or later.
+
+
+### ✨ New Features
+- **Variant Targeting Implementation**: Complete Phase 1-5 implementation for targeting specific genetic variants
+  - Core variant models and resolver infrastructure with Parquet-based caching
+  - Population-specific AF filtering for geographic variant targeting
+  - Phase 5 workflow integration with CLI flags for variant_mode parameter
+  - Comprehensive variant feature implementation summary and documentation
+- **Enhanced CLI and Workflow Integration**:
+  - Off-target-only entry point for pre-designed siRNA candidates
+  - Support for any sequence length in thermodynamic calculations
+  - Improved CLI enum integration for variant_mode parameter
+- **Docker and Container Improvements**:
+  - Python 3.12 upgrade with optimized Dockerfile targeting
+  - Login shell PATH preservation with `/etc/profile.d/conda-path.sh`
+  - Enhanced container testing with dedicated test categories
+  - Improved Docker entrypoint and health checks
+
+### 🔧 Improvements
+- **Performance Optimizations**:
+  - Parquet-based variant cache for improved performance
+  - Cache-first index reuse with complete validation
+  - Transcriptome filtering and major refactoring for simplicity
+  - Unified cache management with Pythonic interface
+- **CI/CD Pipeline Enhancements**:
+  - Python 3.12 requirement across all workflows
+  - Aligned pre-commit mypy with uv package manager
+  - Enhanced release workflow with comprehensive testing
+  - Improved Docker build and test categorization
+- **Code Quality and Maintenance**:
+  - Python 3.10+ syntax modernization throughout codebase
+  - Comprehensive typing improvements and linting fixes
+  - Enhanced error handling and validation middleware
+  - Improved documentation with live CLI output examples
+
+### 📦 Dependencies
+- **Python 3.12 Support**: Full upgrade to Python 3.12 with modern syntax
+- **Enhanced Dependencies**: Added `pyarrow>=18.0.0` for Parquet support
+- **Updated Packages**: Modernized dependency versions with improved compatibility
+- **uv Package Manager**: Full alignment with uv for faster dependency resolution
+
+### ⚡ Performance
+- **Variant Caching**: Parquet-based storage for improved variant data performance
+- **Memory Optimization**: Reduced memory requirements for Docker-constrained environments
+- **Parallel Processing**: Enhanced concurrent execution for variant analysis
+- **Index Reuse**: Cache-first approach for transcriptome indices
+
+
 ## [0.3.3] - 2025-12-15
 
 ### 🐛 Bug Fixes

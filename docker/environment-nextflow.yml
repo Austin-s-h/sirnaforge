@@ -1,35 +1,35 @@
 # siRNAforge Docker environment
 channels:
-  - conda-forge
-  - bioconda
-  - defaults
+- conda-forge
+- bioconda
+- defaults
 dependencies:
-  # Java runtime (required for Nextflow)
-  - openjdk >=17,<25
+# Java runtime (required for Nextflow)
+- openjdk >=17,<25
 
-  # Workflow management
-  - nextflow >=25.04.0
+# Workflow management
+- nextflow >=25.04.0
 
-  # Sequence alignment tools
-  - bwa-mem2 >=2.2.1
-  - samtools >=1.19.2
+# Sequence alignment tools
+- bwa-mem2 >=2.2.1
+- samtools >=1.19.2
 
-  # RNA analysis
-  - viennarna >=2.7.0
+# RNA analysis
+- viennarna >=2.7.0
 
-  # Cloud storage and utilities
-  - awscli >=2.0
-  - curl
-  - wget
+# Cloud storage and utilities
+- awscli >=2.0
+- curl
+- wget
 
-  # JSON processing
-  - jq
+# JSON processing
+- jq
 
-  # Compression utilities
-  - pigz
-  - htslib
-  # Keep Python runtime and native/binary packages in conda. Pure-Python
-  # dependencies will be installed by pip from wheels during the wheel
-  # installation step (pip will skip packages already installed here).
-  - python=3.11
-  - pysam
+# Compression utilities
+- pigz
+- htslib
+# Keep Python runtime and native/binary packages in conda. Pure-Python
+# dependencies will be installed by pip from wheels during the wheel
+# installation step (pip will skip packages already installed here).
+- python=3.12
+- pysam

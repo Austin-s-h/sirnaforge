@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeVar, Union
+from typing import Any, Generic, TypeVar
 
 from sirnaforge.utils.cache_utils import resolve_cache_subdir
 
@@ -49,7 +49,7 @@ class CacheMetadata:
     checksum: str
     file_path: str
     version: str = "1.0"
-    extra: Optional[dict[str, Any]] = None  # For subclass-specific metadata
+    extra: dict[str, Any] | None = None  # For subclass-specific metadata
 
     @classmethod
     def from_dict(cls, data: dict, source_class: type = ReferenceSource) -> "CacheMetadata":
@@ -95,7 +95,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
     def __init__(
         self,
         cache_subdir: str,
-        cache_dir: Optional[Union[str, Path]] = None,
+        cache_dir: str | Path | None = None,
         cache_ttl_days: int = 30,
     ):
         """Initialize the reference manager.
@@ -110,7 +110,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
         self.metadata_file = self.cache_dir / "cache_metadata.json"
         self._load_metadata()
 
-    def _resolve_cache_directory(self, cache_dir: Optional[Union[str, Path]], cache_subdir: str) -> Path:
+    def _resolve_cache_directory(self, cache_dir: str | Path | None, cache_subdir: str) -> Path:
         """Resolve cache directory with fallback locations.
 
         Single source of truth lives in `sirnaforge.utils.cache_utils.resolve_cache_subdir`.
@@ -237,7 +237,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
 
         return True
 
-    def _download_file(self, source: ReferenceSource, timeout: int = 600) -> Optional[str]:
+    def _download_file(self, source: ReferenceSource, timeout: int = 600) -> str | None:
         """Download file from source URL and return as text.
 
         Args:
@@ -308,7 +308,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
             "cached_items": list(self.metadata.keys()),
         }
 
-    def clean_cache(self, older_than_days: Optional[int] = None) -> None:
+    def clean_cache(self, older_than_days: int | None = None) -> None:
         """Clean old cache files.
 
         Args:
