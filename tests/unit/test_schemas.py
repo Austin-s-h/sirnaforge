@@ -50,11 +50,7 @@ class TestSiRNACandidateSchema:
             }
         )
         result = SiRNACandidateSchema.validate(df)
-        # Schema adds missing modification columns (4) and miRNA columns (8) = 12 columns
-        expected_cols = len(test_data.keys()) + 12  # 4 modification columns + 8 miRNA columns
-        assert result.shape == (2, expected_cols)
-        # Order-agnostic column check - now includes modification and miRNA columns
-        expected_columns = set(test_data.keys()) | {
+        extra_columns = {
             "guide_overhang",
             "guide_modifications",
             "passenger_overhang",
@@ -67,7 +63,16 @@ class TestSiRNACandidateSchema:
             "seed_8mer_hits",
             "seed_hits_weighted",
             "off_target_seed_risk_class",
+            "variant_mode",
+            "allele_specific",
+            "targeted_alleles",
+            "overlapped_variants",
         }
+
+        expected_cols = len(test_data.keys()) + len(extra_columns)
+        assert result.shape == (2, expected_cols)
+        # Order-agnostic column check - now includes modification and miRNA columns
+        expected_columns = set(test_data.keys()) | extra_columns
         assert set(result.columns) == expected_columns
 
     def test_passes_filters_allows_new_reason_strings(self):

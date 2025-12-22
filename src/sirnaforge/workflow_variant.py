@@ -2,13 +2,33 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+import pandas as pd
+import pandera as pa
 
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+VARIANT_REPORT_SCHEMA = pa.DataFrameSchema(
+    {
+        "id": pa.Column(object, nullable=True),
+        "chr": pa.Column(str),
+        "pos": pa.Column(int),
+        "ref": pa.Column(str),
+        "alt": pa.Column(str),
+        "sources": pa.Column(object),
+        "primary_source": pa.Column(object, nullable=True),
+        "clinvar_significance": pa.Column(object, nullable=True),
+        "af": pa.Column(float, nullable=True),
+        "vcf_style": pa.Column(str),
+    },
+    strict=False,
+    coerce=True,
+)
 
 
 class VariantWorkflowConfig:
@@ -116,11 +136,10 @@ async def resolve_workflow_variants(
     unique_variants = _deduplicate_variants(resolved_variants)
     logger.info(f"Total unique variants after deduplication: {len(unique_variants)}")
 
-    # Save variant resolution report
-    if unique_variants:
-        report_path = output_dir / "logs" / "resolved_variants.json"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        _save_variant_report(unique_variants, report_path, gene_name, config)
+    # Save variant resolution report even when empty to make filtering transparent
+    report_path = output_dir / "logs" / "resolved_variants.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    _save_variant_report(unique_variants, report_path, gene_name, config)
 
     return unique_variants
 
@@ -212,7 +231,7 @@ def _save_variant_report(
         }
         variant_entries.append(entry)
 
-    report["variants"] = variant_entries
+    report["variants"] = _validate_variant_entries(variant_entries)
 
     with output_path.open("w") as f:
         json.dump(report, f, indent=2)
@@ -236,6 +255,16 @@ def _count_by_chromosome(variants: list[VariantRecord]) -> dict[str, int]:
     for variant in variants:
         counts[variant.chr] = counts.get(variant.chr, 0) + 1
     return counts
+
+
+def _validate_variant_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate variant report rows with pandera schema."""
+    if not entries:
+        return entries
+
+    df = pd.DataFrame(entries)
+    VARIANT_REPORT_SCHEMA.validate(df, lazy=True)
+    return cast(list[dict[str, Any]], df.to_dict(orient="records"))
 
 
 def normalize_variant_mode(mode: str | VariantMode) -> VariantMode:

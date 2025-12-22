@@ -69,6 +69,12 @@ make test-requires-network   # Tests requiring network access
 make test-requires-nextflow  # Tests requiring Nextflow
 ```
 
+### Variant mode validation & reporting (new)
+
+- Variant avoid/target/both modes now always write `logs/resolved_variants.json`, even when no variants pass filters, so you can audit filters that excluded everything.
+- Variant report rows are validated with Pandera to ensure required fields (`chr`, `pos`, `ref`, `alt`, `vcf_style`, AF) are present and typed. Candidate CSVs now include variant annotations (`variant_mode`, `allele_specific`, `targeted_alleles`, `overlapped_variants`) and a dedicated `logs/candidate_variants.json` captures the candidate↔variant links for downstream consumers.
+- Local VCF parsing is covered by `tests/unit/test_variant_resolver.py` using a small fixture (`tests/unit/data/test_variants.vcf`) to keep regressions visible.
+
 ### Code Quality Commands
 
 ```bash
