@@ -55,7 +55,7 @@ from sirnaforge.models.sirna import (
     SiRNACandidate,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
-from sirnaforge.models.variant import VariantMode, VariantRecord
+from sirnaforge.models.variant import VariantRecord
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls

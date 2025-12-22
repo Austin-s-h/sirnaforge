@@ -208,4 +208,3 @@ class TestNormalizeVariantMode:
         """Test None value raises ValueError."""
         with pytest.raises(ValueError, match="Invalid variant mode"):
             normalize_variant_mode(None)  # type: ignore[arg-type]
-
