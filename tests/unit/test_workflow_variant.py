@@ -8,6 +8,7 @@ from sirnaforge.workflow_variant import (
     _count_by_chromosome,
     _count_by_source,
     _deduplicate_variants,
+    normalize_variant_mode,
     parse_clinvar_filter_string,
 )
 
@@ -166,3 +167,45 @@ class TestVariantCounting:
         assert counts["chr1"] == 2
         assert counts["chr2"] == 1
         assert counts["chrX"] == 1
+
+
+class TestNormalizeVariantMode:
+    """Tests for normalize_variant_mode function."""
+
+    def test_enum_passthrough(self):
+        """Test that enum values pass through unchanged."""
+        assert normalize_variant_mode(VariantMode.AVOID) == VariantMode.AVOID
+        assert normalize_variant_mode(VariantMode.TARGET) == VariantMode.TARGET
+        assert normalize_variant_mode(VariantMode.BOTH) == VariantMode.BOTH
+
+    def test_string_lowercase(self):
+        """Test string values are normalized to enum."""
+        assert normalize_variant_mode("avoid") == VariantMode.AVOID
+        assert normalize_variant_mode("target") == VariantMode.TARGET
+        assert normalize_variant_mode("both") == VariantMode.BOTH
+
+    def test_string_uppercase(self):
+        """Test uppercase strings are normalized."""
+        assert normalize_variant_mode("AVOID") == VariantMode.AVOID
+        assert normalize_variant_mode("TARGET") == VariantMode.TARGET
+        assert normalize_variant_mode("BOTH") == VariantMode.BOTH
+
+    def test_string_mixedcase(self):
+        """Test mixed case strings are normalized."""
+        assert normalize_variant_mode("Avoid") == VariantMode.AVOID
+        assert normalize_variant_mode("Target") == VariantMode.TARGET
+        assert normalize_variant_mode("Both") == VariantMode.BOTH
+
+    def test_invalid_string_raises(self):
+        """Test invalid string values raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid variant mode"):
+            normalize_variant_mode("invalid")
+
+        with pytest.raises(ValueError, match="Invalid variant mode"):
+            normalize_variant_mode("skip")
+
+    def test_none_raises(self):
+        """Test None value raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid variant mode"):
+            normalize_variant_mode(None)  # type: ignore[arg-type]
+

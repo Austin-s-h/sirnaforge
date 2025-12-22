@@ -44,6 +44,7 @@ def test_snp_avoid_mode_tp53():
                 "0.01",
                 "--species",
                 "human",
+                "--skip-off-targets",  # Skip off-target analysis for faster variant-focused testing
             ]
 
             result = subprocess.run(
@@ -125,6 +126,7 @@ def test_snp_target_mode_tp53():
                 "human",
                 "--clinvar-filter-levels",
                 "Pathogenic,Likely pathogenic",
+                "--skip-off-targets",  # Skip off-target analysis for faster variant-focused testing
             ]
 
             result = subprocess.run(
@@ -194,6 +196,7 @@ def test_snp_both_mode_tp53():
                 "0.001",
                 "--species",
                 "human",
+                "--skip-off-targets",  # Skip off-target analysis for faster variant-focused testing
             ]
 
             result = subprocess.run(
@@ -253,6 +256,7 @@ def test_variant_coordinate_format():
                 "avoid",
                 "--species",
                 "human",
+                "--skip-off-targets",  # Skip off-target analysis for faster variant-focused testing
             ]
 
             result = subprocess.run(
@@ -298,6 +302,7 @@ def test_multiple_variants():
                 "avoid",
                 "--species",
                 "human",
+                "--skip-off-targets",  # Skip off-target analysis for faster variant-focused testing
             ]
 
             result = subprocess.run(

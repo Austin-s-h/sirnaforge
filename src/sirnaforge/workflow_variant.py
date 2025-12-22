@@ -59,7 +59,8 @@ async def resolve_workflow_variants(
 ) -> list[VariantRecord]:
     """Resolve all variants for the workflow.
 
-    This is Step 1.5 in the workflow: after gene selection, before siRNA design.
+    This is an optional workflow step that runs after gene/transcript selection
+    and before siRNA candidate design.
 
     Args:
         config: Variant workflow configuration
@@ -235,6 +236,29 @@ def _count_by_chromosome(variants: list[VariantRecord]) -> dict[str, int]:
     for variant in variants:
         counts[variant.chr] = counts.get(variant.chr, 0) + 1
     return counts
+
+
+def normalize_variant_mode(mode: str | VariantMode) -> VariantMode:
+    """Normalize variant mode to enum, handling string input.
+
+    Args:
+        mode: Variant mode as string or enum
+
+    Returns:
+        VariantMode enum
+
+    Raises:
+        ValueError: If mode string is invalid
+    """
+    if isinstance(mode, VariantMode):
+        return mode
+
+    try:
+        return VariantMode(mode.lower())
+    except (ValueError, AttributeError) as e:
+        raise ValueError(
+            f"Invalid variant mode: {mode}. Must be one of: {', '.join(m.value for m in VariantMode)}"
+        ) from e
 
 
 def parse_clinvar_filter_string(filter_string: str) -> list[ClinVarSignificance]:

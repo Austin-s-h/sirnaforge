@@ -64,7 +64,12 @@ from sirnaforge.utils.modification_patterns import apply_modifications_to_candid
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
-from sirnaforge.workflow_variant import VariantWorkflowConfig, parse_clinvar_filter_string, resolve_workflow_variants
+from sirnaforge.workflow_variant import (
+    VariantWorkflowConfig,
+    normalize_variant_mode,
+    parse_clinvar_filter_string,
+    resolve_workflow_variants,
+)
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -218,11 +223,11 @@ class SiRNAWorkflow:
             transcripts = await self.step1_retrieve_transcripts(progress)
             progress.advance(main_task)
 
-            # Step 1.5: Variant Resolution (if configured)
+            # Variant Resolution (optional, after transcript retrieval)
             # Save resolved variants on the workflow instance for later use
             if self.config.variant_config and self.config.variant_config.has_variants:
                 progress.update(main_task, description="[cyan]Resolving variants...")
-                self.resolved_variants = await self.step1_5_resolve_variants(progress)
+                self.resolved_variants = await self.resolve_variants_step(progress)
                 progress.advance(main_task)
             else:
                 # Skip variant resolution step
@@ -414,8 +419,11 @@ class SiRNAWorkflow:
 
         return protein_transcripts
 
-    async def step1_5_resolve_variants(self, progress: Progress) -> list[VariantRecord]:
-        """Step 1.5: Resolve variants for targeting or avoidance.
+    async def resolve_variants_step(self, progress: Progress) -> list[VariantRecord]:
+        """Resolve variants for targeting or avoidance (optional workflow step).
+
+        This step runs after transcript retrieval and before siRNA design,
+        resolving and filtering variants based on the workflow configuration.
 
         This step is run after transcript retrieval and before ORF validation and siRNA design.
         Variants are resolved using ClinVar, Ensembl Variation, and/or VCF files.
@@ -2230,11 +2238,8 @@ async def run_sirna_workflow(
     # Configure variant targeting if specified
     variant_config_obj: VariantWorkflowConfig | None = None
     if variant_ids or variant_vcf_file:
-        # Parse variant mode
-        try:
-            variant_mode_enum = VariantMode(variant_mode.lower())
-        except ValueError:
-            variant_mode_enum = VariantMode.AVOID
+        # Parse variant mode using helper that handles normalization
+        variant_mode_enum = normalize_variant_mode(variant_mode)
 
         # Parse ClinVar filters
         clinvar_filters = parse_clinvar_filter_string(variant_clinvar_filters)
