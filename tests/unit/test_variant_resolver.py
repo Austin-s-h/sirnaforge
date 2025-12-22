@@ -1,6 +1,7 @@
 """Unit tests for VariantResolver."""
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -256,6 +257,24 @@ class TestVariantResolverCache:
         assert cached_variant.chr == "chr1"
         assert cached_variant.pos == 100
         assert cached_variant.af == 0.05
+
+
+class TestVariantResolverVcf:
+    """Tests for VCF parsing support."""
+
+    def test_read_vcf_parses_af_and_ac_an(self):
+        """Ensure local VCF parsing populates allele frequency fields."""
+        resolver = VariantResolver(min_af=0.01, variant_mode="avoid")
+
+        vcf_path = Path(__file__).parent / "data" / "test_variants.vcf"
+
+        variants = resolver.read_vcf(vcf_path)
+
+        assert len(variants) == 2
+
+        af_values = {v.to_vcf_style(): v.af for v in variants}
+        assert af_values["chr1:100:A:G"] == pytest.approx(0.12)
+        assert af_values["chr1:200:C:T"] == pytest.approx(0.2)
 
 
 class TestVariantResolverInitialization:

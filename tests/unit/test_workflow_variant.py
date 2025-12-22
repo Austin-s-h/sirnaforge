@@ -1,13 +1,17 @@
 """Tests for variant workflow integration."""
 
+import json
+
 import pytest
 
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord, VariantSource
+from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 from sirnaforge.workflow_variant import (
     VariantWorkflowConfig,
     _count_by_chromosome,
     _count_by_source,
     _deduplicate_variants,
+    _save_variant_report,
     normalize_variant_mode,
     parse_clinvar_filter_string,
 )
@@ -208,3 +212,46 @@ class TestNormalizeVariantMode:
         """Test None value raises ValueError."""
         with pytest.raises(ValueError, match="Invalid variant mode"):
             normalize_variant_mode(None)  # type: ignore[arg-type]
+
+
+def test_save_variant_report_allows_empty(tmp_path):
+    """Ensure variant reports are written even when no variants pass filters."""
+    config = VariantWorkflowConfig(variant_ids=["rsNope"], variant_mode=VariantMode.AVOID)
+    output_path = tmp_path / "resolved_variants.json"
+
+    _save_variant_report([], output_path, "TP53", config)
+
+    with output_path.open() as f:
+        report = json.load(f)
+
+    assert report["gene"] == "TP53"
+    assert report["summary"]["total_variants"] == 0
+    assert report["variants"] == []
+
+
+def test_write_candidate_variant_links(tmp_path):
+    """Verify candidate-variant links are persisted to JSON."""
+
+    class DummyCandidate:
+        def __init__(self, cid: str):
+            self.id = cid
+            self.transcript_id = "ENST0001"
+            self.variant_mode = "target"
+            self.allele_specific = True
+            self.targeted_alleles = ["alt"]
+            self.overlapped_variants = [{"id": "rs123", "chr": "chr1", "pos": 100}]
+
+    candidates = [DummyCandidate("c1"), DummyCandidate("c2")]
+    config = WorkflowConfig(output_dir=tmp_path, gene_query="TP53")
+    wf = SiRNAWorkflow(config)
+    output_path = tmp_path / "logs" / "candidate_variants.json"
+
+    wf._write_candidate_variant_links(candidates, output_path)
+
+    with output_path.open() as fh:
+        payload = json.load(fh)
+
+    assert payload["gene"] == "TP53"
+    assert payload["variant_annotated_candidates"] == 2
+    assert payload["candidates"][0]["id"] == "c1"
+    assert payload["candidates"][0]["overlapped_variants"][0]["id"] == "rs123"
