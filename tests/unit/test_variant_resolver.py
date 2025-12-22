@@ -273,6 +273,7 @@ class TestVariantResolverVcf:
         assert len(variants) == 2
 
         af_values = {v.to_vcf_style(): v.af for v in variants}
+        # AF pulled directly from INFO/AF and AC/AN in the fixture VCF
         assert af_values["chr1:100:A:G"] == pytest.approx(0.12)
         assert af_values["chr1:200:C:T"] == pytest.approx(0.2)
 

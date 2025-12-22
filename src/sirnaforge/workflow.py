@@ -901,7 +901,7 @@ class SiRNAWorkflow:
                 "transcript_id": getattr(candidate, "transcript_id", None),
                 "variant_mode": getattr(candidate, "variant_mode", None),
                 "allele_specific": bool(getattr(candidate, "allele_specific", False)),
-                "targeted_alleles": list(getattr(candidate, "targeted_alleles", []) or []),
+                "targeted_alleles": list(getattr(candidate, "targeted_alleles", [])),
                 "overlapped_variants": overlapped,
             }
             entries.append(entry)

@@ -4,4 +4,4 @@
 ##INFO=<ID=AN,Number=1,Type=Integer,Description="Total Number of Alleles">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
 chr1	100	rsTestA	A	G	.	PASS	AF=0.12
-1	200	.	C	T	.	PASS	AC=2;AN=10
+chr1	200	.	C	T	.	PASS	AC=2;AN=10
