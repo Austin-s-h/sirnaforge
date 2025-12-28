@@ -1,6 +1,7 @@
 """Unit tests for VariantResolver."""
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -474,3 +475,27 @@ class TestVariantResolverEnsemblAPI:
         assert "SAS" in population_afs
         assert population_afs["MID"] == 0.6035
         assert population_afs["SAS"] == 0.5066
+
+
+class TestVariantResolverVcf:
+    """Tests for reading variants from local VCF files."""
+
+    def test_read_vcf_parses_af_and_filters(self):
+        """Ensure VCF parsing normalizes chromosomes and applies AF filters."""
+        resolver = VariantResolver(min_af=0.01)
+        vcf_path = Path(__file__).resolve().parents[2] / "examples" / "variant_demo.vcf"
+
+        variants = resolver.read_vcf(vcf_path)
+
+        # Low-AF variant should be filtered out
+        assert len(variants) == 2
+        ids = {v.id for v in variants}
+        assert ids == {"rsdemo1", "rsdemo2"}
+
+        # Chromosomes should be normalized with chr prefix
+        assert all(v.chr.startswith("chr") for v in variants)
+
+        af_lookup = {v.id: v.af for v in variants}
+        assert af_lookup["rsdemo1"] == pytest.approx(0.12)
+        # AC/AN should be converted to AF
+        assert af_lookup["rsdemo2"] == pytest.approx(0.02)

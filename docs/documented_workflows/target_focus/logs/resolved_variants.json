@@ -1,0 +1,37 @@
+{
+  "gene": "TP53",
+  "variant_mode": "target",
+  "filters": {
+    "min_af": 0.03,
+    "clinvar_significance": [
+      "Pathogenic",
+      "Likely pathogenic"
+    ],
+    "assembly": "GRCh38"
+  },
+  "summary": {
+    "total_variants": 1,
+    "sources": {
+      "local-vcf": 1
+    },
+    "chromosomes": {
+      "chr1": 1
+    }
+  },
+  "variants": [
+    {
+      "id": "rsdemo1",
+      "chr": "chr1",
+      "pos": 100,
+      "ref": "A",
+      "alt": "T",
+      "sources": [
+        "local-vcf"
+      ],
+      "primary_source": "local-vcf",
+      "clinvar_significance": null,
+      "af": 0.11999999731779099,
+      "vcf_style": "chr1:100:A:T"
+    }
+  ]
+}

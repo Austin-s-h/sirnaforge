@@ -1,5 +1,8 @@
 """Tests for variant workflow integration."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord, VariantSource
@@ -10,6 +13,7 @@ from sirnaforge.workflow_variant import (
     _deduplicate_variants,
     normalize_variant_mode,
     parse_clinvar_filter_string,
+    resolve_workflow_variants,
 )
 
 
@@ -208,3 +212,34 @@ class TestNormalizeVariantMode:
         """Test None value raises ValueError."""
         with pytest.raises(ValueError, match="Invalid variant mode"):
             normalize_variant_mode(None)  # type: ignore[arg-type]
+
+
+class TestResolveWorkflowVariants:
+    """Tests for the asynchronous variant resolution workflow helper."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_variants_from_vcf_writes_report(self, tmp_path):
+        """Resolve variants from a local VCF and persist the summary report."""
+        vcf_path = Path(__file__).resolve().parents[2] / "examples" / "variant_demo.vcf"
+        output_dir = tmp_path / "variant_workflow"
+        config = VariantWorkflowConfig(
+            vcf_file=vcf_path,
+            variant_mode=VariantMode.AVOID,
+            min_af=0.01,
+            assembly="GRCh38",
+        )
+
+        variants = await resolve_workflow_variants(config=config, gene_name="TP53", output_dir=output_dir)
+
+        assert len(variants) == 2
+
+        report_path = output_dir / "logs" / "resolved_variants.json"
+        assert report_path.exists()
+
+        with report_path.open() as f:
+            report = json.load(f)
+
+        assert report["gene"] == "TP53"
+        assert report["variant_mode"] == "avoid"
+        assert report["summary"]["total_variants"] == 2
+        assert report["summary"]["chromosomes"] == {"chr1": 1, "chr2": 1}
