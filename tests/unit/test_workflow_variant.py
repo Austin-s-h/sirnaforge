@@ -231,6 +231,7 @@ class TestResolveWorkflowVariants:
 
         variants = await resolve_workflow_variants(config=config, gene_name="TP53", output_dir=output_dir)
 
+        # Expect the low-AF record in the demo VCF to be filtered out at min_af=0.01
         assert len(variants) == 2
 
         report_path = output_dir / "logs" / "resolved_variants.json"

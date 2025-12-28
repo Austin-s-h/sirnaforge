@@ -487,7 +487,7 @@ class TestVariantResolverVcf:
 
         variants = resolver.read_vcf(vcf_path)
 
-        # Low-AF variant should be filtered out
+        # Low-AF variant (rsdemo3) should be filtered out by the 0.01 threshold
         assert len(variants) == 2
         ids = {v.id for v in variants}
         assert ids == {"rsdemo1", "rsdemo2"}
