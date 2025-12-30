@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from Bio import SeqIO
 
-from sirnaforge.utils.vcf_utils import read_vcf_records
+from sirnaforge.data.variant_resolver import VariantResolver
 
 
 @pytest.fixture(scope="module")
@@ -27,13 +27,14 @@ def test_orfs_are_valid(sample_sequences):
 def test_variants_match_reference(sample_sequences):
     """Ensure toy variant refs match bases in the synthetic sample transcripts."""
     vcf_path = Path("examples/variant_demo.vcf")
-    records = list(read_vcf_records(vcf_path))
+    resolver = VariantResolver(min_af=0.0)  # keep low-AF demo variants
+    records = resolver.read_vcf(vcf_path)
     assert records, "variant_demo.vcf should contain records"
 
-    seq_map = {k.replace("_transcript", ""): v for k, v in sample_sequences.items()}
+    seq_map = {k.split("_")[0]: v for k, v in sample_sequences.items()}
 
     for rec in records:
-        chrom = rec.chrom
+        chrom = rec.chr
         assert chrom in seq_map, f"No transcript for {chrom}"
         seq = seq_map[chrom]
         assert 1 <= rec.pos <= len(seq)
