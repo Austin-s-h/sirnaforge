@@ -1,0 +1,41 @@
+"""Validates synthetic sample transcripts and toy variants."""
+
+from pathlib import Path
+
+import pytest
+from Bio import SeqIO
+
+from sirnaforge.utils.vcf_utils import read_vcf_records
+
+
+@pytest.fixture(scope="module")
+def sample_sequences():
+    fasta_path = Path("examples/sample_transcripts.fasta")
+    records = {rec.id.split()[0]: rec.seq for rec in SeqIO.parse(fasta_path, "fasta")}
+    return records
+
+
+def test_orfs_are_valid(sample_sequences):
+    """All sample transcripts should have simple ORFs (ATG...stop, length %3 == 0)."""
+    stop_codons = {"TAA", "TAG", "TGA"}
+    for seq in sample_sequences.values():
+        assert len(seq) % 3 == 0
+        assert str(seq[:3]).upper() == "ATG"
+        assert str(seq[-3:]).upper() in stop_codons
+
+
+def test_variants_match_reference(sample_sequences):
+    """Ensure toy variant refs match bases in the synthetic sample transcripts."""
+    vcf_path = Path("examples/variant_demo.vcf")
+    records = list(read_vcf_records(vcf_path))
+    assert records, "variant_demo.vcf should contain records"
+
+    seq_map = {k.replace("_transcript", ""): v for k, v in sample_sequences.items()}
+
+    for rec in records:
+        chrom = rec.chrom
+        assert chrom in seq_map, f"No transcript for {chrom}"
+        seq = seq_map[chrom]
+        assert 1 <= rec.pos <= len(seq)
+        ref_base = seq[rec.pos - 1].upper()
+        assert ref_base == rec.ref.upper(), f"{chrom}:{rec.pos} expected {rec.ref}, found {ref_base}"
