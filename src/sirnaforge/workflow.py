@@ -44,6 +44,7 @@ from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.data.species_registry import normalize_species_name
+from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -193,6 +194,14 @@ class SiRNAWorkflow:
 
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
+        self._annotation_summary: dict[str, Any] = {}
+
+        # Optional: Initialize transcript annotation client (not used by default yet)
+        # This can be enabled via environment variable or config flag in the future
+        try:
+            self._annotation_client: EnsemblTranscriptModelClient | None = EnsemblTranscriptModelClient()
+        except Exception:
+            self._annotation_client = None
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete siRNA design workflow."""
@@ -274,6 +283,7 @@ class SiRNAWorkflow:
                 },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
+            "transcript_annotation_summary": self._annotation_summary or {"enabled": False},
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
@@ -396,7 +406,53 @@ class SiRNAWorkflow:
         # Quiet transcript validation (no verbose console warnings)
         _ = self.validation.validate_transcripts(protein_transcripts)
 
+        # Optional: Enrich with genomic annotations if client is available
+        await self._enrich_transcript_annotations(protein_transcripts)
+
         return protein_transcripts
+
+    async def _enrich_transcript_annotations(self, transcripts: list[TranscriptInfo]) -> None:
+        """Optionally enrich transcripts with genomic annotations.
+
+        This is a non-breaking enhancement that fetches additional genomic metadata
+        for transcripts when the annotation client is available.
+        Results are logged to workflow summary but do not modify transcript objects.
+        """
+        if not self._annotation_client:
+            return
+
+        # Only try to annotate if we have Ensembl transcript IDs
+        transcript_ids = [t.transcript_id for t in transcripts if t.transcript_id.startswith("ENST")]
+        if not transcript_ids:
+            return
+
+        try:
+            # Use default reference for annotation
+            reference = ReferenceChoice.default("GRCh38", reason="auto-selected for annotation")
+
+            bundle = await self._annotation_client.fetch_by_ids(
+                ids=transcript_ids[:10],  # Limit to first 10 to avoid excessive API calls
+                species="human",
+                reference=reference,
+            )
+
+            # Store summary for workflow output
+            self._annotation_summary = {
+                "enabled": True,
+                "provider": "ensembl_rest",
+                "transcripts_queried": len(transcript_ids[:10]),
+                "transcripts_resolved": bundle.resolved_count,
+                "transcripts_unresolved": bundle.unresolved_count,
+                "reference": reference.to_metadata(),
+            }
+
+            if bundle.resolved_count > 0:
+                console.print(
+                    f"📊 Genomic annotations: {bundle.resolved_count}/{len(transcript_ids[:10])} transcripts enriched"
+                )
+        except Exception as e:
+            logger.debug(f"Transcript annotation enrichment failed (non-critical): {e}")
+            self._annotation_summary = {"enabled": False, "error": str(e)}
 
     async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict[str, Any]:
         """Step 2: Validate ORFs and generate validation report."""
