@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2025-12-31
+
+### ✨ Added
+- **Transcript Annotation Provider Layer**: New data provider interface for fetching genomic transcript annotations
+  - Added `AbstractTranscriptAnnotationClient` interface in `src/sirnaforge/data/base.py`
+  - Implemented `EnsemblTranscriptModelClient` using Ensembl REST API (lookup/id and overlap/region endpoints)
+  - Added `VepConsequenceClient` stub for optional VEP enrichment (behind config flag, placeholder implementation)
+  - New Pydantic models: `Interval`, `TranscriptAnnotation`, and `TranscriptAnnotationBundle` in `src/sirnaforge/models/transcript_annotation.py`
+  - In-memory LRU cache with TTL for transcript annotations
+  - Support for fetching by stable IDs or genomic regions
+  - Comprehensive unit tests with mocked REST responses
+  - Integration tests for real Ensembl REST API (gated by `@pytest.mark.requires_network`)
+
+### 🔧 Improvements
+- **Extensible Architecture**: Transcript annotation provider follows the same layered pattern as existing data providers (gene search, ORF analysis, transcriptome management)
+- **Reference Tracking**: Annotations include provenance metadata (provider, endpoint, reference choice) for reproducibility
+- **Error Handling**: Robust handling of unresolved IDs and network errors with fallback to unresolved list
+
+### 📚 Documentation
+- Added comprehensive docstrings for all new classes and methods
+- Unit and integration tests serve as usage examples
+
 ## [0.3.3] - 2025-12-15
 
 ### 🐛 Bug Fixes

@@ -155,6 +155,61 @@ class AbstractDatabaseClient(ABC):
         pass
 
 
+class AbstractTranscriptAnnotationClient(ABC):
+    """Abstract base class for transcript annotation clients.
+    
+    Provides genomic annotation data including exon/CDS structure,
+    genomic coordinates, and biotype information without fetching
+    full transcript sequences (which are handled by AbstractDatabaseClient).
+    """
+
+    def __init__(self, timeout: int = 30):
+        """Initialize transcript annotation client.
+        
+        Args:
+            timeout: Request timeout in seconds
+        """
+        self.timeout = timeout
+
+    @abstractmethod
+    async def fetch_by_ids(
+        self, ids: list[str], *, species: str, reference: "ReferenceChoice"  # type: ignore  # noqa: F821
+    ) -> "TranscriptAnnotationBundle":  # type: ignore  # noqa: F821
+        """Fetch transcript annotations by stable IDs.
+
+        Args:
+            ids: List of transcript or gene IDs (e.g., ENST00000269305, TP53)
+            species: Species name (e.g., 'homo_sapiens', 'human')
+            reference: Reference assembly/release choice
+
+        Returns:
+            TranscriptAnnotationBundle containing resolved annotations
+
+        Raises:
+            DatabaseAccessError: For network/server access issues
+        """
+        pass
+
+    @abstractmethod
+    async def fetch_by_regions(
+        self, regions: list[str], *, species: str, reference: "ReferenceChoice"  # type: ignore  # noqa: F821
+    ) -> "TranscriptAnnotationBundle":  # type: ignore  # noqa: F821
+        """Fetch transcript annotations by genomic regions.
+
+        Args:
+            regions: List of genomic regions in format 'chr:start-end' (e.g., '17:7661779-7687550')
+            species: Species name (e.g., 'homo_sapiens', 'human')
+            reference: Reference assembly/release choice
+
+        Returns:
+            TranscriptAnnotationBundle containing all transcripts overlapping regions
+
+        Raises:
+            DatabaseAccessError: For network/server access issues
+        """
+        pass
+
+
 class EnsemblClient(AbstractDatabaseClient):
     """Client for Ensembl REST API interactions."""
 

@@ -30,6 +30,11 @@ from .sirna import (
     SequenceType,
     SiRNACandidate,
 )
+from .transcript_annotation import (
+    Interval,
+    TranscriptAnnotation,
+    TranscriptAnnotationBundle,
+)
 
 __all__ = [
     # siRNA design models
@@ -59,4 +64,8 @@ __all__ = [
     "AlignmentStrand",
     "AnalysisMode",
     "MiRNADatabase",
+    # Transcript annotation models
+    "Interval",
+    "TranscriptAnnotation",
+    "TranscriptAnnotationBundle",
 ]
