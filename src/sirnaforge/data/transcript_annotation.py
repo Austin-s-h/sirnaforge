@@ -1,4 +1,33 @@
-"""Transcript annotation providers using Ensembl REST and optional VEP enrichment."""
+"""Transcript annotation providers using Ensembl REST and optional VEP enrichment.
+
+This module provides clients for fetching genomic transcript annotations
+(exon/CDS structure, coordinates, biotype) separate from sequence retrieval.
+
+**Architecture Overview:**
+
+- **EnsemblTranscriptModelClient**: Primary implementation using Ensembl REST API
+- **VepConsequenceClient**: Optional enrichment client (placeholder for future development)
+
+**Caching Strategy:**
+
+Uses in-memory LRU cache with TTL rather than ReferenceManager's persistent file cache.
+This design choice is intentional because:
+
+1. **Data Size**: Annotation JSON responses are small (KB) vs. sequence files (GB)
+2. **Volatility**: Annotations may update with new releases; TTL provides freshness
+3. **Access Pattern**: High frequency, low latency requirements during workflow execution
+4. **Scope**: Transient metadata enrichment vs. permanent reference datasets
+
+The cache automatically evicts oldest entries when reaching max_cache_entries,
+and entries expire after cache_ttl seconds.
+
+**Relationship to GeneSearcher:**
+
+- GeneSearcher: Discovers transcripts by gene name, fetches cDNA/protein sequences
+- This module: Enriches known transcript IDs with genomic structural metadata
+- Both can use Ensembl, but query different API endpoints for different purposes
+- No redundancy: complementary data types that don't overlap
+"""
 
 import asyncio
 from collections.abc import Mapping
@@ -20,6 +49,43 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
     Retrieves transcript metadata including genomic coordinates, exon/CDS structure,
     and biotype information using Ensembl's public REST API.
+
+    **API Endpoints Used:**
+
+    1. **Lookup by ID** (`/lookup/id/:id?expand=1`):
+       - Fetches detailed annotation for single transcript/gene ID
+       - Returns exon coordinates, CDS intervals, biotype
+       - Example: /lookup/id/ENST00000269305?expand=1
+
+    2. **Overlap by Region** (`/overlap/region/:species/:region`):
+       - Fetches all transcripts overlapping genomic region
+       - Useful for region-based queries
+       - Example: /overlap/region/human/17:7661779-7687550?feature=transcript
+
+    **Caching Implementation:**
+
+    - Cache key format: "id:{species}:{identifier}:{reference}" or "region:{species}:{region}:{reference}"
+    - TTL: Configurable, default 1 hour (3600 seconds)
+    - Eviction: LRU when max_cache_entries reached (default 1000)
+    - Thread-safe: Single-process use only (workflow orchestration context)
+
+    **Error Handling:**
+
+    - 404: ID not found → added to unresolved list, no exception raised
+    - 403/503: Server unavailable → DatabaseAccessError raised
+    - Network errors: Wrapped in DatabaseAccessError with context
+    - Timeout: Configurable via timeout parameter
+
+    **Example Usage:**
+
+        >>> client = EnsemblTranscriptModelClient()
+        >>> reference = ReferenceChoice.explicit("GRCh38", reason="user-specified")
+        >>> bundle = await client.fetch_by_ids(
+        ...     ids=["ENST00000269305"],
+        ...     species="human",
+        ...     reference=reference
+        ... )
+        >>> print(f"Resolved: {bundle.resolved_count}, Unresolved: {bundle.unresolved_count}")
     """
 
     def __init__(
@@ -44,7 +110,17 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         self._cache: dict[str, tuple[Any, float]] = {}
 
     def _get_cached(self, key: str) -> Optional[Any]:
-        """Retrieve item from cache if present and not expired."""
+        """Retrieve item from cache if present and not expired.
+
+        Args:
+            key: Cache key (format: "type:species:identifier:reference")
+
+        Returns:
+            Cached value if present and not expired, None otherwise
+
+        Side Effects:
+            Removes expired entries from cache during lookup
+        """
         if key not in self._cache:
             return None
 
@@ -56,7 +132,18 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         return value
 
     def _set_cache(self, key: str, value: Any) -> None:
-        """Store item in cache with current timestamp."""
+        """Store item in cache with current timestamp.
+
+        Implements simple LRU eviction: when cache reaches max_cache_entries,
+        removes 10% of oldest entries by timestamp to make room.
+
+        Args:
+            key: Cache key (format: "type:species:identifier:reference")
+            value: Value to cache (TranscriptAnnotation, dict, or None for unresolved)
+
+        Side Effects:
+            May evict up to 10% of oldest cache entries if at capacity
+        """
         # Simple LRU eviction: remove oldest entries when cache is full
         if len(self._cache) >= self.max_cache_entries:
             # Remove 10% of oldest entries
@@ -175,7 +262,25 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         )
 
     async def _fetch_annotation_by_id(self, identifier: str, species: str) -> Optional[TranscriptAnnotation]:
-        """Fetch a single transcript annotation by ID with expand=1."""
+        """Fetch a single transcript annotation by ID with expand=1.
+
+        Makes HTTP GET request to Ensembl lookup/id endpoint with expand=1
+        to retrieve detailed transcript information including exons and CDS.
+
+        Args:
+            identifier: Ensembl transcript or gene ID (e.g., "ENST00000269305", "TP53")
+            species: Species identifier for Ensembl (e.g., "homo_sapiens")
+
+        Returns:
+            TranscriptAnnotation object if found, None if not found (404)
+
+        Raises:
+            DatabaseAccessError: For network errors, timeouts, or server unavailability (403/503)
+
+        Note:
+            The expand=1 parameter causes Ensembl to include Exon and Translation
+            objects in the response, which are needed for structural annotation.
+        """
         url = f"{self.base_url}/lookup/id/{identifier}?species={species}&expand=1"
         headers = {"Content-Type": "application/json"}
 
@@ -213,7 +318,27 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
     async def _fetch_annotations_by_region(
         self, region: str, species: str
     ) -> dict[str, TranscriptAnnotation]:
-        """Fetch all transcript annotations overlapping a genomic region."""
+        """Fetch all transcript annotations overlapping a genomic region.
+
+        Makes HTTP GET request to Ensembl overlap/region endpoint requesting
+        transcript, exon, and CDS features. Groups features by transcript ID
+        and constructs complete TranscriptAnnotation objects.
+
+        Args:
+            region: Genomic region in format "chr:start-end" (e.g., "17:7661779-7687550")
+            species: Species identifier for Ensembl (e.g., "homo_sapiens")
+
+        Returns:
+            Dictionary mapping transcript IDs to TranscriptAnnotation objects.
+            Empty dict if region not found or has no features.
+
+        Raises:
+            DatabaseAccessError: For network errors, timeouts, or server unavailability (403/503)
+
+        Note:
+            The response is a flat list of features (transcripts, exons, CDS) that
+            must be grouped by transcript ID using the Parent field.
+        """
         url = f"{self.base_url}/overlap/region/{species}/{region}?feature=transcript;feature=exon;feature=cds"
         headers = {"Content-Type": "application/json"}
 
@@ -249,7 +374,24 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             raise DatabaseAccessError(f"Unexpected error: {e}", "Ensembl") from e
 
     def _parse_transcript_data(self, data: Mapping[str, Any]) -> TranscriptAnnotation:
-        """Parse Ensembl lookup response into TranscriptAnnotation."""
+        """Parse Ensembl lookup/id response into TranscriptAnnotation.
+
+        Extracts transcript metadata from Ensembl JSON response including:
+        - Basic identifiers (transcript_id, gene_id, symbol, biotype)
+        - Genomic coordinates (chr, start, end, strand)
+        - Structural features (exons from Exon array, CDS from Translation object)
+
+        Args:
+            data: JSON response dict from Ensembl /lookup/id endpoint with expand=1
+
+        Returns:
+            TranscriptAnnotation object with all available fields populated
+
+        Note:
+            - Exons are parsed from the "Exon" array if present
+            - CDS intervals are derived from "Translation" object if present
+            - Provider/endpoint/reference metadata fields are set by caller
+        """
         # Extract basic info
         transcript_id = str(data.get("id", ""))
         gene_id = str(data.get("Parent", "") or data.get("gene_id", ""))
@@ -313,7 +455,23 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         """Parse Ensembl region overlap response into transcript annotations.
 
         The region endpoint returns a flat list of features (transcripts, exons, CDS).
-        We need to group them by transcript ID and build complete annotations.
+        This method groups them by transcript ID using the Parent field and constructs
+        complete TranscriptAnnotation objects.
+
+        Args:
+            features: List of feature dicts from /overlap/region endpoint, each with:
+                - feature_type: "transcript", "exon", or "cds"
+                - id: Feature stable ID
+                - Parent: Parent transcript ID (for exons and CDS)
+                - genomic coordinates and other metadata
+
+        Returns:
+            Dict mapping transcript IDs to complete TranscriptAnnotation objects
+
+        Algorithm:
+            1. First pass: Group features by transcript ID into transcript/exons/cds buckets
+            2. Second pass: Build TranscriptAnnotation from each grouped set
+            3. Provider/endpoint/reference metadata fields set by caller
         """
         # Group features by transcript ID
         transcript_features: dict[str, dict[str, Any]] = {}
@@ -399,7 +557,28 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
     @staticmethod
     def _normalize_species(species: str) -> str:
-        """Normalize species name for Ensembl API."""
+        """Normalize species name for Ensembl API.
+
+        Converts common species names and formats to Ensembl's expected format
+        (lowercase with underscores, e.g., "homo_sapiens").
+
+        Args:
+            species: Species name in various formats:
+                - Common name: "human", "mouse", "rat"
+                - Scientific name: "Homo sapiens", "Mus musculus"
+                - Ensembl format: "homo_sapiens" (returned as-is)
+
+        Returns:
+            Ensembl-compatible species identifier (e.g., "homo_sapiens")
+
+        Examples:
+            >>> _normalize_species("human")
+            'homo_sapiens'
+            >>> _normalize_species("Homo sapiens")
+            'homo_sapiens'
+            >>> _normalize_species("custom_species")
+            'custom_species'
+        """
         # Map common names to Ensembl species names
         species_map = {
             "human": "homo_sapiens",
@@ -420,6 +599,30 @@ class VepConsequenceClient:
 
     Provides additional functional annotation for transcript variants.
     This is an optional enhancement and not required for base functionality.
+
+    **Current Status: PLACEHOLDER**
+
+    This client exists as a stub for future VEP integration. The `enrich_annotations`
+    method currently returns the input bundle unchanged.
+
+    **Future Implementation:**
+
+    When activated (via config flag), this client will:
+    1. Query Ensembl VEP REST API for consequence predictions
+    2. Enrich TranscriptAnnotation objects with:
+       - Variant consequence types (missense, nonsense, etc.)
+       - Conservation scores
+       - Regulatory feature overlaps
+       - Population frequency data
+    3. Maintain consistent caching strategy with EnsemblTranscriptModelClient
+
+    **Design Rationale:**
+
+    Separated from EnsemblTranscriptModelClient because:
+    - VEP queries are expensive (rate-limited, slower)
+    - Not all workflows need consequence predictions
+    - Allows independent caching strategies
+    - Can be enabled/disabled via configuration
     """
 
     def __init__(self, timeout: int = 30, base_url: str = "https://rest.ensembl.org"):

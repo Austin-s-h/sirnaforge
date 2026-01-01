@@ -1,16 +1,22 @@
 """Shared base classes and utilities for genomic data analysis."""
 
+from __future__ import annotations
+
 import asyncio
 import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Callable, Optional, TypeVar, Union, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from sirnaforge.utils.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    from sirnaforge.config.reference_policy import ReferenceChoice
+    from sirnaforge.models.transcript_annotation import TranscriptAnnotationBundle
 
 logger = get_logger(__name__)
 
@@ -158,9 +164,37 @@ class AbstractDatabaseClient(ABC):
 class AbstractTranscriptAnnotationClient(ABC):
     """Abstract base class for transcript annotation clients.
     
-    Provides genomic annotation data including exon/CDS structure,
-    genomic coordinates, and biotype information without fetching
-    full transcript sequences (which are handled by AbstractDatabaseClient).
+    **Purpose and Scope:**
+    Provides genomic annotation metadata (exon/CDS structure, coordinates, biotype)
+    WITHOUT fetching full transcript sequences. This is complementary to, not overlapping
+    with, AbstractDatabaseClient which focuses on sequence retrieval.
+    
+    **Key Differences from GeneSearcher/AbstractDatabaseClient:**
+    
+    1. **Focus**: Structural annotations (exons, CDS intervals, genomic coordinates)
+       vs. sequence data (cDNA, CDS, protein sequences)
+    
+    2. **Use Case**: Enriching existing transcript metadata with genomic context
+       vs. discovering and retrieving transcripts with sequences
+    
+    3. **Query Patterns**: 
+       - By stable IDs: fetch_by_ids(['ENST00000269305'])
+       - By genomic regions: fetch_by_regions(['17:7661779-7687550'])
+       vs. GeneSearcher which queries by gene name/symbol
+    
+    4. **Caching Strategy**: In-memory LRU cache with TTL for transient annotation data
+       vs. ReferenceManager's persistent file cache for large sequence datasets
+    
+    **When to Use:**
+    - Need exon/CDS boundaries for visualization or analysis
+    - Need genomic coordinates for variant mapping
+    - Need biotype information without full sequence download
+    - Need to query multiple transcripts in a genomic region
+    
+    **When to Use GeneSearcher Instead:**
+    - Need transcript sequences for siRNA design
+    - Need to discover transcripts by gene name/symbol
+    - Need protein sequences or translations
     """
 
     def __init__(self, timeout: int = 30):
@@ -173,8 +207,8 @@ class AbstractTranscriptAnnotationClient(ABC):
 
     @abstractmethod
     async def fetch_by_ids(
-        self, ids: list[str], *, species: str, reference: "ReferenceChoice"  # type: ignore  # noqa: F821
-    ) -> "TranscriptAnnotationBundle":  # type: ignore  # noqa: F821
+        self, ids: list[str], *, species: str, reference: ReferenceChoice
+    ) -> TranscriptAnnotationBundle:
         """Fetch transcript annotations by stable IDs.
 
         Args:
@@ -192,8 +226,8 @@ class AbstractTranscriptAnnotationClient(ABC):
 
     @abstractmethod
     async def fetch_by_regions(
-        self, regions: list[str], *, species: str, reference: "ReferenceChoice"  # type: ignore  # noqa: F821
-    ) -> "TranscriptAnnotationBundle":  # type: ignore  # noqa: F821
+        self, regions: list[str], *, species: str, reference: ReferenceChoice
+    ) -> TranscriptAnnotationBundle:
         """Fetch transcript annotations by genomic regions.
 
         Args:
