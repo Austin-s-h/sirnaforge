@@ -62,6 +62,23 @@ for gene in TP53 BRCA1 EGFR KRAS; do
 done
 ```
 
+## Variant Targeting (documented runs)
+
+Five offline variant-resolution runs were executed with the bundled FASTA (`examples/sample_transcripts.fasta`) and demo VCF (`examples/variant_demo.vcf`). Minimal outputs live under `docs/documented_workflows/`:
+
+- Summary: `docs/documented_workflows/variant_examples.json` (command, mode, min-af, resolved variants)
+- Reports: `docs/documented_workflows/*/logs/resolved_variants.json`
+
+Example commands mirrored in the summary:
+
+```bash
+# Avoid mode with default AF threshold
+sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode avoid --min-af 0.01 --output-dir workflow_output/avoid_baseline
+
+# Target common alleles
+sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode target --min-af 0.03 --output-dir workflow_output/target_focus
+```
+
 ## Docker Workflow
 
 ```bash
