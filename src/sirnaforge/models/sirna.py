@@ -223,7 +223,14 @@ class DesignParameters(BaseModel):
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
-    top_n: int = Field(default=100, ge=1, le=1000, description="Number of top-scoring candidates to return")
+    top_n: int = Field(
+        default=500,
+        ge=1,
+        description=(
+            "Number of top-ranked candidates to select for off-target analysis "
+            "(does not change how many candidates are enumerated)"
+        ),
+    )
 
     # Filtering criteria
     filters: FilterCriteria = Field(default_factory=FilterCriteria, description="Quality control filters")

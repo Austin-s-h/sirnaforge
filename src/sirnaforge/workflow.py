@@ -203,6 +203,7 @@ class SiRNAWorkflow:
 
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
+        self._dirty_controls_added: int = 0
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete siRNA design workflow."""
@@ -510,6 +511,7 @@ class SiRNAWorkflow:
             progress.advance(task)
             design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
             added_controls = inject_dirty_controls(design_result)
+            self._dirty_controls_added = len(added_controls)
             if added_controls:
                 console.print(
                     f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification"
@@ -593,6 +595,7 @@ class SiRNAWorkflow:
         )
 
         added_controls = inject_dirty_controls(combined)
+        self._dirty_controls_added = len(added_controls)
         if added_controls:
             console.print(f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification")
 
@@ -2111,6 +2114,7 @@ class SiRNAWorkflow:
                 "pass_count": passed,
                 "fail_count": failed,
                 "top_n_requested": self.config.top_n,
+                "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,
             }
         )

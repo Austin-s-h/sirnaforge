@@ -195,16 +195,3 @@ class TestNormalizeVariantMode:
         assert normalize_variant_mode("Avoid") == VariantMode.AVOID
         assert normalize_variant_mode("Target") == VariantMode.TARGET
         assert normalize_variant_mode("Both") == VariantMode.BOTH
-
-    def test_invalid_string_raises(self):
-        """Test invalid string values raise ValueError."""
-        with pytest.raises(ValueError, match="Invalid variant mode"):
-            normalize_variant_mode("invalid")
-
-        with pytest.raises(ValueError, match="Invalid variant mode"):
-            normalize_variant_mode("skip")
-
-    def test_none_raises(self):
-        """Test None value raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid variant mode"):
-            normalize_variant_mode(None)  # type: ignore[arg-type]

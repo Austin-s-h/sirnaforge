@@ -1066,7 +1066,9 @@ def design(  # noqa: PLR0912
         "--top-n",
         "-n",
         min=1,
-        help="Number of top candidates to return",
+        help=(
+            "Number of top-ranked candidates to select for reporting/off-target (all candidates are still generated)"
+        ),
     ),
     gc_min: float = typer.Option(
         30.0,
