@@ -624,15 +624,19 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
                         strand=int(strand_g) if strand_g is not None else None,
                     )
 
-            transcript_name = (
-                transcript_data.get("external_name")
-                or transcript_data.get("display_name")
-                or transcript_data.get("gene_name")
-            )
-            symbol = gene_symbol or transcript_data.get("gene_name")
-            if (not symbol) and isinstance(transcript_name, str) and "-" in transcript_name:
-                # Common Ensembl convention: transcript name like "TP53-201".
-                symbol = transcript_name.split("-", 1)[0]
+            symbol = gene_symbol
+            if not symbol:
+                # Fallback: overlap transcript features may only provide a transcript name.
+                # If it looks like the common Ensembl isoform naming scheme (e.g. "TP53-201"),
+                # strip the isoform suffix to recover the gene symbol.
+                symbol_candidate = (
+                    transcript_data.get("gene_name")
+                    or transcript_data.get("external_name")
+                    or transcript_data.get("display_name")
+                )
+                if isinstance(symbol_candidate, str) and "-" in symbol_candidate:
+                    symbol_candidate = symbol_candidate.split("-", 1)[0]
+                symbol = symbol_candidate
             biotype = transcript_data.get("biotype")
 
             # Genomic coordinates
