@@ -7,22 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [0.3.4] - 2025-12-31
+
+### ✨ Added
+- **Transcript Annotation Provider Layer**: New data provider interface for fetching genomic transcript annotations
+  - Added `AbstractTranscriptAnnotationClient` interface in `src/sirnaforge/data/base.py`
+  - Implemented `EnsemblTranscriptModelClient` using Ensembl REST API (lookup/id and overlap/region endpoints)
+  - Added `VepConsequenceClient` stub for optional VEP enrichment (behind config flag, placeholder implementation)
+  - New Pydantic models: `Interval`, `TranscriptAnnotation`, and `TranscriptAnnotationBundle` in `src/sirnaforge/models/transcript_annotation.py`
+  - In-memory LRU cache with TTL for transcript annotations
+  - Support for fetching by stable IDs or genomic regions
+  - Comprehensive unit tests with mocked REST responses
+  - Integration tests for real Ensembl REST API (gated by `@pytest.mark.requires_network`)
+
 ### 🔧 Improvements
-- **Automatic Species Normalization**: All species inputs now automatically normalize to canonical form
-  - Accepts common names (`human`, `mouse`), miRBase codes (`hsa`, `mmu`), or scientific names (`Homo sapiens`)
-  - Consistent internal storage eliminates cross-system comparison issues
-  - Registry-based lookup in `src/sirnaforge/data/species_registry.py`
-- **Relaxed Index Requirements**: Workflow now accepts transcriptome FASTAs without pre-built BWA indices
-  - Nextflow builds indices in Docker environment when needed
-  - Enables off-target analysis on systems without local BWA-MEM2 installation
-- **Updated Ensembl URLs**: Fixed rat transcriptome download URL to current GRCr8 assembly
+- **Extensible Architecture**: Transcript annotation provider follows the same layered pattern as existing data providers (gene search, ORF analysis, transcriptome management)
+- **Reference Tracking**: Annotations include provenance metadata (provider, endpoint, reference choice) for reproducibility
+- **Error Handling**: Robust handling of unresolved IDs and network errors with fallback to unresolved list
 
 ### 📚 Documentation
-- **Species Normalization Guide**: Added comprehensive section to modular override guide
-  - Documents all supported species name formats
-  - Explains automatic normalization behavior
-  - Lists registry mappings and aliases
-- **Updated Examples**: All CLI examples now demonstrate flexible species format usage
+- Added comprehensive docstrings for all new transcript annotation classes and methods
+- Unit and integration tests serve as usage examples
+
+## [0.3.3] - 2025-12-15
+
+### 🐛 Bug Fixes
+- **Docker Login Shell PATH**: Fixed issue where login shells reset PATH and dropped `/opt/conda/bin`, making `sirnaforge` and `nextflow` unavailable
+  - Added `/etc/profile.d/conda-path.sh` to preserve conda toolchain paths in login shells
+  - Added regression test `test_docker_login_shell_path()` to container test suite
+  - Added standalone test script `scripts/test-docker-login-shell.sh` for manual verification
+- **Nextflow Off-target Aggregation**: Fixed a Groovy/DSL2 runtime crash during final aggregation (`No signature of method ... call(LinkedList)`) by correcting channel collection/defaulting semantics in the embedded workflow
+  - Replaced invalid `ifEmpty([])`/`ifEmpty('')` usage with `ifEmpty { [] }`/`ifEmpty { '' }`
+  - Switched from `collect()` to `toList()` for explicit channel materialization before combining genome + miRNA result lists
 
 
 ## [0.3.1] - 2025-12-04
