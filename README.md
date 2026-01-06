@@ -4,7 +4,7 @@
   <h1>siRNAforge</h1>
 
   [![Release](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml)
-  [![Python 3.9–3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
+  [![Python 3.10–3.12](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
   [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
   [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/austin-s-h/packages/container/package/sirnaforge)
   [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://austin-s-h.github.io/sirnaforge)
@@ -33,6 +33,8 @@
 | Feature | Description |
 |---------|-------------|
 | **🔍 Multi-database search** | Automatic transcript retrieval from Ensembl, RefSeq (TODO), and GENCODE (TODO) |
+| **🧬 Variant targeting** | Design and rank candidates against specific genetic variants with population AF filtering |
+| **🧾 Transcript annotations** | Fetch transcript models/interval annotations via a provider layer (Ensembl REST-backed) |
 | **🌡️ Thermodynamic scoring** | ViennaRNA-based secondary structure prediction and stability analysis |
 | **🎯 Transcriptome Off-target analysis** | Transcriptome BWA-MEM2 `transcriptome` search with mismatch tolerance control |
 | **🧬 miRNA seed avoidance** | MirGeneDB, MirBase (TODO) BWA-MEM2 `mirna_seed` search for known matches to miRNA seed regions |
@@ -41,7 +43,7 @@
 | **💉 Chemical modifications** | Track 2'-O-methyl, 2'-fluoro, and phosphorothioate patterns |
 | **📊 Rich output** | Structured CSV, FASTA, and JSON reports with comprehensive metadata |
 
-**Supported Python versions:** 3.9, 3.10, 3.11, 3.12 *(Python 3.13+ pending ViennaRNA compatibility)*
+**Supported Python versions:** 3.10, 3.11, 3.12 *(Python 3.13+ pending ViennaRNA compatibility)*
 
 ---
 
@@ -60,7 +62,6 @@ Choose your path based on what you need to do:
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
   git clone https://github.com/austin-s-h/sirnaforge && cd sirnaforge
-  uv sync --dev
   make dev
   make check
   ```
@@ -143,7 +144,7 @@ Every workflow run now captures the resolved transcriptome decision in `logs/wor
 
 ---
 
-## � Documentation
+## 📚 Documentation
 
 <table>
 <tr>
@@ -245,7 +246,7 @@ All dependencies included in the image:
 - BWA-MEM2 ≥2.2.1
 - SAMtools ≥1.19.2
 - ViennaRNA ≥2.7.0
-- Python 3.9-3.12
+- Python 3.10-3.12
 
 ### Local Development
 Python-only features work immediately. Off-target analysis requires Docker or manual installation of bioinformatics tools.

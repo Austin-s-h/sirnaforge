@@ -1,4 +1,4 @@
-name: 🚀 Release siRNAforge
+name: Release siRNAforge
 
 on:
   push:
@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   validate-release:
-    name: 🔍 Validate Release Input
+    name: Validate Release Input
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -51,10 +51,12 @@ jobs:
       deploy_docs_release: ${{ steps.release_flags.outputs.deploy_docs_release }}
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-    - name: 🔍 Validate version format
+    - name: Validate version format
       id: version
       run: |
         VERSION_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || '' }}"
@@ -68,22 +70,22 @@ jobs:
         # PyPI versions must be PEP 440 compatible.
         # Accepts: X.Y.Z, X.Y.ZrcN, X.Y.ZaN, X.Y.ZbN, X.Y.Z.postN, X.Y.Z.devN, and optional local +tag.
         if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.post[0-9]+|\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
-          echo "❌ Invalid version format: $VERSION"
+          echo "Invalid version format: $VERSION"
           echo "Expected format (PEP 440-ish): X.Y.Z, X.Y.ZrcN, X.Y.ZaN, X.Y.ZbN, X.Y.Z.postN, X.Y.Z.devN (optional +local)"
           exit 1
         fi
-        echo "✅ Version format valid: $VERSION"
+        echo "Version format valid: $VERSION"
 
-    - name: 🔍 Check if version already exists
+    - name: Check if version already exists
       run: |
         VERSION="v${{ steps.version.outputs.version }}"
         if git ls-remote --tags origin | grep -q "refs/tags/$VERSION$"; then
-          echo "❌ Tag $VERSION already exists"
+          echo "Tag $VERSION already exists"
           exit 1
         fi
-        echo "✅ Version $VERSION is available"
+        echo "Version $VERSION is available"
 
-    - name: 🔡 Normalize repository identifiers
+    - name: Normalize repository identifiers
       id: repo
       run: |
         REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
@@ -94,7 +96,7 @@ jobs:
         echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
         echo "name=$NAME_LOWER" >> $GITHUB_OUTPUT
 
-    - name: 📊 Gather project statistics
+    - name: Gather project statistics
       id: stats
       run: |
         # Count code files and tests
@@ -117,7 +119,7 @@ jobs:
         echo "docker_size=$DOCKER_SIZE" >> $GITHUB_OUTPUT
         echo "cli_commands=$CLI_COMMANDS" >> $GITHUB_OUTPUT
 
-    - name: 📋 Generate comprehensive release notes
+    - name: Generate comprehensive release notes
       id: changelog
       env:
         VERSION: ${{ steps.version.outputs.version }}
@@ -133,7 +135,7 @@ jobs:
       run: |
         python .github/scripts/generate_release_notes.py
 
-    - name: ⚙️ Normalize release toggles
+    - name: Normalize release toggles
       id: release_flags
       run: |
         python <<'PY'
@@ -184,13 +186,13 @@ jobs:
 
   # Call the main CI workflow to ensure quality
   run-ci:
-    name: 🧪 Run Main CI Pipeline
+    name: Run Main CI Pipeline
     needs: validate-release
     uses: ./.github/workflows/ci.yml
 
   # Run comprehensive release tests with full coverage
   test-release:
-    name: 🧪 Comprehensive Release Tests
+    name: Comprehensive Release Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -199,31 +201,31 @@ jobs:
     if: needs.run-ci.result == 'success' && needs.build-docker.result == 'success'
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: ⚡ Install uv CLI
+    - name: Install uv CLI
       uses: astral-sh/setup-uv@v6
       with:
         activate-environment: false
         enable-cache: true
         cache-suffix: test-release
 
-    - name: 📦 Install all dependencies
-      run: uv sync --dev
+    - name: Install all dependencies
+      run: make dev
 
-    - name: 📥 Download Docker image
+    - name: Download Docker image
       uses: actions/download-artifact@v4
       with:
         name: docker-image-${{ needs.validate-release.outputs.version }}
         path: /tmp/
 
-    - name: 🐳 Load Docker image for testing
+    - name: Load Docker image for testing
       run: |
         # Load the built image
         docker load --input /tmp/sirnaforge-image.tar
@@ -233,13 +235,13 @@ jobs:
         docker tag "$REGISTRY_IMAGE" sirnaforge:latest
         docker tag "$REGISTRY_IMAGE" sirnaforge:${{ needs.validate-release.outputs.version }}
 
-        echo "✅ Docker image loaded and tagged for testing"
+        echo "Docker image loaded and tagged for testing"
         docker images | grep sirnaforge
 
-    - name: 🧪 Run comprehensive test suite with coverage
+    - name: Run comprehensive test suite with coverage
       run: make test-release
 
-    - name: 📊 Upload coverage reports
+    - name: Upload coverage reports
       uses: actions/upload-artifact@v4
       if: always()
       with:
@@ -250,16 +252,16 @@ jobs:
           pytest-report.xml
         retention-days: 30
 
-    - name: 📈 Coverage summary
+    - name: Coverage summary
       if: always()
       run: |
-        echo "## 📊 Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        echo "## Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY || echo "Coverage report not available" >> $GITHUB_STEP_SUMMARY
 
   # Build Python distribution artifacts once (reusable by PyPI/TestPyPI)
   build-artifacts:
-    name: 📦 Build Python Artifacts
+    name: Build Python Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [ validate-release, run-ci, test-release ]
@@ -267,25 +269,25 @@ jobs:
     outputs:
       version: ${{ needs.validate-release.outputs.version }}
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    - name: ⚡ Install uv CLI
+    - name: Install uv CLI
       uses: astral-sh/setup-uv@v6
       with:
         activate-environment: false
         enable-cache: true
         cache-suffix: build-dist
-    - name: 🔧 Build (sdist + wheel)
+    - name: Build (sdist + wheel)
       run: |
         uv build
         ls -lh dist/
-    - name: 🔍 Verify metadata (twine check)
+    - name: Verify metadata (twine check)
       run: uv run --with twine twine check dist/*
-    - name: 📤 Upload dist artifacts
+    - name: Upload dist artifacts
       uses: actions/upload-artifact@v4
       with:
         name: python-dist-${{ needs.validate-release.outputs.version }}
@@ -294,7 +296,7 @@ jobs:
 
   # Build and test Docker images only after CI passes
   build-docker:
-    name: 🐳 Build & Test Docker Images
+    name: Build & Test Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [ validate-release, run-ci ]
@@ -303,17 +305,17 @@ jobs:
       image-tags: ${{ steps.meta.outputs.tags }}
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🔐 Log in to GitHub Container Registry
+    - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🏗️ Set up Docker Buildx
+    - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
     - name: Generate Docker metadata
@@ -331,7 +333,7 @@ jobs:
           org.opencontainers.image.url=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
           org.opencontainers.image.source=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
 
-    - name: 🐳 Build Docker image (don't push yet)
+    - name: Build Docker image (don't push yet)
       id: build
       uses: docker/build-push-action@v5
       with:
@@ -344,7 +346,7 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: 📤 Upload Docker image artifact
+    - name: Upload Docker image artifact
       uses: actions/upload-artifact@v4
       with:
         name: docker-image-${{ needs.validate-release.outputs.version }}
@@ -353,7 +355,7 @@ jobs:
 
   # Create GitHub release after docker build passes
   create-release:
-    name: 🏷️ Create GitHub Release
+    name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [ validate-release, test-release ]
@@ -363,10 +365,10 @@ jobs:
       release-url: ${{ steps.create.outputs.html_url }}
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🏷️ Create Git tag
+    - name: Create Git tag
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -375,9 +377,9 @@ jobs:
         git tag -a "$VERSION" -m "Release $VERSION"
         git push origin "$VERSION"
 
-        echo "✅ Created and pushed tag: $VERSION"
+        echo "Created and pushed tag: $VERSION"
 
-    - name: 🚀 Create GitHub Release
+    - name: Create GitHub Release
       id: create
       uses: actions/create-release@v1
       env:
@@ -391,7 +393,7 @@ jobs:
 
   # Optional: Publish to PyPI using Trusted Publishing (OIDC) if enabled
   publish-pypi:
-    name: 📦 Publish to PyPI
+    name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: [ validate-release, run-ci, create-release, build-artifacts ]
     if: ${{ needs.run-ci.result == 'success' && needs.create-release.result == 'success' && needs.build-artifacts.result == 'success' }}
@@ -399,15 +401,15 @@ jobs:
       id-token: write # Required for PyPI trusted publisher
       contents: read
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
-    - name: 📥 Download dist artifacts
+    - name: Download dist artifacts
       uses: actions/download-artifact@v4
       with:
         name: python-dist-${{ needs.validate-release.outputs.version }}
         path: dist/
 
-    - name: 🚀 Publish to TestPyPI (Trusted Publisher)
+    - name: Publish to TestPyPI (Trusted Publisher)
       if: ${{ needs.validate-release.outputs.prerelease == 'true' }}
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
@@ -416,7 +418,7 @@ jobs:
         verbose: true
         skip-existing: true
 
-    - name: 🚀 Publish to PyPI (Trusted Publisher)
+    - name: Publish to PyPI (Trusted Publisher)
       if: ${{ needs.validate-release.outputs.prerelease != 'true' }}
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
@@ -424,7 +426,7 @@ jobs:
         verbose: true
         skip-existing: true
 
-    - name: ✅ Publish summary
+    - name: Publish summary
       run: |
         if [ "${{ needs.validate-release.outputs.prerelease }}" = "true" ]; then
           echo "Published version v${{ needs.validate-release.outputs.version }} to TestPyPI (pre-release)."
@@ -434,31 +436,31 @@ jobs:
 
   # Optional: Build and deploy docs for the release
   build-release-docs:
-    name: 📚 Build Release Docs
+    name: Build Release Docs
     runs-on: ubuntu-latest
     needs: [ validate-release, run-ci ]
     if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.run-ci.result == 'success' }}
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
-    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    - name: ⚡ Install uv CLI
+    - name: Install uv CLI
       uses: astral-sh/setup-uv@v6
       with:
         activate-environment: false
         enable-cache: true
         cache-suffix: docs-release
-    - name: 📦 Install dependencies
-      run: uv sync --group dev
-    - name: 🏗️ Build documentation (release)
+    - name: Install dependencies
+      run: make dev
+    - name: Build documentation (release)
       run: |
         export SIRNAFORGE_RELEASE_VERSION=${{ needs.validate-release.outputs.version }}
         uv run --group dev sphinx-build -b html docs docs/_build/html
         touch docs/_build/html/.nojekyll
-    - name: 📤 Upload docs artifact
+    - name: Upload docs artifact
       uses: actions/upload-artifact@v4
       with:
         name: release-docs-${{ needs.validate-release.outputs.version }}
@@ -466,7 +468,7 @@ jobs:
         retention-days: 7
 
   deploy-release-docs:
-    name: 🚀 Deploy Release Docs
+    name: Deploy Release Docs
     runs-on: ubuntu-latest
     needs: [ validate-release, build-release-docs ]
     if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
@@ -474,46 +476,46 @@ jobs:
       pages: write
       id-token: write
     steps:
-    - name: 📥 Download docs artifact
+    - name: Download docs artifact
       uses: actions/download-artifact@v4
       with:
         # Use normalized version (without leading 'v') from validate-release to match upload name
         name: release-docs-${{ needs.validate-release.outputs.version }}
         path: docs/_build/html
-    - name: 📤 Upload pages artifact
+    - name: Upload pages artifact
       uses: actions/upload-pages-artifact@v3
       with:
         path: docs/_build/html
-    - name: 🚀 Deploy to GitHub Pages
+    - name: Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4
 
   # Publish Docker images only after release tests pass and the release is created
   publish-docker:
-    name: 🐳 Publish Docker Images
+    name: Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [ validate-release, build-docker, test-release, create-release ]
     if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-release.result == 'success' && needs.create-release.result == 'success' }}
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🔐 Log in to GitHub Container Registry
+    - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 📥 Download Docker image
+    - name: Download Docker image
       uses: actions/download-artifact@v4
       with:
         name: docker-image-${{ needs.validate-release.outputs.version }}
         path: /tmp/
 
-    - name: 🐳 Load and push Docker image
+    - name: Load and push Docker image
       run: |
         # Load the image
         docker load --input /tmp/sirnaforge-image.tar
@@ -527,12 +529,12 @@ jobs:
           LATEST_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest"
           docker tag "$VERSION_TAG" "$LATEST_TAG"
           docker push "$LATEST_TAG"
-          echo "✅ Pushed both version and latest tags"
+          echo "Pushed both version and latest tags"
         else
-          echo "✅ Pushed version tag only (prerelease)"
+          echo "Pushed version tag only (prerelease)"
         fi
 
-    - name: 🔐 Generate artifact attestation
+    - name: Generate artifact attestation
       uses: actions/attest-build-provenance@v1
       continue-on-error: true
       with:
@@ -541,32 +543,32 @@ jobs:
 
   # Final integration test with published images
   final-integration-test:
-    name: 🧪 Final Integration Test
+    name: Final Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [ validate-release, create-release, publish-docker ]
     if: needs.publish-docker.result == 'success'
 
     steps:
-    - name: 🐳 Test published Docker image
+    - name: Test published Docker image
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
         IMAGE_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${VERSION}"
 
-        echo "🐳 Testing published image from ${{ env.REGISTRY }}..."
+        echo "Testing published image from ${{ env.REGISTRY }}..."
         docker pull "$IMAGE_TAG"
 
-        echo "🧪 Testing CLI functionality..."
+        echo "Testing CLI functionality..."
         docker run --rm "$IMAGE_TAG" sirnaforge --help
 
-        echo "🧪 Testing version command..."
+        echo "Testing version command..."
         docker run --rm "$IMAGE_TAG" sirnaforge version
 
-        echo "✅ Published image works correctly!"
+        echo "Published image works correctly!"
 
   # Final confirmation
   finalize-release:
-    name: ✅ Release Complete
+    name: Release Complete
     runs-on: ubuntu-latest
     timeout-minutes: 2
     needs: [ validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs ]
@@ -574,9 +576,9 @@ jobs:
       always() && needs.create-release.result == 'success' && (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') && (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') && (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
 
     steps:
-    - name: 🎉 Release Status
+    - name: Release Status
       run: |
-        echo "✅ Release v${{ needs.validate-release.outputs.version }} completed successfully"
-        echo "📦 GitHub Release: ${{ needs.create-release.outputs.release-url }}"
-        echo "📁 Repository: ${{ needs.validate-release.outputs.repository-lower }}"
-        echo "🏷️ Tag: v${{ needs.validate-release.outputs.version }}"
+        echo "Release v${{ needs.validate-release.outputs.version }} completed successfully"
+        echo "GitHub Release: ${{ needs.create-release.outputs.release-url }}"
+        echo "Repository: ${{ needs.validate-release.outputs.repository-lower }}"
+        echo "Tag: v${{ needs.validate-release.outputs.version }}"

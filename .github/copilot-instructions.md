@@ -28,4 +28,4 @@
 
 ## Packaging Constraints
 - Packaging is Hatchling-only (`pyproject.toml`, `uv.lock`); don’t add `setup.py` or ad-hoc requirements files.
-- Supported Python is 3.9–3.12 (see README); avoid relying on Python 3.13-only features.
+- Supported Python is 3.10–3.12 (see README); avoid relying on Python 3.13-only features.
