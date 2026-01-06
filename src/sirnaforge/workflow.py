@@ -2180,6 +2180,7 @@ async def run_sirna_workflow(
     sirna_length: int = 21,
     modification_pattern: str = "standard_2ome",
     overhang: str = "dTdT",
+    check_off_targets: bool = True,
     # Variant targeting parameters
     variant_ids: list[str] | None = None,
     variant_vcf_file: Path | None = None,
@@ -2216,6 +2217,7 @@ async def run_sirna_workflow(
         sirna_length: siRNA length in nucleotides
         modification_pattern: Chemical modification pattern
         overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        check_off_targets: Perform off-target analysis stage (default: True)
         variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
         variant_vcf_file: Path to VCF file containing variants to target or avoid
         variant_mode: How to handle variants (avoid/target/both) - default is avoid
@@ -2251,6 +2253,7 @@ async def run_sirna_workflow(
         top_n=top_n_candidates,
         sirna_length=sirna_length,
         filters=filter_criteria,
+        check_off_targets=check_off_targets,
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,

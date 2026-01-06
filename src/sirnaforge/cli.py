@@ -537,6 +537,11 @@ def workflow(  # noqa: PLR0912
         "--overhang",
         help="Overhang sequence (dTdT for DNA, UU for RNA)",
     ),
+    skip_off_targets: bool = typer.Option(
+        False,
+        "--skip-off-targets",
+        help="Skip off-target analysis (faster)",
+    ),
     # Variant targeting parameters
     snp: list[str] = typer.Option(
         [],
@@ -675,7 +680,7 @@ def workflow(  # noqa: PLR0912
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
-        design_only=False,
+        design_only=skip_off_targets,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
@@ -742,6 +747,7 @@ def workflow(  # noqa: PLR0912
                     variant_assembly=variant_assembly,
                     log_file=effective_log,
                     write_json_summary=json_summary,
+                    check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
                 )
             )
