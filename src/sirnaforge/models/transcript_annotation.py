@@ -1,7 +1,5 @@
 """Pydantic models for transcript annotation data structures."""
 
-from typing import Optional
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from sirnaforge.config.reference_policy import ReferenceChoice
@@ -13,9 +11,7 @@ class Interval(BaseModel):
     seq_region_name: str = Field(description="Chromosome or sequence region name")
     start: int = Field(ge=0, description="Start position (0-based or 1-based depending on source)")
     end: int = Field(ge=0, description="End position (inclusive)")
-    strand: Optional[int] = Field(
-        default=None, description="Strand: 1 for forward, -1 for reverse, None for unstranded"
-    )
+    strand: int | None = Field(default=None, description="Strand: 1 for forward, -1 for reverse, None for unstranded")
 
     model_config = ConfigDict(frozen=True)
 
@@ -34,14 +30,20 @@ class TranscriptAnnotation(BaseModel):
     # Core identifiers
     transcript_id: str = Field(description="Transcript stable identifier (e.g., ENST00000269305)")
     gene_id: str = Field(description="Parent gene stable identifier (e.g., ENSG00000141510)")
-    symbol: Optional[str] = Field(default=None, description="Gene symbol (e.g., TP53)")
-    biotype: Optional[str] = Field(default=None, description="Transcript biotype (e.g., protein_coding)")
+    symbol: str | None = Field(default=None, description="Gene symbol (e.g., TP53)")
+    biotype: str | None = Field(default=None, description="Transcript biotype (e.g., protein_coding)")
 
     # Genomic coordinates
     seq_region_name: str = Field(description="Chromosome or contig name (e.g., '17', 'chr17')")
     start: int = Field(ge=1, description="Genomic start position (1-based)")
     end: int = Field(ge=1, description="Genomic end position (inclusive)")
     strand: int = Field(description="Strand: 1 for forward/sense, -1 for reverse/antisense")
+
+    # Optional parent gene coordinates (when available)
+    gene_interval: Interval | None = Field(
+        default=None,
+        description="Genomic interval of the parent gene (typically 1-based coordinates from provider)",
+    )
 
     # Structural features
     exons: list[Interval] = Field(default_factory=list, description="List of exon intervals")
@@ -51,12 +53,20 @@ class TranscriptAnnotation(BaseModel):
 
     # Source metadata
     provider: str = Field(description="Annotation provider (e.g., 'ensembl_rest', 'vep')")
-    endpoint: Optional[str] = Field(default=None, description="API endpoint or base URL used for retrieval")
-    reference_choice: Optional[str] = Field(
+    endpoint: str | None = Field(default=None, description="API endpoint or base URL used for retrieval")
+    reference_choice: str | None = Field(
         default=None, description="Reference assembly/release info (e.g., 'GRCh38.p13', 'ensembl_release_110')"
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @property
+    def chr(self) -> str:
+        """Return a chr-prefixed chromosome label (e.g., 'chr17')."""
+        value = (self.seq_region_name or "").strip()
+        if not value:
+            return value
+        return value if value.lower().startswith("chr") else f"chr{value}"
 
 
 class TranscriptAnnotationBundle(BaseModel):

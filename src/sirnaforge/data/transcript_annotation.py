@@ -32,7 +32,7 @@ and entries expire after cache_ttl seconds.
 import asyncio
 from collections.abc import Mapping
 from time import time
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import aiohttp
 
@@ -109,7 +109,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         self.max_cache_entries = max_cache_entries
         self._cache: dict[str, tuple[Any, float]] = {}
 
-    def _get_cached(self, key: str) -> Optional[Any]:
+    def _get_cached(self, key: str) -> Any | None:
         """Retrieve item from cache if present and not expired.
 
         Args:
@@ -261,7 +261,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             reference_choice=reference,
         )
 
-    async def _fetch_annotation_by_id(self, identifier: str, species: str) -> Optional[TranscriptAnnotation]:
+    async def _fetch_annotation_by_id(self, identifier: str, species: str) -> TranscriptAnnotation | None:
         """Fetch a single transcript annotation by ID with expand=1.
 
         Makes HTTP GET request to Ensembl lookup/id endpoint with expand=1
@@ -295,12 +295,24 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
                 if response.status == 200:
                     data = cast(dict[str, Any], await response.json())
-                    return self._parse_transcript_data(data)
+                    annotation = self._parse_transcript_data(data)
+
+                    # Ensembl transcript lookups typically return `display_name` like "TP53-201".
+                    # Our `TranscriptAnnotation.symbol` is the gene symbol (e.g., "TP53"),
+                    # so resolve it via the parent gene ID when available.
+                    if annotation.gene_id:
+                        gene_symbol, gene_interval = await self._fetch_gene_metadata(
+                            annotation.gene_id, species, session
+                        )
+                        if gene_symbol:
+                            annotation.symbol = gene_symbol
+                        if gene_interval:
+                            annotation.gene_interval = gene_interval
+
+                    return annotation
 
                 if response.status in (403, 502, 503, 504):
-                    raise DatabaseAccessError(
-                        f"HTTP {response.status}: Access denied or server unavailable", "Ensembl"
-                    )
+                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
 
                 logger.warning(f"Unexpected response status {response.status} for {identifier}")
                 return None
@@ -315,7 +327,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             logger.exception(f"Unexpected error fetching annotation for {identifier}")
             raise DatabaseAccessError(f"Unexpected error: {e}", "Ensembl") from e
 
-    async def _fetch_annotations_by_region(
+    async def _fetch_annotations_by_region(  # noqa: PLR0912
         self, region: str, species: str
     ) -> dict[str, TranscriptAnnotation]:
         """Fetch all transcript annotations overlapping a genomic region.
@@ -353,12 +365,33 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
                 if response.status == 200:
                     data = cast(list[dict[str, Any]], await response.json())
-                    return self._parse_region_response(data)
+                    annotations = self._parse_region_response(data)
+
+                    # Region overlap transcript features often include transcript-scoped names
+                    # (e.g., "TP53-203") but not a stable gene symbol field; resolve from gene IDs.
+                    gene_ids = {a.gene_id for a in annotations.values() if a.gene_id}
+                    if gene_ids:
+                        gene_symbol_map: dict[str, str] = {}
+                        gene_interval_map: dict[str, Interval] = {}
+                        for gene_id in gene_ids:
+                            gene_symbol, gene_interval = await self._fetch_gene_metadata(gene_id, species, session)
+                            if gene_symbol:
+                                gene_symbol_map[gene_id] = gene_symbol
+                            if gene_interval:
+                                gene_interval_map[gene_id] = gene_interval
+
+                        for annotation in annotations.values():
+                            resolved_symbol = gene_symbol_map.get(annotation.gene_id)
+                            if resolved_symbol:
+                                annotation.symbol = resolved_symbol
+                            resolved_interval = gene_interval_map.get(annotation.gene_id)
+                            if resolved_interval:
+                                annotation.gene_interval = resolved_interval
+
+                    return annotations
 
                 if response.status in (403, 502, 503, 504):
-                    raise DatabaseAccessError(
-                        f"HTTP {response.status}: Access denied or server unavailable", "Ensembl"
-                    )
+                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
 
                 logger.warning(f"Unexpected response status {response.status} for region {region}")
                 return {}
@@ -372,6 +405,39 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         except Exception as e:
             logger.exception(f"Unexpected error fetching region {region}")
             raise DatabaseAccessError(f"Unexpected error: {e}", "Ensembl") from e
+
+    async def _fetch_gene_metadata(
+        self,
+        gene_id: str,
+        species: str,
+        session: aiohttp.ClientSession,
+    ) -> tuple[str | None, Interval | None]:
+        """Resolve gene symbol and coordinates for a gene stable ID via Ensembl lookup."""
+        url = f"{self.base_url}/lookup/id/{gene_id}?species={species}"
+        headers = {"Content-Type": "application/json"}
+
+        async with session.get(url, headers=headers) as response:
+            if response.status == 404:
+                return None, None
+            if response.status == 200:
+                data = cast(dict[str, Any], await response.json())
+                symbol = data.get("display_name") or data.get("external_name")
+                interval: Interval | None = None
+                seq_region_name = data.get("seq_region_name")
+                start = data.get("start")
+                end = data.get("end")
+                strand = data.get("strand")
+                if seq_region_name and start and end:
+                    interval = Interval(
+                        seq_region_name=str(seq_region_name),
+                        start=int(start),
+                        end=int(end),
+                        strand=int(strand) if strand is not None else None,
+                    )
+                return (str(symbol) if symbol else None), interval
+            if response.status in (403, 502, 503, 504):
+                raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+            return None, None
 
     def _parse_transcript_data(self, data: Mapping[str, Any]) -> TranscriptAnnotation:
         """Parse Ensembl lookup/id response into TranscriptAnnotation.
@@ -395,7 +461,9 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         # Extract basic info
         transcript_id = str(data.get("id", ""))
         gene_id = str(data.get("Parent", "") or data.get("gene_id", ""))
-        symbol = data.get("display_name") or data.get("external_name")
+        # Transcript-level `display_name` is typically gene+isoform (e.g., "TP53-201");
+        # gene symbol is resolved separately from the parent gene record.
+        symbol = data.get("external_name")
         biotype = data.get("biotype")
 
         # Genomic coordinates
@@ -482,11 +550,14 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             if feature_type == "transcript":
                 transcript_id = str(feature.get("id", ""))
                 if transcript_id:
-                    transcript_features.setdefault(transcript_id, {
-                        "transcript": feature,
-                        "exons": [],
-                        "cds": [],
-                    })
+                    transcript_features.setdefault(
+                        transcript_id,
+                        {
+                            "transcript": feature,
+                            "exons": [],
+                            "cds": [],
+                        },
+                    )
             elif feature_type == "exon":
                 parent_id = feature.get("Parent")
                 if parent_id and parent_id in transcript_features:
@@ -504,7 +575,9 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
             # Basic info
             gene_id = str(transcript_data.get("Parent", "") or transcript_data.get("gene_id", ""))
-            symbol = transcript_data.get("external_name") or transcript_data.get("gene_name")
+            # `external_name` here is transcript-scoped (e.g., "TP53-203");
+            # prefer an explicit gene_name when present.
+            symbol = transcript_data.get("gene_name")
             biotype = transcript_data.get("biotype")
 
             # Genomic coordinates
