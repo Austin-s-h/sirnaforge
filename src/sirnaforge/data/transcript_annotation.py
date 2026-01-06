@@ -737,17 +737,16 @@ class VepConsequenceClient:
     **Future Implementation:**
 
     When activated (via config flag), this client will:
+
     1. Query Ensembl VEP REST API for consequence predictions
-    2. Enrich TranscriptAnnotation objects with:
-       - Variant consequence types (missense, nonsense, etc.)
-       - Conservation scores
-       - Regulatory feature overlaps
-       - Population frequency data
+    2. Enrich TranscriptAnnotation objects with variant consequence types (missense, nonsense, etc.),
+       conservation scores, regulatory feature overlaps, and population frequency data
     3. Maintain consistent caching strategy with EnsemblTranscriptModelClient
 
     **Design Rationale:**
 
     Separated from EnsemblTranscriptModelClient because:
+
     - VEP queries are expensive (rate-limited, slower)
     - Not all workflows need consequence predictions
     - Allows independent caching strategies
