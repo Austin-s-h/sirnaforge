@@ -5,7 +5,7 @@ candidates during the design workflow, enabling automated annotation of chemical
 modifications for downstream synthesis and analysis.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from sirnaforge.models.modifications import (
     ChemicalModification,
@@ -112,7 +112,7 @@ def apply_modifications_to_candidate(
     candidate: "SiRNACandidate",
     pattern_name: str = "standard_2ome",
     overhang: str = "dTdT",
-    target_gene: Optional[str] = None,
+    target_gene: str | None = None,
 ) -> "SiRNACandidate":
     """Apply chemical modifications to a siRNA candidate.
 

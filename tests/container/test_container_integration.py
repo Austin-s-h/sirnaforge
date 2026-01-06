@@ -171,12 +171,12 @@ def test_docker_bioinformatics_tools():
             # Decode safely for any later inspection (replace invalid bytes)
             stdout = (
                 result.stdout.decode("utf-8", errors="replace")
-                if isinstance(result.stdout, (bytes, bytearray))
+                if isinstance(result.stdout, bytes | bytearray)
                 else str(result.stdout)
             )
             stderr = (
                 result.stderr.decode("utf-8", errors="replace")
-                if isinstance(result.stderr, (bytes, bytearray))
+                if isinstance(result.stderr, bytes | bytearray)
                 else str(result.stderr)
             )
 

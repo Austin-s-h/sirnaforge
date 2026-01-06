@@ -30,10 +30,14 @@ from .sirna import (
     SequenceType,
     SiRNACandidate,
 )
-from .transcript_annotation import (
-    Interval,
-    TranscriptAnnotation,
-    TranscriptAnnotationBundle,
+from .transcript_annotation import Interval, TranscriptAnnotation, TranscriptAnnotationBundle
+from .variant import (
+    ClinVarSignificance,
+    VariantMode,
+    VariantQuery,
+    VariantQueryType,
+    VariantRecord,
+    VariantSource,
 )
 
 __all__ = [
@@ -68,4 +72,11 @@ __all__ = [
     "Interval",
     "TranscriptAnnotation",
     "TranscriptAnnotationBundle",
+    # Variant models
+    "VariantRecord",
+    "VariantQuery",
+    "VariantQueryType",
+    "VariantMode",
+    "VariantSource",
+    "ClinVarSignificance",
 ]

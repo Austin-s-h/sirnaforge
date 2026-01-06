@@ -135,7 +135,7 @@ def _generate_testing_section() -> list[str]:
         "- ✅ **30 Local Python Tests** (12-15s) - Fastest development iteration",
         "- ✅ **Docker Smoke Tests** (256MB RAM) - Critical functionality verification",
         "- ✅ **Integration Tests** (2GB RAM) - End-to-end workflow validation",
-        "- ✅ **Code Quality** - Ruff, MyPy, Black formatting with 90%+ coverage",
+        "- ✅ **Code Quality** - Ruff formatting and MyPy type checking with 90%+ coverage",
         "",
     ]
 

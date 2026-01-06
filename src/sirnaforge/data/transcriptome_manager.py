@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 
@@ -66,9 +66,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         ),
     }
 
-    def __init__(
-        self, cache_dir: Optional[Union[str, Path]] = None, cache_ttl_days: int = 90, auto_build_indices: bool = True
-    ):
+    def __init__(self, cache_dir: str | Path | None = None, cache_ttl_days: int = 90, auto_build_indices: bool = True):
         """Initialize the transcriptome database manager.
 
         Args:
@@ -98,7 +96,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         cache_key = source.cache_key()
         meta = self.metadata.get(cache_key)
-        cache_path: Optional[Path] = None
+        cache_path: Path | None = None
         if meta:
             cache_path = Path(meta.file_path)
             if not cache_path.exists():
@@ -131,9 +129,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             "last_updated": last_updated,
         }
 
-    def describe_sources_status(
-        self, source_names: Optional[Union[list[str], tuple[str, ...]]] = None
-    ) -> list[dict[str, Any]]:
+    def describe_sources_status(self, source_names: list[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """Return cache statuses for multiple transcriptome sources."""
         targets = source_names or list(self.SOURCES.keys())
         return [self.describe_source_status(name) for name in targets]
@@ -142,7 +138,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         """Create CacheMetadata with TranscriptomeSource."""
         return CacheMetadata.from_dict(data, source_class=TranscriptomeSource)
 
-    def _get_index_path(self, meta: CacheMetadata) -> Optional[Path]:
+    def _get_index_path(self, meta: CacheMetadata) -> Path | None:
         """Get index path from metadata's extra field."""
         if meta.extra and "index_path" in meta.extra:
             return Path(meta.extra["index_path"])
@@ -212,7 +208,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def get_transcriptome(  # noqa: PLR0911
         self, source_name: str, force_refresh: bool = False, build_index: bool = True
-    ) -> Optional[dict[str, Path]]:
+    ) -> dict[str, Path] | None:
         """Get transcriptome database, downloading and building index if needed.
 
         Args:
@@ -262,8 +258,8 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
     def get_custom_transcriptome(
-        self, fasta_path: Union[str, Path], build_index: bool = True, cache_name: Optional[str] = None
-    ) -> Optional[dict[str, Path]]:
+        self, fasta_path: str | Path, build_index: bool = True, cache_name: str | None = None
+    ) -> dict[str, Path] | None:
         """Process a custom transcriptome FASTA with caching and index building.
 
         Args:
@@ -293,9 +289,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # Copy file to cache
         return self._cache_local_file(input_path, cache_name or input_path.stem, build_index)
 
-    def _handle_url_transcriptome(
-        self, url: str, cache_name: Optional[str], build_index: bool
-    ) -> Optional[dict[str, Path]]:
+    def _handle_url_transcriptome(self, url: str, cache_name: str | None, build_index: bool) -> dict[str, Path] | None:
         """Download and cache transcriptome from URL."""
         cache_name = cache_name or url.split("/")[-1].replace(".gz", "").replace(".fa", "").replace(".fasta", "")
         source = TranscriptomeSource(
@@ -386,7 +380,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         filters: list[str],
         force_refresh: bool = False,
         build_index: bool = True,
-    ) -> Optional[dict[str, Path]]:
+    ) -> dict[str, Path] | None:
         """Get a filtered transcriptome with caching.
 
         Args:
@@ -491,7 +485,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             "cached_transcriptomes": list(self.metadata.keys()),
         }
 
-    def clean_cache(self, older_than_days: Optional[int] = None) -> None:
+    def clean_cache(self, older_than_days: int | None = None) -> None:
         """Clean old cache files.
 
         Args:

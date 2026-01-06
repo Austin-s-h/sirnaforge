@@ -5,28 +5,28 @@ on:
     branches: [ master ]
   workflow_dispatch:
     inputs:
-        version:
-          description: 'Release version (e.g., v0.3.4 or v0.3.4rc1)'
-          required: true
-          type: string
-        prerelease:
-          description: 'Mark as pre-release'
-          required: false
-          default: true
-          type: boolean
-        push_images:
-          description: 'Push Docker images to registries'
-          required: false
-          default: true
-          type: boolean
-        deploy_docs_release:
-          description: 'Build & deploy docs'
-          required: false
-          default: true
-          type: boolean
+      version:
+        description: 'Release version (e.g., v0.3.4 or v0.3.4rc1)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: true
+        type: boolean
+      push_images:
+        description: 'Push Docker images to registries'
+        required: false
+        default: true
+        type: boolean
+      deploy_docs_release:
+        description: 'Build & deploy docs'
+        required: false
+        default: true
+        type: boolean
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   REGISTRY: ghcr.io
 
 permissions:
@@ -193,7 +193,9 @@ jobs:
     name: 🧪 Comprehensive Release Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-release, run-ci, build-docker]
+    env:
+      SIRNAFORGE_NEXTFLOW_IMAGE: sirnaforge:latest
+    needs: [ validate-release, run-ci, build-docker ]
     if: needs.run-ci.result == 'success' && needs.build-docker.result == 'success'
 
     steps:
@@ -260,42 +262,42 @@ jobs:
     name: 📦 Build Python Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, run-ci, test-release]
+    needs: [ validate-release, run-ci, test-release ]
     if: needs.test-release.result == 'success'
     outputs:
       version: ${{ needs.validate-release.outputs.version }}
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: ⚡ Install uv CLI
-        uses: astral-sh/setup-uv@v6
-        with:
-          activate-environment: false
-          enable-cache: true
-          cache-suffix: build-dist
-      - name: 🔧 Build (sdist + wheel)
-        run: |
-          uv build
-          ls -lh dist/
-      - name: 🔍 Verify metadata (twine check)
-        run: uv run --with twine twine check dist/*
-      - name: 📤 Upload dist artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-dist-${{ needs.validate-release.outputs.version }}
-          path: dist/
-          retention-days: 7
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: ⚡ Install uv CLI
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: build-dist
+    - name: 🔧 Build (sdist + wheel)
+      run: |
+        uv build
+        ls -lh dist/
+    - name: 🔍 Verify metadata (twine check)
+      run: uv run --with twine twine check dist/*
+    - name: 📤 Upload dist artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-dist-${{ needs.validate-release.outputs.version }}
+        path: dist/
+        retention-days: 7
 
   # Build and test Docker images only after CI passes
   build-docker:
     name: 🐳 Build & Test Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [validate-release, run-ci]
+    needs: [ validate-release, run-ci ]
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.meta.outputs.tags }}
@@ -314,7 +316,7 @@ jobs:
     - name: 🏗️ Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name:  Generate Docker metadata
+    - name: Generate Docker metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
@@ -354,7 +356,7 @@ jobs:
     name: 🏷️ Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, test-release]
+    needs: [ validate-release, test-release ]
     if: always() && needs.test-release.result == 'success'
     outputs:
       release-id: ${{ steps.create.outputs.id }}
@@ -391,82 +393,82 @@ jobs:
   publish-pypi:
     name: 📦 Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [validate-release, run-ci, create-release, build-artifacts]
+    needs: [ validate-release, run-ci, create-release, build-artifacts ]
     if: ${{ needs.run-ci.result == 'success' && needs.create-release.result == 'success' && needs.build-artifacts.result == 'success' }}
     permissions:
-      id-token: write  # Required for PyPI trusted publisher
+      id-token: write # Required for PyPI trusted publisher
       contents: read
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-      - name: 📥 Download dist artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: python-dist-${{ needs.validate-release.outputs.version }}
-          path: dist/
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    - name: 📥 Download dist artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: python-dist-${{ needs.validate-release.outputs.version }}
+        path: dist/
 
-      - name: 🚀 Publish to TestPyPI (Trusted Publisher)
-        if: ${{ needs.validate-release.outputs.prerelease == 'true' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          print-hash: true
-          verbose: true
-          skip-existing: true
+    - name: 🚀 Publish to TestPyPI (Trusted Publisher)
+      if: ${{ needs.validate-release.outputs.prerelease == 'true' }}
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        repository-url: https://test.pypi.org/legacy/
+        print-hash: true
+        verbose: true
+        skip-existing: true
 
-      - name: 🚀 Publish to PyPI (Trusted Publisher)
-        if: ${{ needs.validate-release.outputs.prerelease != 'true' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          print-hash: true
-          verbose: true
-          skip-existing: true
+    - name: 🚀 Publish to PyPI (Trusted Publisher)
+      if: ${{ needs.validate-release.outputs.prerelease != 'true' }}
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        print-hash: true
+        verbose: true
+        skip-existing: true
 
-      - name: ✅ Publish summary
-        run: |
-          if [ "${{ needs.validate-release.outputs.prerelease }}" = "true" ]; then
-            echo "Published version v${{ needs.validate-release.outputs.version }} to TestPyPI (pre-release)."
-          else
-            echo "Published version v${{ needs.validate-release.outputs.version }} to PyPI."
-          fi
+    - name: ✅ Publish summary
+      run: |
+        if [ "${{ needs.validate-release.outputs.prerelease }}" = "true" ]; then
+          echo "Published version v${{ needs.validate-release.outputs.version }} to TestPyPI (pre-release)."
+        else
+          echo "Published version v${{ needs.validate-release.outputs.version }} to PyPI."
+        fi
 
   # Optional: Build and deploy docs for the release
   build-release-docs:
     name: 📚 Build Release Docs
     runs-on: ubuntu-latest
-    needs: [validate-release, run-ci]
+    needs: [ validate-release, run-ci ]
     if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.run-ci.result == 'success' }}
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: ⚡ Install uv CLI
-        uses: astral-sh/setup-uv@v6
-        with:
-          activate-environment: false
-          enable-cache: true
-          cache-suffix: docs-release
-      - name: 📦 Install dependencies
-        run: uv sync --group dev
-      - name: 🏗️ Build documentation (release)
-        run: |
-          export SIRNAFORGE_RELEASE_VERSION=${{ needs.validate-release.outputs.version }}
-          uv run --group dev sphinx-build -b html docs docs/_build/html
-          touch docs/_build/html/.nojekyll
-      - name: 📤 Upload docs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-docs-${{ needs.validate-release.outputs.version }}
-          path: docs/_build/html
-          retention-days: 7
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: ⚡ Install uv CLI
+      uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+        enable-cache: true
+        cache-suffix: docs-release
+    - name: 📦 Install dependencies
+      run: uv sync --group dev
+    - name: 🏗️ Build documentation (release)
+      run: |
+        export SIRNAFORGE_RELEASE_VERSION=${{ needs.validate-release.outputs.version }}
+        uv run --group dev sphinx-build -b html docs docs/_build/html
+        touch docs/_build/html/.nojekyll
+    - name: 📤 Upload docs artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-docs-${{ needs.validate-release.outputs.version }}
+        path: docs/_build/html
+        retention-days: 7
 
   deploy-release-docs:
     name: 🚀 Deploy Release Docs
     runs-on: ubuntu-latest
-    needs: [validate-release, build-release-docs]
+    needs: [ validate-release, build-release-docs ]
     if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
     permissions:
       pages: write
@@ -491,7 +493,7 @@ jobs:
     name: 🐳 Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-release, build-docker, test-release, create-release]
+    needs: [ validate-release, build-docker, test-release, create-release ]
     if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-release.result == 'success' && needs.create-release.result == 'success' }}
 
     steps:
@@ -542,7 +544,7 @@ jobs:
     name: 🧪 Final Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-release, create-release, publish-docker]
+    needs: [ validate-release, create-release, publish-docker ]
     if: needs.publish-docker.result == 'success'
 
     steps:
@@ -567,14 +569,9 @@ jobs:
     name: ✅ Release Complete
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    needs: [validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs]
+    needs: [ validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs ]
     if: >-
-      always() &&
-      needs.create-release.result == 'success' &&
-      (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') &&
-      (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') &&
-      (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') &&
-      (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
+      always() && needs.create-release.result == 'success' && (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') && (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') && (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
 
     steps:
     - name: 🎉 Release Status

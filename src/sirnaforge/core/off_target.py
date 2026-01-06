@@ -12,7 +12,7 @@ import statistics
 import subprocess  # nosec B404
 import tempfile
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 import pandas as pd
 
@@ -55,7 +55,7 @@ def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
 # =============================================================================
 
 
-def _get_executable_path(tool_name: str) -> Optional[str]:
+def _get_executable_path(tool_name: str) -> str | None:
     """Get the full path to an executable, ensuring it exists."""
     path = shutil.which(tool_name)
     if path is None:
@@ -87,7 +87,7 @@ class BwaAnalyzer:
 
     def __init__(
         self,
-        index_prefix: Union[str, Path],
+        index_prefix: str | Path,
         mode: str = "transcriptome",  # "transcriptome" or "mirna_seed"
         seed_length: int = 12,
         min_score: int = 15,
@@ -392,10 +392,10 @@ class OffTargetAnalysisManager:
     def __init__(
         self,
         species: str,
-        transcriptome_path: Optional[Union[str, Path]] = None,
-        mirna_path: Optional[Union[str, Path]] = None,
-        transcriptome_index: Optional[Union[str, Path]] = None,
-        mirna_index: Optional[Union[str, Path]] = None,
+        transcriptome_path: str | Path | None = None,
+        mirna_path: str | Path | None = None,
+        transcriptome_index: str | Path | None = None,
+        mirna_index: str | Path | None = None,
     ):
         """Initialize the off-target analysis manager."""
         self.species = species
@@ -406,14 +406,14 @@ class OffTargetAnalysisManager:
 
     def analyze_mirna_off_targets(
         self,
-        sequences: Union[dict[str, str], str, Path],
-        output_prefix: Union[str, Path],
+        sequences: dict[str, str] | str | Path,
+        output_prefix: str | Path,
     ) -> tuple[Path, Path]:
         """Analyze miRNA off-targets using BWA-MEM2 in miRNA seed mode."""
         if not self.mirna_index:
             raise ValueError("miRNA index not provided")
 
-        if isinstance(sequences, (str, Path)):
+        if isinstance(sequences, str | Path):
             sequences = parse_fasta_file(sequences)
 
         analyzer = BwaAnalyzer(self.mirna_index, mode="mirna_seed")
@@ -428,14 +428,14 @@ class OffTargetAnalysisManager:
 
     def analyze_transcriptome_off_targets(
         self,
-        sequences: Union[dict[str, str], str, Path],
-        output_prefix: Union[str, Path],
+        sequences: dict[str, str] | str | Path,
+        output_prefix: str | Path,
     ) -> tuple[Path, Path]:
         """Analyze transcriptome off-targets using BWA-MEM2 in transcriptome mode."""
         if not self.transcriptome_index:
             raise ValueError("Transcriptome index not provided")
 
-        if isinstance(sequences, (str, Path)):
+        if isinstance(sequences, str | Path):
             sequences = parse_fasta_file(sequences)
 
         analyzer = BwaAnalyzer(self.transcriptome_index, mode="transcriptome")
@@ -469,9 +469,7 @@ class OffTargetAnalysisManager:
 
         return results
 
-    def _write_mirna_results(
-        self, results: list[dict[str, Any]], tsv_path: Union[str, Path], json_path: Union[str, Path]
-    ) -> None:
+    def _write_mirna_results(self, results: list[dict[str, Any]], tsv_path: str | Path, json_path: str | Path) -> None:
         """Write miRNA analysis results."""
         # Write TSV
         species_label = getattr(self, "species", "unknown")
@@ -501,7 +499,7 @@ class OffTargetAnalysisManager:
             json.dump(enriched_results, f, indent=2)
 
     def _write_transcriptome_results(
-        self, results: list[dict[str, Any]], tsv_path: Union[str, Path], json_path: Union[str, Path]
+        self, results: list[dict[str, Any]], tsv_path: str | Path, json_path: str | Path
     ) -> None:
         """Write transcriptome analysis results."""
         # Write TSV
@@ -561,7 +559,7 @@ def validate_and_write_sequences(
         return 0, len(sequences), [str(e)]
 
 
-def build_bwa_index(fasta_file: Union[str, Path], index_prefix: Union[str, Path]) -> Path:
+def build_bwa_index(fasta_file: str | Path, index_prefix: str | Path) -> Path:
     """Build BWA-MEM2 index for both transcriptome and miRNA off-target analysis."""
     fasta_path = Path(fasta_file)
     index_prefix_path = Path(index_prefix)
@@ -615,7 +613,7 @@ def validate_sirna_sequences(
         return {}, sequences, [str(e)]
 
 
-def parse_fasta_file(fasta_file: Union[str, Path]) -> dict[str, str]:
+def parse_fasta_file(fasta_file: str | Path) -> dict[str, str]:
     """Parse FASTA file using existing FastaUtils."""
     return FastaUtils.parse_fasta_to_dict(fasta_file)
 
@@ -641,7 +639,7 @@ def check_tool_availability(tool: str) -> bool:
         return False
 
 
-def validate_index_files(index_prefix: Union[str, Path], tool: str = "bwa") -> bool:
+def validate_index_files(index_prefix: str | Path, tool: str = "bwa") -> bool:
     """Validate that index files exist for given tool."""
     index_path = Path(index_prefix)
 
@@ -671,8 +669,8 @@ def validate_index_files(index_prefix: Union[str, Path], tool: str = "bwa") -> b
 def run_mirna_analysis_for_nextflow(
     species: str,
     sequences_file: str,
-    mirna_index: Union[str, Path],
-    output_prefix: Union[str, Path],
+    mirna_index: str | Path,
+    output_prefix: str | Path,
 ) -> tuple[str, str, str]:
     """Nextflow-compatible function for miRNA analysis."""
     manager = OffTargetAnalysisManager(species=species, mirna_index=mirna_index)
@@ -702,8 +700,8 @@ def run_mirna_analysis_for_nextflow(
 def run_transcriptome_analysis_for_nextflow(
     species: str,
     sequences_file: str,
-    transcriptome_index: Union[str, Path],
-    output_prefix: Union[str, Path],
+    transcriptome_index: str | Path,
+    output_prefix: str | Path,
 ) -> tuple[str, str, str]:
     """Nextflow-compatible function for transcriptome analysis."""
     manager = OffTargetAnalysisManager(species=species, transcriptome_index=transcriptome_index)
@@ -734,7 +732,7 @@ def run_comprehensive_offtarget_analysis(
     species: str,
     sequences_file: str,
     index_path: str,
-    output_prefix: Union[str, Path],
+    output_prefix: str | Path,
     mode: str = "transcriptome",
     bwa_k: int = 12,
     bwa_T: int = 15,
@@ -804,10 +802,10 @@ def run_comprehensive_offtarget_analysis(
 
 
 def run_bwa_alignment_analysis(
-    candidates_file: Union[str, Path],
-    index_prefix: Union[str, Path],
+    candidates_file: str | Path,
+    index_prefix: str | Path,
     species: str,
-    output_dir: Union[str, Path],
+    output_dir: str | Path,
     max_hits: int = 10000,
     bwa_k: int = 12,
     bwa_T: int = 15,
@@ -933,8 +931,8 @@ def run_bwa_alignment_analysis(
 
 
 def aggregate_offtarget_results(  # noqa: PLR0912
-    results_dir: Union[str, Path],
-    output_dir: Union[str, Path],
+    results_dir: str | Path,
+    output_dir: str | Path,
     genome_species: str,
 ) -> Path:
     """Aggregate transcriptome off-target analysis results using Pandera.
@@ -1132,11 +1130,11 @@ def aggregate_offtarget_results(  # noqa: PLR0912
 
 
 def run_mirna_seed_analysis(
-    candidates_file: Union[str, Path],
+    candidates_file: str | Path,
     candidate_id: str,
     mirna_db: str,  # Review, can this be linked to a class describing all miRNA database protocol/ABC?
     mirna_species: list[str],
-    output_dir: Union[str, Path],
+    output_dir: str | Path,
 ) -> Path:
     """Run miRNA seed match analysis for candidate sequences.
 
@@ -1310,8 +1308,8 @@ def run_mirna_seed_analysis(
 
 
 def aggregate_mirna_results(
-    results_dir: Union[str, Path],
-    output_dir: Union[str, Path],
+    results_dir: str | Path,
+    output_dir: str | Path,
     mirna_db: str,
     mirna_species: str,
 ) -> Path:

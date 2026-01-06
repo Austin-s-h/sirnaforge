@@ -10,7 +10,7 @@ import contextlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -54,7 +54,7 @@ def parse_chem_mods(chem_mods_str: str) -> list[ChemicalModification]:
     return modifications
 
 
-def parse_provenance(prov_str: str, url: Optional[str] = None) -> Optional[Provenance]:
+def parse_provenance(prov_str: str, url: str | None = None) -> Provenance | None:
     """Parse Provenance field from FASTA header.
 
     Args:
@@ -177,7 +177,7 @@ def _validate_metadata_entries(raw_metadata: dict[str, Any]) -> dict[str, Strand
     return metadata_dict
 
 
-def load_metadata(json_path: Union[str, Path]) -> dict[str, StrandMetadata]:
+def load_metadata(json_path: str | Path) -> dict[str, StrandMetadata]:
     """Load and validate metadata from JSON sidecar file using Pydantic.
 
     Args:
@@ -195,9 +195,9 @@ def load_metadata(json_path: Union[str, Path]) -> dict[str, StrandMetadata]:
 
 
 def merge_metadata_into_fasta(
-    fasta_path: Union[str, Path],
-    metadata_path: Union[str, Path],
-    output_path: Union[str, Path],
+    fasta_path: str | Path,
+    metadata_path: str | Path,
+    output_path: str | Path,
 ) -> int:
     """Merge metadata from JSON into FASTA headers.
 
@@ -272,7 +272,7 @@ def merge_metadata_into_fasta(
 
 def save_metadata_json(
     metadata_dict: dict[str, StrandMetadata],
-    output_path: Union[str, Path],
+    output_path: str | Path,
 ) -> None:
     """Save strand metadata to JSON file using Pydantic serialization.
 

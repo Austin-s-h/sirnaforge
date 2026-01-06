@@ -52,7 +52,7 @@ git push origin feature/your-feature-name
 - **Type Hints**: All code must include proper type annotations
 - **Testing**: New features require corresponding tests
 - **Documentation**: Update docstrings and README as needed
-- **Formatting**: Code is automatically formatted with Black and Ruff
+- **Formatting**: Code is automatically formatted with Ruff
 
 ### Testing
 ```bash
@@ -136,8 +136,7 @@ For new features, please:
 
 We use modern Python best practices:
 
-- **Black** for code formatting (120 char line length)
-- **Ruff** for linting and import sorting
+- **Ruff** for linting and formatting
 - **MyPy** for type checking
 - **Pre-commit hooks** for automated checks
 

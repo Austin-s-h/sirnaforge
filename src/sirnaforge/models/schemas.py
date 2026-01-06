@@ -9,7 +9,8 @@ type safety, error reporting, and maintainability.
 Use schemas: MySchema.validate(df) - validation errors provide detailed feedback.
 """
 
-from typing import Any, Callable, TypeVar, cast
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
 
 import pandas as pd
 import pandera.pandas as pa
@@ -165,6 +166,28 @@ class SiRNACandidateSchema(DataFrameModel):
     )
     passenger_modifications: Series[str] = Field(
         description="Passenger strand modification summary",
+        nullable=True,
+        coerce=True,
+    )
+
+    # Variant-aware annotations (optional; populated when variant mode enabled)
+    variant_mode: Series[str] = Field(
+        description="Variant handling mode for this candidate (avoid/target/both)",
+        nullable=True,
+        coerce=True,
+    )
+    allele_specific: Series[bool] = Field(
+        description="Whether the candidate is allele-specific due to variant context",
+        nullable=True,
+        coerce=True,
+    )
+    targeted_alleles: Series[str] = Field(
+        description="JSON-encoded list of alleles this candidate targets",
+        nullable=True,
+        coerce=True,
+    )
+    overlapped_variants: Series[str] = Field(
+        description="JSON-encoded list of overlapped variants",
         nullable=True,
         coerce=True,
     )

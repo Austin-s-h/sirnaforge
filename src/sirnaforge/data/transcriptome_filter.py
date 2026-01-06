@@ -13,7 +13,6 @@ import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
 
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -190,7 +189,7 @@ class TranscriptFilter:
         return TranscriptFilter.filter_fasta(input_fasta, output_fasta, combined_filter_func, filter_desc)
 
 
-def get_filter_spec(filter_string: Optional[str]) -> list[str]:
+def get_filter_spec(filter_string: str | None) -> list[str]:
     """Parse filter specification string into list of filter names.
 
     Args:

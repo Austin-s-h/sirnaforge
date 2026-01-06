@@ -2,7 +2,6 @@
 
 import asyncio
 from pathlib import Path
-from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,9 +28,9 @@ class GeneSearchResult(BaseModel):
 
     query: str
     database: DatabaseType
-    gene_info: Optional[GeneInfo] = None
+    gene_info: GeneInfo | None = None
     transcripts: list[TranscriptInfo] = Field(default_factory=list)
-    error: Optional[str] = None
+    error: str | None = None
     is_access_error: bool = False  # True if error was due to access/network issues
 
     model_config = ConfigDict(use_enum_values=True)
@@ -119,7 +118,7 @@ class GeneSearcher:
         )
 
     async def search_gene(
-        self, query: str, database: Optional[DatabaseType] = None, include_sequence: bool = True
+        self, query: str, database: DatabaseType | None = None, include_sequence: bool = True
     ) -> GeneSearchResult:
         """Search for a gene and retrieve its isoforms.
 
@@ -152,7 +151,7 @@ class GeneSearcher:
             return GeneSearchResult(query=query, database=db, error=str(e), is_access_error=False)
 
     async def search_multiple_databases(
-        self, query: str, databases: Optional[list[DatabaseType]] = None, include_sequence: bool = True
+        self, query: str, databases: list[DatabaseType] | None = None, include_sequence: bool = True
     ) -> list[GeneSearchResult]:
         """Search across multiple databases.
 
@@ -187,7 +186,7 @@ class GeneSearcher:
         return processed_results
 
     def save_transcripts_fasta(
-        self, transcripts: list[TranscriptInfo], output_path: Union[str, Path], include_metadata: bool = True
+        self, transcripts: list[TranscriptInfo], output_path: str | Path, include_metadata: bool = True
     ) -> None:
         """Save transcripts to FASTA format using shared utility.
 
@@ -242,7 +241,7 @@ def search_gene_with_fallback_sync(query: str, include_sequence: bool = True) ->
 
 
 def search_multiple_databases_sync(
-    query: str, databases: Optional[list[DatabaseType]] = None, include_sequence: bool = True
+    query: str, databases: list[DatabaseType] | None = None, include_sequence: bool = True
 ) -> list[GeneSearchResult]:
     """Synchronous wrapper for multi-database search."""
     searcher = GeneSearcher()

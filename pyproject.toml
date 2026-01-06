@@ -23,8 +23,8 @@ keywords = ["sirna", "rna-interference", "gene-silencing", "bioinformatics", "co
 license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
-requires-python = ">=3.9, <3.13"
-version = "0.3.4"
+requires-python = ">=3.10, <3.13"
+version = "0.4.0"
 
 dependencies = [
   "biopython>=1.84",
@@ -42,6 +42,7 @@ dependencies = [
   "nextflow>=25.04.0",
   "pandera>=0.26.0",
   "psutil>=6.0.0",
+  "pyarrow>=18.0.0",
 ]
 
 [dependency-groups]
@@ -161,7 +162,7 @@ exclude = [
   "venv",
 ]
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 ignore = [
@@ -195,38 +196,6 @@ select = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-# Black configuration
-[tool.black]
-exclude = '''
-/(
-    \.bzr
-  | \.direnv
-  | \.eggs
-  | \.git
-  | \.git-rewrite-history
-  | \.hg
-  | \.mypy_cache
-  | \.nox
-  | \.pants\.d
-  | \.pytype
-  | \.ruff_cache
-  | \.svn
-  | \.tox
-  | \.venv
-  | __pypackages__
-  | _build
-  | buck-out
-  | build
-  | dist
-  | node_modules
-  | venv
-  | .*\.(fasta|fa|fastq|fq|vcf|gff|gff3|gtf|bed|sam|bam|bcf|wig|bigwig|bigbed|2bit|gbk|gb|genbank|embl|sff|ab1|scf|qual|phylip|nexus|clustal|aln|msf|pir|stockholm)$
-)/
-'''
-include = '\.pyi?$'
-line-length = 120
-target-version = ['py39']
-
 # MyPy configuration
 [tool.mypy]
 check_untyped_defs = true
@@ -238,7 +207,7 @@ ignore_missing_imports = true
 mypy_path = "src"
 no_implicit_optional = true
 pretty = true
-python_version = "3.9"
+python_version = "3.10"
 show_error_codes = true
 strict_equality = true
 warn_no_return = true

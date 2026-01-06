@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional, TypeVar, Union, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -24,7 +25,7 @@ logger = get_logger(__name__)
 class DatabaseError(Exception):
     """Base exception for database-related errors."""
 
-    def __init__(self, message: str, database: Optional[str] = None):
+    def __init__(self, message: str, database: str | None = None):
         """Initialize database error."""
         super().__init__(message)
         self.database = database
@@ -39,7 +40,7 @@ class DatabaseAccessError(DatabaseError):
 class GeneNotFoundError(DatabaseError):
     """Exception for when a gene is not found in the database."""
 
-    def __init__(self, query: str, database: Optional[str] = None):
+    def __init__(self, query: str, database: str | None = None):
         """Initialize gene not found error."""
         super().__init__(f"Gene '{query}' not found", database)
         self.query = query
@@ -72,13 +73,13 @@ class GeneInfo(BaseModel):
     """Gene information model."""
 
     gene_id: str
-    gene_name: Optional[str] = None
-    gene_type: Optional[str] = None
-    chromosome: Optional[str] = None
-    start: Optional[int] = None
-    end: Optional[int] = None
-    strand: Optional[int] = None
-    description: Optional[str] = None
+    gene_name: str | None = None
+    gene_type: str | None = None
+    chromosome: str | None = None
+    start: int | None = None
+    end: int | None = None
+    strand: int | None = None
+    description: str | None = None
     database: DatabaseType
 
     model_config = ConfigDict(use_enum_values=True)
@@ -88,12 +89,12 @@ class TranscriptInfo(BaseModel):
     """Transcript information model."""
 
     transcript_id: str
-    transcript_name: Optional[str] = None
-    transcript_type: Optional[str] = None
+    transcript_name: str | None = None
+    transcript_type: str | None = None
     gene_id: str
-    gene_name: Optional[str] = None
-    sequence: Optional[str] = None
-    length: Optional[int] = None
+    gene_name: str | None = None
+    sequence: str | None = None
+    length: int | None = None
     database: DatabaseType
     is_canonical: bool = False
 
@@ -101,7 +102,7 @@ class TranscriptInfo(BaseModel):
 
     @field_validator_typed("sequence")
     @classmethod
-    def validate_sequence(cls, v: Optional[str]) -> Optional[str]:
+    def validate_sequence(cls, v: str | None) -> str | None:
         """Validate RNA sequence."""
         if v is not None:
             # Convert to uppercase and check for valid RNA bases
@@ -121,7 +122,7 @@ class AbstractDatabaseClient(ABC):
     @abstractmethod
     async def search_gene(
         self, query: str, include_sequence: bool = True
-    ) -> tuple[Optional[GeneInfo], list[TranscriptInfo]]:
+    ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Search for a gene and return gene info and transcripts.
 
         Args:
@@ -163,34 +164,34 @@ class AbstractDatabaseClient(ABC):
 
 class AbstractTranscriptAnnotationClient(ABC):
     """Abstract base class for transcript annotation clients.
-    
+
     **Purpose and Scope:**
     Provides genomic annotation metadata (exon/CDS structure, coordinates, biotype)
     WITHOUT fetching full transcript sequences. This is complementary to, not overlapping
     with, AbstractDatabaseClient which focuses on sequence retrieval.
-    
+
     **Key Differences from GeneSearcher/AbstractDatabaseClient:**
-    
+
     1. **Focus**: Structural annotations (exons, CDS intervals, genomic coordinates)
        vs. sequence data (cDNA, CDS, protein sequences)
-    
+
     2. **Use Case**: Enriching existing transcript metadata with genomic context
        vs. discovering and retrieving transcripts with sequences
-    
-    3. **Query Patterns**: 
+
+    3. **Query Patterns**:
        - By stable IDs: fetch_by_ids(['ENST00000269305'])
        - By genomic regions: fetch_by_regions(['17:7661779-7687550'])
        vs. GeneSearcher which queries by gene name/symbol
-    
+
     4. **Caching Strategy**: In-memory LRU cache with TTL for transient annotation data
        vs. ReferenceManager's persistent file cache for large sequence datasets
-    
+
     **When to Use:**
     - Need exon/CDS boundaries for visualization or analysis
     - Need genomic coordinates for variant mapping
     - Need biotype information without full sequence download
     - Need to query multiple transcripts in a genomic region
-    
+
     **When to Use GeneSearcher Instead:**
     - Need transcript sequences for siRNA design
     - Need to discover transcripts by gene name/symbol
@@ -199,7 +200,7 @@ class AbstractTranscriptAnnotationClient(ABC):
 
     def __init__(self, timeout: int = 30):
         """Initialize transcript annotation client.
-        
+
         Args:
             timeout: Request timeout in seconds
         """
@@ -260,7 +261,7 @@ class EnsemblClient(AbstractDatabaseClient):
 
     async def search_gene(
         self, query: str, include_sequence: bool = True
-    ) -> tuple[Optional[GeneInfo], list[TranscriptInfo]]:
+    ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Search for a gene and return gene info and transcripts."""
         # First, try to resolve the query to a gene
         gene_info = await self._lookup_gene(query)
@@ -271,7 +272,7 @@ class EnsemblClient(AbstractDatabaseClient):
         return gene_info, transcripts
 
     async def get_sequence(
-        self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA, headers: Optional[dict] = None
+        self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA, headers: dict | None = None
     ) -> str:
         """Get sequence from Ensembl REST API.
 
@@ -470,7 +471,7 @@ class RefSeqClient(AbstractDatabaseClient):
 
     async def search_gene(
         self, query: str, include_sequence: bool = True
-    ) -> tuple[Optional[GeneInfo], list[TranscriptInfo]]:
+    ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Search for a gene and return gene info and transcripts."""
         # Search for gene in NCBI Gene database
         gene_id = await self._search_gene_id(query)
@@ -794,7 +795,7 @@ class GencodeClient(AbstractDatabaseClient):
         self,
         query: str,
         include_sequence: bool = True,  # noqa: ARG002
-    ) -> tuple[Optional[GeneInfo], list[TranscriptInfo]]:
+    ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Search for a gene and return gene info and transcripts."""
         # GENCODE doesn't have a simple REST API like Ensembl
         # This would typically require parsing GTF/GFF files or using their FTP download
@@ -842,9 +843,7 @@ class FastaUtils:
     """Utility functions for FASTA file operations."""
 
     @staticmethod
-    def save_sequences_fasta(
-        sequences: list[tuple[str, str]], output_path: Union[str, Path], line_length: int = 80
-    ) -> None:
+    def save_sequences_fasta(sequences: list[tuple[str, str]], output_path: str | Path, line_length: int = 80) -> None:
         """Save sequences to FASTA format.
 
         Args:
@@ -868,7 +867,7 @@ class FastaUtils:
         logger.info(f"Saved {len(sequences)} sequences to {output_path}")
 
     @staticmethod
-    def read_fasta(file_path: Union[str, Path]) -> list[tuple[str, str]]:
+    def read_fasta(file_path: str | Path) -> list[tuple[str, str]]:
         """Read sequences from FASTA file.
 
         Args:
@@ -878,7 +877,7 @@ class FastaUtils:
             List of (header, sequence) tuples
         """
         sequences: list[tuple[str, str]] = []
-        current_header: Optional[str] = None
+        current_header: str | None = None
         current_sequence: list[str] = []
 
         with Path(file_path).open() as f:
@@ -899,7 +898,7 @@ class FastaUtils:
         return sequences
 
     @staticmethod
-    def parse_fasta_to_dict(file_path: Union[str, Path]) -> dict[str, str]:
+    def parse_fasta_to_dict(file_path: str | Path) -> dict[str, str]:
         """Parse FASTA file into a dictionary.
 
         Args:
@@ -921,7 +920,7 @@ class FastaUtils:
         return sequences_dict
 
     @staticmethod
-    def write_dict_to_fasta(sequences: dict[str, str], output_path: Union[str, Path]) -> None:
+    def write_dict_to_fasta(sequences: dict[str, str], output_path: str | Path) -> None:
         """Write sequences dictionary to FASTA format.
 
         Args:

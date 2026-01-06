@@ -12,12 +12,11 @@ import sys
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
 
 DEFAULT_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
-def configure_logging(level: Optional[str] = None, log_file: Optional[str] = None) -> None:
+def configure_logging(level: str | None = None, log_file: str | None = None) -> None:
     """Configure root logger: console + optional rotating file handler.
 
     Args:
@@ -53,7 +52,7 @@ def configure_logging(level: Optional[str] = None, log_file: Optional[str] = Non
         root.addHandler(file_handler)
 
 
-def get_logger(name: str, level: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str, level: str | None = None) -> logging.Logger:
     """Get a logger with standard configuration.
 
     This will return a child logger of the root logger configured by

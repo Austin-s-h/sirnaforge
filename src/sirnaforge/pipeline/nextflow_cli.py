@@ -3,7 +3,7 @@
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from sirnaforge.config import DEFAULT_MIRNA_CANONICAL_SPECIES
 from sirnaforge.core.off_target import aggregate_mirna_results, aggregate_offtarget_results, build_bwa_index
@@ -44,8 +44,8 @@ def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") ->
 def aggregate_results_cli(  # noqa: PLR0912
     genome_species: str,
     output_dir: str = ".",
-    mirna_db: Optional[str] = None,
-    mirna_species: Optional[str] = None,
+    mirna_db: str | None = None,
+    mirna_species: str | None = None,
 ) -> dict[str, Any]:
     """Aggregate off-target analysis results from multiple candidates and genomes.
 
@@ -124,7 +124,7 @@ def aggregate_results_cli(  # noqa: PLR0912
 
         logger.info(f"Aggregation completed: {result_path}")
 
-        mirna_summary: Optional[dict[str, Any]] = None
+        mirna_summary: dict[str, Any] | None = None
         if mirna_analysis_files and (mirna_db or mirna_species):
             resolved_mirna_db = mirna_db or "mirgenedb"
             resolved_mirna_species = mirna_species or DEFAULT_MIRNA_SPECIES_ARGUMENT
