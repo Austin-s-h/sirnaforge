@@ -1,6 +1,7 @@
 """Unit tests for transcript annotation models."""
 
 import pytest
+from pydantic import ValidationError
 
 from sirnaforge.config.reference_policy import ReferenceChoice
 from sirnaforge.models.transcript_annotation import Interval, TranscriptAnnotation, TranscriptAnnotationBundle
@@ -17,7 +18,7 @@ class TestInterval:
             end=2000,
             strand=1,
         )
-        
+
         assert interval.seq_region_name == "17"
         assert interval.start == 1000
         assert interval.end == 2000
@@ -30,14 +31,14 @@ class TestInterval:
             start=500,
             end=1500,
         )
-        
+
         assert interval.strand is None
 
     def test_interval_immutable(self):
         """Test that intervals are immutable."""
         interval = Interval(seq_region_name="1", start=100, end=200)
-        
-        with pytest.raises(Exception):  # Pydantic will raise ValidationError or similar
+
+        with pytest.raises(ValidationError):
             interval.start = 300  # type: ignore
 
     def test_interval_hashable(self):
@@ -45,13 +46,13 @@ class TestInterval:
         interval1 = Interval(seq_region_name="1", start=100, end=200, strand=1)
         interval2 = Interval(seq_region_name="1", start=100, end=200, strand=1)
         interval3 = Interval(seq_region_name="1", start=100, end=300, strand=1)
-        
+
         # Same intervals should hash to same value
         assert hash(interval1) == hash(interval2)
-        
+
         # Different intervals should have different hashes (usually)
         assert hash(interval1) != hash(interval3)
-        
+
         # Can be used in sets
         interval_set = {interval1, interval2, interval3}
         assert len(interval_set) == 2  # interval1 and interval2 are duplicates
@@ -71,7 +72,7 @@ class TestTranscriptAnnotation:
             strand=1,
             provider="ensembl_rest",
         )
-        
+
         assert annotation.transcript_id == "ENST00000269305"
         assert annotation.gene_id == "ENSG00000141510"
         assert annotation.symbol is None
@@ -84,7 +85,7 @@ class TestTranscriptAnnotation:
         exon1 = Interval(seq_region_name="17", start=7661779, end=7661910, strand=1)
         exon2 = Interval(seq_region_name="17", start=7668402, end=7669000, strand=1)
         cds1 = Interval(seq_region_name="17", start=7661779, end=7661910, strand=1)
-        
+
         annotation = TranscriptAnnotation(
             transcript_id="ENST00000269305",
             gene_id="ENSG00000141510",
@@ -100,7 +101,7 @@ class TestTranscriptAnnotation:
             endpoint="https://rest.ensembl.org/lookup/id/ENST00000269305",
             reference_choice="GRCh38",
         )
-        
+
         assert annotation.symbol == "TP53"
         assert annotation.biotype == "protein_coding"
         assert len(annotation.exons) == 2
@@ -120,7 +121,7 @@ class TestTranscriptAnnotation:
             provider="test",
         )
         assert annotation.strand == 1
-        
+
         # Reverse strand
         annotation = TranscriptAnnotation(
             transcript_id="TEST2",
@@ -141,7 +142,7 @@ class TestTranscriptAnnotationBundle:
         """Test creation of empty bundle."""
         reference = ReferenceChoice.disabled("test disabled")
         bundle = TranscriptAnnotationBundle(reference_choice=reference)
-        
+
         assert bundle.resolved_count == 0
         assert bundle.unresolved_count == 0
         assert bundle.total_requested == 0
@@ -157,7 +158,7 @@ class TestTranscriptAnnotationBundle:
             strand=1,
             provider="ensembl_rest",
         )
-        
+
         annotation2 = TranscriptAnnotation(
             transcript_id="ENST00000359597",
             gene_id="ENSG00000141510",
@@ -167,7 +168,7 @@ class TestTranscriptAnnotationBundle:
             strand=1,
             provider="ensembl_rest",
         )
-        
+
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
         bundle = TranscriptAnnotationBundle(
             transcripts={
@@ -177,7 +178,7 @@ class TestTranscriptAnnotationBundle:
             unresolved=["ENST99999999"],
             reference_choice=reference,
         )
-        
+
         assert bundle.resolved_count == 2
         assert bundle.unresolved_count == 1
         assert bundle.total_requested == 3
@@ -191,12 +192,12 @@ class TestTranscriptAnnotationBundle:
         bundle = TranscriptAnnotationBundle(reference_choice=ref_explicit)
         assert bundle.reference_choice.value == "GRCh38"
         assert bundle.reference_choice.state.value == "explicit"
-        
+
         # Default reference
         ref_default = ReferenceChoice.default("GRCh38", reason="auto-selected")
         bundle = TranscriptAnnotationBundle(reference_choice=ref_default)
         assert bundle.reference_choice.state.value == "default"
-        
+
         # Disabled reference
         ref_disabled = ReferenceChoice.disabled("no annotation configured")
         bundle = TranscriptAnnotationBundle(reference_choice=ref_disabled)

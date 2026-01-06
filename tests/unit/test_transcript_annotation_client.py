@@ -1,13 +1,12 @@
 """Unit tests for transcript annotation clients."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sirnaforge.config.reference_policy import ReferenceChoice
-from sirnaforge.data.base import DatabaseAccessError
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient, VepConsequenceClient
+from sirnaforge.models.transcript_annotation import TranscriptAnnotationBundle
 
 
 class TestEnsemblTranscriptModelClient:
@@ -93,37 +92,37 @@ class TestEnsemblTranscriptModelClient:
     async def test_fetch_by_ids_success(self, client, mock_lookup_response):
         """Test successful fetch by IDs."""
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
-        
+
         with patch("sirnaforge.data.transcript_annotation.aiohttp.ClientSession") as mock_session_class:
             # Create mock response object
             mock_response = MagicMock()
             mock_response.status = 200
             mock_response.json = AsyncMock(return_value=mock_lookup_response)
-            
+
             # Create mock session with context manager support
             mock_session = MagicMock()
             mock_session.get = MagicMock(return_value=mock_response)
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock()
-            
+
             # Mock response context manager
             mock_response.__aenter__ = AsyncMock(return_value=mock_response)
             mock_response.__aexit__ = AsyncMock()
-            
+
             # Setup session class to return our mock
             mock_session_class.return_value = mock_session
-            
+
             # Test fetch
             bundle = await client.fetch_by_ids(
                 ["ENST00000269305"],
                 species="human",
                 reference=reference,
             )
-            
+
             assert bundle.resolved_count == 1
             assert bundle.unresolved_count == 0
             assert "ENST00000269305" in bundle.transcripts
-            
+
             annotation = bundle.transcripts["ENST00000269305"]
             assert annotation.gene_id == "ENSG00000141510"
             # Symbol is extracted from display_name which includes transcript variant
@@ -139,28 +138,28 @@ class TestEnsemblTranscriptModelClient:
     async def test_fetch_by_ids_not_found(self, client):
         """Test fetch by IDs with 404 response."""
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
-        
+
         with patch("sirnaforge.data.transcript_annotation.aiohttp.ClientSession") as mock_session_class:
             # Setup mock 404 response
             mock_response = MagicMock()
             mock_response.status = 404
             mock_response.__aenter__ = AsyncMock(return_value=mock_response)
             mock_response.__aexit__ = AsyncMock()
-            
+
             # Create mock session
             mock_session = MagicMock()
             mock_session.get = MagicMock(return_value=mock_response)
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock()
             mock_session_class.return_value = mock_session
-            
+
             # Test fetch
             bundle = await client.fetch_by_ids(
                 ["ENST99999999"],
                 species="human",
                 reference=reference,
             )
-            
+
             assert bundle.resolved_count == 0
             assert bundle.unresolved_count == 1
             assert "ENST99999999" in bundle.unresolved
@@ -170,28 +169,28 @@ class TestEnsemblTranscriptModelClient:
     async def test_fetch_by_ids_access_error(self, client):
         """Test fetch by IDs with access error."""
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
-        
+
         with patch("sirnaforge.data.transcript_annotation.aiohttp.ClientSession") as mock_session_class:
             # Setup mock 503 response (service unavailable)
             mock_response = MagicMock()
             mock_response.status = 503
             mock_response.__aenter__ = AsyncMock(return_value=mock_response)
             mock_response.__aexit__ = AsyncMock()
-            
+
             # Create mock session
             mock_session = MagicMock()
             mock_session.get = MagicMock(return_value=mock_response)
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock()
             mock_session_class.return_value = mock_session
-            
+
             # Test fetch - should add to unresolved rather than raising
             bundle = await client.fetch_by_ids(
                 ["ENST00000269305"],
                 species="human",
                 reference=reference,
             )
-            
+
             assert bundle.unresolved_count == 1
 
     @pytest.mark.unit
@@ -199,7 +198,7 @@ class TestEnsemblTranscriptModelClient:
     async def test_fetch_by_regions_success(self, client, mock_region_response):
         """Test successful fetch by genomic regions."""
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
-        
+
         with patch("sirnaforge.data.transcript_annotation.aiohttp.ClientSession") as mock_session_class:
             # Setup mock response
             mock_response = MagicMock()
@@ -207,24 +206,24 @@ class TestEnsemblTranscriptModelClient:
             mock_response.json = AsyncMock(return_value=mock_region_response)
             mock_response.__aenter__ = AsyncMock(return_value=mock_response)
             mock_response.__aexit__ = AsyncMock()
-            
+
             # Create mock session
             mock_session = MagicMock()
             mock_session.get = MagicMock(return_value=mock_response)
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock()
             mock_session_class.return_value = mock_session
-            
+
             # Test fetch
             bundle = await client.fetch_by_regions(
                 ["17:7661779-7687550"],
                 species="human",
                 reference=reference,
             )
-            
+
             assert bundle.resolved_count == 1
             assert "ENST00000269305" in bundle.transcripts
-            
+
             annotation = bundle.transcripts["ENST00000269305"]
             assert annotation.gene_id == "ENSG00000141510"
             assert len(annotation.exons) == 1
@@ -235,7 +234,7 @@ class TestEnsemblTranscriptModelClient:
     async def test_caching_behavior(self, client, mock_lookup_response):
         """Test that caching works correctly."""
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
-        
+
         with patch("sirnaforge.data.transcript_annotation.aiohttp.ClientSession") as mock_session_class:
             # Setup mock response
             mock_response = MagicMock()
@@ -243,7 +242,7 @@ class TestEnsemblTranscriptModelClient:
             mock_response.json = AsyncMock(return_value=mock_lookup_response)
             mock_response.__aenter__ = AsyncMock(return_value=mock_response)
             mock_response.__aexit__ = AsyncMock()
-            
+
             # Create mock session
             mock_session = MagicMock()
             mock_get = MagicMock(return_value=mock_response)
@@ -251,7 +250,7 @@ class TestEnsemblTranscriptModelClient:
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock()
             mock_session_class.return_value = mock_session
-            
+
             # First fetch - should hit the API
             bundle1 = await client.fetch_by_ids(
                 ["ENST00000269305"],
@@ -260,7 +259,7 @@ class TestEnsemblTranscriptModelClient:
             )
             assert bundle1.resolved_count == 1
             assert mock_get.call_count == 1
-            
+
             # Second fetch - should use cache
             bundle2 = await client.fetch_by_ids(
                 ["ENST00000269305"],
@@ -296,12 +295,10 @@ class TestVepConsequenceClient:
     @pytest.mark.asyncio
     async def test_vep_enrich_placeholder(self):
         """Test VEP enrichment (currently a placeholder)."""
-        from sirnaforge.models.transcript_annotation import TranscriptAnnotationBundle
-        
         client = VepConsequenceClient()
         reference = ReferenceChoice.explicit("GRCh38", reason="test")
         bundle = TranscriptAnnotationBundle(reference_choice=reference)
-        
+
         # Should return the same bundle (placeholder implementation)
         enriched = await client.enrich_annotations(bundle)
         assert enriched.resolved_count == bundle.resolved_count

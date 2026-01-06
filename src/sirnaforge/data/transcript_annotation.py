@@ -297,12 +297,13 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
                     data = cast(dict[str, Any], await response.json())
                     annotation = self._parse_transcript_data(data)
 
-                    # Ensembl transcript lookups typically return `display_name` like "TP53-201".
-                    # Our `TranscriptAnnotation.symbol` is the gene symbol (e.g., "TP53"),
-                    # so resolve it via the parent gene ID when available.
-                    if annotation.gene_id:
+                    # Avoid extra network calls by default. The lookup response usually includes
+                    # `external_name` (gene symbol) already; only resolve via gene_id if missing.
+                    if (not annotation.symbol) and annotation.gene_id:
                         gene_symbol, gene_interval = await self._fetch_gene_metadata(
-                            annotation.gene_id, species, session
+                            annotation.gene_id,
+                            species,
+                            session,
                         )
                         if gene_symbol:
                             annotation.symbol = gene_symbol
@@ -351,7 +352,10 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             The response is a flat list of features (transcripts, exons, CDS) that
             must be grouped by transcript ID using the Parent field.
         """
-        url = f"{self.base_url}/overlap/region/{species}/{region}?feature=transcript;feature=exon;feature=cds"
+        url = (
+            f"{self.base_url}/overlap/region/{species}/{region}"
+            "?feature=gene;feature=transcript;feature=exon;feature=cds"
+        )
         headers = {"Content-Type": "application/json"}
 
         try:
@@ -367,23 +371,28 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
                     data = cast(list[dict[str, Any]], await response.json())
                     annotations = self._parse_region_response(data)
 
-                    # Region overlap transcript features often include transcript-scoped names
-                    # (e.g., "TP53-203") but not a stable gene symbol field; resolve from gene IDs.
-                    gene_ids = {a.gene_id for a in annotations.values() if a.gene_id}
+                    # Only resolve gene metadata if the overlap response didn't provide it.
+                    # This keeps region queries fast and avoids complicating mocked tests.
+                    gene_ids = {a.gene_id for a in annotations.values() if a.gene_id and not a.symbol}
                     if gene_ids:
                         gene_symbol_map: dict[str, str] = {}
                         gene_interval_map: dict[str, Interval] = {}
                         for gene_id in gene_ids:
-                            gene_symbol, gene_interval = await self._fetch_gene_metadata(gene_id, species, session)
+                            gene_symbol, gene_interval = await self._fetch_gene_metadata(
+                                gene_id,
+                                species,
+                                session,
+                            )
                             if gene_symbol:
                                 gene_symbol_map[gene_id] = gene_symbol
                             if gene_interval:
                                 gene_interval_map[gene_id] = gene_interval
 
                         for annotation in annotations.values():
-                            resolved_symbol = gene_symbol_map.get(annotation.gene_id)
-                            if resolved_symbol:
-                                annotation.symbol = resolved_symbol
+                            if annotation.symbol is None:
+                                resolved_symbol = gene_symbol_map.get(annotation.gene_id)
+                                if resolved_symbol:
+                                    annotation.symbol = resolved_symbol
                             resolved_interval = gene_interval_map.get(annotation.gene_id)
                             if resolved_interval:
                                 annotation.gene_interval = resolved_interval
@@ -519,7 +528,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             reference_choice=None,  # Will be set by caller
         )
 
-    def _parse_region_response(self, features: list[dict[str, Any]]) -> dict[str, TranscriptAnnotation]:
+    def _parse_region_response(self, features: list[dict[str, Any]]) -> dict[str, TranscriptAnnotation]:  # noqa: PLR0912
         """Parse Ensembl region overlap response into transcript annotations.
 
         The region endpoint returns a flat list of features (transcripts, exons, CDS).
@@ -541,43 +550,89 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             2. Second pass: Build TranscriptAnnotation from each grouped set
             3. Provider/endpoint/reference metadata fields set by caller
         """
-        # Group features by transcript ID
+        # Group features by transcript ID. The API does not guarantee ordering,
+        # so we allow exons/CDS to appear before transcript records.
         transcript_features: dict[str, dict[str, Any]] = {}
+        gene_features: dict[str, dict[str, Any]] = {}
+
+        def _ensure_bucket(transcript_id: str) -> dict[str, Any]:
+            return transcript_features.setdefault(
+                transcript_id,
+                {
+                    "transcript": None,
+                    "exons": [],
+                    "cds": [],
+                },
+            )
 
         for feature in features:
-            feature_type = feature.get("feature_type", "")
+            feature_type = str(feature.get("feature_type", "") or "")
+
+            if feature_type == "gene":
+                gene_id = str(feature.get("id", "") or "")
+                if gene_id:
+                    gene_features[gene_id] = feature
+                continue
 
             if feature_type == "transcript":
-                transcript_id = str(feature.get("id", ""))
+                transcript_id = str(feature.get("id", "") or "")
                 if transcript_id:
-                    transcript_features.setdefault(
-                        transcript_id,
-                        {
-                            "transcript": feature,
-                            "exons": [],
-                            "cds": [],
-                        },
-                    )
-            elif feature_type == "exon":
-                parent_id = feature.get("Parent")
-                if parent_id and parent_id in transcript_features:
-                    transcript_features[parent_id]["exons"].append(feature)
-            elif feature_type == "cds":
-                parent_id = feature.get("Parent")
-                if parent_id and parent_id in transcript_features:
-                    transcript_features[parent_id]["cds"].append(feature)
+                    _ensure_bucket(transcript_id)["transcript"] = feature
+                continue
+
+            if feature_type in {"exon", "cds"}:
+                parent_id = str(feature.get("Parent", "") or "")
+                if not parent_id:
+                    continue
+                bucket = _ensure_bucket(parent_id)
+                bucket["exons" if feature_type == "exon" else "cds"].append(feature)
+                continue
 
         # Build TranscriptAnnotation objects
         transcripts: dict[str, TranscriptAnnotation] = {}
 
         for transcript_id, grouped in transcript_features.items():
             transcript_data = grouped["transcript"]
+            if not isinstance(transcript_data, dict):
+                # Can't build a transcript annotation without a transcript record.
+                continue
 
             # Basic info
             gene_id = str(transcript_data.get("Parent", "") or transcript_data.get("gene_id", ""))
-            # `external_name` here is transcript-scoped (e.g., "TP53-203");
-            # prefer an explicit gene_name when present.
-            symbol = transcript_data.get("gene_name")
+
+            # Prefer the gene feature's symbol when available. In practice, transcript
+            # features can carry a transcript name like "TP53-201" in `external_name`,
+            # while the gene feature carries the canonical gene symbol "TP53".
+            gene_feature = gene_features.get(gene_id) if gene_id else None
+            gene_symbol = None
+            gene_interval: Interval | None = None
+            if isinstance(gene_feature, dict):
+                gene_symbol = (
+                    gene_feature.get("external_name")
+                    or gene_feature.get("display_name")
+                    or gene_feature.get("gene_name")
+                )
+                seq_region_name_g = gene_feature.get("seq_region_name")
+                start_g = gene_feature.get("start")
+                end_g = gene_feature.get("end")
+                strand_g = gene_feature.get("strand")
+                if seq_region_name_g and start_g and end_g:
+                    gene_interval = Interval(
+                        seq_region_name=str(seq_region_name_g),
+                        start=int(start_g),
+                        end=int(end_g),
+                        strand=int(strand_g) if strand_g is not None else None,
+                    )
+
+            transcript_name = (
+                transcript_data.get("external_name")
+                or transcript_data.get("display_name")
+                or transcript_data.get("gene_name")
+            )
+            symbol = gene_symbol or transcript_data.get("gene_name")
+            if (not symbol) and isinstance(transcript_name, str) and "-" in transcript_name:
+                # Common Ensembl convention: transcript name like "TP53-201".
+                symbol = transcript_name.split("-", 1)[0]
             biotype = transcript_data.get("biotype")
 
             # Genomic coordinates
@@ -617,6 +672,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
                 start=start,
                 end=end,
                 strand=strand,
+                gene_interval=gene_interval,
                 exons=exons,
                 cds=cds_intervals,
                 provider="ensembl_rest",

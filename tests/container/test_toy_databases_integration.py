@@ -4,6 +4,7 @@ These tests require BWA-MEM2 which is only available inside the Docker container
 They are marked with `runs_in_container` to run via `make docker-test`.
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,9 @@ from sirnaforge.data.base import FastaUtils
 @pytest.mark.integration
 def test_toy_transcriptome_analysis_workflow(tmp_path: Path):
     """Test complete transcriptome analysis workflow with toy database."""
+    if shutil.which("bwa-mem2") is None:
+        pytest.skip("bwa-mem2 not available - run this test in the Docker container")
+
     # Get toy database path
     test_data_dir = Path(__file__).parent.parent / "unit" / "data"
     transcriptome_db = test_data_dir / "toy_transcriptome_db.fasta"
@@ -48,6 +52,9 @@ def test_toy_transcriptome_analysis_workflow(tmp_path: Path):
 @pytest.mark.integration
 def test_toy_mirna_analysis_workflow(tmp_path: Path):
     """Test complete miRNA analysis workflow with toy database."""
+    if shutil.which("bwa-mem2") is None:
+        pytest.skip("bwa-mem2 not available - run this test in the Docker container")
+
     # Get toy database path
     test_data_dir = Path(__file__).parent.parent / "unit" / "data"
     mirna_db = test_data_dir / "toy_mirna_db.fasta"
@@ -78,6 +85,9 @@ def test_toy_mirna_analysis_workflow(tmp_path: Path):
 @pytest.mark.integration
 def test_combined_offtarget_analysis(tmp_path: Path):
     """Test combined transcriptome and miRNA analysis with toy databases."""
+    if shutil.which("bwa-mem2") is None:
+        pytest.skip("bwa-mem2 not available - run this test in the Docker container")
+
     # Get toy database paths
     test_data_dir = Path(__file__).parent.parent / "unit" / "data"
     transcriptome_db = test_data_dir / "toy_transcriptome_db.fasta"
