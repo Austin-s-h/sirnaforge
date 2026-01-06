@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, TypeVar
 
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 from pandera.typing import DataFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 

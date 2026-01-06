@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord
