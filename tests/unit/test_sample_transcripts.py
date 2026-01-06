@@ -11,7 +11,7 @@ from sirnaforge.data.variant_resolver import VariantResolver
 @pytest.fixture(scope="module")
 def sample_sequences():
     """Load sample transcripts from FASTA file."""
-    fasta_path = Path("examples/sample_transcripts.fasta")
+    fasta_path = Path("examples/toy_variant_transcripts.fasta")
     return {rec.id.split()[0]: rec.seq for rec in SeqIO.parse(fasta_path, "fasta")}
 
 

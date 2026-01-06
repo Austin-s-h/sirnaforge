@@ -770,6 +770,10 @@ class SiRNAWorkflow:
                         "guide_modifications": mod_summary.get("guide_modifications", ""),
                         "passenger_overhang": mod_summary.get("passenger_overhang", ""),
                         "passenger_modifications": mod_summary.get("passenger_modifications", ""),
+                        "variant_mode": getattr(candidate, "variant_mode", None),
+                        "allele_specific": getattr(candidate, "allele_specific", False),
+                        "targeted_alleles": json.dumps(getattr(candidate, "targeted_alleles", [])),
+                        "overlapped_variants": json.dumps(getattr(candidate, "overlapped_variants", [])),
                     }
                 )
 
@@ -842,6 +846,12 @@ class SiRNAWorkflow:
             logger.warning(f"Failed to write all/pass CSVs: {e}")
 
         try:
+            variant_links_path = self.config.output_dir / "logs" / "candidate_variants.json"
+            self._write_candidate_variant_links(design_results.candidates, variant_links_path)
+        except Exception as e:
+            logger.warning(f"Failed to write candidate variant links: {e}")
+
+        try:
             manifest = self._build_fair_manifest(
                 all_csv=all_csv,
                 pass_csv=pass_csv,
@@ -881,6 +891,35 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.error(f"Failed to write PASS candidates FASTA: {e}")
             raise
+
+    def _write_candidate_variant_links(self, candidates: Sequence[Any], output_path: Path) -> None:
+        """Persist mapping between candidates and overlapped variants for observability."""
+        entries: list[dict[str, Any]] = []
+        for candidate in candidates:
+            overlapped = getattr(candidate, "overlapped_variants", None) or []
+            if not overlapped:
+                continue
+            entry = {
+                "id": getattr(candidate, "id", None),
+                "transcript_id": getattr(candidate, "transcript_id", None),
+                "variant_mode": getattr(candidate, "variant_mode", None),
+                "allele_specific": bool(getattr(candidate, "allele_specific", False)),
+                "targeted_alleles": list(getattr(candidate, "targeted_alleles", [])),
+                "overlapped_variants": overlapped,
+            }
+            entries.append(entry)
+
+        payload = {
+            "gene": self.config.gene_query,
+            "total_candidates": len(candidates),
+            "variant_annotated_candidates": len(entries),
+            "candidates": entries,
+        }
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w") as fh:
+            json.dump(payload, fh, indent=2)
+        logger.info(f"Wrote candidate variant links to {output_path}")
 
     def _file_hash_sha256(self, path: Path) -> str:
         """Return SHA-256 hash of a file for integrity (non-security) tracking."""

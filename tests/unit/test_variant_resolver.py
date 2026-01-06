@@ -259,6 +259,45 @@ class TestVariantResolverCache:
         assert cached_variant.af == 0.05
 
 
+class TestVariantResolverVcf:
+    """Tests for VCF parsing support."""
+
+    def test_read_vcf_parses_af_and_ac_an(self):
+        """Ensure local VCF parsing populates allele frequency fields."""
+        resolver = VariantResolver(min_af=0.01, variant_mode="avoid")
+
+        vcf_path = Path(__file__).parent / "data" / "test_variants.vcf"
+
+        variants = resolver.read_vcf(vcf_path)
+
+        assert len(variants) == 2
+
+        af_values = {v.to_vcf_style(): v.af for v in variants}
+        # AF pulled directly from INFO/AF and AC/AN in the fixture VCF
+        assert af_values["chr1:100:A:G"] == pytest.approx(0.12)
+        assert af_values["chr1:200:C:T"] == pytest.approx(0.2)
+
+    def test_read_vcf_parses_af_and_filters(self):
+        """Ensure VCF parsing normalizes chromosomes and applies AF filters."""
+        resolver = VariantResolver(min_af=0.01)
+        vcf_path = Path(__file__).resolve().parents[2] / "examples" / "variant_demo.vcf"
+
+        variants = resolver.read_vcf(vcf_path)
+
+        # Low-AF variant (rsdemo3) should be filtered out by the 0.01 threshold
+        assert len(variants) == 2
+        ids = {v.id for v in variants}
+        assert ids == {"rsdemo1", "rsdemo2"}
+
+        # Chromosomes should be normalized with chr prefix
+        assert all(v.chr.startswith("chr") for v in variants)
+
+        af_lookup = {v.id: v.af for v in variants}
+        assert af_lookup["rsdemo1"] == pytest.approx(0.12)
+        # AC/AN should be converted to AF
+        assert af_lookup["rsdemo2"] == pytest.approx(0.02)
+
+
 class TestVariantResolverInitialization:
     """Tests for VariantResolver initialization."""
 
@@ -475,27 +514,3 @@ class TestVariantResolverEnsemblAPI:
         assert "SAS" in population_afs
         assert population_afs["MID"] == 0.6035
         assert population_afs["SAS"] == 0.5066
-
-
-class TestVariantResolverVcf:
-    """Tests for reading variants from local VCF files."""
-
-    def test_read_vcf_parses_af_and_filters(self):
-        """Ensure VCF parsing normalizes chromosomes and applies AF filters."""
-        resolver = VariantResolver(min_af=0.01)
-        vcf_path = Path(__file__).resolve().parents[2] / "examples" / "variant_demo.vcf"
-
-        variants = resolver.read_vcf(vcf_path)
-
-        # Low-AF variant (rsdemo3) should be filtered out by the 0.01 threshold
-        assert len(variants) == 2
-        ids = {v.id for v in variants}
-        assert ids == {"rsdemo1", "rsdemo2"}
-
-        # Chromosomes should be normalized with chr prefix
-        assert all(v.chr.startswith("chr") for v in variants)
-
-        af_lookup = {v.id: v.af for v in variants}
-        assert af_lookup["rsdemo1"] == pytest.approx(0.12)
-        # AC/AN should be converted to AF
-        assert af_lookup["rsdemo2"] == pytest.approx(0.02)
