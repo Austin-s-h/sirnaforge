@@ -19,6 +19,17 @@ class Interval(BaseModel):
         """Make Interval hashable for use in sets/dicts."""
         return hash((self.seq_region_name, self.start, self.end, self.strand))
 
+    def __eq__(self, other: object) -> bool:
+        """Compare Interval instances for equality."""
+        if not isinstance(other, Interval):
+            return NotImplemented
+        return (
+            self.seq_region_name == other.seq_region_name
+            and self.start == other.start
+            and self.end == other.end
+            and self.strand == other.strand
+        )
+
 
 class TranscriptAnnotation(BaseModel):
     """Comprehensive transcript annotation from genomic databases.
