@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##contig=<ID=1>
+##contig=<ID=2>
+##contig=<ID=3>
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele Count">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Total Allele Number">
+##NOTE=rsdemo3 is intentionally low-AF to exercise filtering behavior in tests
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	100	rsdemo1	G	T	.	.	AF=0.12
+2	200	rsdemo2	G	C	.	.	AC=1;AN=50
+3	300	rsdemo3	T	G	.	.	AF=0.005

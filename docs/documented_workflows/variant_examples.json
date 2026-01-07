@@ -1,0 +1,61 @@
+[
+  {
+    "name": "avoid_baseline",
+    "variant_mode": "avoid",
+    "min_af": 0.01,
+    "resolved_variants": [
+      "chr1:100:A:T",
+      "chr2:200:G:C"
+    ],
+    "total_resolved": 2,
+    "report": "documented_workflows/avoid_baseline/logs/resolved_variants.json",
+    "command": "sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode avoid --min-af 0.01 --output-dir workflow_output/avoid_baseline"
+  },
+  {
+    "name": "avoid_include_low_af",
+    "variant_mode": "avoid",
+    "min_af": 0.0,
+    "resolved_variants": [
+      "chr1:100:A:T",
+      "chr2:200:G:C",
+      "chr3:300:T:G"
+    ],
+    "total_resolved": 3,
+    "report": "documented_workflows/avoid_include_low_af/logs/resolved_variants.json",
+    "command": "sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode avoid --min-af 0.0 --output-dir workflow_output/avoid_include_low_af"
+  },
+  {
+    "name": "target_focus",
+    "variant_mode": "target",
+    "min_af": 0.03,
+    "resolved_variants": [
+      "chr1:100:A:T"
+    ],
+    "total_resolved": 1,
+    "report": "documented_workflows/target_focus/logs/resolved_variants.json",
+    "command": "sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode target --min-af 0.03 --output-dir workflow_output/target_focus"
+  },
+  {
+    "name": "both_lowfreq",
+    "variant_mode": "both",
+    "min_af": 0.005,
+    "resolved_variants": [
+      "chr1:100:A:T",
+      "chr2:200:G:C"
+    ],
+    "total_resolved": 2,
+    "report": "documented_workflows/both_lowfreq/logs/resolved_variants.json",
+    "command": "sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode both --min-af 0.005 --output-dir workflow_output/both_lowfreq"
+  },
+  {
+    "name": "avoid_strict",
+    "variant_mode": "avoid",
+    "min_af": 0.05,
+    "resolved_variants": [
+      "chr1:100:A:T"
+    ],
+    "total_resolved": 1,
+    "report": "documented_workflows/avoid_strict/logs/resolved_variants.json",
+    "command": "sirnaforge workflow TP53 --input-fasta examples/sample_transcripts.fasta --snp-file examples/variant_demo.vcf --variant-mode avoid --min-af 0.05 --output-dir workflow_output/avoid_strict"
+  }
+]

@@ -171,12 +171,12 @@ def test_docker_bioinformatics_tools():
             # Decode safely for any later inspection (replace invalid bytes)
             stdout = (
                 result.stdout.decode("utf-8", errors="replace")
-                if isinstance(result.stdout, (bytes, bytearray))
+                if isinstance(result.stdout, bytes | bytearray)
                 else str(result.stdout)
             )
             stderr = (
                 result.stderr.decode("utf-8", errors="replace")
-                if isinstance(result.stderr, (bytes, bytearray))
+                if isinstance(result.stderr, bytes | bytearray)
                 else str(result.stderr)
             )
 
@@ -330,6 +330,9 @@ def test_docker_login_shell_path():
     The test runs inside the container and simulates what users would do with
     docker run ... /bin/bash -lc commands.
     """
+    if not Path("/.dockerenv").exists():
+        pytest.skip("runs_in_container test: only valid inside Docker image")
+
     # Test 1: Non-login shell (baseline - should always work)
     result = subprocess.run(
         ["/bin/bash", "-c", "command -v sirnaforge && command -v nextflow"],

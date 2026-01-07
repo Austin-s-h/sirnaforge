@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -21,7 +21,7 @@ from .config import NextflowConfig
 logger = get_logger(__name__)
 
 
-def _get_executable_path(tool_name: str) -> Optional[str]:
+def _get_executable_path(tool_name: str) -> str | None:
     """Get the full path to an executable, ensuring it exists."""
     path = shutil.which(tool_name)
     if path is None:
@@ -43,7 +43,7 @@ def _validate_command_args(cmd: list[str]) -> None:
         raise ValueError(f"Executable must be an absolute path: {executable}")
 
 
-def _find_repo_root(start: Path) -> Optional[Path]:
+def _find_repo_root(start: Path) -> Path | None:
     """Locate the nearest git root from the provided path."""
     for candidate in [start] + list(start.parents):
         if (candidate / ".git").exists():
@@ -80,7 +80,7 @@ console = Console()
 class NextflowRunner:
     """Execute Nextflow workflows from Python with proper error handling."""
 
-    def __init__(self, config: Optional[NextflowConfig] = None):
+    def __init__(self, config: NextflowConfig | None = None):
         """Initialize Nextflow runner.
 
         Args:
@@ -113,7 +113,7 @@ class NextflowRunner:
         return self._pipeline_revision
 
     async def run(
-        self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
+        self, input_file: Path, output_dir: Path, genome_species: list[str] | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         """Simple method to run Nextflow workflow with auto-validation and defaults.
 
@@ -145,7 +145,7 @@ class NextflowRunner:
         )
 
     def run_sync(
-        self, input_file: Path, output_dir: Path, genome_species: Optional[list[str]] = None, **kwargs: Any
+        self, input_file: Path, output_dir: Path, genome_species: list[str] | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         """Synchronous version of run() for simpler usage without async/await.
 
@@ -180,7 +180,7 @@ class NextflowRunner:
         input_file: Path,
         output_dir: Path,
         genome_species: list[str],
-        additional_params: Optional[dict[str, Any]] = None,
+        additional_params: dict[str, Any] | None = None,
         show_progress: bool = True,
     ) -> dict[str, Any]:
         """Run the off-target analysis Nextflow workflow.
@@ -261,7 +261,7 @@ class NextflowRunner:
             Path(env["NXF_HOME"]).mkdir(parents=True, exist_ok=True)
         return env
 
-    async def _run_subprocess(self, cmd: list[str], env: Optional[dict[str, str]] = None) -> Any:
+    async def _run_subprocess(self, cmd: list[str], env: dict[str, str] | None = None) -> Any:
         """Run subprocess asynchronously with proper logging.
 
         Args:
@@ -399,13 +399,13 @@ class NextflowRunner:
             "stderr": stderr_text,
         }
 
-    def validate_installation(self) -> dict[str, Union[bool, str]]:
+    def validate_installation(self) -> dict[str, bool | str]:
         """Validate that Nextflow and required tools are available.
 
         Returns:
             Dictionary of tool availability status
         """
-        tools: dict[str, Union[bool, str]] = {}
+        tools: dict[str, bool | str] = {}
 
         # Check Nextflow
         try:

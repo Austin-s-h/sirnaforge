@@ -18,7 +18,7 @@ class TestDesignParameters:
         """Test default parameter values."""
         params = DesignParameters()
         assert params.sirna_length == 21
-        assert params.top_n == 100
+        assert params.top_n == 500
         assert params.filters.gc_min == 35.0
         assert params.filters.gc_max == 60.0
 

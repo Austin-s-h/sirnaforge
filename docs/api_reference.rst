@@ -68,6 +68,14 @@ Off-Target Models
    :undoc-members:
    :show-inheritance:
 
+Transcript Annotation Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.models.transcript_annotation
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Validation Schemas
 ~~~~~~~~~~~~~~~~~~
 
@@ -99,6 +107,14 @@ ORF Analysis
 ~~~~~~~~~~~~
 
 .. automodule:: sirnaforge.data.orf_analysis
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Transcript Annotations
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.transcript_annotation
    :members:
    :undoc-members:
    :show-inheritance:

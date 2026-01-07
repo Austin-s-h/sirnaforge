@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 from .species_registry import (
@@ -193,7 +193,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         return sorted(CANONICAL_SPECIES_REGISTRY.keys())
 
     @classmethod
-    def canonicalize_species_name(cls, species: str) -> Optional[str]:
+    def canonicalize_species_name(cls, species: str) -> str | None:
         """Normalize a raw species identifier to a canonical key."""
         if not species:
             return None
@@ -287,7 +287,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         cls,
         requested_species: Sequence[str],
         source_name: str,
-        mirna_overrides: Optional[Sequence[str]] = None,
+        mirna_overrides: Sequence[str] | None = None,
     ) -> dict[str, list[str]]:
         """Resolve canonical, genome, and miRNA identifiers for the requested species."""
         canonical_species = cls.canonicalize_species_list(requested_species)
@@ -320,20 +320,20 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         }
 
     @classmethod
-    def _normalize_mirgenedb_species(cls, species: str) -> Optional[str]:
+    def _normalize_mirgenedb_species(cls, species: str) -> str | None:
         if not species:
             return None
         return MIRGENEDB_ALIAS_MAP.get(species.lower())
 
     @classmethod
-    def normalize_species(cls, source_name: str, species: str) -> Optional[str]:
+    def normalize_species(cls, source_name: str, species: str) -> str | None:
         """Normalize user-provided species identifiers to canonical keys."""
         if source_name == "mirgenedb":
             return cls._normalize_mirgenedb_species(species)
         return species
 
     @classmethod
-    def get_source_configuration(cls, source_name: str, species: str) -> Optional[MiRNASource]:
+    def get_source_configuration(cls, source_name: str, species: str) -> MiRNASource | None:
         """Retrieve the MiRNASource configuration for a given source/species."""
         canonical_species = cls.normalize_species(source_name, species)
         if canonical_species is None:
@@ -358,7 +358,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         """Expose the MirGeneDB species metadata table."""
         return {key: dict(value) for key, value in MIRGENEDB_SPECIES_TABLE.items()}
 
-    def __init__(self, cache_dir: Optional[Union[str, Path]] = None, cache_ttl_days: int = 30):
+    def __init__(self, cache_dir: str | Path | None = None, cache_ttl_days: int = 30):
         """Initialize the miRNA database manager.
 
         Args:
@@ -418,7 +418,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         logger.info(f"Filtered to {filtered_count} {species} sequences")
         return "\n".join(filtered_lines)
 
-    def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Optional[Path]:
+    def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
         """Get miRNA database, downloading and filtering if needed.
 
         Simplified caching: each species+source combination gets its own cache file.
@@ -459,7 +459,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         # Download and process
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
 
-        content: Optional[str] = self._download_file(source)
+        content: str | None = self._download_file(source)
         failure = False
 
         if content is None:
@@ -530,9 +530,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 return normalized
         return species
 
-    def get_combined_database(
-        self, sources: list[str], species: str, output_name: Optional[str] = None
-    ) -> Optional[Path]:
+    def get_combined_database(self, sources: list[str], species: str, output_name: str | None = None) -> Path | None:
         """Combine multiple databases into a single file.
 
         Args:

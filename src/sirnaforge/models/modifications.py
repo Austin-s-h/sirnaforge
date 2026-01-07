@@ -4,9 +4,9 @@ This module provides structured representations for chemical modifications,
 overhangs, and provenance metadata associated with siRNA strands.
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -44,7 +44,7 @@ class Provenance(BaseModel):
 
     source_type: SourceType = Field(description="Type of source for this siRNA")
     identifier: str = Field(description="Source identifier (e.g., patent number, DOI, PubMed ID)")
-    url: Optional[str] = Field(default=None, description="URL to the source document")
+    url: str | None = Field(default=None, description="URL to the source document")
 
     def to_header_string(self) -> str:
         """Convert provenance to FASTA header format.
@@ -118,7 +118,7 @@ class StrandMetadata(BaseModel):
 
     id: str = Field(description="Unique identifier for this strand")
     sequence: str = Field(description="RNA or DNA sequence")
-    overhang: Optional[str] = Field(
+    overhang: str | None = Field(
         default=None,
         description="Overhang sequence (e.g., 'dTdT' for DNA, 'UU' for RNA)",
     )
@@ -126,8 +126,8 @@ class StrandMetadata(BaseModel):
         default_factory=list,
         description="List of chemical modifications applied to this strand",
     )
-    notes: Optional[str] = Field(default=None, description="Additional notes or comments")
-    provenance: Optional[Provenance] = Field(default=None, description="Source and validation information")
+    notes: str | None = Field(default=None, description="Additional notes or comments")
+    provenance: Provenance | None = Field(default=None, description="Source and validation information")
     confirmation_status: ConfirmationStatus = Field(
         default=ConfirmationStatus.PENDING,
         description="Experimental confirmation status",
@@ -155,7 +155,7 @@ class StrandMetadata(BaseModel):
                 )
         return self
 
-    def to_fasta_header(self, target_gene: Optional[str] = None, strand_role: Optional[StrandRole] = None) -> str:
+    def to_fasta_header(self, target_gene: str | None = None, strand_role: StrandRole | None = None) -> str:
         """Generate FASTA header with embedded metadata.
 
         Args:

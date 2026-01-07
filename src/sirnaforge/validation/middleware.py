@@ -3,7 +3,7 @@
 import json
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -23,7 +23,7 @@ class ValidationReport:
         """Initialize validation report."""
         self.stage = stage
         self.start_time = time.perf_counter()
-        self.end_time: Optional[float] = None
+        self.end_time: float | None = None
         self.overall_result = ValidationResult()
         self.item_results: list[ValidationResult] = []
         self.summary_stats: dict[str, Any] = {}
@@ -216,7 +216,7 @@ class ValidationMiddleware:
         self,
         transcripts: list[TranscriptInfo],
         candidates: list[SiRNACandidate],
-        orf_data: Optional[pd.DataFrame] = None,
+        orf_data: pd.DataFrame | None = None,
     ) -> ValidationReport:
         """Validate consistency of transcript IDs across datasets."""
         stage = ValidationStage.FILTERING  # Use filtering stage for consistency checks

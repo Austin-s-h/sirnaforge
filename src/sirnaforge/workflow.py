@@ -44,6 +44,7 @@ from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.data.species_registry import normalize_species_name
+from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -55,6 +56,7 @@ from sirnaforge.models.sirna import (
     SiRNACandidate,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
+from sirnaforge.models.variant import VariantRecord
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
@@ -63,6 +65,12 @@ from sirnaforge.utils.modification_patterns import apply_modifications_to_candid
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
+from sirnaforge.workflow_variant import (
+    VariantWorkflowConfig,
+    normalize_variant_mode,
+    parse_clinvar_filter_string,
+    resolve_workflow_variants,
+)
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -93,6 +101,7 @@ class WorkflowConfig:
         num_threads: int | None = None,
         input_source: InputSource | None = None,
         keep_nextflow_work: bool = False,
+        variant_config: VariantWorkflowConfig | None = None,
     ):
         """Initialize workflow configuration."""
         self.output_dir = Path(output_dir)
@@ -147,6 +156,8 @@ class WorkflowConfig:
         # Parallelism for design stage (cap at 4 CPUs for better efficiency)
         requested_threads = num_threads if num_threads is not None else (os.cpu_count() or 4)
         self.num_threads = max(1, min(4, requested_threads))
+        # Variant targeting configuration
+        self.variant_config = variant_config
 
         if self.mirna_database and self.mirna_species:
             self.nextflow_config.setdefault("mirna_db", self.mirna_database)
@@ -193,6 +204,15 @@ class SiRNAWorkflow:
 
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
+        self._annotation_summary: dict[str, Any] = {}
+
+        # Optional: Initialize transcript annotation client (not used by default yet)
+        # This can be enabled via environment variable or config flag in the future
+        try:
+            self._annotation_client: EnsemblTranscriptModelClient | None = EnsemblTranscriptModelClient()
+        except Exception:
+            self._annotation_client = None
+        self._dirty_controls_added: int = 0
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete siRNA design workflow."""
@@ -206,12 +226,23 @@ class SiRNAWorkflow:
         _ = self.validation.validate_input_parameters(self.config.design_params)
 
         with Progress(console=console) as progress:
-            main_task = progress.add_task("[cyan]Overall Progress", total=5)
+            main_task = progress.add_task("[cyan]Overall Progress", total=6)
 
             # Step 1: Transcript Retrieval
             progress.update(main_task, description="[cyan]Retrieving transcripts...")
             transcripts = await self.step1_retrieve_transcripts(progress)
             progress.advance(main_task)
+
+            # Variant Resolution (optional, after transcript retrieval)
+            # Save resolved variants on the workflow instance for later use
+            if self.config.variant_config and self.config.variant_config.has_variants:
+                progress.update(main_task, description="[cyan]Resolving variants...")
+                self.resolved_variants = await self.resolve_variants_step(progress)
+                progress.advance(main_task)
+            else:
+                # Skip variant resolution step
+                self.resolved_variants = []
+                progress.advance(main_task)
 
             # Step 2: ORF Validation
             progress.update(main_task, description="[cyan]Validating ORFs...")
@@ -274,6 +305,7 @@ class SiRNAWorkflow:
                 },
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
+            "transcript_annotation_summary": self._annotation_summary or {"enabled": False},
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
@@ -396,7 +428,95 @@ class SiRNAWorkflow:
         # Quiet transcript validation (no verbose console warnings)
         _ = self.validation.validate_transcripts(protein_transcripts)
 
+        # Optional: Enrich with genomic annotations if client is available
+        await self._enrich_transcript_annotations(protein_transcripts)
+
         return protein_transcripts
+
+    async def _enrich_transcript_annotations(self, transcripts: list[TranscriptInfo]) -> None:
+        """Optionally enrich transcripts with genomic annotations.
+
+        This is a non-breaking enhancement that fetches additional genomic metadata
+        for transcripts when the annotation client is available.
+        Results are logged to workflow summary but do not modify transcript objects.
+        """
+        if not self._annotation_client:
+            return
+
+        # Only try to annotate if we have Ensembl transcript IDs
+        transcript_ids = [t.transcript_id for t in transcripts if t.transcript_id.startswith("ENST")]
+        if not transcript_ids:
+            return
+
+        try:
+            # Use default reference for annotation
+            reference = ReferenceChoice.default("GRCh38", reason="auto-selected for annotation")
+
+            bundle = await self._annotation_client.fetch_by_ids(
+                ids=transcript_ids[:10],  # Limit to first 10 to avoid excessive API calls
+                species="human",
+                reference=reference,
+            )
+
+            # Store summary for workflow output
+            self._annotation_summary = {
+                "enabled": True,
+                "provider": "ensembl_rest",
+                "transcripts_queried": len(transcript_ids[:10]),
+                "transcripts_resolved": bundle.resolved_count,
+                "transcripts_unresolved": bundle.unresolved_count,
+                "reference": reference.to_metadata(),
+            }
+
+            if bundle.resolved_count > 0:
+                console.print(
+                    f"📊 Genomic annotations: {bundle.resolved_count}/{len(transcript_ids[:10])} transcripts enriched"
+                )
+        except Exception as e:
+            logger.debug(f"Transcript annotation enrichment failed (non-critical): {e}")
+            self._annotation_summary = {"enabled": False, "error": str(e)}
+
+    async def resolve_variants_step(self, progress: Progress) -> list[VariantRecord]:
+        """Resolve variants for targeting or avoidance (optional workflow step).
+
+        This step runs after transcript retrieval and before siRNA design,
+        resolving and filtering variants based on the workflow configuration.
+
+        This step is run after transcript retrieval and before ORF validation and siRNA design.
+        Variants are resolved using ClinVar, Ensembl Variation, and/or VCF files.
+
+        Args:
+            progress: Rich progress tracker
+
+        Returns:
+            List of resolved VariantRecords that passed filters
+        """
+        if not self.config.variant_config or not self.config.variant_config.has_variants:
+            return []
+
+        task = progress.add_task("[yellow]Resolving variants...", total=2)
+
+        # Resolve variants using the workflow variant module
+        variants = await resolve_workflow_variants(
+            config=self.config.variant_config,
+            gene_name=self.config.gene_query,
+            output_dir=self.config.output_dir,
+        )
+        progress.advance(task)
+
+        if variants:
+            console.print(
+                f"🧬 Resolved {len(variants)} variant(s) for {self.config.variant_config.variant_mode.value} mode"
+            )
+            for variant in variants[:5]:  # Show first 5
+                console.print(f"  • {variant.id or variant.to_vcf_style()}")
+            if len(variants) > 5:
+                console.print(f"  ... and {len(variants) - 5} more")
+        else:
+            console.print("⚠️  No variants passed filters")
+
+        progress.advance(task)
+        return variants
 
     async def step2_validate_orfs(self, transcripts: list[TranscriptInfo], progress: Progress) -> dict[str, Any]:
         """Step 2: Validate ORFs and generate validation report."""
@@ -447,6 +567,7 @@ class SiRNAWorkflow:
             progress.advance(task)
             design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
             added_controls = inject_dirty_controls(design_result)
+            self._dirty_controls_added = len(added_controls)
             if added_controls:
                 console.print(
                     f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification"
@@ -530,6 +651,7 @@ class SiRNAWorkflow:
         )
 
         added_controls = inject_dirty_controls(combined)
+        self._dirty_controls_added = len(added_controls)
         if added_controls:
             console.print(f"🧪 Added {len(added_controls)} {DIRTY_CONTROL_LABEL} candidates for signal verification")
 
@@ -704,6 +826,10 @@ class SiRNAWorkflow:
                         "guide_modifications": mod_summary.get("guide_modifications", ""),
                         "passenger_overhang": mod_summary.get("passenger_overhang", ""),
                         "passenger_modifications": mod_summary.get("passenger_modifications", ""),
+                        "variant_mode": getattr(candidate, "variant_mode", None),
+                        "allele_specific": getattr(candidate, "allele_specific", False),
+                        "targeted_alleles": json.dumps(getattr(candidate, "targeted_alleles", [])),
+                        "overlapped_variants": json.dumps(getattr(candidate, "overlapped_variants", [])),
                     }
                 )
 
@@ -740,9 +866,9 @@ class SiRNAWorkflow:
             def _normalize_pass(value: Any) -> str:
                 normalized = "FAIL"
                 try:
-                    if value is True or (isinstance(value, (int, float)) and value == 1):
+                    if value is True or (isinstance(value, int | float) and value == 1):
                         normalized = "PASS"
-                    elif value is False or (isinstance(value, (int, float)) and value == 0):
+                    elif value is False or (isinstance(value, int | float) and value == 0):
                         normalized = "FAIL"
                     elif isinstance(value, str):
                         cleaned = value.strip().upper()
@@ -774,6 +900,12 @@ class SiRNAWorkflow:
 
         except Exception as e:  # Do not fail workflow for reporting extras
             logger.warning(f"Failed to write all/pass CSVs: {e}")
+
+        try:
+            variant_links_path = self.config.output_dir / "logs" / "candidate_variants.json"
+            self._write_candidate_variant_links(design_results.candidates, variant_links_path)
+        except Exception as e:
+            logger.warning(f"Failed to write candidate variant links: {e}")
 
         try:
             manifest = self._build_fair_manifest(
@@ -815,6 +947,35 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.error(f"Failed to write PASS candidates FASTA: {e}")
             raise
+
+    def _write_candidate_variant_links(self, candidates: Sequence[Any], output_path: Path) -> None:
+        """Persist mapping between candidates and overlapped variants for observability."""
+        entries: list[dict[str, Any]] = []
+        for candidate in candidates:
+            overlapped = getattr(candidate, "overlapped_variants", None) or []
+            if not overlapped:
+                continue
+            entry = {
+                "id": getattr(candidate, "id", None),
+                "transcript_id": getattr(candidate, "transcript_id", None),
+                "variant_mode": getattr(candidate, "variant_mode", None),
+                "allele_specific": bool(getattr(candidate, "allele_specific", False)),
+                "targeted_alleles": list(getattr(candidate, "targeted_alleles", [])),
+                "overlapped_variants": overlapped,
+            }
+            entries.append(entry)
+
+        payload = {
+            "gene": self.config.gene_query,
+            "total_candidates": len(candidates),
+            "variant_annotated_candidates": len(entries),
+            "candidates": entries,
+        }
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w") as fh:
+            json.dump(payload, fh, indent=2)
+        logger.info(f"Wrote candidate variant links to {output_path}")
 
     def _file_hash_sha256(self, path: Path) -> str:
         """Return SHA-256 hash of a file for integrity (non-security) tracking."""
@@ -1097,7 +1258,7 @@ class SiRNAWorkflow:
         values: list[str]
         if isinstance(raw_value, str):
             values = [raw_value]
-        elif isinstance(raw_value, (list, tuple, set)):
+        elif isinstance(raw_value, list | tuple | set):
             iterable = cast(Iterable[Any], raw_value)
             values = [str(entry) for entry in iterable]
         else:
@@ -1184,7 +1345,7 @@ class SiRNAWorkflow:
             value = params[key]
             if isinstance(value, Path):
                 normalized[key] = str(value)
-            elif isinstance(value, (list, tuple, set)):
+            elif isinstance(value, list | tuple | set):
                 iterable = cast(Iterable[Any], value)
                 normalized[key] = [SiRNAWorkflow._stringify_param(entry) for entry in iterable]
             else:
@@ -1195,7 +1356,7 @@ class SiRNAWorkflow:
     def _stringify_param(value: Any) -> Any:
         if isinstance(value, Path):
             return str(value)
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, list | tuple | set):
             iterable = cast(Iterable[Any], value)
             return [SiRNAWorkflow._stringify_param(entry) for entry in iterable]
         return value
@@ -2048,6 +2209,7 @@ class SiRNAWorkflow:
                 "pass_count": passed,
                 "fail_count": failed,
                 "top_n_requested": self.config.top_n,
+                "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,
             }
         )
@@ -2074,12 +2236,21 @@ async def run_sirna_workflow(
     sirna_length: int = 21,
     modification_pattern: str = "standard_2ome",
     overhang: str = "dTdT",
+    check_off_targets: bool = True,
+    # Variant targeting parameters
+    variant_ids: list[str] | None = None,
+    variant_vcf_file: Path | None = None,
+    variant_mode: str = "avoid",
+    variant_min_af: float = 0.01,
+    variant_clinvar_filters: str = "Pathogenic,Likely pathogenic",
+    variant_assembly: str = "GRCh38",
     log_file: str | None = None,
     write_json_summary: bool = True,
     num_threads: int | None = None,
     allow_transcriptome_with_input_fasta: bool = False,
     default_transcriptome_sources: Sequence[str] = DEFAULT_TRANSCRIPTOME_SOURCES,
     keep_nextflow_work: bool = False,
+    nextflow_docker_image: str | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -2102,12 +2273,20 @@ async def run_sirna_workflow(
         sirna_length: siRNA length in nucleotides
         modification_pattern: Chemical modification pattern
         overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        check_off_targets: Perform off-target analysis stage (default: True)
+        variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
+        variant_vcf_file: Path to VCF file containing variants to target or avoid
+        variant_mode: How to handle variants (avoid/target/both) - default is avoid
+        variant_min_af: Minimum allele frequency threshold for variant filtering (default: 0.01)
+        variant_clinvar_filters: Comma-separated ClinVar significance levels to include (default: Pathogenic,Likely pathogenic)
+        variant_assembly: Reference genome assembly for variants (only GRCh38 supported)
         log_file: Path to centralized log file
         write_json_summary: Write logs/workflow_summary.json
         num_threads: Optional override for design parallelism
         allow_transcriptome_with_input_fasta: Force transcriptome analysis even when using input FASTA
         default_transcriptome_sources: Ordered list of transcriptome identifiers evaluated by default
         keep_nextflow_work: Keep Nextflow work directory symlink in output
+        nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
 
     Returns:
         Dictionary with complete workflow results
@@ -2130,6 +2309,7 @@ async def run_sirna_workflow(
         top_n=top_n_candidates,
         sirna_length=sirna_length,
         filters=filter_criteria,
+        check_off_targets=check_off_targets,
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
@@ -2157,6 +2337,28 @@ async def run_sirna_workflow(
         resolver = ReferencePolicyResolver(input_spec)
         transcriptome_selection = resolver.resolve_transcriptomes()
 
+    # Configure variant targeting if specified
+    variant_config_obj: VariantWorkflowConfig | None = None
+    if variant_ids or variant_vcf_file:
+        # Parse variant mode using helper that handles normalization
+        variant_mode_enum = normalize_variant_mode(variant_mode)
+
+        # Parse ClinVar filters
+        clinvar_filters = parse_clinvar_filter_string(variant_clinvar_filters)
+
+        variant_config_obj = VariantWorkflowConfig(
+            variant_ids=variant_ids,
+            vcf_file=Path(variant_vcf_file) if variant_vcf_file else None,
+            variant_mode=variant_mode_enum,
+            min_af=variant_min_af,
+            clinvar_filter_levels=clinvar_filters,
+            assembly=variant_assembly,
+        )
+
+    nextflow_config_overrides: dict[str, Any] = {}
+    if nextflow_docker_image:
+        nextflow_config_overrides["docker_image"] = nextflow_docker_image
+
     config = WorkflowConfig(
         output_dir=output_path,
         gene_query=gene_query,
@@ -2175,6 +2377,8 @@ async def run_sirna_workflow(
         num_threads=num_threads,
         input_source=resolved_input,
         keep_nextflow_work=keep_nextflow_work,
+        variant_config=variant_config_obj,
+        nextflow_config=nextflow_config_overrides,
     )
 
     # Run workflow
@@ -2204,6 +2408,7 @@ async def run_offtarget_only_workflow(
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     log_file: str | None = None,
+    nextflow_docker_image: str | None = None,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
 
@@ -2223,6 +2428,7 @@ async def run_offtarget_only_workflow(
         transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         log_file: Path to centralized log file
+        nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
 
     Returns:
         Dictionary with off-target analysis results
@@ -2335,6 +2541,8 @@ async def run_offtarget_only_workflow(
     nextflow_config: dict[str, Any] = {}
     if genome_indices_override:
         nextflow_config["genome_indices"] = genome_indices_override
+    if nextflow_docker_image:
+        nextflow_config["docker_image"] = nextflow_docker_image
 
     # Resolve transcriptome policy
     if transcriptome_selection is None and transcriptome_fasta:

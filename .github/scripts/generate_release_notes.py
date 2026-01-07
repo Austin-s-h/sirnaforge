@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -15,10 +16,68 @@ def _extract_changelog_section(changelog_text: str, version: str) -> list[str]:
         return ["- Initial release or changelog entry missing", ""]
 
     lines = match.group(0).splitlines()
-    body = [line for line in lines[1:] if line.strip() != "---"]
+    body = [line for line in lines if line.strip() != "---"]
     if body and body[-1].strip():
         body.append("")
     return body
+
+
+def _list_changelog_versions(changelog_text: str) -> list[str]:
+    versions: list[str] = []
+    for match in re.finditer(r"^## \[([^\]]+)\]", changelog_text, flags=re.MULTILINE):
+        version = match.group(1).strip()
+        if re.match(r"^[0-9]+\.[0-9]+\.[0-9]+", version):
+            versions.append(version)
+    return versions
+
+
+def _version_key(version: str) -> tuple[int, int, int]:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        return (0, 0, 0)
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _get_latest_git_tag() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "tag", "--list", "v*", "--sort=-v:refname"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    for line in result.stdout.splitlines():
+        tag = line.strip()
+        if tag:
+            return tag
+    return None
+
+
+def _select_versions_since_tag(changelog_text: str, current_version: str) -> list[str]:
+    versions = _list_changelog_versions(changelog_text)
+    if not versions:
+        return [current_version]
+
+    baseline_tag = os.environ.get("BASELINE_TAG") or _get_latest_git_tag()
+    baseline_version = baseline_tag.lstrip("v") if baseline_tag else None
+
+    current_key = _version_key(current_version)
+    baseline_key = _version_key(baseline_version) if baseline_version else None
+
+    selected: list[str] = []
+    for v in versions:
+        vk = _version_key(v)
+        if vk <= current_key and (baseline_key is None or vk > baseline_key):
+            selected.append(v)
+
+    if not selected:
+        return [current_version]
+
+    selected.sort(key=_version_key, reverse=True)
+    return selected
 
 
 def _collect_reference_links(changelog_text: str) -> list[str]:
@@ -28,9 +87,9 @@ def _collect_reference_links(changelog_text: str) -> list[str]:
 
 def _generate_installation_section(version: str, registry: str, repo_lower: str) -> list[str]:
     return [
-        "## 📦 Installation Options",
+        "## Installation",
         "",
-        "### 🐳 Docker (Recommended - Complete Environment)",
+        "### Docker (recommended)",
         "```bash",
         "# Pull the latest release",
         f"docker pull {registry}/{repo_lower}:{version}",
@@ -39,7 +98,7 @@ def _generate_installation_section(version: str, registry: str, repo_lower: str)
         f"docker run --rm {registry}/{repo_lower}:{version} sirnaforge --help",
         "```",
         "",
-        "### 🐍 Python Package (Requires external tools for full functionality)",
+        "### Python package",
         "```bash",
         "# Via pip",
         f"pip install sirnaforge=={version}",
@@ -51,14 +110,14 @@ def _generate_installation_section(version: str, registry: str, repo_lower: str)
         "sirnaforge --help",
         "```",
         "",
-        "### 🛠️ Development Installation",
+        "### Development",
         "```bash",
         "# Clone repository",
         f"git clone https://github.com/{repo_lower}.git",
         "cd sirnaforge",
         "",
-        "# Fast setup with uv (60-120 seconds)",
-        "uv sync --dev",
+        "# Setup using the Makefile (uses uv under the hood)",
+        "make dev",
         "",
         "# Verify with quick tests",
         "make test-dev  # ~15 seconds",
@@ -69,9 +128,9 @@ def _generate_installation_section(version: str, registry: str, repo_lower: str)
 
 def _generate_usage_examples(version: str, registry: str, repo_lower: str) -> list[str]:
     return [
-        "## 🚀 Usage Examples",
+        "## Usage",
         "",
-        "### Basic Workflow (Docker)",
+        "### Basic workflow (Docker)",
         "```bash",
         "# Complete gene-to-siRNA workflow",
         "docker run --rm -v $(pwd):/workspace -w /workspace \\",
@@ -84,7 +143,7 @@ def _generate_usage_examples(version: str, registry: str, repo_lower: str) -> li
         "  sirnaforge design transcripts.fasta --output results.csv",
         "```",
         "",
-        "### Python API Usage",
+        "### Python API",
         "```python",
         "from sirnaforge import SiRNADesigner, GeneSearcher",
         "",
@@ -97,7 +156,7 @@ def _generate_usage_examples(version: str, registry: str, repo_lower: str) -> li
         "candidates = designer.design_from_transcripts(transcripts)",
         "```",
         "",
-        "### Available Commands",
+        "### Commands",
         "```bash",
         "sirnaforge workflow   # Complete pipeline: gene → siRNAs",
         "sirnaforge search     # Gene/transcript search",
@@ -113,29 +172,29 @@ def _generate_usage_examples(version: str, registry: str, repo_lower: str) -> li
 
 def _generate_key_features(version: str) -> list[str]:
     return [
-        f"## 🔧 Key Features in v{version}",
+        f"## Key features in v{version}",
         "",
-        "- 🎯 **Smart siRNA Design** - Thermodynamic scoring with 90% duplex binding weight",
-        "- 🔬 **Off-target Analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes",
-        "- 🧪 **ViennaRNA Integration** - Secondary structure prediction for accuracy",
-        "- 📊 **Pandera Data Schemas** - Type-safe output validation and formatting",
-        "- ⚡ **uv Package Manager** - 10-100x faster than pip for dependencies",
-        "- 🐳 **Production Docker** - Pre-built images with all bioinformatics tools",
-        "- 🔬 **Nextflow Pipeline** - Scalable execution with automatic parallelization",
+        "- **Smart siRNA design** - Thermodynamic scoring with 90% duplex binding weight",
+        "- **Off-target analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes",
+        "- **ViennaRNA integration** - Secondary structure prediction for accuracy",
+        "- **Pandera data schemas** - Type-safe output validation and formatting",
+        "- **uv package manager** - Fast dependency resolution",
+        "- **Production Docker** - Pre-built images with all bioinformatics tools",
+        "- **Nextflow pipeline** - Scalable execution with automatic parallelization",
         "",
     ]
 
 
 def _generate_testing_section() -> list[str]:
     return [
-        "## 🧪 Testing & Quality",
+        "## Testing & quality",
         "",
         "**This release passed comprehensive validation:**",
-        "- ✅ **31 Unit Tests** (30-35s) - Core algorithm validation",
-        "- ✅ **30 Local Python Tests** (12-15s) - Fastest development iteration",
-        "- ✅ **Docker Smoke Tests** (256MB RAM) - Critical functionality verification",
-        "- ✅ **Integration Tests** (2GB RAM) - End-to-end workflow validation",
-        "- ✅ **Code Quality** - Ruff, MyPy, Black formatting with 90%+ coverage",
+        "- **Unit tests** - Core algorithm validation",
+        "- **Local Python tests** - Fastest development iteration",
+        "- **Docker smoke tests** - Critical functionality verification",
+        "- **Integration tests** - End-to-end workflow validation",
+        "- **Code quality** - Ruff formatting and MyPy type checking",
         "",
     ]
 
@@ -144,25 +203,25 @@ def _generate_resources_section(
     registry: str, repo_lower: str, owner_lower: str, name_lower: str, version: str
 ) -> list[str]:
     return [
-        "## 🔗 Resources & Links",
+        "## Resources",
         "",
-        "### 📚 Documentation & Guides",
-        f"- 📖 [**Full Documentation**](https://{owner_lower}.github.io/{name_lower}) - Complete user guide",
-        f"- 🚀 [**Quick Start Guide**](https://github.com/{repo_lower}#-quick-start) - Get running in 5 minutes",
-        f"- 🧪 [**API Reference**](https://{owner_lower}.github.io/{name_lower}/api) - Python API documentation",
-        f"- 🐍 [**Development Guide**](https://github.com/{repo_lower}/blob/main/CONTRIBUTING.md) - Contributing instructions",
+        "### Documentation",
+        f"- [**Full documentation**](https://{owner_lower}.github.io/{name_lower}) - Complete user guide",
+        f"- [**Quick start**](https://github.com/{repo_lower}#-quick-start) - Get running in minutes",
+        f"- [**API reference**](https://{owner_lower}.github.io/{name_lower}/api) - Python API documentation",
+        f"- [**Development guide**](https://github.com/{repo_lower}/blob/main/CONTRIBUTING.md) - Contributing instructions",
         "",
-        "### 🐳 Container Images",
-        f"- 🏷️ **Versioned:** `{registry}/{repo_lower}:{version}`",
-        f"- 🔄 **Latest:** `{registry}/{repo_lower}:latest`",
-        f"- 📦 **Registry:** [{registry}/{repo_lower}]({registry}/{repo_lower})",
+        "### Container images",
+        f"- **Versioned:** `{registry}/{repo_lower}:{version}`",
+        f"- **Latest:** `{registry}/{repo_lower}:latest`",
+        f"- **Registry:** [{registry}/{repo_lower}]({registry}/{repo_lower})",
         "",
-        "### 🛠️ Development & Support",
-        f"- 💻 [**Source Code**](https://github.com/{repo_lower}) - Full repository",
-        f"- 🐛 [**Report Issues**](https://github.com/{repo_lower}/issues) - Bug reports & feature requests",
-        f"- 💬 [**Discussions**](https://github.com/{repo_lower}/discussions) - Community support",
-        f"- 📋 [**Changelog**](https://github.com/{repo_lower}/blob/main/CHANGELOG.md) - Version history",
-        f"- 🏷️ [**All Releases**](https://github.com/{repo_lower}/releases) - Previous versions",
+        "### Support",
+        f"- [**Source code**](https://github.com/{repo_lower})",
+        f"- [**Issues**](https://github.com/{repo_lower}/issues) - Bug reports & feature requests",
+        f"- [**Discussions**](https://github.com/{repo_lower}/discussions) - Community support",
+        f"- [**Changelog**](https://github.com/{repo_lower}/blob/main/CHANGELOG.md) - Version history",
+        f"- [**All releases**](https://github.com/{repo_lower}/releases) - Previous versions",
         "",
     ]
 
@@ -171,7 +230,7 @@ def _generate_verification_section(version: str, registry: str, repo_lower: str)
     return [
         "---",
         "",
-        "**⚡ Quick Verification:**",
+        "**Quick verification:**",
         "```bash",
         "# Test Docker image (should complete in ~2 seconds)",
         f"docker run --rm {registry}/{repo_lower}:{version} sirnaforge version",
@@ -202,11 +261,12 @@ def main() -> None:
         "",
     ]
 
-    # Add changelog section
+    # Add changelog section(s)
     if changelog_text:
-        lines.extend(_extract_changelog_section(changelog_text, version))
+        for v in _select_versions_since_tag(changelog_text, version):
+            lines.extend(_extract_changelog_section(changelog_text, v))
     else:
-        lines.extend([f"## 📋 What's New in v{version}", "", "- Initial release", ""])
+        lines.extend([f"## What's new in v{version}", "", "- Initial release", ""])
 
     # Add all major sections
     lines.extend(_generate_installation_section(version, registry, repo_lower))

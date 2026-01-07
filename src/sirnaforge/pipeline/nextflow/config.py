@@ -23,13 +23,15 @@ import os
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+DEFAULT_SIRNAFORGE_DOCKER_IMAGE = "ghcr.io/austin-s-h/sirnaforge:latest"
 
 
 class EnvironmentInfo(BaseModel):
@@ -39,8 +41,8 @@ class EnvironmentInfo(BaseModel):
     docker_available: bool = Field(description="Whether Docker is available and functional for Nextflow execution")
     requested_profile: str = Field(description="The originally requested execution profile")
     recommended_profile: str = Field(description="The profile recommended based on environment detection")
-    docker_image: Optional[str] = Field(default=None, description="Docker image to use (if applicable)")
-    profile_override_reason: Optional[str] = Field(default=None, description="Reason for profile override (if any)")
+    docker_image: str | None = Field(default=None, description="Docker image to use (if applicable)")
+    profile_override_reason: str | None = Field(default=None, description="Reason for profile override (if any)")
 
     def is_profile_overridden(self) -> bool:
         """Check if the recommended profile differs from the requested profile."""
@@ -64,7 +66,7 @@ class EnvironmentInfo(BaseModel):
         return summary
 
 
-def _get_executable_path(tool_name: str) -> Optional[str]:
+def _get_executable_path(tool_name: str) -> str | None:
     """Get the full path to an executable, ensuring it exists."""
     path = shutil.which(tool_name)
     if path is None:
@@ -89,16 +91,17 @@ def _validate_command_args(cmd: list[str]) -> None:
 class NextflowConfig:
     """Configuration manager for Nextflow workflows."""
 
+    DEFAULT_SIRNAFORGE_DOCKER_IMAGE = "ghcr.io/austin-s-h/sirnaforge:latest"
     MEMORY_BUFFER_GB = 0.5
     MIN_MEMORY_GB = 1
     _UNLIMITED_MEMORY_THRESHOLD_BYTES = 1 << 60  # Treat extremely large limits as "unbounded"
 
     def __init__(
         self,
-        docker_image: str = "ghcr.io/austin-s-h/sirnaforge:latest",
+        docker_image: str = DEFAULT_SIRNAFORGE_DOCKER_IMAGE,
         profile: str = "docker",
-        work_dir: Optional[Path] = None,
-        nxf_home: Optional[Path] = None,
+        work_dir: Path | None = None,
+        nxf_home: Path | None = None,
         max_cpus: int = 16,
         max_memory: str = "128.GB",
         max_time: str = "240.h",
@@ -126,7 +129,7 @@ class NextflowConfig:
         self.extra_params = kwargs
 
     @classmethod
-    def _autodetect_max_memory(cls) -> Optional[str]:
+    def _autodetect_max_memory(cls) -> str | None:
         """Detect a safe Nextflow max_memory value based on system limits."""
         if os.getenv("SIRNAFORGE_DISABLE_MEMORY_AUTODETECT", "").lower() in (
             "1",
@@ -174,7 +177,7 @@ class NextflowConfig:
         return None
 
     @classmethod
-    def _read_cgroup_memory_limit_bytes(cls) -> Optional[int]:
+    def _read_cgroup_memory_limit_bytes(cls) -> int | None:
         """Read memory limits exposed via cgroups (v1 or v2)."""
         candidate_paths = [
             Path("/sys/fs/cgroup/memory.max"),  # cgroup v2
@@ -193,7 +196,7 @@ class NextflowConfig:
         return None
 
     @staticmethod
-    def _read_int_from_file(path: Path) -> Optional[int]:
+    def _read_int_from_file(path: Path) -> int | None:
         """Try to parse an integer from the given file."""
         try:
             if not path.exists():
@@ -209,7 +212,7 @@ class NextflowConfig:
             return None
 
     @staticmethod
-    def _read_meminfo_total_bytes() -> Optional[int]:
+    def _read_meminfo_total_bytes() -> int | None:
         """Read MemTotal from /proc/meminfo."""
         try:
             with Path("/proc/meminfo").open() as meminfo:
@@ -243,7 +246,7 @@ class NextflowConfig:
         input_file: Path,
         output_dir: Path,
         genome_species: list[str],
-        additional_params: Optional[dict[str, Any]] = None,
+        additional_params: dict[str, Any] | None = None,
         include_test_profile: bool = False,
     ) -> list[str]:
         """Generate Nextflow command arguments.
@@ -459,7 +462,7 @@ process {{
         Returns:
             Recommended execution profile
         """
-        recommended_profile: Optional[str] = None
+        recommended_profile: str | None = None
 
         # Check for explicit environment variable to force local execution
         if os.getenv("SIRNAFORGE_USE_LOCAL_EXECUTION", "").lower() in ("true", "1", "yes"):

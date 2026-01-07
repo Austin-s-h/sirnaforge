@@ -6,7 +6,7 @@ using composition and protocol-based design.
 """
 
 from dataclasses import dataclass
-from typing import Protocol, TypedDict, Union, cast
+from typing import Protocol, TypedDict, cast
 
 
 class CacheStats(TypedDict):
@@ -117,7 +117,7 @@ class UnifiedCacheManager:
             status="dry run - no files deleted" if dry_run else "cleared",
         )
 
-    def get_total_stats(self) -> dict[str, Union[float, int]]:
+    def get_total_stats(self) -> dict[str, float | int]:
         """Get combined statistics across all caches."""
         info = self.get_info()
         total_files = sum(stats["total_files"] for stats in info.values())

@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
 
@@ -68,7 +68,7 @@ class BaseAlignmentHit(BaseModel, ABC):
     mapq: int = Field(ge=0, le=255, description="Mapping quality (0-255)")
 
     # Scoring (common to all hits)
-    as_score: Optional[int] = Field(default=None, description="Alignment score (AS tag)")
+    as_score: int | None = Field(default=None, description="Alignment score (AS tag)")
     nm: int = Field(ge=0, description="Edit distance / number of mismatches")
     seed_mismatches: int = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: float = Field(ge=0.0, description="Off-target penalty score")
@@ -155,7 +155,7 @@ class MiRNAHit(BaseAlignmentHit):
 
     # miRNA-specific information
     species: str = Field(description="Species of miRNA database")
-    database: Union[MiRNADatabase, str] = Field(
+    database: MiRNADatabase | str = Field(
         description="miRNA database source (mirgenedb, mirbase, mirbase_high_conf, etc.)"
     )
     mirna_id: str = Field(description="miRNA identifier (e.g., hsa-miR-21-5p)")
@@ -211,9 +211,9 @@ class AnalysisSummary(BaseSummary):
     mode: AnalysisMode = Field(description="Analysis mode used")
 
     # Alignment statistics
-    mean_mapq: Optional[float] = Field(default=None, ge=0.0, le=255.0, description="Mean mapping quality")
-    mean_mismatches: Optional[float] = Field(default=None, ge=0.0, description="Mean number of mismatches")
-    mean_seed_mismatches: Optional[float] = Field(default=None, ge=0.0, description="Mean seed region mismatches")
+    mean_mapq: float | None = Field(default=None, ge=0.0, le=255.0, description="Mean mapping quality")
+    mean_mismatches: float | None = Field(default=None, ge=0.0, description="Mean number of mismatches")
+    mean_seed_mismatches: float | None = Field(default=None, ge=0.0, description="Mean seed region mismatches")
 
 
 class MiRNASummary(BaseSummary):
@@ -223,7 +223,7 @@ class MiRNASummary(BaseSummary):
     hits_per_species represents raw alignment counts (may include low-quality matches).
     """
 
-    mirna_database: Union[MiRNADatabase, str] = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
+    mirna_database: MiRNADatabase | str = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
     species_analyzed: list[str] = Field(description="List of species analyzed")
     hits_per_species: dict[str, int] = Field(
         default_factory=dict,
@@ -251,15 +251,15 @@ class BaseAggregatedSummary(BaseModel):
     analysis_files_processed: int = Field(ge=0, description="Number of analysis files processed")
 
     # Common file paths
-    combined_tsv: Optional[Path] = Field(default=None, description="Path to combined TSV file")
-    combined_json: Optional[Path] = Field(default=None, description="Path to combined JSON file")
-    summary_file: Optional[Path] = Field(default=None, description="Path to summary file")
+    combined_tsv: Path | None = Field(default=None, description="Path to combined TSV file")
+    combined_json: Path | None = Field(default=None, description="Path to combined JSON file")
+    summary_file: Path | None = Field(default=None, description="Path to summary file")
 
     # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Aggregation timestamp")
 
     @field_serializer("combined_tsv", "combined_json", "summary_file")
-    def serialize_path(self, path: Optional[Path]) -> Optional[str]:
+    def serialize_path(self, path: Path | None) -> str | None:
         """Serialize Path objects to strings for JSON compatibility."""
         return str(path) if path is not None else None
 
@@ -300,7 +300,7 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
     """Summary of aggregated miRNA results across multiple candidates."""
 
     total_mirna_hits: int = Field(ge=0, description="Total miRNA seed matches")
-    mirna_database: Union[MiRNADatabase, str] = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
+    mirna_database: MiRNADatabase | str = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
 
     hits_per_species: dict[str, int] = Field(default_factory=dict, description="Hit counts by species")
     hits_per_candidate: dict[str, int] = Field(default_factory=dict, description="Hit counts by candidate")
