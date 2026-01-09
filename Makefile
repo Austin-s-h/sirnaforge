@@ -125,9 +125,9 @@ test-release-container: cache-ensure docker-ensure ## Container release suite (e
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
 	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
-		pip install --quiet pytest pytest-cov; \
+		pip install --quiet pytest pytest-cov --target /workspace/.pip; \
 		set +e; \
-		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' \
+		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m 'runs_in_container' \
 		--cov=sirnaforge --cov-append --cov-report= \
 		--junitxml=/workspace/pytest-container-report.xml \
 		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
@@ -185,9 +185,9 @@ docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (va
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
 	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
-		pip install --quiet pytest; \
+		pip install --quiet pytest --target /workspace/.pip; \
 		set +e; \
-		/opt/conda/bin/pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
+		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
 		status=\$$?; \
 		set -e; \
 		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \
