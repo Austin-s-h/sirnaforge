@@ -16,7 +16,7 @@ jobs:
   build-and-push:
     name: Build & push dev image
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: 📥 Checkout code
