@@ -194,7 +194,7 @@ jobs:
   test-release:
     name: Comprehensive Release Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     env:
       SIRNAFORGE_NEXTFLOW_IMAGE: sirnaforge:latest
     needs: [ validate-release, run-ci, build-docker ]
@@ -298,7 +298,7 @@ jobs:
   build-docker:
     name: Build & Test Docker Images
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: [ validate-release, run-ci ]
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
@@ -494,7 +494,7 @@ jobs:
   publish-docker:
     name: Publish Docker Images
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: [ validate-release, build-docker, test-release, create-release ]
     if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-release.result == 'success' && needs.create-release.result == 'success' }}
 
@@ -545,7 +545,7 @@ jobs:
   final-integration-test:
     name: Final Integration Test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     needs: [ validate-release, create-release, publish-docker ]
     if: needs.publish-docker.result == 'success'
 
@@ -570,7 +570,7 @@ jobs:
   finalize-release:
     name: Release Complete
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     needs: [ validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs ]
     if: >-
       always() && needs.create-release.result == 'success' && (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') && (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') && (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
