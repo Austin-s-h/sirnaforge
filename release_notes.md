@@ -2,7 +2,7 @@
 
 **Comprehensive siRNA design toolkit with multi-species off-target analysis**
 
-## [0.4.0] - 2025-1-5
+## [0.4.1] - 2025-1-10
 
 ### Breaking
 
