@@ -22,6 +22,19 @@ def _extract_changelog_section(changelog_text: str, version: str) -> list[str]:
     return body
 
 
+def _extract_unreleased_section(changelog_text: str) -> list[str]:
+    pattern = r"^## \[Unreleased\].*?(?=^## \[|\Z)"
+    match = re.search(pattern, changelog_text, flags=re.MULTILINE | re.DOTALL)
+    if not match:
+        return []
+
+    lines = match.group(0).splitlines()
+    body = [line for line in lines if line.strip() != "---"]
+    if body and body[-1].strip():
+        body.append("")
+    return body
+
+
 def _list_changelog_versions(changelog_text: str) -> list[str]:
     versions: list[str] = []
     for match in re.finditer(r"^## \[([^\]]+)\]", changelog_text, flags=re.MULTILINE):
@@ -263,8 +276,19 @@ def main() -> None:
 
     # Add changelog section(s)
     if changelog_text:
-        for v in _select_versions_since_tag(changelog_text, version):
-            lines.extend(_extract_changelog_section(changelog_text, v))
+        selected_versions = _select_versions_since_tag(changelog_text, version)
+        for v in selected_versions:
+            section = _extract_changelog_section(changelog_text, v)
+            if section == ["- Initial release or changelog entry missing", ""]:
+                # Common for prereleases: CHANGELOG.md often only has an [Unreleased]
+                # section until the final version is cut.
+                unreleased = _extract_unreleased_section(changelog_text)
+                if unreleased:
+                    lines.extend(unreleased)
+                else:
+                    lines.extend(section)
+            else:
+                lines.extend(section)
     else:
         lines.extend([f"## What's new in v{version}", "", "- Initial release", ""])
 
@@ -289,6 +313,11 @@ def main() -> None:
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with Path(github_output).open("a", encoding="utf-8") as handle:
+            # Preferred output name used by release workflow.
+            handle.write("content<<EOF\n")
+            handle.write(output)
+            handle.write("EOF\n")
+            # Backwards-compat output name (older workflows may consume this).
             handle.write("changelog<<EOF\n")
             handle.write(output)
             handle.write("EOF\n")

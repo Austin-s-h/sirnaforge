@@ -2,18 +2,23 @@ name: Release siRNAforge
 
 on:
   push:
-    branches: [ master ]
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g., v0.3.4 or v0.3.4rc1)'
-        required: true
+        required: false
         type: string
       prerelease:
-        description: 'Mark as pre-release'
+        description: 'Pre-release behavior (auto infers from version: a/b/rc/.dev)'
         required: false
-        default: true
-        type: boolean
+        type: choice
+        default: auto
+        options:
+          - auto
+          - true
+          - false
       push_images:
         description: 'Push Docker images to registries'
         required: false
@@ -59,7 +64,7 @@ jobs:
     - name: Validate version format
       id: version
       run: |
-        VERSION_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || '' }}"
+        VERSION_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
         if [ -z "$VERSION_INPUT" ]; then
           VERSION_INPUT=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
         fi
@@ -76,14 +81,23 @@ jobs:
         fi
         echo "Version format valid: $VERSION"
 
-    - name: Check if version already exists
+    - name: Verify tag exists (tag-driven release)
       run: |
-        VERSION="v${{ steps.version.outputs.version }}"
-        if git ls-remote --tags origin | grep -q "refs/tags/$VERSION$"; then
-          echo "Tag $VERSION already exists"
+        TAG="v${{ steps.version.outputs.version }}"
+        if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.ref_name }}" != "$TAG" ]; then
+            echo "This workflow is tag-driven; expected tag $TAG but got ${{ github.ref_name }}"
+            exit 1
+          fi
+        fi
+
+        if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+          echo "Found tag $TAG on remote"
+        else
+          echo "Tag $TAG not found on remote. Create and push it, then re-run."
+          echo "Example: git tag -a $TAG -m 'Release $TAG' && git push origin $TAG"
           exit 1
         fi
-        echo "Version $VERSION is available"
 
     - name: Normalize repository identifiers
       id: repo
@@ -137,37 +151,60 @@ jobs:
 
     - name: Normalize release toggles
       id: release_flags
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
       run: |
         python <<'PY'
         import json
         import os
+        import re
         from pathlib import Path
 
         defaults = {
-            "prerelease": "true",
-            "push_images": "true",
-            "deploy_docs_release": "true",
+          # Default prerelease is inferred from VERSION when not explicitly provided.
+          "prerelease": "auto",
+          "push_images": "true",
+          "deploy_docs_release": "true",
         }
+
+        def infer_prerelease(version: str) -> str:
+          # PEP 440-ish: aN/bN/rcN and .devN are prerelease-style.
+          if re.search(r"(a\d+|b\d+|rc\d+|\.dev\d+)", version):
+            return "true"
+          return "false"
 
         event_name = os.environ.get("GITHUB_EVENT_NAME", "")
         event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
         payload = {}
         if event_path.is_file():
-            payload = json.loads(event_path.read_text(encoding="utf-8"))
+          payload = json.loads(event_path.read_text(encoding="utf-8"))
 
         inputs = payload.get("inputs") if event_name == "workflow_dispatch" else {}
         if not isinstance(inputs, dict):
-            inputs = {}
+          inputs = {}
+
+        version = os.environ.get("VERSION", "")
+        inferred_prerelease = infer_prerelease(version)
 
         resolved = {}
         for key, default in defaults.items():
-            raw = inputs.get(key)
-            if isinstance(raw, bool):
-                resolved[key] = "true" if raw else "false"
-            elif raw is None or str(raw).strip() == "":
-                resolved[key] = default
+          raw = inputs.get(key)
+          if isinstance(raw, bool):
+            resolved[key] = "true" if raw else "false"
+            continue
+
+          if raw is None or str(raw).strip() == "":
+            if key == "prerelease" and default == "auto":
+              resolved[key] = inferred_prerelease
             else:
-                resolved[key] = "true" if str(raw).strip().lower() == "true" else "false"
+              resolved[key] = default
+            continue
+
+          val = str(raw).strip().lower()
+          if key == "prerelease" and val == "auto":
+            resolved[key] = inferred_prerelease
+          else:
+            resolved[key] = "true" if val == "true" else "false"
 
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:
@@ -367,17 +404,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Create Git tag
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-        VERSION="v${{ needs.validate-release.outputs.version }}"
-        git tag -a "$VERSION" -m "Release $VERSION"
-        git push origin "$VERSION"
-
-        echo "Created and pushed tag: $VERSION"
 
     - name: Create GitHub Release
       id: create
