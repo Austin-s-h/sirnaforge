@@ -259,7 +259,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY || echo "Coverage report not available" >> $GITHUB_STEP_SUMMARY
 
-  # Build Python distribution artifacts once (reusable by PyPI/TestPyPI)
+  # Build Python distribution artifacts once (reusable by PyPI)
   build-artifacts:
     name: Build Python Artifacts
     runs-on: ubuntu-latest
@@ -409,15 +409,6 @@ jobs:
         name: python-dist-${{ needs.validate-release.outputs.version }}
         path: dist/
 
-    - name: Publish to TestPyPI (Trusted Publisher)
-      if: ${{ needs.validate-release.outputs.prerelease == 'true' }}
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        repository-url: https://test.pypi.org/legacy/
-        print-hash: true
-        verbose: true
-        skip-existing: true
-
     - name: Publish to PyPI (Trusted Publisher)
       if: ${{ needs.validate-release.outputs.prerelease != 'true' }}
       uses: pypa/gh-action-pypi-publish@release/v1
@@ -426,13 +417,6 @@ jobs:
         verbose: true
         skip-existing: true
 
-    - name: Publish summary
-      run: |
-        if [ "${{ needs.validate-release.outputs.prerelease }}" = "true" ]; then
-          echo "Published version v${{ needs.validate-release.outputs.version }} to TestPyPI (pre-release)."
-        else
-          echo "Published version v${{ needs.validate-release.outputs.version }} to PyPI."
-        fi
 
   # Optional: Build and deploy docs for the release
   build-release-docs:
