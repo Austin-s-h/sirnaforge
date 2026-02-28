@@ -1,0 +1,2 @@
+dataset_id,source,site_id,chrom,start_1based,end_1based,orientation,spacer_len,sequence,score,region,nearest_gene,validation_smrt_percent,p_value,rank_homology,rank_conserved_g,rank_zfn_v2
+prognos_ccr5_sites,PROGNOS (Fine et al., 2014),NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,L...R_OR_R...L,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,COMPUTE_OR_IMPORT,exon_or_promoter_or_intron_or_intergenic,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP,NEEDS_TABLE_SUPP

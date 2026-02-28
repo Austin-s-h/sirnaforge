@@ -1,0 +1,46 @@
+{
+  "dataset_id": "prognos_ccr5_benchmark_annotations",
+  "source": "Fine et al. 2014 (PROGNOS)",
+  "genome_build": "hg19",
+  "nuclease": "CCR5-224 ZFNs",
+  "design": {
+    "platform": "ZFN (FokI heterodimer)",
+    "fingers_per_monomer": 4,
+    "recognition_site_length_bp": 24,
+    "binding_preference": "G-rich contact preference"
+  },
+  "performance": {
+    "validated_offtargets_prior_methods": 12,
+    "prognos_recovery_at_3x": "10/12",
+    "prognos_novel_validated_sites": 1,
+    "novel_site_near_gene": "CSNK1G3"
+  },
+  "ranking_policy": {
+    "tie_break_order": [
+      "exon",
+      "promoter",
+      "intron",
+      "intergenic"
+    ],
+    "final_tie_break": "chromosomal_location"
+  },
+  "conventions": {
+    "site_format": "(+)_half-site - spacer - (-)_half-site",
+    "match_type_examples": [
+      "L-5-R",
+      "R-6-L"
+    ],
+    "coordinate_convention": "hg19 coordinate of 5' base",
+    "lowercase_letters_mean": "mismatch vs intended target"
+  },
+  "fixture_scope": {
+    "s10_visible_rows": 17,
+    "s11_homology_visible_rows": 32,
+    "contains_ambiguities": true,
+    "ambiguity_markers": [
+      "?",
+      "Sequencing Failure",
+      "N/A"
+    ]
+  }
+}
