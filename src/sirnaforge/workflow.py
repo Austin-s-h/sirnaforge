@@ -54,12 +54,14 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
-    ZFNDefaultSubfingerMutationConstraint,
-    ZFNOverallMutationConstraint,
-    ZFNSubfingerMutationConstraint,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.variant import VariantRecord
+from sirnaforge.models.zfn import (
+    GenomicAnnotationConfig,
+    ZFNDesignParameters,
+    ZFNDesignResult,
+)
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
@@ -74,6 +76,7 @@ from sirnaforge.workflow_variant import (
     parse_clinvar_filter_string,
     resolve_workflow_variants,
 )
+from sirnaforge.zfn.design import ZFNDesigner
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -105,10 +108,12 @@ class WorkflowConfig:
         input_source: InputSource | None = None,
         keep_nextflow_work: bool = False,
         variant_config: VariantWorkflowConfig | None = None,
+        zfn_config: ZFNWorkflowConfig | None = None,
     ):
         """Initialize workflow configuration."""
         self.output_dir = Path(output_dir)
         self.input_source = input_source
+        self.zfn_config = zfn_config
 
         resolved_input = input_source.local_path if input_source else (Path(input_fasta) if input_fasta else None)
         self.input_fasta = resolved_input
@@ -188,19 +193,43 @@ class WorkflowConfig:
         return species
 
 
+class ZFNWorkflowConfig:
+    """Configuration for ZFN pair evaluation and off-target search workflow.
+
+    This carries the scientifically distinct ZFN parameters:
+    - Left/right half-site sequences (IUPAC-validated, 9-18 bp)
+    - Genomic search space (whole-genome FASTA)
+    - Algorithm choice (homology / conserved_g / zfn_v2)
+    - Spacer/dimer/mismatch constraints
+    - Optional genomic annotation for region classification
+    """
+
+    def __init__(
+        self,
+        zfn_params: ZFNDesignParameters,
+        annotation: GenomicAnnotationConfig | None = None,
+    ):
+        """Initialize ZFN workflow configuration."""
+        self.zfn_params = zfn_params
+        self.annotation = annotation
+
+
 class SiRNAWorkflow:
-    """Main workflow orchestrator for siRNA design pipeline."""
+    """Main workflow orchestrator for siRNA/miRNA/ZFN design pipeline."""
 
     def __init__(self, config: WorkflowConfig):
-        """Initialize the siRNA workflow orchestrator."""
+        """Initialize the workflow orchestrator."""
         self.config = config
         self.gene_searcher = GeneSearcher()
         self.orf_analyzer = ORFAnalyzer()
         self.validation = ValidationMiddleware(config.validation_config)
 
         # Select designer based on design mode
-        self.sirnaforgeer: SiRNADesigner
-        if config.design_params.design_mode == DesignMode.MIRNA:
+        self.zfn_designer: ZFNDesigner | None = None
+        self.sirnaforgeer: SiRNADesigner | MiRNADesigner | None = None
+        if config.design_params.design_mode == DesignMode.ZFN:
+            self.zfn_designer = ZFNDesigner()
+        elif config.design_params.design_mode == DesignMode.MIRNA:
             self.sirnaforgeer = MiRNADesigner(config.design_params)
         else:
             self.sirnaforgeer = SiRNADesigner(config.design_params)
@@ -218,7 +247,11 @@ class SiRNAWorkflow:
         self._dirty_controls_added: int = 0
 
     async def run_complete_workflow(self) -> dict[str, Any]:
-        """Run the complete siRNA design workflow."""
+        """Run the complete design workflow (siRNA/miRNA or ZFN)."""
+        # ── ZFN mode: fundamentally different execution path ──
+        if self.config.design_params.design_mode == DesignMode.ZFN:
+            return await self._run_zfn_workflow()
+
         console.print("\n🧬 [bold cyan]Starting siRNAforge Workflow[/bold cyan]")
         console.print(f"Gene Query: [yellow]{self.config.gene_query}[/yellow]")
         console.print(f"Output Directory: [blue]{self.config.output_dir}[/blue]")
@@ -338,6 +371,112 @@ class SiRNAWorkflow:
             logger.warning("Failed to export console stream to workflow_stream.log")
 
         return final_results
+
+    # ──────────────────────────────────────────────────────
+    #  ZFN workflow: pair evaluation + exhaustive off-target
+    # ──────────────────────────────────────────────────────
+
+    async def _run_zfn_workflow(self) -> dict[str, Any]:
+        """Execute the ZFN pair evaluation and off-target search workflow.
+
+        ZFN is scientifically distinct from siRNA/miRNA:
+        - Input is a user-provided half-site pair (not transcript FASTA)
+        - Off-target is exhaustive sliding-window on whole-genome FASTA
+          with FokI seed-region penalties and paired hit assembly
+        - Steps 1–2 (transcript fetch, ORF validation) are skipped
+        """
+        if self.zfn_designer is None:
+            raise RuntimeError("ZFN designer not initialized for design_mode=zfn")
+
+        zfn_cfg = self.config.zfn_config
+        if zfn_cfg is None:
+            raise RuntimeError(
+                "ZFNWorkflowConfig not provided — ensure --zfn-left-half-site and --zfn-right-half-site are set"
+            )
+
+        zfn_params = zfn_cfg.zfn_params
+        annotation = zfn_cfg.annotation
+
+        console.print("\n🧬 [bold cyan]Starting ZFN Pair Evaluation Workflow[/bold cyan]")
+        console.print(f"Left half-site:  [yellow]{zfn_params.left_half_site}[/yellow]")
+        console.print(f"Right half-site: [yellow]{zfn_params.right_half_site}[/yellow]")
+        console.print(f"Algorithm: [blue]{zfn_params.algorithm.value}[/blue]")
+        console.print(f"Dimer mode: [blue]{zfn_params.dimer_mode.value}[/blue]")
+        console.print(f"Spacer lengths: [blue]{zfn_params.spacer_constraints.allowed_spacer_lengths}[/blue]")
+        console.print(f"Output: [blue]{self.config.output_dir}[/blue]")
+
+        start_time = time.perf_counter()
+
+        with Progress(console=console) as progress:
+            main_task = progress.add_task("[cyan]ZFN Workflow Progress", total=3)
+
+            # Step 1: Evaluate pair (design + exhaustive off-target search)
+            progress.update(main_task, description="[cyan]Running ZFN pair evaluation & off-target search...")
+            zfn_result: ZFNDesignResult = self.zfn_designer.evaluate_pair(
+                params=zfn_params,
+                annotation=annotation,
+            )
+            progress.advance(main_task)
+
+            # Step 2: Generate reports
+            progress.update(main_task, description="[cyan]Generating ZFN reports...")
+            zfn_output = self.config.output_dir / "sirnaforge"
+            zfn_output.mkdir(parents=True, exist_ok=True)
+
+            # Off-target sites CSV
+            offtarget_csv = zfn_output / "zfn_offtarget_sites.csv"
+            zfn_result.save_offtargets_csv(str(offtarget_csv))
+            console.print(f"  Off-target sites: [green]{offtarget_csv}[/green]")
+
+            # Candidate summary JSON
+            candidate_json = zfn_output / "zfn_candidate_summary.json"
+            candidate_data: dict[str, Any] = {
+                "candidates": [cand.model_dump(mode="json") for cand in zfn_result.candidates],
+                "summary": zfn_result.get_summary(),
+            }
+            candidate_json.write_text(json.dumps(candidate_data, indent=2, default=str))
+            console.print(f"  Candidate summary: [green]{candidate_json}[/green]")
+            progress.advance(main_task)
+
+            # Step 3: Write workflow summary
+            progress.update(main_task, description="[cyan]Writing workflow summary...")
+            total_time = max(0.0, time.perf_counter() - start_time)
+
+            summary = zfn_result.get_summary()
+            summary.update(
+                {
+                    "workflow_mode": "zfn",
+                    "left_half_site": zfn_params.left_half_site,
+                    "right_half_site": zfn_params.right_half_site,
+                    "dimer_mode": zfn_params.dimer_mode.value,
+                    "spacer_lengths": zfn_params.spacer_constraints.allowed_spacer_lengths,
+                    "max_mismatches": zfn_params.half_site_constraints.max_mismatches,
+                    "total_workflow_time_s": round(total_time, 3),
+                    "output_dir": str(self.config.output_dir),
+                    "offtarget_csv": str(offtarget_csv),
+                    "candidate_json": str(candidate_json),
+                }
+            )
+
+            if zfn_result.candidates:
+                cand = zfn_result.candidates[0]
+                summary["composite_score"] = cand.composite_score
+                summary["predicted_sites_total"] = cand.predicted_sites_total
+                summary["predicted_sites_exonic"] = cand.predicted_sites_exonic
+                summary["passes_filters"] = cand.passes_offtarget_filters
+
+            if self.config.write_json_summary:
+                log_dir = self.config.output_dir / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                summary_path = log_dir / "workflow_summary.json"
+                summary_path.write_text(json.dumps(summary, indent=2, default=str))
+                console.print(f"  Workflow summary: [green]{summary_path}[/green]")
+
+            progress.advance(main_task)
+
+        console.print(f"\n✅ [bold green]ZFN workflow completed in {total_time:.1f}s[/bold green]")
+
+        return summary
 
     async def step1_retrieve_transcripts(self, progress: Progress) -> list[TranscriptInfo]:
         """Step 1: Retrieve and validate transcript sequences."""
@@ -568,6 +707,7 @@ class SiRNAWorkflow:
             # Original single-call path (compatible with tests that patch design_from_file)
             task = progress.add_task("[yellow]Designing siRNAs...", total=2)
             progress.advance(task)
+            assert self.sirnaforgeer is not None, "designer not initialised for siRNA/miRNA mode"
             design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
             added_controls = inject_dirty_controls(design_result)
             self._dirty_controls_added = len(added_controls)
@@ -720,6 +860,7 @@ class SiRNAWorkflow:
                 continue
 
             try:
+                assert self.sirnaforgeer is not None, "designer not initialised"
                 dr = self.sirnaforgeer.design_from_sequence(transcript.sequence, transcript.transcript_id)
                 results.append(dr)
 
@@ -955,10 +1096,10 @@ class SiRNAWorkflow:
         """Persist mapping between candidates and overlapped variants for observability."""
         entries: list[dict[str, Any]] = []
         for candidate in candidates:
-            overlapped = getattr(candidate, "overlapped_variants", None) or []
+            overlapped: list[Any] = list(cast(Sequence[Any], getattr(candidate, "overlapped_variants", None) or []))
             if not overlapped:
                 continue
-            entry = {
+            entry: dict[str, Any] = {
                 "id": getattr(candidate, "id", None),
                 "transcript_id": getattr(candidate, "transcript_id", None),
                 "variant_mode": getattr(candidate, "variant_mode", None),
@@ -968,7 +1109,7 @@ class SiRNAWorkflow:
             }
             entries.append(entry)
 
-        payload = {
+        payload: dict[str, Any] = {
             "gene": self.config.gene_query,
             "total_candidates": len(candidates),
             "variant_annotated_candidates": len(entries),
@@ -1544,6 +1685,14 @@ class SiRNAWorkflow:
 
         console.print(f"❌ Nextflow pipeline failed: {results}")
         return await self._basic_offtarget_analysis(candidates)
+
+    async def run_nextflow_offtarget_analysis(
+        self,
+        candidates: list[SiRNACandidate],
+        input_fasta: Path,
+    ) -> dict[str, Any]:
+        """Public wrapper for Nextflow off-target analysis execution."""
+        return await self._run_nextflow_offtarget_analysis(candidates=candidates, input_fasta=input_fasta)
 
     def _setup_nextflow_runner(
         self,
@@ -2239,9 +2388,8 @@ async def run_sirna_workflow(
     sirna_length: int = 21,
     modification_pattern: str = "standard_2ome",
     overhang: str = "dTdT",
-    zfn_subfinger_mutations: Sequence[ZFNSubfingerMutationConstraint] | None = None,
-    zfn_default_subfinger_mutation: ZFNDefaultSubfingerMutationConstraint | None = None,
-    zfn_overall_mutations: Sequence[ZFNOverallMutationConstraint] | None = None,
+    zfn_design_params: ZFNDesignParameters | None = None,
+    zfn_annotation: GenomicAnnotationConfig | None = None,
     check_off_targets: bool = True,
     # Variant targeting parameters
     variant_ids: list[str] | None = None,
@@ -2279,9 +2427,8 @@ async def run_sirna_workflow(
         sirna_length: siRNA length in nucleotides
         modification_pattern: Chemical modification pattern
         overhang: Overhang sequence (dTdT for DNA, UU for RNA)
-        zfn_subfinger_mutations: Optional per-sub-finger ZFN mutation allowances
-        zfn_default_subfinger_mutation: Optional default per-sub-finger mutation budget
-        zfn_overall_mutations: Optional global mutation budgets across all sub-fingers
+        zfn_design_params: Optional ZFN design parameters for ZFN mode workflow
+        zfn_annotation: Optional genomic annotation config for ZFN off-target classification
         check_off_targets: Perform off-target analysis stage (default: True)
         variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
         variant_vcf_file: Path to VCF file containing variants to target or avoid
@@ -2322,9 +2469,6 @@ async def run_sirna_workflow(
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
-        zfn_subfinger_mutations=list(zfn_subfinger_mutations or []),
-        zfn_default_subfinger_mutation=zfn_default_subfinger_mutation,
-        zfn_overall_mutations=list(zfn_overall_mutations or []),
     )
     database_enum = DatabaseType(database.lower())
 
@@ -2371,6 +2515,14 @@ async def run_sirna_workflow(
     if nextflow_docker_image:
         nextflow_config_overrides["docker_image"] = nextflow_docker_image
 
+    # Build ZFN workflow config when in ZFN mode
+    zfn_workflow_config: ZFNWorkflowConfig | None = None
+    if mode_enum == DesignMode.ZFN and zfn_design_params is not None:
+        zfn_workflow_config = ZFNWorkflowConfig(
+            zfn_params=zfn_design_params,
+            annotation=zfn_annotation,
+        )
+
     config = WorkflowConfig(
         output_dir=output_path,
         gene_query=gene_query,
@@ -2391,6 +2543,7 @@ async def run_sirna_workflow(
         keep_nextflow_work=keep_nextflow_work,
         variant_config=variant_config_obj,
         nextflow_config=nextflow_config_overrides,
+        zfn_config=zfn_workflow_config,
     )
 
     # Run workflow
@@ -2510,7 +2663,7 @@ async def run_offtarget_only_workflow(
             )
 
             # Calculate asymmetry score (5' vs 3' end stability)
-            dg_5p, dg_3p, asymmetry_score = calc.calculate_asymmetry_score(temp_candidate)
+            _, _, asymmetry_score = calc.calculate_asymmetry_score(temp_candidate)
 
             # Calculate duplex stability
             duplex_stability = calc.calculate_duplex_stability(guide_sequence, passenger_sequence)
@@ -2596,7 +2749,7 @@ async def run_offtarget_only_workflow(
     with Progress(console=console) as progress:
         task = progress.add_task("[cyan]Running off-target analysis...", total=None)
 
-        offtarget_results = await workflow._run_nextflow_offtarget_analysis(
+        offtarget_results = await workflow.run_nextflow_offtarget_analysis(
             candidates=candidates,
             input_fasta=candidates_fasta,
         )

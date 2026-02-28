@@ -10,13 +10,13 @@ os.environ.setdefault("TERM", "dumb")
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 import typer
-from Bio import SeqIO
+from Bio.SeqIO import parse as seqio_parse
 from Bio.SeqRecord import SeqRecord
 from rich.console import Console
 from rich.panel import Panel
@@ -51,9 +51,10 @@ from sirnaforge.config import (
     render_reference_selection_label,
 )
 from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.data.base import DatabaseType, FastaUtils
+from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import (
     GeneSearcher,
+    GeneSearchResult,
     search_gene_sync,
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
@@ -63,16 +64,26 @@ from sirnaforge.models.sirna import (
     DesignParameters,
     FilterCriteria,
     MiRNADesignConfig,
-    ZFNDefaultSubfingerMutationConstraint,
-    ZFNMutationType,
-    ZFNOverallMutationConstraint,
-    ZFNSubfingerMutationConstraint,
 )
 from sirnaforge.models.variant import VariantMode
+from sirnaforge.models.zfn import (
+    DimerMode,
+    GenomicAnnotationConfig,
+    ZFNAlgorithm,
+    ZFNDefaultSubfingerMutationConstraint,
+    ZFNDesignParameters,
+    ZFNHalfSiteConstraints,
+    ZFNMutationConstraints,
+    ZFNMutationType,
+    ZFNOverallMutationConstraint,
+    ZFNSpacerConstraints,
+    ZFNSubfingerMutationConstraint,
+)
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
+from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
 
 app = typer.Typer(
@@ -84,14 +95,33 @@ app = typer.Typer(
 console = Console(force_terminal=False, legacy_windows=True)
 
 # mypy-friendly alias for Typer command decorator
-T = TypeVar("T", bound=Callable[..., object])
-CommandDecorator = Callable[..., Callable[[T], T]]
-app_command: CommandDecorator = app.command
+app_command = command_decorator_typed(app.command)
 
 DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
-def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
+class TranscriptLike(Protocol):
+    """Minimal transcript-like interface used by CLI filters."""
+
+    transcript_type: str | None
+    is_canonical: bool
+
+
+TTranscript = TypeVar("TTranscript", bound=TranscriptLike)
+
+
+def _parse_fasta_seqrecords(input_file: Path) -> list[SeqRecord]:
+    """Parse FASTA records with an explicit typed boundary for static checkers."""
+    parse_fasta = cast(Callable[[str, str], Iterable[SeqRecord]], seqio_parse)
+    return list(parse_fasta(str(input_file), "fasta"))
+
+
+def filter_transcripts(
+    transcripts: list[TTranscript],
+    include_types: list[str] | None = None,
+    exclude_types: list[str] | None = None,
+    canonical_only: bool = False,
+) -> list[TTranscript]:
     """Filter transcript records by type and canonical status.
 
     Args:
@@ -104,7 +134,7 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
     Returns:
         A list of transcripts that match the requested filters.
     """
-    filtered = transcripts
+    filtered: list[TTranscript] = transcripts
 
     if canonical_only:
         filtered = [t for t in filtered if t.is_canonical]
@@ -118,7 +148,11 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
     return filtered
 
 
-def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # type: ignore
+def extract_canonical_transcripts(
+    transcripts: list[TranscriptInfo],
+    gene_name: str,
+    output_dir: Path | str | None = None,
+) -> tuple[Path | None, int]:
     """Write canonical isoforms to a separate FASTA file.
 
     Args:
@@ -137,9 +171,9 @@ def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # t
     if not canonical:
         return None, 0
 
-    output_dir = Path.cwd() if output_dir is None else Path(output_dir)
+    output_dir_path = Path.cwd() if output_dir is None else Path(output_dir)
 
-    canonical_file = output_dir / f"{gene_name}_canonical.fasta"
+    canonical_file = output_dir_path / f"{gene_name}_canonical.fasta"
 
     # Create a temporary searcher to use the save method
     # TODO: directly use fasta utils
@@ -365,6 +399,7 @@ def search(  # noqa: PLR0912
         include_types = [t.strip() for t in transcript_types.split(",") if t.strip()] if transcript_types else []
         exclude_types_list = [t.strip() for t in exclude_types.split(",") if t.strip()] if exclude_types else []
 
+        results: list[GeneSearchResult]
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -383,20 +418,20 @@ def search(  # noqa: PLR0912
                 results = [search_gene_sync(query=query, database=db_type, include_sequence=not no_sequence)]
 
         # Display results
-        successful_results = [r for r in results if r.success]
+        successful_results: list[GeneSearchResult] = [r for r in results if r.success]
 
         if not successful_results:
             console.print(f"❌ [red]No results found for:[/red] {query}")
             for result in results:
                 if result.error:
-                    db_name = result.database.value if hasattr(result.database, "value") else str(result.database)
+                    db_name = result.database.value
                     console.print(f"  {db_name}: {result.error}")
             raise typer.Exit(1)
 
         # Apply filtering to all transcripts
-        all_transcripts = []
+        all_transcripts: list[TranscriptInfo] = []
         for result in successful_results:
-            filtered_transcripts = filter_transcripts(
+            filtered_transcripts: list[TranscriptInfo] = filter_transcripts(
                 result.transcripts,
                 include_types=include_types,
                 exclude_types=exclude_types_list,
@@ -432,7 +467,7 @@ def search(  # noqa: PLR0912
                 transcript_count = 0
                 status = f"❌ {result.error}"
 
-            db_name = result.database.value if hasattr(result.database, "value") else str(result.database)
+            db_name = result.database.value
             summary_table.add_row(db_name, gene_id, gene_name, str(transcript_count), status)
 
         console.print(summary_table)
@@ -447,9 +482,7 @@ def search(  # noqa: PLR0912
             transcript_table.add_column("Canonical", style="magenta")
 
             for transcript in all_transcripts[:10]:  # Show first 10
-                db_name = (
-                    transcript.database.value if hasattr(transcript.database, "value") else str(transcript.database)
-                )
+                db_name = transcript.database.value
                 transcript_table.add_row(
                     transcript.transcript_id,
                     db_name,
@@ -466,7 +499,7 @@ def search(  # noqa: PLR0912
         # Save sequences to FASTA if requested
         if not no_sequence and all_transcripts:
             searcher = GeneSearcher()
-            transcripts_with_sequence = [t for t in all_transcripts if t.sequence]
+            transcripts_with_sequence: list[TranscriptInfo] = [t for t in all_transcripts if t.sequence]
 
             if transcripts_with_sequence:
                 searcher.save_transcripts_fasta(transcripts_with_sequence, output)
@@ -551,6 +584,52 @@ def workflow(  # noqa: PLR0912
         "--zfn-max-substitutions-overall",
         min=0,
         help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
+    ),
+    # ── ZFN half-site and search-space inputs (required when --design-mode zfn) ──
+    zfn_left_half_site: str | None = typer.Option(
+        None,
+        "--zfn-left-half-site",
+        help="Left ZFN half-site sequence (9-18 bp, IUPAC allowed). Required for --design-mode zfn.",
+    ),
+    zfn_right_half_site: str | None = typer.Option(
+        None,
+        "--zfn-right-half-site",
+        help="Right ZFN half-site sequence (9-18 bp, IUPAC allowed). Required for --design-mode zfn.",
+    ),
+    zfn_search_space: str | None = typer.Option(
+        None,
+        "--zfn-search-space",
+        help=(
+            "Genome reference key or local FASTA path for ZFN off-target search space. "
+            "Default: ensembl_human_hg38_primary when --design-mode zfn."
+        ),
+    ),
+    zfn_algorithm: str = typer.Option(
+        "zfn_v2",
+        "--zfn-algorithm",
+        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
+    ),
+    zfn_dimer_mode: str = typer.Option(
+        "heterodimer_only",
+        "--zfn-dimer-mode",
+        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
+    ),
+    zfn_spacer_lengths: str = typer.Option(
+        "5,6,7",
+        "--zfn-spacer-lengths",
+        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
+    ),
+    zfn_max_mismatches: int = typer.Option(
+        2,
+        "--zfn-max-mismatches",
+        min=0,
+        max=6,
+        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
+    ),
+    zfn_annotation: str | None = typer.Option(
+        None,
+        "--zfn-annotation",
+        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
     ),
     top_n_candidates: int = typer.Option(
         100,
@@ -779,6 +858,79 @@ def workflow(  # noqa: PLR0912
         console.print("❌ Error: --zfn-subfinger-mutation requires --design-mode zfn", style="red")
         raise typer.Exit(1)
 
+    # ── Assemble ZFNDesignParameters when mode is ZFN ──
+    zfn_design_params: ZFNDesignParameters | None = None
+    annotation: GenomicAnnotationConfig | None = None
+    if mode_enum == DesignMode.ZFN:
+        if not zfn_left_half_site or not zfn_right_half_site:
+            console.print(
+                "❌ Error: --zfn-left-half-site and --zfn-right-half-site are required for --design-mode zfn",
+                style="red",
+            )
+            raise typer.Exit(1)
+
+        try:
+            parsed_spacers = [int(s.strip()) for s in zfn_spacer_lengths.split(",")]
+        except ValueError:
+            console.print("❌ Error: --zfn-spacer-lengths must be comma-separated integers", style="red")
+            raise typer.Exit(1)
+
+        try:
+            algo = ZFNAlgorithm(zfn_algorithm.lower())
+        except ValueError:
+            console.print(
+                f"❌ Error: --zfn-algorithm must be one of: homology, conserved_g, zfn_v2 (got '{zfn_algorithm}')",
+                style="red",
+            )
+            raise typer.Exit(1)
+
+        try:
+            dimer = DimerMode(zfn_dimer_mode.lower())
+        except ValueError:
+            console.print(
+                f"❌ Error: --zfn-dimer-mode must be heterodimer_only or include_homodimers (got '{zfn_dimer_mode}')",
+                style="red",
+            )
+            raise typer.Exit(1)
+
+        mutation_constraints: ZFNMutationConstraints | None = None
+        if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
+            mutation_constraints = ZFNMutationConstraints(
+                subfinger_mutations=zfn_constraints,
+                default_subfinger_mutation=zfn_default_constraint,
+                overall_mutations=zfn_overall_constraints,
+            )
+
+        # Determine search space: explicit FASTA path or reference key
+        search_space_fasta: str | None = None
+        search_space_reference: str | None = "ensembl_human_hg38_primary"  # default
+        if zfn_search_space:
+            if Path(zfn_search_space).exists() or "://" in zfn_search_space:
+                search_space_fasta = zfn_search_space
+                search_space_reference = None
+            else:
+                search_space_reference = zfn_search_space
+
+        if zfn_annotation:
+            annotation = GenomicAnnotationConfig(annotation_path=zfn_annotation)
+
+        try:
+            zfn_design_params = ZFNDesignParameters(
+                left_half_site=zfn_left_half_site,
+                right_half_site=zfn_right_half_site,
+                search_space_reference=search_space_reference,
+                search_space_fasta=search_space_fasta,
+                algorithm=algo,
+                dimer_mode=dimer,
+                spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=parsed_spacers),
+                half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=zfn_max_mismatches),
+                mutation_constraints=mutation_constraints,
+            )
+        except Exception as exc:
+            logger.error("ZFN parameter validation failed: %s", exc)
+            console.print(f"❌ Error: ZFN parameter validation failed: {exc}", style="red")
+            raise typer.Exit(1)
+
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
         override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
@@ -871,9 +1023,8 @@ def workflow(  # noqa: PLR0912
                     sirna_length=sirna_length,
                     modification_pattern=modification_pattern,
                     overhang=overhang,
-                    zfn_subfinger_mutations=zfn_constraints,
-                    zfn_default_subfinger_mutation=zfn_default_constraint,
-                    zfn_overall_mutations=zfn_overall_constraints,
+                    zfn_design_params=zfn_design_params,
+                    zfn_annotation=annotation if mode_enum == DesignMode.ZFN else None,
                     # Variant parameters
                     variant_ids=list(snp) if snp else None,
                     variant_vcf_file=snp_file,
@@ -1351,9 +1502,6 @@ def design(  # noqa: PLR0912
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
-        zfn_subfinger_mutations=zfn_constraints,
-        zfn_default_subfinger_mutation=zfn_default_constraint,
-        zfn_overall_mutations=zfn_overall_constraints,
     )
 
     console.print(
@@ -1468,7 +1616,7 @@ def validate(
     """
     try:
         with console.status("Validating FASTA file..."):
-            sequences = list(SeqIO.parse(input_file, "fasta"))
+            sequences = _parse_fasta_seqrecords(input_file)
 
         if not sequences:
             console.print("❌ [red]No sequences found in FASTA file[/red]")
@@ -1643,7 +1791,7 @@ def cache(
 # Create sequences subcommand group
 sequences_app = typer.Typer(help="Manage siRNA sequences and metadata")
 app.add_typer(sequences_app, name="sequences")
-sequences_command: CommandDecorator = sequences_app.command
+sequences_command = command_decorator_typed(sequences_app.command)
 
 
 class SequencesShowError(RuntimeError):
@@ -1656,7 +1804,7 @@ def _load_fasta_records(input_file: Path) -> list[SeqRecord]:
     Raises:
         SequencesShowError: If the file contains no records.
     """
-    records = list(SeqIO.parse(input_file, "fasta"))
+    records = _parse_fasta_seqrecords(input_file)
     if not records:
         raise SequencesShowError("No sequences found in file")
     return records
@@ -1681,13 +1829,17 @@ def _metadata_value_to_json(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     if isinstance(value, list):
-        return [_metadata_value_to_json(item) for item in value]
+        json_items: list[Any] = []
+        items: list[object] = list(value)
+        for item in items:
+            json_items.append(_metadata_value_to_json(item))
+        return json_items
     return value
 
 
 def _records_to_json(records: list[SeqRecord]) -> str:
     """Render FASTA record header metadata as a JSON string."""
-    payload = []
+    payload: list[dict[str, Any]] = []
     for record in records:
         metadata = parse_header(record)
         payload.append({key: _metadata_value_to_json(val) for key, val in metadata.items()})
@@ -1696,12 +1848,17 @@ def _records_to_json(records: list[SeqRecord]) -> str:
 
 def _summarize_modifications(metadata: dict[str, Any]) -> str:
     """Summarize chemical modifications from parsed header metadata."""
-    mods = metadata.get("chem_mods") or []
-    summary = []
+    raw_mods = metadata.get("chem_mods")
+    mods: list[object] = list(raw_mods) if isinstance(raw_mods, list) else []
+    summary: list[str] = []
     for mod in mods:
         mod_type = getattr(mod, "type", str(mod))
-        positions = getattr(mod, "positions", [])
-        length = len(positions) if isinstance(positions, list) else positions
+        positions_value = getattr(mod, "positions", [])
+        if isinstance(positions_value, list):
+            positions_list: list[object] = list(positions_value)
+            length: int | Any = len(positions_list)
+        else:
+            length = positions_value
         summary.append(f"{mod_type}({length})")
     return ", ".join(summary)
 

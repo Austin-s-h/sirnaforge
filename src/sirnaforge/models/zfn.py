@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, cast
 
 import pandas as pd
-import pandera.pandas as pa
-from pandera.typing import DataFrame
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.typed_decorators import field_validator_typed
 
 logger = get_logger(__name__)
-
-F = TypeVar("F", bound=Callable[..., Any])
-FieldValidatorFactory = Callable[..., Callable[[F], F]]
-field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class Strand(str, Enum):
@@ -149,6 +143,66 @@ class ZFNScoringWeights(BaseModel):
         return v
 
 
+class ZFNMutationType(str, Enum):
+    """Allowed mutation categories for ZFN sub-finger constraints."""
+
+    SUBSTITUTION = "substitution"
+    TRANSITION = "transition"
+    TRANSVERSION = "transversion"
+    INSERTION = "insertion"
+    DELETION = "deletion"
+
+
+class ZFNSubfingerMutationConstraint(BaseModel):
+    """Mutation allowance definition for one ZFN sub-finger."""
+
+    subfinger_index: int = Field(ge=1, description="1-based sub-finger index")
+    max_mutations: int = Field(ge=0, description="Maximum allowed mutations for this sub-finger")
+    mutation_types: list[ZFNMutationType] = Field(
+        min_length=1,
+        description="Allowed mutation types for this sub-finger",
+    )
+
+
+class ZFNDefaultSubfingerMutationConstraint(BaseModel):
+    """Default mutation allowance applied to each sub-finger."""
+
+    max_mutations: int = Field(ge=0, description="Maximum allowed mutations for each sub-finger")
+    mutation_types: list[ZFNMutationType] = Field(
+        min_length=1,
+        description="Allowed mutation types for each sub-finger",
+    )
+
+
+class ZFNOverallMutationConstraint(BaseModel):
+    """Global mutation allowance applied across all sub-fingers."""
+
+    max_mutations: int = Field(ge=0, description="Maximum allowed mutations across all sub-fingers")
+    mutation_types: list[ZFNMutationType] = Field(
+        min_length=1,
+        description="Allowed mutation types for the global budget",
+    )
+
+
+class ZFNMutationConstraints(BaseModel):
+    """Composite container for all ZFN sub-finger and global mutation budgets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subfinger_mutations: list[ZFNSubfingerMutationConstraint] = Field(
+        default_factory=lambda: cast(list[ZFNSubfingerMutationConstraint], []),
+        description="Per-sub-finger mutation allowances",
+    )
+    default_subfinger_mutation: ZFNDefaultSubfingerMutationConstraint | None = Field(
+        default=None,
+        description="Default mutation allowance applied to each sub-finger",
+    )
+    overall_mutations: list[ZFNOverallMutationConstraint] = Field(
+        default_factory=lambda: cast(list[ZFNOverallMutationConstraint], []),
+        description="Global mutation budgets applied across all sub-fingers",
+    )
+
+
 class ZFNDesignParameters(BaseModel):
     """Top-level configuration for ZFN pair evaluation and off-target search."""
 
@@ -179,6 +233,10 @@ class ZFNDesignParameters(BaseModel):
     report_n_sites: int = Field(default=200, ge=1, description="Number of sites to include in reports")
     off_target_filters: ZFNOffTargetFilterCriteria = Field(default_factory=ZFNOffTargetFilterCriteria)
     scoring: ZFNScoringWeights = Field(default_factory=ZFNScoringWeights)
+    mutation_constraints: ZFNMutationConstraints | None = Field(
+        default=None,
+        description="Optional per-sub-finger and global mutation budgets for manufacturability scoring",
+    )
 
     @field_validator_typed("left_half_site", "right_half_site")
     @classmethod
@@ -309,7 +367,7 @@ class ZFNCandidate(BaseModel):
     passes_offtarget_filters: bool | str = Field(default=True, description="PASS if within thresholds, else reason")
     component_scores: dict[str, float] = Field(default_factory=dict)
     composite_score: float = Field(ge=0, le=100, description="Overall design score")
-    top_offtargets: list[ZFNOffTargetSite] = Field(default_factory=list)
+    top_offtargets: list[ZFNOffTargetSite] = Field(default_factory=lambda: cast(list[ZFNOffTargetSite], []))
 
 
 class ZFNDesignResult(BaseModel):
@@ -319,13 +377,12 @@ class ZFNDesignResult(BaseModel):
 
     parameters: ZFNDesignParameters = Field(description="Parameters used")
     annotation: GenomicAnnotationConfig | None = Field(default=None)
-    candidates: list[ZFNCandidate] = Field(default_factory=list)
-    off_target_sites: list[ZFNOffTargetSite] = Field(default_factory=list)
+    candidates: list[ZFNCandidate] = Field(default_factory=lambda: cast(list[ZFNCandidate], []))
+    off_target_sites: list[ZFNOffTargetSite] = Field(default_factory=lambda: cast(list[ZFNOffTargetSite], []))
     processing_time_s: float = Field(ge=0)
     tool_versions: dict[str, str] = Field(default_factory=dict)
 
-    @pa.check_types
-    def save_offtargets_csv(self, filepath: str) -> DataFrame[Any]:
+    def save_offtargets_csv(self, filepath: str) -> pd.DataFrame:
         """Save off-target site table to CSV."""
         rows: list[dict[str, Any]] = []
         for site in self.off_target_sites:
@@ -351,7 +408,7 @@ class ZFNDesignResult(BaseModel):
             )
         df = pd.DataFrame(rows)
         df.to_csv(filepath, index=False)
-        return cast(DataFrame[Any], df)
+        return df
 
     def get_summary(self) -> dict[str, Any]:
         """Generate a compact run summary."""

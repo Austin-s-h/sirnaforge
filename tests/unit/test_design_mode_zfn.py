@@ -5,8 +5,11 @@ import pytest
 from sirnaforge.cli import _parse_zfn_mutation_constraints, _resolve_design_mode
 from sirnaforge.models.sirna import (
     DesignMode,
-    DesignParameters,
+)
+from sirnaforge.models.zfn import (
     ZFNDefaultSubfingerMutationConstraint,
+    ZFNDesignParameters,
+    ZFNMutationConstraints,
     ZFNMutationType,
     ZFNOverallMutationConstraint,
     ZFNSubfingerMutationConstraint,
@@ -54,28 +57,32 @@ def test_parse_zfn_mutation_constraints_invalid_format() -> None:
 
 
 def test_design_parameters_store_zfn_constraints() -> None:
-    """DesignParameters should persist per-sub-finger mutation allowances."""
-    params = DesignParameters(
-        design_mode=DesignMode.ZFN,
-        zfn_subfinger_mutations=[
+    """ZFNMutationConstraints should persist per-sub-finger mutation allowances on ZFNDesignParameters."""
+    mc = ZFNMutationConstraints(
+        subfinger_mutations=[
             ZFNSubfingerMutationConstraint(
                 subfinger_index=3,
                 max_mutations=1,
                 mutation_types=[ZFNMutationType.TRANSVERSION],
             )
         ],
-        zfn_default_subfinger_mutation=ZFNDefaultSubfingerMutationConstraint(
+        default_subfinger_mutation=ZFNDefaultSubfingerMutationConstraint(
             max_mutations=1,
             mutation_types=[ZFNMutationType.SUBSTITUTION],
         ),
-        zfn_overall_mutations=[
+        overall_mutations=[
             ZFNOverallMutationConstraint(
                 max_mutations=3,
                 mutation_types=[ZFNMutationType.SUBSTITUTION],
             )
         ],
     )
-    assert params.design_mode == DesignMode.ZFN
-    assert params.zfn_subfinger_mutations[0].subfinger_index == 3
-    assert params.zfn_default_subfinger_mutation is not None
-    assert params.zfn_overall_mutations[0].max_mutations == 3
+    params = ZFNDesignParameters(
+        left_half_site="GCCCCACTGTGGGGTG",
+        right_half_site="ACCAGATGACTGATGA",
+        mutation_constraints=mc,
+    )
+    assert params.mutation_constraints is not None
+    assert params.mutation_constraints.subfinger_mutations[0].subfinger_index == 3
+    assert params.mutation_constraints.default_subfinger_mutation is not None
+    assert params.mutation_constraints.overall_mutations[0].max_mutations == 3

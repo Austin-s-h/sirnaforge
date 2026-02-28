@@ -17,6 +17,7 @@ nextflow.enable.dsl = 2
 */
 
 include { SIRNA_OFFTARGET_ANALYSIS } from './subworkflows/local/sirna_offtarget_analysis'
+include { ZFN_OFFTARGET_ANALYSIS   } from './subworkflows/local/zfn_offtarget_analysis'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -130,23 +131,48 @@ workflow SIRNAFORGE_OFFTARGET {
     }
 
     //
-    // SUBWORKFLOW: Run comprehensive off-target analysis
+    // SUBWORKFLOW: Route by design_mode
     //
-    SIRNA_OFFTARGET_ANALYSIS(
-        ch_input,
-        ch_genomes,
-        params.max_hits,
-        params.bwa_k,
-        params.bwa_T,
-        params.seed_start,
-        params.seed_end
-    )
+    if (params.design_mode == 'zfn') {
+        //
+        // ZFN mode: exhaustive paired half-site search (not BWA-MEM2)
+        //
+        def zfn_genome = params.zfn_genome_fasta ? file(params.zfn_genome_fasta, checkIfExists: true) : file('NO_GENOME')
+        def zfn_annot  = params.zfn_annotation   ? file(params.zfn_annotation, checkIfExists: true) : file('NO_ANNOTATION')
+
+        ZFN_OFFTARGET_ANALYSIS(
+            params.zfn_left_half_site,
+            params.zfn_right_half_site,
+            zfn_genome,
+            params.zfn_algorithm,
+            params.zfn_dimer_mode,
+            params.zfn_spacer_lengths,
+            params.zfn_max_mismatches,
+            zfn_annot
+        )
+    } else {
+        //
+        // siRNA / miRNA mode: BWA-MEM2 alignment + miRNA seed analysis
+        //
+        SIRNA_OFFTARGET_ANALYSIS(
+            ch_input,
+            ch_genomes,
+            params.max_hits,
+            params.bwa_k,
+            params.bwa_T,
+            params.seed_start,
+            params.seed_end
+        )
+    }
 
     emit:
-    combined_analyses    = SIRNA_OFFTARGET_ANALYSIS.out.combined_analyses
-    combined_summary     = SIRNA_OFFTARGET_ANALYSIS.out.combined_summary
-    final_summary        = SIRNA_OFFTARGET_ANALYSIS.out.final_summary
-    versions            = SIRNA_OFFTARGET_ANALYSIS.out.versions
+    // Outputs depend on design_mode; consumers must check which are populated
+    combined_analyses    = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.combined_analyses : Channel.empty()
+    combined_summary     = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.combined_summary : Channel.empty()
+    final_summary        = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.final_summary : Channel.empty()
+    zfn_sites            = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.sites : Channel.empty()
+    zfn_summary          = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.summary : Channel.empty()
+    versions             = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.versions : SIRNA_OFFTARGET_ANALYSIS.out.versions
 }
 
 /*

@@ -1,25 +1,19 @@
 """Pydantic models for siRNA design data structures."""
 
-from collections.abc import Callable
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any
 
 import pandas as pd
-import pandera.pandas as pa
 from pandera.typing import DataFrame
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import get_modification_summary
+from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed
 
 logger = get_logger(__name__)
-
-# mypy-friendly typed alias for pydantic's untyped decorator factory
-F = TypeVar("F", bound=Callable[..., Any])
-FieldValidatorFactory = Callable[..., Callable[[F], F]]
-field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class FilterCriteria(BaseModel):
@@ -163,48 +157,7 @@ class DesignMode(str, Enum):
 
     SIRNA = "sirna"  # Standard siRNA design mode
     MIRNA = "mirna"  # miRNA-biogenesis-aware design mode
-    ZFN = "zfn"  # Zinc-finger design mode (uses siRNA designer core with ZFN constraints)
-
-
-class ZFNMutationType(str, Enum):
-    """Allowed mutation categories for ZFN sub-finger constraints."""
-
-    SUBSTITUTION = "substitution"
-    TRANSITION = "transition"
-    TRANSVERSION = "transversion"
-    INSERTION = "insertion"
-    DELETION = "deletion"
-
-
-class ZFNSubfingerMutationConstraint(BaseModel):
-    """Mutation allowance definition for one ZFN sub-finger."""
-
-    subfinger_index: int = Field(ge=1, description="1-based sub-finger index")
-    max_mutations: int = Field(ge=0, description="Maximum allowed mutations for this sub-finger")
-    mutation_types: list[ZFNMutationType] = Field(
-        min_length=1,
-        description="Allowed mutation types for this sub-finger",
-    )
-
-
-class ZFNDefaultSubfingerMutationConstraint(BaseModel):
-    """Default mutation allowance applied to each sub-finger."""
-
-    max_mutations: int = Field(ge=0, description="Maximum allowed mutations for each sub-finger")
-    mutation_types: list[ZFNMutationType] = Field(
-        min_length=1,
-        description="Allowed mutation types for each sub-finger",
-    )
-
-
-class ZFNOverallMutationConstraint(BaseModel):
-    """Global mutation allowance applied across all sub-fingers."""
-
-    max_mutations: int = Field(ge=0, description="Maximum allowed mutations across all sub-fingers")
-    mutation_types: list[ZFNMutationType] = Field(
-        min_length=1,
-        description="Allowed mutation types for the global budget",
-    )
+    ZFN = "zfn"  # Zinc-finger nuclease pair evaluation with exhaustive off-target search
 
 
 class MiRNADesignConfig(BaseModel):
@@ -262,19 +215,6 @@ class DesignParameters(BaseModel):
     design_mode: DesignMode = Field(
         default=DesignMode.SIRNA,
         description="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
-    )
-
-    zfn_subfinger_mutations: list[ZFNSubfingerMutationConstraint] = Field(
-        default_factory=list,
-        description="Per-sub-finger mutation allowances used when design_mode=zfn",
-    )
-    zfn_default_subfinger_mutation: ZFNDefaultSubfingerMutationConstraint | None = Field(
-        default=None,
-        description="Default mutation allowance applied to each sub-finger in zfn mode",
-    )
-    zfn_overall_mutations: list[ZFNOverallMutationConstraint] = Field(
-        default_factory=list,
-        description="Global mutation budgets applied across all sub-fingers in zfn mode",
     )
 
     # Basic parameters
@@ -517,7 +457,7 @@ class DesignResult(BaseModel):
         description=("Candidates discarded during initial filtering (used for dirty controls and auditing)"),
     )
 
-    @pa.check_types
+    @check_types_typed
     def save_csv(self, filepath: str) -> DataFrame[SiRNACandidateSchema]:
         """Save siRNA candidates to CSV file with comprehensive validation.
 

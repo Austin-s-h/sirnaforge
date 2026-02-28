@@ -5,15 +5,15 @@ from __future__ import annotations
 import asyncio
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, cast
 
 import aiohttp
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.typed_decorators import field_validator_typed
 
 if TYPE_CHECKING:
     from sirnaforge.config.reference_policy import ReferenceChoice
@@ -44,12 +44,6 @@ class GeneNotFoundError(DatabaseError):
         """Initialize gene not found error."""
         super().__init__(f"Gene '{query}' not found", database)
         self.query = query
-
-
-# mypy-friendly typed alias for pydantic field_validator
-F = TypeVar("F", bound=Callable[..., object])
-FieldValidatorFactory = Callable[..., Callable[[F], F]]
-field_validator_typed: FieldValidatorFactory = field_validator
 
 
 class DatabaseType(str, Enum):

@@ -16,7 +16,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import BaseModel, Field
+
+from sirnaforge.utils.typed_decorators import field_serializer_typed, field_validator_typed
 
 
 class AlignmentStrand(str, Enum):
@@ -73,7 +75,7 @@ class BaseAlignmentHit(BaseModel, ABC):
     seed_mismatches: int = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: float = Field(ge=0.0, description="Off-target penalty score")
 
-    @field_validator("qseq")
+    @field_validator_typed("qseq")
     @classmethod
     def validate_sequence(cls, v: str) -> str:
         """Ensure sequence contains only valid nucleotide characters."""
@@ -84,7 +86,7 @@ class BaseAlignmentHit(BaseModel, ABC):
             raise ValueError(f"Invalid nucleotide characters in sequence: {v}")
         return v.upper()
 
-    @field_validator("cigar")
+    @field_validator_typed("cigar")
     @classmethod
     def validate_cigar(cls, v: str) -> str:
         """Basic CIGAR string validation."""
@@ -258,7 +260,7 @@ class BaseAggregatedSummary(BaseModel):
     # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Aggregation timestamp")
 
-    @field_serializer("combined_tsv", "combined_json", "summary_file")
+    @field_serializer_typed("combined_tsv", "combined_json", "summary_file")
     def serialize_path(self, path: Path | None) -> str | None:
         """Serialize Path objects to strings for JSON compatibility."""
         return str(path) if path is not None else None

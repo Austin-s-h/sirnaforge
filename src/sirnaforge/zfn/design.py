@@ -11,6 +11,7 @@ from sirnaforge.models.zfn import (
     ZFNCandidate,
     ZFNDesignParameters,
     ZFNDesignResult,
+    ZFNMutationConstraints,
     ZFNOffTargetFilterCriteria,
     ZFNOffTargetSite,
 )
@@ -136,18 +137,109 @@ class ZFNDesigner:
         return max(0.0, 100.0 - volume_penalty - similarity_penalty)
 
     def _score_manufacturability(self, params: ZFNDesignParameters) -> float:
-        """Manufacturability heuristic in [0,100]."""
+        """Manufacturability heuristic in [0,100].
+
+        Considers:
+        - IUPAC ambiguity codes (each non-ACGT base adds complexity)
+        - Homopolymer runs (impede synthesis)
+        - Mutation constraint budgets (per-sub-finger and global, if provided)
+
+        Each zinc finger recognises a 3-bp triplet.  IUPAC ambiguity codes
+        within a triplet represent tolerated mutations; the constraint
+        budgets set an upper limit on how many such positions are acceptable
+        per finger and across the whole half-site.
+        """
         left = params.left_half_site
         right = params.right_half_site
         combined = left + right
 
+        # --- Base complexity penalty (IUPAC ambiguity) ---
         iupac_count = sum(1 for base in combined if base not in {"A", "C", "G", "T"})
         complexity_score = max(0.0, 100.0 - (iupac_count * 4.0))
+
+        # --- Homopolymer repeat penalty ---
         repeat_penalty = 0.0
         if "AAAA" in combined or "TTTT" in combined or "CCCC" in combined or "GGGG" in combined:
             repeat_penalty = 15.0
 
-        return max(0.0, complexity_score - repeat_penalty)
+        base_score = max(0.0, complexity_score - repeat_penalty)
+
+        # --- Mutation constraint penalties ---
+        constraint_penalty = self._compute_mutation_constraint_penalty(params)
+
+        return max(0.0, base_score - constraint_penalty)
+
+    def score_manufacturability(self, params: ZFNDesignParameters) -> float:
+        """Public wrapper for manufacturability scoring logic."""
+        return self._score_manufacturability(params)
+
+    # ------------------------------------------------------------------
+    # Mutation-constraint helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _count_ambiguous_per_triplet(seq: str) -> list[int]:
+        """Split *seq* into 3-bp triplets and count non-ACGT bases per triplet.
+
+        Trailing bases that do not form a complete triplet are grouped as
+        one shorter "finger" so every base is accounted for.
+        """
+        canonical = {"A", "C", "G", "T"}
+        triplets: list[int] = []
+        for i in range(0, len(seq), 3):
+            chunk = seq[i : i + 3]
+            triplets.append(sum(1 for b in chunk if b not in canonical))
+        return triplets
+
+    @staticmethod
+    def count_ambiguous_per_triplet(seq: str) -> list[int]:
+        """Public wrapper for triplet ambiguity counting helper."""
+        return ZFNDesigner._count_ambiguous_per_triplet(seq)
+
+    def _compute_mutation_constraint_penalty(self, params: ZFNDesignParameters) -> float:
+        """Return a [0, 40] penalty based on mutation constraint violations.
+
+        The penalty is 0 when no constraints are set or all budgets are
+        satisfied.  Each per-finger violation adds up to 10 pts, and
+        overall-budget violations add up to 20 pts, capped at 40 total.
+        """
+        mc: ZFNMutationConstraints | None = params.mutation_constraints
+        if mc is None:
+            return 0.0
+
+        left_trips = self._count_ambiguous_per_triplet(params.left_half_site)
+        right_trips = self._count_ambiguous_per_triplet(params.right_half_site)
+        all_trips = left_trips + right_trips
+
+        penalty = 0.0
+
+        # Per-sub-finger checks (explicit entries override the default)
+        explicit_indices: set[int] = set()
+        for sf in mc.subfinger_mutations:
+            explicit_indices.add(sf.subfinger_index)
+            idx = sf.subfinger_index - 1  # 1-based → 0-based
+            if 0 <= idx < len(all_trips) and all_trips[idx] > sf.max_mutations:
+                excess = all_trips[idx] - sf.max_mutations
+                penalty += min(10.0, excess * 5.0)
+
+        # Default mutation allowance for fingers not explicitly constrained
+        if mc.default_subfinger_mutation is not None:
+            default_max = mc.default_subfinger_mutation.max_mutations
+            for idx, count in enumerate(all_trips):
+                if (idx + 1) in explicit_indices:
+                    continue
+                if count > default_max:
+                    excess = count - default_max
+                    penalty += min(10.0, excess * 5.0)
+
+        # Global / overall mutation budgets
+        total_ambiguous = sum(all_trips)
+        for ov in mc.overall_mutations:
+            if total_ambiguous > ov.max_mutations:
+                excess = total_ambiguous - ov.max_mutations
+                penalty += min(20.0, excess * 4.0)
+
+        return min(40.0, penalty)
 
     def _tool_versions(self) -> dict[str, str]:
         """Collect tool versions used in evaluation."""
