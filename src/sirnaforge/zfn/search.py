@@ -1,0 +1,492 @@
+"""Exhaustive ZFN off-target search implementation for provided half-sites."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TypedDict
+
+from Bio import SeqIO
+from Bio.Seq import Seq
+
+from sirnaforge.data.genome_manager import GenomeManager
+from sirnaforge.models.zfn import (
+    DimerMode,
+    GenomicAnnotationConfig,
+    IUPACMode,
+    MatchOrientation,
+    Strand,
+    ZFNAlgorithm,
+    ZFNDesignParameters,
+    ZFNOffTargetSite,
+)
+from sirnaforge.utils.logging_utils import get_logger
+
+from .interfaces import ZFNAnnotationProvider
+
+logger = get_logger(__name__)
+
+IUPAC_MAP: dict[str, set[str]] = {
+    "A": {"A"},
+    "C": {"C"},
+    "G": {"G"},
+    "T": {"T"},
+    "N": {"A", "C", "G", "T"},
+    "R": {"A", "G"},
+    "Y": {"C", "T"},
+    "W": {"A", "T"},
+    "S": {"C", "G"},
+    "K": {"G", "T"},
+    "M": {"A", "C"},
+    "B": {"C", "G", "T"},
+    "D": {"A", "G", "T"},
+    "H": {"A", "C", "T"},
+    "V": {"A", "C", "G"},
+}
+
+
+@dataclass(slots=True)
+class _HalfSiteHit:
+    """Internal representation of a half-site near-match hit."""
+
+    kind: str
+    chrom: str
+    start0: int
+    end0: int
+    strand: Strand
+    query: str
+    observed: str
+    mismatches: int
+    seed_mismatches: int
+    mismatch_positions: list[int]
+    aligned: str
+
+
+class _WindowMatch(TypedDict):
+    """Typed match payload returned by one half-site window evaluation."""
+
+    mismatches: int
+    seed_mismatches: int
+    mismatch_positions: list[int]
+    aligned: str
+
+
+class ExhaustiveZFNOffTargetSearcher:
+    """Exhaustive sliding-window off-target search for a provided ZFN pair."""
+
+    def __init__(self, annotation_provider: ZFNAnnotationProvider | None = None) -> None:
+        """Initialize searcher with optional annotation provider."""
+        self.annotation_provider = annotation_provider
+
+    def search(
+        self,
+        params: ZFNDesignParameters,
+        annotation: GenomicAnnotationConfig | None = None,
+    ) -> list[ZFNOffTargetSite]:
+        """Search all predicted cut sites with explicit mismatch + spacer constraints."""
+        fasta_path = self._resolve_search_space_fasta(params)
+        if annotation is not None:
+            self._resolve_annotation_path(annotation)
+
+        chrom_sequences = self._load_fasta(fasta_path)
+
+        left_hits = self._scan_half_site(
+            kind="L",
+            query=params.left_half_site,
+            chrom_sequences=chrom_sequences,
+            params=params,
+        )
+        right_hits = self._scan_half_site(
+            kind="R",
+            query=params.right_half_site,
+            chrom_sequences=chrom_sequences,
+            params=params,
+        )
+
+        all_sites = self._pair_hits(left_hits, right_hits, chrom_sequences, params)
+        all_sites.sort(key=lambda s: s.score, reverse=True)
+        if len(all_sites) > params.top_n_sites:
+            all_sites = all_sites[: params.top_n_sites]
+
+        if annotation and self.annotation_provider is not None:
+            all_sites = self.annotation_provider.annotate(all_sites, annotation)
+
+        return all_sites
+
+    def _resolve_search_space_fasta(self, params: ZFNDesignParameters) -> Path:
+        """Resolve search-space FASTA via explicit input or cache-managed sources."""
+        manager = GenomeManager()
+
+        if params.search_space_fasta:
+            custom = manager.get_custom_genome(params.search_space_fasta, build_index=False)
+            if custom is None or "fasta" not in custom:
+                raise ValueError(f"Unable to resolve search_space_fasta: {params.search_space_fasta}")
+            resolved = Path(custom["fasta"])
+            logger.info(f"Resolved ZFN search space from explicit FASTA: {resolved}")
+            return resolved
+
+        source = params.search_space_reference
+        if not source:
+            raise ValueError("Provide either search_space_fasta or search_space_reference for ZFN off-target search")
+
+        cached = manager.get_genome(source_name=source, build_index=False)
+        if cached is None or "fasta" not in cached:
+            raise ValueError(f"Unable to resolve search_space_reference via cache: {source}")
+
+        resolved = Path(cached["fasta"])
+        logger.info(f"Resolved ZFN search space from cache source '{source}': {resolved}")
+        return resolved
+
+    def _resolve_annotation_path(self, annotation: GenomicAnnotationConfig) -> Path | None:
+        """Resolve annotation path for future annotation backends."""
+        resolved = annotation.resolved_annotation_path()
+        if resolved is None:
+            return None
+
+        if not resolved.exists():
+            logger.warning(f"Annotation path does not exist: {resolved}")
+            return None
+
+        return resolved
+
+    def _load_fasta(self, fasta_path: Path) -> dict[str, str]:
+        """Load contig/chromosome sequences from FASTA."""
+        if not fasta_path.exists():
+            raise FileNotFoundError(f"Genome FASTA not found: {fasta_path}")
+
+        sequences: dict[str, str] = {}
+        for record in SeqIO.parse(str(fasta_path), "fasta"):
+            sequences[record.id] = str(record.seq).upper()
+
+        if not sequences:
+            raise ValueError(f"No sequences found in genome FASTA: {fasta_path}")
+        return sequences
+
+    def _scan_half_site(
+        self,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+    ) -> list[_HalfSiteHit]:
+        """Exhaustively scan all chromosomes and both strands for one half-site."""
+        query = query.upper()
+        query_rc = str(Seq(query).reverse_complement())
+        qlen = len(query)
+
+        hits: list[_HalfSiteHit] = []
+        for chrom, chrom_seq in chrom_sequences.items():
+            if len(chrom_seq) < qlen:
+                continue
+
+            stride = params.half_site_constraints.window_stride
+            for i in range(0, len(chrom_seq) - qlen + 1, stride):
+                window_plus = chrom_seq[i : i + qlen]
+
+                plus_match = self._evaluate_window(
+                    kind=kind,
+                    query=query,
+                    observed=window_plus,
+                    mode=params.half_site_constraints.iupac_mode,
+                    seed_len=params.half_site_constraints.seed_len_from_fokI,
+                    max_mm=params.half_site_constraints.max_mismatches,
+                    max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+                )
+                if plus_match is not None:
+                    hits.append(
+                        _HalfSiteHit(
+                            kind=kind,
+                            chrom=chrom,
+                            start0=i,
+                            end0=i + qlen,
+                            strand=Strand.PLUS,
+                            query=query,
+                            observed=window_plus,
+                            mismatches=plus_match["mismatches"],
+                            seed_mismatches=plus_match["seed_mismatches"],
+                            mismatch_positions=plus_match["mismatch_positions"],
+                            aligned=plus_match["aligned"],
+                        )
+                    )
+
+                window_minus_oriented = str(Seq(window_plus).reverse_complement())
+                minus_match = self._evaluate_window(
+                    kind=kind,
+                    query=query,
+                    observed=window_minus_oriented,
+                    mode=params.half_site_constraints.iupac_mode,
+                    seed_len=params.half_site_constraints.seed_len_from_fokI,
+                    max_mm=params.half_site_constraints.max_mismatches,
+                    max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+                    expanded_query=query_rc,
+                )
+                if minus_match is not None:
+                    hits.append(
+                        _HalfSiteHit(
+                            kind=kind,
+                            chrom=chrom,
+                            start0=i,
+                            end0=i + qlen,
+                            strand=Strand.MINUS,
+                            query=query,
+                            observed=window_minus_oriented,
+                            mismatches=minus_match["mismatches"],
+                            seed_mismatches=minus_match["seed_mismatches"],
+                            mismatch_positions=minus_match["mismatch_positions"],
+                            aligned=minus_match["aligned"],
+                        )
+                    )
+
+        return hits
+
+    def _evaluate_window(
+        self,
+        kind: str,
+        query: str,
+        observed: str,
+        mode: IUPACMode,
+        seed_len: int | None,
+        max_mm: int,
+        max_seed_mm: int | None,
+        expanded_query: str | None = None,
+    ) -> _WindowMatch | None:
+        """Evaluate one window against one query under IUPAC + seed constraints."""
+        query_for_match = expanded_query if (expanded_query and mode == IUPACMode.EXPAND_IUPAC) else query
+
+        mismatches = 0
+        seed_mismatches = 0
+        mismatch_positions: list[int] = []
+        aligned_chars: list[str] = []
+
+        seed_positions = self._seed_positions(kind, len(query_for_match), seed_len)
+
+        for idx, (q, o) in enumerate(zip(query_for_match, observed, strict=False)):
+            is_match = self._base_match(q, o, mode)
+            if is_match:
+                aligned_chars.append(o)
+            else:
+                mismatches += 1
+                mismatch_positions.append(idx)
+                aligned_chars.append(o.lower())
+                if idx in seed_positions:
+                    seed_mismatches += 1
+                if mismatches > max_mm:
+                    return None
+
+        if max_seed_mm is not None and seed_len is not None and seed_mismatches > max_seed_mm:
+            return None
+
+        return {
+            "mismatches": mismatches,
+            "seed_mismatches": seed_mismatches,
+            "mismatch_positions": mismatch_positions,
+            "aligned": "".join(aligned_chars),
+        }
+
+    def _seed_positions(self, kind: str, seq_len: int, seed_len: int | None) -> set[int]:
+        """Return seed positions nearest FokI according to half-site side."""
+        if seed_len is None or seed_len <= 0:
+            return set()
+        effective = min(seed_len, seq_len)
+
+        if kind == "L":
+            # Left half-site FokI-proximal side is toward 3' end in canonical L...R representation.
+            return set(range(seq_len - effective, seq_len))
+
+        # Right half-site FokI-proximal side is toward 5' end in canonical L...R representation.
+        return set(range(0, effective))
+
+    def _base_match(self, query_base: str, observed_base: str, mode: IUPACMode) -> bool:
+        """Return whether one query base matches one observed base under configured IUPAC mode."""
+        query_base = query_base.upper()
+        observed_base = observed_base.upper()
+
+        if mode == IUPACMode.NONE:
+            return query_base == observed_base
+
+        allowed = IUPAC_MAP.get(query_base, {query_base})
+        return observed_base in allowed
+
+    def _pair_hits(  # noqa: PLR0912
+        self,
+        left_hits: list[_HalfSiteHit],
+        right_hits: list[_HalfSiteHit],
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+    ) -> list[ZFNOffTargetSite]:
+        """Join half-site hits into full predicted cut sites by spacer and orientation rules."""
+        sites: list[ZFNOffTargetSite] = []
+        allowed_spacers = set(params.spacer_constraints.allowed_spacer_lengths)
+
+        for left_hit in left_hits:
+            for right_hit in right_hits:
+                if left_hit.chrom != right_hit.chrom:
+                    continue
+                site = self._build_site(
+                    first=left_hit,
+                    second=right_hit,
+                    chrom_seq=chrom_sequences[left_hit.chrom],
+                    allowed_spacers=allowed_spacers,
+                    params=params,
+                )
+                if site is not None:
+                    sites.append(site)
+
+        if params.dimer_mode == DimerMode.INCLUDE_HOMODIMERS:
+            for i, first in enumerate(left_hits):
+                for second in left_hits[i + 1 :]:
+                    if first.chrom != second.chrom:
+                        continue
+                    site = self._build_site(
+                        first=first,
+                        second=second,
+                        chrom_seq=chrom_sequences[first.chrom],
+                        allowed_spacers=allowed_spacers,
+                        params=params,
+                    )
+                    if site is not None:
+                        sites.append(site)
+
+            for i, first in enumerate(right_hits):
+                for second in right_hits[i + 1 :]:
+                    if first.chrom != second.chrom:
+                        continue
+                    site = self._build_site(
+                        first=first,
+                        second=second,
+                        chrom_seq=chrom_sequences[first.chrom],
+                        allowed_spacers=allowed_spacers,
+                        params=params,
+                    )
+                    if site is not None:
+                        sites.append(site)
+
+        deduped: dict[tuple[str, int, int, MatchOrientation], ZFNOffTargetSite] = {}
+        for site in sites:
+            key = (site.chrom, site.start_1based, site.end_1based, site.orientation)
+            prev = deduped.get(key)
+            if prev is None or site.score > prev.score:
+                deduped[key] = site
+        return list(deduped.values())
+
+    def _build_site(
+        self,
+        first: _HalfSiteHit,
+        second: _HalfSiteHit,
+        chrom_seq: str,
+        allowed_spacers: set[int],
+        params: ZFNDesignParameters,
+    ) -> ZFNOffTargetSite | None:
+        """Build one site model from two half-site hits if all pairing constraints pass."""
+        leftmost, rightmost = (first, second) if first.start0 <= second.start0 else (second, first)
+
+        if params.spacer_constraints.require_opposite_strands and first.strand == second.strand:
+            return None
+
+        spacer_len = rightmost.start0 - leftmost.end0
+        if spacer_len < 0 or spacer_len not in allowed_spacers:
+            return None
+
+        orientation = MatchOrientation(f"{leftmost.kind}...{rightmost.kind}")
+        if params.dimer_mode == DimerMode.HETERODIMER_ONLY and orientation not in {
+            MatchOrientation.LR,
+            MatchOrientation.RL,
+        }:
+            return None
+
+        site_start_0 = leftmost.start0
+        site_end_0 = rightmost.end0
+        sequence = chrom_seq[site_start_0:site_end_0]
+
+        if first.kind == "L":
+            left_hit, right_hit = first, second
+        elif second.kind == "L":
+            left_hit, right_hit = second, first
+        else:
+            left_hit, right_hit = leftmost, rightmost
+
+        score = self._score_site(left_hit, right_hit, params.algorithm)
+        total_mismatches = left_hit.mismatches + right_hit.mismatches
+        site_id = (
+            f"{left_hit.chrom}:{site_start_0 + 1}-{site_end_0}:"
+            f"{orientation.value}:mm{left_hit.mismatches}+{right_hit.mismatches}"
+        )
+
+        return ZFNOffTargetSite(
+            site_id=site_id,
+            chrom=left_hit.chrom,
+            start_1based=site_start_0 + 1,
+            end_1based=site_end_0,
+            strand=leftmost.strand,
+            orientation=orientation,
+            spacer_len=spacer_len,
+            sequence=sequence,
+            left_mismatches=left_hit.mismatches,
+            right_mismatches=right_hit.mismatches,
+            total_mismatches=total_mismatches,
+            score=score,
+            region="unknown",
+            nearest_gene=None,
+            left_aligned=left_hit.aligned,
+            right_aligned=right_hit.aligned,
+        )
+
+    def _score_site(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit, algorithm: ZFNAlgorithm) -> float:
+        """Score one paired site using the selected algorithm family."""
+        if algorithm == ZFNAlgorithm.HOMOLOGY:
+            return self._score_homology(left_hit, right_hit)
+        if algorithm == ZFNAlgorithm.CONSERVED_G:
+            return self._score_conserved_g(left_hit, right_hit)
+        return self._score_zfn_v2(left_hit, right_hit)
+
+    def _score_homology(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:
+        """Mismatch-count score in [0,100]."""
+        mismatch_penalty = (left_hit.mismatches + right_hit.mismatches) * 12.0
+        seed_penalty = (left_hit.seed_mismatches + right_hit.seed_mismatches) * 8.0
+        return max(0.0, min(100.0, 100.0 - mismatch_penalty - seed_penalty))
+
+    def _score_conserved_g(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:
+        """Homology score plus a heuristic bonus for conserved intended G contacts."""
+        base = self._score_homology(left_hit, right_hit)
+        total_g_positions = left_hit.query.count("G") + right_hit.query.count("G")
+        if total_g_positions == 0:
+            return base
+
+        conserved_left = sum(
+            1 for q, o in zip(left_hit.query, left_hit.observed, strict=False) if q == "G" and o == "G"
+        )
+        conserved_right = sum(
+            1 for q, o in zip(right_hit.query, right_hit.observed, strict=False) if q == "G" and o == "G"
+        )
+        conserved_ratio = (conserved_left + conserved_right) / total_g_positions
+        return max(0.0, min(100.0, base + (conserved_ratio * 10.0)))
+
+    def _score_zfn_v2(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:
+        """Finger-aware, polarity-weighted, compensatory score in [0,100]."""
+        left_penalty = self._half_site_v2_penalty(left_hit, is_left=True)
+        right_penalty = self._half_site_v2_penalty(right_hit, is_left=False)
+
+        # Compensation heuristic: unbalanced penalties partially compensate each other.
+        compensation_bonus = min(6.0, abs(left_penalty - right_penalty) * 0.25)
+        total_penalty = max(0.0, left_penalty + right_penalty - compensation_bonus)
+
+        return max(0.0, min(100.0, 100.0 - total_penalty))
+
+    def _half_site_v2_penalty(self, hit: _HalfSiteHit, is_left: bool) -> float:
+        """Compute one half-site penalty with finger and polarity weighting."""
+        if not hit.mismatch_positions:
+            return 0.0
+
+        seq_len = len(hit.query)
+        finger_len = 3
+        penalties: list[float] = []
+
+        for pos in hit.mismatch_positions:
+            dist_from_foki = (seq_len - 1) - pos if is_left else pos
+
+            polarity_weight = 1.0 + (0.08 * max(0, 5 - dist_from_foki))
+            finger_idx = pos // finger_len
+            finger_weight = 1.0 + (0.05 * finger_idx)
+            penalties.append(9.0 * polarity_weight * finger_weight)
+
+        return sum(penalties)

@@ -54,9 +54,9 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
-    ZNFDefaultSubfingerMutationConstraint,
-    ZNFOverallMutationConstraint,
-    ZNFSubfingerMutationConstraint,
+    ZFNDefaultSubfingerMutationConstraint,
+    ZFNOverallMutationConstraint,
+    ZFNSubfingerMutationConstraint,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.variant import VariantRecord
@@ -2239,9 +2239,9 @@ async def run_sirna_workflow(
     sirna_length: int = 21,
     modification_pattern: str = "standard_2ome",
     overhang: str = "dTdT",
-    znf_subfinger_mutations: Sequence[ZNFSubfingerMutationConstraint] | None = None,
-    znf_default_subfinger_mutation: ZNFDefaultSubfingerMutationConstraint | None = None,
-    znf_overall_mutations: Sequence[ZNFOverallMutationConstraint] | None = None,
+    zfn_subfinger_mutations: Sequence[ZFNSubfingerMutationConstraint] | None = None,
+    zfn_default_subfinger_mutation: ZFNDefaultSubfingerMutationConstraint | None = None,
+    zfn_overall_mutations: Sequence[ZFNOverallMutationConstraint] | None = None,
     check_off_targets: bool = True,
     # Variant targeting parameters
     variant_ids: list[str] | None = None,
@@ -2265,7 +2265,7 @@ async def run_sirna_workflow(
         output_dir: Directory for output files
         input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
-        design_mode: Design mode (sirna, mirna, or znf)
+        design_mode: Design mode (sirna, mirna, or zfn)
         top_n_candidates: Number of top candidates to generate
         genome_species: Species genomes for off-target analysis
         genome_indices_override: Comma-separated species:/index_prefix overrides for off-target analysis
@@ -2279,9 +2279,9 @@ async def run_sirna_workflow(
         sirna_length: siRNA length in nucleotides
         modification_pattern: Chemical modification pattern
         overhang: Overhang sequence (dTdT for DNA, UU for RNA)
-        znf_subfinger_mutations: Optional per-sub-finger ZNF mutation allowances
-        znf_default_subfinger_mutation: Optional default per-sub-finger mutation budget
-        znf_overall_mutations: Optional global mutation budgets across all sub-fingers
+        zfn_subfinger_mutations: Optional per-sub-finger ZFN mutation allowances
+        zfn_default_subfinger_mutation: Optional default per-sub-finger mutation budget
+        zfn_overall_mutations: Optional global mutation budgets across all sub-fingers
         check_off_targets: Perform off-target analysis stage (default: True)
         variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
         variant_vcf_file: Path to VCF file containing variants to target or avoid
@@ -2322,9 +2322,9 @@ async def run_sirna_workflow(
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
-        znf_subfinger_mutations=list(znf_subfinger_mutations or []),
-        znf_default_subfinger_mutation=znf_default_subfinger_mutation,
-        znf_overall_mutations=list(znf_overall_mutations or []),
+        zfn_subfinger_mutations=list(zfn_subfinger_mutations or []),
+        zfn_default_subfinger_mutation=zfn_default_subfinger_mutation,
+        zfn_overall_mutations=list(zfn_overall_mutations or []),
     )
     database_enum = DatabaseType(database.lower())
 

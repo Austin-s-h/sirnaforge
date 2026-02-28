@@ -163,11 +163,11 @@ class DesignMode(str, Enum):
 
     SIRNA = "sirna"  # Standard siRNA design mode
     MIRNA = "mirna"  # miRNA-biogenesis-aware design mode
-    ZNF = "znf"  # Zinc-finger design mode (uses siRNA designer core with ZNF constraints)
+    ZFN = "zfn"  # Zinc-finger design mode (uses siRNA designer core with ZFN constraints)
 
 
-class ZNFMutationType(str, Enum):
-    """Allowed mutation categories for ZNF sub-finger constraints."""
+class ZFNMutationType(str, Enum):
+    """Allowed mutation categories for ZFN sub-finger constraints."""
 
     SUBSTITUTION = "substitution"
     TRANSITION = "transition"
@@ -176,32 +176,32 @@ class ZNFMutationType(str, Enum):
     DELETION = "deletion"
 
 
-class ZNFSubfingerMutationConstraint(BaseModel):
-    """Mutation allowance definition for one ZNF sub-finger."""
+class ZFNSubfingerMutationConstraint(BaseModel):
+    """Mutation allowance definition for one ZFN sub-finger."""
 
     subfinger_index: int = Field(ge=1, description="1-based sub-finger index")
     max_mutations: int = Field(ge=0, description="Maximum allowed mutations for this sub-finger")
-    mutation_types: list[ZNFMutationType] = Field(
+    mutation_types: list[ZFNMutationType] = Field(
         min_length=1,
         description="Allowed mutation types for this sub-finger",
     )
 
 
-class ZNFDefaultSubfingerMutationConstraint(BaseModel):
+class ZFNDefaultSubfingerMutationConstraint(BaseModel):
     """Default mutation allowance applied to each sub-finger."""
 
     max_mutations: int = Field(ge=0, description="Maximum allowed mutations for each sub-finger")
-    mutation_types: list[ZNFMutationType] = Field(
+    mutation_types: list[ZFNMutationType] = Field(
         min_length=1,
         description="Allowed mutation types for each sub-finger",
     )
 
 
-class ZNFOverallMutationConstraint(BaseModel):
+class ZFNOverallMutationConstraint(BaseModel):
     """Global mutation allowance applied across all sub-fingers."""
 
     max_mutations: int = Field(ge=0, description="Maximum allowed mutations across all sub-fingers")
-    mutation_types: list[ZNFMutationType] = Field(
+    mutation_types: list[ZFNMutationType] = Field(
         min_length=1,
         description="Allowed mutation types for the global budget",
     )
@@ -261,20 +261,20 @@ class DesignParameters(BaseModel):
     # Design mode selection
     design_mode: DesignMode = Field(
         default=DesignMode.SIRNA,
-        description="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or znf",
+        description="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
     )
 
-    znf_subfinger_mutations: list[ZNFSubfingerMutationConstraint] = Field(
+    zfn_subfinger_mutations: list[ZFNSubfingerMutationConstraint] = Field(
         default_factory=list,
-        description="Per-sub-finger mutation allowances used when design_mode=znf",
+        description="Per-sub-finger mutation allowances used when design_mode=zfn",
     )
-    znf_default_subfinger_mutation: ZNFDefaultSubfingerMutationConstraint | None = Field(
+    zfn_default_subfinger_mutation: ZFNDefaultSubfingerMutationConstraint | None = Field(
         default=None,
-        description="Default mutation allowance applied to each sub-finger in znf mode",
+        description="Default mutation allowance applied to each sub-finger in zfn mode",
     )
-    znf_overall_mutations: list[ZNFOverallMutationConstraint] = Field(
+    zfn_overall_mutations: list[ZFNOverallMutationConstraint] = Field(
         default_factory=list,
-        description="Global mutation budgets applied across all sub-fingers in znf mode",
+        description="Global mutation budgets applied across all sub-fingers in zfn mode",
     )
 
     # Basic parameters

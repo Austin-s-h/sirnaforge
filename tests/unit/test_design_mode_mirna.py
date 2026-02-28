@@ -43,7 +43,7 @@ class TestDesignModeEnum:
         """Test that DesignMode enum has correct values."""
         assert DesignMode.SIRNA.value == "sirna"
         assert DesignMode.MIRNA.value == "mirna"
-        assert DesignMode.ZNF.value == "znf"
+        assert DesignMode.ZFN.value == "zfn"
 
     def test_design_mode_in_parameters(self):
         """Test that design_mode is accessible in DesignParameters."""
@@ -55,9 +55,9 @@ class TestDesignModeEnum:
         params_mirna = DesignParameters(design_mode=DesignMode.MIRNA)
         assert params_mirna.design_mode == DesignMode.MIRNA
 
-        # Can be set to znf
-        params_znf = DesignParameters(design_mode=DesignMode.ZNF)
-        assert params_znf.design_mode == DesignMode.ZNF
+        # Can be set to zfn
+        params_zfn = DesignParameters(design_mode=DesignMode.ZFN)
+        assert params_zfn.design_mode == DesignMode.ZFN
 
 
 class TestMiRNADesigner:
