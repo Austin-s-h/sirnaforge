@@ -6,10 +6,77 @@ import csv
 import json
 from pathlib import Path
 
+from Bio.Seq import Seq
+
+from sirnaforge.models.zfn import ZFNDesignParameters, ZFNHalfSiteConstraints, ZFNSpacerConstraints
+from sirnaforge.zfn.design import ZFNDesigner
+
 
 def _data_dir() -> Path:
     """Return the unit-test data directory for ZFN benchmark fixtures."""
     return Path(__file__).parent / "data" / "zfn"
+
+
+def _match_type_spacer(match_type: str) -> int:
+    """Extract spacer length from compact match-type labels like ``L-5-R``."""
+    return int(match_type.split("-")[1])
+
+
+def _genomic_site_from_visible_row(plus_half_site: str, minus_half_site: str, spacer_len: int) -> str:
+    """Build genomic site string for search-space FASTA from S10 visible row halves.
+
+    The ZFN searcher expects ``right_half_site`` in model orientation and compares
+    against reverse-complemented genomic sequence on the right half.
+    """
+    plus = plus_half_site.upper()
+    minus = minus_half_site.upper()
+    right_genomic = str(Seq(minus).reverse_complement())
+    return f"{plus}{'A' * spacer_len}{right_genomic}"
+
+
+def test_00_ccr5_sirnaforge_run_sanity_against_visible_rows(tmp_path: Path) -> None:
+    """Run sirnaforge ZFN design on synthetic CCR5 subset and compare to visible real-data rows."""
+    s10_path = _data_dir() / "ccr5_s10_visible_rows.csv"
+    with s10_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    ccr5_row = next(row for row in rows if row["Closest gene"] == "CCR5")
+    csnk1g3_row = next(row for row in rows if row["Closest gene"] == "CSNK1G3")
+
+    ccr5_spacer = _match_type_spacer(ccr5_row["Match type"])
+    csnk1g3_spacer = _match_type_spacer(csnk1g3_row["Match type"])
+
+    synthetic_genome = (
+        "TTT"
+        + _genomic_site_from_visible_row(ccr5_row["(+) half-site"], ccr5_row["(−) half-site"], ccr5_spacer)
+        + "GGGG"
+        + _genomic_site_from_visible_row(
+            csnk1g3_row["(+) half-site"],
+            csnk1g3_row["(−) half-site"],
+            csnk1g3_spacer,
+        )
+        + "CCC"
+    )
+
+    fasta_path = tmp_path / "ccr5_visible_subset.fa"
+    fasta_path.write_text(f">chr5\n{synthetic_genome}\n", encoding="utf-8")
+
+    params = ZFNDesignParameters(
+        left_half_site=ccr5_row["(+) half-site"],
+        right_half_site=ccr5_row["(−) half-site"],
+        search_space_fasta=str(fasta_path),
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=4),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
+        top_n_sites=100,
+    )
+
+    result = ZFNDesigner().evaluate_pair(params)
+    sites = result.off_target_sites
+    assert sites, "Expected at least one predicted site from synthetic CCR5 subset"
+
+    assert any(site.left_mismatches == 0 and site.right_mismatches == 0 for site in sites)
+
+    assert any(site.spacer_len == 5 and site.left_mismatches >= 1 and site.right_mismatches >= 1 for site in sites)
 
 
 def test_ccr5_study_facts_include_expected_assertions() -> None:
