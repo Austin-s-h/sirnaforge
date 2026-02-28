@@ -163,6 +163,48 @@ class DesignMode(str, Enum):
 
     SIRNA = "sirna"  # Standard siRNA design mode
     MIRNA = "mirna"  # miRNA-biogenesis-aware design mode
+    ZNF = "znf"  # Zinc-finger design mode (uses siRNA designer core with ZNF constraints)
+
+
+class ZNFMutationType(str, Enum):
+    """Allowed mutation categories for ZNF sub-finger constraints."""
+
+    SUBSTITUTION = "substitution"
+    TRANSITION = "transition"
+    TRANSVERSION = "transversion"
+    INSERTION = "insertion"
+    DELETION = "deletion"
+
+
+class ZNFSubfingerMutationConstraint(BaseModel):
+    """Mutation allowance definition for one ZNF sub-finger."""
+
+    subfinger_index: int = Field(ge=1, description="1-based sub-finger index")
+    max_mutations: int = Field(ge=0, description="Maximum allowed mutations for this sub-finger")
+    mutation_types: list[ZNFMutationType] = Field(
+        min_length=1,
+        description="Allowed mutation types for this sub-finger",
+    )
+
+
+class ZNFDefaultSubfingerMutationConstraint(BaseModel):
+    """Default mutation allowance applied to each sub-finger."""
+
+    max_mutations: int = Field(ge=0, description="Maximum allowed mutations for each sub-finger")
+    mutation_types: list[ZNFMutationType] = Field(
+        min_length=1,
+        description="Allowed mutation types for each sub-finger",
+    )
+
+
+class ZNFOverallMutationConstraint(BaseModel):
+    """Global mutation allowance applied across all sub-fingers."""
+
+    max_mutations: int = Field(ge=0, description="Maximum allowed mutations across all sub-fingers")
+    mutation_types: list[ZNFMutationType] = Field(
+        min_length=1,
+        description="Allowed mutation types for the global budget",
+    )
 
 
 class MiRNADesignConfig(BaseModel):
@@ -218,7 +260,21 @@ class DesignParameters(BaseModel):
 
     # Design mode selection
     design_mode: DesignMode = Field(
-        default=DesignMode.SIRNA, description="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)"
+        default=DesignMode.SIRNA,
+        description="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or znf",
+    )
+
+    znf_subfinger_mutations: list[ZNFSubfingerMutationConstraint] = Field(
+        default_factory=list,
+        description="Per-sub-finger mutation allowances used when design_mode=znf",
+    )
+    znf_default_subfinger_mutation: ZNFDefaultSubfingerMutationConstraint | None = Field(
+        default=None,
+        description="Default mutation allowance applied to each sub-finger in znf mode",
+    )
+    znf_overall_mutations: list[ZNFOverallMutationConstraint] = Field(
+        default_factory=list,
+        description="Global mutation budgets applied across all sub-fingers in znf mode",
     )
 
     # Basic parameters

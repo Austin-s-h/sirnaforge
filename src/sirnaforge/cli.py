@@ -58,7 +58,16 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
-from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignParameters,
+    FilterCriteria,
+    MiRNADesignConfig,
+    ZNFDefaultSubfingerMutationConstraint,
+    ZNFMutationType,
+    ZNFOverallMutationConstraint,
+    ZNFSubfingerMutationConstraint,
+)
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
@@ -154,7 +163,7 @@ def _resolve_design_mode(
     applied when the corresponding option is still set to its siRNA default.
 
     Args:
-        design_mode: Raw user input (e.g., ``sirna`` or ``mirna``).
+        design_mode: Raw user input (e.g., ``sirna``, ``mirna``, or ``znf``).
         gc_min: Minimum GC percentage.
         gc_max: Maximum GC percentage.
         overhang: Overhang string.
@@ -169,7 +178,7 @@ def _resolve_design_mode(
     try:
         mode_enum = DesignMode(design_mode.lower())
     except ValueError as exc:
-        raise ValueError(f"Invalid design mode '{design_mode}'. Choose 'sirna' or 'mirna'") from exc
+        raise ValueError(f"Invalid design mode '{design_mode}'. Choose 'sirna', 'mirna', or 'znf'") from exc
 
     if mode_enum == DesignMode.MIRNA:
         mirna_config = MiRNADesignConfig()
@@ -182,6 +191,85 @@ def _resolve_design_mode(
             modification_pattern = mirna_config.modifications
 
     return mode_enum, gc_min, gc_max, overhang, modification_pattern
+
+
+def _parse_znf_mutation_types(raw_types: str, raw_constraint: str) -> list[ZNFMutationType]:
+    """Parse and normalize mutation type tokens."""
+    aliases = {"mismatch": "substitution", "mismatches": "substitution"}
+    mutation_types = [t.strip().lower() for t in raw_types.split(",") if t.strip()]
+    if not mutation_types:
+        raise ValueError(f"Invalid ZNF mutation types in '{raw_constraint}'. At least one type is required.")
+    return [ZNFMutationType(aliases.get(value, value)) for value in mutation_types]
+
+
+def _parse_znf_mutation_constraints(
+    raw_constraints: list[str],
+) -> tuple[
+    list[ZNFSubfingerMutationConstraint],
+    ZNFDefaultSubfingerMutationConstraint | None,
+    list[ZNFOverallMutationConstraint],
+]:
+    """Parse CLI ZNF mutation constraints in ``scope:max:type1,type2`` format.
+
+    Scope can be:
+      - ``<int>`` for explicit sub-finger index
+      - ``*`` for default per-sub-finger budget
+      - ``overall`` for global mutation budgets
+    """
+    per_subfinger: list[ZNFSubfingerMutationConstraint] = []
+    default_subfinger: ZNFDefaultSubfingerMutationConstraint | None = None
+    overall_constraints: list[ZNFOverallMutationConstraint] = []
+    for raw in raw_constraints:
+        parts = [part.strip() for part in raw.split(":", maxsplit=2)]
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid ZNF sub-finger mutation constraint '{raw}'. "
+                "Expected format: scope:max_mutations:type1,type2 "
+                "(scope: subfinger index, '*', or 'overall')"
+            )
+
+        scope_raw, max_mut_raw, types_raw = parts
+        try:
+            max_mutations = int(max_mut_raw)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ZNF mutation counts in '{raw}'. max_mutations must be an integer.") from exc
+
+        mutation_types = _parse_znf_mutation_types(types_raw, raw)
+        scope_normalized = scope_raw.lower()
+
+        if scope_normalized == "*":
+            default_subfinger = ZNFDefaultSubfingerMutationConstraint(
+                max_mutations=max_mutations,
+                mutation_types=mutation_types,
+            )
+            continue
+
+        if scope_normalized == "overall":
+            overall_constraints.append(
+                ZNFOverallMutationConstraint(
+                    max_mutations=max_mutations,
+                    mutation_types=mutation_types,
+                )
+            )
+            continue
+
+        try:
+            subfinger_index = int(scope_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid ZNF mutation scope '{scope_raw}' in '{raw}'. "
+                "Use subfinger index, '*' (default per-subfinger), or 'overall'."
+            ) from exc
+
+        per_subfinger.append(
+            ZNFSubfingerMutationConstraint(
+                subfinger_index=subfinger_index,
+                max_mutations=max_mutations,
+                mutation_types=mutation_types,
+            )
+        )
+
+    return per_subfinger, default_subfinger, overall_constraints
 
 
 @app_command()
@@ -439,7 +527,30 @@ def workflow(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
+        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or znf",
+    ),
+    znf_subfinger_mutation: list[str] = typer.Option(
+        [],
+        "--znf-subfinger-mutation",
+        help=(
+            "ZNF sub-finger mutation allowance. "
+            "Repeatable format: scope:max_mutations:type1,type2. "
+            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
+            "or 'overall' for global budgets. "
+            "Use 'mismatch' as a shorthand alias for 'substitution'."
+        ),
+    ),
+    znf_max_mismatches_per_subfinger: int | None = typer.Option(
+        None,
+        "--znf-max-mismatches-per-subfinger",
+        min=0,
+        help="Convenience option equivalent to --znf-subfinger-mutation '*:<N>:mismatch'.",
+    ),
+    znf_max_substitutions_overall: int | None = typer.Option(
+        None,
+        "--znf-max-substitutions-overall",
+        min=0,
+        help="Convenience option equivalent to --znf-subfinger-mutation 'overall:<N>:substitution'.",
     ),
     top_n_candidates: int = typer.Option(
         100,
@@ -648,6 +759,26 @@ def workflow(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
+    merged_znf_constraints = list(znf_subfinger_mutation)
+    if znf_max_mismatches_per_subfinger is not None:
+        merged_znf_constraints.append(f"*:{znf_max_mismatches_per_subfinger}:mismatch")
+    if znf_max_substitutions_overall is not None:
+        merged_znf_constraints.append(f"overall:{znf_max_substitutions_overall}:substitution")
+
+    try:
+        znf_constraints, znf_default_constraint, znf_overall_constraints = _parse_znf_mutation_constraints(
+            merged_znf_constraints
+        )
+    except ValueError as exc:
+        logger.error("Invalid ZNF sub-finger mutation configuration: %s", exc)
+        console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+
+    if mode_enum != DesignMode.ZNF and (znf_constraints or znf_default_constraint or znf_overall_constraints):
+        logger.error("ZNF constraints provided while design mode is %s", mode_enum.value)
+        console.print("❌ Error: --znf-subfinger-mutation requires --design-mode znf", style="red")
+        raise typer.Exit(1)
+
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
         override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
@@ -704,7 +835,9 @@ def workflow(  # noqa: PLR0912
             f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
-            f"Overhang: [magenta]{overhang}[/magenta]",
+            f"Overhang: [magenta]{overhang}[/magenta]\n"
+            f"ZNF Constraints: [magenta]{len(znf_constraints)} explicit, "
+            f"{1 if znf_default_constraint else 0} default, {len(znf_overall_constraints)} overall[/magenta]",
             title="Workflow Configuration",
         )
     )
@@ -738,6 +871,9 @@ def workflow(  # noqa: PLR0912
                     sirna_length=sirna_length,
                     modification_pattern=modification_pattern,
                     overhang=overhang,
+                    znf_subfinger_mutations=znf_constraints,
+                    znf_default_subfinger_mutation=znf_default_constraint,
+                    znf_overall_mutations=znf_overall_constraints,
                     # Variant parameters
                     variant_ids=list(snp) if snp else None,
                     variant_vcf_file=snp_file,
@@ -1057,7 +1193,30 @@ def design(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
+        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or znf",
+    ),
+    znf_subfinger_mutation: list[str] = typer.Option(
+        [],
+        "--znf-subfinger-mutation",
+        help=(
+            "ZNF sub-finger mutation allowance. "
+            "Repeatable format: scope:max_mutations:type1,type2. "
+            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
+            "or 'overall' for global budgets. "
+            "Use 'mismatch' as a shorthand alias for 'substitution'."
+        ),
+    ),
+    znf_max_mismatches_per_subfinger: int | None = typer.Option(
+        None,
+        "--znf-max-mismatches-per-subfinger",
+        min=0,
+        help="Convenience option equivalent to --znf-subfinger-mutation '*:<N>:mismatch'.",
+    ),
+    znf_max_substitutions_overall: int | None = typer.Option(
+        None,
+        "--znf-max-substitutions-overall",
+        min=0,
+        help="Convenience option equivalent to --znf-subfinger-mutation 'overall:<N>:substitution'.",
     ),
     length: int = typer.Option(
         21,
@@ -1155,6 +1314,24 @@ def design(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
+    merged_znf_constraints = list(znf_subfinger_mutation)
+    if znf_max_mismatches_per_subfinger is not None:
+        merged_znf_constraints.append(f"*:{znf_max_mismatches_per_subfinger}:mismatch")
+    if znf_max_substitutions_overall is not None:
+        merged_znf_constraints.append(f"overall:{znf_max_substitutions_overall}:substitution")
+
+    try:
+        znf_constraints, znf_default_constraint, znf_overall_constraints = _parse_znf_mutation_constraints(
+            merged_znf_constraints
+        )
+    except ValueError as exc:
+        console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+
+    if mode_enum != DesignMode.ZNF and (znf_constraints or znf_default_constraint or znf_overall_constraints):
+        console.print("❌ Error: --znf-subfinger-mutation requires --design-mode znf", style="red")
+        raise typer.Exit(1)
+
     # Create parameters
     filters = FilterCriteria(
         gc_min=gc_min,
@@ -1174,6 +1351,9 @@ def design(  # noqa: PLR0912
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
+        znf_subfinger_mutations=znf_constraints,
+        znf_default_subfinger_mutation=znf_default_constraint,
+        znf_overall_mutations=znf_overall_constraints,
     )
 
     console.print(

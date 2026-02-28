@@ -111,6 +111,30 @@ sirnaforge workflow BRCA1 \
   --output-dir results
 ```
 
+### ZNF mutation constraints (composable)
+
+ZNF mode accepts repeatable mutation constraints so you can combine per-subfinger and global budgets.
+
+```bash
+sirnaforge workflow ZNF_TARGET \
+  --input-fasta examples/sample_transcripts.fasta \
+  --design-mode znf \
+  --znf-max-mismatches-per-subfinger 1 \
+  --znf-max-substitutions-overall 3 \
+  --znf-subfinger-mutation "2:0:deletion" \
+  --output-dir znf_results
+```
+
+Constraint syntax for `--znf-subfinger-mutation` is:
+
+- `scope:max_mutations:type1,type2`
+- `scope` can be:
+  - `*` → default budget for each subfinger
+  - `<index>` → specific subfinger (1-based)
+  - `overall` → global budget across all subfingers
+- supported types: `substitution`, `transition`, `transversion`, `insertion`, `deletion`
+- shorthand: `mismatch` is accepted as an alias for `substitution`
+
 ### Custom inputs & offline mode
 
 Bring your own transcript sequences while still running the full workflow:

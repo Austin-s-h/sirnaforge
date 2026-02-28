@@ -39,6 +39,22 @@ uv run sirnaforge workflow TP53 \
 
 ## Gene Search & Design Automations
 
+### ZNF Constraint Composition
+
+```bash
+uv run sirnaforge workflow ZNF_PANEL \
+  --input-fasta examples/sample_transcripts.fasta \
+  --design-mode znf \
+  --znf-max-mismatches-per-subfinger 1 \
+  --znf-subfinger-mutation "overall:3:substitution" \
+  --znf-subfinger-mutation "3:2:transition,transversion" \
+  --output-dir znf_panel_demo
+```
+
+- Use `--znf-max-mismatches-per-subfinger` for the common baseline.
+- Add `overall:...` constraints to cap mutation classes globally.
+- Override individual subfingers with indexed entries when needed.
+
 ### Curated Transcript Panel
 
 ```bash
