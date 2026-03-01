@@ -31,6 +31,15 @@ Run complete siRNA design from gene query to scored candidates.
 The workflow command searches for gene transcripts, designs siRNA candidates, scores them using thermodynamic analysis, and outputs ranked results.
 :::
 
+#### ZFN Mode Notes (Curated)
+
+When `--design-mode zfn` is selected:
+
+* `--zfn-left-half-site` and `--zfn-right-half-site` are required.
+* `--zfn-search-space` accepts either a local/remote FASTA or a configured reference key.
+* `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
+* Outputs are written as `sirnaforge/zfn_candidate_summary.json` and `sirnaforge/zfn_offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
+
 #### Input Sources & Transcriptome References
 
 siRNAforge accepts complementary inputs when you need to bypass gene search or control the reference used for transcriptome off-target analysis:

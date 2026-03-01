@@ -148,7 +148,11 @@ workflow SIRNAFORGE_OFFTARGET {
             params.zfn_dimer_mode,
             params.zfn_spacer_lengths,
             params.zfn_max_mismatches,
-            zfn_annot
+            zfn_annot,
+            params.zfn_sharding_enabled,
+            params.zfn_shard_chunk_mb,
+            params.zfn_shard_overlap_bp,
+            params.zfn_shard_chromosomes
         )
     } else {
         //

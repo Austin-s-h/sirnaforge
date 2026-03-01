@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-03-01
+
+### New Features
+- **ZFN workflow maturity for release**:
+  - Added robust ZFN workflow mode coverage for constrained half-site design and off-target site discovery.
+  - Documented and stabilized ZFN algorithm selection (`homology`, `conserved_g`, `zfn_v2`) and dimer controls.
+  - Added explicit reporting expectations for `zfn_candidate_summary.json` and `zfn_offtarget_sites.csv` outputs.
+
+### Improvements
+- **Documentation completeness and command correctness**:
+  - Reconciled stale CLI examples with current command options (`--species`, `--modifications`, ZFN-required half-site flags).
+  - Added curated ZFN guidance to complement auto-generated CLI help output.
+  - Updated installation docs to reflect Python support (`3.10-3.12`).
+- **Release metadata consistency**:
+  - Aligned release-facing documentation for the 0.4.2 train across changelog and release notes.
+
 ## [0.4.0] - 2025-1-5
 
 ### Breaking

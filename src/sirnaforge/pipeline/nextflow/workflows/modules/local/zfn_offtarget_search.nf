@@ -12,78 +12,45 @@
 */
 
 process ZFN_OFFTARGET_SEARCH {
-    tag "zfn_offtarget"
+    tag "zfn_offtarget:${shard_id}"
     label 'process_high'
     publishDir "${params.outdir}/zfn_offtarget", mode: params.publish_dir_mode
 
     input:
+    tuple val(shard_id), val(shard_chrom), val(scan_start_1), val(scan_end_1), val(shard_max_mismatches)
     val left_half_site
     val right_half_site
     path genome_fasta
     val algorithm
     val dimer_mode
     val spacer_lengths
-    val max_mismatches
     path annotation_file
 
     output:
-    path "zfn_offtarget_sites.tsv", emit: sites
-    path "zfn_candidate_summary.json", emit: summary
+    path "zfn_offtarget_sites_${shard_id}.csv", emit: sites
+    path "zfn_candidate_summary_${shard_id}.json", emit: summary
     path "versions.yml", emit: versions
 
     when:
     task.ext.when == null || task.ext.when
 
     script:
-    def annotation_arg = annotation_file.name != 'NO_ANNOTATION' ? "--annotation ${annotation_file}" : ''
+    def annotation_arg = annotation_file.name != 'NO_ANNOTATION' ? "--annotation-file ${annotation_file} \\\n" : ''
     """
-    python3 <<'PYEOF'
-import sys, json
-sys.path.insert(0, '${workflow.projectDir}/../src')
-
-from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher
-from sirnaforge.models.zfn import (
-    DimerMode,
-    GenomicAnnotationConfig,
-    ZFNAlgorithm,
-    ZFNDesignParameters,
-    ZFNHalfSiteConstraints,
-    ZFNSpacerConstraints,
-)
-from sirnaforge.zfn.design import ZFNDesigner
-
-spacer_list = [int(s) for s in '${spacer_lengths}'.split(',')]
-
-params_obj = ZFNDesignParameters(
-    left_half_site='${left_half_site}',
-    right_half_site='${right_half_site}',
-    search_space_fasta='${genome_fasta}',
-    search_space_reference=None,
-    algorithm=ZFNAlgorithm('${algorithm}'),
-    dimer_mode=DimerMode('${dimer_mode}'),
-    spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=spacer_list),
-    half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=${max_mismatches}),
-)
-
-annotation = None
-annotation_path = '${annotation_file}'
-if annotation_path and annotation_path != 'NO_ANNOTATION':
-    annotation = GenomicAnnotationConfig(annotation_path=annotation_path)
-
-designer = ZFNDesigner()
-result = designer.evaluate_pair(params=params_obj, annotation=annotation)
-
-# Write off-target sites TSV
-result.save_offtargets_csv('zfn_offtarget_sites.tsv')
-
-# Write candidate summary JSON
-summary = result.get_summary()
-candidates = [c.model_dump(mode='json') for c in result.candidates]
-with open('zfn_candidate_summary.json', 'w') as f:
-    json.dump({'candidates': candidates, 'summary': summary}, f, indent=2, default=str)
-
-print(f"ZFN off-target search completed: {len(result.off_target_sites)} sites found")
-PYEOF
+    sirnaforge _internal zfn-search-shard \
+      --shard-id '${shard_id}' \
+      --shard-chrom '${shard_chrom}' \
+      --scan-start-1 ${scan_start_1} \
+      --scan-end-1 ${scan_end_1} \
+      --shard-max-mismatches ${shard_max_mismatches} \
+      --left-half-site '${left_half_site}' \
+      --right-half-site '${right_half_site}' \
+      --genome-fasta ${genome_fasta} \
+      --algorithm '${algorithm}' \
+      --dimer-mode '${dimer_mode}' \
+      --spacer-lengths '${spacer_lengths}' \
+    ${annotation_arg}      --output-sites-csv zfn_offtarget_sites_${shard_id}.csv \
+      --output-summary-json zfn_candidate_summary_${shard_id}.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
@@ -94,8 +61,8 @@ PYEOF
 
     stub:
     """
-    echo -e "site_id\\tchrom\\tstart_1based\\tend_1based\\tstrand\\torientation\\tspacer_len\\tsequence\\tleft_mismatches\\tright_mismatches\\ttotal_mismatches\\tscore\\tregion\\tnearest_gene\\tleft_aligned\\tright_aligned" > zfn_offtarget_sites.tsv
-    echo '{"candidates": [], "summary": {"candidates": 0, "off_target_sites": 0}}' > zfn_candidate_summary.json
+    echo "site_id,chrom,start_1based,end_1based,strand,orientation,spacer_len,sequence,left_mismatches,right_mismatches,total_mismatches,score,region,nearest_gene,left_aligned,right_aligned" > zfn_offtarget_sites_${shard_id}.csv
+    echo '{"candidates": [], "summary": {"candidates": 0, "off_target_sites": 0}}' > zfn_candidate_summary_${shard_id}.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

@@ -32,7 +32,7 @@ Chemical modifications enhance siRNA stability and reduce off-target effects whi
 **Example:**
 ```bash
 sirnaforge workflow TP53 \
-  --modification-file examples/modification_patterns/standard_2ome.json \
+  --modifications standard_2ome \
   --output-dir tp53_standard
 ```
 
@@ -67,7 +67,7 @@ sirnaforge workflow TP53 \
 **Example:**
 ```bash
 sirnaforge design input.fasta \
-  --modification-file examples/modification_patterns/minimal_terminal.json \
+  --modifications minimal_terminal \
   --output minimal_cost.csv
 ```
 
@@ -102,8 +102,8 @@ sirnaforge design input.fasta \
 **Example:**
 ```bash
 sirnaforge workflow TTR \
-  --modification-file examples/modification_patterns/maximal_stability.json \
-  --genome-species human \
+  --modifications maximal_stability \
+  --species human \
   --output-dir ttr_therapeutic
 ```
 
@@ -169,8 +169,8 @@ First FDA-approved RNAi therapeutic (2018) targeting transthyretin (TTR) for her
 ```bash
 # Design TTR-targeting siRNA using Patisiran pattern
 sirnaforge workflow TTR \
-  --modification-file examples/modification_patterns/fda_approved_onpattro.json \
-  --genome-species human \
+  --modifications standard_2ome \
+  --species human \
   --output-dir ttr_patisiran_template
 ```
 
@@ -433,7 +433,7 @@ Passenger: [1-21] all positions
 **Example:**
 ```bash
 sirnaforge design library.fasta \
-  --modification-file examples/modification_patterns/minimal_terminal.json \
+  --modifications minimal_terminal \
   --top-n 500 \
   --output hts_library.csv
 ```
@@ -453,7 +453,7 @@ sirnaforge design library.fasta \
 **Example:**
 ```bash
 sirnaforge workflow GENE \
-  --modification-file examples/modification_patterns/standard_2ome.json \
+  --modifications standard_2ome \
   --top-n 20
 ```
 
@@ -472,8 +472,8 @@ sirnaforge workflow GENE \
 **Example:**
 ```bash
 sirnaforge workflow TARGET \
-  --modification-file examples/modification_patterns/maximal_stability.json \
-  --genome-species mouse \
+  --modifications maximal_stability \
+  --species mouse \
   --output-dir invivo_poc
 ```
 
@@ -610,12 +610,12 @@ sirnaforge workflow TARGET \
 ```bash
 # Apply pattern during design
 sirnaforge design input.fasta \
-  --modification-file pattern.json \
+  --modifications standard_2ome \
   --output designed.csv
 
 # Apply pattern during workflow
 sirnaforge workflow GENE \
-  --modification-file pattern.json \
+  --modifications standard_2ome \
   --output-dir results
 ```
 
@@ -739,7 +739,7 @@ To contribute new patterns to siRNAforge:
 ```bash
 # Test your pattern
 sirnaforge design test.fasta \
-  --modification-file my_new_pattern.json \
+  --modifications standard_2ome \
   --output test_output.csv
 
 # Verify it works

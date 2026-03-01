@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes yet.
 
+## [0.4.2] - 2026-03-01
+
+### Added
+- **ZFN documentation expansion**:
+  - Added clearer release-ready guidance for ZFN workflow inputs, algorithm selection, and expected output artifacts.
+  - Added curated ZFN usage notes to complement auto-generated CLI command output.
+
+### Improved
+- **CLI example accuracy**:
+  - Updated workflow examples to use current options (`--species`, `--modifications`) and removed stale flags.
+  - Corrected ZFN examples to include required half-site inputs for `--design-mode zfn`.
+- **Version/platform consistency**:
+  - Updated installation language to reflect supported Python versions (`3.10-3.12`).
+
 ## [0.3.4] - 2025-12-31
 
 ### Added

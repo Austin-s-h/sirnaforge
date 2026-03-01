@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import fnmatch
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
-from Bio import SeqIO
 from Bio.Seq import Seq
 
 from sirnaforge.data.genome_manager import GenomeManager
@@ -20,9 +21,11 @@ from sirnaforge.models.zfn import (
     ZFNDesignParameters,
     ZFNOffTargetSite,
 )
+from sirnaforge.utils.fasta import load_fasta_sequences
 from sirnaforge.utils.logging_utils import get_logger
 
 from .interfaces import ZFNAnnotationProvider
+from .rank import rank_sites
 
 logger = get_logger(__name__)
 
@@ -62,6 +65,18 @@ class _HalfSiteHit:
     aligned: str
 
 
+@dataclass(slots=True)
+class _ShardSpec:
+    """Internal chromosome/chunk shard specification."""
+
+    shard_id: str
+    chrom: str
+    core_start0: int
+    core_end0: int
+    scan_start0: int
+    scan_end0: int
+
+
 class _WindowMatch(TypedDict):
     """Typed match payload returned by one half-site window evaluation."""
 
@@ -90,28 +105,192 @@ class ExhaustiveZFNOffTargetSearcher:
 
         chrom_sequences = self._load_fasta(fasta_path)
 
+        shard_specs = self._build_shard_specs(chrom_sequences, params)
+        all_sites: list[ZFNOffTargetSite] = []
+
+        workers = min(params.sharding.max_workers, len(shard_specs)) if shard_specs else 1
+        if workers > 1 and len(shard_specs) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._search_shard,
+                        shard=shard,
+                        chrom_sequences=chrom_sequences,
+                        params=params,
+                    ): shard.shard_id
+                    for shard in shard_specs
+                }
+                for future in as_completed(futures):
+                    all_sites.extend(future.result())
+        else:
+            for shard in shard_specs:
+                all_sites.extend(self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params))
+
+        deduped = self._dedupe_sites(all_sites)
+
+        if annotation and self.annotation_provider is not None:
+            deduped = self.annotation_provider.annotate(deduped, annotation)
+
+        ranked = rank_sites(deduped, params)
+        if len(ranked) > params.top_n_sites:
+            ranked = ranked[: params.top_n_sites]
+
+        return ranked
+
+    def _build_shard_specs(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> list[_ShardSpec]:
+        """Build chromosome/chunk shard specs with overlap safety guarantees."""
+        sharding = params.sharding
+        selected_contigs = self._resolve_target_contigs(chrom_sequences, sharding.chromosomes)
+        if not selected_contigs:
+            raise ValueError("No matching chromosomes available for configured ZFN sharding filter")
+
+        sharding_active = sharding.enabled and len(selected_contigs) > 1
+
+        if not sharding_active:
+            return [
+                _ShardSpec(
+                    shard_id=f"{chrom}:1-{len(chrom_sequences[chrom])}",
+                    chrom=chrom,
+                    core_start0=0,
+                    core_end0=len(chrom_sequences[chrom]),
+                    scan_start0=0,
+                    scan_end0=len(chrom_sequences[chrom]),
+                )
+                for chrom in selected_contigs
+            ]
+
+        max_spacer = max(params.spacer_constraints.allowed_spacer_lengths)
+        required_overlap = max(
+            50,
+            max(len(params.left_half_site), params.half_site_constraints.max_len)
+            + max_spacer
+            + max(len(params.right_half_site), params.half_site_constraints.max_len),
+        )
+        overlap = max(sharding.overlap_bp, required_overlap)
+
+        shards: list[_ShardSpec] = []
+        for chrom in selected_contigs:
+            chrom_len = len(chrom_sequences[chrom])
+            chunk_size = max(1, sharding.chunk_size_bp)
+
+            chunk_start0 = 0
+            while chunk_start0 < chrom_len:
+                chunk_end0 = min(chrom_len, chunk_start0 + chunk_size)
+                scan_start0 = max(0, chunk_start0 - overlap)
+                scan_end0 = min(chrom_len, chunk_end0 + overlap)
+
+                shards.append(
+                    _ShardSpec(
+                        shard_id=f"{chrom}:{chunk_start0 + 1}-{chunk_end0}",
+                        chrom=chrom,
+                        core_start0=chunk_start0,
+                        core_end0=chunk_end0,
+                        scan_start0=scan_start0,
+                        scan_end0=scan_end0,
+                    )
+                )
+                chunk_start0 = chunk_end0
+
+        logger.info(
+            "ZFN sharding enabled: %s shards across %s contigs (chunk=%sbp, overlap=%sbp)",
+            len(shards),
+            len(selected_contigs),
+            sharding.chunk_size_bp,
+            overlap,
+        )
+        return shards
+
+    def _resolve_target_contigs(self, chrom_sequences: dict[str, str], requested: list[str]) -> list[str]:
+        """Resolve requested chromosome filters against loaded FASTA contigs."""
+        if not requested:
+            return list(chrom_sequences.keys())
+
+        tokens = [token.strip() for token in requested if token.strip()]
+        if not tokens:
+            return list(chrom_sequences.keys())
+
+        resolved: list[str] = []
+        for chrom in chrom_sequences:
+            normalized = self._normalize_chrom(chrom)
+            if any(self._chrom_matches_token(chrom, normalized, token) for token in tokens):
+                resolved.append(chrom)
+        return resolved
+
+    def _chrom_matches_token(self, chrom: str, normalized: str, token: str) -> bool:
+        """Return whether a contig matches one filter token."""
+        raw_token = token.strip().lower()
+        normalized_token = self._normalize_chrom(token)
+        result = False
+
+        if raw_token in {"*", "all"}:
+            result = True
+        elif raw_token in {"autosomes", "autosome"}:
+            result = normalized.isdigit() and 1 <= int(normalized) <= 22
+        elif raw_token in {"sex", "gonosomes"}:
+            result = normalized in {"x", "y"}
+        elif raw_token in {"mito", "mitochondrial", "mtdna"}:
+            result = normalized in {"m", "mt"}
+        elif "-" in normalized_token:
+            start, end = normalized_token.split("-", 1)
+            if start.isdigit() and end.isdigit() and normalized.isdigit():
+                lower = int(start)
+                upper = int(end)
+                if lower > upper:
+                    lower, upper = upper, lower
+                value = int(normalized)
+                result = lower <= value <= upper
+        elif any(ch in token for ch in "*?[]"):
+            chrom_lc = chrom.lower()
+            result = fnmatch.fnmatch(chrom_lc, raw_token) or fnmatch.fnmatch(normalized, normalized_token)
+        else:
+            result = normalized == normalized_token or chrom.lower() == raw_token
+
+        return result
+
+    def _normalize_chrom(self, chrom: str) -> str:
+        """Normalize chromosome labels for robust alias matching (chr3 == 3)."""
+        token = chrom.strip().lower()
+        if token.startswith("chr"):
+            token = token[3:]
+        return token
+
+    def _search_shard(
+        self,
+        shard: _ShardSpec,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+    ) -> list[ZFNOffTargetSite]:
+        """Run one shard search and return local paired sites."""
         left_hits = self._scan_half_site(
             kind="L",
             query=params.left_half_site,
             chrom_sequences=chrom_sequences,
             params=params,
+            target_chrom=shard.chrom,
+            region_start0=shard.scan_start0,
+            region_end0=shard.scan_end0,
         )
         right_hits = self._scan_half_site(
             kind="R",
             query=params.right_half_site,
             chrom_sequences=chrom_sequences,
             params=params,
+            target_chrom=shard.chrom,
+            region_start0=shard.scan_start0,
+            region_end0=shard.scan_end0,
         )
 
-        all_sites = self._pair_hits(left_hits, right_hits, chrom_sequences, params)
-        all_sites.sort(key=lambda s: s.score, reverse=True)
-        if len(all_sites) > params.top_n_sites:
-            all_sites = all_sites[: params.top_n_sites]
+        return self._pair_hits(left_hits, right_hits, chrom_sequences, params)
 
-        if annotation and self.annotation_provider is not None:
-            all_sites = self.annotation_provider.annotate(all_sites, annotation)
-
-        return all_sites
+    def _dedupe_sites(self, sites: list[ZFNOffTargetSite]) -> list[ZFNOffTargetSite]:
+        """Dedupe by coordinates+orientation and keep the highest-scoring site."""
+        deduped: dict[tuple[str, int, int, MatchOrientation], ZFNOffTargetSite] = {}
+        for site in sites:
+            key = (site.chrom, site.start_1based, site.end_1based, site.orientation)
+            prev = deduped.get(key)
+            if prev is None or site.score > prev.score:
+                deduped[key] = site
+        return list(deduped.values())
 
     def _resolve_search_space_fasta(self, params: ZFNDesignParameters) -> Path:
         """Resolve search-space FASTA via explicit input or cache-managed sources."""
@@ -151,16 +330,7 @@ class ExhaustiveZFNOffTargetSearcher:
 
     def _load_fasta(self, fasta_path: Path) -> dict[str, str]:
         """Load contig/chromosome sequences from FASTA."""
-        if not fasta_path.exists():
-            raise FileNotFoundError(f"Genome FASTA not found: {fasta_path}")
-
-        sequences: dict[str, str] = {}
-        for record in SeqIO.parse(str(fasta_path), "fasta"):
-            sequences[record.id] = str(record.seq).upper()
-
-        if not sequences:
-            raise ValueError(f"No sequences found in genome FASTA: {fasta_path}")
-        return sequences
+        return load_fasta_sequences(fasta_path)
 
     def _scan_half_site(
         self,
@@ -168,6 +338,9 @@ class ExhaustiveZFNOffTargetSearcher:
         query: str,
         chrom_sequences: dict[str, str],
         params: ZFNDesignParameters,
+        target_chrom: str | None = None,
+        region_start0: int | None = None,
+        region_end0: int | None = None,
     ) -> list[_HalfSiteHit]:
         """Exhaustively scan all chromosomes and both strands for one half-site."""
         query = query.upper()
@@ -176,11 +349,18 @@ class ExhaustiveZFNOffTargetSearcher:
 
         hits: list[_HalfSiteHit] = []
         for chrom, chrom_seq in chrom_sequences.items():
+            if target_chrom is not None and chrom != target_chrom:
+                continue
             if len(chrom_seq) < qlen:
                 continue
 
+            scan_start0 = 0 if region_start0 is None else max(0, region_start0)
+            scan_end0 = len(chrom_seq) if region_end0 is None else min(len(chrom_seq), region_end0)
+            if scan_end0 - scan_start0 < qlen:
+                continue
+
             stride = params.half_site_constraints.window_stride
-            for i in range(0, len(chrom_seq) - qlen + 1, stride):
+            for i in range(scan_start0, scan_end0 - qlen + 1, stride):
                 window_plus = chrom_seq[i : i + qlen]
 
                 plus_match = self._evaluate_window(

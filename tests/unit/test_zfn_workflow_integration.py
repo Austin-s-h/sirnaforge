@@ -20,9 +20,10 @@ from sirnaforge.models.zfn import (
     ZFNMutationConstraints,
     ZFNMutationType,
     ZFNOverallMutationConstraint,
+    ZFNShardingConfig,
     ZFNSubfingerMutationConstraint,
 )
-from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig, ZFNWorkflowConfig
+from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig, ZFNWorkflowConfig, apply_zfn_runtime_overrides
 from sirnaforge.zfn.design import ZFNDesigner
 
 # ---------------------------------------------------------------------------
@@ -257,6 +258,28 @@ class TestZFNWorkflowConfig:
             design_params=dp,
         )
         assert cfg.zfn_config is None
+
+    def test_zfn_sharding_overrides_load_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Environment JSON should enable sharding without adding CLI flags."""
+        monkeypatch.setenv(
+            "SIRNAFORGE_ZFN_SHARDING_JSON",
+            '{"enabled": true, "chunk_size_mb": 10, "overlap_bp": 60, "chromosomes": "chr3", "max_workers": 2}',
+        )
+
+        params = ZFNDesignParameters(
+            left_half_site="GCGTACGTA",
+            right_half_site="TACGGCATA",
+            sharding=ZFNShardingConfig(enabled=False),
+        )
+        nextflow_overrides: dict[str, object] = {}
+
+        updated = apply_zfn_runtime_overrides(params, nextflow_overrides)
+        assert updated.sharding.enabled is True
+        assert updated.sharding.chunk_size_bp == 10_000_000
+        assert updated.sharding.overlap_bp == 60
+        assert updated.sharding.chromosomes == ["chr3"]
+        assert updated.sharding.max_workers == 2
+        assert nextflow_overrides["zfn_sharding_enabled"] is True
 
 
 # ---------------------------------------------------------------------------

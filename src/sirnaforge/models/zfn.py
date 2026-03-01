@@ -203,6 +203,40 @@ class ZFNMutationConstraints(BaseModel):
     )
 
 
+class ZFNShardingConfig(BaseModel):
+    """Optional chromosome/chunk sharding controls for scalable ZFN search."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=True, description="Enable chromosome/chunk sharding")
+    chunk_size_bp: int = Field(default=20_000_000, ge=1, description="Nominal chunk size in base pairs")
+    overlap_bp: int = Field(
+        default=50,
+        ge=0,
+        description="Chunk overlap in base pairs (auto-raised to safe minimum when needed)",
+    )
+    chromosomes: list[str] = Field(
+        default_factory=lambda: cast(list[str], []),
+        description=(
+            "Optional chromosome filter tokens; empty means all contigs. "
+            "Supports exact labels (chr3/3), ranges (1-5), groups (autosomes, sex), "
+            "and glob patterns (chrUn_*)."
+        ),
+    )
+    max_workers: int = Field(default=1, ge=1, le=128, description="Parallel shard workers for in-process search")
+
+    @field_validator_typed("chromosomes")
+    @classmethod
+    def validate_chromosomes(cls, v: list[str]) -> list[str]:
+        """Normalize chromosome names while preserving input order."""
+        cleaned: list[str] = []
+        for raw in v:
+            token = raw.strip()
+            if token and token not in cleaned:
+                cleaned.append(token)
+        return cleaned
+
+
 class ZFNDesignParameters(BaseModel):
     """Top-level configuration for ZFN pair evaluation and off-target search."""
 
@@ -237,6 +271,7 @@ class ZFNDesignParameters(BaseModel):
         default=None,
         description="Optional per-sub-finger and global mutation budgets for manufacturability scoring",
     )
+    sharding: ZFNShardingConfig = Field(default_factory=ZFNShardingConfig)
 
     @field_validator_typed("left_half_site", "right_half_site")
     @classmethod

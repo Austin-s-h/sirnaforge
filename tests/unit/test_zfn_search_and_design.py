@@ -17,6 +17,7 @@ from sirnaforge.models.zfn import (
     ZFNHalfSiteConstraints,
     ZFNOffTargetFilterCriteria,
     ZFNOffTargetSite,
+    ZFNShardingConfig,
     ZFNSpacerConstraints,
 )
 from sirnaforge.zfn.design import ZFNDesigner
@@ -253,6 +254,113 @@ def test_spacer_length_filters_sites(tmp_path: Path) -> None:
     assert {(s.chrom, s.start_1based, s.end_1based) for s in sites_5} != {
         (s.chrom, s.start_1based, s.end_1based) for s in sites_6
     }
+
+
+def test_sharded_search_dedupes_overlap_boundary_hits(tmp_path: Path) -> None:
+    """Chunk overlap should avoid boundary misses and collapse duplicate shard hits."""
+    canonical = _canonical_site(LEFT, RIGHT, spacer="AAAAA")
+    sequence = "A" * 40 + canonical + "C" * 60
+    fasta = _write_fasta(tmp_path, sequence, name="chr3")
+
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+        sharding=ZFNShardingConfig(
+            enabled=True,
+            chunk_size_bp=50,
+            overlap_bp=0,
+            chromosomes=["chr3"],
+            max_workers=2,
+        ),
+    )
+
+    sites = ExhaustiveZFNOffTargetSearcher().search(params)
+    assert len(sites) == 1
+    site = sites[0]
+    assert site.chrom == "chr3"
+    assert site.start_1based == 41
+
+
+def test_sharded_search_matches_unsharded_coordinates(tmp_path: Path) -> None:
+    """Sharded search should match unsharded genomic site set for deterministic toy FASTA."""
+    sequence = (
+        "TT"
+        + _canonical_site(LEFT, RIGHT, spacer="AAAAA")
+        + "GGGGG"
+        + _canonical_site(LEFT, RIGHT, spacer="AAAAAA")
+        + "CC"
+    )
+    fasta = _write_fasta(tmp_path, sequence, name="chr3")
+
+    base_kwargs = {
+        "search_space_fasta": str(fasta),
+        "left_half_site": LEFT,
+        "right_half_site": RIGHT,
+        "half_site_constraints": ZFNHalfSiteConstraints(max_mismatches=0),
+        "spacer_constraints": ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
+    }
+
+    unsharded = ExhaustiveZFNOffTargetSearcher().search(ZFNDesignParameters(**base_kwargs))
+    sharded = ExhaustiveZFNOffTargetSearcher().search(
+        ZFNDesignParameters(
+            **base_kwargs,
+            sharding=ZFNShardingConfig(
+                enabled=True,
+                chunk_size_bp=40,
+                overlap_bp=0,
+                chromosomes=["3"],
+                max_workers=2,
+            ),
+        )
+    )
+
+    unsharded_key = {(s.chrom, s.start_1based, s.end_1based, s.orientation.value) for s in unsharded}
+    sharded_key = {(s.chrom, s.start_1based, s.end_1based, s.orientation.value) for s in sharded}
+    assert sharded_key == unsharded_key
+
+
+def test_single_contig_auto_disables_chunk_sharding(tmp_path: Path) -> None:
+    """Single-contig inputs should run as one whole-contig shard even when sharding is enabled."""
+    sequence = "A" * 200
+    fasta = _write_fasta(tmp_path, sequence, name="chr3")
+
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(enabled=True, chunk_size_bp=25, overlap_bp=0),
+    )
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    chrom_sequences = searcher._load_fasta(fasta)
+
+    shards = searcher._build_shard_specs(chrom_sequences, params)
+    assert len(shards) == 1
+    assert shards[0].core_start0 == 0
+    assert shards[0].core_end0 == len(sequence)
+    assert shards[0].scan_start0 == 0
+    assert shards[0].scan_end0 == len(sequence)
+
+
+def test_chromosome_filter_tokens_support_groups_ranges_and_globs() -> None:
+    """Chromosome filters should support aliases, groups, numeric ranges, and glob patterns."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    chrom_sequences = {
+        "chr1": "A" * 10,
+        "chr2": "A" * 10,
+        "chrX": "A" * 10,
+        "chrM": "A" * 10,
+        "chrUn_gl000220": "A" * 10,
+    }
+
+    assert searcher._resolve_target_contigs(chrom_sequences, ["autosomes"]) == ["chr1", "chr2"]
+    assert searcher._resolve_target_contigs(chrom_sequences, ["sex"]) == ["chrX"]
+    assert searcher._resolve_target_contigs(chrom_sequences, ["mito"]) == ["chrM"]
+    assert searcher._resolve_target_contigs(chrom_sequences, ["1-2"]) == ["chr1", "chr2"]
+    assert searcher._resolve_target_contigs(chrom_sequences, ["chrUn_*"]) == ["chrUn_gl000220"]
+    assert searcher._resolve_target_contigs(chrom_sequences, ["3", "chr1"]) == ["chr1"]
 
 
 def test_ranking_tiebreak_region_exon_promoter_intron_intergenic() -> None:

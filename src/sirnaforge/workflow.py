@@ -61,6 +61,7 @@ from sirnaforge.models.zfn import (
     GenomicAnnotationConfig,
     ZFNDesignParameters,
     ZFNDesignResult,
+    ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
@@ -384,6 +385,10 @@ class SiRNAWorkflow:
         - Off-target is exhaustive sliding-window on whole-genome FASTA
           with FokI seed-region penalties and paired hit assembly
         - Steps 1–2 (transcript fetch, ORF validation) are skipped
+
+                Sharding/chunking behavior is configured via ``zfn_params.sharding``.
+                The search layer applies generic contig-aware planning and will avoid
+                chunk sharding when the selected FASTA resolves to a single contig.
         """
         if self.zfn_designer is None:
             raise RuntimeError("ZFN designer not initialized for design_mode=zfn")
@@ -455,6 +460,11 @@ class SiRNAWorkflow:
                     "output_dir": str(self.config.output_dir),
                     "offtarget_csv": str(offtarget_csv),
                     "candidate_json": str(candidate_json),
+                    "sharding_enabled": zfn_params.sharding.enabled,
+                    "shard_chunk_size_bp": zfn_params.sharding.chunk_size_bp,
+                    "shard_overlap_bp": zfn_params.sharding.overlap_bp,
+                    "shard_chromosomes": zfn_params.sharding.chromosomes,
+                    "shard_max_workers": zfn_params.sharding.max_workers,
                 }
             )
 
@@ -2368,6 +2378,89 @@ class SiRNAWorkflow:
         return base
 
 
+def _parse_env_flag(value: str | None) -> bool:
+    """Parse a boolean-ish environment value."""
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_zfn_sharding_overrides_from_env() -> dict[str, Any]:
+    """Load optional JSON sharding overrides from ``SIRNAFORGE_ZFN_SHARDING_JSON``."""
+    raw = os.getenv("SIRNAFORGE_ZFN_SHARDING_JSON")
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("Ignoring invalid SIRNAFORGE_ZFN_SHARDING_JSON: %s", exc)
+        return {}
+
+    if not isinstance(parsed, dict):
+        logger.warning("Ignoring SIRNAFORGE_ZFN_SHARDING_JSON: expected object, got %s", type(parsed).__name__)
+        return {}
+
+    return cast(dict[str, Any], parsed)
+
+
+def _normalize_sharding_override_value(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Normalize override aliases/units for ZFN sharding payloads."""
+    normalized = dict(overrides)
+
+    chunk_size_mb = normalized.pop("chunk_size_mb", None)
+    if chunk_size_mb is not None and "chunk_size_bp" not in normalized:
+        try:
+            normalized["chunk_size_bp"] = int(float(chunk_size_mb) * 1_000_000)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid ZFN sharding chunk_size_mb: %r", chunk_size_mb)
+
+    chromosomes = normalized.get("chromosomes")
+    if isinstance(chromosomes, str):
+        normalized["chromosomes"] = [token.strip() for token in chromosomes.split(",") if token.strip()]
+
+    return normalized
+
+
+def apply_zfn_runtime_overrides(
+    zfn_design_params: ZFNDesignParameters,
+    nextflow_config_overrides: dict[str, Any],
+) -> ZFNDesignParameters:
+    """Apply non-CLI ZFN sharding/runtime overrides and project Nextflow params.
+
+        Starts from ``zfn_design_params.sharding`` (typed defaults are authoritative),
+        merges optional JSON overrides from ``SIRNAFORGE_ZFN_SHARDING_JSON``, and
+        mirrors the resolved sharding values into ``nextflow_config_overrides`` so
+        the Nextflow route and direct Python route share the same effective config.
+
+    The runtime search implementation remains generic and contig-aware; if input
+    selection yields one contig, chunk sharding is not applied by the search
+    planner even when sharding is enabled.
+    """
+    merged_overrides: dict[str, Any] = {}
+
+    if zfn_design_params.sharding.enabled:
+        merged_overrides.update(zfn_design_params.sharding.model_dump(mode="python"))
+
+    merged_overrides.update(_normalize_sharding_override_value(_load_zfn_sharding_overrides_from_env()))
+
+    if merged_overrides:
+        sharding = ZFNShardingConfig(**merged_overrides)
+        zfn_design_params = zfn_design_params.model_copy(update={"sharding": sharding}, deep=True)
+
+    # Optional Nextflow route can be enabled without CLI changes.
+    if _parse_env_flag(os.getenv("SIRNAFORGE_ZFN_USE_NEXTFLOW")):
+        nextflow_config_overrides["design_mode"] = "zfn"
+
+    sharding_cfg = zfn_design_params.sharding
+    nextflow_config_overrides.setdefault("zfn_sharding_enabled", sharding_cfg.enabled)
+    nextflow_config_overrides.setdefault("zfn_shard_chunk_mb", max(1, sharding_cfg.chunk_size_bp // 1_000_000))
+    nextflow_config_overrides.setdefault("zfn_shard_overlap_bp", sharding_cfg.overlap_bp)
+    nextflow_config_overrides.setdefault("zfn_shard_chromosomes", ",".join(sharding_cfg.chromosomes))
+
+    return zfn_design_params
+
+
 # Convenience function for running complete workflow
 async def run_sirna_workflow(
     gene_query: str,
@@ -2518,6 +2611,7 @@ async def run_sirna_workflow(
     # Build ZFN workflow config when in ZFN mode
     zfn_workflow_config: ZFNWorkflowConfig | None = None
     if mode_enum == DesignMode.ZFN and zfn_design_params is not None:
+        zfn_design_params = apply_zfn_runtime_overrides(zfn_design_params, nextflow_config_overrides)
         zfn_workflow_config = ZFNWorkflowConfig(
             zfn_params=zfn_design_params,
             annotation=zfn_annotation,

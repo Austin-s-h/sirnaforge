@@ -105,3 +105,6 @@ workflow_test_debug_*/
 tp53_workflow_debug/
 workflow_output/
 docker_results/
+
+# Notebook experiment outputs
+notebooks/zfn_experiment_runs/

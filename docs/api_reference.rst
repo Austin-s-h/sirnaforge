@@ -41,6 +41,30 @@ Off-Target Prediction
    :undoc-members:
    :show-inheritance:
 
+ZFN Design
+~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.design
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+ZFN Search
+~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.search
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+ZFN Ranking
+~~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.rank
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Data Models
 -----------
 
@@ -64,6 +88,14 @@ Off-Target Models
 ~~~~~~~~~~~~~~~~~
 
 .. automodule:: sirnaforge.models.off_target
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+ZFN Models
+~~~~~~~~~~
+
+.. automodule:: sirnaforge.models.zfn
    :members:
    :undoc-members:
    :show-inheritance:

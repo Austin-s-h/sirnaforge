@@ -8,7 +8,7 @@ This guide covers development setup, contribution guidelines, and best practices
 
 ### Prerequisites
 
-- Python 3.9-3.12
+- Python 3.10-3.12
 - Git
 - `uv` package manager
 - `make` (optional but recommended)

@@ -85,6 +85,11 @@ from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
+from sirnaforge.zfn.nextflow_bridge import (
+    aggregate_zfn_shard_results,
+    make_zfn_shard_manifest,
+    run_zfn_shard_search,
+)
 
 app = typer.Typer(
     name="sirnaforge",
@@ -2025,6 +2030,89 @@ def sequences_annotate(
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
+
+
+internal_app = typer.Typer(help="Internal workflow commands", hidden=True)
+app.add_typer(internal_app, name="_internal", hidden=True)
+internal_command = command_decorator_typed(internal_app.command)
+
+
+@internal_command("zfn-make-shards")
+def internal_zfn_make_shards(
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    left_half_site: str = typer.Option(..., "--left-half-site"),
+    right_half_site: str = typer.Option(..., "--right-half-site"),
+    spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
+    max_mismatches: int = typer.Option(..., "--max-mismatches"),
+    sharding_enabled: str = typer.Option("true", "--sharding-enabled"),
+    shard_chunk_mb: float = typer.Option(20.0, "--shard-chunk-mb"),
+    shard_overlap_bp: int = typer.Option(50, "--shard-overlap-bp"),
+    shard_chromosomes: str = typer.Option("", "--shard-chromosomes"),
+    output: Path = typer.Option(Path("zfn_shards.tsv"), "--output"),
+) -> None:
+    """Build ZFN shard manifest for Nextflow execution."""
+    make_zfn_shard_manifest(
+        genome_fasta=genome_fasta,
+        left_half_site=left_half_site,
+        right_half_site=right_half_site,
+        spacer_lengths=spacer_lengths,
+        max_mismatches=max_mismatches,
+        sharding_enabled=sharding_enabled,
+        shard_chunk_mb=shard_chunk_mb,
+        shard_overlap_bp=shard_overlap_bp,
+        shard_chromosomes=shard_chromosomes,
+        output_tsv=output,
+    )
+
+
+@internal_command("zfn-search-shard")
+def internal_zfn_search_shard(
+    shard_id: str = typer.Option(..., "--shard-id"),
+    shard_chrom: str = typer.Option(..., "--shard-chrom"),
+    scan_start_1: int = typer.Option(..., "--scan-start-1"),
+    scan_end_1: int = typer.Option(..., "--scan-end-1"),
+    shard_max_mismatches: int = typer.Option(..., "--shard-max-mismatches"),
+    left_half_site: str = typer.Option(..., "--left-half-site"),
+    right_half_site: str = typer.Option(..., "--right-half-site"),
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    algorithm: str = typer.Option(..., "--algorithm"),
+    dimer_mode: str = typer.Option(..., "--dimer-mode"),
+    spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
+    annotation_file: Path | None = typer.Option(None, "--annotation-file"),
+    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+) -> None:
+    """Run one shard-scoped ZFN search and emit shard artifacts."""
+    run_zfn_shard_search(
+        shard_id=shard_id,
+        shard_chrom=shard_chrom,
+        scan_start_1=scan_start_1,
+        scan_end_1=scan_end_1,
+        shard_max_mismatches=shard_max_mismatches,
+        left_half_site=left_half_site,
+        right_half_site=right_half_site,
+        genome_fasta=genome_fasta,
+        algorithm=algorithm,
+        dimer_mode=dimer_mode,
+        spacer_lengths=spacer_lengths,
+        annotation_file=annotation_file,
+        output_sites_csv=output_sites_csv,
+        output_summary_json=output_summary_json,
+    )
+
+
+@internal_command("zfn-aggregate-shards")
+def internal_zfn_aggregate_shards(
+    shard_csv_glob: str = typer.Option("zfn_offtarget_sites_*.csv", "--shard-csv-glob"),
+    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+) -> None:
+    """Aggregate shard-level ZFN outputs into final ranked outputs."""
+    aggregate_zfn_shard_results(
+        shard_csv_glob=shard_csv_glob,
+        output_sites_csv=output_sites_csv,
+        output_summary_json=output_summary_json,
+    )
 
 
 if __name__ == "__main__":
