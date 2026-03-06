@@ -2,6 +2,26 @@
 
 This guide is the user-facing entry point for ZFN design and off-target analysis in siRNAforge.
 
+## Current implementation status (PR #61: dev → master)
+
+### Completed
+
+- ✅ ZFN support is available through `sirnaforge workflow ... --design-mode zfn`.
+- ✅ Typed models and JSON-serializable workflow artifacts are implemented (`sirnaforge.models.zfn` and `zfn_candidate_summary.json` output).
+- ✅ Output/reporting follows existing workflow conventions, including:
+  - `sirnaforge/zfn_candidate_summary.json`
+  - `sirnaforge/zfn_offtarget_sites.csv`
+  - `logs/workflow_summary.json`
+- ✅ Workflow provenance is captured in `workflow_summary.json`.
+- ✅ Nextflow-backed ZFN execution path is present (including internal shard commands).
+- ✅ Automated tests exist for ZFN workflow, search/design behavior, and integration paths.
+- ✅ User/developer documentation for ZFN workflow usage is present.
+
+### Not implemented in this PR branch
+
+- ❌ A first-class top-level CLI namespace (`sirnaforge zfn ...`) is not implemented; current public path is `sirnaforge workflow --design-mode zfn`.
+- ❌ Distinct `repeat_motif` mode is not implemented; current implementation focuses on nuclease-style half-site pair workflow.
+
 ## What the ZFN module does
 
 - Scores a user-provided left/right half-site pair.
