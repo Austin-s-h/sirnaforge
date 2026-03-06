@@ -370,6 +370,7 @@ async def test_zfn_workflow_outputs_include_contract_and_provenance(tmp_path: Pa
         search_space_fasta=str(fasta),
         spacer_constraints={"allowed_spacer_lengths": [6, 5, 6]},
     )
+    assert zfn_params.spacer_constraints.allowed_spacer_lengths == [5, 6]
     cfg = WorkflowConfig(
         gene_query="ZFN_TEST",
         output_dir=tmp_path / "out",

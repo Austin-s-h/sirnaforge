@@ -401,6 +401,12 @@ class SiRNAWorkflow:
 
         zfn_params = zfn_cfg.zfn_params
         annotation = zfn_cfg.annotation
+        annotation_source: str | None = None
+        if annotation is not None:
+            if annotation.annotation_path:
+                annotation_source = annotation.annotation_path
+            elif annotation.annotation_reference:
+                annotation_source = annotation.annotation_reference
 
         console.print("\n🧬 [bold cyan]Starting ZFN Pair Evaluation Workflow[/bold cyan]")
         console.print(f"Left half-site:  [yellow]{zfn_params.left_half_site}[/yellow]")
@@ -463,13 +469,7 @@ class SiRNAWorkflow:
                     "seed_max_mismatches": zfn_params.half_site_constraints.seed_max_mismatches,
                     "search_space_reference": zfn_params.search_space_reference,
                     "search_space_fasta": zfn_params.search_space_fasta,
-                    "annotation_source": (
-                        annotation.annotation_path
-                        if annotation is not None and annotation.annotation_path
-                        else annotation.annotation_reference
-                        if annotation is not None
-                        else None
-                    ),
+                    "annotation_source": annotation_source,
                     "total_workflow_time_s": round(total_time, 3),
                     "output_dir": str(self.config.output_dir),
                     "offtarget_csv": str(offtarget_csv),

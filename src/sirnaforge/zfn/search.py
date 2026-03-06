@@ -605,8 +605,8 @@ class ExhaustiveZFNOffTargetSearcher:
             right_mismatches=right_hit.mismatches,
             left_seed_mismatches=left_hit.seed_mismatches,
             right_seed_mismatches=right_hit.seed_mismatches,
-            left_mismatch_positions=list(left_hit.mismatch_positions),
-            right_mismatch_positions=list(right_hit.mismatch_positions),
+            left_mismatch_positions=left_hit.mismatch_positions,
+            right_mismatch_positions=right_hit.mismatch_positions,
             total_mismatches=total_mismatches,
             score=score,
             score_components=components,
@@ -675,7 +675,10 @@ class ExhaustiveZFNOffTargetSearcher:
         bonus = conserved_ratio * 10.0
         score = max(0.0, min(100.0, base + bonus))
         base_components["conserved_g_bonus"] = bonus
-        base_components["algorithm_weighted_penalty"] = max(0.0, 100.0 - score)
+        base_components["algorithm_weighted_penalty"] = max(
+            0.0,
+            base_components["mismatch_penalty"] + base_components["seed_penalty"] - bonus,
+        )
         return score, base_components
 
     def _score_zfn_v2(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:

@@ -24,6 +24,11 @@ _REGION_PRIORITY: dict[str, int] = {
 }
 
 
+def _score_to_penalty(score: float) -> float:
+    """Convert a score in [0,100] to a penalty in [0,100]."""
+    return float(100.0 - score)
+
+
 def _chrom_sort_key(chrom: str) -> tuple[int, int | str]:
     """Return a sortable chromosome key with numeric chromosomes first."""
     normalized = chrom.lower()
@@ -70,7 +75,9 @@ def rank_sites(
     def algorithm_penalty(site: ZFNOffTargetSite) -> float:
         if "algorithm_weighted_penalty" in site.score_components:
             return float(site.score_components["algorithm_weighted_penalty"])
-        return float(100.0 - site.score)
+        # Backward compatibility: artifacts predating zfn_candidate_summary.v1 may not
+        # include score_components. Use score-derived penalty for deterministic ordering.
+        return _score_to_penalty(site.score)
 
     return sorted(
         sites,

@@ -47,6 +47,7 @@ def test_explicit_search_space_fasta_finds_heterodimer_sites(tmp_path: Path) -> 
         search_space_fasta=str(fasta),
         left_half_site=LEFT,
         right_half_site=RIGHT,
+        algorithm=ZFNAlgorithm.HOMOLOGY,
         half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
         spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
     )
@@ -641,13 +642,19 @@ def test_paired_sites_include_score_component_breakdown(tmp_path: Path) -> None:
         search_space_fasta=str(fasta),
         left_half_site=LEFT,
         right_half_site=RIGHT,
+        algorithm=ZFNAlgorithm.HOMOLOGY,
         half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
         spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
     )
 
     sites = ExhaustiveZFNOffTargetSearcher().search(params)
     assert sites
-    assert "algorithm_weighted_penalty" in sites[0].score_components
+    components = sites[0].score_components
+    assert components
+    assert "algorithm_weighted_penalty" in components
+    assert "mismatch_penalty" in components
+    assert "seed_penalty" in components
+    assert components["algorithm_weighted_penalty"] == pytest.approx(0.0)
 
 
 def test_designer_filter_and_empty_candidate_branches() -> None:

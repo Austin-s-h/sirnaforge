@@ -111,9 +111,14 @@ class ZFNSpacerConstraints(BaseModel):
     @classmethod
     def normalize_spacer_lengths(cls, v: list[int]) -> list[int]:
         """Normalize spacer lengths to a sorted, unique positive list."""
-        cleaned = sorted({int(length) for length in v if int(length) >= 0})
+        parsed_values: set[int] = set()
+        for length in v:
+            parsed = int(length)
+            if parsed > 0:
+                parsed_values.add(parsed)
+        cleaned = sorted(parsed_values)
         if not cleaned:
-            raise ValueError("allowed_spacer_lengths must contain at least one non-negative integer")
+            raise ValueError("allowed_spacer_lengths must contain at least one positive integer")
         return cleaned
 
 
