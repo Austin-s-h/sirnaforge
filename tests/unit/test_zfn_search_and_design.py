@@ -47,6 +47,7 @@ def test_explicit_search_space_fasta_finds_heterodimer_sites(tmp_path: Path) -> 
         search_space_fasta=str(fasta),
         left_half_site=LEFT,
         right_half_site=RIGHT,
+        algorithm=ZFNAlgorithm.HOMOLOGY,
         half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
         spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
     )
@@ -432,6 +433,44 @@ def test_ranking_tiebreak_region_exon_promoter_intron_intergenic() -> None:
     assert [s.site_id for s in ranked[:3]] == ["s2", "s3", "s1"]
 
 
+def test_ranking_tiebreak_prefers_lower_mismatch_burden() -> None:
+    """For equal score, ranking should prefer lower mismatch burden deterministically."""
+    params = ZFNDesignParameters(
+        left_half_site=LEFT, right_half_site=RIGHT, spacer_constraints={"allowed_spacer_lengths": [5]}
+    )
+    base = {
+        "chrom": "chr1",
+        "start_1based": 10,
+        "end_1based": 32,
+        "strand": Strand.PLUS,
+        "orientation": MatchOrientation.LR,
+        "spacer_len": 5,
+        "sequence": "N" * 23,
+        "score": 90.0,
+        "region": "unknown",
+        "nearest_gene": None,
+        "left_aligned": "x",
+        "right_aligned": "y",
+    }
+    low_mm = ZFNOffTargetSite(
+        site_id="low_mm",
+        left_mismatches=0,
+        right_mismatches=0,
+        total_mismatches=0,
+        **base,
+    )
+    high_mm = ZFNOffTargetSite(
+        site_id="high_mm",
+        left_mismatches=1,
+        right_mismatches=1,
+        total_mismatches=2,
+        **base,
+    )
+
+    ranked = rank_sites([high_mm, low_mm], params)
+    assert [site.site_id for site in ranked] == ["low_mm", "high_mm"]
+
+
 def test_resolve_search_space_fasta_raises_when_custom_resolution_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """Custom FASTA path should raise when cache manager cannot resolve a fasta path."""
 
@@ -593,6 +632,29 @@ def test_score_helpers_cover_zero_g_and_non_empty_penalties() -> None:
     )
     penalty = searcher._half_site_v2_penalty(penalized, is_left=True)
     assert penalty > 0.0
+
+
+def test_paired_sites_include_score_component_breakdown(tmp_path: Path) -> None:
+    """Predicted sites should expose explainable score components for deterministic ranking."""
+    sequence = f"AAA{_canonical_site(LEFT, RIGHT)}CCC"
+    fasta = _write_fasta(tmp_path, sequence)
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        algorithm=ZFNAlgorithm.HOMOLOGY,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+    )
+
+    sites = ExhaustiveZFNOffTargetSearcher().search(params)
+    assert sites
+    components = sites[0].score_components
+    assert components
+    assert "algorithm_weighted_penalty" in components
+    assert "mismatch_penalty" in components
+    assert "seed_penalty" in components
+    assert components["algorithm_weighted_penalty"] == pytest.approx(0.0)
 
 
 def test_designer_filter_and_empty_candidate_branches() -> None:

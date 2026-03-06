@@ -107,6 +107,20 @@ class ZFNSpacerConstraints(BaseModel):
         description="Require half-sites on opposite strands in canonical ZFN configuration",
     )
 
+    @field_validator_typed("allowed_spacer_lengths")
+    @classmethod
+    def normalize_spacer_lengths(cls, v: list[int]) -> list[int]:
+        """Normalize spacer lengths to a sorted, unique positive list."""
+        parsed_values: set[int] = set()
+        for length in v:
+            parsed = int(length)
+            if parsed > 0:
+                parsed_values.add(parsed)
+        cleaned = sorted(parsed_values)
+        if not cleaned:
+            raise ValueError("allowed_spacer_lengths must contain at least one positive integer")
+        return cleaned
+
 
 class ZFNOffTargetFilterCriteria(BaseModel):
     """Criteria to fail a candidate ZFN due to predicted off-target burden."""
@@ -323,6 +337,38 @@ class ZFNDesignParameters(BaseModel):
             raise ValueError("search_space_fasta cannot be empty when provided")
         return normalized
 
+    def canonical_search_contract(self) -> ZFNSearchContract:
+        """Return canonical, JSON-serializable ZFN search contract for reports/workflows."""
+        return ZFNSearchContract(
+            left_half_site=self.left_half_site,
+            right_half_site=self.right_half_site,
+            allowed_spacer_lengths=list(self.spacer_constraints.allowed_spacer_lengths),
+            max_mismatches_per_half_site=self.half_site_constraints.max_mismatches,
+            seed_len_from_foki=self.half_site_constraints.seed_len_from_fokI,
+            seed_max_mismatches=self.half_site_constraints.seed_max_mismatches,
+            dimer_mode=self.dimer_mode,
+            algorithm=self.algorithm,
+            require_opposite_strands=self.spacer_constraints.require_opposite_strands,
+            orientation_convention="L...R genomic ordering",
+        )
+
+
+class ZFNSearchContract(BaseModel):
+    """Canonical internal contract for ZFN search/ranking behavior."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    left_half_site: str = Field(description="Canonical uppercase left half-site sequence")
+    right_half_site: str = Field(description="Canonical uppercase right half-site sequence")
+    allowed_spacer_lengths: list[int] = Field(description="Sorted unique spacer lengths in bp")
+    max_mismatches_per_half_site: int = Field(ge=0, description="Mismatch budget per half-site")
+    seed_len_from_foki: int | None = Field(default=None, ge=1)
+    seed_max_mismatches: int | None = Field(default=None, ge=0)
+    dimer_mode: DimerMode = Field(description="Pairing mode for hit assembly")
+    algorithm: ZFNAlgorithm = Field(description="Algorithm family used for scoring")
+    require_opposite_strands: bool = Field(description="Whether same-strand pairs are disallowed")
+    orientation_convention: str = Field(description="Human-readable orientation convention")
+
 
 class GenomicAnnotationConfig(BaseModel):
     """Optional annotation configuration for off-target site classification."""
@@ -377,8 +423,14 @@ class ZFNOffTargetSite(BaseModel):
     sequence: str = Field(description="Full site sequence: half-site + spacer + half-site")
     left_mismatches: int = Field(ge=0)
     right_mismatches: int = Field(ge=0)
+    left_seed_mismatches: int = Field(default=0, ge=0)
+    right_seed_mismatches: int = Field(default=0, ge=0)
+    left_mismatch_positions: list[int] = Field(default_factory=list)
+    right_mismatch_positions: list[int] = Field(default_factory=list)
     total_mismatches: int = Field(ge=0)
     score: float = Field(ge=0, le=100, description="Predicted off-target similarity/cleavage likelihood score")
+    score_components: dict[str, float] = Field(default_factory=dict)
+    dimer_compatible: bool = Field(default=True)
     region: Literal["exon", "promoter", "intron", "intergenic", "unknown"] = Field(default="unknown")
     nearest_gene: str | None = Field(default=None)
     left_aligned: str = Field(description="Alignment string for left half-site")
@@ -433,8 +485,14 @@ class ZFNDesignResult(BaseModel):
                     "sequence": site.sequence,
                     "left_mismatches": site.left_mismatches,
                     "right_mismatches": site.right_mismatches,
+                    "left_seed_mismatches": site.left_seed_mismatches,
+                    "right_seed_mismatches": site.right_seed_mismatches,
+                    "left_mismatch_positions": ",".join(str(pos) for pos in site.left_mismatch_positions),
+                    "right_mismatch_positions": ",".join(str(pos) for pos in site.right_mismatch_positions),
                     "total_mismatches": site.total_mismatches,
                     "score": site.score,
+                    "dimer_compatible": site.dimer_compatible,
+                    "score_components": site.score_components,
                     "region": site.region,
                     "nearest_gene": site.nearest_gene,
                     "left_aligned": site.left_aligned,

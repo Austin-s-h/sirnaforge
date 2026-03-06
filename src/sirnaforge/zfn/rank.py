@@ -24,6 +24,11 @@ _REGION_PRIORITY: dict[str, int] = {
 }
 
 
+def _score_to_penalty(score: float) -> float:
+    """Convert a score in [0,100] to a penalty in [0,100]."""
+    return float(100.0 - score)
+
+
 def _chrom_sort_key(chrom: str) -> tuple[int, int | str]:
     """Return a sortable chromosome key with numeric chromosomes first."""
     normalized = chrom.lower()
@@ -60,11 +65,30 @@ def rank_sites(
         A new sorted list of sites.
     """
     algorithm_label = params.algorithm.value if params is not None else ""
+    preferred_spacers = set(params.spacer_constraints.allowed_spacer_lengths) if params is not None else set()
+
+    def spacer_distance(spacer_len: int) -> int:
+        if not preferred_spacers:
+            return 0
+        return min(abs(spacer_len - allowed) for allowed in preferred_spacers)
+
+    def algorithm_penalty(site: ZFNOffTargetSite) -> float:
+        if "algorithm_weighted_penalty" in site.score_components:
+            return float(site.score_components["algorithm_weighted_penalty"])
+        # Backward compatibility: artifacts predating zfn_candidate_summary.v1 may not
+        # include score_components. Use score-derived penalty for deterministic ordering.
+        return _score_to_penalty(site.score)
 
     return sorted(
         sites,
         key=lambda site: (
             -site.score,
+            0 if site.dimer_compatible else 1,
+            site.total_mismatches,
+            site.left_mismatches,
+            site.right_mismatches,
+            spacer_distance(site.spacer_len),
+            algorithm_penalty(site),
             -_REGION_PRIORITY.get(site.region, 0),
             _chrom_sort_key(site.chrom),
             site.start_1based,
