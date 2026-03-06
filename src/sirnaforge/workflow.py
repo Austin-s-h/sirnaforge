@@ -436,6 +436,8 @@ class SiRNAWorkflow:
             # Candidate summary JSON
             candidate_json = zfn_output / "zfn_candidate_summary.json"
             candidate_data: dict[str, Any] = {
+                "schema_version": "zfn_candidate_summary.v1",
+                "search_contract": zfn_params.canonical_search_contract().model_dump(mode="json"),
                 "candidates": [cand.model_dump(mode="json") for cand in zfn_result.candidates],
                 "summary": zfn_result.get_summary(),
             }
@@ -454,8 +456,20 @@ class SiRNAWorkflow:
                     "left_half_site": zfn_params.left_half_site,
                     "right_half_site": zfn_params.right_half_site,
                     "dimer_mode": zfn_params.dimer_mode.value,
+                    "algorithm": zfn_params.algorithm.value,
                     "spacer_lengths": zfn_params.spacer_constraints.allowed_spacer_lengths,
                     "max_mismatches": zfn_params.half_site_constraints.max_mismatches,
+                    "seed_len_from_foki": zfn_params.half_site_constraints.seed_len_from_fokI,
+                    "seed_max_mismatches": zfn_params.half_site_constraints.seed_max_mismatches,
+                    "search_space_reference": zfn_params.search_space_reference,
+                    "search_space_fasta": zfn_params.search_space_fasta,
+                    "annotation_source": (
+                        annotation.annotation_path
+                        if annotation is not None and annotation.annotation_path
+                        else annotation.annotation_reference
+                        if annotation is not None
+                        else None
+                    ),
                     "total_workflow_time_s": round(total_time, 3),
                     "output_dir": str(self.config.output_dir),
                     "offtarget_csv": str(offtarget_csv),

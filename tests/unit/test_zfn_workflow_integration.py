@@ -6,6 +6,7 @@ ZFN-specific engine instead of falling through to the siRNA designer.
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -350,3 +351,38 @@ class TestZFNDesignerEvaluatePair:
         manuf_no_mc = result_no_mc.candidates[0].component_scores["manufacturability"]
         manuf_with_mc = result_with_mc.candidates[0].component_scores["manufacturability"]
         assert manuf_with_mc < manuf_no_mc
+
+
+@pytest.mark.asyncio
+async def test_zfn_workflow_outputs_include_contract_and_provenance(tmp_path: Path) -> None:
+    """Workflow artifacts should include stable schema metadata and ZFN provenance fields."""
+    left = "GCGTACGTA"
+    right = "TACGGCATA"
+    spacer = "AAAAA"
+    target = f"{left}{spacer}{str(Seq(right).reverse_complement())}"
+    fasta = tmp_path / "genome.fa"
+    fasta.write_text(f">chr1\nAAA{target}CCC\n", encoding="utf-8")
+
+    dp = DesignParameters(design_mode=DesignMode.ZFN)
+    zfn_params = ZFNDesignParameters(
+        left_half_site=left,
+        right_half_site=right,
+        search_space_fasta=str(fasta),
+        spacer_constraints={"allowed_spacer_lengths": [6, 5, 6]},
+    )
+    cfg = WorkflowConfig(
+        gene_query="ZFN_TEST",
+        output_dir=tmp_path / "out",
+        design_params=dp,
+        zfn_config=ZFNWorkflowConfig(zfn_params=zfn_params),
+    )
+    result = await SiRNAWorkflow(cfg).run_complete_workflow()
+
+    assert result["workflow_mode"] == "zfn"
+    assert result["algorithm"] == zfn_params.algorithm.value
+    assert result["spacer_lengths"] == [5, 6]
+
+    candidate_path = cfg.output_dir / "sirnaforge" / "zfn_candidate_summary.json"
+    payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "zfn_candidate_summary.v1"
+    assert payload["search_contract"]["allowed_spacer_lengths"] == [5, 6]

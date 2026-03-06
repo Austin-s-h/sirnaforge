@@ -86,3 +86,18 @@ def test_design_parameters_store_zfn_constraints() -> None:
     assert params.mutation_constraints.subfinger_mutations[0].subfinger_index == 3
     assert params.mutation_constraints.default_subfinger_mutation is not None
     assert params.mutation_constraints.overall_mutations[0].max_mutations == 3
+
+
+def test_design_parameters_canonical_contract_normalizes_spacers() -> None:
+    """Canonical contract should expose a stable normalized internal representation."""
+    params = ZFNDesignParameters(
+        left_half_site="gcCCCACTG",
+        right_half_site="accagatga",
+        spacer_constraints={"allowed_spacer_lengths": [6, 5, 6]},
+    )
+    contract = params.canonical_search_contract()
+
+    assert contract.left_half_site == "GCCCCACTG"
+    assert contract.right_half_site == "ACCAGATGA"
+    assert contract.allowed_spacer_lengths == [5, 6]
+    assert contract.orientation_convention == "L...R genomic ordering"

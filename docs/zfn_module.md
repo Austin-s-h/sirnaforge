@@ -60,6 +60,13 @@ Outputs are written under:
 - `zfn_output/sirnaforge/zfn_offtarget_sites.csv`
 - `zfn_output/logs/workflow_summary.json`
 
+`zfn_candidate_summary.json` uses a stable envelope with:
+- `schema_version` (currently `zfn_candidate_summary.v1`)
+- `search_contract` (canonical half-sites, spacer list, mismatch budgets, dimer mode, algorithm)
+- `candidates` and `summary`
+
+`workflow_summary.json` records ZFN provenance fields including `algorithm`, `dimer_mode`, `spacer_lengths`, mismatch thresholds, and resolved search-space input (`search_space_reference`/`search_space_fasta`).
+
 ### Common ZFN options
 
 - `--zfn-algorithm`: `homology`, `conserved_g`, `zfn_v2`

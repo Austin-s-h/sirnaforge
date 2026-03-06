@@ -585,7 +585,7 @@ class ExhaustiveZFNOffTargetSearcher:
         else:
             left_hit, right_hit = leftmost, rightmost
 
-        score = self._score_site(left_hit, right_hit, params.algorithm)
+        score, components = self._score_site_with_components(left_hit, right_hit, params.algorithm)
         total_mismatches = left_hit.mismatches + right_hit.mismatches
         site_id = (
             f"{left_hit.chrom}:{site_start_0 + 1}-{site_end_0}:"
@@ -603,8 +603,14 @@ class ExhaustiveZFNOffTargetSearcher:
             sequence=sequence,
             left_mismatches=left_hit.mismatches,
             right_mismatches=right_hit.mismatches,
+            left_seed_mismatches=left_hit.seed_mismatches,
+            right_seed_mismatches=right_hit.seed_mismatches,
+            left_mismatch_positions=list(left_hit.mismatch_positions),
+            right_mismatch_positions=list(right_hit.mismatch_positions),
             total_mismatches=total_mismatches,
             score=score,
+            score_components=components,
+            dimer_compatible=True,
             region="unknown",
             nearest_gene=None,
             left_aligned=left_hit.aligned,
@@ -613,24 +619,51 @@ class ExhaustiveZFNOffTargetSearcher:
 
     def _score_site(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit, algorithm: ZFNAlgorithm) -> float:
         """Score one paired site using the selected algorithm family."""
+        return self._score_site_with_components(left_hit, right_hit, algorithm)[0]
+
+    def _score_site_with_components(
+        self,
+        left_hit: _HalfSiteHit,
+        right_hit: _HalfSiteHit,
+        algorithm: ZFNAlgorithm,
+    ) -> tuple[float, dict[str, float]]:
+        """Score one paired site and return explainable score components."""
         if algorithm == ZFNAlgorithm.HOMOLOGY:
-            return self._score_homology(left_hit, right_hit)
+            return self._score_homology_components(left_hit, right_hit)
         if algorithm == ZFNAlgorithm.CONSERVED_G:
-            return self._score_conserved_g(left_hit, right_hit)
-        return self._score_zfn_v2(left_hit, right_hit)
+            return self._score_conserved_g_components(left_hit, right_hit)
+        return self._score_zfn_v2_components(left_hit, right_hit)
 
     def _score_homology(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:
         """Mismatch-count score in [0,100]."""
+        return self._score_homology_components(left_hit, right_hit)[0]
+
+    def _score_homology_components(
+        self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit
+    ) -> tuple[float, dict[str, float]]:
+        """Mismatch-count score in [0,100]."""
         mismatch_penalty = (left_hit.mismatches + right_hit.mismatches) * 12.0
         seed_penalty = (left_hit.seed_mismatches + right_hit.seed_mismatches) * 8.0
-        return max(0.0, min(100.0, 100.0 - mismatch_penalty - seed_penalty))
+        score = max(0.0, min(100.0, 100.0 - mismatch_penalty - seed_penalty))
+        return score, {
+            "algorithm_weighted_penalty": mismatch_penalty + seed_penalty,
+            "mismatch_penalty": mismatch_penalty,
+            "seed_penalty": seed_penalty,
+        }
 
     def _score_conserved_g(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:
         """Homology score plus a heuristic bonus for conserved intended G contacts."""
-        base = self._score_homology(left_hit, right_hit)
+        return self._score_conserved_g_components(left_hit, right_hit)[0]
+
+    def _score_conserved_g_components(
+        self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit
+    ) -> tuple[float, dict[str, float]]:
+        """Homology score plus a heuristic bonus for conserved intended G contacts."""
+        base, base_components = self._score_homology_components(left_hit, right_hit)
         total_g_positions = left_hit.query.count("G") + right_hit.query.count("G")
         if total_g_positions == 0:
-            return base
+            base_components["conserved_g_bonus"] = 0.0
+            return base, base_components
 
         conserved_left = sum(
             1 for q, o in zip(left_hit.query, left_hit.observed, strict=False) if q == "G" and o == "G"
@@ -639,9 +672,19 @@ class ExhaustiveZFNOffTargetSearcher:
             1 for q, o in zip(right_hit.query, right_hit.observed, strict=False) if q == "G" and o == "G"
         )
         conserved_ratio = (conserved_left + conserved_right) / total_g_positions
-        return max(0.0, min(100.0, base + (conserved_ratio * 10.0)))
+        bonus = conserved_ratio * 10.0
+        score = max(0.0, min(100.0, base + bonus))
+        base_components["conserved_g_bonus"] = bonus
+        base_components["algorithm_weighted_penalty"] = max(0.0, 100.0 - score)
+        return score, base_components
 
     def _score_zfn_v2(self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit) -> float:
+        """Finger-aware, polarity-weighted, compensatory score in [0,100]."""
+        return self._score_zfn_v2_components(left_hit, right_hit)[0]
+
+    def _score_zfn_v2_components(
+        self, left_hit: _HalfSiteHit, right_hit: _HalfSiteHit
+    ) -> tuple[float, dict[str, float]]:
         """Finger-aware, polarity-weighted, compensatory score in [0,100]."""
         left_penalty = self._half_site_v2_penalty(left_hit, is_left=True)
         right_penalty = self._half_site_v2_penalty(right_hit, is_left=False)
@@ -650,7 +693,13 @@ class ExhaustiveZFNOffTargetSearcher:
         compensation_bonus = min(6.0, abs(left_penalty - right_penalty) * 0.25)
         total_penalty = max(0.0, left_penalty + right_penalty - compensation_bonus)
 
-        return max(0.0, min(100.0, 100.0 - total_penalty))
+        score = max(0.0, min(100.0, 100.0 - total_penalty))
+        return score, {
+            "algorithm_weighted_penalty": total_penalty,
+            "left_penalty": left_penalty,
+            "right_penalty": right_penalty,
+            "compensation_bonus": compensation_bonus,
+        }
 
     def _half_site_v2_penalty(self, hit: _HalfSiteHit, is_left: bool) -> float:
         """Compute one half-site penalty with finger and polarity weighting."""
