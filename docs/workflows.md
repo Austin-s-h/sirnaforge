@@ -87,7 +87,7 @@ Expected artifacts:
 Advanced runtime controls:
 
 - `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` to force Nextflow-backed ZFN search path.
-- `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "window_size": 3000000, "window_overlap": 40}'` for custom shard/window behavior on large references.
+- `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "chunk_size_mb": 3, "overlap_bp": 40000}'` for custom shard/window behavior on large references.
 
 ## Variant Targeting (documented runs)
 

@@ -169,7 +169,7 @@ First FDA-approved RNAi therapeutic (2018) targeting transthyretin (TTR) for her
 ```bash
 # Design TTR-targeting siRNA using Patisiran pattern
 sirnaforge workflow TTR \
-  --modifications standard_2ome \
+  --modifications patisiran_onpattro \
   --species human \
   --output-dir ttr_patisiran_template
 ```
