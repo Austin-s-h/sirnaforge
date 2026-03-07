@@ -7,6 +7,7 @@ transcriptome FASTA files with automatic BWA-MEM2 index building and cache manag
 
 import hashlib
 import logging
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -251,13 +252,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         # Download transcriptome
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
-        content = self._download_file(source)
-        if not content or not content.strip():
-            return None
-
-        cache_file.write_text(content, encoding="utf-8")
-        if cache_file.stat().st_size == 0:
-            cache_file.unlink()
+        if not self._download_to_path(source, cache_file):
             return None
 
         # Update metadata
@@ -288,7 +283,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         fasta_str = str(fasta_path)
 
         # Handle URL downloads
-        if fasta_str.startswith(("http://", "https://", "ftp://")):
+        if self._is_remote_location(fasta_str):
             return self._handle_url_transcriptome(fasta_str, cache_name, build_index)
 
         # Handle local files
@@ -306,7 +301,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def _handle_url_transcriptome(self, url: str, cache_name: str | None, build_index: bool) -> dict[str, Path] | None:
         """Download and cache transcriptome from URL."""
-        cache_name = cache_name or url.split("/")[-1].replace(".gz", "").replace(".fa", "").replace(".fasta", "")
+        cache_name = cache_name or self._default_cache_name_for_resource(url)
         source = TranscriptomeSource(
             name=cache_name,
             url=url,
@@ -325,13 +320,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
         # Download
-        content = self._download_file(source)
-        if not content or not content.strip():
-            return None
-
-        cache_file.write_text(content, encoding="utf-8")
-        if cache_file.stat().st_size == 0:
-            cache_file.unlink()
+        if not self._download_to_path(source, cache_file):
             return None
 
         # Save metadata
@@ -374,7 +363,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # Check if already cached
         if not cache_file.exists():
             logger.info(f"🔄 Copying {input_path.name} to cache...")
-            cache_file.write_text(input_path.read_text())
+            shutil.copyfile(input_path, cache_file)
 
         # Save metadata
         self.metadata[cache_key] = CacheMetadata(

@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 import logging
+import shutil
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -289,6 +290,50 @@ class ReferenceManager(ABC, Generic[SourceT]):
         except Exception as e:
             logger.error(f"❌ Failed to download {source.url}: {e}")
             return None
+
+    def _download_to_path(self, source: ReferenceSource, destination: Path, timeout: int = 600) -> bool:
+        """Stream a source URL directly to destination, optionally decompressing gzip content."""
+        try:
+            logger.info(f"📥 Downloading {source.name} ({source.species}): {source.url}")
+            request = urllib.request.Request(
+                source.url,
+                headers={
+                    "User-Agent": "sirnaforge/1.0 (+https://github.com/austin-s-h/sirnaforge)",
+                    "Accept": "text/plain,application/octet-stream",
+                },
+            )
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                if source.compressed and source.url.endswith(".gz"):
+                    logger.info("🔄 Decompressing gzipped file...")
+                    with gzip.GzipFile(fileobj=response) as decompressed, destination.open("wb") as handle:
+                        shutil.copyfileobj(decompressed, handle, length=1024 * 1024)
+                else:
+                    with destination.open("wb") as handle:
+                        shutil.copyfileobj(response, handle, length=1024 * 1024)
+
+            if destination.stat().st_size == 0:
+                logger.error("Received empty response from %s", source.url)
+                destination.unlink(missing_ok=True)
+                return False
+
+            logger.info("✅ Downloaded %s bytes to %s", destination.stat().st_size, destination)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to download {source.url}: {e}")
+            destination.unlink(missing_ok=True)
+            return False
+
+    def _is_remote_location(self, resource_location: str) -> bool:
+        """Return whether a user resource string points to a remote URL."""
+        return resource_location.startswith(("http://", "https://", "ftp://"))
+
+    def _default_cache_name_for_resource(self, resource_location: str) -> str:
+        """Derive a stable cache name from a user-supplied local path or URL."""
+        name = resource_location.rstrip("/").split("/")[-1] if resource_location else "resource"
+        normalized = name.replace(".gz", "").replace(".fa", "").replace(".fasta", "")
+        return normalized or "resource"
 
     def cache_info(self) -> dict[str, Any]:
         """Get information about the current cache state.

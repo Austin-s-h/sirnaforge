@@ -10,6 +10,7 @@ from typing import TypedDict
 
 from Bio.Seq import Seq
 
+from sirnaforge.data.annotation_manager import AnnotationManager
 from sirnaforge.data.genome_manager import GenomeManager
 from sirnaforge.models.zfn import (
     DimerMode,
@@ -21,10 +22,8 @@ from sirnaforge.models.zfn import (
     ZFNDesignParameters,
     ZFNOffTargetSite,
 )
-from sirnaforge.utils.cache_utils import resolve_cache_subdir
 from sirnaforge.utils.fasta import load_fasta_sequences
 from sirnaforge.utils.logging_utils import get_logger
-from sirnaforge.utils.resource_resolver import resolve_input_source
 
 from .interfaces import ZFNAnnotationProvider
 from .rank import rank_sites
@@ -320,34 +319,19 @@ class ExhaustiveZFNOffTargetSearcher:
 
     def _resolve_annotation_path(self, annotation: GenomicAnnotationConfig) -> Path | None:
         """Resolve annotation path for future annotation backends."""
-        resolved = annotation.resolved_annotation_path()
-        if resolved is not None:
-            if resolved.exists():
-                annotation.annotation_path = str(resolved)
-                return resolved
-            logger.warning(f"Annotation path does not exist: {resolved}")
+        manager = AnnotationManager(cache_dir=annotation.cache_dir)
+
+        input_location = annotation.annotation_path or annotation.annotation_reference
+        if not input_location:
             return None
 
-        if not annotation.annotation_reference:
+        resolved = manager.get_custom_annotation(input_location)
+        if resolved is None or not resolved.exists():
+            logger.warning("Unable to resolve annotation input: %s", input_location)
             return None
 
-        destination_root = (
-            Path(annotation.cache_dir).expanduser().resolve()
-            if annotation.cache_dir
-            else resolve_cache_subdir("zfn_annotations")
-        )
-        try:
-            source = resolve_input_source(annotation.annotation_reference, destination_root)
-        except Exception as exc:  # pragma: no cover - defensive guard for mixed IO/network errors
-            logger.warning("Unable to resolve annotation reference '%s': %s", annotation.annotation_reference, exc)
-            return None
-
-        if not source.local_path.exists():
-            logger.warning("Resolved annotation reference does not exist: %s", source.local_path)
-            return None
-
-        annotation.annotation_path = str(source.local_path)
-        return source.local_path
+        annotation.annotation_path = str(resolved)
+        return resolved
 
     def _load_fasta(self, fasta_path: Path) -> dict[str, str]:
         """Load contig/chromosome sequences from FASTA."""
