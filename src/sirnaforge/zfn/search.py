@@ -344,7 +344,6 @@ class ExhaustiveZFNOffTargetSearcher:
     ) -> list[_HalfSiteHit]:
         """Exhaustively scan all chromosomes and both strands for one half-site."""
         query = query.upper()
-        query_rc = str(Seq(query).reverse_complement())
         qlen = len(query)
 
         hits: list[_HalfSiteHit] = []
@@ -398,7 +397,6 @@ class ExhaustiveZFNOffTargetSearcher:
                     seed_len=params.half_site_constraints.seed_len_from_fokI,
                     max_mm=params.half_site_constraints.max_mismatches,
                     max_seed_mm=params.half_site_constraints.seed_max_mismatches,
-                    expanded_query=query_rc,
                 )
                 if minus_match is not None:
                     hits.append(
@@ -487,6 +485,18 @@ class ExhaustiveZFNOffTargetSearcher:
         allowed = IUPAC_MAP.get(query_base, {query_base})
         return observed_base in allowed
 
+    @staticmethod
+    def _index_hits_by_pos(hits: list[_HalfSiteHit]) -> dict[str, dict[int, list[_HalfSiteHit]]]:
+        """Build a two-level index: chrom → start0 → [hits].
+
+        Allows O(1) lookup of hits at an expected genomic position when
+        probing for valid spacer-distance partners.
+        """
+        index: dict[str, dict[int, list[_HalfSiteHit]]] = {}
+        for hit in hits:
+            index.setdefault(hit.chrom, {}).setdefault(hit.start0, []).append(hit)
+        return index
+
     def _pair_hits(  # noqa: PLR0912
         self,
         left_hits: list[_HalfSiteHit],
@@ -498,48 +508,79 @@ class ExhaustiveZFNOffTargetSearcher:
         sites: list[ZFNOffTargetSite] = []
         allowed_spacers = set(params.spacer_constraints.allowed_spacer_lengths)
 
+        # Build coordinate indexes for O(hits × |spacers|) pairing instead of O(n²).
+        # Index hits by (chrom, start0) so we can probe expected partner positions directly.
+        right_by_pos = self._index_hits_by_pos(right_hits)
+        left_by_pos = self._index_hits_by_pos(left_hits)
+
+        # Case A: left_hit is leftward of right_hit (canonical L...R geometry)
         for left_hit in left_hits:
-            for right_hit in right_hits:
-                if left_hit.chrom != right_hit.chrom:
-                    continue
-                site = self._build_site(
-                    first=left_hit,
-                    second=right_hit,
-                    chrom_seq=chrom_sequences[left_hit.chrom],
-                    allowed_spacers=allowed_spacers,
-                    params=params,
-                )
-                if site is not None:
-                    sites.append(site)
+            chrom_rights = right_by_pos.get(left_hit.chrom)
+            if not chrom_rights:
+                continue
+            for spacer in allowed_spacers:
+                for right_hit in chrom_rights.get(left_hit.end0 + spacer, []):
+                    site = self._build_site(
+                        first=left_hit,
+                        second=right_hit,
+                        chrom_seq=chrom_sequences[left_hit.chrom],
+                        allowed_spacers=allowed_spacers,
+                        params=params,
+                    )
+                    if site is not None:
+                        sites.append(site)
+
+        # Case B: right_hit is leftward of left_hit (inverted R...L geometry)
+        for right_hit in right_hits:
+            chrom_lefts = left_by_pos.get(right_hit.chrom)
+            if not chrom_lefts:
+                continue
+            for spacer in allowed_spacers:
+                for left_hit in chrom_lefts.get(right_hit.end0 + spacer, []):
+                    site = self._build_site(
+                        first=left_hit,
+                        second=right_hit,
+                        chrom_seq=chrom_sequences[right_hit.chrom],
+                        allowed_spacers=allowed_spacers,
+                        params=params,
+                    )
+                    if site is not None:
+                        sites.append(site)
 
         if params.dimer_mode == DimerMode.INCLUDE_HOMODIMERS:
-            for i, first in enumerate(left_hits):
-                for second in left_hits[i + 1 :]:
-                    if first.chrom != second.chrom:
-                        continue
-                    site = self._build_site(
-                        first=first,
-                        second=second,
-                        chrom_seq=chrom_sequences[first.chrom],
-                        allowed_spacers=allowed_spacers,
-                        params=params,
-                    )
-                    if site is not None:
-                        sites.append(site)
+            # Homodimer left×left: reuse the already-indexed left_by_pos
+            for left_hit in left_hits:
+                chrom_lefts = left_by_pos.get(left_hit.chrom)
+                if not chrom_lefts:
+                    continue
+                for spacer in allowed_spacers:
+                    for second in chrom_lefts.get(left_hit.end0 + spacer, []):
+                        site = self._build_site(
+                            first=left_hit,
+                            second=second,
+                            chrom_seq=chrom_sequences[left_hit.chrom],
+                            allowed_spacers=allowed_spacers,
+                            params=params,
+                        )
+                        if site is not None:
+                            sites.append(site)
 
-            for i, first in enumerate(right_hits):
-                for second in right_hits[i + 1 :]:
-                    if first.chrom != second.chrom:
-                        continue
-                    site = self._build_site(
-                        first=first,
-                        second=second,
-                        chrom_seq=chrom_sequences[first.chrom],
-                        allowed_spacers=allowed_spacers,
-                        params=params,
-                    )
-                    if site is not None:
-                        sites.append(site)
+            # Homodimer right×right: reuse the already-indexed right_by_pos
+            for right_hit in right_hits:
+                chrom_rights = right_by_pos.get(right_hit.chrom)
+                if not chrom_rights:
+                    continue
+                for spacer in allowed_spacers:
+                    for second in chrom_rights.get(right_hit.end0 + spacer, []):
+                        site = self._build_site(
+                            first=right_hit,
+                            second=second,
+                            chrom_seq=chrom_sequences[right_hit.chrom],
+                            allowed_spacers=allowed_spacers,
+                            params=params,
+                        )
+                        if site is not None:
+                            sites.append(site)
 
         deduped: dict[tuple[str, int, int, MatchOrientation], ZFNOffTargetSite] = {}
         for site in sites:

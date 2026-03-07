@@ -117,8 +117,10 @@ ZFN mode accepts repeatable mutation constraints so you can combine per-subfinge
 
 ```bash
 sirnaforge workflow ZFN_TARGET \
-  --input-fasta examples/sample_transcripts.fasta \
   --design-mode zfn \
+  --zfn-left-half-site GCGTGGGCG \
+  --zfn-right-half-site GCCCACGCG \
+  --zfn-search-space hg38 \
   --zfn-max-mismatches-per-subfinger 1 \
   --zfn-max-substitutions-overall 3 \
   --zfn-subfinger-mutation "2:0:deletion" \

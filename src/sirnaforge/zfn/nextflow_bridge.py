@@ -218,6 +218,8 @@ def run_zfn_shard_search(
     shard_chrom: str,
     scan_start_1: int,
     scan_end_1: int,
+    core_start_1: int | None = None,
+    core_end_1: int | None = None,
     shard_max_mismatches: int,
     left_half_site: str,
     right_half_site: str,
@@ -229,7 +231,16 @@ def run_zfn_shard_search(
     output_sites_csv: Path,
     output_summary_json: Path,
 ) -> dict[str, int | str]:
-    """Execute one shard search and persist shard-scoped outputs."""
+    """Execute one shard search and persist shard-scoped outputs.
+
+    The search scans ``scan_start_1..scan_end_1`` (1-based, inclusive) for
+    sequence context, but only sites whose coordinates fall entirely within the
+    *core* window (``core_start_1..core_end_1``) are written to output.  This
+    prevents duplicate sites across overlapping shards.  When ``core_start_1``
+    or ``core_end_1`` are not provided they default to the scan boundaries.
+    """
+    effective_core_start = core_start_1 if core_start_1 is not None else scan_start_1
+    effective_core_end = core_end_1 if core_end_1 is not None else scan_end_1
     spacer_list = [int(s) for s in _parse_csv_tokens(spacer_lengths)]
 
     params_obj = ZFNDesignParameters(
@@ -253,7 +264,9 @@ def run_zfn_shard_search(
     filtered_sites = [
         site
         for site in result.off_target_sites
-        if site.chrom == shard_chrom and site.start_1based >= scan_start_1 and site.end_1based <= scan_end_1
+        if site.chrom == shard_chrom
+        and site.start_1based >= effective_core_start
+        and site.end_1based <= effective_core_end
     ]
 
     filtered_result = ZFNDesignResult(

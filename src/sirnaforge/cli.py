@@ -1349,7 +1349,7 @@ def design(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
+        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware). For ZFN use 'sirnaforge workflow --design-mode zfn'.",
     ),
     zfn_subfinger_mutation: list[str] = typer.Option(
         [],
@@ -1470,6 +1470,14 @@ def design(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
+    if mode_enum == DesignMode.ZFN:
+        console.print(
+            "❌ Error: --design-mode zfn is not supported in the 'design' command. "
+            "Use 'sirnaforge workflow --design-mode zfn' with --zfn-left-half-site and --zfn-right-half-site instead.",
+            style="red",
+        )
+        raise typer.Exit(1)
+
     merged_zfn_constraints = list(zfn_subfinger_mutation)
     if zfn_max_mismatches_per_subfinger is not None:
         merged_zfn_constraints.append(f"*:{zfn_max_mismatches_per_subfinger}:mismatch")
@@ -1484,8 +1492,12 @@ def design(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
-    if mode_enum != DesignMode.ZFN and (zfn_constraints or zfn_default_constraint or zfn_overall_constraints):
-        console.print("❌ Error: --zfn-subfinger-mutation requires --design-mode zfn", style="red")
+    if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
+        console.print(
+            "❌ Error: --zfn-subfinger-mutation flags are only valid for ZFN mode. "
+            "Use 'sirnaforge workflow --design-mode zfn' instead.",
+            style="red",
+        )
         raise typer.Exit(1)
 
     # Create parameters
@@ -2071,6 +2083,12 @@ def internal_zfn_search_shard(
     shard_chrom: str = typer.Option(..., "--shard-chrom"),
     scan_start_1: int = typer.Option(..., "--scan-start-1"),
     scan_end_1: int = typer.Option(..., "--scan-end-1"),
+    core_start_1: int | None = typer.Option(
+        None, "--core-start-1", help="Core window start (1-based). Defaults to scan-start-1."
+    ),
+    core_end_1: int | None = typer.Option(
+        None, "--core-end-1", help="Core window end (1-based). Defaults to scan-end-1."
+    ),
     shard_max_mismatches: int = typer.Option(..., "--shard-max-mismatches"),
     left_half_site: str = typer.Option(..., "--left-half-site"),
     right_half_site: str = typer.Option(..., "--right-half-site"),
@@ -2088,6 +2106,8 @@ def internal_zfn_search_shard(
         shard_chrom=shard_chrom,
         scan_start_1=scan_start_1,
         scan_end_1=scan_end_1,
+        core_start_1=core_start_1,
+        core_end_1=core_end_1,
         shard_max_mismatches=shard_max_mismatches,
         left_half_site=left_half_site,
         right_half_site=right_half_site,
