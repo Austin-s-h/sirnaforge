@@ -13,7 +13,8 @@
 ## Dev Workflow (use these commands)
 - Setup once: `make dev` (runs `uv sync` + installs pre-commit).
 - Run things via uv: `uv run sirnaforge …`.
-- Lint/format/typecheck: `make lint`, `make format` (Ruff), `make check` (format + `make test-dev`).
+- Lint/format/typecheck: `make lint`, `make format` (Ruff), `make check` (runs `make format` then `make test-dev`, so it can modify files).
+- Security validation: `make security` (Bandit + Safety reports).
 - Quick manual sanity check: `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
 
 ## Testing (how this repo behaves)
@@ -21,6 +22,11 @@
 - Tiered suites are Make targets: `make test-dev` (fast), `make test-ci`, `make test-release`, `make test`.
 - Deterministic fixtures live in `tests/unit/data/` and `examples/`. Avoid network in unit tests unless explicitly marked (`requires_network`).
 - Container-only integration lives in `tests/container/` and expects Docker + bundled bio tools.
+
+## Change Expectations
+- Keep changes surgical and consistent with the existing module boundaries; prefer extending current helpers/models over introducing parallel implementations.
+- Add or update targeted tests whenever behavior changes. For documentation-only changes, validate the touched docs for accuracy instead of adding tests.
+- Update nearby documentation when CLI behavior, workflow outputs, or public APIs change. Architecture references already live under `docs/developer/`.
 
 ## Pipeline / External Tooling Boundaries
 - Nextflow assets are embedded under `src/sirnaforge/pipeline/nextflow/workflows/` and are executed via `src/sirnaforge/pipeline/nextflow/runner.py` (don’t reimplement pipeline orchestration).
