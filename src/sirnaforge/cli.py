@@ -103,6 +103,7 @@ console = Console(force_terminal=False, legacy_windows=True)
 app_command = command_decorator_typed(app.command)
 
 DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
+REMOTE_RESOURCE_SCHEMES = ("http://", "https://", "ftp://", "file://")
 
 
 class TranscriptLike(Protocol):
@@ -910,14 +911,17 @@ def workflow(  # noqa: PLR0912
         search_space_fasta: str | None = None
         search_space_reference: str | None = "ensembl_human_hg38_primary"  # default
         if zfn_search_space:
-            if Path(zfn_search_space).exists() or "://" in zfn_search_space:
+            if Path(zfn_search_space).exists() or zfn_search_space.startswith(REMOTE_RESOURCE_SCHEMES):
                 search_space_fasta = zfn_search_space
                 search_space_reference = None
             else:
                 search_space_reference = zfn_search_space
 
         if zfn_annotation:
-            annotation = GenomicAnnotationConfig(annotation_path=zfn_annotation)
+            if zfn_annotation.startswith(REMOTE_RESOURCE_SCHEMES):
+                annotation = GenomicAnnotationConfig(annotation_reference=zfn_annotation)
+            else:
+                annotation = GenomicAnnotationConfig(annotation_path=zfn_annotation)
 
         try:
             zfn_design_params = ZFNDesignParameters(

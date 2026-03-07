@@ -224,6 +224,40 @@ class TestZFNWorkflowRouting:
         assert wf.zfn_designer is None
         assert wf.sirnaforgeer is not None
 
+    def test_zfn_mode_skips_transcript_and_orf_directories(self, tmp_path: Path) -> None:
+        """ZFN mode should not create transcript/ORF output folders during config bootstrap."""
+        dp = DesignParameters(design_mode=DesignMode.ZFN)
+        out_dir = tmp_path / "out_zfn"
+        WorkflowConfig(
+            gene_query="test_gene",
+            output_dir=out_dir,
+            design_params=dp,
+        )
+
+        assert out_dir.exists()
+        assert not (out_dir / "transcripts").exists()
+        assert not (out_dir / "orf_reports").exists()
+        assert (out_dir / "sirnaforge").exists()
+        assert (out_dir / "off_target").exists()
+        assert (out_dir / "logs").exists()
+
+    def test_sirna_mode_keeps_transcript_and_orf_directories(self, tmp_path: Path) -> None:
+        """SiRNA mode should preserve historical output folder bootstrap behavior."""
+        dp = DesignParameters(design_mode=DesignMode.SIRNA)
+        out_dir = tmp_path / "out_sirna"
+        WorkflowConfig(
+            gene_query="test_gene",
+            output_dir=out_dir,
+            design_params=dp,
+        )
+
+        assert out_dir.exists()
+        assert (out_dir / "transcripts").exists()
+        assert (out_dir / "orf_reports").exists()
+        assert (out_dir / "sirnaforge").exists()
+        assert (out_dir / "off_target").exists()
+        assert (out_dir / "logs").exists()
+
 
 # ---------------------------------------------------------------------------
 # ZFNWorkflowConfig

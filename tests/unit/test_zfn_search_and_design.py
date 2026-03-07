@@ -20,6 +20,7 @@ from sirnaforge.models.zfn import (
     ZFNShardingConfig,
     ZFNSpacerConstraints,
 )
+from sirnaforge.utils.resource_resolver import InputSource
 from sirnaforge.zfn.design import ZFNDesigner
 from sirnaforge.zfn.rank import rank_sites
 from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher, _HalfSiteHit
@@ -512,6 +513,47 @@ def test_resolve_annotation_path_handles_missing_file(tmp_path: Path) -> None:
     annotation = GenomicAnnotationConfig(annotation_path=str(tmp_path / "missing.gtf"))
     resolved = ExhaustiveZFNOffTargetSearcher()._resolve_annotation_path(annotation)
     assert resolved is None
+
+
+def test_resolve_annotation_path_uses_existing_reference_path(tmp_path: Path) -> None:
+    """Annotation resolver should accept annotation_reference when it points to a local file."""
+    annotation_file = tmp_path / "annotations.gtf"
+    annotation_file.write_text("# gtf\n", encoding="utf-8")
+
+    annotation = GenomicAnnotationConfig(annotation_reference=str(annotation_file))
+    resolved = ExhaustiveZFNOffTargetSearcher()._resolve_annotation_path(annotation)
+
+    assert resolved == annotation_file
+    assert annotation.annotation_path == str(annotation_file)
+
+
+def test_resolve_annotation_path_downloads_reference_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Annotation resolver should download URL-like references into a local cache path."""
+    downloaded = tmp_path / "downloaded.gtf.gz"
+    downloaded.write_text("# gtf\n", encoding="utf-8")
+
+    def _fake_resolve_input_source(input_location: str, destination_root: Path, timeout: float = 30.0) -> InputSource:
+        assert input_location == "https://example.org/annotations.gtf.gz"
+        assert destination_root == tmp_path
+        return InputSource(
+            original=input_location,
+            local_path=downloaded,
+            source_type="https",
+            downloaded=True,
+            size_bytes=downloaded.stat().st_size,
+            sha256="abc123",
+        )
+
+    monkeypatch.setattr("sirnaforge.zfn.search.resolve_input_source", _fake_resolve_input_source)
+
+    annotation = GenomicAnnotationConfig(
+        annotation_reference="https://example.org/annotations.gtf.gz",
+        cache_dir=str(tmp_path),
+    )
+    resolved = ExhaustiveZFNOffTargetSearcher()._resolve_annotation_path(annotation)
+
+    assert resolved == downloaded
+    assert annotation.annotation_path == str(downloaded)
 
 
 def test_load_fasta_raises_on_missing_and_empty(tmp_path: Path) -> None:

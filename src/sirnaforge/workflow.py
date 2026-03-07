@@ -174,11 +174,12 @@ class WorkflowConfig:
 
         # Create output structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "transcripts").mkdir(exist_ok=True)
-        (self.output_dir / "orf_reports").mkdir(exist_ok=True)
         (self.output_dir / "sirnaforge").mkdir(exist_ok=True)
         (self.output_dir / "off_target").mkdir(exist_ok=True)
         (self.output_dir / "logs").mkdir(exist_ok=True)
+        if self.design_params.design_mode != DesignMode.ZFN:
+            (self.output_dir / "transcripts").mkdir(exist_ok=True)
+            (self.output_dir / "orf_reports").mkdir(exist_ok=True)
 
     @staticmethod
     def _extract_species_from_indices(indices: str) -> list[str]:
