@@ -2,7 +2,7 @@
 
 import pytest
 
-from sirnaforge.cli import _parse_zfn_mutation_constraints, _resolve_design_mode
+from sirnaforge.cli import _build_zfn_design_configuration, _parse_zfn_mutation_constraints, _resolve_design_mode
 from sirnaforge.models.sirna import (
     DesignMode,
 )
@@ -101,3 +101,27 @@ def test_design_parameters_canonical_contract_normalizes_spacers() -> None:
     assert contract.right_half_site == "ACCAGATGA"
     assert contract.allowed_spacer_lengths == [5, 6]
     assert contract.orientation_convention == "L...R genomic ordering"
+
+
+def test_build_zfn_design_configuration_applies_cli_sharding_overrides() -> None:
+    """CLI sharding options should propagate into typed ZFN sharding config."""
+    params, _, _, _, _ = _build_zfn_design_configuration(
+        zfn_subfinger_mutation=[],
+        zfn_max_mismatches_per_subfinger=None,
+        zfn_max_substitutions_overall=None,
+        zfn_left_half_site="GCGTGGGCG",
+        zfn_right_half_site="GCCCACGCG",
+        zfn_search_space="ensembl_human_hg38_primary",
+        zfn_algorithm="zfn_v2",
+        zfn_dimer_mode="heterodimer_only",
+        zfn_spacer_lengths="5,6,7",
+        zfn_max_mismatches=2,
+        zfn_annotation=None,
+        zfn_shard_max_workers=6,
+        zfn_shard_chunk_mb=40.0,
+        zfn_shard_chromosomes="autosomes,sex",
+    )
+
+    assert params.sharding.max_workers == 6
+    assert params.sharding.chunk_size_bp == 40_000_000
+    assert params.sharding.chromosomes == ["autosomes", "sex"]

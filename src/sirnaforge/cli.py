@@ -312,7 +312,7 @@ def _parse_zfn_mutation_constraints(
     return per_subfinger, default_subfinger, overall_constraints
 
 
-def _build_zfn_design_configuration(
+def _build_zfn_design_configuration(  # noqa: PLR0912
     *,
     zfn_subfinger_mutation: list[str],
     zfn_max_mismatches_per_subfinger: int | None,
@@ -325,6 +325,9 @@ def _build_zfn_design_configuration(
     zfn_spacer_lengths: str,
     zfn_max_mismatches: int,
     zfn_annotation: str | None,
+    zfn_shard_max_workers: int | None,
+    zfn_shard_chunk_mb: float | None,
+    zfn_shard_chromosomes: str | None,
 ) -> tuple[
     ZFNDesignParameters,
     GenomicAnnotationConfig | None,
@@ -395,6 +398,19 @@ def _build_zfn_design_configuration(
         half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=zfn_max_mismatches),
         mutation_constraints=mutation_constraints,
     )
+
+    sharding_updates: dict[str, Any] = {}
+    if zfn_shard_max_workers is not None:
+        sharding_updates["max_workers"] = zfn_shard_max_workers
+    if zfn_shard_chunk_mb is not None:
+        sharding_updates["chunk_size_bp"] = max(1, int(float(zfn_shard_chunk_mb) * 1_000_000))
+    if zfn_shard_chromosomes is not None:
+        sharding_updates["chromosomes"] = [token.strip() for token in zfn_shard_chromosomes.split(",") if token.strip()]
+
+    if sharding_updates:
+        updated_sharding = zfn_design_params.sharding.model_copy(update=sharding_updates, deep=True)
+        zfn_design_params = zfn_design_params.model_copy(update={"sharding": updated_sharding}, deep=True)
+
     return zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints
 
 
@@ -718,6 +734,29 @@ def workflow(  # noqa: PLR0912
         max=6,
         help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
     ),
+    zfn_shard_max_workers: int | None = typer.Option(
+        None,
+        "--zfn-shard-max-workers",
+        min=1,
+        max=128,
+        envvar="SIRNAFORGE_ZFN_SHARD_MAX_WORKERS",
+        help=(
+            "Parallel shard workers for in-process ZFN search. Higher values improve throughput on multicore systems."
+        ),
+    ),
+    zfn_shard_chunk_mb: float | None = typer.Option(
+        None,
+        "--zfn-shard-chunk-mb",
+        min=1.0,
+        help="Shard chunk size in MB (larger chunks reduce scheduling overhead).",
+    ),
+    zfn_shard_chromosomes: str | None = typer.Option(
+        None,
+        "--zfn-shard-chromosomes",
+        help=(
+            "Optional comma-separated chromosome filter tokens for sharding (e.g. 'autosomes,sex' or 'chr1,chr2,chrX')."
+        ),
+    ),
     zfn_annotation: str | None = typer.Option(
         None,
         "--zfn-annotation",
@@ -975,6 +1014,9 @@ def workflow(  # noqa: PLR0912
                     zfn_spacer_lengths=zfn_spacer_lengths,
                     zfn_max_mismatches=zfn_max_mismatches,
                     zfn_annotation=zfn_annotation,
+                    zfn_shard_max_workers=zfn_shard_max_workers,
+                    zfn_shard_chunk_mb=zfn_shard_chunk_mb,
+                    zfn_shard_chromosomes=zfn_shard_chromosomes,
                 )
             )
         except ValueError as exc:
@@ -1455,6 +1497,29 @@ def zfn(
         max=6,
         help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
     ),
+    zfn_shard_max_workers: int | None = typer.Option(
+        None,
+        "--zfn-shard-max-workers",
+        min=1,
+        max=128,
+        envvar="SIRNAFORGE_ZFN_SHARD_MAX_WORKERS",
+        help=(
+            "Parallel shard workers for in-process ZFN search. Higher values improve throughput on multicore systems."
+        ),
+    ),
+    zfn_shard_chunk_mb: float | None = typer.Option(
+        None,
+        "--zfn-shard-chunk-mb",
+        min=1.0,
+        help="Shard chunk size in MB (larger chunks reduce scheduling overhead).",
+    ),
+    zfn_shard_chromosomes: str | None = typer.Option(
+        None,
+        "--zfn-shard-chromosomes",
+        help=(
+            "Optional comma-separated chromosome filter tokens for sharding (e.g. 'autosomes,sex' or 'chr1,chr2,chrX')."
+        ),
+    ),
     zfn_annotation: str | None = typer.Option(
         None,
         "--zfn-annotation",
@@ -1502,6 +1567,9 @@ def zfn(
                 zfn_spacer_lengths=zfn_spacer_lengths,
                 zfn_max_mismatches=zfn_max_mismatches,
                 zfn_annotation=zfn_annotation,
+                zfn_shard_max_workers=zfn_shard_max_workers,
+                zfn_shard_chunk_mb=zfn_shard_chunk_mb,
+                zfn_shard_chromosomes=zfn_shard_chromosomes,
             )
         )
     except ValueError as exc:
@@ -1519,6 +1587,8 @@ def zfn(
             f"Algorithm: [cyan]{zfn_design_params.algorithm.value}[/cyan]\n"
             f"Dimer mode: [cyan]{zfn_design_params.dimer_mode.value}[/cyan]\n"
             f"Spacer lengths: [cyan]{zfn_design_params.spacer_constraints.allowed_spacer_lengths}[/cyan]\n"
+            f"Sharding: [cyan]workers={zfn_design_params.sharding.max_workers}, "
+            f"chunk={zfn_design_params.sharding.chunk_size_bp}bp[/cyan]\n"
             f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
             f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]",

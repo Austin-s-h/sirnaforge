@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +111,14 @@ class ExhaustiveZFNOffTargetSearcher:
         all_sites: list[ZFNOffTargetSite] = []
 
         workers = min(params.sharding.max_workers, len(shard_specs)) if shard_specs else 1
+        logger.info("Starting ZFN shard search: %s shard(s), workers=%s", len(shard_specs), workers)
+        if workers == 1 and len(shard_specs) > 8:
+            logger.info(
+                "ZFN search is running with a single shard worker; use --zfn-shard-max-workers to improve throughput"
+            )
+
+        started_at = time.perf_counter()
+        progress_interval = max(1, len(shard_specs) // 20) if shard_specs else 1
         if workers > 1 and len(shard_specs) > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
@@ -121,11 +130,29 @@ class ExhaustiveZFNOffTargetSearcher:
                     ): shard.shard_id
                     for shard in shard_specs
                 }
-                for future in as_completed(futures):
+                for completed_count, future in enumerate(as_completed(futures), start=1):
                     all_sites.extend(future.result())
+                    if completed_count == len(shard_specs) or completed_count % progress_interval == 0:
+                        elapsed = time.perf_counter() - started_at
+                        logger.info(
+                            "ZFN shard progress: %s/%s complete (%.1f%%) after %.1fs",
+                            completed_count,
+                            len(shard_specs),
+                            (completed_count * 100.0) / max(1, len(shard_specs)),
+                            elapsed,
+                        )
         else:
-            for shard in shard_specs:
+            for completed_count, shard in enumerate(shard_specs, start=1):
                 all_sites.extend(self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params))
+                if completed_count == len(shard_specs) or completed_count % progress_interval == 0:
+                    elapsed = time.perf_counter() - started_at
+                    logger.info(
+                        "ZFN shard progress: %s/%s complete (%.1f%%) after %.1fs",
+                        completed_count,
+                        len(shard_specs),
+                        (completed_count * 100.0) / max(1, len(shard_specs)),
+                        elapsed,
+                    )
 
         deduped = self._dedupe_sites(all_sites)
 
