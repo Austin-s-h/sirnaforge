@@ -312,6 +312,92 @@ def _parse_zfn_mutation_constraints(
     return per_subfinger, default_subfinger, overall_constraints
 
 
+def _build_zfn_design_configuration(
+    *,
+    zfn_subfinger_mutation: list[str],
+    zfn_max_mismatches_per_subfinger: int | None,
+    zfn_max_substitutions_overall: int | None,
+    zfn_left_half_site: str,
+    zfn_right_half_site: str,
+    zfn_search_space: str | None,
+    zfn_algorithm: str,
+    zfn_dimer_mode: str,
+    zfn_spacer_lengths: str,
+    zfn_max_mismatches: int,
+    zfn_annotation: str | None,
+) -> tuple[
+    ZFNDesignParameters,
+    GenomicAnnotationConfig | None,
+    list[ZFNSubfingerMutationConstraint],
+    ZFNDefaultSubfingerMutationConstraint | None,
+    list[ZFNOverallMutationConstraint],
+]:
+    """Parse and validate CLI options into a typed ZFN design configuration."""
+    merged_zfn_constraints = list(zfn_subfinger_mutation)
+    if zfn_max_mismatches_per_subfinger is not None:
+        merged_zfn_constraints.append(f"*:{zfn_max_mismatches_per_subfinger}:mismatch")
+    if zfn_max_substitutions_overall is not None:
+        merged_zfn_constraints.append(f"overall:{zfn_max_substitutions_overall}:substitution")
+
+    zfn_constraints, zfn_default_constraint, zfn_overall_constraints = _parse_zfn_mutation_constraints(
+        merged_zfn_constraints
+    )
+
+    try:
+        parsed_spacers = [int(s.strip()) for s in zfn_spacer_lengths.split(",")]
+    except ValueError as exc:
+        raise ValueError("--zfn-spacer-lengths must be comma-separated integers") from exc
+    try:
+        algo = ZFNAlgorithm(zfn_algorithm.lower())
+    except ValueError as exc:
+        raise ValueError(
+            f"--zfn-algorithm must be one of: homology, conserved_g, zfn_v2 (got '{zfn_algorithm}')"
+        ) from exc
+    try:
+        dimer = DimerMode(zfn_dimer_mode.lower())
+    except ValueError as exc:
+        raise ValueError(
+            f"--zfn-dimer-mode must be heterodimer_only or include_homodimers (got '{zfn_dimer_mode}')"
+        ) from exc
+
+    mutation_constraints: ZFNMutationConstraints | None = None
+    if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
+        mutation_constraints = ZFNMutationConstraints(
+            subfinger_mutations=zfn_constraints,
+            default_subfinger_mutation=zfn_default_constraint,
+            overall_mutations=zfn_overall_constraints,
+        )
+
+    search_space_fasta: str | None = None
+    search_space_reference: str | None = "ensembl_human_hg38_primary"
+    if zfn_search_space:
+        if Path(zfn_search_space).exists() or zfn_search_space.startswith(REMOTE_RESOURCE_SCHEMES):
+            search_space_fasta = zfn_search_space
+            search_space_reference = None
+        else:
+            search_space_reference = zfn_search_space
+
+    annotation: GenomicAnnotationConfig | None = None
+    if zfn_annotation:
+        if zfn_annotation.startswith(REMOTE_RESOURCE_SCHEMES):
+            annotation = GenomicAnnotationConfig(annotation_reference=zfn_annotation)
+        else:
+            annotation = GenomicAnnotationConfig(annotation_path=zfn_annotation)
+
+    zfn_design_params = ZFNDesignParameters(
+        left_half_site=zfn_left_half_site,
+        right_half_site=zfn_right_half_site,
+        search_space_reference=search_space_reference,
+        search_space_fasta=search_space_fasta,
+        algorithm=algo,
+        dimer_mode=dimer,
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=parsed_spacers),
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=zfn_max_mismatches),
+        mutation_constraints=mutation_constraints,
+    )
+    return zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints
+
+
 @app_command()
 def search(  # noqa: PLR0912
     query: str = typer.Argument(..., help="Gene ID, gene name, or transcript ID to search for"),
@@ -876,68 +962,31 @@ def workflow(  # noqa: PLR0912
             raise typer.Exit(1)
 
         try:
-            parsed_spacers = [int(s.strip()) for s in zfn_spacer_lengths.split(",")]
-        except ValueError:
-            console.print("❌ Error: --zfn-spacer-lengths must be comma-separated integers", style="red")
+            zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (
+                _build_zfn_design_configuration(
+                    zfn_subfinger_mutation=zfn_subfinger_mutation,
+                    zfn_max_mismatches_per_subfinger=zfn_max_mismatches_per_subfinger,
+                    zfn_max_substitutions_overall=zfn_max_substitutions_overall,
+                    zfn_left_half_site=zfn_left_half_site,
+                    zfn_right_half_site=zfn_right_half_site,
+                    zfn_search_space=zfn_search_space,
+                    zfn_algorithm=zfn_algorithm,
+                    zfn_dimer_mode=zfn_dimer_mode,
+                    zfn_spacer_lengths=zfn_spacer_lengths,
+                    zfn_max_mismatches=zfn_max_mismatches,
+                    zfn_annotation=zfn_annotation,
+                )
+            )
+        except ValueError as exc:
+            logger.error("Invalid ZFN configuration: %s", exc)
+            console.print(f"❌ Error: {exc}", style="red")
             raise typer.Exit(1)
-
-        try:
-            algo = ZFNAlgorithm(zfn_algorithm.lower())
-        except ValueError:
-            console.print(
-                f"❌ Error: --zfn-algorithm must be one of: homology, conserved_g, zfn_v2 (got '{zfn_algorithm}')",
-                style="red",
-            )
-            raise typer.Exit(1)
-
-        try:
-            dimer = DimerMode(zfn_dimer_mode.lower())
-        except ValueError:
-            console.print(
-                f"❌ Error: --zfn-dimer-mode must be heterodimer_only or include_homodimers (got '{zfn_dimer_mode}')",
-                style="red",
-            )
-            raise typer.Exit(1)
-
-        mutation_constraints: ZFNMutationConstraints | None = None
-        if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
-            mutation_constraints = ZFNMutationConstraints(
-                subfinger_mutations=zfn_constraints,
-                default_subfinger_mutation=zfn_default_constraint,
-                overall_mutations=zfn_overall_constraints,
-            )
-
-        # Determine search space: explicit FASTA path or reference key
-        search_space_fasta: str | None = None
-        search_space_reference: str | None = "ensembl_human_hg38_primary"  # default
-        if zfn_search_space:
-            if Path(zfn_search_space).exists() or zfn_search_space.startswith(REMOTE_RESOURCE_SCHEMES):
-                search_space_fasta = zfn_search_space
-                search_space_reference = None
-            else:
-                search_space_reference = zfn_search_space
-
-        if zfn_annotation:
-            if zfn_annotation.startswith(REMOTE_RESOURCE_SCHEMES):
-                annotation = GenomicAnnotationConfig(annotation_reference=zfn_annotation)
-            else:
-                annotation = GenomicAnnotationConfig(annotation_path=zfn_annotation)
-
-        try:
-            zfn_design_params = ZFNDesignParameters(
-                left_half_site=zfn_left_half_site,
-                right_half_site=zfn_right_half_site,
-                search_space_reference=search_space_reference,
-                search_space_fasta=search_space_fasta,
-                algorithm=algo,
-                dimer_mode=dimer,
-                spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=parsed_spacers),
-                half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=zfn_max_mismatches),
-                mutation_constraints=mutation_constraints,
-            )
         except Exception as exc:
             logger.error("ZFN parameter validation failed: %s", exc)
-            console.print(f"❌ Error: ZFN parameter validation failed: {exc}", style="red")
+            console.print(
+                f"❌ Error: ZFN parameter validation failed: {exc}",
+                style="red",
+            )
             raise typer.Exit(1)
 
     try:
@@ -1336,24 +1385,12 @@ def offtarget(
 
 
 @app_command()
-def design(  # noqa: PLR0912
-    input_file: Path = typer.Argument(
-        ...,
-        help="Input FASTA file containing transcript sequences",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    ),
-    output: Path = typer.Option(
-        Path("sirna_results.tsv"),
-        "--output",
+def zfn(
+    output_dir: Path = typer.Option(
+        Path("sirna_zfn_output"),
+        "--output-dir",
         "-o",
-        help="Output file for siRNA candidates",
-    ),
-    design_mode: str = typer.Option(
-        "sirna",
-        "--design-mode",
-        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware). For ZFN use 'sirnaforge workflow --design-mode zfn'.",
+        help="Output directory for ZFN activity evaluation results",
     ),
     zfn_subfinger_mutation: list[str] = typer.Option(
         [],
@@ -1377,6 +1414,173 @@ def design(  # noqa: PLR0912
         "--zfn-max-substitutions-overall",
         min=0,
         help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
+    ),
+    zfn_left_half_site: str = typer.Option(
+        ...,
+        "--zfn-left-half-site",
+        help="Left ZFN half-site sequence (9-18 bp, IUPAC allowed).",
+    ),
+    zfn_right_half_site: str = typer.Option(
+        ...,
+        "--zfn-right-half-site",
+        help="Right ZFN half-site sequence (9-18 bp, IUPAC allowed).",
+    ),
+    zfn_search_space: str | None = typer.Option(
+        None,
+        "--zfn-search-space",
+        help=(
+            "Genome reference key or local FASTA path for ZFN off-target search space. "
+            "Default: ensembl_human_hg38_primary."
+        ),
+    ),
+    zfn_algorithm: str = typer.Option(
+        "zfn_v2",
+        "--zfn-algorithm",
+        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
+    ),
+    zfn_dimer_mode: str = typer.Option(
+        "heterodimer_only",
+        "--zfn-dimer-mode",
+        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
+    ),
+    zfn_spacer_lengths: str = typer.Option(
+        "5,6,7",
+        "--zfn-spacer-lengths",
+        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
+    ),
+    zfn_max_mismatches: int = typer.Option(
+        2,
+        "--zfn-max-mismatches",
+        min=0,
+        max=6,
+        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
+    ),
+    zfn_annotation: str | None = typer.Option(
+        None,
+        "--zfn-annotation",
+        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+    log_file: Path | None = typer.Option(
+        None,
+        "--log-file",
+        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
+    nextflow_docker_image: str | None = typer.Option(
+        None,
+        "--nextflow-docker-image",
+        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
+        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
+    ),
+    json_summary: bool = typer.Option(
+        True,
+        "--json-summary/--no-json-summary",
+        help="Write logs/workflow_summary.json (disable to skip JSON output)",
+    ),
+) -> None:
+    """Evaluate a ZFN pair and run exhaustive genome-wide off-target search."""
+    log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
+    log_destination.parent.mkdir(parents=True, exist_ok=True)
+    configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
+
+    try:
+        zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (
+            _build_zfn_design_configuration(
+                zfn_subfinger_mutation=zfn_subfinger_mutation,
+                zfn_max_mismatches_per_subfinger=zfn_max_mismatches_per_subfinger,
+                zfn_max_substitutions_overall=zfn_max_substitutions_overall,
+                zfn_left_half_site=zfn_left_half_site,
+                zfn_right_half_site=zfn_right_half_site,
+                zfn_search_space=zfn_search_space,
+                zfn_algorithm=zfn_algorithm,
+                zfn_dimer_mode=zfn_dimer_mode,
+                zfn_spacer_lengths=zfn_spacer_lengths,
+                zfn_max_mismatches=zfn_max_mismatches,
+                zfn_annotation=zfn_annotation,
+            )
+        )
+    except ValueError as exc:
+        console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"❌ Error: ZFN parameter validation failed: {exc}", style="red")
+        raise typer.Exit(1)
+
+    console.print(
+        Panel.fit(
+            f"🧬 [bold blue]ZFN Activity Evaluation[/bold blue]\n"
+            f"Left half-site: [yellow]{zfn_design_params.left_half_site}[/yellow]\n"
+            f"Right half-site: [yellow]{zfn_design_params.right_half_site}[/yellow]\n"
+            f"Algorithm: [cyan]{zfn_design_params.algorithm.value}[/cyan]\n"
+            f"Dimer mode: [cyan]{zfn_design_params.dimer_mode.value}[/cyan]\n"
+            f"Spacer lengths: [cyan]{zfn_design_params.spacer_constraints.allowed_spacer_lengths}[/cyan]\n"
+            f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
+            f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]\n"
+            f"Output Directory: [cyan]{output_dir}[/cyan]",
+            title="ZFN Configuration",
+        )
+    )
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running ZFN activity workflow...", total=None)
+            asyncio.run(
+                run_sirna_workflow(
+                    gene_query="zfn",
+                    output_dir=str(output_dir),
+                    database="ensembl",
+                    design_mode=DesignMode.ZFN.value,
+                    zfn_design_params=zfn_design_params,
+                    zfn_annotation=annotation,
+                    log_file=str(log_destination),
+                    write_json_summary=json_summary,
+                    nextflow_docker_image=nextflow_docker_image,
+                )
+            )
+            progress.remove_task(task)
+
+        console.print("\n✅ [bold green]ZFN workflow completed successfully![/bold green]")
+        console.print(f"📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
+        console.print("📂 Key files:")
+        console.print("   • Off-target sites: [blue]sirnaforge/zfn_offtarget_sites.csv[/blue]")
+        console.print("   • Candidate summary: [blue]sirnaforge/zfn_candidate_summary.json[/blue]")
+        if json_summary:
+            console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
+    except Exception as e:
+        console.print(f"❌ [red]ZFN workflow error:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+
+@app_command()
+def design(  # noqa: PLR0912
+    input_file: Path = typer.Argument(
+        ...,
+        help="Input FASTA file containing transcript sequences",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    output: Path = typer.Option(
+        Path("sirna_results.tsv"),
+        "--output",
+        "-o",
+        help="Output file for siRNA candidates",
+    ),
+    design_mode: str = typer.Option(
+        "sirna",
+        "--design-mode",
+        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware). For ZFN use 'sirnaforge zfn'.",
     ),
     length: int = typer.Option(
         21,
@@ -1476,30 +1680,7 @@ def design(  # noqa: PLR0912
 
     if mode_enum == DesignMode.ZFN:
         console.print(
-            "❌ Error: --design-mode zfn is not supported in the 'design' command. "
-            "Use 'sirnaforge workflow --design-mode zfn' with --zfn-left-half-site and --zfn-right-half-site instead.",
-            style="red",
-        )
-        raise typer.Exit(1)
-
-    merged_zfn_constraints = list(zfn_subfinger_mutation)
-    if zfn_max_mismatches_per_subfinger is not None:
-        merged_zfn_constraints.append(f"*:{zfn_max_mismatches_per_subfinger}:mismatch")
-    if zfn_max_substitutions_overall is not None:
-        merged_zfn_constraints.append(f"overall:{zfn_max_substitutions_overall}:substitution")
-
-    try:
-        zfn_constraints, zfn_default_constraint, zfn_overall_constraints = _parse_zfn_mutation_constraints(
-            merged_zfn_constraints
-        )
-    except ValueError as exc:
-        console.print(f"❌ Error: {exc}", style="red")
-        raise typer.Exit(1)
-
-    if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
-        console.print(
-            "❌ Error: --zfn-subfinger-mutation flags are only valid for ZFN mode. "
-            "Use 'sirnaforge workflow --design-mode zfn' instead.",
+            "❌ Error: --design-mode zfn is not supported in the 'design' command. Use 'sirnaforge zfn' instead.",
             style="red",
         )
         raise typer.Exit(1)

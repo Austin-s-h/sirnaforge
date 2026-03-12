@@ -64,11 +64,10 @@ done
 
 ## ZFN Workflow
 
-Use ZFN mode when you want half-site constrained off-target discovery.
+Use the dedicated ZFN command when you want half-site constrained off-target discovery.
 
 ```bash
-sirnaforge workflow CCR5_ZFN_RUN \
-  --design-mode zfn \
+sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
   --zfn-right-half-site AAACTGCAAAAG \
   --zfn-search-space ensembl_human_hg38_primary \

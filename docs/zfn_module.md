@@ -6,7 +6,7 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
 
 ### Completed
 
-- ✅ ZFN support is available through `sirnaforge workflow ... --design-mode zfn`.
+- ✅ ZFN support is available through the dedicated `sirnaforge zfn ...` command.
 - ✅ Typed models and JSON-serializable workflow artifacts are implemented (`sirnaforge.models.zfn` and `zfn_candidate_summary.json` output).
 - ✅ Output/reporting follows existing workflow conventions, including:
   - `sirnaforge/zfn_candidate_summary.json`
@@ -19,7 +19,6 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
 
 ### Not implemented in this PR branch
 
-- ❌ A first-class top-level CLI namespace (`sirnaforge zfn ...`) is not implemented; current public path is `sirnaforge workflow --design-mode zfn`.
 - ❌ Distinct `repeat_motif` mode is not implemented; current implementation focuses on nuclease-style half-site pair workflow.
 
 ## What the ZFN module does
@@ -31,20 +30,19 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
 
 ## CLI usage
 
-### Required inputs for `--design-mode zfn`
+### Required inputs for `sirnaforge zfn`
 
-When using ZFN mode, both half-sites are required:
+When using the ZFN command, both half-sites are required:
 
 - `--zfn-left-half-site`
 - `--zfn-right-half-site`
 
 The workflow exits with a validation error if either flag is missing.
 
-### ZFN workflow mode
+### ZFN command
 
 ```bash
-sirnaforge workflow CCR5_ZFN_RUN \
-  --design-mode zfn \
+sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
   --zfn-right-half-site AAACTGCAAAAG \
   --zfn-search-space ensembl_human_hg38_primary \
@@ -76,6 +74,8 @@ Outputs are written under:
 - `--zfn-annotation`: optional GTF/GFF annotation for region classification
 
 For larger genomes or advanced runtime control, see the workflow-level environment toggles documented in [Workflows](workflows.md).
+
+Legacy note: `sirnaforge workflow --design-mode zfn` remains a compatibility path, but `sirnaforge zfn` is the primary entrypoint.
 
 ## Python API quickstart
 

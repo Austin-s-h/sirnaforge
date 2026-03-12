@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Changed
+- CLI documentation now reflects the dedicated `sirnaforge zfn` entrypoint for ZFN activity/off-target workflows.
+- `sirnaforge design` documentation now reflects transcript siRNA/miRNA scope only.
 
 ## [0.4.2] - 2026-03-01
 

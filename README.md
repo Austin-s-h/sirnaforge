@@ -116,11 +116,10 @@ sirnaforge workflow BRCA1 \
 ZFN mode accepts repeatable mutation constraints so you can combine per-subfinger and global budgets.
 
 ```bash
-sirnaforge workflow ZFN_TARGET \
-  --design-mode zfn \
+sirnaforge zfn \
   --zfn-left-half-site GCGTGGGCG \
   --zfn-right-half-site GCCCACGCG \
-  --zfn-search-space hg38 \
+  --zfn-search-space ensembl_human_hg38_primary \
   --zfn-max-mismatches-per-subfinger 1 \
   --zfn-max-substitutions-overall 3 \
   --zfn-subfinger-mutation "2:0:deletion" \

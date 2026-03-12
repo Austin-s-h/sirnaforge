@@ -41,9 +41,7 @@ uv run sirnaforge workflow TP53 \
 ### ZFN Constraint Composition
 
 ```bash
-uv run sirnaforge workflow ZFN_PANEL \
-  --input-fasta examples/sample_transcripts.fasta \
-  --design-mode zfn \
+uv run sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
   --zfn-right-half-site AAACTGCAAAAG \
   --zfn-search-space ensembl_human_hg38_primary \
