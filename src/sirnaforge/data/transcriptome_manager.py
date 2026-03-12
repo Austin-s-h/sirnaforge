@@ -9,7 +9,7 @@ import hashlib
 import logging
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -256,13 +256,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return None
 
         # Update metadata
-        self.metadata[cache_key] = CacheMetadata(
-            source=source,
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
-        )
+        self._record_cache_entry(cache_key, source, cache_file)
         logger.info(f"✅ Cached {source.name}: {cache_file} ({cache_file.stat().st_size:,} bytes)")
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -324,13 +318,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return None
 
         # Save metadata
-        self.metadata[cache_key] = CacheMetadata(
-            source=source,
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
-        )
+        self._record_cache_entry(cache_key, source, cache_file)
         logger.info(f"✅ Cached custom transcriptome: {cache_file} ({cache_file.stat().st_size:,} bytes)")
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -342,14 +330,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         # Ensure metadata exists
         if cache_key not in self.metadata:
-            self.metadata[cache_key] = CacheMetadata(
-                source=TranscriptomeSource(
+            self._record_cache_entry(
+                cache_key,
+                TranscriptomeSource(
                     name=cache_name, url=str(file_path), species="custom", description=f"Local: {file_path}"
                 ),
-                downloaded_at=datetime.now().isoformat(),
-                file_size=file_path.stat().st_size,
-                checksum=self._compute_file_checksum(file_path),
-                file_path=str(file_path),
+                file_path,
             )
 
         return self._prepare_result_with_index(file_path, index_prefix, cache_key, build_index)
@@ -366,14 +352,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             shutil.copyfile(input_path, cache_file)
 
         # Save metadata
-        self.metadata[cache_key] = CacheMetadata(
-            source=TranscriptomeSource(
+        self._record_cache_entry(
+            cache_key,
+            TranscriptomeSource(
                 name=cache_name, url=str(input_path), species="custom", description=f"Local: {input_path}"
             ),
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
+            cache_file,
         )
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -426,17 +410,15 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return None
 
         # Cache metadata
-        self.metadata[filtered_cache_key] = CacheMetadata(
-            source=TranscriptomeSource(
+        self._record_cache_entry(
+            filtered_cache_key,
+            TranscriptomeSource(
                 name=f"{source.name}_filtered",
                 url=source.url,
                 species=source.species,
                 description=f"{source.description} [filtered: {filter_spec}]",
             ),
-            downloaded_at=datetime.now().isoformat(),
-            file_size=filtered_fasta.stat().st_size,
-            checksum=self._compute_file_checksum(filtered_fasta),
-            file_path=str(filtered_fasta),
+            filtered_fasta,
             extra={"filters": filters, "kept_count": kept},
         )
 
@@ -473,60 +455,29 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         """List all pre-configured transcriptome sources."""
         return self.sources
 
-    def cache_info(self) -> dict[str, Any]:
-        """Get information about the current cache state."""
-        total_files = len(list(self.cache_dir.glob("*.fa")))
-        total_size = sum(f.stat().st_size for f in self.cache_dir.glob("*.fa"))
+    def _cache_info_files(self) -> list[Path]:
+        """Return transcriptome FASTA files to include in total cache stats."""
+        return list(self.cache_dir.glob("*.fa"))
+
+    def _cache_info_extra(self, total_files: int, _total_size_bytes: int) -> dict[str, Any]:
+        """Augment base cache stats with transcriptome/index-specific fields."""
         index_files = len(list(self.cache_dir.glob("*_index.amb")))
 
         return {
-            "cache_directory": str(self.cache_dir),
             "total_fasta_files": total_files,
-            "total_size_mb": total_size / (1024 * 1024),
             "index_files": index_files,
-            "cache_ttl_days": self.cache_ttl.days,
             "auto_build_indices": self.auto_build_indices,
             "cached_references": list(self.metadata.keys()),
             "cached_transcriptomes": list(self.metadata.keys()),
         }
 
-    def clean_cache(self, older_than_days: int | None = None) -> None:
-        """Clean old cache files.
+    def _clean_extra_files(self, meta: CacheMetadata) -> None:
+        """Remove BWA index files associated with a cached transcriptome entry."""
+        index_path = self._get_index_path(meta)
+        if index_path is None:
+            return
 
-        Args:
-            older_than_days: Remove files older than this (default: use TTL)
-        """
-        if older_than_days is None:
-            older_than_days = self.cache_ttl.days
-
-        cutoff = datetime.now() - timedelta(days=older_than_days)
-        removed_count = 0
-
-        for cache_key in list(self.metadata.keys()):
-            meta = self.metadata[cache_key]
-            downloaded_at = datetime.fromisoformat(meta.downloaded_at)
-
-            if downloaded_at < cutoff:
-                # Remove FASTA file
-                fasta_path = Path(meta.file_path)
-                if fasta_path.exists():
-                    fasta_path.unlink()
-                    removed_count += 1
-
-                # Remove index files if they exist
-                index_path = self._get_index_path(meta)
-                if index_path:
-                    # Remove marker file for the index prefix (if present)
-                    index_path.unlink(missing_ok=True)
-                    for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
-                        index_file = index_path.with_suffix(ext)
-                        if index_file.exists():
-                            index_file.unlink()
-
-                del self.metadata[cache_key]
-
-        if removed_count > 0:
-            self._save_metadata()
-            logger.info(f"🧹 Cleaned {removed_count} old cache files")
-        else:
-            logger.info("🧹 No old cache files to clean")
+        # Remove marker file for the index prefix (if present)
+        index_path.unlink(missing_ok=True)
+        for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
+            index_path.with_suffix(ext).unlink(missing_ok=True)

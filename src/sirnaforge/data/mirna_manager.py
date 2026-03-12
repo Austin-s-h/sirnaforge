@@ -7,13 +7,17 @@ automatic cache management and species-specific organization.
 """
 
 import argparse
-import contextlib
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from typing import Any
+
+from Bio import SeqIO
+from Bio.SeqRecord import SeqRecord
 
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 from .species_registry import (
@@ -24,6 +28,7 @@ from .species_registry import (
 )
 
 logger = logging.getLogger(__name__)
+FASTA_PARSE_FORMAT = "fasta-blast"
 
 
 @dataclass
@@ -391,32 +396,22 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             logger.warning(f"Unknown species '{species}', returning all sequences")
             return fasta_content
 
-        # Simple filtering: include header+sequence pairs where header contains species code
-        filtered_lines = []
-        current_header = None
+        # Some upstream endpoints occasionally return HTML-wrapped FASTA lines.
+        normalized_content = re.sub(r"</?[^>\n]+>", "", fasta_content)
+        input_handle = StringIO(normalized_content)
+        output_handle = StringIO()
+        filtered_count = 0
 
-        for raw_line in fasta_content.split("\n"):
-            line = raw_line.strip()
-            if not line:
-                continue
+        for record in SeqIO.parse(input_handle, FASTA_PARSE_FORMAT):
+            if code in record.description.lower():
+                SeqIO.write(record, output_handle, "fasta")
+                filtered_count += 1
 
-            if line.startswith(">"):
-                # New header - check if it matches our species
-                if code in line:
-                    current_header = line
-                    filtered_lines.append(line)
-                else:
-                    current_header = None
-            elif current_header and line:
-                # Sequence line for a matching header
-                filtered_lines.append(line)
-
-        filtered_count = len([line for line in filtered_lines if line.startswith(">")])
         if filtered_count == 0:
             logger.error("No sequences found for species '%s' after filtering", species)
 
         logger.info(f"Filtered to {filtered_count} {species} sequences")
-        return "\n".join(filtered_lines)
+        return output_handle.getvalue().strip()
 
     def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
         """Get miRNA database, downloading and filtering if needed.
@@ -506,15 +501,9 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             return None
 
         # Update metadata
-        checksum = self._compute_file_checksum(cache_file)
-        self.metadata[cache_key] = CacheMetadata(
-            source=source,
-            downloaded_at=self._get_current_timestamp(),
-            file_size=cache_file.stat().st_size,
-            checksum=checksum,
-            file_path=str(cache_file),
+        self._record_cache_entry(
+            cache_key, source, cache_file, downloaded_at=self._get_current_timestamp(), persist=True
         )
-        self._save_metadata()
 
         logger.info(f"✅ Cached {source.name} ({source.species}): {cache_file} ({cache_file.stat().st_size:,} bytes)")
         return cache_file
@@ -571,26 +560,21 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         total_sequences = 0
 
         with combined_file.open("w") as outfile:
-            for source_file in source_files:
-                source_name = "unknown"
-                for src_name in sources:
-                    if src_name in source_file.name:
-                        source_name = src_name
-                        break
+            for source_name, source_file in zip(sources, source_files, strict=True):
+                for record in SeqIO.parse(source_file, FASTA_PARSE_FORMAT):
+                    sequence = str(record.seq).upper()
+                    if sequence in seen_sequences:
+                        continue
+                    seen_sequences.add(sequence)
 
-                with source_file.open("r") as infile:
-                    header = None
-                    for line in infile:
-                        line_content = line.strip()
-                        if line_content.startswith(">"):
-                            header = f"{line_content} [source:{source_name or 'unknown'}]"
-                        elif line_content and header:
-                            seq_upper = line_content.upper()
-                            if seq_upper not in seen_sequences:
-                                outfile.write(f"{header}\n{line_content}\n")
-                                seen_sequences.add(seq_upper)
-                                total_sequences += 1
-                            header = None
+                    annotated_record = SeqRecord(
+                        record.seq,
+                        id=record.id,
+                        name=record.name,
+                        description=f"{record.description} [source:{source_name}]",
+                    )
+                    SeqIO.write(annotated_record, outfile, "fasta")
+                    total_sequences += 1
 
         logger.info(f"✅ Combined database created: {combined_file} ({total_sequences} unique sequences)")
         return combined_file
@@ -600,45 +584,8 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         return self.SOURCES
 
     def clear_cache(self, confirm: bool = False) -> dict[str, Any]:
-        """Clear the miRNA cache directory.
-
-        Args:
-            confirm: If True, actually delete files. If False, just return what would be deleted.
-
-        Returns:
-            Dictionary with information about files deleted or that would be deleted.
-        """
-        if not self.cache_dir.exists():
-            return {
-                "cache_directory": str(self.cache_dir),
-                "files_deleted": 0,
-                "size_freed_mb": 0.0,
-                "status": "Cache directory does not exist",
-            }
-
-        cache_files = list(self.cache_dir.glob("*.fa"))
-        json_files = list(self.cache_dir.glob("*.json"))
-        all_files = cache_files + json_files
-
-        total_size = sum(f.stat().st_size for f in all_files if f.exists())
-
-        result = {
-            "cache_directory": str(self.cache_dir),
-            "files_deleted": len(all_files),
-            "size_freed_mb": total_size / (1024 * 1024),
-            "status": "Would delete" if not confirm else "Deleted",
-        }
-
-        if confirm:
-            # Actually delete the files
-            for file_path in all_files:
-                with contextlib.suppress(FileNotFoundError):
-                    file_path.unlink()
-            result["status"] = "Cache cleared successfully"
-        else:
-            result["status"] = f"Would delete {len(all_files)} files ({total_size / (1024 * 1024):.2f} MB)"
-
-        return result
+        """Clear miRNA cache using the shared reference-manager implementation."""
+        return super().clear_cache(confirm=confirm)
 
 
 def _create_parser() -> argparse.ArgumentParser:

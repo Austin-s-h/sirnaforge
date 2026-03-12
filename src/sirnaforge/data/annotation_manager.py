@@ -5,10 +5,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
-from .reference_manager import CacheMetadata
 from .transcriptome_manager import TranscriptomeManager, TranscriptomeSource
 
 logger = logging.getLogger(__name__)
@@ -88,13 +86,6 @@ class AnnotationManager(TranscriptomeManager):
         if not self._download_to_path(source, cache_file):
             return None
 
-        self.metadata[cache_key] = CacheMetadata(
-            source=source,
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
-        )
-        self._save_metadata()
+        self._record_cache_entry(cache_key, source, cache_file, persist=True)
         logger.info("✅ Cached custom annotation: %s (%s bytes)", cache_file, cache_file.stat().st_size)
         return cache_file

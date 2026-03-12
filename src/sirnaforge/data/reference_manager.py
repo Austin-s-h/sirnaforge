@@ -202,6 +202,30 @@ class ReferenceManager(ABC, Generic[SourceT]):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
+    def _record_cache_entry(
+        self,
+        cache_key: str,
+        source: ReferenceSource,
+        cache_file: Path,
+        *,
+        extra: dict[str, Any] | None = None,
+        downloaded_at: str | None = None,
+        persist: bool = False,
+    ) -> CacheMetadata:
+        """Create/replace metadata for a cache entry from an on-disk file."""
+        metadata = CacheMetadata(
+            source=source,
+            downloaded_at=downloaded_at or datetime.now().isoformat(),
+            file_size=cache_file.stat().st_size,
+            checksum=self._compute_file_checksum(cache_file),
+            file_path=str(cache_file),
+            extra=extra,
+        )
+        self.metadata[cache_key] = metadata
+        if persist:
+            self._save_metadata()
+        return metadata
+
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached data is still valid.
 
@@ -335,23 +359,32 @@ class ReferenceManager(ABC, Generic[SourceT]):
         normalized = name.replace(".gz", "").replace(".fa", "").replace(".fasta", "")
         return normalized or "resource"
 
+    def _cache_info_files(self) -> list[Path]:
+        """Return cache files included in aggregate size/count stats."""
+        return list(self.cache_dir.glob("*.fa")) + list(self.cache_dir.glob("*.fasta"))
+
+    def _cache_info_extra(self, _total_files: int, _total_size_bytes: int) -> dict[str, Any]:
+        """Return subclass-specific fields for cache_info."""
+        return {}
+
     def cache_info(self) -> dict[str, Any]:
         """Get information about the current cache state.
 
         Returns:
             Dictionary containing cache statistics
         """
-        files = list(self.cache_dir.glob("*.fa")) + list(self.cache_dir.glob("*.fasta"))
+        files = self._cache_info_files()
         total_files = len(files)
         total_size = sum(f.stat().st_size for f in files if f.exists())
-
-        return {
+        info: dict[str, Any] = {
             "cache_directory": str(self.cache_dir),
             "total_files": total_files,
             "total_size_mb": total_size / (1024 * 1024),
             "cache_ttl_days": self.cache_ttl.days,
             "cached_items": list(self.metadata.keys()),
         }
+        info.update(self._cache_info_extra(total_files, total_size))
+        return info
 
     def clean_cache(self, older_than_days: int | None = None) -> None:
         """Clean old cache files.

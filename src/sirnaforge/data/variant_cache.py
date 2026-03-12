@@ -1,5 +1,6 @@
 """Improved variant caching using Parquet for efficient storage and retrieval."""
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,20 @@ class VariantParquetCache:
         # Initialize empty cache if it doesn't exist
         if not self.cache_file.exists():
             self._init_empty_cache()
+
+    @staticmethod
+    def _serialize_value(value: Any) -> str:
+        """Serialize Python values to JSON for stable, safe storage."""
+        return json.dumps(value, sort_keys=True)
+
+    @staticmethod
+    def _deserialize_value(value: Any, default: Any) -> Any:
+        """Deserialize cached JSON payloads."""
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return default
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
 
     def _init_empty_cache(self) -> None:
         """Initialize an empty cache file."""
@@ -92,13 +107,9 @@ class VariantParquetCache:
                 return None
 
             # Reconstruct VariantRecord
-            sources_str = str(row["sources"])
-            annotations_str = str(row["annotations"])
-            provenance_str = str(row["provenance"])
-
-            sources = eval(sources_str) if sources_str != "nan" else []
-            annotations = eval(annotations_str) if annotations_str != "nan" else {}
-            provenance = eval(provenance_str) if provenance_str != "nan" else {}
+            sources = self._deserialize_value(row["sources"], [])
+            annotations = self._deserialize_value(row["annotations"], {})
+            provenance = self._deserialize_value(row["provenance"], {})
 
             variant = VariantRecord(
                 id=row["id"] if pd.notna(row["id"]) else None,
@@ -144,11 +155,11 @@ class VariantParquetCache:
                 "ref": variant.ref,
                 "alt": variant.alt,
                 "assembly": variant.assembly,
-                "sources": str([s.value for s in variant.sources]),
+                "sources": self._serialize_value([s.value for s in variant.sources]),
                 "clinvar_significance": variant.clinvar_significance.value if variant.clinvar_significance else None,
                 "af": variant.af,
-                "annotations": str(variant.annotations),
-                "provenance": str(variant.provenance),
+                "annotations": self._serialize_value(variant.annotations),
+                "provenance": self._serialize_value(variant.provenance),
                 "cached_at": datetime.now().isoformat(),
             }
 
