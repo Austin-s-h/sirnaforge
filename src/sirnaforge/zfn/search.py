@@ -174,7 +174,7 @@ class ExhaustiveZFNOffTargetSearcher:
         deduped = self._dedupe_sites(all_sites)
         phase_timings["dedupe_s"] = time.perf_counter() - phase_start
 
-        if annotation and self.annotation_provider is not None:
+        if annotation and self.annotation_provider:
             phase_start = time.perf_counter()
             deduped = self.annotation_provider.annotate(deduped, annotation)
             phase_timings["annotate_s"] = time.perf_counter() - phase_start

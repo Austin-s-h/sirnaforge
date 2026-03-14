@@ -3,11 +3,13 @@
 import pytest
 
 from sirnaforge.data.variant_helpers import (
+    annotate_candidate_with_variant,
     apply_variant_to_sequence,
     check_candidate_overlaps_variant,
     generate_contexts_for_variant,
     get_variant_position_in_transcript,
 )
+from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.models.variant import VariantRecord
 
 
@@ -289,6 +291,61 @@ class TestApplyVariantToSequence:
 
         with pytest.raises(ValueError, match="outside sequence boundaries"):
             apply_variant_to_sequence(sequence, variant, transcript_start=1, allele="alt")
+
+
+class TestAnnotateCandidateWithVariant:
+    """Tests for annotate_candidate_with_variant."""
+
+    @staticmethod
+    def _make_candidate() -> SiRNACandidate:
+        return SiRNACandidate(
+            id="sirna_test_001",
+            transcript_id="ENST000001",
+            position=100,
+            guide_sequence="AUCGAUCGAUCGAUCGAUCGA",
+            passenger_sequence="UCGAUCGAUCGAUCGAUCGAU",
+            gc_content=52.0,
+            length=21,
+            asymmetry_score=0.7,
+            composite_score=80.0,
+        )
+
+    def test_annotate_sets_variant_metadata(self):
+        """Annotating a candidate should set allele and mode metadata."""
+        candidate = self._make_candidate()
+        variant = VariantRecord(chr="chr1", pos=1000, ref="G", alt="A")
+
+        annotate_candidate_with_variant(candidate, variant, allele="alt", variant_mode="target")
+
+        assert candidate.allele_specific is True
+        assert candidate.variant_mode == "target"
+        assert candidate.targeted_alleles == ["alt"]
+        assert len(candidate.overlapped_variants) == 1
+        assert candidate.overlapped_variants[0]["chr"] == "chr1"
+        assert candidate.overlapped_variants[0]["pos"] == 1000
+
+    def test_annotate_is_idempotent_for_same_variant_and_allele(self):
+        """Repeated annotation should not duplicate variant payload or allele labels."""
+        candidate = self._make_candidate()
+        variant = VariantRecord(chr="chr1", pos=1000, ref="G", alt="A")
+
+        annotate_candidate_with_variant(candidate, variant, allele="alt", variant_mode="target")
+        annotate_candidate_with_variant(candidate, variant, allele="alt", variant_mode="target")
+
+        assert candidate.targeted_alleles == ["alt"]
+        assert len(candidate.overlapped_variants) == 1
+
+    def test_annotate_tracks_multiple_targeted_alleles(self):
+        """Different allele annotations should accumulate without duplicates."""
+        candidate = self._make_candidate()
+        variant = VariantRecord(chr="chr1", pos=1000, ref="G", alt="A")
+
+        annotate_candidate_with_variant(candidate, variant, allele="ref", variant_mode="both")
+        annotate_candidate_with_variant(candidate, variant, allele="alt", variant_mode="both")
+
+        assert set(candidate.targeted_alleles) == {"ref", "alt"}
+        assert candidate.variant_mode == "both"
+        assert len(candidate.overlapped_variants) == 1
 
 
 class TestGetVariantPositionInTranscript:

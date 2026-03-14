@@ -143,6 +143,78 @@ class TestVariantAFFiltering:
         # Should pass filter since no AF data is available
         assert resolver._passes_filters(variant) is True
 
+    def test_avoid_mode_uses_population_af_when_global_missing(self):
+        """Avoid mode should still enforce AF threshold with population-only AFs."""
+        resolver = VariantResolver(min_af=0.05, variant_mode="avoid")
+
+        variant = VariantRecord(
+            id="rs28934576",
+            chr="chr17",
+            pos=7673802,
+            ref="C",
+            alt="A",
+            assembly="GRCh38",
+            sources=[VariantSource.ENSEMBL],
+            af=None,
+            population_afs={"AFR": 0.08, "EUR": 0.01},
+        )
+
+        assert resolver._passes_filters(variant) is True
+
+    def test_avoid_mode_population_af_below_threshold_fails(self):
+        """Avoid mode should reject variants if max population AF is below threshold."""
+        resolver = VariantResolver(min_af=0.05, variant_mode="avoid")
+
+        variant = VariantRecord(
+            id="rs28934576",
+            chr="chr17",
+            pos=7673802,
+            ref="C",
+            alt="A",
+            assembly="GRCh38",
+            sources=[VariantSource.ENSEMBL],
+            af=None,
+            population_afs={"AFR": 0.03, "EUR": 0.01},
+        )
+
+        assert resolver._passes_filters(variant) is False
+
+    def test_target_mode_with_only_population_af_skips_af_filter(self):
+        """Target mode uses global AF only and therefore skips AF filtering when global AF is missing."""
+        resolver = VariantResolver(min_af=0.05, variant_mode="target")
+
+        variant = VariantRecord(
+            id="rs28934576",
+            chr="chr17",
+            pos=7673802,
+            ref="C",
+            alt="A",
+            assembly="GRCh38",
+            sources=[VariantSource.ENSEMBL],
+            af=None,
+            population_afs={"AFR": 0.20, "EUR": 0.18},
+        )
+
+        assert resolver._passes_filters(variant) is True
+
+    def test_both_mode_with_only_population_af_skips_af_filter(self):
+        """Both mode follows target-mode AF semantics when global AF is missing."""
+        resolver = VariantResolver(min_af=0.05, variant_mode="both")
+
+        variant = VariantRecord(
+            id="rs28934576",
+            chr="chr17",
+            pos=7673802,
+            ref="C",
+            alt="A",
+            assembly="GRCh38",
+            sources=[VariantSource.ENSEMBL],
+            af=None,
+            population_afs={"AFR": 0.20, "EUR": 0.18},
+        )
+
+        assert resolver._passes_filters(variant) is True
+
     def test_clinvar_significance_filter(self):
         """Test that ClinVar significance filtering works correctly."""
         resolver = VariantResolver(min_af=0.01, clinvar_filters=[ClinVarSignificance.PATHOGENIC])
