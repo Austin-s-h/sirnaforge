@@ -324,8 +324,8 @@ def test_sharded_search_matches_unsharded_coordinates(tmp_path: Path) -> None:
     assert sharded_key == unsharded_key
 
 
-def test_single_contig_auto_disables_chunk_sharding(tmp_path: Path) -> None:
-    """Single-contig inputs should run as one whole-contig shard even when sharding is enabled."""
+def test_single_contig_sharding_chunks_large_contig(tmp_path: Path) -> None:
+    """Single-contig inputs should still chunk when sharding is enabled."""
     sequence = "A" * 200
     fasta = _write_fasta(tmp_path, sequence, name="chr3")
 
@@ -339,11 +339,53 @@ def test_single_contig_auto_disables_chunk_sharding(tmp_path: Path) -> None:
     chrom_sequences = searcher._load_fasta(fasta)
 
     shards = searcher._build_shard_specs(chrom_sequences, params)
-    assert len(shards) == 1
+    assert len(shards) == 8
     assert shards[0].core_start0 == 0
-    assert shards[0].core_end0 == len(sequence)
+    assert shards[0].core_end0 == 25
     assert shards[0].scan_start0 == 0
-    assert shards[0].scan_end0 == len(sequence)
+    assert shards[0].scan_end0 == 75
+    assert shards[-1].core_end0 == len(sequence)
+
+
+def test_sharded_search_matches_unsharded_on_large_complex_synthetic_genome(tmp_path: Path) -> None:
+    """Sharded and unsharded scans should agree on a larger, multi-contig synthetic genome."""
+    site_5 = _canonical_site(LEFT, RIGHT, spacer="AAAAA")
+    site_6 = _canonical_site(LEFT, RIGHT, spacer="AAAAAA")
+    decoy = "G" * len(site_5)
+
+    chr3 = ("A" * 30_000) + site_5 + ("C" * 31_000) + decoy + ("T" * 31_000) + site_6 + ("A" * 30_000)
+    chr5 = ("C" * 25_000) + site_6 + ("G" * 40_000) + site_5 + ("T" * 25_000)
+
+    fasta = tmp_path / "complex_synthetic.fa"
+    fasta.write_text(f">chr3\n{chr3}\n>chr5\n{chr5}\n", encoding="utf-8")
+
+    base_kwargs = {
+        "search_space_fasta": str(fasta),
+        "left_half_site": LEFT,
+        "right_half_site": RIGHT,
+        "half_site_constraints": ZFNHalfSiteConstraints(max_mismatches=0),
+        "spacer_constraints": ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
+    }
+
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    unsharded = searcher.search(ZFNDesignParameters(**base_kwargs, sharding=ZFNShardingConfig(enabled=False)))
+    sharded = searcher.search(
+        ZFNDesignParameters(
+            **base_kwargs,
+            sharding=ZFNShardingConfig(
+                enabled=True,
+                chunk_size_bp=20_000,
+                overlap_bp=0,
+                chromosomes=["chr3", "chr5"],
+                max_workers=4,
+            ),
+        )
+    )
+
+    unsharded_key = {(s.chrom, s.start_1based, s.end_1based, s.orientation.value) for s in unsharded}
+    sharded_key = {(s.chrom, s.start_1based, s.end_1based, s.orientation.value) for s in sharded}
+    assert sharded_key == unsharded_key
+    assert len(sharded_key) >= 4
 
 
 def test_chromosome_filter_tokens_support_groups_ranges_and_globs() -> None:
@@ -784,6 +826,68 @@ def test_search_path_with_annotation_provider_and_top_n(tmp_path: Path) -> None:
     )
     assert len(sites) == 1
     assert all(site.region == "promoter" for site in sites)
+
+
+def test_designer_default_annotation_provider_applies_gtf_annotations(tmp_path: Path) -> None:
+    """Default designer/searcher wiring should annotate sites from a valid GTF."""
+    site_seq = _canonical_site(LEFT, RIGHT, spacer="AAAAA")
+    fasta = _write_fasta(tmp_path, f"TTTT{site_seq}CCCC")
+
+    gtf_path = tmp_path / "annotation.gtf"
+    gtf_path.write_text(
+        (
+            'chr1\ttest\tgene\t1\t200\t.\t+\t.\tgene_id "GENE1"; gene_name "GENE1";\n'
+            'chr1\ttest\texon\t1\t200\t.\t+\t.\tgene_id "GENE1"; transcript_id "TX1"; gene_name "GENE1";\n'
+        ),
+        encoding="utf-8",
+    )
+
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        top_n_sites=10,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+    )
+    annotation = GenomicAnnotationConfig(annotation_path=str(gtf_path))
+
+    result = ZFNDesigner().evaluate_pair(params=params, annotation=annotation)
+
+    assert result.off_target_sites
+    assert any(site.region == "exon" for site in result.off_target_sites)
+    assert any(site.nearest_gene == "GENE1" for site in result.off_target_sites)
+
+
+def test_designer_annotation_matches_chr_aliases_between_fasta_and_gtf(tmp_path: Path) -> None:
+    """Annotation should work when FASTA and GTF differ only by chr prefix."""
+    site_seq = _canonical_site(LEFT, RIGHT, spacer="AAAAA")
+    fasta = _write_fasta(tmp_path, f"TTTT{site_seq}CCCC", name="3")
+
+    gtf_path = tmp_path / "annotation_chr3.gtf"
+    gtf_path.write_text(
+        (
+            'chr3\ttest\tgene\t1\t200\t.\t+\t.\tgene_id "GENE3"; gene_name "GENE3";\n'
+            'chr3\ttest\texon\t1\t200\t.\t+\t.\tgene_id "GENE3"; transcript_id "TX3"; gene_name "GENE3";\n'
+        ),
+        encoding="utf-8",
+    )
+
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        top_n_sites=10,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+    )
+    annotation = GenomicAnnotationConfig(annotation_path=str(gtf_path))
+
+    result = ZFNDesigner().evaluate_pair(params=params, annotation=annotation)
+
+    assert result.off_target_sites
+    assert any(site.region == "exon" for site in result.off_target_sites)
+    assert any(site.nearest_gene == "GENE3" for site in result.off_target_sites)
 
 
 def test_resolve_search_space_fasta_raises_when_source_and_fasta_missing() -> None:

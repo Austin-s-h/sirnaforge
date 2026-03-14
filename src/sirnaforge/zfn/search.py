@@ -25,6 +25,7 @@ from sirnaforge.models.zfn import (
 from sirnaforge.utils.fasta import load_fasta_sequences
 from sirnaforge.utils.logging_utils import get_logger
 
+from .annotation import GTFZFNAnnotationProvider
 from .interfaces import ZFNAnnotationProvider
 from .rank import rank_sites
 
@@ -94,7 +95,7 @@ class ExhaustiveZFNOffTargetSearcher:
 
     def __init__(self, annotation_provider: ZFNAnnotationProvider | None = None) -> None:
         """Initialize searcher with optional annotation provider."""
-        self.annotation_provider = annotation_provider
+        self.annotation_provider = annotation_provider or GTFZFNAnnotationProvider()
 
     @staticmethod
     def _reverse_complement(seq: str) -> str:
@@ -128,7 +129,7 @@ class ExhaustiveZFNOffTargetSearcher:
         logger.info("Starting ZFN shard search: %s shard(s), workers=%s", len(shard_specs), workers)
         if workers == 1 and len(shard_specs) > 8:
             logger.info(
-                "ZFN search is running with a single shard worker; use --zfn-shard-max-workers to improve throughput"
+                "ZFN search is currently using one shard worker; runtime tuning remains internal and is auto-selected"
             )
 
         started_at = time.perf_counter()
@@ -209,7 +210,7 @@ class ExhaustiveZFNOffTargetSearcher:
         if not selected_contigs:
             raise ValueError("No matching chromosomes available for configured ZFN sharding filter")
 
-        sharding_active = sharding.enabled and len(selected_contigs) > 1
+        sharding_active = sharding.enabled
 
         if not sharding_active:
             return [

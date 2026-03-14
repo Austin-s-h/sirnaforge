@@ -2448,9 +2448,8 @@ def apply_zfn_runtime_overrides(
         mirrors the resolved sharding values into ``nextflow_config_overrides`` so
         the Nextflow route and direct Python route share the same effective config.
 
-    The runtime search implementation remains generic and contig-aware; if input
-    selection yields one contig, chunk sharding is not applied by the search
-    planner even when sharding is enabled.
+    The runtime search implementation remains generic and contig-aware, including
+    chunk sharding on single-contig inputs when sharding is enabled.
     """
     merged_overrides: dict[str, Any] = {}
 

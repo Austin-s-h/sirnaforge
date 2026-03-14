@@ -103,8 +103,8 @@ def test_design_parameters_canonical_contract_normalizes_spacers() -> None:
     assert contract.orientation_convention == "L...R genomic ordering"
 
 
-def test_build_zfn_design_configuration_applies_cli_sharding_overrides() -> None:
-    """CLI sharding options should propagate into typed ZFN sharding config."""
+def test_build_zfn_design_configuration_autotunes_internal_sharding() -> None:
+    """Sharding should be internalized with practical auto-tuned defaults."""
     params, _, _, _, _ = _build_zfn_design_configuration(
         zfn_subfinger_mutation=[],
         zfn_max_mismatches_per_subfinger=None,
@@ -117,11 +117,88 @@ def test_build_zfn_design_configuration_applies_cli_sharding_overrides() -> None
         zfn_spacer_lengths="5,6,7",
         zfn_max_mismatches=2,
         zfn_annotation=None,
-        zfn_shard_max_workers=6,
-        zfn_shard_chunk_mb=40.0,
-        zfn_shard_chromosomes="autosomes,sex",
     )
 
-    assert params.sharding.max_workers == 6
-    assert params.sharding.chunk_size_bp == 40_000_000
-    assert params.sharding.chromosomes == ["autosomes", "sex"]
+    assert params.sharding.enabled is True
+    assert params.sharding.max_workers >= 1
+    assert params.sharding.max_workers <= 8
+    assert params.sharding.chunk_size_bp in {8_000_000, 12_000_000}
+    assert params.sharding.chromosomes == []
+
+
+def test_build_zfn_design_configuration_uses_workflow_cores_for_sharding() -> None:
+    """Workflow core budget should cap/drive internal ZFN shard workers."""
+    params, _, _, _, _ = _build_zfn_design_configuration(
+        zfn_subfinger_mutation=[],
+        zfn_max_mismatches_per_subfinger=None,
+        zfn_max_substitutions_overall=None,
+        zfn_left_half_site="GCGTGGGCG",
+        zfn_right_half_site="GCCCACGCG",
+        zfn_search_space="ensembl_human_hg38_primary",
+        zfn_algorithm="zfn_v2",
+        zfn_dimer_mode="heterodimer_only",
+        zfn_spacer_lengths="5,6,7",
+        zfn_max_mismatches=2,
+        workflow_cores=2,
+        zfn_annotation=None,
+    )
+
+    assert params.sharding.max_workers == 2
+    assert params.sharding.chunk_size_bp == 12_000_000
+
+
+def test_build_zfn_design_configuration_caps_shard_workers_for_large_cores() -> None:
+    """Internal sharding workers should remain bounded on high-core hosts."""
+    params, _, _, _, _ = _build_zfn_design_configuration(
+        zfn_subfinger_mutation=[],
+        zfn_max_mismatches_per_subfinger=None,
+        zfn_max_substitutions_overall=None,
+        zfn_left_half_site="GCGTGGGCG",
+        zfn_right_half_site="GCCCACGCG",
+        zfn_search_space="ensembl_human_hg38_primary",
+        zfn_algorithm="zfn_v2",
+        zfn_dimer_mode="heterodimer_only",
+        zfn_spacer_lengths="5,6,7",
+        zfn_max_mismatches=2,
+        workflow_cores=16,
+        zfn_annotation=None,
+    )
+
+    assert params.sharding.max_workers == 8
+    assert params.sharding.chunk_size_bp == 8_000_000
+
+
+def test_build_zfn_design_configuration_rejects_invalid_half_site_bases() -> None:
+    """Invalid half-site bases should fail fast during typed parameter construction."""
+    with pytest.raises(ValueError, match=r"Invalid base\(s\) in half-site"):
+        _build_zfn_design_configuration(
+            zfn_subfinger_mutation=[],
+            zfn_max_mismatches_per_subfinger=None,
+            zfn_max_substitutions_overall=None,
+            zfn_left_half_site="BADSEQ",
+            zfn_right_half_site="GCCCACGCG",
+            zfn_search_space="ensembl_human_hg38_primary",
+            zfn_algorithm="zfn_v2",
+            zfn_dimer_mode="heterodimer_only",
+            zfn_spacer_lengths="5,6",
+            zfn_max_mismatches=2,
+            zfn_annotation=None,
+        )
+
+
+def test_build_zfn_design_configuration_rejects_invalid_spacer_lengths() -> None:
+    """Spacer lengths outside valid biological range should be rejected."""
+    with pytest.raises(ValueError, match="allowed_spacer_lengths"):
+        _build_zfn_design_configuration(
+            zfn_subfinger_mutation=[],
+            zfn_max_mismatches_per_subfinger=None,
+            zfn_max_substitutions_overall=None,
+            zfn_left_half_site="GCGTGGGCG",
+            zfn_right_half_site="GCCCACGCG",
+            zfn_search_space="ensembl_human_hg38_primary",
+            zfn_algorithm="zfn_v2",
+            zfn_dimer_mode="heterodimer_only",
+            zfn_spacer_lengths="0",
+            zfn_max_mismatches=2,
+            zfn_annotation=None,
+        )

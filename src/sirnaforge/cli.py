@@ -76,6 +76,7 @@ from sirnaforge.models.zfn import (
     ZFNMutationConstraints,
     ZFNMutationType,
     ZFNOverallMutationConstraint,
+    ZFNShardingConfig,
     ZFNSpacerConstraints,
     ZFNSubfingerMutationConstraint,
 )
@@ -109,6 +110,20 @@ REMOTE_RESOURCE_SCHEMES = ("http://", "https://", "ftp://", "file://")
 DEFAULT_ZFN_WINDOW_STRIDE = 1
 DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
+
+
+def _autotune_zfn_sharding(cores_budget: int | None = None) -> ZFNShardingConfig:
+    """Return internal sharding defaults tuned for practical contig sets and host CPU."""
+    cpu_count = cores_budget if cores_budget is not None else (os.cpu_count() or 1)
+    max_workers = min(8, max(1, cpu_count))
+    chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
+    return ZFNShardingConfig(
+        enabled=True,
+        chunk_size_bp=chunk_size_bp,
+        overlap_bp=50,
+        chromosomes=[],
+        max_workers=max_workers,
+    )
 
 
 class TranscriptLike(Protocol):
@@ -332,10 +347,8 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
     zfn_window_stride: int | None = None,
     zfn_top_n_sites: int | None = None,
     zfn_report_n_sites: int | None = None,
+    workflow_cores: int | None = None,
     zfn_annotation: str | None = None,
-    zfn_shard_max_workers: int | None = None,
-    zfn_shard_chunk_mb: float | None = None,
-    zfn_shard_chromosomes: str | None = None,
 ) -> tuple[
     ZFNDesignParameters,
     GenomicAnnotationConfig | None,
@@ -410,19 +423,8 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
         top_n_sites=zfn_top_n_sites or DEFAULT_ZFN_TOP_N_SITES,
         report_n_sites=zfn_report_n_sites or DEFAULT_ZFN_REPORT_N_SITES,
         mutation_constraints=mutation_constraints,
+        sharding=_autotune_zfn_sharding(workflow_cores),
     )
-
-    sharding_updates: dict[str, Any] = {}
-    if zfn_shard_max_workers is not None:
-        sharding_updates["max_workers"] = zfn_shard_max_workers
-    if zfn_shard_chunk_mb is not None:
-        sharding_updates["chunk_size_bp"] = max(1, int(float(zfn_shard_chunk_mb) * 1_000_000))
-    if zfn_shard_chromosomes is not None:
-        sharding_updates["chromosomes"] = [token.strip() for token in zfn_shard_chromosomes.split(",") if token.strip()]
-
-    if sharding_updates:
-        updated_sharding = zfn_design_params.sharding.model_copy(update=sharding_updates, deep=True)
-        zfn_design_params = zfn_design_params.model_copy(update={"sharding": updated_sharding}, deep=True)
 
     return zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints
 
@@ -772,27 +774,13 @@ def workflow(  # noqa: PLR0912
         hidden=True,
         help="Internal tuning: number of top ranked sites included in report outputs.",
     ),
-    zfn_shard_max_workers: int | None = typer.Option(
+    cores: int | None = typer.Option(
         None,
-        "--zfn-shard-max-workers",
+        "--cores",
         min=1,
-        max=128,
-        envvar="SIRNAFORGE_ZFN_SHARD_MAX_WORKERS",
+        envvar="SIRNAFORGE_CORES",
         help=(
-            "Parallel shard workers for in-process ZFN search. Higher values improve throughput on multicore systems."
-        ),
-    ),
-    zfn_shard_chunk_mb: float | None = typer.Option(
-        None,
-        "--zfn-shard-chunk-mb",
-        min=1.0,
-        help="Shard chunk size in MB (larger chunks reduce scheduling overhead).",
-    ),
-    zfn_shard_chromosomes: str | None = typer.Option(
-        None,
-        "--zfn-shard-chromosomes",
-        help=(
-            "Optional comma-separated chromosome filter tokens for sharding (e.g. 'autosomes,sex' or 'chr1,chr2,chrX')."
+            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
         ),
     ),
     zfn_annotation: str | None = typer.Option(
@@ -1054,10 +1042,8 @@ def workflow(  # noqa: PLR0912
                     zfn_window_stride=zfn_window_stride,
                     zfn_top_n_sites=zfn_top_n_sites,
                     zfn_report_n_sites=zfn_report_n_sites,
+                    workflow_cores=cores,
                     zfn_annotation=zfn_annotation,
-                    zfn_shard_max_workers=zfn_shard_max_workers,
-                    zfn_shard_chunk_mb=zfn_shard_chunk_mb,
-                    zfn_shard_chromosomes=zfn_shard_chromosomes,
                 )
             )
         except ValueError as exc:
@@ -1175,6 +1161,7 @@ def workflow(  # noqa: PLR0912
                     variant_assembly=variant_assembly,
                     log_file=effective_log,
                     write_json_summary=json_summary,
+                    num_threads=cores,
                     check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
                 )
@@ -1563,27 +1550,13 @@ def zfn(
         hidden=True,
         help="Internal tuning: number of top ranked sites included in report outputs.",
     ),
-    zfn_shard_max_workers: int | None = typer.Option(
+    cores: int | None = typer.Option(
         None,
-        "--zfn-shard-max-workers",
+        "--cores",
         min=1,
-        max=128,
-        envvar="SIRNAFORGE_ZFN_SHARD_MAX_WORKERS",
+        envvar="SIRNAFORGE_CORES",
         help=(
-            "Parallel shard workers for in-process ZFN search. Higher values improve throughput on multicore systems."
-        ),
-    ),
-    zfn_shard_chunk_mb: float | None = typer.Option(
-        None,
-        "--zfn-shard-chunk-mb",
-        min=1.0,
-        help="Shard chunk size in MB (larger chunks reduce scheduling overhead).",
-    ),
-    zfn_shard_chromosomes: str | None = typer.Option(
-        None,
-        "--zfn-shard-chromosomes",
-        help=(
-            "Optional comma-separated chromosome filter tokens for sharding (e.g. 'autosomes,sex' or 'chr1,chr2,chrX')."
+            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
         ),
     ),
     zfn_annotation: str | None = typer.Option(
@@ -1635,10 +1608,8 @@ def zfn(
                 zfn_window_stride=zfn_window_stride,
                 zfn_top_n_sites=zfn_top_n_sites,
                 zfn_report_n_sites=zfn_report_n_sites,
+                workflow_cores=cores,
                 zfn_annotation=zfn_annotation,
-                zfn_shard_max_workers=zfn_shard_max_workers,
-                zfn_shard_chunk_mb=zfn_shard_chunk_mb,
-                zfn_shard_chromosomes=zfn_shard_chromosomes,
             )
         )
     except ValueError as exc:
@@ -1658,8 +1629,6 @@ def zfn(
             f"Spacer lengths: [cyan]{zfn_design_params.spacer_constraints.allowed_spacer_lengths}[/cyan]\n"
             f"Internal tuning: [cyan]stride={zfn_design_params.half_site_constraints.window_stride}, "
             f"top_n={zfn_design_params.top_n_sites}, report_n={zfn_design_params.report_n_sites}[/cyan]\n"
-            f"Sharding: [cyan]workers={zfn_design_params.sharding.max_workers}, "
-            f"chunk={zfn_design_params.sharding.chunk_size_bp}bp[/cyan]\n"
             f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
             f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]",
@@ -1683,6 +1652,7 @@ def zfn(
                     zfn_design_params=zfn_design_params,
                     zfn_annotation=annotation,
                     log_file=str(log_destination),
+                    num_threads=cores,
                     write_json_summary=json_summary,
                     nextflow_docker_image=nextflow_docker_image,
                 )

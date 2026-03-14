@@ -163,8 +163,10 @@ class VariantParquetCache:
                 "cached_at": datetime.now().isoformat(),
             }
 
-            # Append new row
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            # Append new row without concat to avoid pandas FutureWarning on empty/all-NA frames.
+            row_df = pd.DataFrame([new_row])
+            row_df = row_df.reindex(columns=df.columns)
+            df.loc[len(df)] = row_df.iloc[0]
 
             # Write back to file
             df.to_parquet(self.cache_file, index=False, engine="pyarrow", compression="snappy")
