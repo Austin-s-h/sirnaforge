@@ -97,6 +97,22 @@ class ExhaustiveZFNOffTargetSearcher:
         """Initialize searcher with optional annotation provider."""
         self.annotation_provider = annotation_provider or GTFZFNAnnotationProvider()
 
+    def _recommended_worker_cap(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> int:
+        """Return a conservative worker cap for large genomes to avoid OOM.
+
+        Whole-primary assemblies plus permissive mismatch budgets can produce very
+        large intermediate hit sets per shard. Limiting concurrency keeps peak
+        memory bounded while preserving throughput on smaller references.
+        """
+        total_bp = sum(len(seq) for seq in chrom_sequences.values())
+        max_mismatches = params.half_site_constraints.max_mismatches
+
+        if total_bp >= 2_500_000_000:
+            return 1 if max_mismatches >= 3 else 2
+        if total_bp >= 1_000_000_000:
+            return 2 if max_mismatches >= 3 else 4
+        return params.sharding.max_workers
+
     @staticmethod
     def _reverse_complement(seq: str) -> str:
         """Return reverse complement for one uppercase DNA/IUPAC sequence."""
@@ -125,7 +141,17 @@ class ExhaustiveZFNOffTargetSearcher:
         phase_timings["build_shards_s"] = time.perf_counter() - phase_start
         all_sites: list[ZFNOffTargetSite] = []
 
-        workers = min(params.sharding.max_workers, len(shard_specs)) if shard_specs else 1
+        worker_cap = self._recommended_worker_cap(chrom_sequences, params)
+        workers = min(worker_cap, len(shard_specs)) if shard_specs else 1
+        if workers < params.sharding.max_workers:
+            logger.warning(
+                "ZFN worker count auto-capped from %s to %s to limit peak memory usage "
+                "for a large search space (%s bp, max_mismatches=%s)",
+                params.sharding.max_workers,
+                workers,
+                sum(len(seq) for seq in chrom_sequences.values()),
+                params.half_site_constraints.max_mismatches,
+            )
         logger.info("Starting ZFN shard search: %s shard(s), workers=%s", len(shard_specs), workers)
         if workers == 1 and len(shard_specs) > 8:
             logger.info(
