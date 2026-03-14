@@ -53,7 +53,7 @@ class CacheMetadata:
     extra: dict[str, Any] | None = None  # For subclass-specific metadata
 
     @classmethod
-    def from_dict(cls, data: dict, source_class: type = ReferenceSource) -> "CacheMetadata":
+    def from_dict(cls, data: dict[str, Any], source_class: type[ReferenceSource] = ReferenceSource) -> "CacheMetadata":
         """Create CacheMetadata from dictionary.
 
         Args:
@@ -124,15 +124,30 @@ class ReferenceManager(ABC, Generic[SourceT]):
     def _load_metadata(self) -> None:
         """Load cache metadata from disk."""
         self.metadata: dict[str, CacheMetadata] = {}
+        self.uri_index: dict[str, str] = {}
 
         if self.metadata_file.exists():
             try:
                 with self.metadata_file.open("r") as f:
                     data = json.load(f)
-                    for key, meta_dict in data.items():
-                        self.metadata[key] = self._metadata_from_dict(meta_dict)
+                    if isinstance(data, dict) and "entries" in data:
+                        entries = data.get("entries", {})
+                        for key, meta_dict in entries.items():
+                            self.metadata[key] = self._metadata_from_dict(meta_dict)
+                        raw_uri_index = data.get("uri_index", {})
+                        if isinstance(raw_uri_index, dict):
+                            self.uri_index = {str(uri): str(key) for uri, key in raw_uri_index.items()}
+                    else:
+                        for key, meta_dict in data.items():
+                            self.metadata[key] = self._metadata_from_dict(meta_dict)
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Failed to load cache metadata: {e}")
+
+        # Backfill URI index from metadata so older cache files upgrade in-place.
+        for cache_key, meta in self.metadata.items():
+            source_url = meta.source.url
+            if self._is_remote_location(source_url):
+                self.uri_index[source_url] = cache_key
 
     @abstractmethod
     def _metadata_from_dict(self, data: dict) -> CacheMetadata:
@@ -145,7 +160,11 @@ class ReferenceManager(ABC, Generic[SourceT]):
     def _save_metadata(self) -> None:
         """Save cache metadata to disk."""
         try:
-            data = {key: meta.to_dict() for key, meta in self.metadata.items()}
+            data = {
+                "version": "2.0",
+                "entries": {key: meta.to_dict() for key, meta in self.metadata.items()},
+                "uri_index": self.uri_index,
+            }
             # Compute from cache_dir so callers/tests that monkeypatch cache_dir stay consistent.
             metadata_path = self.cache_dir / "cache_metadata.json"
             self.metadata_file = metadata_path
@@ -222,9 +241,22 @@ class ReferenceManager(ABC, Generic[SourceT]):
             extra=extra,
         )
         self.metadata[cache_key] = metadata
+        if self._is_remote_location(source.url):
+            self.uri_index[source.url] = cache_key
         if persist:
             self._save_metadata()
         return metadata
+
+    def _cache_key_for_remote_uri(self, uri: str) -> str | None:
+        """Return an indexed cache key for a remote URI when available."""
+        cache_key = self.uri_index.get(uri)
+        if cache_key is None:
+            return None
+        if cache_key not in self.metadata:
+            # Remove stale mappings so future lookups do not repeatedly miss.
+            self.uri_index.pop(uri, None)
+            return None
+        return cache_key
 
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached data is still valid.

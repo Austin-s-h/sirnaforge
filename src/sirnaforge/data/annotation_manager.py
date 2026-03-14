@@ -76,8 +76,12 @@ class AnnotationManager(TranscriptomeManager):
             compressed=False,
             description=f"Custom annotation from {url}",
         )
-        cache_key = source.cache_key()
-        cache_file = self.cache_dir / f"{cache_key}{suffix}"
+        cache_key = self._cache_key_for_remote_uri(url) or source.cache_key()
+        cache_file = (
+            Path(self.metadata[cache_key].file_path)
+            if cache_key in self.metadata
+            else self.cache_dir / f"{cache_key}{suffix}"
+        )
 
         if self._is_cache_valid(cache_key):
             logger.info("✅ Using cached custom annotation: %s", cache_file)

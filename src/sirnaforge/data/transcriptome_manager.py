@@ -74,6 +74,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         cache_dir: str | Path | None = None,
         cache_ttl_days: int = 90,
         auto_build_indices: bool = True,
+        local_content_dedupe: bool = True,
         cache_subdir: str = "transcriptomes",
         sources: dict[str, TranscriptomeSource] | None = None,
         source_label: str | None = None,
@@ -84,14 +85,27 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             cache_dir: Directory for caching transcriptomes (default: ~/.cache/sirnaforge/transcriptomes)
             cache_ttl_days: Cache time-to-live in days (default: 90 days for large files)
             auto_build_indices: Automatically build BWA-MEM2 indices when missing
+            local_content_dedupe: Reuse cached local files by content hash across different input paths
             cache_subdir: Cache subdirectory override for composable manager reuse
             sources: Optional source dictionary override
             source_label: Optional source label used in status/error reporting
         """
         super().__init__(cache_subdir=cache_subdir, cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
         self.auto_build_indices = auto_build_indices
+        self.local_content_dedupe = local_content_dedupe
         self.sources: dict[str, TranscriptomeSource] = dict(sources or self.SOURCES)
         self.source_label = source_label or self.SOURCE_LABEL
+        self.local_content_index: dict[str, str] = {}
+        self._rebuild_local_content_index()
+
+    def _rebuild_local_content_index(self) -> None:
+        """Rebuild local content-hash index from loaded metadata."""
+        self.local_content_index.clear()
+        for cache_key, meta in self.metadata.items():
+            extra = meta.extra or {}
+            content_hash = extra.get("local_content_hash")
+            if isinstance(content_hash, str) and content_hash:
+                self.local_content_index[content_hash] = cache_key
 
     def describe_source_status(self, source_name: str) -> dict[str, Any]:
         """Return cache metadata for a configured source."""
@@ -241,8 +255,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return None
 
         source = self.sources[source_name]
-        cache_key = source.cache_key()
-        cache_file = self.cache_dir / f"{cache_key}.fa"
+        cache_key = self._cache_key_for_remote_uri(source.url) or source.cache_key()
+        cache_file = (
+            Path(self.metadata[cache_key].file_path)
+            if cache_key in self.metadata
+            else self.cache_dir / f"{cache_key}.fa"
+        )
         index_prefix = self.cache_dir / f"{cache_key}_index"
 
         # Use cached version if valid
@@ -304,8 +322,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             description=f"Custom transcriptome from {url}",
         )
 
-        cache_key = source.cache_key()
-        cache_file = self.cache_dir / f"{cache_key}.fa"
+        cache_key = self._cache_key_for_remote_uri(url) or source.cache_key()
+        cache_file = (
+            Path(self.metadata[cache_key].file_path)
+            if cache_key in self.metadata
+            else self.cache_dir / f"{cache_key}.fa"
+        )
         index_prefix = self.cache_dir / f"{cache_key}_index"
 
         # Check cache
@@ -325,7 +347,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def _handle_cached_file(self, file_path: Path, cache_name: str, build_index: bool) -> dict[str, Path]:
         """Handle transcriptome file already in cache directory."""
-        cache_key = hashlib.md5(f"local_{cache_name}_{file_path}".encode()).hexdigest()[:12]
+        extra: dict[str, Any] | None = None
+        if self.local_content_dedupe:
+            content_hash = self._compute_file_checksum(file_path)
+            cache_key = hashlib.md5(f"local_content_{content_hash}".encode()).hexdigest()[:12]
+            extra = {"local_content_hash": content_hash}
+            self.local_content_index[content_hash] = cache_key
+        else:
+            cache_key = hashlib.md5(f"local_{cache_name}_{file_path}".encode()).hexdigest()[:12]
         index_prefix = file_path.parent / f"{file_path.stem}_index"
 
         # Ensure metadata exists
@@ -336,15 +365,34 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
                     name=cache_name, url=str(file_path), species="custom", description=f"Local: {file_path}"
                 ),
                 file_path,
+                extra=extra,
             )
 
         return self._prepare_result_with_index(file_path, index_prefix, cache_key, build_index)
 
     def _cache_local_file(self, input_path: Path, cache_name: str, build_index: bool) -> dict[str, Path]:
         """Copy local file to cache and prepare it."""
-        cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
-        cache_file = self.cache_dir / f"{cache_name}_{cache_key}.fa"
-        index_prefix = self.cache_dir / f"{cache_name}_{cache_key}_index"
+        extra: dict[str, Any] | None = None
+        if self.local_content_dedupe:
+            content_hash = self._compute_file_checksum(input_path)
+            known_cache_key = self.local_content_index.get(content_hash)
+            if known_cache_key and known_cache_key in self.metadata:
+                known_meta = self.metadata[known_cache_key]
+                known_path = Path(known_meta.file_path)
+                if known_path.exists():
+                    logger.info("✅ Reusing local cached transcriptome by content hash: %s", known_path)
+                    index_prefix = self._get_index_path(known_meta) or (known_path.parent / f"{known_path.stem}_index")
+                    return self._prepare_result_with_index(known_path, index_prefix, known_cache_key, build_index)
+
+            cache_key = hashlib.md5(f"local_content_{content_hash}".encode()).hexdigest()[:12]
+            cache_file = self.cache_dir / f"{cache_key}.fa"
+            index_prefix = self.cache_dir / f"{cache_key}_index"
+            extra = {"local_content_hash": content_hash}
+            self.local_content_index[content_hash] = cache_key
+        else:
+            cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
+            cache_file = self.cache_dir / f"{cache_name}_{cache_key}.fa"
+            index_prefix = self.cache_dir / f"{cache_name}_{cache_key}_index"
 
         # Check if already cached
         if not cache_file.exists():
@@ -358,6 +406,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
                 name=cache_name, url=str(input_path), species="custom", description=f"Local: {input_path}"
             ),
             cache_file,
+            extra=extra,
         )
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -467,6 +516,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             "total_fasta_files": total_files,
             "index_files": index_files,
             "auto_build_indices": self.auto_build_indices,
+            "local_content_dedupe": self.local_content_dedupe,
             "cached_references": list(self.metadata.keys()),
             "cached_transcriptomes": list(self.metadata.keys()),
         }

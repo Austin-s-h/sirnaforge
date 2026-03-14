@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Mapping
@@ -15,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 _CACHE_ROOT_SENTINEL = object()
+_RESOLVED_CACHE_SUBDIRS: dict[str, Path] = {}
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_cache_subdir(subdir: str, *, override: str | os.PathLike[str] | None = None) -> Path:
@@ -46,6 +50,16 @@ def resolve_cache_subdir(subdir: str, *, override: str | os.PathLike[str] | None
     for candidate in candidates:
         try:
             candidate.mkdir(parents=True, exist_ok=True)
+            prior = _RESOLVED_CACHE_SUBDIRS.get(subdir)
+            if prior is not None and prior != candidate:
+                logger.warning(
+                    "Multiple cache roots detected for subdir '%s': '%s' then '%s'. "
+                    "This can cause repeated downloads across runs.",
+                    subdir,
+                    prior,
+                    candidate,
+                )
+            _RESOLVED_CACHE_SUBDIRS[subdir] = candidate
             return candidate
         except PermissionError as exc:
             if first_error is None:
