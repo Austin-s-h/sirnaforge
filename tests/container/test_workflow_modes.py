@@ -513,9 +513,7 @@ def test_minimal_toy_workflow(tmp_path: Path):
     - Basic pipeline flow
     """
     output_dir = _get_persistent_output_dir(tmp_path, "toy_minimal")
-
-    # Use toy transcripts from test data
-    toy_fasta = Path(__file__).parent.parent / "unit" / "data" / "toy_transcripts.fasta"
+    toy_fasta = Path(__file__).parent.parent / "unit" / "data" / "toy_transcriptome_db.fasta"
     if not toy_fasta.exists():
         pytest.skip("Toy transcripts not available")
 
