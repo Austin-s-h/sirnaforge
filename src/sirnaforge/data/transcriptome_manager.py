@@ -268,6 +268,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             logger.info(f"✅ Using cached {source.name} ({source.species}): {cache_file}")
             return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
+        # Recover from interrupted prior runs where file exists but metadata is missing.
+        if not force_refresh and self._recover_remote_cache_entry(
+            source=source, cache_key=cache_key, cache_file=cache_file
+        ):
+            logger.info(f"✅ Using recovered cached {source.name} ({source.species}): {cache_file}")
+            return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
+
         # Download transcriptome
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
         if not self._download_to_path(source, cache_file):
@@ -333,6 +340,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # Check cache
         if self._is_cache_valid(cache_key):
             logger.info(f"✅ Using cached custom transcriptome: {cache_file}")
+            return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
+
+        if self._recover_remote_cache_entry(source=source, cache_key=cache_key, cache_file=cache_file):
+            logger.info(f"✅ Using recovered cached custom transcriptome: {cache_file}")
             return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
         # Download

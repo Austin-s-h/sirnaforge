@@ -87,6 +87,10 @@ class AnnotationManager(TranscriptomeManager):
             logger.info("✅ Using cached custom annotation: %s", cache_file)
             return cache_file
 
+        if self._recover_remote_cache_entry(source=source, cache_key=cache_key, cache_file=cache_file):
+            logger.info("✅ Using recovered cached custom annotation: %s", cache_file)
+            return cache_file
+
         if not self._download_to_path(source, cache_file):
             return None
 

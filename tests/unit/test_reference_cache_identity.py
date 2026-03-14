@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from sirnaforge.data.annotation_manager import AnnotationManager
-from sirnaforge.data.transcriptome_manager import TranscriptomeManager
+from sirnaforge.data.transcriptome_manager import TranscriptomeManager, TranscriptomeSource
 from sirnaforge.utils.cache_utils import resolve_cache_subdir
 
 
@@ -123,6 +123,48 @@ def test_custom_annotation_uses_uri_identity_across_names(tmp_path: Path, monkey
     assert len(download_calls) == 1
 
 
+def test_remote_transcriptome_recovers_from_existing_file_without_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing remote artifact should be reused even if metadata was never persisted."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    source = manager.sources["ensembl_human_cdna"]
+    cache_file = tmp_path / f"{source.cache_key()}.fa"
+    cache_file.write_text(">tx1\nACGT\n", encoding="utf-8")
+
+    def _fail_download(*args: Any, **kwargs: Any) -> bool:  # noqa: ARG001
+        raise AssertionError("download should not be called when cache file exists")
+
+    monkeypatch.setattr(manager, "_download_to_path", _fail_download)
+
+    result = manager.get_transcriptome("ensembl_human_cdna", build_index=False)
+
+    assert result is not None
+    assert result["fasta"] == cache_file
+    assert source.url in manager.uri_index
+
+
+def test_remote_custom_annotation_recovers_from_existing_file_without_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing annotation artifact should be reused even when metadata is absent."""
+    manager = AnnotationManager(cache_dir=tmp_path)
+    url = "https://example.org/resources/annotation.gtf.gz"
+    source = TranscriptomeSource(name="annotation", url=url, species="custom", format="gtf", compressed=False)
+    cache_file = tmp_path / f"{source.cache_key()}.gtf.gz"
+    cache_file.write_text('chr1\tsrc\tgene\t1\t10\t.\t+\t.\tgene_id "g1";\n', encoding="utf-8")
+
+    def _fail_download(*args: Any, **kwargs: Any) -> bool:  # noqa: ARG001
+        raise AssertionError("download should not be called when annotation cache file exists")
+
+    monkeypatch.setattr(manager, "_download_to_path", _fail_download)
+
+    result = manager.get_custom_annotation(url, cache_name="annotation")
+
+    assert result == cache_file
+    assert url in manager.uri_index
+
+
 def test_resolve_cache_subdir_warns_on_mixed_roots(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Resolving one subdir to multiple roots should emit a warning."""
     subdir = "mixed-root-warning-test"
@@ -133,3 +175,182 @@ def test_resolve_cache_subdir_warns_on_mixed_roots(tmp_path: Path, caplog: pytes
     resolve_cache_subdir(subdir, override=root_b / subdir)
 
     assert any("Multiple cache roots detected" in record.message for record in caplog.records)
+
+
+def test_force_refresh_bypasses_recovered_remote_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """force_refresh should trigger a new download even when cache file exists."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    source = manager.sources["ensembl_human_cdna"]
+    cache_file = tmp_path / f"{source.cache_key()}.fa"
+    cache_file.write_text(">tx1\nOLD\n", encoding="utf-8")
+
+    downloads = 0
+
+    def _fake_download_to_path(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        nonlocal downloads
+        downloads += 1
+        destination.write_text(">tx1\nNEW\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(manager, "_download_to_path", _fake_download_to_path)
+
+    result = manager.get_transcriptome("ensembl_human_cdna", force_refresh=True, build_index=False)
+
+    assert result is not None
+    assert downloads == 1
+    assert cache_file.read_text(encoding="utf-8") == ">tx1\nNEW\n"
+
+
+def test_stale_uri_index_is_ignored_and_recomputed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stale URI index entries should not prevent deterministic key reuse."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    source = manager.sources["ensembl_human_cdna"]
+    cache_key = source.cache_key()
+    cache_file = tmp_path / f"{cache_key}.fa"
+    cache_file.write_text(">tx1\nACGT\n", encoding="utf-8")
+
+    manager.uri_index[source.url] = "missing_key"
+
+    def _fail_download(*args: Any, **kwargs: Any) -> bool:  # noqa: ARG001
+        raise AssertionError("download should not be called for existing cached file")
+
+    monkeypatch.setattr(manager, "_download_to_path", _fail_download)
+
+    result = manager.get_transcriptome("ensembl_human_cdna", build_index=False)
+
+    assert result is not None
+    assert result["fasta"] == cache_file
+    assert manager.uri_index[source.url] == cache_key
+
+
+def test_cache_persists_across_manager_restarts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new manager instance should reuse metadata persisted by a prior instance."""
+    url = "https://example.org/resources/restart.fa.gz"
+
+    first_manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    first_downloads = 0
+
+    def _first_download(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        nonlocal first_downloads
+        first_downloads += 1
+        destination.write_text(">tx1\nPERSIST\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(first_manager, "_download_to_path", _first_download)
+    first = first_manager.get_custom_transcriptome(url, build_index=False, cache_name="persist")
+
+    assert first is not None
+    assert first_downloads == 1
+
+    second_manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+
+    def _fail_download(*args: Any, **kwargs: Any) -> bool:  # noqa: ARG001
+        raise AssertionError("second manager should hit persisted cache")
+
+    monkeypatch.setattr(second_manager, "_download_to_path", _fail_download)
+    second = second_manager.get_custom_transcriptome(url, build_index=False, cache_name="persist_again")
+
+    assert second is not None
+    assert second["fasta"] == first["fasta"]
+
+
+def test_malformed_metadata_file_does_not_block_remote_cache_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bad metadata JSON should not force redownload when artifact already exists."""
+    source = TranscriptomeManager.SOURCES["ensembl_human_cdna"]
+    cache_file = tmp_path / f"{source.cache_key()}.fa"
+    cache_file.write_text(">tx1\nRECOVER\n", encoding="utf-8")
+    (tmp_path / "cache_metadata.json").write_text("{not-json", encoding="utf-8")
+
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+
+    def _fail_download(*args: Any, **kwargs: Any) -> bool:  # noqa: ARG001
+        raise AssertionError("download should not be called when existing artifact is recoverable")
+
+    monkeypatch.setattr(manager, "_download_to_path", _fail_download)
+
+    result = manager.get_transcriptome("ensembl_human_cdna", build_index=False)
+
+    assert result is not None
+    assert result["fasta"] == cache_file
+    assert source.url in manager.uri_index
+
+
+def test_remote_uri_identity_is_exact_string_no_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Different URI strings should not dedupe even if they differ only in query values."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    url_a = "https://example.org/resources/transcripts.fa.gz?version=1"
+    url_b = "https://example.org/resources/transcripts.fa.gz?version=2"
+
+    download_calls: list[Path] = []
+
+    def _fake_download_to_path(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        download_calls.append(destination)
+        destination.write_text(">tx1\nEXACT\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(manager, "_download_to_path", _fake_download_to_path)
+
+    first = manager.get_custom_transcriptome(url_a, build_index=False, cache_name="v1")
+    second = manager.get_custom_transcriptome(url_b, build_index=False, cache_name="v2")
+
+    assert first is not None
+    assert second is not None
+    assert first["fasta"] != second["fasta"]
+    assert len(download_calls) == 2
+
+
+def test_corrupted_cached_file_triggers_redownload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Checksum mismatch should invalidate metadata cache and force redownload."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    url = "https://example.org/resources/transcripts.fa.gz"
+
+    first_downloads = 0
+
+    def _first_download(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        nonlocal first_downloads
+        first_downloads += 1
+        destination.write_text(">tx1\nORIGINAL\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(manager, "_download_to_path", _first_download)
+    first = manager.get_custom_transcriptome(url, build_index=False, cache_name="run")
+    assert first is not None
+    assert first_downloads == 1
+
+    # Corrupt file after metadata/checksum has been persisted in-memory.
+    first["fasta"].write_text(">tx1\nCORRUPTED\n", encoding="utf-8")
+
+    second_downloads = 0
+
+    def _second_download(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        nonlocal second_downloads
+        second_downloads += 1
+        destination.write_text(">tx1\nREPAIRED\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(manager, "_download_to_path", _second_download)
+    second = manager.get_custom_transcriptome(url, build_index=False, cache_name="run")
+
+    assert second is not None
+    assert second_downloads == 1
+    assert second["fasta"].read_text(encoding="utf-8") == ">tx1\nREPAIRED\n"
+
+
+def test_clear_cache_clears_uri_index(tmp_path: Path) -> None:
+    """Clearing cache should remove URI index entries as well as metadata."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    source = manager.sources["ensembl_human_cdna"]
+    cache_file = tmp_path / f"{source.cache_key()}.fa"
+    cache_file.write_text(">tx1\nACGT\n", encoding="utf-8")
+    manager._record_cache_entry(source.cache_key(), source, cache_file)
+
+    assert manager.uri_index
+    assert manager.metadata
+
+    cleared = manager.clear_cache(confirm=True)
+
+    assert cleared["files_deleted"] >= 1
+    assert manager.metadata == {}
+    assert manager.uri_index == {}

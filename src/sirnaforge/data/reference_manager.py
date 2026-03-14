@@ -206,6 +206,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
                 continue
 
         self.metadata.clear()
+        self.uri_index.clear()
         return {
             "cache_directory": str(self.cache_dir),
             "files_deleted": deleted,
@@ -257,6 +258,33 @@ class ReferenceManager(ABC, Generic[SourceT]):
             self.uri_index.pop(uri, None)
             return None
         return cache_key
+
+    def _recover_remote_cache_entry(
+        self,
+        *,
+        source: ReferenceSource,
+        cache_key: str,
+        cache_file: Path,
+        persist: bool = True,
+    ) -> bool:
+        """Recover metadata for an already-downloaded remote artifact.
+
+        This handles interrupted runs where the file exists on disk but metadata
+        was never flushed, preventing unnecessary re-downloads.
+        """
+        if cache_key in self.metadata:
+            return self._is_cache_valid(cache_key)
+
+        if not cache_file.exists() or cache_file.stat().st_size == 0:
+            return False
+
+        self._record_cache_entry(cache_key, source, cache_file, persist=persist)
+        logger.info(
+            "Recovered remote cache metadata for %s from existing file %s",
+            source.url,
+            cache_file,
+        )
+        return self._is_cache_valid(cache_key)
 
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached data is still valid.
