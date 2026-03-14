@@ -105,6 +105,11 @@ app_command = command_decorator_typed(app.command)
 DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 REMOTE_RESOURCE_SCHEMES = ("http://", "https://", "ftp://", "file://")
 
+# Internal performance defaults for exhaustive ZFN search.
+DEFAULT_ZFN_WINDOW_STRIDE = 1
+DEFAULT_ZFN_TOP_N_SITES = 5000
+DEFAULT_ZFN_REPORT_N_SITES = 200
+
 
 class TranscriptLike(Protocol):
     """Minimal transcript-like interface used by CLI filters."""
@@ -324,10 +329,13 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
     zfn_dimer_mode: str,
     zfn_spacer_lengths: str,
     zfn_max_mismatches: int,
-    zfn_annotation: str | None,
-    zfn_shard_max_workers: int | None,
-    zfn_shard_chunk_mb: float | None,
-    zfn_shard_chromosomes: str | None,
+    zfn_window_stride: int | None = None,
+    zfn_top_n_sites: int | None = None,
+    zfn_report_n_sites: int | None = None,
+    zfn_annotation: str | None = None,
+    zfn_shard_max_workers: int | None = None,
+    zfn_shard_chunk_mb: float | None = None,
+    zfn_shard_chromosomes: str | None = None,
 ) -> tuple[
     ZFNDesignParameters,
     GenomicAnnotationConfig | None,
@@ -395,7 +403,12 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
         algorithm=algo,
         dimer_mode=dimer,
         spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=parsed_spacers),
-        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=zfn_max_mismatches),
+        half_site_constraints=ZFNHalfSiteConstraints(
+            max_mismatches=zfn_max_mismatches,
+            window_stride=zfn_window_stride or DEFAULT_ZFN_WINDOW_STRIDE,
+        ),
+        top_n_sites=zfn_top_n_sites or DEFAULT_ZFN_TOP_N_SITES,
+        report_n_sites=zfn_report_n_sites or DEFAULT_ZFN_REPORT_N_SITES,
         mutation_constraints=mutation_constraints,
     )
 
@@ -734,6 +747,31 @@ def workflow(  # noqa: PLR0912
         max=6,
         help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
     ),
+    zfn_window_stride: int | None = typer.Option(
+        None,
+        "--zfn-window-stride",
+        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
+        min=1,
+        max=50,
+        hidden=True,
+        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
+    ),
+    zfn_top_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-top-n-sites",
+        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
+    ),
+    zfn_report_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-report-n-sites",
+        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: number of top ranked sites included in report outputs.",
+    ),
     zfn_shard_max_workers: int | None = typer.Option(
         None,
         "--zfn-shard-max-workers",
@@ -1013,6 +1051,9 @@ def workflow(  # noqa: PLR0912
                     zfn_dimer_mode=zfn_dimer_mode,
                     zfn_spacer_lengths=zfn_spacer_lengths,
                     zfn_max_mismatches=zfn_max_mismatches,
+                    zfn_window_stride=zfn_window_stride,
+                    zfn_top_n_sites=zfn_top_n_sites,
+                    zfn_report_n_sites=zfn_report_n_sites,
                     zfn_annotation=zfn_annotation,
                     zfn_shard_max_workers=zfn_shard_max_workers,
                     zfn_shard_chunk_mb=zfn_shard_chunk_mb,
@@ -1497,6 +1538,31 @@ def zfn(
         max=6,
         help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
     ),
+    zfn_window_stride: int | None = typer.Option(
+        None,
+        "--zfn-window-stride",
+        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
+        min=1,
+        max=50,
+        hidden=True,
+        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
+    ),
+    zfn_top_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-top-n-sites",
+        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
+    ),
+    zfn_report_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-report-n-sites",
+        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: number of top ranked sites included in report outputs.",
+    ),
     zfn_shard_max_workers: int | None = typer.Option(
         None,
         "--zfn-shard-max-workers",
@@ -1566,6 +1632,9 @@ def zfn(
                 zfn_dimer_mode=zfn_dimer_mode,
                 zfn_spacer_lengths=zfn_spacer_lengths,
                 zfn_max_mismatches=zfn_max_mismatches,
+                zfn_window_stride=zfn_window_stride,
+                zfn_top_n_sites=zfn_top_n_sites,
+                zfn_report_n_sites=zfn_report_n_sites,
                 zfn_annotation=zfn_annotation,
                 zfn_shard_max_workers=zfn_shard_max_workers,
                 zfn_shard_chunk_mb=zfn_shard_chunk_mb,
@@ -1587,6 +1656,8 @@ def zfn(
             f"Algorithm: [cyan]{zfn_design_params.algorithm.value}[/cyan]\n"
             f"Dimer mode: [cyan]{zfn_design_params.dimer_mode.value}[/cyan]\n"
             f"Spacer lengths: [cyan]{zfn_design_params.spacer_constraints.allowed_spacer_lengths}[/cyan]\n"
+            f"Internal tuning: [cyan]stride={zfn_design_params.half_site_constraints.window_stride}, "
+            f"top_n={zfn_design_params.top_n_sites}, report_n={zfn_design_params.report_n_sites}[/cyan]\n"
             f"Sharding: [cyan]workers={zfn_design_params.sharding.max_workers}, "
             f"chunk={zfn_design_params.sharding.chunk_size_bp}bp[/cyan]\n"
             f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from functools import lru_cache
 
 from sirnaforge.models.zfn import ZFNDesignParameters, ZFNOffTargetSite
 
@@ -29,6 +30,7 @@ def _score_to_penalty(score: float) -> float:
     return float(100.0 - score)
 
 
+@lru_cache(maxsize=512)
 def _chrom_sort_key(chrom: str) -> tuple[int, int | str]:
     """Return a sortable chromosome key with numeric chromosomes first."""
     normalized = chrom.lower()

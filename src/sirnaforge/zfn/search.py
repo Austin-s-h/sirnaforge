@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
-
-from Bio.Seq import Seq
 
 from sirnaforge.data.annotation_manager import AnnotationManager
 from sirnaforge.data.genome_manager import GenomeManager
@@ -48,6 +47,8 @@ IUPAC_MAP: dict[str, set[str]] = {
     "H": {"A", "C", "T"},
     "V": {"A", "C", "G"},
 }
+
+_RC_TRANS = str.maketrans("ACGTNRYWSKMBDHV", "TGCANYRWSMKVHDB")
 
 
 @dataclass(slots=True)
@@ -95,19 +96,32 @@ class ExhaustiveZFNOffTargetSearcher:
         """Initialize searcher with optional annotation provider."""
         self.annotation_provider = annotation_provider
 
+    @staticmethod
+    def _reverse_complement(seq: str) -> str:
+        """Return reverse complement for one uppercase DNA/IUPAC sequence."""
+        return seq.translate(_RC_TRANS)[::-1]
+
     def search(
         self,
         params: ZFNDesignParameters,
         annotation: GenomicAnnotationConfig | None = None,
     ) -> list[ZFNOffTargetSite]:
         """Search all predicted cut sites with explicit mismatch + spacer constraints."""
+        phase_timings: dict[str, float] = {}
+
+        phase_start = time.perf_counter()
         fasta_path = self._resolve_search_space_fasta(params)
         if annotation is not None:
             self._resolve_annotation_path(annotation)
+        phase_timings["resolve_inputs_s"] = time.perf_counter() - phase_start
 
+        phase_start = time.perf_counter()
         chrom_sequences = self._load_fasta(fasta_path)
+        phase_timings["load_fasta_s"] = time.perf_counter() - phase_start
 
+        phase_start = time.perf_counter()
         shard_specs = self._build_shard_specs(chrom_sequences, params)
+        phase_timings["build_shards_s"] = time.perf_counter() - phase_start
         all_sites: list[ZFNOffTargetSite] = []
 
         workers = min(params.sharding.max_workers, len(shard_specs)) if shard_specs else 1
@@ -153,15 +167,38 @@ class ExhaustiveZFNOffTargetSearcher:
                         (completed_count * 100.0) / max(1, len(shard_specs)),
                         elapsed,
                     )
+        phase_timings["search_shards_s"] = time.perf_counter() - started_at
 
+        phase_start = time.perf_counter()
         deduped = self._dedupe_sites(all_sites)
+        phase_timings["dedupe_s"] = time.perf_counter() - phase_start
 
         if annotation and self.annotation_provider is not None:
+            phase_start = time.perf_counter()
             deduped = self.annotation_provider.annotate(deduped, annotation)
+            phase_timings["annotate_s"] = time.perf_counter() - phase_start
 
+        phase_start = time.perf_counter()
         ranked = rank_sites(deduped, params)
+        phase_timings["rank_s"] = time.perf_counter() - phase_start
+
+        phase_start = time.perf_counter()
         if len(ranked) > params.top_n_sites:
             ranked = ranked[: params.top_n_sites]
+        phase_timings["truncate_s"] = time.perf_counter() - phase_start
+
+        logger.info(
+            "ZFN search phase timings: %s",
+            json.dumps(phase_timings, sort_keys=True),
+        )
+        logger.info(
+            "ZFN search counts: shards=%s raw_sites=%s deduped_sites=%s ranked_sites=%s top_n=%s",
+            len(shard_specs),
+            len(all_sites),
+            len(deduped),
+            len(ranked),
+            params.top_n_sites,
+        )
 
         return ranked
 
@@ -377,6 +414,7 @@ class ExhaustiveZFNOffTargetSearcher:
         """Exhaustively scan all chromosomes and both strands for one half-site."""
         query = query.upper()
         qlen = len(query)
+        seed_positions = self._seed_positions(kind, qlen, params.half_site_constraints.seed_len_from_fokI)
 
         hits: list[_HalfSiteHit] = []
         for chrom, chrom_seq in chrom_sequences.items():
@@ -402,6 +440,7 @@ class ExhaustiveZFNOffTargetSearcher:
                     seed_len=params.half_site_constraints.seed_len_from_fokI,
                     max_mm=params.half_site_constraints.max_mismatches,
                     max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+                    seed_positions=seed_positions,
                 )
                 if plus_match is not None:
                     hits.append(
@@ -420,7 +459,7 @@ class ExhaustiveZFNOffTargetSearcher:
                         )
                     )
 
-                window_minus_oriented = str(Seq(window_plus).reverse_complement())
+                window_minus_oriented = self._reverse_complement(window_plus)
                 minus_match = self._evaluate_window(
                     kind=kind,
                     query=query,
@@ -429,6 +468,7 @@ class ExhaustiveZFNOffTargetSearcher:
                     seed_len=params.half_site_constraints.seed_len_from_fokI,
                     max_mm=params.half_site_constraints.max_mismatches,
                     max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+                    seed_positions=seed_positions,
                 )
                 if minus_match is not None:
                     hits.append(
@@ -459,6 +499,7 @@ class ExhaustiveZFNOffTargetSearcher:
         max_mm: int,
         max_seed_mm: int | None,
         expanded_query: str | None = None,
+        seed_positions: set[int] | None = None,
     ) -> _WindowMatch | None:
         """Evaluate one window against one query under IUPAC + seed constraints."""
         query_for_match = expanded_query if (expanded_query and mode == IUPACMode.EXPAND_IUPAC) else query
@@ -468,7 +509,9 @@ class ExhaustiveZFNOffTargetSearcher:
         mismatch_positions: list[int] = []
         aligned_chars: list[str] = []
 
-        seed_positions = self._seed_positions(kind, len(query_for_match), seed_len)
+        active_seed_positions = seed_positions
+        if active_seed_positions is None:
+            active_seed_positions = self._seed_positions(kind, len(query_for_match), seed_len)
 
         for idx, (q, o) in enumerate(zip(query_for_match, observed, strict=False)):
             is_match = self._base_match(q, o, mode)
@@ -478,7 +521,7 @@ class ExhaustiveZFNOffTargetSearcher:
                 mismatches += 1
                 mismatch_positions.append(idx)
                 aligned_chars.append(o.lower())
-                if idx in seed_positions:
+                if idx in active_seed_positions:
                     seed_mismatches += 1
                 if mismatches > max_mm:
                     return None
