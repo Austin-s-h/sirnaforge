@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -93,25 +94,99 @@ class _WindowMatch(TypedDict):
 class ExhaustiveZFNOffTargetSearcher:
     """Exhaustive sliding-window off-target search for a provided ZFN pair."""
 
+    _DEFAULT_MEMORY_RESERVE_GB = 2
+    _DEFAULT_PER_WORKER_GB = 0.5
+
     def __init__(self, annotation_provider: ZFNAnnotationProvider | None = None) -> None:
         """Initialize searcher with optional annotation provider."""
         self.annotation_provider = annotation_provider or GTFZFNAnnotationProvider()
 
     def _recommended_worker_cap(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> int:
-        """Return a conservative worker cap for large genomes to avoid OOM.
+        """Return a conservative worker cap for large genomes or low-memory hosts to avoid OOM.
 
         Whole-primary assemblies plus permissive mismatch budgets can produce very
         large intermediate hit sets per shard. Limiting concurrency keeps peak
         memory bounded while preserving throughput on smaller references.
+        Available system memory is also checked so that heavily-loaded machines do not run into OOM kills
+        even on single-chromosome searches.
         """
         total_bp = sum(len(seq) for seq in chrom_sequences.values())
         max_mismatches = params.half_site_constraints.max_mismatches
 
         if total_bp >= 2_500_000_000:
-            return 1 if max_mismatches >= 3 else 2
-        if total_bp >= 1_000_000_000:
-            return 2 if max_mismatches >= 3 else 4
-        return params.sharding.max_workers
+            genome_cap = 1 if max_mismatches >= 3 else 2
+        elif total_bp >= 1_000_000_000:
+            genome_cap = 2 if max_mismatches >= 3 else 4
+        else:
+            genome_cap = params.sharding.max_workers
+
+        return min(genome_cap, self._memory_based_worker_cap(params.sharding.max_workers))
+
+    @staticmethod
+    def _available_memory_gb() -> float | None:
+        """Return available system memory in GiB by reading /proc/meminfo, or None."""
+        try:
+            with Path("/proc/meminfo").open(encoding="ascii") as fh:
+                for line in fh:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) / (1024 * 1024)
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    @classmethod
+    def _float_env_or_default(cls, env_name: str, default: float) -> float:
+        """Read a positive float env override, falling back to the provided default."""
+        raw = os.environ.get(env_name)
+        if raw is None:
+            return default
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r; expected a positive float", env_name, raw)
+            return default
+        if value <= 0:
+            logger.warning("Ignoring non-positive %s=%r; expected a positive float", env_name, raw)
+            return default
+        return value
+
+    @classmethod
+    def _memory_reserve_gb(cls) -> float:
+        """Return reserved host memory budget in GiB for non-search workloads."""
+        return cls._float_env_or_default("SIRNAFORGE_ZFN_MEMORY_RESERVE_GB", cls._DEFAULT_MEMORY_RESERVE_GB)
+
+    @classmethod
+    def _per_worker_memory_gb(cls) -> float:
+        """Return estimated GiB consumed by each concurrent shard worker."""
+        return cls._float_env_or_default("SIRNAFORGE_ZFN_WORKER_MEMORY_GB", cls._DEFAULT_PER_WORKER_GB)
+
+    def _memory_based_worker_cap(self, requested: int) -> int:
+        """Cap workers based on live available memory to avoid OOM on small hosts.
+
+        Each concurrent shard worker builds per-shard hit lists in memory.
+        On a heavily-loaded 12 GB machine (VS Code, Docker, other experiments)
+        running 8 workers on chr3 was enough to invoke the OOM killer.
+        By default we reserve 2 GiB for OS + other apps and allow ~0.5 GiB per worker slot.
+        Both values can be adjusted via internal env vars for profiling or constrained hosts.
+        """
+        avail_gb = self._available_memory_gb()
+        if avail_gb is None:
+            return requested
+        reserve_gb = self._memory_reserve_gb()
+        per_worker_gb = self._per_worker_memory_gb()
+        usable_gb = max(0.0, avail_gb - reserve_gb)
+        mem_cap = max(1, int(usable_gb / per_worker_gb))
+        if mem_cap < requested:
+            logger.warning(
+                "ZFN worker count memory-capped from %s to %s "
+                "(%.1f GiB available, %.1f GiB usable after %.1f GiB reserve)",
+                requested,
+                mem_cap,
+                avail_gb,
+                usable_gb,
+                reserve_gb,
+            )
+        return mem_cap
 
     @staticmethod
     def _reverse_complement(seq: str) -> str:

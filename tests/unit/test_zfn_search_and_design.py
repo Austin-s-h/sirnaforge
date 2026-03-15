@@ -347,6 +347,28 @@ def test_single_contig_sharding_chunks_large_contig(tmp_path: Path) -> None:
     assert shards[-1].core_end0 == len(sequence)
 
 
+def test_memory_based_worker_cap_allows_two_workers_on_stable_mid_memory_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live-memory cap should reflect the current default reserve on a host with about 5 GiB free."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 4.9)
+
+    expected = int((4.9 - searcher._DEFAULT_MEMORY_RESERVE_GB) / searcher._DEFAULT_PER_WORKER_GB)
+    assert searcher._memory_based_worker_cap(8) == max(1, expected)
+
+
+def test_memory_based_worker_cap_honors_internal_reserve_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Internal env override should allow restoring a more conservative reserve when profiling."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 4.9)
+    monkeypatch.setenv("SIRNAFORGE_ZFN_MEMORY_RESERVE_GB", "4.0")
+
+    assert searcher._memory_based_worker_cap(8) == 1
+
+
 def test_sharded_search_matches_unsharded_on_large_complex_synthetic_genome(tmp_path: Path) -> None:
     """Sharded and unsharded scans should agree on a larger, multi-contig synthetic genome."""
     site_5 = _canonical_site(LEFT, RIGHT, spacer="AAAAA")
