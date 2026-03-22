@@ -6,7 +6,6 @@ These helpers keep domain logic in Python while Nextflow handles process orchest
 from __future__ import annotations
 
 import csv
-import fnmatch
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +27,7 @@ from sirnaforge.models.zfn import (
 from sirnaforge.utils.fasta import load_fasta_contig_lengths
 from sirnaforge.zfn.design import ZFNDesigner
 from sirnaforge.zfn.rank import rank_sites
+from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher, build_zfn_shard_specs
 
 RegionLiteral = Literal["exon", "promoter", "intron", "intergenic", "unknown"]
 
@@ -57,56 +57,6 @@ def _parse_csv_tokens(value: str) -> list[str]:
     return [token.strip() for token in value.split(",") if token.strip()]
 
 
-def _normalize_chrom(token: str) -> str:
-    """Normalize chromosome labels for alias matching."""
-    normalized = token.strip().lower()
-    return normalized[3:] if normalized.startswith("chr") else normalized
-
-
-def _chrom_matches_token(chrom: str, token: str) -> bool:
-    """Return whether a contig label matches one chromosome token."""
-    raw_token = token.strip().lower()
-    normalized = _normalize_chrom(chrom)
-    normalized_token = _normalize_chrom(token)
-
-    result = False
-
-    if raw_token in {"*", "all"}:
-        result = True
-    elif raw_token in {"autosomes", "autosome"}:
-        result = normalized.isdigit() and 1 <= int(normalized) <= 22
-    elif raw_token in {"sex", "gonosomes"}:
-        result = normalized in {"x", "y"}
-    elif raw_token in {"mito", "mitochondrial", "mtdna"}:
-        result = normalized in {"m", "mt"}
-    elif "-" in normalized_token:
-        start, end = normalized_token.split("-", 1)
-        if start.isdigit() and end.isdigit() and normalized.isdigit():
-            lower = int(start)
-            upper = int(end)
-            if lower > upper:
-                lower, upper = upper, lower
-            value = int(normalized)
-            result = lower <= value <= upper
-    elif any(char in token for char in "*?[]"):
-        chrom_lc = chrom.lower()
-        result = fnmatch.fnmatch(chrom_lc, raw_token) or fnmatch.fnmatch(normalized, normalized_token)
-    else:
-        result = normalized == normalized_token or chrom.lower() == raw_token
-
-    return result
-
-
-def _resolve_target_contigs(contig_lengths: dict[str, int], requested_tokens: list[str]) -> list[str]:
-    """Resolve requested chromosome tokens against contig labels preserving FASTA order."""
-    if not requested_tokens:
-        return list(contig_lengths.keys())
-    tokens = [token.strip() for token in requested_tokens if token.strip()]
-    if not tokens:
-        return list(contig_lengths.keys())
-    return [chrom for chrom in contig_lengths if any(_chrom_matches_token(chrom, token) for token in tokens)]
-
-
 def make_zfn_shard_manifest(
     *,
     genome_fasta: Path,
@@ -122,58 +72,43 @@ def make_zfn_shard_manifest(
 ) -> dict[str, int | bool]:
     """Build shard TSV for ZFN search.
 
-    Sharding is applied by default when enabled and more than one contig is selected.
-    If the selected input has a single contig, a single whole-contig shard is emitted.
+    Sharding is applied whenever enabled, including for single-contig references.
+    The direct Python searcher remains authoritative for overlap and chunk planning.
     """
     contig_lengths = load_fasta_contig_lengths(genome_fasta)
-
-    requested = _parse_csv_tokens(shard_chromosomes)
-    selected_contigs = _resolve_target_contigs(contig_lengths, requested)
-    if not selected_contigs:
+    params_obj = ZFNDesignParameters(
+        left_half_site=left_half_site,
+        right_half_site=right_half_site,
+        search_space_fasta=str(genome_fasta),
+        search_space_reference=None,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=max_mismatches),
+        spacer_constraints=ZFNSpacerConstraints(
+            allowed_spacer_lengths=[int(value) for value in _parse_csv_tokens(spacer_lengths)]
+        ),
+        sharding=ZFNShardingConfig(
+            enabled=_parse_bool(sharding_enabled),
+            chunk_size_bp=max(1, int(float(shard_chunk_mb) * 1_000_000)),
+            overlap_bp=int(shard_overlap_bp),
+            chromosomes=_parse_csv_tokens(shard_chromosomes),
+        ),
+    )
+    shard_specs = build_zfn_shard_specs(contig_lengths, params_obj)
+    if not shard_specs:
         raise ValueError("No shards generated. Check zfn_shard_chromosomes against FASTA contig names.")
 
-    should_shard = _parse_bool(sharding_enabled) and len(selected_contigs) > 1
-
-    spacer_values = [int(value) for value in _parse_csv_tokens(spacer_lengths)]
-    max_spacer = max(spacer_values) if spacer_values else 0
-    required_overlap = max(50, len(left_half_site) + max_spacer + len(right_half_site))
-    overlap_bp = max(int(shard_overlap_bp), required_overlap)
-    chunk_size_bp = max(1, int(float(shard_chunk_mb) * 1_000_000))
-
     rows: list[ZFNShardRow] = []
-    for chrom in selected_contigs:
-        contig_len = contig_lengths[chrom]
-        if not should_shard:
-            rows.append(
-                ZFNShardRow(
-                    shard_id=f"{chrom}:1-{contig_len}",
-                    chrom=chrom,
-                    core_start_1=1,
-                    core_end_1=contig_len,
-                    scan_start_1=1,
-                    scan_end_1=contig_len,
-                    max_mismatches=max_mismatches,
-                )
+    for shard in shard_specs:
+        rows.append(
+            ZFNShardRow(
+                shard_id=shard.shard_id,
+                chrom=shard.chrom,
+                core_start_1=shard.core_start0 + 1,
+                core_end_1=shard.core_end0,
+                scan_start_1=shard.scan_start0 + 1,
+                scan_end_1=shard.scan_end0,
+                max_mismatches=max_mismatches,
             )
-            continue
-
-        core_start0 = 0
-        while core_start0 < contig_len:
-            core_end0 = min(contig_len, core_start0 + chunk_size_bp)
-            scan_start0 = max(0, core_start0 - overlap_bp)
-            scan_end0 = min(contig_len, core_end0 + overlap_bp)
-            rows.append(
-                ZFNShardRow(
-                    shard_id=f"{chrom}:{core_start0 + 1}-{core_end0}",
-                    chrom=chrom,
-                    core_start_1=core_start0 + 1,
-                    core_end_1=core_end0,
-                    scan_start_1=scan_start0 + 1,
-                    scan_end_1=scan_end0,
-                    max_mismatches=max_mismatches,
-                )
-            )
-            core_start0 = core_end0
+        )
 
     output_tsv.parent.mkdir(parents=True, exist_ok=True)
     with output_tsv.open("w", newline="", encoding="utf-8") as handle:
@@ -206,9 +141,9 @@ def make_zfn_shard_manifest(
 
     return {
         "shards": len(rows),
-        "contigs": len(selected_contigs),
-        "sharding_active": should_shard,
-        "overlap_bp": overlap_bp,
+        "contigs": len({row.chrom for row in rows}),
+        "sharding_active": _parse_bool(sharding_enabled),
+        "overlap_bp": rows[0].scan_end_1 - rows[0].core_end_1 if rows else 0,
     }
 
 
@@ -259,23 +194,27 @@ def run_zfn_shard_search(
     if annotation_file is not None and annotation_file.name != "NO_ANNOTATION":
         annotation = GenomicAnnotationConfig(annotation_path=str(annotation_file))
 
-    result = ZFNDesigner().evaluate_pair(params=params_obj, annotation=annotation)
-
-    filtered_sites = [
-        site
-        for site in result.off_target_sites
-        if site.chrom == shard_chrom
-        and site.start_1based >= effective_core_start
-        and site.end_1based <= effective_core_end
-    ]
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    designer = ZFNDesigner(searcher=searcher)
+    filtered_sites = searcher.search_region(
+        params=params_obj,
+        chrom=shard_chrom,
+        scan_start0=scan_start_1 - 1,
+        scan_end0=scan_end_1,
+        core_start0=effective_core_start - 1,
+        core_end0=effective_core_end,
+        annotation=annotation,
+        top_n_sites=None,
+    )
+    candidate = designer.build_candidate(params_obj, filtered_sites)
 
     filtered_result = ZFNDesignResult(
-        parameters=result.parameters,
-        annotation=result.annotation,
-        candidates=result.candidates,
+        parameters=params_obj,
+        annotation=annotation,
+        candidates=[candidate],
         off_target_sites=filtered_sites,
-        processing_time_s=result.processing_time_s,
-        tool_versions=result.tool_versions,
+        processing_time_s=0.0,
+        tool_versions=designer.tool_versions(),
     )
 
     output_sites_csv.parent.mkdir(parents=True, exist_ok=True)

@@ -192,6 +192,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG001", "S101"]
+"*.ipynb" = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM", "RET", "PTH", "PL", "D"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

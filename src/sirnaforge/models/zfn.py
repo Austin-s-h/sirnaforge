@@ -223,7 +223,7 @@ class ZFNShardingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(default=True, description="Enable chromosome/chunk sharding")
-    chunk_size_bp: int = Field(default=20_000_000, ge=1, description="Nominal chunk size in base pairs")
+    chunk_size_bp: int = Field(default=12_000_000, ge=1, description="Nominal chunk size in base pairs")
     overlap_bp: int = Field(
         default=50,
         ge=0,
@@ -237,7 +237,7 @@ class ZFNShardingConfig(BaseModel):
             "and glob patterns (chrUn_*)."
         ),
     )
-    max_workers: int = Field(default=1, ge=1, le=128, description="Parallel shard workers for in-process search")
+    max_workers: int = Field(default=2, ge=1, le=128, description="Parallel shard workers for in-process search")
 
     @field_validator_typed("chromosomes")
     @classmethod

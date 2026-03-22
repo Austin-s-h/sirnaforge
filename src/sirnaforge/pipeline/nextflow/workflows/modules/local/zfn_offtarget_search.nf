@@ -17,7 +17,7 @@ process ZFN_OFFTARGET_SEARCH {
     publishDir "${params.outdir}/zfn_offtarget", mode: params.publish_dir_mode
 
     input:
-    tuple val(shard_id), val(shard_chrom), val(scan_start_1), val(scan_end_1), val(shard_max_mismatches)
+    tuple val(shard_id), val(shard_chrom), val(core_start_1), val(core_end_1), val(scan_start_1), val(scan_end_1), val(shard_max_mismatches)
     val left_half_site
     val right_half_site
     path genome_fasta
@@ -40,6 +40,8 @@ process ZFN_OFFTARGET_SEARCH {
     sirnaforge _internal zfn-search-shard \
       --shard-id '${shard_id}' \
       --shard-chrom '${shard_chrom}' \
+            --core-start-1 ${core_start_1} \
+            --core-end-1 ${core_end_1} \
       --scan-start-1 ${scan_start_1} \
       --scan-end-1 ${scan_end_1} \
       --shard-max-mismatches ${shard_max_mismatches} \

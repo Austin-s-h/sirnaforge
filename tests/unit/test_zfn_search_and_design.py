@@ -324,6 +324,40 @@ def test_sharded_search_matches_unsharded_coordinates(tmp_path: Path) -> None:
     assert sharded_key == unsharded_key
 
 
+def test_search_region_limits_results_to_scan_and_core_window(tmp_path: Path) -> None:
+    """Direct shard-bounded search should only report sites from the requested region."""
+    first_site = _canonical_site(LEFT, RIGHT, spacer="AAAAA")
+    second_site = _canonical_site(LEFT, RIGHT, spacer="AAAAAA")
+    sequence = "TT" + first_site + ("G" * 15) + second_site + "CC"
+    fasta = _write_fasta(tmp_path, sequence, name="chr3")
+
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
+    )
+    searcher = ExhaustiveZFNOffTargetSearcher()
+
+    full_sites = searcher.search(params)
+    region_sites = searcher.search_region(
+        params=params,
+        chrom="chr3",
+        scan_start0=0,
+        scan_end0=len(first_site) + 10,
+        core_start0=0,
+        core_end0=len(first_site) + 10,
+        top_n_sites=None,
+    )
+
+    assert len(full_sites) == 2
+    assert len(region_sites) == 1
+    assert region_sites[0].chrom == "chr3"
+    assert region_sites[0].start_1based == 3
+    assert region_sites[0].spacer_len == 5
+
+
 def test_single_contig_sharding_chunks_large_contig(tmp_path: Path) -> None:
     """Single-contig inputs should still chunk when sharding is enabled."""
     sequence = "A" * 200
@@ -359,14 +393,44 @@ def test_memory_based_worker_cap_allows_two_workers_on_stable_mid_memory_host(
     assert searcher._memory_based_worker_cap(8) == max(1, expected)
 
 
-def test_memory_based_worker_cap_honors_internal_reserve_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Internal env override should allow restoring a more conservative reserve when profiling."""
+def test_memory_based_worker_cap_keeps_one_worker_on_low_memory_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Low-memory hosts should still retain a single worker instead of failing closed."""
     searcher = ExhaustiveZFNOffTargetSearcher()
 
-    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 4.9)
-    monkeypatch.setenv("SIRNAFORGE_ZFN_MEMORY_RESERVE_GB", "4.0")
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 2.2)
 
     assert searcher._memory_based_worker_cap(8) == 1
+
+
+def test_recommended_worker_cap_uses_requested_workers_when_memory_allows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime worker recommendation should follow requested workers when memory allows it."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(max_workers=8),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 64.0)
+
+    assert searcher._recommended_worker_cap({"chr3": "A" * 3_000_000_000}, params) == 8
+
+
+def test_recommended_worker_cap_still_applies_memory_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime worker recommendation should still be bounded by live available memory."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(max_workers=8),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 4.9)
+
+    expected = int((4.9 - searcher._DEFAULT_MEMORY_RESERVE_GB) / searcher._DEFAULT_PER_WORKER_GB)
+    assert searcher._recommended_worker_cap({"chr3": "A" * 3_000_000_000}, params) == max(1, expected)
 
 
 def test_sharded_search_matches_unsharded_on_large_complex_synthetic_genome(tmp_path: Path) -> None:

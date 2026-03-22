@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
@@ -91,6 +90,125 @@ class _WindowMatch(TypedDict):
     aligned: str
 
 
+def _normalize_chrom_token(chrom: str) -> str:
+    """Normalize chromosome labels for robust alias matching (chr3 == 3)."""
+    token = chrom.strip().lower()
+    if token.startswith("chr"):
+        token = token[3:]
+    return token
+
+
+def _chrom_matches_filter(chrom: str, token: str) -> bool:
+    """Return whether a contig matches one filter token."""
+    raw_token = token.strip().lower()
+    normalized = _normalize_chrom_token(chrom)
+    normalized_token = _normalize_chrom_token(token)
+    result = False
+
+    if raw_token in {"*", "all"}:
+        result = True
+    elif raw_token in {"autosomes", "autosome"}:
+        result = normalized.isdigit() and 1 <= int(normalized) <= 22
+    elif raw_token in {"sex", "gonosomes"}:
+        result = normalized in {"x", "y"}
+    elif raw_token in {"mito", "mitochondrial", "mtdna"}:
+        result = normalized in {"m", "mt"}
+    elif "-" in normalized_token:
+        start, end = normalized_token.split("-", 1)
+        if start.isdigit() and end.isdigit() and normalized.isdigit():
+            lower = int(start)
+            upper = int(end)
+            if lower > upper:
+                lower, upper = upper, lower
+            value = int(normalized)
+            result = lower <= value <= upper
+    elif any(ch in token for ch in "*?[]"):
+        chrom_lc = chrom.lower()
+        result = fnmatch.fnmatch(chrom_lc, raw_token) or fnmatch.fnmatch(normalized, normalized_token)
+    else:
+        result = normalized == normalized_token or chrom.lower() == raw_token
+
+    return result
+
+
+def resolve_target_contigs(contig_names: list[str], requested: list[str]) -> list[str]:
+    """Resolve requested chromosome filters against loaded contig names."""
+    if not requested:
+        return list(contig_names)
+
+    tokens = [token.strip() for token in requested if token.strip()]
+    if not tokens:
+        return list(contig_names)
+
+    return [chrom for chrom in contig_names if any(_chrom_matches_filter(chrom, token) for token in tokens)]
+
+
+def build_zfn_shard_specs(contig_lengths: dict[str, int], params: ZFNDesignParameters) -> list[_ShardSpec]:
+    """Build chromosome/chunk shard specs from contig lengths.
+
+    This is the authoritative shard planning logic shared by the direct Python
+    searcher and external orchestration layers such as Nextflow.
+    """
+    sharding = params.sharding
+    selected_contigs = resolve_target_contigs(list(contig_lengths.keys()), sharding.chromosomes)
+    if not selected_contigs:
+        raise ValueError("No matching chromosomes available for configured ZFN sharding filter")
+
+    if not sharding.enabled:
+        return [
+            _ShardSpec(
+                shard_id=f"{chrom}:1-{contig_lengths[chrom]}",
+                chrom=chrom,
+                core_start0=0,
+                core_end0=contig_lengths[chrom],
+                scan_start0=0,
+                scan_end0=contig_lengths[chrom],
+            )
+            for chrom in selected_contigs
+        ]
+
+    max_spacer = max(params.spacer_constraints.allowed_spacer_lengths)
+    required_overlap = max(
+        50,
+        max(len(params.left_half_site), params.half_site_constraints.max_len)
+        + max_spacer
+        + max(len(params.right_half_site), params.half_site_constraints.max_len),
+    )
+    overlap = max(sharding.overlap_bp, required_overlap)
+
+    shards: list[_ShardSpec] = []
+    for chrom in selected_contigs:
+        chrom_len = contig_lengths[chrom]
+        chunk_size = max(1, sharding.chunk_size_bp)
+
+        chunk_start0 = 0
+        while chunk_start0 < chrom_len:
+            chunk_end0 = min(chrom_len, chunk_start0 + chunk_size)
+            scan_start0 = max(0, chunk_start0 - overlap)
+            scan_end0 = min(chrom_len, chunk_end0 + overlap)
+
+            shards.append(
+                _ShardSpec(
+                    shard_id=f"{chrom}:{chunk_start0 + 1}-{chunk_end0}",
+                    chrom=chrom,
+                    core_start0=chunk_start0,
+                    core_end0=chunk_end0,
+                    scan_start0=scan_start0,
+                    scan_end0=scan_end0,
+                )
+            )
+            chunk_start0 = chunk_end0
+
+    logger.info(
+        "ZFN sharding enabled: %s shards across %s contigs (chunk=%sbp, overlap=%sbp)",
+        len(shards),
+        len(selected_contigs),
+        sharding.chunk_size_bp,
+        overlap,
+    )
+    return shards
+
+
 class ExhaustiveZFNOffTargetSearcher:
     """Exhaustive sliding-window off-target search for a provided ZFN pair."""
 
@@ -102,25 +220,14 @@ class ExhaustiveZFNOffTargetSearcher:
         self.annotation_provider = annotation_provider or GTFZFNAnnotationProvider()
 
     def _recommended_worker_cap(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> int:
-        """Return a conservative worker cap for large genomes or low-memory hosts to avoid OOM.
+        """Return a conservative worker cap based on requested workers and live memory.
 
-        Whole-primary assemblies plus permissive mismatch budgets can produce very
-        large intermediate hit sets per shard. Limiting concurrency keeps peak
-        memory bounded while preserving throughput on smaller references.
-        Available system memory is also checked so that heavily-loaded machines do not run into OOM kills
-        even on single-chromosome searches.
+        The search path should follow the requested sharding profile unless the
+        host lacks enough free memory to sustain that concurrency without risking
+        an OOM kill.
         """
-        total_bp = sum(len(seq) for seq in chrom_sequences.values())
-        max_mismatches = params.half_site_constraints.max_mismatches
-
-        if total_bp >= 2_500_000_000:
-            genome_cap = 1 if max_mismatches >= 3 else 2
-        elif total_bp >= 1_000_000_000:
-            genome_cap = 2 if max_mismatches >= 3 else 4
-        else:
-            genome_cap = params.sharding.max_workers
-
-        return min(genome_cap, self._memory_based_worker_cap(params.sharding.max_workers))
+        del chrom_sequences
+        return min(params.sharding.max_workers, self._memory_based_worker_cap(params.sharding.max_workers))
 
     @staticmethod
     def _available_memory_gb() -> float | None:
@@ -134,32 +241,6 @@ class ExhaustiveZFNOffTargetSearcher:
             pass
         return None
 
-    @classmethod
-    def _float_env_or_default(cls, env_name: str, default: float) -> float:
-        """Read a positive float env override, falling back to the provided default."""
-        raw = os.environ.get(env_name)
-        if raw is None:
-            return default
-        try:
-            value = float(raw)
-        except ValueError:
-            logger.warning("Ignoring invalid %s=%r; expected a positive float", env_name, raw)
-            return default
-        if value <= 0:
-            logger.warning("Ignoring non-positive %s=%r; expected a positive float", env_name, raw)
-            return default
-        return value
-
-    @classmethod
-    def _memory_reserve_gb(cls) -> float:
-        """Return reserved host memory budget in GiB for non-search workloads."""
-        return cls._float_env_or_default("SIRNAFORGE_ZFN_MEMORY_RESERVE_GB", cls._DEFAULT_MEMORY_RESERVE_GB)
-
-    @classmethod
-    def _per_worker_memory_gb(cls) -> float:
-        """Return estimated GiB consumed by each concurrent shard worker."""
-        return cls._float_env_or_default("SIRNAFORGE_ZFN_WORKER_MEMORY_GB", cls._DEFAULT_PER_WORKER_GB)
-
     def _memory_based_worker_cap(self, requested: int) -> int:
         """Cap workers based on live available memory to avoid OOM on small hosts.
 
@@ -167,13 +248,12 @@ class ExhaustiveZFNOffTargetSearcher:
         On a heavily-loaded 12 GB machine (VS Code, Docker, other experiments)
         running 8 workers on chr3 was enough to invoke the OOM killer.
         By default we reserve 2 GiB for OS + other apps and allow ~0.5 GiB per worker slot.
-        Both values can be adjusted via internal env vars for profiling or constrained hosts.
         """
         avail_gb = self._available_memory_gb()
         if avail_gb is None:
             return requested
-        reserve_gb = self._memory_reserve_gb()
-        per_worker_gb = self._per_worker_memory_gb()
+        reserve_gb = self._DEFAULT_MEMORY_RESERVE_GB
+        per_worker_gb = self._DEFAULT_PER_WORKER_GB
         usable_gb = max(0.0, avail_gb - reserve_gb)
         mem_cap = max(1, int(usable_gb / per_worker_gb))
         if mem_cap < requested:
@@ -234,41 +314,15 @@ class ExhaustiveZFNOffTargetSearcher:
             )
 
         started_at = time.perf_counter()
-        progress_interval = max(1, len(shard_specs) // 20) if shard_specs else 1
-        if workers > 1 and len(shard_specs) > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(
-                        self._search_shard,
-                        shard=shard,
-                        chrom_sequences=chrom_sequences,
-                        params=params,
-                    ): shard.shard_id
-                    for shard in shard_specs
-                }
-                for completed_count, future in enumerate(as_completed(futures), start=1):
-                    all_sites.extend(future.result())
-                    if completed_count == len(shard_specs) or completed_count % progress_interval == 0:
-                        elapsed = time.perf_counter() - started_at
-                        logger.info(
-                            "ZFN shard progress: %s/%s complete (%.1f%%) after %.1fs",
-                            completed_count,
-                            len(shard_specs),
-                            (completed_count * 100.0) / max(1, len(shard_specs)),
-                            elapsed,
-                        )
-        else:
-            for completed_count, shard in enumerate(shard_specs, start=1):
-                all_sites.extend(self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params))
-                if completed_count == len(shard_specs) or completed_count % progress_interval == 0:
-                    elapsed = time.perf_counter() - started_at
-                    logger.info(
-                        "ZFN shard progress: %s/%s complete (%.1f%%) after %.1fs",
-                        completed_count,
-                        len(shard_specs),
-                        (completed_count * 100.0) / max(1, len(shard_specs)),
-                        elapsed,
-                    )
+        all_sites.extend(
+            self._run_shard_searches(
+                shard_specs=shard_specs,
+                chrom_sequences=chrom_sequences,
+                params=params,
+                workers=workers,
+                started_at=started_at,
+            )
+        )
         phase_timings["search_shards_s"] = time.perf_counter() - started_at
 
         phase_start = time.perf_counter()
@@ -285,8 +339,7 @@ class ExhaustiveZFNOffTargetSearcher:
         phase_timings["rank_s"] = time.perf_counter() - phase_start
 
         phase_start = time.perf_counter()
-        if len(ranked) > params.top_n_sites:
-            ranked = ranked[: params.top_n_sites]
+        ranked = self._truncate_sites(ranked, params.top_n_sites)
         phase_timings["truncate_s"] = time.perf_counter() - phase_start
 
         logger.info(
@@ -304,122 +357,251 @@ class ExhaustiveZFNOffTargetSearcher:
 
         return ranked
 
+    def search_region(
+        self,
+        params: ZFNDesignParameters,
+        chrom: str,
+        scan_start0: int,
+        scan_end0: int,
+        core_start0: int | None = None,
+        core_end0: int | None = None,
+        annotation: GenomicAnnotationConfig | None = None,
+        top_n_sites: int | None = None,
+    ) -> list[ZFNOffTargetSite]:
+        """Search one bounded genomic region using the same core engine as full search.
+
+        The region is scanned across ``scan_start0..scan_end0`` and then filtered to
+        the optional core window so overlapping shards can share context without
+        double-reporting the same site.
+        """
+        fasta_path = self._resolve_search_space_fasta(params)
+        if annotation is not None:
+            self._resolve_annotation_path(annotation)
+
+        chrom_sequences = self._load_fasta(fasta_path)
+        if chrom not in chrom_sequences:
+            raise ValueError(f"Chromosome {chrom!r} not present in resolved search space")
+
+        scan_start = max(0, scan_start0)
+        scan_end = min(len(chrom_sequences[chrom]), scan_end0)
+        if scan_start >= scan_end:
+            return []
+
+        core_start = scan_start if core_start0 is None else max(scan_start, core_start0)
+        core_end = scan_end if core_end0 is None else min(scan_end, core_end0)
+        if core_start >= core_end:
+            return []
+
+        shard = _ShardSpec(
+            shard_id=f"{chrom}:{core_start + 1}-{core_end}",
+            chrom=chrom,
+            core_start0=core_start,
+            core_end0=core_end,
+            scan_start0=scan_start,
+            scan_end0=scan_end,
+        )
+        shard_sites = self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params)
+        shard_sites = self._filter_sites_to_core_window(
+            shard_sites, chrom=chrom, core_start0=core_start, core_end0=core_end
+        )
+        return self._postprocess_sites(
+            shard_sites,
+            params=params,
+            annotation=annotation,
+            top_n_sites=top_n_sites,
+        )
+
     def _build_shard_specs(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> list[_ShardSpec]:
         """Build chromosome/chunk shard specs with overlap safety guarantees."""
-        sharding = params.sharding
-        selected_contigs = self._resolve_target_contigs(chrom_sequences, sharding.chromosomes)
-        if not selected_contigs:
-            raise ValueError("No matching chromosomes available for configured ZFN sharding filter")
+        contig_lengths = {chrom: len(sequence) for chrom, sequence in chrom_sequences.items()}
+        return build_zfn_shard_specs(contig_lengths, params)
 
-        sharding_active = sharding.enabled
+    def _filter_sites_to_core_window(
+        self,
+        sites: list[ZFNOffTargetSite],
+        chrom: str,
+        core_start0: int,
+        core_end0: int,
+    ) -> list[ZFNOffTargetSite]:
+        """Keep only sites fully contained in the shard core window."""
+        core_start_1 = core_start0 + 1
+        return [
+            site
+            for site in sites
+            if site.chrom == chrom and site.start_1based >= core_start_1 and site.end_1based <= core_end0
+        ]
 
-        if not sharding_active:
-            return [
-                _ShardSpec(
-                    shard_id=f"{chrom}:1-{len(chrom_sequences[chrom])}",
-                    chrom=chrom,
-                    core_start0=0,
-                    core_end0=len(chrom_sequences[chrom]),
-                    scan_start0=0,
-                    scan_end0=len(chrom_sequences[chrom]),
-                )
-                for chrom in selected_contigs
-            ]
+    def _truncate_sites(self, sites: list[ZFNOffTargetSite], top_n_sites: int | None) -> list[ZFNOffTargetSite]:
+        """Optionally truncate a ranked site list."""
+        if top_n_sites is None or len(sites) <= top_n_sites:
+            return sites
+        return sites[:top_n_sites]
 
-        max_spacer = max(params.spacer_constraints.allowed_spacer_lengths)
-        required_overlap = max(
-            50,
-            max(len(params.left_half_site), params.half_site_constraints.max_len)
-            + max_spacer
-            + max(len(params.right_half_site), params.half_site_constraints.max_len),
+    def _postprocess_sites(
+        self,
+        sites: list[ZFNOffTargetSite],
+        params: ZFNDesignParameters,
+        annotation: GenomicAnnotationConfig | None = None,
+        top_n_sites: int | None = None,
+    ) -> list[ZFNOffTargetSite]:
+        """Apply dedupe, optional annotation, ranking, and truncation."""
+        deduped = self._dedupe_sites(sites)
+        if annotation and self.annotation_provider:
+            deduped = self.annotation_provider.annotate(deduped, annotation)
+        ranked = rank_sites(deduped, params)
+        return self._truncate_sites(ranked, top_n_sites)
+
+    def _run_shard_searches(
+        self,
+        shard_specs: list[_ShardSpec],
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        workers: int,
+        started_at: float,
+    ) -> list[ZFNOffTargetSite]:
+        """Execute shard searches with either parallel or serial scheduling."""
+        if workers > 1 and len(shard_specs) > 1:
+            return self._run_parallel_shard_searches(
+                shard_specs=shard_specs,
+                chrom_sequences=chrom_sequences,
+                params=params,
+                workers=workers,
+                started_at=started_at,
+            )
+        return self._run_serial_shard_searches(
+            shard_specs=shard_specs,
+            chrom_sequences=chrom_sequences,
+            params=params,
+            started_at=started_at,
         )
-        overlap = max(sharding.overlap_bp, required_overlap)
 
-        shards: list[_ShardSpec] = []
-        for chrom in selected_contigs:
-            chrom_len = len(chrom_sequences[chrom])
-            chunk_size = max(1, sharding.chunk_size_bp)
-
-            chunk_start0 = 0
-            while chunk_start0 < chrom_len:
-                chunk_end0 = min(chrom_len, chunk_start0 + chunk_size)
-                scan_start0 = max(0, chunk_start0 - overlap)
-                scan_end0 = min(chrom_len, chunk_end0 + overlap)
-
-                shards.append(
-                    _ShardSpec(
-                        shard_id=f"{chrom}:{chunk_start0 + 1}-{chunk_end0}",
-                        chrom=chrom,
-                        core_start0=chunk_start0,
-                        core_end0=chunk_end0,
-                        scan_start0=scan_start0,
-                        scan_end0=scan_end0,
+    def _run_parallel_shard_searches(
+        self,
+        shard_specs: list[_ShardSpec],
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        workers: int,
+        started_at: float,
+    ) -> list[ZFNOffTargetSite]:
+        """Execute shard searches using a thread pool."""
+        all_sites: list[ZFNOffTargetSite] = []
+        progress_interval = max(1, len(shard_specs) // 20)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    self._search_shard,
+                    shard=shard,
+                    chrom_sequences=chrom_sequences,
+                    params=params,
+                ): shard.shard_id
+                for shard in shard_specs
+            }
+            completed_count = 0
+            pending = set(futures)
+            heartbeat_interval_s = 60.0
+            last_heartbeat_at = started_at
+            while pending:
+                done, pending = wait(pending, timeout=heartbeat_interval_s, return_when=FIRST_COMPLETED)
+                if not done:
+                    last_heartbeat_at = self._maybe_log_shard_heartbeat(
+                        completed_count=completed_count,
+                        total_shards=len(shard_specs),
+                        pending_count=len(pending),
+                        started_at=started_at,
+                        last_heartbeat_at=last_heartbeat_at,
+                        heartbeat_interval_s=heartbeat_interval_s,
                     )
-                )
-                chunk_start0 = chunk_end0
+                    continue
 
+                for future in done:
+                    all_sites.extend(future.result())
+                    completed_count += 1
+
+                self._log_shard_progress_if_needed(
+                    completed_count=completed_count,
+                    total_shards=len(shard_specs),
+                    progress_interval=progress_interval,
+                    started_at=started_at,
+                )
+        return all_sites
+
+    def _run_serial_shard_searches(
+        self,
+        shard_specs: list[_ShardSpec],
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        started_at: float,
+    ) -> list[ZFNOffTargetSite]:
+        """Execute shard searches serially."""
+        all_sites: list[ZFNOffTargetSite] = []
+        progress_interval = max(1, len(shard_specs) // 20) if shard_specs else 1
+        for completed_count, shard in enumerate(shard_specs, start=1):
+            all_sites.extend(self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params))
+            self._log_shard_progress_if_needed(
+                completed_count=completed_count,
+                total_shards=len(shard_specs),
+                progress_interval=progress_interval,
+                started_at=started_at,
+            )
+        return all_sites
+
+    def _maybe_log_shard_heartbeat(
+        self,
+        completed_count: int,
+        total_shards: int,
+        pending_count: int,
+        started_at: float,
+        last_heartbeat_at: float,
+        heartbeat_interval_s: float,
+    ) -> float:
+        """Emit a heartbeat when no shard has completed recently."""
+        now = time.perf_counter()
+        if now - last_heartbeat_at < heartbeat_interval_s:
+            return last_heartbeat_at
+
+        elapsed = now - started_at
         logger.info(
-            "ZFN sharding enabled: %s shards across %s contigs (chunk=%sbp, overlap=%sbp)",
-            len(shards),
-            len(selected_contigs),
-            sharding.chunk_size_bp,
-            overlap,
+            "ZFN shard progress: %s/%s complete (%.1f%%) after %.1fs; %s shard(s) still running",
+            completed_count,
+            total_shards,
+            (completed_count * 100.0) / max(1, total_shards),
+            elapsed,
+            pending_count,
         )
-        return shards
+        return now
+
+    def _log_shard_progress_if_needed(
+        self,
+        completed_count: int,
+        total_shards: int,
+        progress_interval: int,
+        started_at: float,
+    ) -> None:
+        """Emit normal progress logs for shard completion milestones."""
+        if completed_count != total_shards and completed_count % progress_interval != 0:
+            return
+
+        elapsed = time.perf_counter() - started_at
+        logger.info(
+            "ZFN shard progress: %s/%s complete (%.1f%%) after %.1fs",
+            completed_count,
+            total_shards,
+            (completed_count * 100.0) / max(1, total_shards),
+            elapsed,
+        )
 
     def _resolve_target_contigs(self, chrom_sequences: dict[str, str], requested: list[str]) -> list[str]:
         """Resolve requested chromosome filters against loaded FASTA contigs."""
-        if not requested:
-            return list(chrom_sequences.keys())
-
-        tokens = [token.strip() for token in requested if token.strip()]
-        if not tokens:
-            return list(chrom_sequences.keys())
-
-        resolved: list[str] = []
-        for chrom in chrom_sequences:
-            normalized = self._normalize_chrom(chrom)
-            if any(self._chrom_matches_token(chrom, normalized, token) for token in tokens):
-                resolved.append(chrom)
-        return resolved
+        return resolve_target_contigs(list(chrom_sequences.keys()), requested)
 
     def _chrom_matches_token(self, chrom: str, normalized: str, token: str) -> bool:
         """Return whether a contig matches one filter token."""
-        raw_token = token.strip().lower()
-        normalized_token = self._normalize_chrom(token)
-        result = False
-
-        if raw_token in {"*", "all"}:
-            result = True
-        elif raw_token in {"autosomes", "autosome"}:
-            result = normalized.isdigit() and 1 <= int(normalized) <= 22
-        elif raw_token in {"sex", "gonosomes"}:
-            result = normalized in {"x", "y"}
-        elif raw_token in {"mito", "mitochondrial", "mtdna"}:
-            result = normalized in {"m", "mt"}
-        elif "-" in normalized_token:
-            start, end = normalized_token.split("-", 1)
-            if start.isdigit() and end.isdigit() and normalized.isdigit():
-                lower = int(start)
-                upper = int(end)
-                if lower > upper:
-                    lower, upper = upper, lower
-                value = int(normalized)
-                result = lower <= value <= upper
-        elif any(ch in token for ch in "*?[]"):
-            chrom_lc = chrom.lower()
-            result = fnmatch.fnmatch(chrom_lc, raw_token) or fnmatch.fnmatch(normalized, normalized_token)
-        else:
-            result = normalized == normalized_token or chrom.lower() == raw_token
-
-        return result
+        del normalized
+        return _chrom_matches_filter(chrom, token)
 
     def _normalize_chrom(self, chrom: str) -> str:
         """Normalize chromosome labels for robust alias matching (chr3 == 3)."""
-        token = chrom.strip().lower()
-        if token.startswith("chr"):
-            token = token[3:]
-        return token
+        return _normalize_chrom_token(chrom)
 
     def _search_shard(
         self,

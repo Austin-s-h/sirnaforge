@@ -12,6 +12,7 @@ from sirnaforge.models.zfn import (
     ZFNMutationConstraints,
     ZFNMutationType,
     ZFNOverallMutationConstraint,
+    ZFNShardingConfig,
     ZFNSubfingerMutationConstraint,
 )
 
@@ -48,6 +49,17 @@ def test_parse_zfn_mutation_constraints_valid() -> None:
         mutation_types=[ZFNMutationType.SUBSTITUTION, ZFNMutationType.TRANSITION],
     )
     assert constraints[1].mutation_types == [ZFNMutationType.DELETION]
+
+
+def test_zfn_sharding_model_defaults_use_internal_parallel_profile() -> None:
+    """Typed ZFN sharding defaults should request the internal two-worker profile."""
+    sharding = ZFNShardingConfig()
+
+    assert sharding.enabled is True
+    assert sharding.chunk_size_bp == 12_000_000
+    assert sharding.overlap_bp == 50
+    assert sharding.chromosomes == []
+    assert sharding.max_workers == 2
 
 
 def test_parse_zfn_mutation_constraints_invalid_format() -> None:

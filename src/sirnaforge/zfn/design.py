@@ -96,6 +96,10 @@ class ZFNDesigner:
             top_offtargets=sorted(sites, key=lambda s: s.score, reverse=True)[: params.report_n_sites],
         )
 
+    def build_candidate(self, params: ZFNDesignParameters, sites: list[ZFNOffTargetSite]) -> ZFNCandidate:
+        """Public wrapper for candidate-summary construction."""
+        return self._build_candidate(params, sites)
+
     def _apply_filters(
         self,
         filters: ZFNOffTargetFilterCriteria,
@@ -247,3 +251,7 @@ class ZFNDesigner:
             "sirnaforge": __version__,
             "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         }
+
+    def tool_versions(self) -> dict[str, str]:
+        """Public wrapper for tool version metadata."""
+        return self._tool_versions()

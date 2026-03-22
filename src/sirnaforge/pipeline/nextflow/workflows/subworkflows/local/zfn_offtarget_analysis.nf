@@ -51,6 +51,8 @@ workflow ZFN_OFFTARGET_ANALYSIS {
             tuple(
                 row.shard_id,
                 row.chrom,
+                row.core_start_1 as int,
+                row.core_end_1 as int,
                 row.scan_start_1 as int,
                 row.scan_end_1 as int,
                 row.max_mismatches as int
