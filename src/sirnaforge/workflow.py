@@ -442,10 +442,16 @@ class SiRNAWorkflow:
 
             # Candidate summary JSON
             candidate_json = zfn_output / "zfn_candidate_summary.json"
+            candidate_payloads: list[dict[str, Any]] = []
+            for cand in zfn_result.candidates:
+                payload = cand.model_dump(mode="json")
+                payload["on_target_result"] = cand.component_scores.get("on_target_quality")
+                candidate_payloads.append(payload)
+
             candidate_data: dict[str, Any] = {
                 "schema_version": "zfn_candidate_summary.v1",
                 "search_contract": zfn_params.canonical_search_contract().model_dump(mode="json"),
-                "candidates": [cand.model_dump(mode="json") for cand in zfn_result.candidates],
+                "candidates": candidate_payloads,
                 "summary": zfn_result.get_summary(),
             }
             candidate_json.write_text(json.dumps(candidate_data, indent=2, default=str))
@@ -491,6 +497,7 @@ class SiRNAWorkflow:
                 summary["predicted_sites_total"] = cand.predicted_sites_total
                 summary["predicted_sites_exonic"] = cand.predicted_sites_exonic
                 summary["passes_filters"] = cand.passes_offtarget_filters
+                summary["on_target_result"] = cand.component_scores.get("on_target_quality")
 
             if self.config.write_json_summary:
                 log_dir = self.config.output_dir / "logs"

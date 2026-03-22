@@ -114,11 +114,21 @@ DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
 
 
-def _autotune_zfn_sharding(cores_budget: int | None = None) -> ZFNShardingConfig:
-    """Return internal sharding defaults tuned for practical contig sets and host CPU."""
+def _autotune_zfn_sharding(
+    cores_budget: int | None = None,
+    search_backend: ZFNSearchBackend = ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+) -> ZFNShardingConfig:
+    """Return internal sharding defaults tuned by backend and host CPU budget."""
     cpu_count = cores_budget if cores_budget is not None else (os.cpu_count() or 1)
-    max_workers = min(8, max(1, cpu_count))
-    chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
+
+    if search_backend == ZFNSearchBackend.FM_INDEX:
+        # FM-index can over-fragment and over-allocate quickly on full-primary genomes.
+        max_workers = min(4, max(1, cpu_count // 2 if cpu_count >= 4 else cpu_count))
+        chunk_size_bp = 16_000_000 if cpu_count >= 8 else 20_000_000
+    else:
+        max_workers = min(8, max(1, cpu_count))
+        chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
+
     return ZFNShardingConfig(
         enabled=True,
         chunk_size_bp=chunk_size_bp,
@@ -416,7 +426,7 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
         top_n_sites=zfn_top_n_sites or DEFAULT_ZFN_TOP_N_SITES,
         report_n_sites=zfn_report_n_sites or DEFAULT_ZFN_REPORT_N_SITES,
         mutation_constraints=mutation_constraints,
-        sharding=_autotune_zfn_sharding(workflow_cores),
+        sharding=_autotune_zfn_sharding(workflow_cores, zfn_search_backend),
     )
 
     return zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints

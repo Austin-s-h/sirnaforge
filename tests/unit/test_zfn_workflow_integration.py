@@ -421,3 +421,12 @@ async def test_zfn_workflow_outputs_include_contract_and_provenance(tmp_path: Pa
     payload = json.loads(candidate_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "zfn_candidate_summary.v1"
     assert payload["search_contract"]["allowed_spacer_lengths"] == [5, 6]
+    assert "on_target_result" in payload["candidates"][0]
+    assert (
+        payload["candidates"][0]["on_target_result"]
+        == payload["candidates"][0]["component_scores"]["on_target_quality"]
+    )
+
+    workflow_summary_path = cfg.output_dir / "logs" / "workflow_summary.json"
+    workflow_summary = json.loads(workflow_summary_path.read_text(encoding="utf-8"))
+    assert "on_target_result" in workflow_summary

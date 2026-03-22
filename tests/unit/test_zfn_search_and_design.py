@@ -903,6 +903,35 @@ def test_resolve_annotation_path_downloads_reference_url(monkeypatch: pytest.Mon
     assert annotation.annotation_path == str(downloaded)
 
 
+def test_resolve_annotation_path_falls_back_when_explicit_cache_dir_unwritable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unwritable explicit annotation cache_dir should degrade via AnnotationManager init."""
+    downloaded = tmp_path / "fallback_downloaded.gtf.gz"
+    downloaded.write_text("# gtf\n", encoding="utf-8")
+
+    def _fake_get_custom_annotation(
+        self: AnnotationManager,
+        annotation_path_or_url: str | Path,
+        cache_name: str | None = None,
+    ) -> Path:
+        del self, cache_name
+        assert str(annotation_path_or_url).startswith("https://")
+        return downloaded
+
+    monkeypatch.setattr(AnnotationManager, "get_custom_annotation", _fake_get_custom_annotation)
+    monkeypatch.setattr(AnnotationManager, "_cache_dir_is_writable", staticmethod(lambda _: False))
+
+    annotation = GenomicAnnotationConfig(
+        annotation_reference="https://example.org/annotations.gtf.gz",
+        cache_dir="/cache",
+    )
+    resolved = ExhaustiveZFNOffTargetSearcher()._resolve_annotation_path(annotation)
+
+    assert resolved == downloaded
+    assert annotation.annotation_path == str(downloaded)
+
+
 def test_load_fasta_raises_on_missing_and_empty(tmp_path: Path) -> None:
     """FASTA loader should fail on missing file and empty fasta content."""
     searcher = ExhaustiveZFNOffTargetSearcher()

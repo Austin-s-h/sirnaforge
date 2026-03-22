@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +36,14 @@ class AnnotationManager(TranscriptomeManager):
             cache_dir: Optional cache directory override
             cache_ttl_days: Cache TTL in days
         """
+        requested_cache_dir = Path(cache_dir).expanduser() if cache_dir is not None else None
+        if requested_cache_dir is not None and not self._cache_dir_is_writable(requested_cache_dir):
+            logger.warning(
+                "Annotation cache_dir '%s' is not writable; falling back to default cache resolution",
+                requested_cache_dir,
+            )
+            cache_dir = None
+
         super().__init__(
             cache_dir=cache_dir,
             cache_ttl_days=cache_ttl_days,
@@ -43,6 +52,18 @@ class AnnotationManager(TranscriptomeManager):
             sources={},
             source_label=self.SOURCE_LABEL,
         )
+
+    @staticmethod
+    def _cache_dir_is_writable(cache_dir: Path) -> bool:
+        """Return whether a cache directory can be created and written to."""
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            probe = cache_dir / f".sirnaforge_write_probe_{uuid.uuid4().hex}"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
 
     def get_custom_annotation(self, annotation_path_or_url: str | Path, cache_name: str | None = None) -> Path | None:
         """Resolve and cache a user-supplied annotation resource.
@@ -77,15 +98,24 @@ class AnnotationManager(TranscriptomeManager):
             description=f"Custom annotation from {url}",
         )
         cache_key = self._cache_key_for_remote_uri(url) or source.cache_key()
-        cache_file = (
-            Path(self.metadata[cache_key].file_path)
-            if cache_key in self.metadata
-            else self.cache_dir / f"{cache_key}{suffix}"
-        )
+        default_cache_file = self.cache_dir / f"{cache_key}{suffix}"
+        cache_file = default_cache_file
 
-        if self._is_cache_valid(cache_key):
-            logger.info("✅ Using cached custom annotation: %s", cache_file)
-            return cache_file
+        if cache_key in self.metadata:
+            metadata_cache_file = Path(self.metadata[cache_key].file_path)
+            if self._is_cache_valid(cache_key):
+                logger.info("✅ Using cached custom annotation: %s", metadata_cache_file)
+                return metadata_cache_file
+
+            # Stale metadata from an old/unwritable cache root should be re-homed to current cache_dir.
+            if self._cache_dir_is_writable(metadata_cache_file.parent):
+                cache_file = metadata_cache_file
+            else:
+                logger.warning(
+                    "Annotation metadata path '%s' is not writable; re-homing download to '%s'",
+                    metadata_cache_file,
+                    default_cache_file,
+                )
 
         if self._recover_remote_cache_entry(source=source, cache_key=cache_key, cache_file=cache_file):
             logger.info("✅ Using recovered cached custom annotation: %s", cache_file)

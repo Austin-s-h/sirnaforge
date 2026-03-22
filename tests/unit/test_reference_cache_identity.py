@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sirnaforge.data.annotation_manager import AnnotationManager
+from sirnaforge.data.reference_manager import CacheMetadata
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager, TranscriptomeSource
 from sirnaforge.utils.cache_utils import resolve_cache_subdir
 
@@ -163,6 +165,52 @@ def test_remote_custom_annotation_recovers_from_existing_file_without_metadata(
 
     assert result == cache_file
     assert url in manager.uri_index
+
+
+def test_annotation_manager_init_falls_back_from_unwritable_cache_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AnnotationManager should auto-fallback when explicit cache_dir is not writable."""
+    monkeypatch.setattr(AnnotationManager, "_cache_dir_is_writable", staticmethod(lambda _: False))
+
+    manager = AnnotationManager(cache_dir=Path("/cache"))
+
+    assert manager.cache_dir != Path("/cache")
+    assert manager.cache_dir.exists()
+
+
+def test_annotation_manager_rehomes_stale_unwritable_metadata_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid metadata file paths should be re-homed to the active cache directory."""
+    manager = AnnotationManager(cache_dir=tmp_path)
+    url = "https://example.org/resources/annotation.gtf.gz"
+    source = TranscriptomeSource(name="annotation", url=url, species="custom", format="gtf", compressed=False)
+    cache_key = source.cache_key()
+    manager.metadata[cache_key] = CacheMetadata(
+        source=source,
+        downloaded_at=datetime.now().isoformat(),
+        file_size=1,
+        checksum="deadbeef",
+        file_path="/cache",
+    )
+
+    captured_destinations: list[Path] = []
+
+    def _fake_download_to_path(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        captured_destinations.append(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text('chr1\tsrc\tgene\t1\t10\t.\t+\t.\tgene_id "g1";\n', encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(manager, "_download_to_path", _fake_download_to_path)
+    monkeypatch.setattr(manager, "_cache_dir_is_writable", staticmethod(lambda p: str(p) != "/"))
+
+    result = manager.get_custom_annotation(url)
+
+    assert result is not None
+    assert result.parent == manager.cache_dir
+    assert captured_destinations[0].parent == manager.cache_dir
 
 
 def test_resolve_cache_subdir_warns_on_mixed_roots(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
