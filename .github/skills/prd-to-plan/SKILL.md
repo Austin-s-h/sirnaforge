@@ -1,84 +1,107 @@
 ---
-name: ubiquitous-language
-description: Extract a DDD-style ubiquitous language glossary from the current conversation, flagging ambiguities and proposing canonical terms. Saves to UBIQUITOUS_LANGUAGE.md. Use when user wants to define domain terms, build a glossary, harden terminology, create a ubiquitous language, or mentions "domain model" or "DDD".
+name: prd-to-plan
+description: Turn a PRD into a multi-phase implementation plan using tracer-bullet vertical slices, saved as a local Markdown file in ./plans/. Use when user wants to break down a PRD, create an implementation plan, plan phases from a PRD, or mentions "tracer bullets".
 ---
 
-# Ubiquitous Language
+# PRD to Plan
 
-Extract and formalize domain terminology from the current conversation into a consistent glossary, saved to a local file.
+Break a PRD into a phased implementation plan using vertical slices (tracer bullets). Output is a Markdown file in `./plans/`.
 
 ## Process
 
-1. **Scan the conversation** for domain-relevant nouns, verbs, and concepts
-2. **Identify problems**:
-   - Same word used for different concepts (ambiguity)
-   - Different words used for the same concept (synonyms)
-   - Vague or overloaded terms
-3. **Propose a canonical glossary** with opinionated term choices
-4. **Write to `UBIQUITOUS_LANGUAGE.md`** in the working directory using the format below
-5. **Output a summary** inline in the conversation
+### 1. Confirm the PRD is in context
 
-## Output Format
+The PRD should already be in the conversation. If it isn't, ask the user to paste it or point you to the file.
 
-Write a `UBIQUITOUS_LANGUAGE.md` file with this structure:
+### 2. Explore the codebase
 
-```md
-# Ubiquitous Language
+If you have not already explored the codebase, do so to understand the current architecture, existing patterns, and integration layers.
 
-## Order lifecycle
+### 3. Identify durable architectural decisions
 
-| Term | Definition | Aliases to avoid |
-|------|-----------|-----------------|
-| **Order** | A customer's request to purchase one or more items | Purchase, transaction |
-| **Invoice** | A request for payment sent to a customer after delivery | Bill, payment request |
+Before slicing, identify high-level decisions that are unlikely to change throughout implementation:
 
-## People
+- Route structures / URL patterns
+- Database schema shape
+- Key data models
+- Authentication / authorization approach
+- Third-party service boundaries
 
-| Term | Definition | Aliases to avoid |
-|------|-----------|-----------------|
-| **Customer** | A person or organization that places orders | Client, buyer, account |
-| **User** | An authentication identity in the system | Login, account |
+These go in the plan header so every phase can reference them.
 
-## Relationships
+### 4. Draft vertical slices
 
-- An **Invoice** belongs to exactly one **Customer**
-- An **Order** produces one or more **Invoices**
+Break the PRD into **tracer bullet** phases. Each phase is a thin vertical slice that cuts through ALL integration layers end-to-end, NOT a horizontal slice of one layer.
 
-## Example dialogue
+<vertical-slice-rules>
+- Each slice delivers a narrow but COMPLETE path through every layer (schema, API, UI, tests)
+- A completed slice is demoable or verifiable on its own
+- Prefer many thin slices over few thick ones
+- Do NOT include specific file names, function names, or implementation details that are likely to change as later phases are built
+- DO include durable decisions: route paths, schema shapes, data model names
+</vertical-slice-rules>
 
-> **Dev:** "When a **Customer** places an **Order**, do we create the **Invoice** immediately?"
-> **Domain expert:** "No — an **Invoice** is only generated once a **Fulfillment** is confirmed. A single **Order** can produce multiple **Invoices** if items ship in separate **Shipments**."
-> **Dev:** "So if a **Shipment** is cancelled before dispatch, no **Invoice** exists for it?"
-> **Domain expert:** "Exactly. The **Invoice** lifecycle is tied to the **Fulfillment**, not the **Order**."
+### 5. Quiz the user
 
-## Flagged ambiguities
+Present the proposed breakdown as a numbered list. For each phase show:
 
-- "account" was used to mean both **Customer** and **User** — these are distinct concepts: a **Customer** places orders, while a **User** is an authentication identity that may or may not represent a **Customer**.
-```
+- **Title**: short descriptive name
+- **User stories covered**: which user stories from the PRD this addresses
 
-## Rules
+Ask the user:
 
-- **Be opinionated.** When multiple words exist for the same concept, pick the best one and list the others as aliases to avoid.
-- **Flag conflicts explicitly.** If a term is used ambiguously in the conversation, call it out in the "Flagged ambiguities" section with a clear recommendation.
-- **Keep definitions tight.** One sentence max. Define what it IS, not what it does.
-- **Show relationships.** Use bold term names and express cardinality where obvious.
-- **Only include domain terms.** Skip generic programming concepts (array, function, endpoint) unless they have domain-specific meaning.
-- **Group terms into multiple tables** when natural clusters emerge (e.g. by subdomain, lifecycle, or actor). Each group gets its own heading and table. If all terms belong to a single cohesive domain, one table is fine — don't force groupings.
-- **Write an example dialogue.** A short conversation (3-5 exchanges) between a dev and a domain expert that demonstrates how the terms interact naturally. The dialogue should clarify boundaries between related concepts and show terms being used precisely.
+- Does the granularity feel right? (too coarse / too fine)
+- Should any phases be merged or split further?
 
-## Re-running
+Iterate until the user approves the breakdown.
 
-When invoked again in the same conversation:
+### 6. Write the plan file
 
-1. Read the existing `UBIQUITOUS_LANGUAGE.md`
-2. Incorporate any new terms from subsequent discussion
-3. Update definitions if understanding has evolved
-4. Mark changed entries with "(updated)" and new entries with "(new)"
-5. Re-flag any new ambiguities
-6. Rewrite the example dialogue to incorporate new terms
+Create `./plans/` if it doesn't exist. Write the plan as a Markdown file named after the feature (e.g. `./plans/user-onboarding.md`). Use the template below.
 
-## Post-output instruction
+<plan-template>
+# Plan: <Feature Name>
 
-After writing the file, state:
+> Source PRD: <brief identifier or link>
 
-> I've written/updated `UBIQUITOUS_LANGUAGE.md`. From this point forward I will use these terms consistently. If I drift from this language or you notice a term that should be added, let me know.
+## Architectural decisions
+
+Durable decisions that apply across all phases:
+
+- **Routes**: ...
+- **Schema**: ...
+- **Key models**: ...
+- (add/remove sections as appropriate)
+
+---
+
+## Phase 1: <Title>
+
+**User stories**: <list from PRD>
+
+### What to build
+
+A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
+
+### Acceptance criteria
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+- [ ] Criterion 3
+
+---
+
+## Phase 2: <Title>
+
+**User stories**: <list from PRD>
+
+### What to build
+
+...
+
+### Acceptance criteria
+
+- [ ] ...
+
+<!-- Repeat for each phase -->
+</plan-template>

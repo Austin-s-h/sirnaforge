@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import fnmatch
+import importlib
 import json
+import pickle
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from threading import Lock
+from typing import Any, Protocol, TypedDict, cast
 
 from sirnaforge.data.annotation_manager import AnnotationManager
 from sirnaforge.data.genome_manager import GenomeManager
@@ -21,7 +24,9 @@ from sirnaforge.models.zfn import (
     ZFNAlgorithm,
     ZFNDesignParameters,
     ZFNOffTargetSite,
+    ZFNSearchBackend,
 )
+from sirnaforge.utils.cache_utils import stable_cache_key
 from sirnaforge.utils.fasta import load_fasta_sequences
 from sirnaforge.utils.logging_utils import get_logger
 
@@ -88,6 +93,775 @@ class _WindowMatch(TypedDict):
     seed_mismatches: int
     mismatch_positions: list[int]
     aligned: str
+
+
+class _HalfSiteScanEngine(Protocol):
+    """Internal backend contract for half-site scan engines."""
+
+    backend: ZFNSearchBackend
+
+    def scan_half_site(
+        self,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None = None,
+        region_start0: int | None = None,
+        region_end0: int | None = None,
+    ) -> list[_HalfSiteHit]:
+        """Return verified half-site hits for one query across the requested region."""
+        ...
+
+
+class _SearchBackendUnavailableError(RuntimeError):
+    """Raised when a configured search backend dependency is unavailable."""
+
+
+@dataclass(frozen=True, slots=True)
+class _MultiFMIndexState:
+    """Loaded multi-document FM index plus contig-to-doc mapping."""
+
+    index: Any
+    doc_ids_by_chrom: dict[str, int]
+
+
+class _SearchIndexManifest(TypedDict):
+    """Persisted search-space index manifest payload."""
+
+    format_version: int
+    backend: str
+    backend_class: str
+    genome_fasta: str
+    artifact: str
+    contig_names: list[str]
+    contig_lengths: dict[str, int]
+
+
+_SEARCH_INDEX_MANIFEST = "manifest.json"
+_FM_INDEX_ARTIFACT = "multifm_index.pkl"
+_SEARCH_INDEX_FORMAT_VERSION = 1
+
+
+def _load_fm_index_module() -> Any:
+    """Import the fm_index package with consistent backend error handling."""
+    try:
+        return importlib.import_module("fm_index")
+    except ImportError as exc:
+        raise _SearchBackendUnavailableError(
+            "ZFN search backend 'fm_index' is unavailable because the installed environment is missing "
+            "the required 'fm-index' package"
+        ) from exc
+
+
+def _resolve_search_index_bundle(index_path: str | Path) -> Path:
+    """Resolve a search-space index bundle path to an absolute directory."""
+    bundle_dir = Path(index_path).expanduser().resolve()
+    if not bundle_dir.exists():
+        raise ValueError(f"Configured search_space_index does not exist: {bundle_dir}")
+    if not bundle_dir.is_dir():
+        raise ValueError(f"Configured search_space_index must be a directory bundle: {bundle_dir}")
+    return bundle_dir
+
+
+def _load_search_index_manifest(bundle_dir: Path) -> _SearchIndexManifest:
+    """Load and parse one persisted search-index manifest."""
+    manifest_path = bundle_dir / _SEARCH_INDEX_MANIFEST
+    if not manifest_path.exists():
+        raise ValueError(f"search_space_index bundle is missing {_SEARCH_INDEX_MANIFEST}: {bundle_dir}")
+
+    with manifest_path.open(encoding="utf-8") as handle:
+        return cast(_SearchIndexManifest, json.load(handle))
+
+
+def _chrom_sequence_lengths(chrom_sequences: dict[str, str]) -> dict[str, int]:
+    """Return contig lengths for one loaded FASTA dictionary."""
+    return {chrom: len(seq) for chrom, seq in chrom_sequences.items()}
+
+
+def _resolve_cached_genome_fasta(genome_fasta: Path) -> Path:
+    """Resolve one genome FASTA through the shared genome cache pipeline."""
+    manager = GenomeManager()
+    cached = manager.get_custom_genome(genome_fasta, build_index=False)
+    if cached is None or "fasta" not in cached:
+        raise ValueError(f"Unable to resolve genome FASTA for search-index build: {genome_fasta}")
+    return Path(cached["fasta"])
+
+
+def _default_search_index_bundle_dir(genome_fasta: Path, backend: ZFNSearchBackend) -> Path:
+    """Return the canonical cache-backed bundle directory for one backend and cached FASTA."""
+    bundle_key = stable_cache_key(
+        {
+            "backend": backend.value,
+            "fasta": str(genome_fasta),
+            "format_version": _SEARCH_INDEX_FORMAT_VERSION,
+        }
+    )
+    return genome_fasta.parent / f"{bundle_key}_{backend.value}_index"
+
+
+def build_zfn_search_index(
+    *,
+    backend: ZFNSearchBackend,
+    genome_fasta: Path,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Build a persisted search-space index bundle for indexed ZFN backends."""
+    resolved_fasta = _resolve_cached_genome_fasta(genome_fasta)
+    output_dir = (
+        _default_search_index_bundle_dir(resolved_fasta, backend)
+        if output_dir is None
+        else output_dir.expanduser().resolve()
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    chrom_sequences = load_fasta_sequences(resolved_fasta)
+    if not chrom_sequences:
+        raise ValueError(f"No contigs found in genome FASTA: {resolved_fasta}")
+
+    if backend != ZFNSearchBackend.FM_INDEX:
+        raise ValueError(
+            "Persisted search-space indexes are currently implemented only for the 'fm_index' backend; "
+            "pyahocorasick remains query-derived and exhaustive_python is scan-only"
+        )
+
+    fm_index = _load_fm_index_module()
+    contig_names = list(chrom_sequences.keys())
+    multi_index = fm_index.MultiFMIndex([chrom_sequences[name] for name in contig_names])
+    artifact_path = output_dir / _FM_INDEX_ARTIFACT
+    with artifact_path.open("wb") as handle:
+        pickle.dump(multi_index, handle)
+
+    manifest: _SearchIndexManifest = {
+        "format_version": _SEARCH_INDEX_FORMAT_VERSION,
+        "backend": backend.value,
+        "backend_class": "MultiFMIndex",
+        "genome_fasta": str(resolved_fasta),
+        "artifact": _FM_INDEX_ARTIFACT,
+        "contig_names": contig_names,
+        "contig_lengths": _chrom_sequence_lengths(chrom_sequences),
+    }
+    with (output_dir / _SEARCH_INDEX_MANIFEST).open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+
+    return {
+        "backend": backend.value,
+        "bundle_dir": str(output_dir),
+        "artifact": str(artifact_path),
+        "genome_fasta": str(resolved_fasta),
+        "contigs": len(contig_names),
+        "bases": sum(len(seq) for seq in chrom_sequences.values()),
+    }
+
+
+def _reverse_complement_seq(seq: str) -> str:
+    """Return reverse complement for one uppercase DNA/IUPAC sequence."""
+    return seq.translate(_RC_TRANS)[::-1]
+
+
+def _seed_positions_for(kind: str, seq_len: int, seed_len: int | None) -> set[int]:
+    """Return seed positions nearest FokI according to half-site side."""
+    if seed_len is None or seed_len <= 0:
+        return set()
+    effective = min(seed_len, seq_len)
+
+    if kind == "L":
+        return set(range(seq_len - effective, seq_len))
+
+    return set(range(0, effective))
+
+
+def _base_match_for(query_base: str, observed_base: str, mode: IUPACMode) -> bool:
+    """Return whether one query base matches one observed base under configured IUPAC mode."""
+    query_base = query_base.upper()
+    observed_base = observed_base.upper()
+
+    if mode == IUPACMode.NONE:
+        return query_base == observed_base
+
+    allowed = IUPAC_MAP.get(query_base, {query_base})
+    return observed_base in allowed
+
+
+def _evaluate_window_match(
+    *,
+    kind: str,
+    query: str,
+    observed: str,
+    mode: IUPACMode,
+    seed_len: int | None,
+    max_mm: int,
+    max_seed_mm: int | None,
+    expanded_query: str | None = None,
+    seed_positions: set[int] | None = None,
+) -> _WindowMatch | None:
+    """Evaluate one window against one query under IUPAC and seed constraints."""
+    query_for_match = expanded_query if (expanded_query and mode == IUPACMode.EXPAND_IUPAC) else query
+
+    mismatches = 0
+    seed_mismatches = 0
+    mismatch_positions: list[int] = []
+    aligned_chars: list[str] = []
+
+    active_seed_positions = seed_positions
+    if active_seed_positions is None:
+        active_seed_positions = _seed_positions_for(kind, len(query_for_match), seed_len)
+
+    for idx, (q, o) in enumerate(zip(query_for_match, observed, strict=False)):
+        is_match = _base_match_for(q, o, mode)
+        if is_match:
+            aligned_chars.append(o)
+        else:
+            mismatches += 1
+            mismatch_positions.append(idx)
+            aligned_chars.append(o.lower())
+            if idx in active_seed_positions:
+                seed_mismatches += 1
+            if mismatches > max_mm:
+                return None
+
+    if max_seed_mm is not None and seed_len is not None and seed_mismatches > max_seed_mm:
+        return None
+
+    return {
+        "mismatches": mismatches,
+        "seed_mismatches": seed_mismatches,
+        "mismatch_positions": mismatch_positions,
+        "aligned": "".join(aligned_chars),
+    }
+
+
+class _BaseHalfSiteScanEngine:
+    """Shared helpers for concrete half-site scan backends."""
+
+    _OBSERVED_ALPHABET = tuple(IUPAC_MAP.keys())
+
+    def __init__(self, owner: ExhaustiveZFNOffTargetSearcher) -> None:
+        self._owner = owner
+        self._pattern_cache: dict[tuple[Any, ...], tuple[str, ...]] = {}
+        self._pattern_lock = Lock()
+
+    def _pattern_cache_key(self, kind: str, query: str, params: ZFNDesignParameters) -> tuple[Any, ...]:
+        constraints = params.half_site_constraints
+        return (
+            kind,
+            query,
+            constraints.iupac_mode,
+            constraints.max_mismatches,
+            constraints.seed_len_from_fokI,
+            constraints.seed_max_mismatches,
+        )
+
+    def _candidate_patterns(self, kind: str, query: str, params: ZFNDesignParameters) -> tuple[str, ...]:
+        key = self._pattern_cache_key(kind, query, params)
+        cached = self._pattern_cache.get(key)
+        if cached is not None:
+            return cached
+
+        with self._pattern_lock:
+            cached = self._pattern_cache.get(key)
+            if cached is not None:
+                return cached
+
+            constraints = params.half_site_constraints
+            seed_positions = _seed_positions_for(kind, len(query), constraints.seed_len_from_fokI)
+            max_seed_mm = constraints.seed_max_mismatches
+            mode = constraints.iupac_mode
+            results: set[str] = set()
+            builder: list[str] = []
+
+            def walk(idx: int, mismatches: int, seed_mismatches: int) -> None:
+                if idx == len(query):
+                    results.add("".join(builder))
+                    return
+
+                allowed = {query[idx]} if mode == IUPACMode.NONE else IUPAC_MAP.get(query[idx], {query[idx]})
+                in_seed = idx in seed_positions
+                for base in self._OBSERVED_ALPHABET:
+                    delta = 0 if base in allowed else 1
+                    next_mismatches = mismatches + delta
+                    if next_mismatches > constraints.max_mismatches:
+                        continue
+
+                    next_seed_mismatches = seed_mismatches + (delta if in_seed else 0)
+                    if (
+                        max_seed_mm is not None
+                        and constraints.seed_len_from_fokI is not None
+                        and next_seed_mismatches > max_seed_mm
+                    ):
+                        continue
+
+                    builder.append(base)
+                    walk(idx + 1, next_mismatches, next_seed_mismatches)
+                    builder.pop()
+
+            walk(0, 0, 0)
+            materialized = tuple(sorted(results))
+            self._pattern_cache[key] = materialized
+            return materialized
+
+    def _build_verified_hit(
+        self,
+        *,
+        kind: str,
+        chrom: str,
+        start0: int,
+        strand: Strand,
+        query: str,
+        observed_oriented: str,
+        params: ZFNDesignParameters,
+    ) -> _HalfSiteHit | None:
+        match = _evaluate_window_match(
+            kind=kind,
+            query=query,
+            observed=observed_oriented,
+            mode=params.half_site_constraints.iupac_mode,
+            seed_len=params.half_site_constraints.seed_len_from_fokI,
+            max_mm=params.half_site_constraints.max_mismatches,
+            max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+        )
+        if match is None:
+            return None
+
+        return _HalfSiteHit(
+            kind=kind,
+            chrom=chrom,
+            start0=start0,
+            end0=start0 + len(query),
+            strand=strand,
+            query=query,
+            observed=observed_oriented,
+            mismatches=match["mismatches"],
+            seed_mismatches=match["seed_mismatches"],
+            mismatch_positions=match["mismatch_positions"],
+            aligned=match["aligned"],
+        )
+
+
+class _ExhaustivePythonHalfSiteScanEngine(_BaseHalfSiteScanEngine):
+    """Baseline exhaustive Python sliding-window scan engine."""
+
+    backend = ZFNSearchBackend.EXHAUSTIVE_PYTHON
+
+    def scan_half_site(
+        self,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None = None,
+        region_start0: int | None = None,
+        region_end0: int | None = None,
+    ) -> list[_HalfSiteHit]:
+        query = query.upper()
+        qlen = len(query)
+        seed_positions = _seed_positions_for(kind, qlen, params.half_site_constraints.seed_len_from_fokI)
+
+        hits: list[_HalfSiteHit] = []
+        for chrom, chrom_seq in chrom_sequences.items():
+            if target_chrom is not None and chrom != target_chrom:
+                continue
+            if len(chrom_seq) < qlen:
+                continue
+
+            scan_start0 = 0 if region_start0 is None else max(0, region_start0)
+            scan_end0 = len(chrom_seq) if region_end0 is None else min(len(chrom_seq), region_end0)
+            if scan_end0 - scan_start0 < qlen:
+                continue
+
+            stride = params.half_site_constraints.window_stride
+            for i in range(scan_start0, scan_end0 - qlen + 1, stride):
+                window_plus = chrom_seq[i : i + qlen]
+
+                plus_match = _evaluate_window_match(
+                    kind=kind,
+                    query=query,
+                    observed=window_plus,
+                    mode=params.half_site_constraints.iupac_mode,
+                    seed_len=params.half_site_constraints.seed_len_from_fokI,
+                    max_mm=params.half_site_constraints.max_mismatches,
+                    max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+                    seed_positions=seed_positions,
+                )
+                if plus_match is not None:
+                    hits.append(
+                        _HalfSiteHit(
+                            kind=kind,
+                            chrom=chrom,
+                            start0=i,
+                            end0=i + qlen,
+                            strand=Strand.PLUS,
+                            query=query,
+                            observed=window_plus,
+                            mismatches=plus_match["mismatches"],
+                            seed_mismatches=plus_match["seed_mismatches"],
+                            mismatch_positions=plus_match["mismatch_positions"],
+                            aligned=plus_match["aligned"],
+                        )
+                    )
+
+                window_minus_oriented = _reverse_complement_seq(window_plus)
+                minus_match = _evaluate_window_match(
+                    kind=kind,
+                    query=query,
+                    observed=window_minus_oriented,
+                    mode=params.half_site_constraints.iupac_mode,
+                    seed_len=params.half_site_constraints.seed_len_from_fokI,
+                    max_mm=params.half_site_constraints.max_mismatches,
+                    max_seed_mm=params.half_site_constraints.seed_max_mismatches,
+                    seed_positions=seed_positions,
+                )
+                if minus_match is not None:
+                    hits.append(
+                        _HalfSiteHit(
+                            kind=kind,
+                            chrom=chrom,
+                            start0=i,
+                            end0=i + qlen,
+                            strand=Strand.MINUS,
+                            query=query,
+                            observed=window_minus_oriented,
+                            mismatches=minus_match["mismatches"],
+                            seed_mismatches=minus_match["seed_mismatches"],
+                            mismatch_positions=minus_match["mismatch_positions"],
+                            aligned=minus_match["aligned"],
+                        )
+                    )
+
+        return hits
+
+
+class _PyAhoCorasickHalfSiteScanEngine(_BaseHalfSiteScanEngine):
+    """Automaton-backed exact candidate search with shared hit verification."""
+
+    backend = ZFNSearchBackend.PYAHOCORASICK
+
+    def __init__(self, owner: ExhaustiveZFNOffTargetSearcher) -> None:
+        super().__init__(owner)
+        self._automaton_cache: dict[tuple[Any, ...], Any] = {}
+        self._automaton_lock = Lock()
+
+    @staticmethod
+    def _load_module() -> Any:
+        try:
+            return importlib.import_module("ahocorasick")
+        except ImportError as exc:
+            raise _SearchBackendUnavailableError(
+                "ZFN search backend 'pyahocorasick' is unavailable because the installed environment is missing "
+                "the required 'pyahocorasick' package"
+            ) from exc
+
+    def _automaton(self, kind: str, query: str, params: ZFNDesignParameters) -> Any:
+        key = self._pattern_cache_key(kind, query, params)
+        cached = self._automaton_cache.get(key)
+        if cached is not None:
+            return cached
+
+        with self._automaton_lock:
+            cached = self._automaton_cache.get(key)
+            if cached is not None:
+                return cached
+
+            ahocorasick = self._load_module()
+            payload_map: dict[str, list[tuple[Strand, str]]] = {}
+            for oriented_pattern in self._candidate_patterns(kind, query, params):
+                payload_map.setdefault(oriented_pattern, []).append((Strand.PLUS, oriented_pattern))
+                minus_genomic_pattern = _reverse_complement_seq(oriented_pattern)
+                payload_map.setdefault(minus_genomic_pattern, []).append((Strand.MINUS, oriented_pattern))
+
+            automaton = ahocorasick.Automaton()
+            for pattern, payloads in payload_map.items():
+                automaton.add_word(pattern, tuple(payloads))
+            automaton.make_automaton()
+            self._automaton_cache[key] = automaton
+            return automaton
+
+    def _scan_with_prebuilt_index(
+        self,
+        *,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None,
+        region_start0: int | None,
+        region_end0: int | None,
+    ) -> list[_HalfSiteHit] | None:
+        """Aho-Corasick does not currently persist search-space bundles because its automaton is query-derived."""
+        del kind, query, chrom_sequences, target_chrom, region_start0, region_end0
+        if params.search_space_index:
+            logger.info(
+                "ZFN backend '%s' received search_space_index=%s, but pyahocorasick does not reuse persisted "
+                "search-space bundles because its automaton is derived from the query patterns; falling back to "
+                "an in-memory automaton build",
+                self.backend.value,
+                params.search_space_index,
+            )
+        return None
+
+    def scan_half_site(
+        self,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None = None,
+        region_start0: int | None = None,
+        region_end0: int | None = None,
+    ) -> list[_HalfSiteHit]:
+        query = query.upper()
+        qlen = len(query)
+        prebuilt_hits = self._scan_with_prebuilt_index(
+            kind=kind,
+            query=query,
+            chrom_sequences=chrom_sequences,
+            params=params,
+            target_chrom=target_chrom,
+            region_start0=region_start0,
+            region_end0=region_end0,
+        )
+        if prebuilt_hits is not None:
+            return prebuilt_hits
+        automaton = self._automaton(kind, query, params)
+        hits: list[_HalfSiteHit] = []
+
+        for chrom, chrom_seq in chrom_sequences.items():
+            if target_chrom is not None and chrom != target_chrom:
+                continue
+
+            scan_start0 = 0 if region_start0 is None else max(0, region_start0)
+            scan_end0 = len(chrom_seq) if region_end0 is None else min(len(chrom_seq), region_end0)
+            if scan_end0 - scan_start0 < qlen:
+                continue
+
+            for end_index, payloads in automaton.iter(chrom_seq, scan_start0, scan_end0):
+                start0 = end_index - qlen + 1
+                if start0 < scan_start0 or start0 + qlen > scan_end0:
+                    continue
+                for strand, observed_oriented in payloads:
+                    hit = self._build_verified_hit(
+                        kind=kind,
+                        chrom=chrom,
+                        start0=start0,
+                        strand=strand,
+                        query=query,
+                        observed_oriented=observed_oriented,
+                        params=params,
+                    )
+                    if hit is not None:
+                        hits.append(hit)
+
+        return hits
+
+
+class _FMIndexHalfSiteScanEngine(_BaseHalfSiteScanEngine):
+    """FM-index-backed exact candidate search with shared hit verification."""
+
+    backend = ZFNSearchBackend.FM_INDEX
+
+    def __init__(self, owner: ExhaustiveZFNOffTargetSearcher) -> None:
+        super().__init__(owner)
+        self._multi_index_cache: dict[tuple[Any, ...], _MultiFMIndexState] = {}
+        self._multi_index_lock = Lock()
+
+    @staticmethod
+    def _load_module() -> Any:
+        return _load_fm_index_module()
+
+    @staticmethod
+    def _multi_index_from_sequences(chrom_sequences: dict[str, str]) -> _MultiFMIndexState:
+        """Build one live MultiFMIndex for the loaded contigs."""
+        fm_index = _load_fm_index_module()
+        contig_names = list(chrom_sequences.keys())
+        index = fm_index.MultiFMIndex([chrom_sequences[name] for name in contig_names])
+        return _MultiFMIndexState(
+            index=index,
+            doc_ids_by_chrom={chrom: doc_id for doc_id, chrom in enumerate(contig_names)},
+        )
+
+    def _live_multi_index(self, chrom_sequences: dict[str, str]) -> _MultiFMIndexState:
+        """Return a cached live MultiFMIndex for one loaded FASTA snapshot."""
+        key = ("live", tuple((chrom, id(seq)) for chrom, seq in chrom_sequences.items()))
+        cached = self._multi_index_cache.get(key)
+        if cached is not None:
+            return cached
+
+        with self._multi_index_lock:
+            cached = self._multi_index_cache.get(key)
+            if cached is not None:
+                return cached
+
+            state = self._multi_index_from_sequences(chrom_sequences)
+            self._multi_index_cache[key] = state
+            return state
+
+    def _persisted_multi_index(self, bundle_dir: Path, chrom_sequences: dict[str, str]) -> _MultiFMIndexState:
+        """Load and validate one persisted MultiFMIndex bundle."""
+        key = ("persisted", str(bundle_dir))
+        cached = self._multi_index_cache.get(key)
+        if cached is not None:
+            return cached
+
+        with self._multi_index_lock:
+            cached = self._multi_index_cache.get(key)
+            if cached is not None:
+                return cached
+
+            manifest = _load_search_index_manifest(bundle_dir)
+            if manifest.get("backend") != self.backend.value:
+                raise ValueError(
+                    f"search_space_index backend mismatch: expected '{self.backend.value}', got '{manifest.get('backend')}'"
+                )
+            if manifest.get("format_version") != _SEARCH_INDEX_FORMAT_VERSION:
+                raise ValueError(
+                    "search_space_index format version mismatch: "
+                    f"expected {_SEARCH_INDEX_FORMAT_VERSION}, got {manifest.get('format_version')}"
+                )
+
+            contig_names = manifest["contig_names"]
+            contig_lengths = manifest["contig_lengths"]
+
+            live_lengths = _chrom_sequence_lengths(chrom_sequences)
+            if list(chrom_sequences.keys()) != contig_names:
+                raise ValueError("search_space_index contig ordering does not match the resolved FASTA")
+            if live_lengths != contig_lengths:
+                raise ValueError("search_space_index contig lengths do not match the resolved FASTA")
+
+            artifact = manifest["artifact"]
+            artifact_path = bundle_dir / artifact
+            if not artifact_path.exists():
+                raise ValueError(f"search_space_index artifact does not exist: {artifact_path}")
+
+            with artifact_path.open("rb") as handle:
+                index = pickle.load(handle)
+
+            state = _MultiFMIndexState(
+                index=index,
+                doc_ids_by_chrom={chrom: doc_id for doc_id, chrom in enumerate(contig_names)},
+            )
+            self._multi_index_cache[key] = state
+            return state
+
+    def _scan_with_multi_index_state(
+        self,
+        *,
+        state: _MultiFMIndexState,
+        kind: str,
+        query: str,
+        params: ZFNDesignParameters,
+        target_chrom: str | None,
+        region_start0: int | None,
+        region_end0: int | None,
+    ) -> list[_HalfSiteHit]:
+        """Scan one query against a shared MultiFMIndex state."""
+        qlen = len(query)
+        patterns = self._candidate_patterns(kind, query, params)
+        scan_hits: list[_HalfSiteHit] = []
+
+        selected_chroms = [target_chrom] if target_chrom is not None else list(state.doc_ids_by_chrom.keys())
+
+        for chrom in selected_chroms:
+            doc_id = state.doc_ids_by_chrom.get(chrom)
+            if doc_id is None:
+                continue
+
+            scan_start = 0 if region_start0 is None else max(0, region_start0)
+            scan_end = None if region_end0 is None else region_end0
+
+            for oriented_pattern in patterns:
+                for start0 in state.index.iter_locate(oriented_pattern, doc_id=doc_id):
+                    if start0 < scan_start or (scan_end is not None and start0 + qlen > scan_end):
+                        continue
+                    hit = self._build_verified_hit(
+                        kind=kind,
+                        chrom=chrom,
+                        start0=start0,
+                        strand=Strand.PLUS,
+                        query=query,
+                        observed_oriented=oriented_pattern,
+                        params=params,
+                    )
+                    if hit is not None:
+                        scan_hits.append(hit)
+
+                minus_genomic_pattern = _reverse_complement_seq(oriented_pattern)
+                for start0 in state.index.iter_locate(minus_genomic_pattern, doc_id=doc_id):
+                    if start0 < scan_start or (scan_end is not None and start0 + qlen > scan_end):
+                        continue
+                    hit = self._build_verified_hit(
+                        kind=kind,
+                        chrom=chrom,
+                        start0=start0,
+                        strand=Strand.MINUS,
+                        query=query,
+                        observed_oriented=oriented_pattern,
+                        params=params,
+                    )
+                    if hit is not None:
+                        scan_hits.append(hit)
+
+        return scan_hits
+
+    def _scan_with_prebuilt_index(
+        self,
+        *,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None,
+        region_start0: int | None,
+        region_end0: int | None,
+    ) -> list[_HalfSiteHit] | None:
+        """Load and query one persisted MultiFMIndex bundle when configured."""
+        if not params.search_space_index:
+            return None
+
+        bundle_dir = _resolve_search_index_bundle(params.search_space_index)
+        state = self._persisted_multi_index(bundle_dir, chrom_sequences)
+        return self._scan_with_multi_index_state(
+            state=state,
+            kind=kind,
+            query=query,
+            params=params,
+            target_chrom=target_chrom,
+            region_start0=region_start0,
+            region_end0=region_end0,
+        )
+
+    def scan_half_site(
+        self,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None = None,
+        region_start0: int | None = None,
+        region_end0: int | None = None,
+    ) -> list[_HalfSiteHit]:
+        query = query.upper()
+        prebuilt_hits = self._scan_with_prebuilt_index(
+            kind=kind,
+            query=query,
+            chrom_sequences=chrom_sequences,
+            params=params,
+            target_chrom=target_chrom,
+            region_start0=region_start0,
+            region_end0=region_end0,
+        )
+        if prebuilt_hits is not None:
+            return prebuilt_hits
+
+        state = self._live_multi_index(chrom_sequences)
+        return self._scan_with_multi_index_state(
+            state=state,
+            kind=kind,
+            query=query,
+            params=params,
+            target_chrom=target_chrom,
+            region_start0=region_start0,
+            region_end0=region_end0,
+        )
 
 
 def _normalize_chrom_token(chrom: str) -> str:
@@ -218,6 +992,26 @@ class ExhaustiveZFNOffTargetSearcher:
     def __init__(self, annotation_provider: ZFNAnnotationProvider | None = None) -> None:
         """Initialize searcher with optional annotation provider."""
         self.annotation_provider = annotation_provider or GTFZFNAnnotationProvider()
+        self._scan_engines: dict[ZFNSearchBackend, _HalfSiteScanEngine] = {}
+
+    def _scan_engine_for(self, params: ZFNDesignParameters) -> _HalfSiteScanEngine:
+        """Return the configured half-site scan engine for this search request."""
+        backend = params.search_backend
+        cached = self._scan_engines.get(backend)
+        if cached is not None:
+            return cached
+
+        if backend == ZFNSearchBackend.EXHAUSTIVE_PYTHON:
+            engine: _HalfSiteScanEngine = _ExhaustivePythonHalfSiteScanEngine(self)
+        elif backend == ZFNSearchBackend.PYAHOCORASICK:
+            engine = _PyAhoCorasickHalfSiteScanEngine(self)
+        elif backend == ZFNSearchBackend.FM_INDEX:
+            engine = _FMIndexHalfSiteScanEngine(self)
+        else:
+            raise ValueError(f"Unsupported ZFN search backend: {backend}")
+
+        self._scan_engines[backend] = engine
+        return engine
 
     def _recommended_worker_cap(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> int:
         """Return a conservative worker cap based on requested workers and live memory.
@@ -271,7 +1065,7 @@ class ExhaustiveZFNOffTargetSearcher:
     @staticmethod
     def _reverse_complement(seq: str) -> str:
         """Return reverse complement for one uppercase DNA/IUPAC sequence."""
-        return seq.translate(_RC_TRANS)[::-1]
+        return _reverse_complement_seq(seq)
 
     def search(
         self,
@@ -294,6 +1088,7 @@ class ExhaustiveZFNOffTargetSearcher:
         phase_start = time.perf_counter()
         shard_specs = self._build_shard_specs(chrom_sequences, params)
         phase_timings["build_shards_s"] = time.perf_counter() - phase_start
+        scan_engine = self._scan_engine_for(params)
         all_sites: list[ZFNOffTargetSite] = []
 
         worker_cap = self._recommended_worker_cap(chrom_sequences, params)
@@ -308,6 +1103,7 @@ class ExhaustiveZFNOffTargetSearcher:
                 params.half_site_constraints.max_mismatches,
             )
         logger.info("Starting ZFN shard search: %s shard(s), workers=%s", len(shard_specs), workers)
+        logger.info("Using ZFN scan backend: %s", params.search_backend.value)
         if workers == 1 and len(shard_specs) > 8:
             logger.info(
                 "ZFN search is currently using one shard worker; runtime tuning remains internal and is auto-selected"
@@ -319,6 +1115,7 @@ class ExhaustiveZFNOffTargetSearcher:
                 shard_specs=shard_specs,
                 chrom_sequences=chrom_sequences,
                 params=params,
+                scan_engine=scan_engine,
                 workers=workers,
                 started_at=started_at,
             )
@@ -400,7 +1197,13 @@ class ExhaustiveZFNOffTargetSearcher:
             scan_start0=scan_start,
             scan_end0=scan_end,
         )
-        shard_sites = self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params)
+        scan_engine = self._scan_engine_for(params)
+        shard_sites = self._search_shard(
+            shard=shard,
+            chrom_sequences=chrom_sequences,
+            params=params,
+            scan_engine=scan_engine,
+        )
         shard_sites = self._filter_sites_to_core_window(
             shard_sites, chrom=chrom, core_start0=core_start, core_end0=core_end
         )
@@ -456,6 +1259,7 @@ class ExhaustiveZFNOffTargetSearcher:
         shard_specs: list[_ShardSpec],
         chrom_sequences: dict[str, str],
         params: ZFNDesignParameters,
+        scan_engine: _HalfSiteScanEngine,
         workers: int,
         started_at: float,
     ) -> list[ZFNOffTargetSite]:
@@ -465,6 +1269,7 @@ class ExhaustiveZFNOffTargetSearcher:
                 shard_specs=shard_specs,
                 chrom_sequences=chrom_sequences,
                 params=params,
+                scan_engine=scan_engine,
                 workers=workers,
                 started_at=started_at,
             )
@@ -472,6 +1277,7 @@ class ExhaustiveZFNOffTargetSearcher:
             shard_specs=shard_specs,
             chrom_sequences=chrom_sequences,
             params=params,
+            scan_engine=scan_engine,
             started_at=started_at,
         )
 
@@ -480,6 +1286,7 @@ class ExhaustiveZFNOffTargetSearcher:
         shard_specs: list[_ShardSpec],
         chrom_sequences: dict[str, str],
         params: ZFNDesignParameters,
+        scan_engine: _HalfSiteScanEngine,
         workers: int,
         started_at: float,
     ) -> list[ZFNOffTargetSite]:
@@ -493,6 +1300,7 @@ class ExhaustiveZFNOffTargetSearcher:
                     shard=shard,
                     chrom_sequences=chrom_sequences,
                     params=params,
+                    scan_engine=scan_engine,
                 ): shard.shard_id
                 for shard in shard_specs
             }
@@ -530,13 +1338,21 @@ class ExhaustiveZFNOffTargetSearcher:
         shard_specs: list[_ShardSpec],
         chrom_sequences: dict[str, str],
         params: ZFNDesignParameters,
+        scan_engine: _HalfSiteScanEngine,
         started_at: float,
     ) -> list[ZFNOffTargetSite]:
         """Execute shard searches serially."""
         all_sites: list[ZFNOffTargetSite] = []
         progress_interval = max(1, len(shard_specs) // 20) if shard_specs else 1
         for completed_count, shard in enumerate(shard_specs, start=1):
-            all_sites.extend(self._search_shard(shard=shard, chrom_sequences=chrom_sequences, params=params))
+            all_sites.extend(
+                self._search_shard(
+                    shard=shard,
+                    chrom_sequences=chrom_sequences,
+                    params=params,
+                    scan_engine=scan_engine,
+                )
+            )
             self._log_shard_progress_if_needed(
                 completed_count=completed_count,
                 total_shards=len(shard_specs),
@@ -608,9 +1424,10 @@ class ExhaustiveZFNOffTargetSearcher:
         shard: _ShardSpec,
         chrom_sequences: dict[str, str],
         params: ZFNDesignParameters,
+        scan_engine: _HalfSiteScanEngine,
     ) -> list[ZFNOffTargetSite]:
         """Run one shard search and return local paired sites."""
-        left_hits = self._scan_half_site(
+        left_hits = scan_engine.scan_half_site(
             kind="L",
             query=params.left_half_site,
             chrom_sequences=chrom_sequences,
@@ -619,7 +1436,7 @@ class ExhaustiveZFNOffTargetSearcher:
             region_start0=shard.scan_start0,
             region_end0=shard.scan_end0,
         )
-        right_hits = self._scan_half_site(
+        right_hits = scan_engine.scan_half_site(
             kind="R",
             query=params.right_half_site,
             chrom_sequences=chrom_sequences,
@@ -695,83 +1512,21 @@ class ExhaustiveZFNOffTargetSearcher:
         region_start0: int | None = None,
         region_end0: int | None = None,
     ) -> list[_HalfSiteHit]:
-        """Exhaustively scan all chromosomes and both strands for one half-site."""
-        query = query.upper()
-        qlen = len(query)
-        seed_positions = self._seed_positions(kind, qlen, params.half_site_constraints.seed_len_from_fokI)
+        """Compatibility shim for the legacy built-in Python half-site scan path."""
+        exhaustive_engine = self._scan_engines.get(ZFNSearchBackend.EXHAUSTIVE_PYTHON)
+        if exhaustive_engine is None:
+            exhaustive_engine = _ExhaustivePythonHalfSiteScanEngine(self)
+            self._scan_engines[ZFNSearchBackend.EXHAUSTIVE_PYTHON] = exhaustive_engine
 
-        hits: list[_HalfSiteHit] = []
-        for chrom, chrom_seq in chrom_sequences.items():
-            if target_chrom is not None and chrom != target_chrom:
-                continue
-            if len(chrom_seq) < qlen:
-                continue
-
-            scan_start0 = 0 if region_start0 is None else max(0, region_start0)
-            scan_end0 = len(chrom_seq) if region_end0 is None else min(len(chrom_seq), region_end0)
-            if scan_end0 - scan_start0 < qlen:
-                continue
-
-            stride = params.half_site_constraints.window_stride
-            for i in range(scan_start0, scan_end0 - qlen + 1, stride):
-                window_plus = chrom_seq[i : i + qlen]
-
-                plus_match = self._evaluate_window(
-                    kind=kind,
-                    query=query,
-                    observed=window_plus,
-                    mode=params.half_site_constraints.iupac_mode,
-                    seed_len=params.half_site_constraints.seed_len_from_fokI,
-                    max_mm=params.half_site_constraints.max_mismatches,
-                    max_seed_mm=params.half_site_constraints.seed_max_mismatches,
-                    seed_positions=seed_positions,
-                )
-                if plus_match is not None:
-                    hits.append(
-                        _HalfSiteHit(
-                            kind=kind,
-                            chrom=chrom,
-                            start0=i,
-                            end0=i + qlen,
-                            strand=Strand.PLUS,
-                            query=query,
-                            observed=window_plus,
-                            mismatches=plus_match["mismatches"],
-                            seed_mismatches=plus_match["seed_mismatches"],
-                            mismatch_positions=plus_match["mismatch_positions"],
-                            aligned=plus_match["aligned"],
-                        )
-                    )
-
-                window_minus_oriented = self._reverse_complement(window_plus)
-                minus_match = self._evaluate_window(
-                    kind=kind,
-                    query=query,
-                    observed=window_minus_oriented,
-                    mode=params.half_site_constraints.iupac_mode,
-                    seed_len=params.half_site_constraints.seed_len_from_fokI,
-                    max_mm=params.half_site_constraints.max_mismatches,
-                    max_seed_mm=params.half_site_constraints.seed_max_mismatches,
-                    seed_positions=seed_positions,
-                )
-                if minus_match is not None:
-                    hits.append(
-                        _HalfSiteHit(
-                            kind=kind,
-                            chrom=chrom,
-                            start0=i,
-                            end0=i + qlen,
-                            strand=Strand.MINUS,
-                            query=query,
-                            observed=window_minus_oriented,
-                            mismatches=minus_match["mismatches"],
-                            seed_mismatches=minus_match["seed_mismatches"],
-                            mismatch_positions=minus_match["mismatch_positions"],
-                            aligned=minus_match["aligned"],
-                        )
-                    )
-
-        return hits
+        return exhaustive_engine.scan_half_site(
+            kind=kind,
+            query=query,
+            chrom_sequences=chrom_sequences,
+            params=params,
+            target_chrom=target_chrom,
+            region_start0=region_start0,
+            region_end0=region_end0,
+        )
 
     def _evaluate_window(
         self,
@@ -786,63 +1541,25 @@ class ExhaustiveZFNOffTargetSearcher:
         seed_positions: set[int] | None = None,
     ) -> _WindowMatch | None:
         """Evaluate one window against one query under IUPAC + seed constraints."""
-        query_for_match = expanded_query if (expanded_query and mode == IUPACMode.EXPAND_IUPAC) else query
-
-        mismatches = 0
-        seed_mismatches = 0
-        mismatch_positions: list[int] = []
-        aligned_chars: list[str] = []
-
-        active_seed_positions = seed_positions
-        if active_seed_positions is None:
-            active_seed_positions = self._seed_positions(kind, len(query_for_match), seed_len)
-
-        for idx, (q, o) in enumerate(zip(query_for_match, observed, strict=False)):
-            is_match = self._base_match(q, o, mode)
-            if is_match:
-                aligned_chars.append(o)
-            else:
-                mismatches += 1
-                mismatch_positions.append(idx)
-                aligned_chars.append(o.lower())
-                if idx in active_seed_positions:
-                    seed_mismatches += 1
-                if mismatches > max_mm:
-                    return None
-
-        if max_seed_mm is not None and seed_len is not None and seed_mismatches > max_seed_mm:
-            return None
-
-        return {
-            "mismatches": mismatches,
-            "seed_mismatches": seed_mismatches,
-            "mismatch_positions": mismatch_positions,
-            "aligned": "".join(aligned_chars),
-        }
+        return _evaluate_window_match(
+            kind=kind,
+            query=query,
+            observed=observed,
+            mode=mode,
+            seed_len=seed_len,
+            max_mm=max_mm,
+            max_seed_mm=max_seed_mm,
+            expanded_query=expanded_query,
+            seed_positions=seed_positions,
+        )
 
     def _seed_positions(self, kind: str, seq_len: int, seed_len: int | None) -> set[int]:
         """Return seed positions nearest FokI according to half-site side."""
-        if seed_len is None or seed_len <= 0:
-            return set()
-        effective = min(seed_len, seq_len)
-
-        if kind == "L":
-            # Left half-site FokI-proximal side is toward 3' end in canonical L...R representation.
-            return set(range(seq_len - effective, seq_len))
-
-        # Right half-site FokI-proximal side is toward 5' end in canonical L...R representation.
-        return set(range(0, effective))
+        return _seed_positions_for(kind, seq_len, seed_len)
 
     def _base_match(self, query_base: str, observed_base: str, mode: IUPACMode) -> bool:
         """Return whether one query base matches one observed base under configured IUPAC mode."""
-        query_base = query_base.upper()
-        observed_base = observed_base.upper()
-
-        if mode == IUPACMode.NONE:
-            return query_base == observed_base
-
-        allowed = IUPAC_MAP.get(query_base, {query_base})
-        return observed_base in allowed
+        return _base_match_for(query_base, observed_base, mode)
 
     @staticmethod
     def _index_hits_by_pos(hits: list[_HalfSiteHit]) -> dict[str, dict[int, list[_HalfSiteHit]]]:

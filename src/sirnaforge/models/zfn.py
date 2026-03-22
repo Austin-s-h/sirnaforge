@@ -54,6 +54,14 @@ class IUPACMode(str, Enum):
     EXPAND_IUPAC = "expand_iupac"
 
 
+class ZFNSearchBackend(str, Enum):
+    """Available scan backends for ZFN half-site search."""
+
+    EXHAUSTIVE_PYTHON = "exhaustive_python"
+    PYAHOCORASICK = "pyahocorasick"
+    FM_INDEX = "fm_index"
+
+
 class ZFNHalfSiteConstraints(BaseModel):
     """Constraints on one ZFN half-site."""
 
@@ -269,7 +277,11 @@ class ZFNDesignParameters(BaseModel):
     )
     search_space_index: str | None = Field(
         default=None,
-        description="Optional pre-built index prefix for search space (reserved for indexed backends)",
+        description="Optional persisted search-space index bundle path for indexed backends (currently fm_index)",
+    )
+    search_backend: ZFNSearchBackend = Field(
+        default=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        description="Backend used for half-site search within the shared ZFN search pipeline",
     )
     left_half_site: str = Field(description="Left ZFN half-site sequence")
     right_half_site: str = Field(description="Right ZFN half-site sequence")
@@ -337,6 +349,17 @@ class ZFNDesignParameters(BaseModel):
             raise ValueError("search_space_fasta cannot be empty when provided")
         return normalized
 
+    @field_validator_typed("search_space_index")
+    @classmethod
+    def validate_search_space_index(cls, v: str | None) -> str | None:
+        """Normalize explicit search index path strings."""
+        if v is None:
+            return None
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("search_space_index cannot be empty when provided")
+        return normalized
+
     def canonical_search_contract(self) -> ZFNSearchContract:
         """Return canonical, JSON-serializable ZFN search contract for reports/workflows."""
         return ZFNSearchContract(
@@ -348,6 +371,7 @@ class ZFNDesignParameters(BaseModel):
             seed_max_mismatches=self.half_site_constraints.seed_max_mismatches,
             dimer_mode=self.dimer_mode,
             algorithm=self.algorithm,
+            search_backend=self.search_backend,
             require_opposite_strands=self.spacer_constraints.require_opposite_strands,
             orientation_convention="L...R genomic ordering",
         )
@@ -366,6 +390,7 @@ class ZFNSearchContract(BaseModel):
     seed_max_mismatches: int | None = Field(default=None, ge=0)
     dimer_mode: DimerMode = Field(description="Pairing mode for hit assembly")
     algorithm: ZFNAlgorithm = Field(description="Algorithm family used for scoring")
+    search_backend: ZFNSearchBackend = Field(description="Backend used for half-site scanning")
     require_opposite_strands: bool = Field(description="Whether same-strand pairs are disallowed")
     orientation_convention: str = Field(description="Human-readable orientation convention")
 

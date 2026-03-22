@@ -1,17 +1,28 @@
 """Unit tests for ZFN design mode parsing and mutation-constraint wiring."""
 
+import json
+from pathlib import Path
+
 import pytest
 
-from sirnaforge.cli import _build_zfn_design_configuration, _parse_zfn_mutation_constraints, _resolve_design_mode
+import sirnaforge.cli as cli_module
+from sirnaforge.cli import (
+    _build_zfn_design_configuration,
+    _parse_zfn_mutation_constraints,
+    _resolve_design_mode,
+)
 from sirnaforge.models.sirna import (
     DesignMode,
 )
 from sirnaforge.models.zfn import (
+    DimerMode,
+    ZFNAlgorithm,
     ZFNDefaultSubfingerMutationConstraint,
     ZFNDesignParameters,
     ZFNMutationConstraints,
     ZFNMutationType,
     ZFNOverallMutationConstraint,
+    ZFNSearchBackend,
     ZFNShardingConfig,
     ZFNSubfingerMutationConstraint,
 )
@@ -124,8 +135,10 @@ def test_build_zfn_design_configuration_autotunes_internal_sharding() -> None:
         zfn_left_half_site="GCGTGGGCG",
         zfn_right_half_site="GCCCACGCG",
         zfn_search_space="ensembl_human_hg38_primary",
-        zfn_algorithm="zfn_v2",
-        zfn_dimer_mode="heterodimer_only",
+        zfn_search_space_index=None,
+        zfn_search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        zfn_algorithm=ZFNAlgorithm.ZFN_V2,
+        zfn_dimer_mode=DimerMode.HETERODIMER_ONLY,
         zfn_spacer_lengths="5,6,7",
         zfn_max_mismatches=2,
         zfn_annotation=None,
@@ -147,8 +160,10 @@ def test_build_zfn_design_configuration_uses_workflow_cores_for_sharding() -> No
         zfn_left_half_site="GCGTGGGCG",
         zfn_right_half_site="GCCCACGCG",
         zfn_search_space="ensembl_human_hg38_primary",
-        zfn_algorithm="zfn_v2",
-        zfn_dimer_mode="heterodimer_only",
+        zfn_search_space_index=None,
+        zfn_search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        zfn_algorithm=ZFNAlgorithm.ZFN_V2,
+        zfn_dimer_mode=DimerMode.HETERODIMER_ONLY,
         zfn_spacer_lengths="5,6,7",
         zfn_max_mismatches=2,
         workflow_cores=2,
@@ -168,8 +183,10 @@ def test_build_zfn_design_configuration_caps_shard_workers_for_large_cores() -> 
         zfn_left_half_site="GCGTGGGCG",
         zfn_right_half_site="GCCCACGCG",
         zfn_search_space="ensembl_human_hg38_primary",
-        zfn_algorithm="zfn_v2",
-        zfn_dimer_mode="heterodimer_only",
+        zfn_search_space_index=None,
+        zfn_search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        zfn_algorithm=ZFNAlgorithm.ZFN_V2,
+        zfn_dimer_mode=DimerMode.HETERODIMER_ONLY,
         zfn_spacer_lengths="5,6,7",
         zfn_max_mismatches=2,
         workflow_cores=16,
@@ -190,8 +207,10 @@ def test_build_zfn_design_configuration_rejects_invalid_half_site_bases() -> Non
             zfn_left_half_site="BADSEQ",
             zfn_right_half_site="GCCCACGCG",
             zfn_search_space="ensembl_human_hg38_primary",
-            zfn_algorithm="zfn_v2",
-            zfn_dimer_mode="heterodimer_only",
+            zfn_search_space_index=None,
+            zfn_search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+            zfn_algorithm=ZFNAlgorithm.ZFN_V2,
+            zfn_dimer_mode=DimerMode.HETERODIMER_ONLY,
             zfn_spacer_lengths="5,6",
             zfn_max_mismatches=2,
             zfn_annotation=None,
@@ -208,9 +227,56 @@ def test_build_zfn_design_configuration_rejects_invalid_spacer_lengths() -> None
             zfn_left_half_site="GCGTGGGCG",
             zfn_right_half_site="GCCCACGCG",
             zfn_search_space="ensembl_human_hg38_primary",
-            zfn_algorithm="zfn_v2",
-            zfn_dimer_mode="heterodimer_only",
+            zfn_search_space_index=None,
+            zfn_search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+            zfn_algorithm=ZFNAlgorithm.ZFN_V2,
+            zfn_dimer_mode=DimerMode.HETERODIMER_ONLY,
             zfn_spacer_lengths="0",
             zfn_max_mismatches=2,
             zfn_annotation=None,
         )
+
+
+def test_internal_zfn_build_search_index_delegates_and_prints_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Internal index build command should pass typed args through and emit JSON summary."""
+    genome_fasta = tmp_path / "genome.fa"
+    genome_fasta.write_text(">chr1\nACGT\n", encoding="utf-8")
+
+    seen: dict[str, object] = {}
+
+    def _fake_build(*, backend: ZFNSearchBackend, genome_fasta: Path, output_dir: Path | None) -> dict[str, object]:
+        seen["backend"] = backend
+        seen["genome_fasta"] = genome_fasta
+        seen["output_dir"] = output_dir
+        return {
+            "artifact": "/tmp/fm_bundle/multifm_index.pkl",
+            "backend": backend.value,
+            "bases": 4,
+            "bundle_dir": "/tmp/fm_bundle",
+            "contigs": 1,
+            "genome_fasta": str(genome_fasta),
+        }
+
+    printed: dict[str, str] = {}
+
+    def _capture_print(text: object) -> None:
+        printed.setdefault("text", str(text))
+
+    monkeypatch.setattr(cli_module, "build_zfn_search_index", _fake_build)
+    monkeypatch.setattr(cli_module.console, "print", _capture_print)
+
+    cli_module.internal_zfn_build_search_index(
+        genome_fasta=genome_fasta,
+        search_backend=ZFNSearchBackend.FM_INDEX,
+        output_dir=None,
+    )
+
+    assert seen["backend"] == ZFNSearchBackend.FM_INDEX
+    assert seen["genome_fasta"] == genome_fasta
+    assert seen["output_dir"] is None
+    payload = json.loads(printed["text"])
+    assert payload["backend"] == "fm_index"
+    assert payload["contigs"] == 1

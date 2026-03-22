@@ -1,6 +1,9 @@
 """Unit tests for ZFN cache-resolved search space and design support."""
 
+import importlib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from Bio.Seq import Seq
@@ -18,12 +21,13 @@ from sirnaforge.models.zfn import (
     ZFNHalfSiteConstraints,
     ZFNOffTargetFilterCriteria,
     ZFNOffTargetSite,
+    ZFNSearchBackend,
     ZFNShardingConfig,
     ZFNSpacerConstraints,
 )
 from sirnaforge.zfn.design import ZFNDesigner
 from sirnaforge.zfn.rank import rank_sites
-from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher, _HalfSiteHit
+from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher, _HalfSiteHit, build_zfn_search_index
 
 LEFT = "GCGTACGTA"
 RIGHT = "TACGGCATA"
@@ -37,6 +41,78 @@ def _write_fasta(tmp_path: Path, sequence: str, name: str = "chr1") -> Path:
 
 def _canonical_site(left: str, right: str, spacer: str = "AAAAA") -> str:
     return f"{left}{spacer}{str(Seq(right).reverse_complement())}"
+
+
+class _FakeAutomaton:
+    def __init__(self) -> None:
+        self._patterns: dict[str, object] = {}
+
+    def add_word(self, key: str, value: object) -> bool:
+        self._patterns[key] = value
+        return True
+
+    def make_automaton(self) -> None:
+        return None
+
+    def iter(self, text: str, start: int = 0, end: int | None = None):
+        if end is None:
+            end = len(text)
+        for idx in range(start, end):
+            for pattern, value in self._patterns.items():
+                if idx + len(pattern) <= end and text[idx : idx + len(pattern)] == pattern:
+                    yield idx + len(pattern) - 1, value
+
+
+class _FakeFMIndex:
+    def __init__(self, data: str) -> None:
+        self._data = data
+
+    def iter_locate(self, pattern: str):
+        start = 0
+        while True:
+            pos = self._data.find(pattern, start)
+            if pos < 0:
+                break
+            yield pos
+            start = pos + 1
+
+
+class _FakeMultiFMIndex:
+    def __init__(self, data: list[str]) -> None:
+        self._data = list(data)
+
+    def iter_locate(self, pattern: str, doc_id: int | None = None):
+        if doc_id is None:
+            for current_doc_id, doc in enumerate(self._data):
+                start = 0
+                while True:
+                    pos = doc.find(pattern, start)
+                    if pos < 0:
+                        break
+                    yield current_doc_id, pos
+                    start = pos + 1
+            return
+
+        doc = self._data[doc_id]
+        start = 0
+        while True:
+            pos = doc.find(pattern, start)
+            if pos < 0:
+                break
+            yield pos
+            start = pos + 1
+
+    def item(self) -> list[str]:
+        return list(self._data)
+
+
+def _install_fake_backend_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "ahocorasick", SimpleNamespace(Automaton=_FakeAutomaton))
+    monkeypatch.setitem(
+        sys.modules,
+        "fm_index",
+        SimpleNamespace(FMIndex=_FakeFMIndex, MultiFMIndex=_FakeMultiFMIndex),
+    )
 
 
 def test_explicit_search_space_fasta_finds_heterodimer_sites(tmp_path: Path) -> None:
@@ -56,6 +132,149 @@ def test_explicit_search_space_fasta_finds_heterodimer_sites(tmp_path: Path) -> 
     sites = ExhaustiveZFNOffTargetSearcher().search(params)
     assert len(sites) >= 2
     assert all(site.spacer_len == 5 for site in sites)
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [ZFNSearchBackend.PYAHOCORASICK, ZFNSearchBackend.FM_INDEX],
+)
+def test_optional_scan_backends_match_exhaustive_python_on_toy_fasta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    backend: ZFNSearchBackend,
+) -> None:
+    """Alternative scan backends should preserve site coordinates and orientation on deterministic inputs."""
+    _install_fake_backend_modules(monkeypatch)
+    sequence = f"TTTT{_canonical_site(LEFT, RIGHT)}CCCC{_canonical_site(LEFT, RIGHT, spacer='AAAAAA')}"
+    fasta = _write_fasta(tmp_path, sequence, name="chr3")
+
+    exhaustive_sites = ExhaustiveZFNOffTargetSearcher().search(
+        ZFNDesignParameters(
+            search_space_fasta=str(fasta),
+            left_half_site=LEFT,
+            right_half_site=RIGHT,
+            search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+            half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+            spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
+        )
+    )
+    backend_sites = ExhaustiveZFNOffTargetSearcher().search(
+        ZFNDesignParameters(
+            search_space_fasta=str(fasta),
+            left_half_site=LEFT,
+            right_half_site=RIGHT,
+            search_backend=backend,
+            half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+            spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
+        )
+    )
+
+    exhaustive_key = {(s.chrom, s.start_1based, s.end_1based, s.orientation.value) for s in exhaustive_sites}
+    backend_key = {(s.chrom, s.start_1based, s.end_1based, s.orientation.value) for s in backend_sites}
+    assert backend_key == exhaustive_key
+
+
+def test_optional_scan_backend_reports_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A missing required backend package should fail with a clear environment message."""
+    fasta = _write_fasta(tmp_path, _canonical_site(LEFT, RIGHT))
+    params = ZFNDesignParameters(
+        search_space_fasta=str(fasta),
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.PYAHOCORASICK,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+    )
+
+    sys.modules.pop("ahocorasick", None)
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str, package: str | None = None):
+        if name == "ahocorasick":
+            raise ImportError("missing test dependency")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+
+    with pytest.raises(RuntimeError, match="pyahocorasick"):
+        ExhaustiveZFNOffTargetSearcher().search(params)
+
+
+def test_pyahocorasick_accepts_search_space_index_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pyahocorasick should ignore search_space_index because its automaton is query-derived."""
+    _install_fake_backend_modules(monkeypatch)
+    fasta = _write_fasta(tmp_path, f"TTTT{_canonical_site(LEFT, RIGHT)}CCCC", name="chr3")
+
+    sites = ExhaustiveZFNOffTargetSearcher().search(
+        ZFNDesignParameters(
+            search_space_fasta=str(fasta),
+            search_space_index=str(tmp_path / "reserved.index"),
+            left_half_site=LEFT,
+            right_half_site=RIGHT,
+            search_backend=ZFNSearchBackend.PYAHOCORASICK,
+            half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+            spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+        )
+    )
+
+    assert len(sites) == 1
+    assert sites[0].chrom == "chr3"
+
+
+def test_fm_index_bundle_build_and_load_supports_multi_contig_search(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """fm_index should build and reload a persisted MultiFMIndex bundle with stable contig mapping."""
+    _install_fake_backend_modules(monkeypatch)
+    site = _canonical_site(LEFT, RIGHT)
+    fasta = tmp_path / "search_space.fa"
+    fasta.write_text(
+        f">chr2\nAAA{site}TTT\n>chr3\nCCC{site}GGG\n",
+        encoding="utf-8",
+    )
+    bundle_dir = tmp_path / "fm_bundle"
+
+    summary = build_zfn_search_index(
+        backend=ZFNSearchBackend.FM_INDEX,
+        genome_fasta=fasta,
+        output_dir=bundle_dir,
+    )
+
+    assert summary["backend"] == "fm_index"
+    assert summary["contigs"] == 2
+
+    sites = ExhaustiveZFNOffTargetSearcher().search(
+        ZFNDesignParameters(
+            search_space_fasta=str(fasta),
+            search_space_index=str(bundle_dir),
+            left_half_site=LEFT,
+            right_half_site=RIGHT,
+            search_backend=ZFNSearchBackend.FM_INDEX,
+            half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+            spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+        )
+    )
+
+    assert {site.chrom for site in sites} == {"chr2", "chr3"}
+
+
+def test_non_fm_backends_reject_persisted_search_index_build(tmp_path: Path) -> None:
+    """Only fm_index should expose persisted search-space bundle building."""
+    fasta = _write_fasta(tmp_path, _canonical_site(LEFT, RIGHT))
+
+    with pytest.raises(ValueError, match="implemented only for the 'fm_index' backend"):
+        build_zfn_search_index(
+            backend=ZFNSearchBackend.PYAHOCORASICK,
+            genome_fasta=fasta,
+            output_dir=tmp_path / "aho_bundle",
+        )
 
 
 def test_iupac_allow_mode_matches_and_none_mode_rejects(tmp_path: Path) -> None:

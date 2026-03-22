@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from Bio.Seq import Seq
 
-from sirnaforge.models.zfn import MatchOrientation, Strand, ZFNOffTargetSite
+from sirnaforge.models.zfn import DimerMode, MatchOrientation, Strand, ZFNAlgorithm, ZFNOffTargetSite, ZFNSearchBackend
 from sirnaforge.zfn.nextflow_bridge import make_zfn_shard_manifest, run_zfn_shard_search
 from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher
 
@@ -121,8 +121,10 @@ def test_run_zfn_shard_search_uses_region_search_api(monkeypatch: pytest.MonkeyP
         left_half_site=LEFT,
         right_half_site=RIGHT,
         genome_fasta=fasta,
-        algorithm="zfn_v2",
-        dimer_mode="heterodimer_only",
+        search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        search_space_index=None,
+        algorithm=ZFNAlgorithm.ZFN_V2,
+        dimer_mode=DimerMode.HETERODIMER_ONLY,
         spacer_lengths="5",
         annotation_file=None,
         output_sites_csv=output_sites_csv,

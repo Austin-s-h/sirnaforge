@@ -76,6 +76,7 @@ from sirnaforge.models.zfn import (
     ZFNMutationConstraints,
     ZFNMutationType,
     ZFNOverallMutationConstraint,
+    ZFNSearchBackend,
     ZFNShardingConfig,
     ZFNSpacerConstraints,
     ZFNSubfingerMutationConstraint,
@@ -91,6 +92,7 @@ from sirnaforge.zfn.nextflow_bridge import (
     make_zfn_shard_manifest,
     run_zfn_shard_search,
 )
+from sirnaforge.zfn.search import build_zfn_search_index
 
 app = typer.Typer(
     name="sirnaforge",
@@ -340,8 +342,10 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
     zfn_left_half_site: str,
     zfn_right_half_site: str,
     zfn_search_space: str | None,
-    zfn_algorithm: str,
-    zfn_dimer_mode: str,
+    zfn_search_space_index: str | None,
+    zfn_search_backend: ZFNSearchBackend,
+    zfn_algorithm: ZFNAlgorithm,
+    zfn_dimer_mode: DimerMode,
     zfn_spacer_lengths: str,
     zfn_max_mismatches: int,
     zfn_window_stride: int | None = None,
@@ -371,19 +375,6 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
         parsed_spacers = [int(s.strip()) for s in zfn_spacer_lengths.split(",")]
     except ValueError as exc:
         raise ValueError("--zfn-spacer-lengths must be comma-separated integers") from exc
-    try:
-        algo = ZFNAlgorithm(zfn_algorithm.lower())
-    except ValueError as exc:
-        raise ValueError(
-            f"--zfn-algorithm must be one of: homology, conserved_g, zfn_v2 (got '{zfn_algorithm}')"
-        ) from exc
-    try:
-        dimer = DimerMode(zfn_dimer_mode.lower())
-    except ValueError as exc:
-        raise ValueError(
-            f"--zfn-dimer-mode must be heterodimer_only or include_homodimers (got '{zfn_dimer_mode}')"
-        ) from exc
-
     mutation_constraints: ZFNMutationConstraints | None = None
     if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
         mutation_constraints = ZFNMutationConstraints(
@@ -413,8 +404,10 @@ def _build_zfn_design_configuration(  # noqa: PLR0912
         right_half_site=zfn_right_half_site,
         search_space_reference=search_space_reference,
         search_space_fasta=search_space_fasta,
-        algorithm=algo,
-        dimer_mode=dimer,
+        search_space_index=zfn_search_space_index,
+        search_backend=zfn_search_backend,
+        algorithm=zfn_algorithm,
+        dimer_mode=zfn_dimer_mode,
         spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=parsed_spacers),
         half_site_constraints=ZFNHalfSiteConstraints(
             max_mismatches=zfn_max_mismatches,
@@ -727,13 +720,23 @@ def workflow(  # noqa: PLR0912
             "Default: ensembl_human_hg38_primary when --design-mode zfn."
         ),
     ),
-    zfn_algorithm: str = typer.Option(
-        "zfn_v2",
+    zfn_search_space_index: str | None = typer.Option(
+        None,
+        "--zfn-search-space-index",
+        help="Optional persisted search-space index bundle path for indexed ZFN backends (currently fm_index).",
+    ),
+    zfn_search_backend: ZFNSearchBackend = typer.Option(
+        ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        "--zfn-search-backend",
+        help="Half-site search backend: exhaustive_python, pyahocorasick, or fm_index.",
+    ),
+    zfn_algorithm: ZFNAlgorithm = typer.Option(
+        ZFNAlgorithm.ZFN_V2,
         "--zfn-algorithm",
         help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
     ),
-    zfn_dimer_mode: str = typer.Option(
-        "heterodimer_only",
+    zfn_dimer_mode: DimerMode = typer.Option(
+        DimerMode.HETERODIMER_ONLY,
         "--zfn-dimer-mode",
         help="Dimer mode: heterodimer_only (default) or include_homodimers.",
     ),
@@ -1035,6 +1038,8 @@ def workflow(  # noqa: PLR0912
                     zfn_left_half_site=zfn_left_half_site,
                     zfn_right_half_site=zfn_right_half_site,
                     zfn_search_space=zfn_search_space,
+                    zfn_search_space_index=zfn_search_space_index,
+                    zfn_search_backend=zfn_search_backend,
                     zfn_algorithm=zfn_algorithm,
                     zfn_dimer_mode=zfn_dimer_mode,
                     zfn_spacer_lengths=zfn_spacer_lengths,
@@ -1503,13 +1508,23 @@ def zfn(
             "Default: ensembl_human_hg38_primary."
         ),
     ),
-    zfn_algorithm: str = typer.Option(
-        "zfn_v2",
+    zfn_search_space_index: str | None = typer.Option(
+        None,
+        "--zfn-search-space-index",
+        help="Optional persisted search-space index bundle path for indexed ZFN backends (currently fm_index).",
+    ),
+    zfn_search_backend: ZFNSearchBackend = typer.Option(
+        ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        "--zfn-search-backend",
+        help="Half-site search backend: exhaustive_python, pyahocorasick, or fm_index.",
+    ),
+    zfn_algorithm: ZFNAlgorithm = typer.Option(
+        ZFNAlgorithm.ZFN_V2,
         "--zfn-algorithm",
         help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
     ),
-    zfn_dimer_mode: str = typer.Option(
-        "heterodimer_only",
+    zfn_dimer_mode: DimerMode = typer.Option(
+        DimerMode.HETERODIMER_ONLY,
         "--zfn-dimer-mode",
         help="Dimer mode: heterodimer_only (default) or include_homodimers.",
     ),
@@ -1601,6 +1616,8 @@ def zfn(
                 zfn_left_half_site=zfn_left_half_site,
                 zfn_right_half_site=zfn_right_half_site,
                 zfn_search_space=zfn_search_space,
+                zfn_search_space_index=zfn_search_space_index,
+                zfn_search_backend=zfn_search_backend,
                 zfn_algorithm=zfn_algorithm,
                 zfn_dimer_mode=zfn_dimer_mode,
                 zfn_spacer_lengths=zfn_spacer_lengths,
@@ -1625,6 +1642,7 @@ def zfn(
             f"Left half-site: [yellow]{zfn_design_params.left_half_site}[/yellow]\n"
             f"Right half-site: [yellow]{zfn_design_params.right_half_site}[/yellow]\n"
             f"Algorithm: [cyan]{zfn_design_params.algorithm.value}[/cyan]\n"
+            f"Search backend: [cyan]{zfn_design_params.search_backend.value}[/cyan]\n"
             f"Dimer mode: [cyan]{zfn_design_params.dimer_mode.value}[/cyan]\n"
             f"Spacer lengths: [cyan]{zfn_design_params.spacer_constraints.allowed_spacer_lengths}[/cyan]\n"
             f"Internal tuning: [cyan]stride={zfn_design_params.half_site_constraints.window_stride}, "
@@ -2373,6 +2391,21 @@ def internal_zfn_make_shards(
     )
 
 
+@internal_command("zfn-build-search-index")
+def internal_zfn_build_search_index(
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    search_backend: ZFNSearchBackend = typer.Option(ZFNSearchBackend.FM_INDEX, "--search-backend"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+) -> None:
+    """Build a persisted ZFN search-space index bundle for indexed backends."""
+    summary = build_zfn_search_index(
+        backend=search_backend,
+        genome_fasta=genome_fasta,
+        output_dir=output_dir,
+    )
+    console.print(json.dumps(summary, indent=2, sort_keys=True))
+
+
 @internal_command("zfn-search-shard")
 def internal_zfn_search_shard(
     shard_id: str = typer.Option(..., "--shard-id"),
@@ -2389,8 +2422,10 @@ def internal_zfn_search_shard(
     left_half_site: str = typer.Option(..., "--left-half-site"),
     right_half_site: str = typer.Option(..., "--right-half-site"),
     genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
-    algorithm: str = typer.Option(..., "--algorithm"),
-    dimer_mode: str = typer.Option(..., "--dimer-mode"),
+    search_backend: ZFNSearchBackend = typer.Option(ZFNSearchBackend.EXHAUSTIVE_PYTHON, "--search-backend"),
+    search_space_index: Path | None = typer.Option(None, "--search-space-index"),
+    algorithm: ZFNAlgorithm = typer.Option(..., "--algorithm"),
+    dimer_mode: DimerMode = typer.Option(..., "--dimer-mode"),
     spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
     annotation_file: Path | None = typer.Option(None, "--annotation-file"),
     output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
@@ -2408,6 +2443,8 @@ def internal_zfn_search_shard(
         left_half_site=left_half_site,
         right_half_site=right_half_site,
         genome_fasta=genome_fasta,
+        search_backend=search_backend,
+        search_space_index=search_space_index,
         algorithm=algorithm,
         dimer_mode=dimer_mode,
         spacer_lengths=spacer_lengths,

@@ -24,7 +24,7 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.10, <3.13"
-version = "0.4.2"
+version = "0.4.3"
 
 dependencies = [
   "biopython>=1.84",
@@ -32,6 +32,8 @@ dependencies = [
   "numpy>=1.26.0",
   "requests>=2.32.0",
   "pysam>=0.23.0",
+  "pyahocorasick>=2.1.0",
+  "fm-index>=2.3.4",
   "click>=8.0.0",
   "pydantic>=2.11.0",
   "rich>=14.0.0",

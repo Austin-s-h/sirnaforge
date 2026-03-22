@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-03-22
+
+### New Features
+- **Pluggable ZFN search backends**:
+  - Added `ZFNSearchBackend` support across workflow, CLI, and typed ZFN contracts.
+  - Added optional backend engines for `pyahocorasick` and `fm_index` alongside `exhaustive_python`.
+- **Persisted ZFN search-space index bundles**:
+  - Added `fm_index` bundle build/load support with manifest + artifact validation.
+  - Added internal CLI command `sirnaforge internal zfn-build-search-index` for reproducible bundle generation.
+
+### Improvements
+- **Cache-aligned reproducibility for `fm_index`**:
+  - Index bundle creation now resolves FASTA inputs through the shared genome cache pipeline.
+  - Default bundle output paths are stable and cache-derived for repeatable runs.
+- **Strict typing and enum-driven CLI contracts**:
+  - Replaced string validation paths for backend/algorithm/dimer mode with imported enum types.
+  - Updated Nextflow bridge and shard execution paths to accept typed enums directly.
+- **Documentation and tests**:
+  - Expanded CLI reference with backend/index usage guidance and reproducible prebuild examples.
+  - Added/updated unit coverage for persisted index flow and internal index command delegation.
+
+### Dependencies
+- Added runtime dependencies for optional accelerated backends:
+  - `pyahocorasick>=2.1.0`
+  - `fm-index>=2.3.4`
+
 ## [0.4.2] - 2026-03-01
 
 ### New Features
