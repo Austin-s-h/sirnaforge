@@ -13,7 +13,9 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
+import pandas as pd
 import pytest
 from Bio.Seq import Seq
 
@@ -73,6 +75,127 @@ def _build_ccr5_synthetic_genome(tmp_path: Path) -> Path:
     fasta = tmp_path / "ccr5_synthetic_genome.fa"
     fasta.write_text(f">chr_synthetic\n{genome_seq}\n")
     return fasta
+
+
+def _build_chr3_scaled_benchmark_genome(tmp_path: Path) -> Path:
+    """Build a larger chr3-only synthetic FASTA to stress backend parity in workflow mode."""
+    s10_path = Path(__file__).resolve().parents[1] / "unit" / "data" / "zfn" / "ccr5_s10_visible_rows.csv"
+    with s10_path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+
+    ccr5_row = next(r for r in rows if r["Closest gene"] == "CCR5")
+    csnk1g3_row = next(r for r in rows if r["Closest gene"] == "CSNK1G3")
+    tmod1_row = next(r for r in rows if r["Closest gene"] == "TMOD1")
+
+    def _site_seq(plus: str, minus: str, spacer_len: int) -> str:
+        return plus.upper() + "A" * spacer_len + str(Seq(minus.upper()).reverse_complement())
+
+    chr3_seq = (
+        ("ACGT" * 10_000)
+        + _site_seq(ccr5_row["(+) half-site"], ccr5_row["(−) half-site"], 5)
+        + ("TGCA" * 8_000)
+        + _site_seq(csnk1g3_row["(+) half-site"], csnk1g3_row["(−) half-site"], 5)
+        + ("GATC" * 8_000)
+        + _site_seq(tmod1_row["(+) half-site"], tmod1_row["(−) half-site"], 5)
+        + ("CATG" * 8_000)
+        + _site_seq(ccr5_row["(+) half-site"], ccr5_row["(−) half-site"], 6)
+        + ("TTAA" * 10_000)
+    )
+
+    fasta = tmp_path / "chr3_scaled_benchmark.fa"
+    fasta.write_text(f">chr3\n{chr3_seq}\n", encoding="utf-8")
+    return fasta
+
+
+def _normalize_offtarget_csv(offtarget_csv: Path) -> pd.DataFrame:
+    """Normalize workflow output CSV for deterministic backend-to-backend dataframe comparisons."""
+    with offtarget_csv.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    df = pd.DataFrame(rows)
+    keep_columns = [
+        "chrom",
+        "start_1based",
+        "end_1based",
+        "strand",
+        "orientation",
+        "spacer_len",
+        "sequence",
+        "left_mismatches",
+        "right_mismatches",
+        "total_mismatches",
+        "score",
+    ]
+    normalized = df[keep_columns].copy()
+    numeric_columns = [
+        "start_1based",
+        "end_1based",
+        "spacer_len",
+        "left_mismatches",
+        "right_mismatches",
+        "total_mismatches",
+        "score",
+    ]
+    for column in numeric_columns:
+        normalized[column] = pd.to_numeric(normalized[column])
+    normalized["score"] = normalized["score"].round(8)
+    return normalized.sort_values(
+        by=["chrom", "start_1based", "end_1based", "orientation", "total_mismatches", "sequence"]
+    ).reset_index(drop=True)
+
+
+def _run_zfn_backend_workflow(
+    *,
+    tmp_path: Path,
+    backend_label: str,
+    genome_fasta: Path,
+    search_space_index: Path | None = None,
+) -> tuple[pd.DataFrame, Path]:
+    """Run one full ZFN workflow backend and return normalized site dataframe + output directory."""
+    output_dir = _get_persistent_output_dir(tmp_path, f"zfn_chr3_{backend_label}")
+    command = [
+        "sirnaforge",
+        "workflow",
+        "CCR5_ZFN_CHR3",
+        "--design-mode",
+        "zfn",
+        "--zfn-left-half-site",
+        CCR5_LEFT_HALF_SITE,
+        "--zfn-right-half-site",
+        CCR5_RIGHT_HALF_SITE,
+        "--zfn-search-space",
+        str(genome_fasta),
+        "--zfn-search-backend",
+        backend_label,
+        "--zfn-spacer-lengths",
+        "5,6",
+        "--zfn-max-mismatches",
+        "2",
+        "--zfn-algorithm",
+        "homology",
+        "--output-dir",
+        str(output_dir),
+    ]
+    if search_space_index is not None:
+        command.extend(["--zfn-search-space-index", str(search_space_index)])
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        print(f"Backend {backend_label} STDOUT:\n{result.stdout}")
+        print(f"Backend {backend_label} STDERR:\n{result.stderr}")
+        pytest.fail(f"ZFN workflow backend={backend_label} exited with code {result.returncode}")
+
+    offtarget_csv = output_dir / "sirnaforge" / "zfn_offtarget_sites.csv"
+    assert offtarget_csv.exists(), f"Missing zfn_offtarget_sites.csv for backend={backend_label}"
+    normalized = _normalize_offtarget_csv(offtarget_csv)
+    assert not normalized.empty, f"No off-target rows produced for backend={backend_label}"
+    return normalized, output_dir
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +485,100 @@ def test_zfn_homodimer_mode(tmp_path: Path) -> None:
         f"Homodimer mode ({results_by_mode['include_homodimers']}) found fewer sites "
         f"than heterodimer-only ({results_by_mode['heterodimer_only']})"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+def test_zfn_chr3_backend_dataframe_parity(tmp_path: Path) -> None:
+    """Run a larger chr3 workflow across backends and assert dataframe-level parity with visible diagnostics."""
+    genome_fasta = _build_chr3_scaled_benchmark_genome(tmp_path)
+
+    fm_bundle_dir = tmp_path / "zfn_chr3_fm_bundle"
+    fm_bundle_result = subprocess.run(
+        [
+            "sirnaforge",
+            "_internal",
+            "zfn-build-search-index",
+            "--genome-fasta",
+            str(genome_fasta),
+            "--search-backend",
+            "fm_index",
+            "--output-dir",
+            str(fm_bundle_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if fm_bundle_result.returncode != 0:
+        print(f"fm_index bundle build STDOUT:\n{fm_bundle_result.stdout}")
+        print(f"fm_index bundle build STDERR:\n{fm_bundle_result.stderr}")
+        pytest.fail(f"Failed to build fm_index bundle (exit code {fm_bundle_result.returncode})")
+
+    backend_frames: dict[str, pd.DataFrame] = {}
+    backend_output_dirs: dict[str, Path] = {}
+    backend_cases: list[tuple[str, Path | None]] = [
+        ("exhaustive_python", None),
+        ("pyahocorasick", None),
+        ("fm_index", None),
+        ("fm_index_persisted", fm_bundle_dir),
+    ]
+
+    for backend_label, index_path in backend_cases:
+        workflow_backend = "fm_index" if backend_label == "fm_index_persisted" else backend_label
+        frame, out_dir = _run_zfn_backend_workflow(
+            tmp_path=tmp_path,
+            backend_label=workflow_backend,
+            genome_fasta=genome_fasta,
+            search_space_index=index_path,
+        )
+        backend_frames[backend_label] = frame
+        backend_output_dirs[backend_label] = out_dir
+        frame.to_csv(out_dir / "backend_normalized_sites.csv", index=False)
+
+    baseline = backend_frames["exhaustive_python"]
+    parity_counts: list[dict[str, str | int]] = []
+    for backend_label, frame in backend_frames.items():
+        parity_counts.append({"backend": backend_label, "rows": int(len(frame))})
+        if backend_label == "exhaustive_python":
+            continue
+
+        if not frame.equals(baseline):
+            merged = baseline.merge(
+                frame,
+                how="outer",
+                indicator=True,
+                on=[
+                    "chrom",
+                    "start_1based",
+                    "end_1based",
+                    "strand",
+                    "orientation",
+                    "spacer_len",
+                    "sequence",
+                    "left_mismatches",
+                    "right_mismatches",
+                    "total_mismatches",
+                    "score",
+                ],
+            )
+            diff_preview = merged[merged["_merge"] != "both"].head(20)
+            diff_path = backend_output_dirs[backend_label] / "backend_parity_diff_preview.csv"
+            diff_preview.to_csv(diff_path, index=False)
+            preview_text = cast(Any, diff_preview).to_string(index=False)
+            pytest.fail(
+                "chr3 backend dataframe mismatch for "
+                f"{backend_label}. Preview saved to {diff_path}.\n"
+                f"Visible preview:\n{preview_text}"
+            )
+
+    counts_df = pd.DataFrame(parity_counts)
+    counts_path = tmp_path / "zfn_chr3_backend_row_counts.csv"
+    counts_df.to_csv(counts_path, index=False)
+    counts_text = cast(Any, counts_df).to_string(index=False)
+    print(f"ZFN chr3 backend parity row-count summary:\n{counts_text}")
+    print(f"Saved row-count summary to: {counts_path}")
 
 
 # ---------------------------------------------------------------------------

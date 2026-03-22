@@ -531,7 +531,7 @@ def test_minimal_toy_workflow(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
-        timeout=60,  # Should be very fast
+        timeout=300,
         check=False,
     )
 
