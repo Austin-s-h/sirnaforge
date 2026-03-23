@@ -436,12 +436,12 @@ class SiRNAWorkflow:
             zfn_output.mkdir(parents=True, exist_ok=True)
 
             # Off-target sites CSV
-            offtarget_csv = zfn_output / "zfn_offtarget_sites.csv"
+            offtarget_csv = zfn_output / "offtarget_sites.csv"
             zfn_result.save_offtargets_csv(str(offtarget_csv))
             console.print(f"  Off-target sites: [green]{offtarget_csv}[/green]")
 
             # Candidate summary JSON
-            candidate_json = zfn_output / "zfn_candidate_summary.json"
+            candidate_json = zfn_output / "candidate_summary.json"
             candidate_payloads: list[dict[str, Any]] = []
             for cand in zfn_result.candidates:
                 payload = cand.model_dump(mode="json")
@@ -716,7 +716,7 @@ class SiRNAWorkflow:
                 progress.advance(task)
 
         # Generate ORF validation report
-        report_file = self.config.output_dir / "orf_reports" / f"{self.config.gene_query}_orf_validation.txt"
+        report_file = self.config.output_dir / "orf_reports" / "orf_validation.txt"
         self._generate_orf_report(orf_results, report_file)
         progress.advance(task)
 
@@ -938,10 +938,10 @@ class SiRNAWorkflow:
             self._apply_modifications_to_results(design_results)
 
         base = self.config.output_dir / "sirnaforge"
-        all_csv = base / f"{self.config.gene_query}_all.csv"
-        pass_csv = base / f"{self.config.gene_query}_pass.csv"
-        pass_fasta = base / f"{self.config.gene_query}_pass.fasta"
-        report_file = self.config.output_dir / "orf_reports" / f"{self.config.gene_query}_orf_validation.txt"
+        all_csv = base / "candidates_all.csv"
+        pass_csv = base / "candidates_pass.csv"
+        pass_fasta = base / "candidates_pass.fasta"
+        report_file = self.config.output_dir / "orf_reports" / "orf_validation.txt"
         is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
 
         try:

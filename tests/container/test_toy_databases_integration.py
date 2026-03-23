@@ -9,7 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from sirnaforge.core.off_target import OffTargetAnalysisManager, build_bwa_index
+from sirnaforge.core.off_target import (
+    BwaAnalyzer,
+    MiRNASeedBackend,
+    OffTargetAnalysisManager,
+    build_bwa_index,
+    mirna_seed_hit_identity,
+    parse_fasta_file,
+    scan_mirna_seed_matches,
+)
 from sirnaforge.data.base import FastaUtils
 
 
@@ -117,3 +125,48 @@ def test_combined_offtarget_analysis(tmp_path: Path):
     assert transcriptome_json.exists()
     assert mirna_tsv.exists()
     assert mirna_json.exists()
+
+
+@pytest.mark.runs_in_container
+@pytest.mark.integration
+def test_toy_mirna_seed_backend_matches_bwa_semantic_hits(tmp_path: Path):
+    """Pyahocorasick should match BWA on the constrained toy miRNA seed fixture."""
+    if shutil.which("bwa-mem2") is None:
+        pytest.skip("bwa-mem2 not available - run this test in the Docker container")
+
+    test_data_dir = Path(__file__).parent.parent / "unit" / "data"
+    mirna_db = test_data_dir / "toy_mirna_db.fasta"
+    candidate_file = test_data_dir / "toy_candidates.fasta"
+
+    index_prefix = build_bwa_index(mirna_db, tmp_path / "mirna_index")
+
+    candidate_sequences = parse_fasta_file(candidate_file)
+    mirna_sequences = parse_fasta_file(mirna_db)
+
+    bwa_hits = BwaAnalyzer(
+        index_prefix=index_prefix,
+        mode="mirna_seed",
+        seed_length=6,
+        min_score=6,
+        max_hits=1000,
+        seed_start=2,
+        seed_end=8,
+    ).analyze_sequences(candidate_sequences)
+
+    pyahocorasick_hits = scan_mirna_seed_matches(
+        candidate_sequences,
+        mirna_sequences,
+        backend=MiRNASeedBackend.PYAHOCORASICK,
+        seed_start=2,
+        seed_end=8,
+        max_mismatches=2,
+        max_hits=1000,
+    )
+
+    assert bwa_hits, "toy fixture should produce BWA miRNA seed hits"
+    assert pyahocorasick_hits, "toy fixture should produce pyahocorasick miRNA seed hits"
+
+    bwa_identity = {mirna_seed_hit_identity(hit, coord_is_one_based=True) for hit in bwa_hits}
+    pyahocorasick_identity = {mirna_seed_hit_identity(hit) for hit in pyahocorasick_hits}
+
+    assert pyahocorasick_identity == bwa_identity

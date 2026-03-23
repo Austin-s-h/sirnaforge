@@ -1193,42 +1193,66 @@ def workflow(  # noqa: PLR0912
         summary_table.add_column("Status", style="green")
         summary_table.add_column("Details", style="white")
 
-        results.get("workflow_config", {})
-        transcript_summary = results.get("transcript_summary", {})
-        design_summary = results.get("design_summary", {})
-        offtarget_summary = results.get("offtarget_summary", {})
+        if mode_enum == DesignMode.ZFN:
+            summary_table.add_row(
+                "ZFN Pair Search",
+                "Complete",
+                f"{results.get('off_target_sites', 0)} off-target sites",
+            )
+            summary_table.add_row(
+                "ZFN Candidate Scoring",
+                "Complete",
+                f"{results.get('candidates', 0)} candidates",
+            )
+            summary_table.add_row(
+                "Annotation",
+                "Complete" if results.get("annotation_source") else "⚠️  Skipped",
+                str(results.get("annotation_source") or "none"),
+            )
+        else:
+            transcript_summary = results.get("transcript_summary", {})
+            design_summary = results.get("design_summary", {})
+            offtarget_summary = results.get("offtarget_summary", {})
 
-        summary_table.add_row(
-            "📄 Transcript Retrieval",
-            "✅ Complete",
-            f"{transcript_summary.get('total_transcripts', 0)} transcripts from {database}",
-        )
+            summary_table.add_row(
+                "Transcript Retrieval",
+                "Complete",
+                f"{transcript_summary.get('total_transcripts', 0)} transcripts from {database}",
+            )
 
-        summary_table.add_row(
-            "🧬 siRNAforge", "✅ Complete", f"{design_summary.get('total_candidates', 0)} candidates generated"
-        )
+            summary_table.add_row(
+                "🧬 siRNAforge", "✅ Complete", f"{design_summary.get('total_candidates', 0)} candidates generated"
+            )
 
-        summary_table.add_row(
-            "🎯 Off-target Analysis",
-            "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
-            f"Method: {offtarget_summary.get('method', 'basic')}",
-        )
+            summary_table.add_row(
+                "Off-target Analysis",
+                "Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
+                f"Method: {offtarget_summary.get('method', 'basic')}",
+            )
 
         console.print(summary_table)
 
         # Output locations
         console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
-        console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
-        console.print(f"   • siRNA candidates (ALL): [blue]sirnaforge/{gene_query}_all.csv[/blue]")
-        console.print(f"   • siRNA candidates (PASS): [blue]sirnaforge/{gene_query}_pass.csv[/blue]")
-        console.print("   • Off-target results: [blue]off_target/results/[/blue]")
-        console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
-        if json_summary:
-            console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
+        if mode_enum == DesignMode.ZFN:
+            console.print("   • Off-target sites: [blue]sirnaforge/offtarget_sites.csv[/blue]")
+            console.print("   • Candidate summary: [blue]sirnaforge/candidate_summary.json[/blue]")
+            console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
+            if json_summary:
+                console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
+        else:
+            offtarget_summary = results.get("offtarget_summary", {})
+            console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
+            console.print("   • siRNA candidates (ALL): [blue]sirnaforge/candidates_all.csv[/blue]")
+            console.print("   • siRNA candidates (PASS): [blue]sirnaforge/candidates_pass.csv[/blue]")
+            console.print("   • Off-target results: [blue]off_target/results/[/blue]")
+            console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
+            if json_summary:
+                console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
 
-        if offtarget_summary.get("method") == "nextflow":
-            console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
+            if offtarget_summary.get("method") == "nextflow":
+                console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
 
     except Exception as e:
         logger.exception("Workflow execution failed")
@@ -1690,8 +1714,8 @@ def zfn(
         console.print("\n✅ [bold green]ZFN workflow completed successfully![/bold green]")
         console.print(f"📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
-        console.print("   • Off-target sites: [blue]sirnaforge/zfn_offtarget_sites.csv[/blue]")
-        console.print("   • Candidate summary: [blue]sirnaforge/zfn_candidate_summary.json[/blue]")
+        console.print("   • Off-target sites: [blue]sirnaforge/offtarget_sites.csv[/blue]")
+        console.print("   • Candidate summary: [blue]sirnaforge/candidate_summary.json[/blue]")
         if json_summary:
             console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
     except Exception as e:

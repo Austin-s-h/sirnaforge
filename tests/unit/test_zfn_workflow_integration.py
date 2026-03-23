@@ -417,7 +417,7 @@ async def test_zfn_workflow_outputs_include_contract_and_provenance(tmp_path: Pa
     assert result["algorithm"] == zfn_params.algorithm.value
     assert result["spacer_lengths"] == [5, 6]
 
-    candidate_path = cfg.output_dir / "sirnaforge" / "zfn_candidate_summary.json"
+    candidate_path = cfg.output_dir / "sirnaforge" / "candidate_summary.json"
     payload = json.loads(candidate_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "zfn_candidate_summary.v1"
     assert payload["search_contract"]["allowed_spacer_lengths"] == [5, 6]
