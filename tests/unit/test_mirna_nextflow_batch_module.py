@@ -3,10 +3,17 @@
 from pathlib import Path
 
 
-def test_nextflow_mirna_batch_module_uses_python_entrypoint_defaults() -> None:
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    raise AssertionError("Could not locate repository root containing pyproject.toml")
+
+
+def test_nextflow_mirna_module_uses_default_backend() -> None:
     """Batch module should invoke the shared Python entrypoint without backend-specific knobs."""
     module_path = (
-        Path(__file__).parents[2]
+        _repo_root()
         / "src"
         / "sirnaforge"
         / "pipeline"
@@ -15,6 +22,10 @@ def test_nextflow_mirna_batch_module_uses_python_entrypoint_defaults() -> None:
         / "modules"
         / "local"
         / "mirna_seed_analysis.nf"
+    )
+    assert module_path.exists(), (
+        f"Expected Nextflow miRNA module at {module_path}. "
+        "Check path under src/sirnaforge/pipeline/nextflow/workflows/modules/local/."
     )
     module_text = module_path.read_text()
 

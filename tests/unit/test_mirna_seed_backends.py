@@ -128,7 +128,7 @@ def test_scan_mirna_seed_matches_uses_full_sequence_when_shorter_than_seed_windo
     assert hit["offtarget_score"] == 0.0
 
 
-def test_scan_mirna_seed_matches_pyahocorasick_dependency_error_is_clear(monkeypatch) -> None:
+def test_scan_mirna_seed_missing_pyahocorasick_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing optional pyahocorasick dependency should fail with actionable guidance."""
 
     def _missing_dependency(name: str):
@@ -136,7 +136,8 @@ def test_scan_mirna_seed_matches_pyahocorasick_dependency_error_is_clear(monkeyp
             raise ImportError("simulated missing dependency")
         return __import__(name)
 
-    monkeypatch.setattr("importlib.import_module", _missing_dependency)
+    # Patch where off_target resolves the optional dependency so we exercise the real failure path.
+    monkeypatch.setattr("sirnaforge.core.off_target.importlib.import_module", _missing_dependency)
 
     with pytest.raises(RuntimeError, match="required 'pyahocorasick' package"):
         scan_mirna_seed_matches(
