@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from sirnaforge.core.off_target import (
     MiRNASeedBackend,
@@ -73,3 +74,73 @@ def test_run_mirna_seed_analysis_pyahocorasick_writes_schema_compatible_outputs(
     assert summary["total_hits"] == len(validated_df)
     assert summary["total_raw_alignments"] == len(validated_df)
     assert summary["hits_per_species"]["human"] == len(validated_df)
+
+
+def test_scan_mirna_seed_matches_preserves_seed_mismatch_and_score_semantics() -> None:
+    """Seed mismatch counting and score calculation should remain stable across in-process scanning."""
+    candidate_sequences = {"candidate_1": "AUGCUAACG"}
+    mirna_sequences = {
+        "mir_exact": "TGCTAAC",
+        "mir_one_seed_mismatch": "TGCTAGC",
+    }
+
+    hits = scan_mirna_seed_matches(
+        candidate_sequences,
+        mirna_sequences,
+        backend=MiRNASeedBackend.PYAHOCORASICK,
+        seed_start=2,
+        seed_end=8,
+        max_mismatches=2,
+        max_hits=100,
+    )
+
+    by_mirna = {hit["rname"]: hit for hit in hits}
+    assert set(by_mirna) == {"mir_exact", "mir_one_seed_mismatch"}
+    assert by_mirna["mir_exact"]["qseq"] == "ATGCTAACG"
+    assert by_mirna["mir_exact"]["nm"] == 0
+    assert by_mirna["mir_exact"]["seed_mismatches"] == 0
+    assert by_mirna["mir_exact"]["offtarget_score"] == 0.0
+
+    assert by_mirna["mir_one_seed_mismatch"]["nm"] == 1
+    assert by_mirna["mir_one_seed_mismatch"]["seed_mismatches"] == 1
+    assert by_mirna["mir_one_seed_mismatch"]["offtarget_score"] == 15.0
+
+
+def test_scan_mirna_seed_matches_uses_full_sequence_when_shorter_than_seed_window() -> None:
+    """Short queries should still produce deterministic hits using the full normalized sequence."""
+    hits = scan_mirna_seed_matches(
+        {"short_candidate": "AUGC"},
+        {"short_mirna": "ATGC"},
+        backend=MiRNASeedBackend.PYAHOCORASICK,
+        seed_start=2,
+        seed_end=8,
+        max_mismatches=0,
+        max_hits=10,
+    )
+
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["qseq"] == "ATGC"
+    assert hit["cigar"] == "4M"
+    assert hit["coord"] == 0
+    assert hit["nm"] == 0
+    assert hit["seed_mismatches"] == 0
+    assert hit["offtarget_score"] == 0.0
+
+
+def test_scan_mirna_seed_matches_pyahocorasick_dependency_error_is_clear(monkeypatch) -> None:
+    """Missing optional pyahocorasick dependency should fail with actionable guidance."""
+
+    def _missing_dependency(name: str):
+        if name == "ahocorasick":
+            raise ImportError("simulated missing dependency")
+        return __import__(name)
+
+    monkeypatch.setattr("importlib.import_module", _missing_dependency)
+
+    with pytest.raises(RuntimeError, match="required 'pyahocorasick' package"):
+        scan_mirna_seed_matches(
+            {"candidate_1": "AUGCUAACG"},
+            {"mir_exact": "TGCTAAC"},
+            backend=MiRNASeedBackend.PYAHOCORASICK,
+        )
