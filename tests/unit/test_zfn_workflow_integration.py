@@ -298,7 +298,12 @@ class TestZFNWorkflowConfig:
         """Environment JSON should enable sharding without adding CLI flags."""
         monkeypatch.setenv(
             "SIRNAFORGE_ZFN_SHARDING_JSON",
-            '{"enabled": true, "chunk_size_mb": 10, "overlap_bp": 60, "chromosomes": "chr3", "max_workers": 2}',
+            (
+                '{"enabled": true, "chunk_size_mb": 10, "overlap_bp": 60, '
+                '"chromosomes": "chr3", "max_workers": 2, '
+                '"memory_budget_gb": 12.5, "memory_reserve_gb": 1.5, '
+                '"target_cpu_utilization": 0.9, "max_cpu_workers": 6}'
+            ),
         )
 
         params = ZFNDesignParameters(
@@ -314,6 +319,10 @@ class TestZFNWorkflowConfig:
         assert updated.sharding.overlap_bp == 60
         assert updated.sharding.chromosomes == ["chr3"]
         assert updated.sharding.max_workers == 2
+        assert updated.sharding.memory_budget_gb == 12.5
+        assert updated.sharding.memory_reserve_gb == 1.5
+        assert updated.sharding.target_cpu_utilization == 0.9
+        assert updated.sharding.max_cpu_workers == 6
         assert nextflow_overrides["zfn_sharding_enabled"] is True
 
 

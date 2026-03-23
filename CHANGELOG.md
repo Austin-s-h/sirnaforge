@@ -10,9 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.3] - 2026-03-22
 
 ### New Features
+- Changed default ZFN search backend from EXHAUSTIVE_PYTHON to PYAHOCORASICK for improved performance.
+- Added new fields to ZFNShardingConfig: memory_budget_gb, memory_reserve_gb, target_cpu_utilization, and max_cpu_workers to allow for better resource management.
+- Enhanced memory and CPU utilization handling in ExhaustiveZFNOffTargetSearcher to dynamically adjust worker counts based on available resources and user-defined limits.
+- Introduced warnings for using fm_index on large references to prevent high memory consumption.
+- Added integration tests for ZFN annotation and reference resolution, ensuring compatibility with real genomic data.
+- Updated unit tests to validate new sharding parameters and their impact on worker allocation and chunk sizing.
+
 - **Pluggable ZFN search backends**:
   - Added `ZFNSearchBackend` support across workflow, CLI, and typed ZFN contracts.
   - Added optional backend engines for `pyahocorasick` and `fm_index` alongside `exhaustive_python`.
+
+
 - **Persisted ZFN search-space index bundles**:
   - Added `fm_index` bundle build/load support with manifest + artifact validation.
   - Added internal CLI command `sirnaforge internal zfn-build-search-index` for reproducible bundle generation.

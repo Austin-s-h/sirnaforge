@@ -96,10 +96,16 @@ Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 
 * `--zfn-left-half-site` and `--zfn-right-half-site` are required.
 * `--zfn-search-space` accepts either a local/remote FASTA or a configured reference key.
-* `--zfn-search-backend` selects the half-site scan engine: `exhaustive_python`, `pyahocorasick`, or `fm_index`.
+* `--zfn-search-backend` selects the half-site scan engine: `pyahocorasick` (default), `exhaustive_python` (baseline), or `fm_index` (experimental).
 * `--zfn-search-space-index` accepts a persisted index-bundle directory for indexed backends. This is currently supported by `fm_index`.
 * `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
 * Outputs are written as `sirnaforge/zfn_candidate_summary.json` and `sirnaforge/zfn_offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
+
+Operational guidance from the backend tuning work:
+
+- prefer `pyahocorasick` for the first run on large references
+- use `fm_index` only for repeated persisted-index workflows; treat it as experimental on large references
+- keep `exhaustive_python` as the baseline comparator and fallback implementation
 
 For reproducible `fm_index` runs, prebuild one search-space bundle once, then reuse it across runs:
 

@@ -73,6 +73,16 @@ Outputs are written under:
 - `--zfn-max-mismatches`: mismatch cap per half-site during exhaustive search
 - `--zfn-annotation`: optional GTF/GFF annotation for region classification
 
+### Backend choice
+
+The backend tuning work settled on this operational order:
+
+1. `pyahocorasick` for the practical first run on large genomic references
+2. `fm_index` only for repeated persisted-index reuse workflows (experimental on large references)
+3. `exhaustive_python` as the strict baseline and fallback path
+
+See [Developer Documentation](developer/index.rst) for the backend tuning summary and the hg38 primary validation commands used to reach that conclusion.
+
 For larger genomes or advanced runtime control, see the workflow-level environment toggles documented in [Workflows](workflows.md).
 
 Legacy note: `sirnaforge workflow --design-mode zfn` remains a compatibility path, but `sirnaforge zfn` is the primary entrypoint.

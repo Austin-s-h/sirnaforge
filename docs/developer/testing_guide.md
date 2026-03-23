@@ -154,6 +154,14 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:latest \
 - **Release validation**: Use `test-release` with full coverage
 - **Quick validation**: Use `make check` for lint + fast tests
 
+## ZFN Manual Validation
+
+The heavy ZFN benchmarking and real-reference checks are documented as technical validation notes rather than notebook-management policy.
+
+- use [zfn_backend_tuning.md](zfn_backend_tuning.md) for the backend selection rationale
+- use [zfn_hg38_primary_test_commands.md](zfn_hg38_primary_test_commands.md) for full hg38 primary reruns
+- keep chr3 and hg38 durable behavior in `tests/integration/` so reference resolution, search execution, and annotation are exercised together
+
 ### Timeouts and Expectations
 - **Never cancel** `uv sync --dev` (can take 60-120s first time)
 - **Docker builds** take ~15-20 minutes first time, much faster subsequently

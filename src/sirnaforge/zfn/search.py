@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import importlib
 import json
+import os
 import pickle
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -986,8 +987,18 @@ def build_zfn_shard_specs(contig_lengths: dict[str, int], params: ZFNDesignParam
 class ExhaustiveZFNOffTargetSearcher:
     """Exhaustive sliding-window off-target search for a provided ZFN pair."""
 
-    _DEFAULT_MEMORY_RESERVE_GB = 2
-    _DEFAULT_PER_WORKER_GB = 0.5
+    _DEFAULT_MEMORY_RESERVE_GB = 2.0
+    _MIN_PER_WORKER_GB = 0.5
+    _MAX_PER_WORKER_GB = 2.0
+    _BASE_PER_WORKER_GB = 0.3
+    _PER_GBP_PER_WORKER_GB = 0.04
+    _PER_MISMATCH_STEP_GB = 0.06
+    _PER_EXTRA_SPACER_GB = 0.02
+    _FM_INDEX_PER_WORKER_BOOST_GB = 0.2
+    _TARGET_SHARDS_PER_WORKER = 8
+    _MIN_DERIVED_CHUNK_BP = 8_000_000
+    _MAX_DERIVED_CHUNK_BP = 24_000_000
+    _FM_INDEX_EXPERIMENTAL_WARNING_BP = 200_000_000
 
     def __init__(self, annotation_provider: ZFNAnnotationProvider | None = None) -> None:
         """Initialize searcher with optional annotation provider."""
@@ -1013,15 +1024,64 @@ class ExhaustiveZFNOffTargetSearcher:
         self._scan_engines[backend] = engine
         return engine
 
-    def _recommended_worker_cap(self, chrom_sequences: dict[str, str], params: ZFNDesignParameters) -> int:
-        """Return a conservative worker cap based on requested workers and live memory.
+    def _recommended_worker_cap(self, total_bp: int, params: ZFNDesignParameters) -> int:
+        """Return a conservative worker cap based on user CPU and memory constraints."""
+        requested = params.sharding.max_workers
+        cpu_cap = self._cpu_based_worker_cap(requested, params)
+        mem_cap = self._memory_based_worker_cap(requested, total_bp, params)
+        return min(requested, cpu_cap, mem_cap)
 
-        The search path should follow the requested sharding profile unless the
-        host lacks enough free memory to sustain that concurrency without risking
-        an OOM kill.
+    def _cpu_based_worker_cap(self, requested: int, params: ZFNDesignParameters) -> int:
+        """Cap workers using optional CPU utilization and explicit worker constraints."""
+        cap = requested
+        util_target = params.sharding.target_cpu_utilization
+        if util_target is not None:
+            host_cpus = os.cpu_count() or requested
+            cap = min(cap, max(1, int(host_cpus * util_target)))
+        if params.sharding.max_cpu_workers is not None:
+            cap = min(cap, params.sharding.max_cpu_workers)
+        return max(1, cap)
+
+    def _estimate_memory_per_worker_gb(self, total_bp: int, params: ZFNDesignParameters) -> float:
+        """Estimate per-worker memory from loaded search-space size and search complexity."""
+        total_gbp = total_bp / 1_000_000_000
+        max_mismatches = params.half_site_constraints.max_mismatches
+        spacer_count = len(params.spacer_constraints.allowed_spacer_lengths)
+
+        estimate = (
+            self._BASE_PER_WORKER_GB
+            + (total_gbp * self._PER_GBP_PER_WORKER_GB)
+            + (max(0, max_mismatches - 2) * self._PER_MISMATCH_STEP_GB)
+            + (max(0, spacer_count - 1) * self._PER_EXTRA_SPACER_GB)
+        )
+        if params.search_backend == ZFNSearchBackend.FM_INDEX:
+            estimate += self._FM_INDEX_PER_WORKER_BOOST_GB
+        return min(self._MAX_PER_WORKER_GB, max(self._MIN_PER_WORKER_GB, estimate))
+
+    def _derive_chunk_size_bp(self, total_bp: int, workers: int, params: ZFNDesignParameters) -> int:
+        """Derive chunk size from total loaded bp and selected worker count.
+
+        This keeps shard counts proportional to available parallelism while
+        constraining runtime chunking to practical bounds for hg38-scale runs.
         """
-        del chrom_sequences
-        return min(params.sharding.max_workers, self._memory_based_worker_cap(params.sharding.max_workers))
+        configured = max(1, params.sharding.chunk_size_bp)
+        selected_workers = max(1, workers)
+        target_shards = max(selected_workers, selected_workers * self._TARGET_SHARDS_PER_WORKER)
+        raw_chunk = max(1, (total_bp + target_shards - 1) // target_shards)
+
+        min_chunk = configured
+        max_chunk = max(configured, self._MAX_DERIVED_CHUNK_BP)
+        return max(min_chunk, min(max_chunk, raw_chunk))
+
+    def _resolve_runtime_sharding(self, total_bp: int, params: ZFNDesignParameters) -> tuple[ZFNDesignParameters, int]:
+        """Resolve runtime worker and chunk sizing from bp, memory, and CPU constraints."""
+        worker_cap = self._recommended_worker_cap(total_bp, params)
+        workers = max(1, min(worker_cap, params.sharding.max_workers))
+        derived_chunk_size_bp = self._derive_chunk_size_bp(total_bp, workers, params)
+
+        runtime_sharding = params.sharding.model_copy(update={"chunk_size_bp": derived_chunk_size_bp}, deep=True)
+        runtime_params = params.model_copy(update={"sharding": runtime_sharding}, deep=True)
+        return runtime_params, workers
 
     @staticmethod
     def _available_memory_gb() -> float | None:
@@ -1035,32 +1095,52 @@ class ExhaustiveZFNOffTargetSearcher:
             pass
         return None
 
-    def _memory_based_worker_cap(self, requested: int) -> int:
-        """Cap workers based on live available memory to avoid OOM on small hosts.
-
-        Each concurrent shard worker builds per-shard hit lists in memory.
-        On a heavily-loaded 12 GB machine (VS Code, Docker, other experiments)
-        running 8 workers on chr3 was enough to invoke the OOM killer.
-        By default we reserve 2 GiB for OS + other apps and allow ~0.5 GiB per worker slot.
-        """
-        avail_gb = self._available_memory_gb()
-        if avail_gb is None:
+    def _memory_based_worker_cap(self, requested: int, total_bp: int, params: ZFNDesignParameters) -> int:
+        """Cap workers from a bp-derived per-worker memory estimate and user budget."""
+        budget_gb = params.sharding.memory_budget_gb
+        if budget_gb is None:
+            budget_gb = self._available_memory_gb()
+        if budget_gb is None:
             return requested
-        reserve_gb = self._DEFAULT_MEMORY_RESERVE_GB
-        per_worker_gb = self._DEFAULT_PER_WORKER_GB
-        usable_gb = max(0.0, avail_gb - reserve_gb)
+
+        reserve_gb = params.sharding.memory_reserve_gb
+        per_worker_gb = self._estimate_memory_per_worker_gb(total_bp, params)
+        usable_gb = max(0.0, budget_gb - reserve_gb)
         mem_cap = max(1, int(usable_gb / per_worker_gb))
         if mem_cap < requested:
             logger.warning(
                 "ZFN worker count memory-capped from %s to %s "
-                "(%.1f GiB available, %.1f GiB usable after %.1f GiB reserve)",
+                "(budget=%.1f GiB, usable=%.1f GiB after reserve=%.1f GiB, "
+                "estimated %.3f GiB/worker from search-space %.2f Gbp)",
                 requested,
                 mem_cap,
-                avail_gb,
+                budget_gb,
                 usable_gb,
                 reserve_gb,
+                per_worker_gb,
+                total_bp / 1_000_000_000,
             )
         return mem_cap
+
+    def _warn_if_fm_index_large_search_space(self, params: ZFNDesignParameters, total_bp: int) -> None:
+        """Emit one guardrail warning when fm_index is used on large references."""
+        if params.search_backend != ZFNSearchBackend.FM_INDEX:
+            return
+        if total_bp < self._FM_INDEX_EXPERIMENTAL_WARNING_BP:
+            return
+
+        available_gb = self._available_memory_gb()
+        memory_hint = ""
+        if available_gb is not None:
+            memory_hint = f"; MemAvailable={available_gb:.1f} GiB"
+        index_hint = "with persisted index reuse" if params.search_space_index else "without a persisted index bundle"
+        logger.warning(
+            "ZFN backend 'fm_index' is experimental for large references and may consume high memory. "
+            "Loaded search space: %.2f Gbp (%s%s). Prefer 'pyahocorasick' for first-pass runs.",
+            total_bp / 1_000_000_000,
+            index_hint,
+            memory_hint,
+        )
 
     @staticmethod
     def _reverse_complement(seq: str) -> str:
@@ -1084,22 +1164,47 @@ class ExhaustiveZFNOffTargetSearcher:
         phase_start = time.perf_counter()
         chrom_sequences = self._load_fasta(fasta_path)
         phase_timings["load_fasta_s"] = time.perf_counter() - phase_start
+        total_bp = sum(len(seq) for seq in chrom_sequences.values())
+        self._warn_if_fm_index_large_search_space(params, total_bp)
+
+        per_worker_estimate = self._estimate_memory_per_worker_gb(total_bp, params)
+        runtime_params, planned_workers = self._resolve_runtime_sharding(total_bp, params)
 
         phase_start = time.perf_counter()
-        shard_specs = self._build_shard_specs(chrom_sequences, params)
+        shard_specs = self._build_shard_specs(chrom_sequences, runtime_params)
         phase_timings["build_shards_s"] = time.perf_counter() - phase_start
         scan_engine = self._scan_engine_for(params)
         all_sites: list[ZFNOffTargetSite] = []
 
-        worker_cap = self._recommended_worker_cap(chrom_sequences, params)
-        workers = min(worker_cap, len(shard_specs)) if shard_specs else 1
+        workers = min(planned_workers, len(shard_specs)) if shard_specs else 1
+        logger.info(
+            "ZFN worker sizing: total_bp=%s (%.2f Gbp), requested=%s, selected=%s, "
+            "chunk_size_bp=%s, memory_estimate_per_worker_gib=%.3f, memory_budget_gib=%s, "
+            "memory_reserve_gib=%.1f, target_cpu_utilization=%s, max_cpu_workers=%s",
+            total_bp,
+            total_bp / 1_000_000_000,
+            params.sharding.max_workers,
+            workers,
+            runtime_params.sharding.chunk_size_bp,
+            per_worker_estimate,
+            params.sharding.memory_budget_gb,
+            params.sharding.memory_reserve_gb,
+            params.sharding.target_cpu_utilization,
+            params.sharding.max_cpu_workers,
+        )
+        if runtime_params.sharding.chunk_size_bp != params.sharding.chunk_size_bp:
+            logger.info(
+                "ZFN chunk size auto-derived from total_bp and workers: configured=%s, derived=%s",
+                params.sharding.chunk_size_bp,
+                runtime_params.sharding.chunk_size_bp,
+            )
         if workers < params.sharding.max_workers:
             logger.warning(
                 "ZFN worker count auto-capped from %s to %s to limit peak memory usage "
                 "for a large search space (%s bp, max_mismatches=%s)",
                 params.sharding.max_workers,
                 workers,
-                sum(len(seq) for seq in chrom_sequences.values()),
+                total_bp,
                 params.half_site_constraints.max_mismatches,
             )
         logger.info("Starting ZFN shard search: %s shard(s), workers=%s", len(shard_specs), workers)

@@ -116,7 +116,7 @@ DEFAULT_ZFN_REPORT_N_SITES = 200
 
 def _autotune_zfn_sharding(
     cores_budget: int | None = None,
-    search_backend: ZFNSearchBackend = ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+    search_backend: ZFNSearchBackend = ZFNSearchBackend.PYAHOCORASICK,
 ) -> ZFNShardingConfig:
     """Return internal sharding defaults tuned by backend and host CPU budget."""
     cpu_count = cores_budget if cores_budget is not None else (os.cpu_count() or 1)
@@ -733,12 +733,18 @@ def workflow(  # noqa: PLR0912
     zfn_search_space_index: str | None = typer.Option(
         None,
         "--zfn-search-space-index",
-        help="Optional persisted search-space index bundle path for indexed ZFN backends (currently fm_index).",
+        help=(
+            "Optional persisted search-space index bundle path for indexed ZFN backends "
+            "(currently fm_index; fm_index is experimental on large references)."
+        ),
     ),
     zfn_search_backend: ZFNSearchBackend = typer.Option(
-        ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        ZFNSearchBackend.PYAHOCORASICK,
         "--zfn-search-backend",
-        help="Half-site search backend: exhaustive_python, pyahocorasick, or fm_index.",
+        help=(
+            "Half-site search backend: pyahocorasick (default), "
+            "exhaustive_python (baseline), or fm_index (experimental)."
+        ),
     ),
     zfn_algorithm: ZFNAlgorithm = typer.Option(
         ZFNAlgorithm.ZFN_V2,
@@ -1545,12 +1551,18 @@ def zfn(
     zfn_search_space_index: str | None = typer.Option(
         None,
         "--zfn-search-space-index",
-        help="Optional persisted search-space index bundle path for indexed ZFN backends (currently fm_index).",
+        help=(
+            "Optional persisted search-space index bundle path for indexed ZFN backends "
+            "(currently fm_index; fm_index is experimental on large references)."
+        ),
     ),
     zfn_search_backend: ZFNSearchBackend = typer.Option(
-        ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        ZFNSearchBackend.PYAHOCORASICK,
         "--zfn-search-backend",
-        help="Half-site search backend: exhaustive_python, pyahocorasick, or fm_index.",
+        help=(
+            "Half-site search backend: pyahocorasick (default), "
+            "exhaustive_python (baseline), or fm_index (experimental)."
+        ),
     ),
     zfn_algorithm: ZFNAlgorithm = typer.Option(
         ZFNAlgorithm.ZFN_V2,

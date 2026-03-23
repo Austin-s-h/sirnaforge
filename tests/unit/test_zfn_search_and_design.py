@@ -1,6 +1,7 @@
 """Unit tests for ZFN cache-resolved search space and design support."""
 
 import importlib
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,61 @@ def _write_fasta(tmp_path: Path, sequence: str, name: str = "chr1") -> Path:
     fasta = tmp_path / "search_space.fa"
     fasta.write_text(f">{name}\n{sequence}\n", encoding="utf-8")
     return fasta
+
+
+def test_zfn_design_parameters_default_backend_is_pyahocorasick() -> None:
+    """Default ZFN backend should favor the practical first-pass runtime path."""
+    params = ZFNDesignParameters(left_half_site=LEFT, right_half_site=RIGHT)
+    assert params.search_backend == ZFNSearchBackend.PYAHOCORASICK
+
+
+def test_fm_index_large_search_space_guardrail_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """fm_index should emit one explicit warning on large references."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.FM_INDEX,
+    )
+
+    def _resolve_stub(_: ZFNDesignParameters) -> Path:
+        return Path("dummy.fa")
+
+    def _load_stub(_: Path) -> dict[str, str]:
+        return {"chr1": "A" * 200_000_000}
+
+    def _build_shards_stub(*_args: object) -> list[object]:
+        return []
+
+    def _scan_engine_stub(*_args: object) -> object:
+        return object()
+
+    def _run_shards_stub(**_kwargs: object) -> list[ZFNOffTargetSite]:
+        return []
+
+    def _dedupe_stub(_: list[ZFNOffTargetSite]) -> list[ZFNOffTargetSite]:
+        return []
+
+    def _truncate_stub(ranked: list[ZFNOffTargetSite], _top_n: int) -> list[ZFNOffTargetSite]:
+        return ranked
+
+    monkeypatch.setattr(searcher, "_resolve_search_space_fasta", _resolve_stub)
+    monkeypatch.setattr(searcher, "_load_fasta", _load_stub)
+    monkeypatch.setattr(searcher, "_build_shard_specs", _build_shards_stub)
+    monkeypatch.setattr(searcher, "_scan_engine_for", _scan_engine_stub)
+    monkeypatch.setattr(searcher, "_run_shard_searches", _run_shards_stub)
+    monkeypatch.setattr(searcher, "_dedupe_sites", _dedupe_stub)
+    monkeypatch.setattr(searcher, "_truncate_sites", _truncate_stub)
+
+    with caplog.at_level(logging.WARNING):
+        searcher.search(params)
+
+    assert "fm_index' is experimental" in caplog.text
+    assert "Prefer 'pyahocorasick'" in caplog.text
 
 
 def _canonical_site(left: str, right: str, spacer: str = "AAAAA") -> str:
@@ -603,22 +659,36 @@ def test_single_contig_sharding_chunks_large_contig(tmp_path: Path) -> None:
 def test_memory_based_worker_cap_allows_two_workers_on_stable_mid_memory_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The live-memory cap should reflect the current default reserve on a host with about 5 GiB free."""
+    """The memory cap should reflect bp-derived per-worker estimates and reserve."""
     searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(max_workers=8),
+    )
 
+    total_bp = 3_000_000_000
+    per_worker = searcher._estimate_memory_per_worker_gb(total_bp, params)
     monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 4.9)
 
-    expected = int((4.9 - searcher._DEFAULT_MEMORY_RESERVE_GB) / searcher._DEFAULT_PER_WORKER_GB)
-    assert searcher._memory_based_worker_cap(8) == max(1, expected)
+    expected = int((4.9 - params.sharding.memory_reserve_gb) / per_worker)
+    assert searcher._memory_based_worker_cap(8, total_bp, params) == max(1, expected)
 
 
 def test_memory_based_worker_cap_keeps_one_worker_on_low_memory_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Low-memory hosts should still retain a single worker instead of failing closed."""
     searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(max_workers=8),
+    )
 
     monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 2.2)
 
-    assert searcher._memory_based_worker_cap(8) == 1
+    assert searcher._memory_based_worker_cap(8, 3_000_000_000, params) == 1
 
 
 def test_recommended_worker_cap_uses_requested_workers_when_memory_allows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -633,7 +703,7 @@ def test_recommended_worker_cap_uses_requested_workers_when_memory_allows(monkey
 
     monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 64.0)
 
-    assert searcher._recommended_worker_cap({"chr3": "A" * 3_000_000_000}, params) == 8
+    assert searcher._recommended_worker_cap(3_000_000_000, params) == 8
 
 
 def test_recommended_worker_cap_still_applies_memory_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -648,8 +718,79 @@ def test_recommended_worker_cap_still_applies_memory_limit(monkeypatch: pytest.M
 
     monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 4.9)
 
-    expected = int((4.9 - searcher._DEFAULT_MEMORY_RESERVE_GB) / searcher._DEFAULT_PER_WORKER_GB)
-    assert searcher._recommended_worker_cap({"chr3": "A" * 3_000_000_000}, params) == max(1, expected)
+    per_worker = searcher._estimate_memory_per_worker_gb(3_000_000_000, params)
+    expected = int((4.9 - params.sharding.memory_reserve_gb) / per_worker)
+    assert searcher._recommended_worker_cap(3_000_000_000, params) == max(1, expected)
+
+
+def test_recommended_worker_cap_honors_user_memory_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit memory_budget_gb should be used instead of live MemAvailable."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(max_workers=8, memory_budget_gb=3.0, memory_reserve_gb=1.0),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 64.0)
+
+    per_worker = searcher._estimate_memory_per_worker_gb(3_000_000_000, params)
+    expected = max(1, int((3.0 - 1.0) / per_worker))
+    assert searcher._recommended_worker_cap(3_000_000_000, params) == min(8, expected)
+
+
+def test_recommended_worker_cap_honors_cpu_utilization_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CPU utilization targets should cap requested workers even when memory is abundant."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(max_workers=8, target_cpu_utilization=0.5),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 64.0)
+    monkeypatch.setattr("sirnaforge.zfn.search.os.cpu_count", lambda: 12)
+
+    assert searcher._recommended_worker_cap(3_000_000_000, params) == 6
+
+
+def test_derive_chunk_size_bp_scales_with_total_bp_and_workers() -> None:
+    """Derived chunk size should reflect total bp and selected workers within guardrails."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(chunk_size_bp=12_000_000, max_workers=8),
+    )
+
+    small = searcher._derive_chunk_size_bp(20_000_000, 8, params)
+    large = searcher._derive_chunk_size_bp(3_000_000_000, 8, params)
+
+    assert small == 12_000_000
+    assert large == 24_000_000
+
+
+def test_resolve_runtime_sharding_uses_derived_chunk_and_worker_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime sharding should combine worker caps and bp-derived chunk sizing."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(
+            max_workers=8, chunk_size_bp=12_000_000, memory_budget_gb=3.0, memory_reserve_gb=1.0
+        ),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 64.0)
+
+    runtime_params, workers = searcher._resolve_runtime_sharding(3_000_000_000, params)
+    assert workers <= params.sharding.max_workers
+    assert runtime_params.sharding.chunk_size_bp >= 8_000_000
+    assert runtime_params.sharding.chunk_size_bp <= 24_000_000
 
 
 def test_sharded_search_matches_unsharded_on_large_complex_synthetic_genome(tmp_path: Path) -> None:

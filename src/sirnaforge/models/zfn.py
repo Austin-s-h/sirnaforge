@@ -246,6 +246,37 @@ class ZFNShardingConfig(BaseModel):
         ),
     )
     max_workers: int = Field(default=2, ge=1, le=128, description="Parallel shard workers for in-process search")
+    memory_budget_gb: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional memory budget in GiB for ZFN shard workers. "
+            "When set, worker concurrency is derived from estimated per-worker memory "
+            "requirements and this budget."
+        ),
+    )
+    memory_reserve_gb: float = Field(
+        default=2.0,
+        ge=0,
+        description=(
+            "Memory reserve in GiB subtracted from memory_budget_gb (or live available memory) "
+            "before deriving worker concurrency."
+        ),
+    )
+    target_cpu_utilization: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        description=(
+            "Optional CPU utilization target for shard workers as a fraction of host CPUs (for example, 0.9 for 90%)."
+        ),
+    )
+    max_cpu_workers: int | None = Field(
+        default=None,
+        ge=1,
+        le=128,
+        description="Optional hard upper bound on CPU-derived shard workers.",
+    )
 
     @field_validator_typed("chromosomes")
     @classmethod
@@ -280,8 +311,8 @@ class ZFNDesignParameters(BaseModel):
         description="Optional persisted search-space index bundle path for indexed backends (currently fm_index)",
     )
     search_backend: ZFNSearchBackend = Field(
-        default=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
-        description="Backend used for half-site search within the shared ZFN search pipeline",
+        default=ZFNSearchBackend.PYAHOCORASICK,
+        description="Backend used for half-site search within the shared ZFN search pipeline (default: pyahocorasick)",
     )
     left_half_site: str = Field(description="Left ZFN half-site sequence")
     right_half_site: str = Field(description="Right ZFN half-site sequence")
