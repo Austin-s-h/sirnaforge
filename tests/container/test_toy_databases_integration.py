@@ -4,21 +4,46 @@ These tests require BWA-MEM2 which is only available inside the Docker container
 They are marked with `runs_in_container` to run via `make docker-test`.
 """
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 
 from sirnaforge.core.off_target import (
-    BwaAnalyzer,
     MiRNASeedBackend,
     OffTargetAnalysisManager,
     build_bwa_index,
     mirna_seed_hit_identity,
-    parse_fasta_file,
-    scan_mirna_seed_matches,
+    run_mirna_seed_analysis,
 )
 from sirnaforge.data.base import FastaUtils
+
+
+def _load_semantic_mirna_hit_identities(
+    output_dir: Path, candidate_id: str
+) -> set[tuple[str, str, int, int, int, float]]:
+    """Load normalized miRNA hits from a backend run and project them onto the parity contract."""
+    hits_path = output_dir / f"{candidate_id}_mirna_hits_raw.json"
+    hits = json.loads(hits_path.read_text())
+    return {mirna_seed_hit_identity(hit) for hit in hits}
+
+
+def _assert_semantic_hit_parity(
+    *,
+    baseline_hits: set[tuple[str, str, int, int, int, float]],
+    candidate_hits: set[tuple[str, str, int, int, int, float]],
+    baseline_label: str,
+    candidate_label: str,
+) -> None:
+    """Assert semantic parity with a diff that makes backend drift obvious to maintainers."""
+    missing_hits = sorted(baseline_hits - candidate_hits)
+    extra_hits = sorted(candidate_hits - baseline_hits)
+    assert candidate_hits == baseline_hits, (
+        f"{candidate_label} semantic miRNA seed hits diverged from {baseline_label}: "
+        f"missing={missing_hits[:10]}, extra={extra_hits[:10]}, "
+        f"baseline_count={len(baseline_hits)}, candidate_count={len(candidate_hits)}"
+    )
 
 
 @pytest.mark.runs_in_container
@@ -130,43 +155,52 @@ def test_combined_offtarget_analysis(tmp_path: Path):
 @pytest.mark.runs_in_container
 @pytest.mark.integration
 def test_toy_mirna_seed_backend_matches_bwa_semantic_hits(tmp_path: Path):
-    """Pyahocorasick should match BWA on the constrained toy miRNA seed fixture."""
+    """The optimized miRNA backend should match BWA on toy-data semantic hit identities."""
     if shutil.which("bwa-mem2") is None:
         pytest.skip("bwa-mem2 not available - run this test in the Docker container")
 
     test_data_dir = Path(__file__).parent.parent / "unit" / "data"
-    mirna_db = test_data_dir / "toy_mirna_db.fasta"
-    candidate_file = test_data_dir / "toy_candidates.fasta"
+    mirna_db = test_data_dir / "toy_mirna_bwa_parity_db.fasta"
+    candidate_file = test_data_dir / "toy_mirna_bwa_parity_candidates.fasta"
+    candidate_id = "toy"
 
-    index_prefix = build_bwa_index(mirna_db, tmp_path / "mirna_index")
+    assert mirna_db.exists(), "Semantic-parity miRNA toy database should exist"
+    assert candidate_file.exists(), "Toy candidate sequences should exist"
 
-    candidate_sequences = parse_fasta_file(candidate_file)
-    mirna_sequences = parse_fasta_file(mirna_db)
-
-    bwa_hits = BwaAnalyzer(
-        index_prefix=index_prefix,
-        mode="mirna_seed",
-        seed_length=6,
-        min_score=6,
-        max_hits=1000,
-        seed_start=2,
-        seed_end=8,
-    ).analyze_sequences(candidate_sequences)
-
-    pyahocorasick_hits = scan_mirna_seed_matches(
-        candidate_sequences,
-        mirna_sequences,
-        backend=MiRNASeedBackend.PYAHOCORASICK,
-        seed_start=2,
-        seed_end=8,
-        max_mismatches=2,
-        max_hits=1000,
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "sirnaforge.data.mirna_manager.MiRNADatabaseManager.get_database",
+        lambda *_args, **_kwargs: mirna_db,
     )
+    try:
+        bwa_output_dir = run_mirna_seed_analysis(
+            candidates_file=candidate_file,
+            candidate_id=candidate_id,
+            mirna_db="toy_db",
+            mirna_species=["human"],
+            output_dir=tmp_path / "bwa",
+            backend=MiRNASeedBackend.BWA,
+        )
+        optimized_output_dir = run_mirna_seed_analysis(
+            candidates_file=candidate_file,
+            candidate_id=candidate_id,
+            mirna_db="toy_db",
+            mirna_species=["human"],
+            output_dir=tmp_path / "optimized",
+            backend=MiRNASeedBackend.PYAHOCORASICK,
+        )
+    finally:
+        monkeypatch.undo()
 
-    assert bwa_hits, "toy fixture should produce BWA miRNA seed hits"
-    assert pyahocorasick_hits, "toy fixture should produce pyahocorasick miRNA seed hits"
+    bwa_identity = _load_semantic_mirna_hit_identities(bwa_output_dir, candidate_id)
+    optimized_identity = _load_semantic_mirna_hit_identities(optimized_output_dir, candidate_id)
 
-    bwa_identity = {mirna_seed_hit_identity(hit, coord_is_one_based=True) for hit in bwa_hits}
-    pyahocorasick_identity = {mirna_seed_hit_identity(hit) for hit in pyahocorasick_hits}
+    assert bwa_identity, "toy fixture should produce BWA miRNA seed hits"
+    assert optimized_identity, "toy fixture should produce optimized miRNA seed hits"
 
-    assert pyahocorasick_identity == bwa_identity
+    _assert_semantic_hit_parity(
+        baseline_hits=bwa_identity,
+        candidate_hits=optimized_identity,
+        baseline_label="bwa",
+        candidate_label="pyahocorasick",
+    )

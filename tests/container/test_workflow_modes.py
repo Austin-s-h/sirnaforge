@@ -16,10 +16,14 @@ in test_container_integration.py::test_docker_full_tp53_workflow, so not duplica
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.models.schemas import MiRNAAlignmentSchema
 
 _RUNNING_IN_CI = os.getenv("CI", "").strip().lower() in {"1", "true", "yes"}
 
@@ -53,6 +57,21 @@ def _print_failure_location(output_dir: Path) -> None:
     print(f"\n{'=' * 80}")
     print(f"Test failed. Output saved to: {output_dir}")
     print(f"{'=' * 80}\n")
+
+
+def _seed_mirna_cache(cache_root: Path, *, source_name: str, species: str, fasta_path: Path) -> Path:
+    """Seed a deterministic miRNA cache entry for container workflow tests."""
+    manager = MiRNADatabaseManager(cache_dir=cache_root / "mirna")
+    source = manager.get_source_configuration(source_name, species)
+    if source is None:
+        raise AssertionError(f"Unsupported miRNA cache seed source: {source_name}/{species}")
+
+    cache_key = source.cache_key()
+    cache_file = manager.cache_dir / f"{cache_key}.fa"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(fasta_path, cache_file)
+    manager._record_cache_entry(cache_key, source, cache_file, persist=True)
+    return cache_file
 
 
 @pytest.mark.integration
@@ -322,6 +341,104 @@ def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
     assert mirna_reference.get("species") == ["hsa"], (
         f"miRNA species should collapse to ['hsa'], got: {mirna_reference.get('species')}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.slow
+def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
+    """Exercise the Nextflow miRNA batch path through the workflow CLI."""
+    if not Path("/.dockerenv").exists():
+        pytest.skip("runs_in_container test: only valid inside Docker image")
+    if shutil.which("nextflow") is None:
+        pytest.skip("Nextflow not available - run this test in Docker container")
+
+    output_dir = _get_persistent_output_dir(tmp_path, "nextflow_mirna_batch")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    test_data_dir = Path(__file__).resolve().parents[1] / "unit" / "data"
+    input_fasta = test_data_dir / "toy_candidates.fasta"
+    mirna_fixture = test_data_dir / "toy_mirna_db.fasta"
+
+    if not input_fasta.exists() or not mirna_fixture.exists():
+        pytest.skip("Toy miRNA fixtures not available")
+
+    cache_root = output_dir / "cache_root"
+    _seed_mirna_cache(cache_root, source_name="mirgenedb", species="hsa", fasta_path=mirna_fixture)
+
+    env = os.environ.copy()
+    env["SIRNAFORGE_CACHE_DIR"] = str(cache_root)
+
+    result = subprocess.run(
+        [
+            "sirnaforge",
+            "workflow",
+            "MIRNA_BATCH",
+            "--input-fasta",
+            str(input_fasta),
+            "--output-dir",
+            str(output_dir),
+            "--species",
+            "human",
+            "--top-n",
+            "3",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+        env=env,
+    )
+
+    if result.returncode != 0:
+        _print_failure_location(output_dir)
+        pytest.fail(f"Nextflow miRNA batch workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
+
+    results_dir = output_dir / "off_target" / "results"
+    batch_analysis = results_dir / "mirna" / "mirna_analysis.tsv"
+    batch_summary_path = results_dir / "mirna" / "mirna_summary.json"
+    combined_hits = results_dir / "aggregated" / "combined_mirna_hits.tsv"
+    combined_summary_path = results_dir / "aggregated" / "combined_mirna_summary.json"
+    workflow_summary_path = output_dir / "logs" / "workflow_summary.json"
+
+    for path in (batch_analysis, batch_summary_path, combined_hits, combined_summary_path, workflow_summary_path):
+        assert path.exists(), f"Missing expected artifact: {path}"
+
+    schema_columns = list(MiRNAAlignmentSchema.to_schema().columns.keys())
+    batch_lines = batch_analysis.read_text().strip().splitlines()
+    combined_lines = combined_hits.read_text().strip().splitlines()
+    assert len(batch_lines) > 1, "Batch miRNA analysis should contain hits"
+    assert batch_lines[0].split("\t") == schema_columns
+    assert combined_lines[0].split("\t") == schema_columns
+    assert len(combined_lines) == len(batch_lines), "Single batch run should aggregate to the same miRNA hit set"
+
+    batch_summary = json.loads(batch_summary_path.read_text())
+    assert batch_summary["candidate_id"] == "batch"
+    assert batch_summary["total_sequences"] == 3
+    assert batch_summary["species_analyzed"] == ["hsa"]
+    assert batch_summary["total_hits"] == len(batch_lines) - 1
+    assert batch_summary["hits_per_species"]["hsa"] == batch_summary["total_hits"]
+
+    combined_summary = json.loads(combined_summary_path.read_text())
+    assert combined_summary["analysis_files_processed"] == 1
+    assert combined_summary["total_candidates"] == 1
+    assert combined_summary["hits_per_candidate"] == {"batch": batch_summary["total_hits"]}
+    assert combined_summary["species_analyzed"] == ["hsa"]
+    assert combined_summary["total_mirna_hits"] == batch_summary["total_hits"]
+    assert combined_summary["human_hits"] == batch_summary["total_hits"]
+    assert combined_summary["other_species_hits"] == 0
+
+    workflow_summary = json.loads(workflow_summary_path.read_text())
+    assert workflow_summary["workflow_config"]["mirna_reference"]["species"] == ["hsa"]
+    assert workflow_summary["design_summary"]["total_candidates"] == 3
+
+    offtarget_summary = workflow_summary["offtarget_summary"]
+    assert offtarget_summary["status"] == "completed"
+    assert offtarget_summary["method"] == "embedded_nextflow"
+    assert offtarget_summary["aggregated"]["mirna"] == combined_summary
+    assert offtarget_summary["filtering_stats"]["human_mirna_hits"] == combined_summary["human_hits"]
 
 
 @pytest.mark.integration

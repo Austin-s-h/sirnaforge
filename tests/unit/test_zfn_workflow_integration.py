@@ -361,10 +361,11 @@ class TestZFNDesignerEvaluatePair:
 
     def test_evaluate_pair_mutation_constraints_affect_composite(self, tmp_path: Path) -> None:
         """Mutation constraints should influence the composite score via manufacturability."""
-        left = "NNNNNNNNN"
+        left = "ACCNNYACC"
+        target_left = "ACCAACACC"
         right = "GCCGCCGCC"
         spacer = "AAAAA"
-        target = f"{left}{spacer}{str(Seq(right).reverse_complement())}"
+        target = f"{target_left}{spacer}{str(Seq(right).reverse_complement())}"
         fasta = tmp_path / "genome.fa"
         fasta.write_text(f">chr1\nAAAA{target}CCCC\n")
 
@@ -394,6 +395,28 @@ class TestZFNDesignerEvaluatePair:
         manuf_no_mc = result_no_mc.candidates[0].component_scores["manufacturability"]
         manuf_with_mc = result_with_mc.candidates[0].component_scores["manufacturability"]
         assert manuf_with_mc < manuf_no_mc
+
+    def test_evaluate_pair_rejects_overly_degenerate_half_site(self, tmp_path: Path) -> None:
+        """Highly degenerate half-sites should fail fast with a clear user-facing error."""
+        left = "NNNNNNNNN"
+        right = "GCCGCCGCC"
+        spacer = "AAAAA"
+        target = f"{left}{spacer}{str(Seq(right).reverse_complement())}"
+        fasta = tmp_path / "genome.fa"
+        fasta.write_text(f">chr1\nAAAA{target}CCCC\n")
+
+        params = ZFNDesignParameters(
+            search_space_fasta=str(fasta),
+            left_half_site=left,
+            right_half_site=right,
+        )
+
+        designer = ZFNDesigner()
+        with pytest.raises(
+            ValueError,
+            match="too complex for the pyahocorasick backend.*Please reduce half-site ambiguity or mismatch allowances",
+        ):
+            designer.evaluate_pair(params=params)
 
 
 @pytest.mark.asyncio
