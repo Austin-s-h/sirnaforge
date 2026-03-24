@@ -335,7 +335,9 @@ def _evaluate_window_match(
 class _BaseHalfSiteScanEngine:
     """Shared helpers for concrete half-site scan backends."""
 
+    backend: ZFNSearchBackend
     _OBSERVED_ALPHABET = tuple(IUPAC_MAP.keys())
+    _MAX_CANDIDATE_PATTERNS = 1_000_000
 
     def __init__(self, owner: ExhaustiveZFNOffTargetSearcher) -> None:
         self._owner = owner
@@ -400,6 +402,58 @@ class _BaseHalfSiteScanEngine:
             materialized = tuple(sorted(results))
             self._pattern_cache[key] = materialized
             return materialized
+
+    def _candidate_pattern_count(self, kind: str, query: str, params: ZFNDesignParameters) -> int:
+        """Return the exact number of candidate patterns implied by the query.
+
+        Pattern-based backends enumerate all windows within the mismatch/seed
+        budget before verifying them against the genome. Highly degenerate
+        IUPAC queries can explode combinatorially, so we estimate the count
+        first and reject inputs that would make indexed backends impractical.
+        """
+        constraints = params.half_site_constraints
+        seed_positions = _seed_positions_for(kind, len(query), constraints.seed_len_from_fokI)
+        max_seed_mm = constraints.seed_max_mismatches if constraints.seed_len_from_fokI is not None else None
+        mode = constraints.iupac_mode
+
+        states: dict[tuple[int, int], int] = {(0, 0): 1}
+        alphabet_size = len(self._OBSERVED_ALPHABET)
+
+        for idx, base in enumerate(query):
+            allowed = {base} if mode == IUPACMode.NONE else IUPAC_MAP.get(base, {base})
+            match_choices = len(allowed)
+            mismatch_choices = alphabet_size - match_choices
+            in_seed = idx in seed_positions
+            next_states: dict[tuple[int, int], int] = {}
+
+            for (mismatches, seed_mismatches), count in states.items():
+                if match_choices:
+                    state = (mismatches, seed_mismatches)
+                    next_states[state] = next_states.get(state, 0) + (count * match_choices)
+
+                if mismatch_choices:
+                    next_mismatches = mismatches + 1
+                    next_seed_mismatches = seed_mismatches + (1 if in_seed else 0)
+                    if next_mismatches > constraints.max_mismatches:
+                        continue
+                    if max_seed_mm is not None and next_seed_mismatches > max_seed_mm:
+                        continue
+                    state = (next_mismatches, next_seed_mismatches)
+                    next_states[state] = next_states.get(state, 0) + (count * mismatch_choices)
+
+            states = next_states
+            if not states:
+                return 0
+
+        return sum(states.values())
+
+    def _raise_pattern_complexity_error(self, *, kind: str, pattern_count: int) -> None:
+        """Reject indexed-backend inputs whose query expansion is too large to be practical."""
+        raise ValueError(
+            f"ZFN {kind} half-site is too complex for the {self.backend.value} backend: "
+            f"{pattern_count} candidate patterns exceed the safety limit of {self._MAX_CANDIDATE_PATTERNS}. "
+            "Please reduce half-site ambiguity or mismatch allowances and try again with a more specific input."
+        )
 
     def _build_verified_hit(
         self,
@@ -623,6 +677,9 @@ class _PyAhoCorasickHalfSiteScanEngine(_BaseHalfSiteScanEngine):
         )
         if prebuilt_hits is not None:
             return prebuilt_hits
+        pattern_count = self._candidate_pattern_count(kind, query, params)
+        if pattern_count > self._MAX_CANDIDATE_PATTERNS:
+            self._raise_pattern_complexity_error(kind=kind, pattern_count=pattern_count)
         automaton = self._automaton(kind, query, params)
         hits: list[_HalfSiteHit] = []
 
@@ -841,6 +898,9 @@ class _FMIndexHalfSiteScanEngine(_BaseHalfSiteScanEngine):
         region_end0: int | None = None,
     ) -> list[_HalfSiteHit]:
         query = query.upper()
+        pattern_count = self._candidate_pattern_count(kind, query, params)
+        if pattern_count > self._MAX_CANDIDATE_PATTERNS:
+            self._raise_pattern_complexity_error(kind=kind, pattern_count=pattern_count)
         prebuilt_hits = self._scan_with_prebuilt_index(
             kind=kind,
             query=query,

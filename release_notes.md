@@ -23,6 +23,10 @@
   - Reconciled stale workflow flags in examples (`--species`, `--modifications`).
   - Added required ZFN half-site guidance for `--design-mode zfn` usage.
   - Added curated ZFN usage notes alongside auto-generated CLI reference content.
+- **miRNA backend rollout readiness**:
+  - Added deterministic exhaustive-oracle and BWA semantic parity coverage for the internal miRNA backend seam.
+  - Verified the embedded Nextflow miRNA batch path still emits the expected aggregated artifacts through the default backend.
+  - Documented the release-facing validation sequence for future miRNA backend changes without widening the public interface.
 
 ### Previous 0.4.1 highlights
 - **Variant Targeting Implementation**: Complete Phase 1-5 implementation for targeting specific genetic variants
