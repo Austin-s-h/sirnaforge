@@ -125,7 +125,16 @@ def _autotune_zfn_sharding(
         # FM-index can over-fragment and over-allocate quickly on full-primary genomes.
         max_workers = min(4, max(1, cpu_count // 2 if cpu_count >= 4 else cpu_count))
         chunk_size_bp = 16_000_000 if cpu_count >= 8 else 20_000_000
+    elif search_backend == ZFNSearchBackend.PYAHOCORASICK:
+        # pyahocorasick is memory-sensitive on large fallback runs; keep a conservative
+        # default worker count and treat workers primarily as a memory-control knob.
+        # chunk_size_bp here acts as the large-contig fallback threshold, not the
+        # primary scheduling unit.
+        max_workers = min(2, max(1, cpu_count))
+        chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
     else:
+        # exhaustive_python remains baseline-oriented and follows the broader
+        # CPU-parallel profile.
         max_workers = min(8, max(1, cpu_count))
         chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
 

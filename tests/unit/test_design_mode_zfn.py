@@ -199,13 +199,18 @@ def test_build_zfn_design_configuration_caps_shard_workers_for_large_cores() -> 
 
 
 def test_autotune_zfn_sharding_uses_backend_aware_fm_index_profile() -> None:
-    """FM-index should use a more conservative worker/chunk profile than scan backends."""
+    """FM-index should use a more conservative worker/chunk profile than scan backends.
+
+    For pyahocorasick the chunk_size_bp is a large-contig fallback threshold;
+    the primary execution path (contig_first) does not use it for scheduling.
+    """
     fm_index = _autotune_zfn_sharding(cores_budget=12, search_backend=ZFNSearchBackend.FM_INDEX)
     pyaho = _autotune_zfn_sharding(cores_budget=12, search_backend=ZFNSearchBackend.PYAHOCORASICK)
 
     assert fm_index.max_workers == 4
     assert fm_index.chunk_size_bp == 16_000_000
-    assert pyaho.max_workers == 8
+    assert pyaho.max_workers == 2
+    # chunk_size_bp is retained as the large-contig chunked-fallback threshold.
     assert pyaho.chunk_size_bp == 8_000_000
 
 

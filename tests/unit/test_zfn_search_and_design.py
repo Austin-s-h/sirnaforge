@@ -713,6 +713,7 @@ def test_recommended_worker_cap_still_applies_memory_limit(monkeypatch: pytest.M
         search_space_fasta="dummy.fa",
         left_half_site=LEFT,
         right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
         sharding=ZFNShardingConfig(max_workers=8),
     )
 
@@ -730,6 +731,7 @@ def test_recommended_worker_cap_honors_user_memory_budget(monkeypatch: pytest.Mo
         search_space_fasta="dummy.fa",
         left_half_site=LEFT,
         right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
         sharding=ZFNShardingConfig(max_workers=8, memory_budget_gb=3.0, memory_reserve_gb=1.0),
     )
 
@@ -747,6 +749,7 @@ def test_recommended_worker_cap_honors_cpu_utilization_target(monkeypatch: pytes
         search_space_fasta="dummy.fa",
         left_half_site=LEFT,
         right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
         sharding=ZFNShardingConfig(max_workers=8, target_cpu_utilization=0.5),
     )
 
@@ -791,6 +794,40 @@ def test_resolve_runtime_sharding_uses_derived_chunk_and_worker_caps(monkeypatch
     assert workers <= params.sharding.max_workers
     assert runtime_params.sharding.chunk_size_bp >= 8_000_000
     assert runtime_params.sharding.chunk_size_bp <= 24_000_000
+
+
+def test_recommended_worker_cap_pyahocorasick_large_contig_defaults_to_four(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large pyahocorasick fallback searches should cap workers to a safe default."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.PYAHOCORASICK,
+        sharding=ZFNShardingConfig(max_workers=8),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 22.0)
+
+    assert searcher._recommended_worker_cap(3_000_000_000, params) == 4
+
+
+def test_recommended_worker_cap_pyahocorasick_large_contig_relaxes_on_high_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """High-memory hosts can explicitly relax the pyahocorasick large-contig cap."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = ZFNDesignParameters(
+        search_space_fasta="dummy.fa",
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        search_backend=ZFNSearchBackend.PYAHOCORASICK,
+        sharding=ZFNShardingConfig(max_workers=8),
+    )
+
+    monkeypatch.setattr(searcher, "_available_memory_gb", lambda: 64.0)
+
+    assert searcher._recommended_worker_cap(3_000_000_000, params) == 8
 
 
 def test_sharded_search_matches_unsharded_on_large_complex_synthetic_genome(tmp_path: Path) -> None:
@@ -1452,3 +1489,122 @@ def test_score_manufacturability_applies_homopolymer_repeat_penalty() -> None:
     )
     score = designer._score_manufacturability(params)
     assert score == pytest.approx(85.0)
+
+
+# ---------------------------------------------------------------------------
+# _select_execution_strategy
+# ---------------------------------------------------------------------------
+
+
+def _make_params_for_strategy(
+    backend: ZFNSearchBackend,
+    chromosomes: list[str] | None = None,
+) -> ZFNDesignParameters:
+    return ZFNDesignParameters(
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        search_backend=backend,
+        sharding=ZFNShardingConfig(
+            enabled=True,
+            chromosomes=chromosomes or [],
+        ),
+    )
+
+
+def test_select_execution_strategy_pyahocorasick_small_contigs_returns_contig_first() -> None:
+    """Pyahocorasick + all contigs below threshold → contig_first strategy."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = _make_params_for_strategy(ZFNSearchBackend.PYAHOCORASICK)
+    contig_lengths = {"chr1": 100_000_000, "chr2": 50_000_000}
+    assert searcher._select_execution_strategy(params, contig_lengths) == "contig_first"
+
+
+def test_select_execution_strategy_pyahocorasick_large_contig_returns_chunked() -> None:
+    """Pyahocorasick + one contig exceeding 200 Mbp → falls back to chunked."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = _make_params_for_strategy(ZFNSearchBackend.PYAHOCORASICK)
+    contig_lengths = {"chr1": 201_000_000, "chr2": 50_000_000}
+    assert searcher._select_execution_strategy(params, contig_lengths) == "chunked"
+
+
+def test_select_execution_strategy_exhaustive_python_always_chunked() -> None:
+    """exhaustive_python backend always uses chunked regardless of contig sizes."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = _make_params_for_strategy(ZFNSearchBackend.EXHAUSTIVE_PYTHON)
+    contig_lengths = {"chr1": 1_000, "chr2": 500}
+    assert searcher._select_execution_strategy(params, contig_lengths) == "chunked"
+
+
+def test_select_execution_strategy_fm_index_always_chunked() -> None:
+    """fm_index backend always uses chunked regardless of contig sizes."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = _make_params_for_strategy(ZFNSearchBackend.FM_INDEX)
+    contig_lengths = {"chr1": 1_000}
+    assert searcher._select_execution_strategy(params, contig_lengths) == "chunked"
+
+
+def test_select_execution_strategy_pyahocorasick_filter_excludes_large_contig() -> None:
+    """If chromosome filter excludes the only large contig, result is contig_first."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    # Only 'chr2' is selected; chr1 is large but not in the filter.
+    params = _make_params_for_strategy(ZFNSearchBackend.PYAHOCORASICK, chromosomes=["chr2"])
+    contig_lengths = {"chr1": 250_000_000, "chr2": 80_000_000}
+    assert searcher._select_execution_strategy(params, contig_lengths) == "contig_first"
+
+
+def test_select_execution_strategy_pyahocorasick_filter_includes_only_large_contig() -> None:
+    """If chromosome filter selects only the large contig, result is chunked."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    params = _make_params_for_strategy(ZFNSearchBackend.PYAHOCORASICK, chromosomes=["chr1"])
+    contig_lengths = {"chr1": 250_000_000, "chr2": 80_000_000}
+    assert searcher._select_execution_strategy(params, contig_lengths) == "chunked"
+
+
+# ---------------------------------------------------------------------------
+# _build_contig_shard_specs
+# ---------------------------------------------------------------------------
+
+
+def test_build_contig_shard_specs_one_shard_per_contig(tmp_path: Path) -> None:
+    """contig_first build produces exactly one shard per selected chromosome."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    chrom_sequences = {"chr1": "A" * 1000, "chr2": "C" * 500}
+    params = ZFNDesignParameters(
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(enabled=True, chromosomes=[]),
+    )
+    shards = searcher._build_contig_shard_specs(chrom_sequences, params)
+    assert len(shards) == 2
+    chroms = {s.chrom for s in shards}
+    assert chroms == {"chr1", "chr2"}
+
+
+def test_build_contig_shard_specs_full_contig_no_overlap(tmp_path: Path) -> None:
+    """Each contig shard spans the full sequence with no overlap padding."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    chrom_sequences = {"chrX": "T" * 2000}
+    params = ZFNDesignParameters(
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(enabled=True, chromosomes=[]),
+    )
+    (shard,) = searcher._build_contig_shard_specs(chrom_sequences, params)
+    assert shard.core_start0 == 0
+    assert shard.core_end0 == 2000
+    assert shard.scan_start0 == 0
+    assert shard.scan_end0 == 2000
+
+
+def test_build_contig_shard_specs_respects_chromosome_filter() -> None:
+    """Chromosome filter applies; unselected contigs are excluded from shards."""
+    searcher = ExhaustiveZFNOffTargetSearcher()
+    chrom_sequences = {"chr1": "A" * 1000, "chr2": "C" * 500, "chrUn": "G" * 200}
+    params = ZFNDesignParameters(
+        left_half_site=LEFT,
+        right_half_site=RIGHT,
+        sharding=ZFNShardingConfig(enabled=True, chromosomes=["chr1", "chr2"]),
+    )
+    shards = searcher._build_contig_shard_specs(chrom_sequences, params)
+    assert len(shards) == 2
+    assert {s.chrom for s in shards} == {"chr1", "chr2"}

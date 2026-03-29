@@ -1059,6 +1059,13 @@ class ExhaustiveZFNOffTargetSearcher:
     _MIN_DERIVED_CHUNK_BP = 8_000_000
     _MAX_DERIVED_CHUNK_BP = 24_000_000
     _FM_INDEX_EXPERIMENTAL_WARNING_BP = 200_000_000
+    # Contig length threshold above which pyahocorasick falls back to fixed chunking.
+    # Below this threshold each contig is scanned as a single shard (contig-first strategy).
+    _PYAHOCORASICK_CONTIG_CHUNK_THRESHOLD_BP = 200_000_000
+    # On large-contig fallback searches, pyahocorasick tends to be memory-bound.
+    # Keep a conservative worker cap unless an explicitly larger memory budget exists.
+    _PYAHOCORASICK_LARGE_CONTIG_WORKER_CAP = 4
+    _PYAHOCORASICK_HIGH_MEMORY_RELAX_GB = 32.0
 
     def __init__(self, annotation_provider: ZFNAnnotationProvider | None = None) -> None:
         """Initialize searcher with optional annotation provider."""
@@ -1089,7 +1096,24 @@ class ExhaustiveZFNOffTargetSearcher:
         requested = params.sharding.max_workers
         cpu_cap = self._cpu_based_worker_cap(requested, params)
         mem_cap = self._memory_based_worker_cap(requested, total_bp, params)
-        return min(requested, cpu_cap, mem_cap)
+        backend_cap = self._backend_worker_cap(requested, total_bp, params)
+        return min(requested, cpu_cap, mem_cap, backend_cap)
+
+    def _backend_worker_cap(self, requested: int, total_bp: int, params: ZFNDesignParameters) -> int:
+        """Apply backend-specific caps that are not captured by generic cpu/memory heuristics."""
+        if params.search_backend != ZFNSearchBackend.PYAHOCORASICK:
+            return requested
+        if total_bp <= self._PYAHOCORASICK_CONTIG_CHUNK_THRESHOLD_BP:
+            return requested
+
+        budget_gb = params.sharding.memory_budget_gb
+        if budget_gb is None:
+            budget_gb = self._available_memory_gb()
+
+        if budget_gb is not None and budget_gb >= self._PYAHOCORASICK_HIGH_MEMORY_RELAX_GB:
+            return requested
+
+        return min(requested, self._PYAHOCORASICK_LARGE_CONTIG_WORKER_CAP)
 
     def _cpu_based_worker_cap(self, requested: int, params: ZFNDesignParameters) -> int:
         """Cap workers using optional CPU utilization and explicit worker constraints."""
@@ -1103,11 +1127,19 @@ class ExhaustiveZFNOffTargetSearcher:
         return max(1, cap)
 
     def _estimate_memory_per_worker_gb(self, total_bp: int, params: ZFNDesignParameters) -> float:
-        """Estimate per-worker memory from loaded search-space size and search complexity."""
-        total_gbp = total_bp / 1_000_000_000
-        max_mismatches = params.half_site_constraints.max_mismatches
-        spacer_count = len(params.spacer_constraints.allowed_spacer_lengths)
+        """Estimate per-worker memory from loaded search-space size and search complexity.
 
+        For pyahocorasick, the automaton is built once and shared across all shard workers,
+        so per-worker cost is driven by scan throughput rather than reference size.
+        """
+        max_mismatches = params.half_site_constraints.max_mismatches
+        if params.search_backend == ZFNSearchBackend.PYAHOCORASICK:
+            # Automaton is shared; per-worker cost does not scale with reference bp.
+            estimate = self._BASE_PER_WORKER_GB + (max(0, max_mismatches - 2) * self._PER_MISMATCH_STEP_GB)
+            return min(self._MAX_PER_WORKER_GB, max(self._MIN_PER_WORKER_GB, estimate))
+
+        total_gbp = total_bp / 1_000_000_000
+        spacer_count = len(params.spacer_constraints.allowed_spacer_lengths)
         estimate = (
             self._BASE_PER_WORKER_GB
             + (total_gbp * self._PER_GBP_PER_WORKER_GB)
@@ -1228,45 +1260,57 @@ class ExhaustiveZFNOffTargetSearcher:
         self._warn_if_fm_index_large_search_space(params, total_bp)
 
         per_worker_estimate = self._estimate_memory_per_worker_gb(total_bp, params)
-        runtime_params, planned_workers = self._resolve_runtime_sharding(total_bp, params)
+        strategy = self._select_execution_strategy(params, {chrom: len(seq) for chrom, seq in chrom_sequences.items()})
 
         phase_start = time.perf_counter()
-        shard_specs = self._build_shard_specs(chrom_sequences, runtime_params)
+        if strategy == "contig_first":
+            shard_specs = self._build_contig_shard_specs(chrom_sequences, params)
+            workers = min(len(shard_specs), params.sharding.max_workers) if shard_specs else 1
+            logger.info(
+                "ZFN execution strategy: contig_first (pyahocorasick, %s contig(s), "
+                "workers=%s, memory_estimate_per_worker_gib=%.3f)",
+                len(shard_specs),
+                workers,
+                per_worker_estimate,
+            )
+        else:
+            runtime_params, planned_workers = self._resolve_runtime_sharding(total_bp, params)
+            shard_specs = self._build_shard_specs(chrom_sequences, runtime_params)
+            workers = min(planned_workers, len(shard_specs)) if shard_specs else 1
+            logger.info(
+                "ZFN worker sizing: total_bp=%s (%.2f Gbp), requested=%s, selected=%s, "
+                "chunk_size_bp=%s, memory_estimate_per_worker_gib=%.3f, memory_budget_gib=%s, "
+                "memory_reserve_gib=%.1f, target_cpu_utilization=%s, max_cpu_workers=%s",
+                total_bp,
+                total_bp / 1_000_000_000,
+                params.sharding.max_workers,
+                workers,
+                runtime_params.sharding.chunk_size_bp,
+                per_worker_estimate,
+                params.sharding.memory_budget_gb,
+                params.sharding.memory_reserve_gb,
+                params.sharding.target_cpu_utilization,
+                params.sharding.max_cpu_workers,
+            )
+            if runtime_params.sharding.chunk_size_bp != params.sharding.chunk_size_bp:
+                logger.info(
+                    "ZFN chunk size auto-derived from total_bp and workers: configured=%s, derived=%s",
+                    params.sharding.chunk_size_bp,
+                    runtime_params.sharding.chunk_size_bp,
+                )
+            if workers < params.sharding.max_workers:
+                logger.warning(
+                    "ZFN worker count auto-capped from %s to %s to limit peak memory usage "
+                    "for a large search space (%s bp, max_mismatches=%s)",
+                    params.sharding.max_workers,
+                    workers,
+                    total_bp,
+                    params.half_site_constraints.max_mismatches,
+                )
         phase_timings["build_shards_s"] = time.perf_counter() - phase_start
         scan_engine = self._scan_engine_for(params)
         all_sites: list[ZFNOffTargetSite] = []
 
-        workers = min(planned_workers, len(shard_specs)) if shard_specs else 1
-        logger.info(
-            "ZFN worker sizing: total_bp=%s (%.2f Gbp), requested=%s, selected=%s, "
-            "chunk_size_bp=%s, memory_estimate_per_worker_gib=%.3f, memory_budget_gib=%s, "
-            "memory_reserve_gib=%.1f, target_cpu_utilization=%s, max_cpu_workers=%s",
-            total_bp,
-            total_bp / 1_000_000_000,
-            params.sharding.max_workers,
-            workers,
-            runtime_params.sharding.chunk_size_bp,
-            per_worker_estimate,
-            params.sharding.memory_budget_gb,
-            params.sharding.memory_reserve_gb,
-            params.sharding.target_cpu_utilization,
-            params.sharding.max_cpu_workers,
-        )
-        if runtime_params.sharding.chunk_size_bp != params.sharding.chunk_size_bp:
-            logger.info(
-                "ZFN chunk size auto-derived from total_bp and workers: configured=%s, derived=%s",
-                params.sharding.chunk_size_bp,
-                runtime_params.sharding.chunk_size_bp,
-            )
-        if workers < params.sharding.max_workers:
-            logger.warning(
-                "ZFN worker count auto-capped from %s to %s to limit peak memory usage "
-                "for a large search space (%s bp, max_mismatches=%s)",
-                params.sharding.max_workers,
-                workers,
-                total_bp,
-                params.half_site_constraints.max_mismatches,
-            )
         logger.info("Starting ZFN shard search: %s shard(s), workers=%s", len(shard_specs), workers)
         logger.info("Using ZFN scan backend: %s", params.search_backend.value)
         if workers == 1 and len(shard_specs) > 8:
@@ -1383,6 +1427,51 @@ class ExhaustiveZFNOffTargetSearcher:
         """Build chromosome/chunk shard specs with overlap safety guarantees."""
         contig_lengths = {chrom: len(sequence) for chrom, sequence in chrom_sequences.items()}
         return build_zfn_shard_specs(contig_lengths, params)
+
+    def _select_execution_strategy(self, params: ZFNDesignParameters, contig_lengths: dict[str, int]) -> str:
+        """Select the internal execution strategy for this backend and reference.
+
+        Returns 'contig_first' when the backend is pyahocorasick and no selected
+        contig exceeds _PYAHOCORASICK_CONTIG_CHUNK_THRESHOLD_BP.  All other
+        backends, and pyahocorasick on very large contigs, use 'chunked'.
+
+        The returned string is one of: 'contig_first', 'chunked'.
+        """
+        if params.search_backend != ZFNSearchBackend.PYAHOCORASICK:
+            return "chunked"
+
+        selected = resolve_target_contigs(list(contig_lengths.keys()), params.sharding.chromosomes)
+        if any(contig_lengths[c] > self._PYAHOCORASICK_CONTIG_CHUNK_THRESHOLD_BP for c in selected):
+            logger.info(
+                "ZFN pyahocorasick: large contig detected (>%d Mbp); falling back to chunked execution strategy",
+                self._PYAHOCORASICK_CONTIG_CHUNK_THRESHOLD_BP // 1_000_000,
+            )
+            return "chunked"
+        return "contig_first"
+
+    def _build_contig_shard_specs(
+        self, chrom_sequences: dict[str, str], params: ZFNDesignParameters
+    ) -> list[_ShardSpec]:
+        """Build one shard per selected contig — no intra-contig chunking or overlap math.
+
+        Used by the contig-first execution strategy for pyahocorasick, where the
+        automaton is shared across workers and scanning the full contig per worker
+        is the most efficient partition.
+        """
+        selected = resolve_target_contigs(list(chrom_sequences.keys()), params.sharding.chromosomes)
+        if not selected:
+            raise ValueError("No matching chromosomes available for configured ZFN sharding filter")
+        return [
+            _ShardSpec(
+                shard_id=f"{chrom}:1-{len(chrom_sequences[chrom])}",
+                chrom=chrom,
+                core_start0=0,
+                core_end0=len(chrom_sequences[chrom]),
+                scan_start0=0,
+                scan_end0=len(chrom_sequences[chrom]),
+            )
+            for chrom in selected
+        ]
 
     def _filter_sites_to_core_window(
         self,
