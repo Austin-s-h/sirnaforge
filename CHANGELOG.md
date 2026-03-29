@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cache-aligned reproducibility for `fm_index`**:
   - Index bundle creation now resolves FASTA inputs through the shared genome cache pipeline.
   - Default bundle output paths are stable and cache-derived for repeatable runs.
+- **miRNA backend rollout readiness**:
+  - Clarified the internal miRNA seed-scanning seam around `pyahocorasick` as the operational default.
+  - Kept `exhaustive_python` as the correctness oracle and BWA as the semantic comparison baseline for parity validation.
+  - Preserved the existing miRNA output contract and embedded Nextflow batch behavior without adding a public backend-selection flag.
 - **Strict typing and enum-driven CLI contracts**:
   - Replaced string validation paths for backend/algorithm/dimer mode with imported enum types.
   - Updated Nextflow bridge and shard execution paths to accept typed enums directly.

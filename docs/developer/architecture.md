@@ -262,6 +262,15 @@ class AlignmentResult:
     """Off-target alignment with scoring"""
 ```
 
+**Off-target Backend Strategy:**
+
+- Transcriptome off-target analysis remains alignment-based and continues to run through the BWA-MEM2 and embedded Nextflow path.
+- miRNA seed analysis uses an intentionally internal backend seam that normalizes backend-specific results onto one semantic hit contract before emitting the stable TSV/JSON artifacts consumed by reporting.
+- `pyahocorasick` is the operational default for miRNA seed scanning because it provides the best in-process runtime profile without changing downstream output shape.
+- `exhaustive_python` remains the strict correctness oracle for parity and regression testing.
+- `BWA` remains available as the semantic comparison baseline for container-backed validation, not as the default user path.
+- The ZFN and miRNA systems share the same rollout policy pattern: keep a trusted baseline, promote an optimized default only after parity coverage exists, and avoid widening the public backend-selection surface until the behavior is well proven.
+
 ### 4. Model Layer (`models/`)
 
 **Purpose**: Data models and validation

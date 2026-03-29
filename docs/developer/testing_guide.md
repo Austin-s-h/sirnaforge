@@ -166,6 +166,10 @@ The heavy ZFN benchmarking and real-reference checks are documented as technical
 
 Use this sequence when touching the internal miRNA backend seam or the Nextflow batch path.
 
+The operational default for miRNA seed analysis is `pyahocorasick`.
+Keep `exhaustive_python` as the correctness oracle for parity checks and treat the BWA path as the semantic comparison baseline in environments where BWA exists.
+Backend selection remains intentionally internal for this slice; do not add a public CLI or workflow knob unless the product surface is being widened on purpose.
+
 ```bash
 make lint
 

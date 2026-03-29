@@ -37,7 +37,7 @@
 | **🧾 Transcript annotations** | Fetch transcript models/interval annotations via a provider layer (Ensembl REST-backed) |
 | **🌡️ Thermodynamic scoring** | ViennaRNA-based secondary structure prediction and stability analysis |
 | **🎯 Transcriptome Off-target analysis** | Transcriptome BWA-MEM2 `transcriptome` search with mismatch tolerance control |
-| **🧬 miRNA seed avoidance** | MirGeneDB, MirBase (TODO) BWA-MEM2 `mirna_seed` search for known matches to miRNA seed regions |
+| **🧬 miRNA seed avoidance** | MirGeneDB, MirBase (TODO) seed-region matching against miRNA databases (positions 2-8; internal `pyahocorasick` default) |
 | **🔤 Smart species handling** | Accepts any format (common names, miRBase codes, scientific names) — auto-normalizes to canonical |
 | **⚙️ Nextflow pipeline** | Scalable, containerized execution for high-throughput analysis |
 | **💉 Chemical modifications** | Track 2'-O-methyl, 2'-fluoro, and phosphorothioate patterns |

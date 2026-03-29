@@ -206,7 +206,12 @@ def _run_zfn_backend_workflow(
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 def test_zfn_workflow_cli_smoke(tmp_path: Path) -> None:
-    """Smoke test: ZFN design mode runs end-to-end via CLI and produces expected outputs."""
+    """Smoke test: broad-mismatch CCR5 workflow runs end-to-end via CLI and produces expected outputs.
+
+    This benchmark-style scenario intentionally uses ``exhaustive_python`` because
+    the 4-mismatch search budget is outside the practical pyahocorasick path for
+    these real CCR5 half-sites.
+    """
     output_dir = _get_persistent_output_dir(tmp_path, "zfn_smoke")
     genome_fasta = _build_ccr5_synthetic_genome(tmp_path)
 
@@ -223,6 +228,8 @@ def test_zfn_workflow_cli_smoke(tmp_path: Path) -> None:
             CCR5_RIGHT_HALF_SITE,
             "--zfn-search-space",
             str(genome_fasta),
+            "--zfn-search-backend",
+            "exhaustive_python",
             "--zfn-spacer-lengths",
             "5,6",
             "--zfn-max-mismatches",
@@ -310,6 +317,9 @@ def test_zfn_ccr5_known_site_recovery(tmp_path: Path) -> None:
     Uses the validated CCR5 on-target + CSNK1G3 + CCR2 sites embedded
     in a synthetic genome.  The searcher should find a perfect-match
     on-target site and mismatched off-target sites.
+
+    This fixture keeps the original broad mismatch budget from the CCR5
+    benchmark context, so it is explicitly scoped to ``exhaustive_python``.
     """
     output_dir = _get_persistent_output_dir(tmp_path, "zfn_ccr5_recovery")
     genome_fasta = _build_ccr5_synthetic_genome(tmp_path)
@@ -327,6 +337,8 @@ def test_zfn_ccr5_known_site_recovery(tmp_path: Path) -> None:
             CCR5_RIGHT_HALF_SITE,
             "--zfn-search-space",
             str(genome_fasta),
+            "--zfn-search-backend",
+            "exhaustive_python",
             "--zfn-spacer-lengths",
             "5,6",
             "--zfn-max-mismatches",
@@ -438,7 +450,12 @@ def test_zfn_all_algorithms_produce_results(tmp_path: Path) -> None:
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 def test_zfn_homodimer_mode(tmp_path: Path) -> None:
-    """Verify homodimer mode finds additional sites vs heterodimer-only."""
+    """Verify homodimer mode finds additional sites vs heterodimer-only.
+
+    This comparison retains the broad CCR5 benchmark mismatch budget and is
+    therefore scoped to ``exhaustive_python`` rather than the default runtime
+    backend.
+    """
     genome_fasta = _build_ccr5_synthetic_genome(tmp_path)
 
     results_by_mode: dict[str, int] = {}
@@ -458,6 +475,8 @@ def test_zfn_homodimer_mode(tmp_path: Path) -> None:
                 CCR5_RIGHT_HALF_SITE,
                 "--zfn-search-space",
                 str(genome_fasta),
+                "--zfn-search-backend",
+                "exhaustive_python",
                 "--zfn-spacer-lengths",
                 "5,6",
                 "--zfn-max-mismatches",

@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cache-backed default bundle placement for `fm_index` builds via shared genome reference resolution.
 - Enum-typed CLI and bridge plumbing for backend/algorithm/dimer arguments.
 - CLI docs updated with backend/index options and reusable `fm_index` prebuild workflow.
+- Internal miRNA backend seam now defaults to `pyahocorasick` while keeping `exhaustive_python` as the correctness oracle and BWA as the semantic comparison baseline.
+- Embedded Nextflow miRNA batch runs continue to emit the same aggregated artifacts without introducing a public backend-selection flag.
 
 ### Dependencies
 - Added optional accelerated backend dependencies:

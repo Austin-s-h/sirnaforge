@@ -6,6 +6,17 @@ API Reference
    :undoc-members:
    :show-inheritance:
 
+Configuration
+-------------
+
+Reference Policy
+~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.config.reference_policy
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Command Line Interface
 ----------------------
 
@@ -65,6 +76,38 @@ ZFN Ranking
    :undoc-members:
    :show-inheritance:
 
+ZFN Annotation
+~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.annotation
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+ZFN Interfaces
+~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.interfaces
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+ZFN Nextflow Bridge
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.nextflow_bridge
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+ZFN Benchmark Data
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.zfn.benchmark_data
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Data Models
 -----------
 
@@ -108,6 +151,14 @@ Transcript Annotation Models
    :undoc-members:
    :show-inheritance:
 
+Variant Models
+~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.models.variant
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Validation Schemas
 ~~~~~~~~~~~~~~~~~~
 
@@ -127,6 +178,14 @@ Base Data Classes
    :undoc-members:
    :show-inheritance:
 
+Annotation Manager
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.annotation_manager
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Gene Search
 ~~~~~~~~~~~
 
@@ -139,6 +198,38 @@ ORF Analysis
 ~~~~~~~~~~~~
 
 .. automodule:: sirnaforge.data.orf_analysis
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Genome Manager
+~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.genome_manager
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Reference Manager
+~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.reference_manager
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Transcriptome Manager
+~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.transcriptome_manager
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Transcriptome Filter
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.transcriptome_filter
    :members:
    :undoc-members:
    :show-inheritance:
@@ -163,6 +254,30 @@ Species Registry
 ~~~~~~~~~~~~~~~~
 
 .. automodule:: sirnaforge.data.species_registry
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Variant Resolver
+~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.variant_resolver
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Variant Cache
+~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.variant_cache
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Variant Helpers
+~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.data.variant_helpers
    :members:
    :undoc-members:
    :show-inheritance:
@@ -194,10 +309,26 @@ Nextflow Runner
    :undoc-members:
    :show-inheritance:
 
+Pipeline Resources
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.pipeline.resources.resources
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Workflow Orchestration
 ----------------------
 
 .. automodule:: sirnaforge.workflow
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Variant Workflow Integration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.workflow_variant
    :members:
    :undoc-members:
    :show-inheritance:
@@ -240,6 +371,38 @@ Logging Utilities
    :undoc-members:
    :show-inheritance:
 
+Cache Utilities
+~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.cache_utils
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+CLI Input Helpers
+~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.cli_inputs
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Control Candidates
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.control_candidates
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+FASTA Utilities
+~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.fasta
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Modification Patterns
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -252,6 +415,30 @@ Resource Resolver
 ~~~~~~~~~~~~~~~~~
 
 .. automodule:: sirnaforge.utils.resource_resolver
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Species Utilities
+~~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.species
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Typed Decorators
+~~~~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.typed_decorators
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Unified Cache
+~~~~~~~~~~~~~
+
+.. automodule:: sirnaforge.utils.unified_cache
    :members:
    :undoc-members:
    :show-inheritance:

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from Bio.Seq import Seq
 
-from sirnaforge.models.zfn import ZFNDesignParameters, ZFNHalfSiteConstraints, ZFNSpacerConstraints
+from sirnaforge.models.zfn import (
+    ZFNDesignParameters,
+    ZFNHalfSiteConstraints,
+    ZFNSearchBackend,
+    ZFNSpacerConstraints,
+)
 from sirnaforge.zfn.design import ZFNDesigner
 
 
@@ -65,6 +70,7 @@ def test_00_ccr5_sirnaforge_run_sanity_against_visible_rows(tmp_path: Path) -> N
         left_half_site=ccr5_row["(+) half-site"],
         right_half_site=ccr5_row["(−) half-site"],
         search_space_fasta=str(fasta_path),
+        search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
         half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=4),
         spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5, 6]),
         top_n_sites=100,

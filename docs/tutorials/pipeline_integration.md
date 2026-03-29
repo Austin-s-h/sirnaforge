@@ -6,7 +6,7 @@ This tutorial walks through running siRNAforge's **embedded Nextflow** pipeline 
 
 Use the Nextflow workflow when you need to:
 - Score hundreds of candidate genes or transcripts in batch
-- Run transcriptome + miRNA off-target analysis with BWA-MEM2
+- Run transcriptome off-target analysis with BWA-MEM2 plus the default internal miRNA seed-matching path in one workflow
 - Leverage Docker/Conda environments reproducibly on HPC or cloud infrastructure
 
 For small jobs or interactive exploration, the CLI (`sirnaforge workflow ...`) is sufficient.
@@ -56,7 +56,8 @@ Important parameters:
 - `--candidates`: FASTA file with siRNA sequences (one per record)
 - `--outdir`: Output directory for per-species TSV/JSON summaries
 - `--genome_species`: Comma-separated list for miRNA genome lookups (not genomic DNA alignment)
-- `--max_hits`, `--bwa_k`, `--bwa_T`, `--seed_start`, `--seed_end`: Override alignment sensitivity (see pipeline config)
+- `--max_hits`, `--bwa_k`, `--bwa_T`: Override transcriptome alignment sensitivity (see pipeline config)
+- `--seed_start`, `--seed_end`: Override the miRNA seed window used by the shared analysis contract
 
 ## Running Nextflow Directly (advanced)
 
