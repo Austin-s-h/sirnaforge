@@ -213,8 +213,43 @@ def test_annotation_manager_rehomes_stale_unwritable_metadata_path(
     assert captured_destinations[0].parent == manager.cache_dir
 
 
-def test_resolve_cache_subdir_warns_on_mixed_roots(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """Resolving one subdir to multiple roots should emit a warning."""
+def test_transcriptome_manager_rehomes_stale_unwritable_metadata_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid transcriptome metadata paths should re-home downloads to active cache dir."""
+    manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=False)
+    source = manager.sources["ensembl_human_cdna"]
+    cache_key = source.cache_key()
+    manager.metadata[cache_key] = CacheMetadata(
+        source=source,
+        downloaded_at=datetime.now().isoformat(),
+        file_size=1,
+        checksum="deadbeef",
+        file_path="/cache",
+    )
+
+    captured_destinations: list[Path] = []
+
+    def _fake_download_to_path(source: Any, destination: Path, timeout: int = 600) -> bool:  # noqa: ARG001
+        captured_destinations.append(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(">tx1\nACGT\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(manager, "_download_to_path", _fake_download_to_path)
+    monkeypatch.setattr(manager, "_cache_dir_is_writable", staticmethod(lambda p: str(p) != "/"))
+
+    result = manager.get_transcriptome("ensembl_human_cdna", force_refresh=True, build_index=False)
+
+    assert result is not None
+    assert result["fasta"].parent == manager.cache_dir
+    assert captured_destinations[0].parent == manager.cache_dir
+
+
+def test_resolve_cache_subdir_does_not_warn_on_explicit_override_changes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Intentional explicit cache overrides should not emit mixed-root warning noise."""
     subdir = "mixed-root-warning-test"
     root_a = tmp_path / "root_a"
     root_b = tmp_path / "root_b"
@@ -222,7 +257,7 @@ def test_resolve_cache_subdir_warns_on_mixed_roots(tmp_path: Path, caplog: pytes
     resolve_cache_subdir(subdir, override=root_a / subdir)
     resolve_cache_subdir(subdir, override=root_b / subdir)
 
-    assert any("Multiple cache roots detected" in record.message for record in caplog.records)
+    assert not any("Multiple cache roots detected" in record.message for record in caplog.records)
 
 
 def test_force_refresh_bypasses_recovered_remote_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

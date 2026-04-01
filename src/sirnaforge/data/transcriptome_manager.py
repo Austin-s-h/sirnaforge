@@ -8,6 +8,7 @@ transcriptome FASTA files with automatic BWA-MEM2 index building and cache manag
 import hashlib
 import logging
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -181,6 +182,43 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         meta.extra["index_path"] = str(index_path)
         meta.extra["index_built_at"] = datetime.now().isoformat()
 
+    @staticmethod
+    def _cache_dir_is_writable(cache_dir: Path) -> bool:
+        """Return whether a cache directory can be created and written to."""
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            probe = cache_dir / f".sirnaforge_write_probe_{uuid.uuid4().hex}"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+
+    def _resolve_remote_cache_file(self, cache_key: str, suffix: str = ".fa") -> Path:
+        """Resolve a writable remote-cache destination for a cache key.
+
+        Stale metadata can reference old host paths (for example from a prior
+        non-container run). When that parent directory is no longer writable,
+        re-home new downloads to the active manager cache directory.
+        """
+        default_cache_file = self.cache_dir / f"{cache_key}{suffix}"
+        if cache_key not in self.metadata:
+            return default_cache_file
+
+        metadata_cache_file = Path(self.metadata[cache_key].file_path)
+        if self._is_cache_valid(cache_key):
+            return metadata_cache_file
+
+        if self._cache_dir_is_writable(metadata_cache_file.parent):
+            return metadata_cache_file
+
+        logger.warning(
+            "Transcriptome metadata path '%s' is not writable; re-homing download to '%s'",
+            metadata_cache_file,
+            default_cache_file,
+        )
+        return default_cache_file
+
     def _is_index_complete(self, index_prefix: Path) -> bool:
         """Check if all required BWA-MEM2 index files exist and are non-empty.
 
@@ -256,11 +294,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         source = self.sources[source_name]
         cache_key = self._cache_key_for_remote_uri(source.url) or source.cache_key()
-        cache_file = (
-            Path(self.metadata[cache_key].file_path)
-            if cache_key in self.metadata
-            else self.cache_dir / f"{cache_key}.fa"
-        )
+        cache_file = self._resolve_remote_cache_file(cache_key)
         index_prefix = self.cache_dir / f"{cache_key}_index"
 
         # Use cached version if valid
@@ -330,11 +364,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         )
 
         cache_key = self._cache_key_for_remote_uri(url) or source.cache_key()
-        cache_file = (
-            Path(self.metadata[cache_key].file_path)
-            if cache_key in self.metadata
-            else self.cache_dir / f"{cache_key}.fa"
-        )
+        cache_file = self._resolve_remote_cache_file(cache_key)
         index_prefix = self.cache_dir / f"{cache_key}_index"
 
         # Check cache

@@ -17,6 +17,7 @@ from typing import Any
 
 _CACHE_ROOT_SENTINEL = object()
 _RESOLVED_CACHE_SUBDIRS: dict[str, Path] = {}
+_RESOLUTION_MODES: dict[str, str] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ def resolve_cache_subdir(subdir: str, *, override: str | os.PathLike[str] | None
     """
     if not subdir:
         raise ValueError("subdir must be provided")
+
+    resolution_mode = "override" if override is not None else "auto"
 
     candidates: list[Path] = []
     if override is not None:
@@ -51,7 +54,11 @@ def resolve_cache_subdir(subdir: str, *, override: str | os.PathLike[str] | None
         try:
             candidate.mkdir(parents=True, exist_ok=True)
             prior = _RESOLVED_CACHE_SUBDIRS.get(subdir)
-            if prior is not None and prior != candidate:
+            prior_mode = _RESOLUTION_MODES.get(subdir)
+            should_warn = (
+                prior is not None and prior != candidate and prior_mode == "auto" and resolution_mode == "auto"
+            )
+            if should_warn:
                 logger.warning(
                     "Multiple cache roots detected for subdir '%s': '%s' then '%s'. "
                     "This can cause repeated downloads across runs.",
@@ -60,6 +67,7 @@ def resolve_cache_subdir(subdir: str, *, override: str | os.PathLike[str] | None
                     candidate,
                 )
             _RESOLVED_CACHE_SUBDIRS[subdir] = candidate
+            _RESOLUTION_MODES[subdir] = resolution_mode
             return candidate
         except PermissionError as exc:
             if first_error is None:
