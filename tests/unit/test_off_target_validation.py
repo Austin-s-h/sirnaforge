@@ -450,5 +450,29 @@ class TestSeedMismatchValidation:
         assert "validate_seed_mismatches" in str(exc_info.value)
 
 
+class TestMiRNAMaxHitsResolution:
+    """The miRNA seed-hit cap defaults to exhaustive (None); env var can impose one."""
+
+    def test_exhaustive_by_default(self, monkeypatch):
+        from sirnaforge.core.off_target import _mirna_max_hits
+
+        monkeypatch.delenv("SIRNAFORGE_MIRNA_MAX_HITS", raising=False)
+        assert _mirna_max_hits() is None
+
+    def test_env_var_imposes_positive_cap(self, monkeypatch):
+        from sirnaforge.core.off_target import _mirna_max_hits
+
+        monkeypatch.setenv("SIRNAFORGE_MIRNA_MAX_HITS", "500")
+        assert _mirna_max_hits() == 500
+
+    def test_invalid_env_var_falls_back_to_exhaustive(self, monkeypatch):
+        from sirnaforge.core.off_target import _mirna_max_hits
+
+        monkeypatch.setenv("SIRNAFORGE_MIRNA_MAX_HITS", "not-an-int")
+        assert _mirna_max_hits() is None
+        monkeypatch.setenv("SIRNAFORGE_MIRNA_MAX_HITS", "-5")
+        assert _mirna_max_hits() is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

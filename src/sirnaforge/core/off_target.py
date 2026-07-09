@@ -8,6 +8,7 @@ Optimized for both standalone use and parallelized Nextflow workflows.
 
 import importlib
 import json
+import os
 import shutil
 import statistics
 import subprocess  # nosec B404
@@ -40,6 +41,25 @@ from sirnaforge.utils.species import human_vs_other_totals
 logger = get_logger(__name__)
 
 _NUCLEOTIDE_ALPHABET = ("A", "C", "G", "T")
+
+
+def _mirna_max_hits() -> int | None:
+    """Resolve the miRNA seed-hit cap (per species, batched across candidates).
+
+    Exhaustive by default (``None`` = report every seed match) — a truncated cap
+    silently loses hits and biases downstream counts. Set
+    ``SIRNAFORGE_MIRNA_MAX_HITS`` to a positive int to impose a cap if desired.
+    """
+    raw = os.getenv("SIRNAFORGE_MIRNA_MAX_HITS")
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+            logger.warning("SIRNAFORGE_MIRNA_MAX_HITS must be positive; ignoring (exhaustive).")
+        except ValueError:
+            logger.warning("Invalid SIRNAFORGE_MIRNA_MAX_HITS=%r; ignoring (exhaustive).", raw)
+    return None
 
 
 class MiRNASeedBackend(str, Enum):
@@ -534,7 +554,7 @@ def scan_mirna_seed_matches(
     seed_start: int = 2,
     seed_end: int = 8,
     max_mismatches: int = 2,
-    max_hits: int = 1000,
+    max_hits: int | None = None,
 ) -> list[dict[str, Any]]:
     """Scan miRNA FASTA records using an in-process seed-scanning backend.
 
@@ -584,7 +604,7 @@ def scan_mirna_seed_matches(
             row["coord"],
         )
     )
-    return results[:max_hits]
+    return results if max_hits is None else results[:max_hits]
 
 
 # =============================================================================
@@ -628,7 +648,7 @@ class BwaAnalyzer:
         mode: str = "transcriptome",  # "transcriptome" or "mirna_seed"
         seed_length: int = 12,
         min_score: int = 15,
-        max_hits: int = 10000,
+        max_hits: int | None = 10000,
         seed_start: int = 2,
         seed_end: int = 8,
     ):
@@ -639,7 +659,7 @@ class BwaAnalyzer:
             mode: Analysis mode - "transcriptome" for long targets, "mirna_seed" for short targets
             seed_length: BWA seed length parameter
             min_score: Minimum alignment score
-            max_hits: Maximum hits to return
+            max_hits: Maximum hits to return (``None`` = no limit / exhaustive)
             seed_start: Seed region start (1-based)
             seed_end: Seed region end (1-based)
         """
@@ -702,7 +722,7 @@ class BwaAnalyzer:
         finally:
             Path(temp_fasta_path).unlink(missing_ok=True)
 
-        return results[: self.max_hits]
+        return results if self.max_hits is None else results[: self.max_hits]
 
     def _prepare_sequences_for_analysis(self, sequences: dict[str, str]) -> dict[str, str]:
         """Prepare sequences for analysis based on mode."""
@@ -1687,7 +1707,7 @@ def run_mirna_seed_analysis(
                     mode="mirna_seed",
                     seed_length=6,
                     min_score=6,
-                    max_hits=1000,
+                    max_hits=_mirna_max_hits(),
                     seed_start=2,
                     seed_end=8,
                 )
@@ -1709,7 +1729,7 @@ def run_mirna_seed_analysis(
                     seed_start=2,
                     seed_end=8,
                     max_mismatches=2,
-                    max_hits=1000,
+                    max_hits=_mirna_max_hits(),
                 )
 
             results_df = _build_mirna_alignment_frame(
