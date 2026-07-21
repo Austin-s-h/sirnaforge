@@ -672,7 +672,7 @@ class BwaAnalyzer:
         mode: str = "transcriptome",  # "transcriptome" or "mirna_seed"
         seed_length: int = 12,
         min_score: int = 15,
-        max_hits: int | None = 10000,
+        max_hits: int | None = None,
         seed_start: int = 2,
         seed_end: int = 8,
     ):
@@ -1274,7 +1274,7 @@ def run_comprehensive_offtarget_analysis(
     mode: str = "transcriptome",
     bwa_k: int = 12,
     bwa_T: int = 15,
-    max_hits: int = 10000,
+    max_hits: int | None = None,
     seed_start: int = 2,
     seed_end: int = 8,
 ) -> tuple[str, str, str]:
@@ -1344,7 +1344,7 @@ def run_bwa_alignment_analysis(
     index_prefix: str | Path,
     species: str,
     output_dir: str | Path,
-    max_hits: int = 10000,
+    max_hits: int | None = None,
     bwa_k: int = 12,
     bwa_T: int = 15,
     seed_start: int = 2,
@@ -1359,7 +1359,7 @@ def run_bwa_alignment_analysis(
         index_prefix: Path to BWA-MEM2 index prefix
         species: Species identifier
         output_dir: Directory to write results
-        max_hits: Maximum hits to report per candidate
+        max_hits: Maximum hits to report per candidate (``None`` = no limit / exhaustive)
         bwa_k: BWA seed length parameter
         bwa_T: BWA minimum score threshold
         seed_start: Seed region start position (1-based)
