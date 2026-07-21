@@ -208,6 +208,23 @@ def _mismatch_positions(query: str, window: str) -> tuple[int, ...]:
     return tuple(index + 1 for index, (left, right) in enumerate(zip(query, window, strict=True)) if left != right)
 
 
+def _seed_window_positions_to_guide(
+    window_positions: tuple[int, ...] | list[int],
+    *,
+    seed_start: int,
+) -> tuple[int, ...]:
+    """Map 1-based positions within the extracted seed window onto 1-based guide positions.
+
+    The in-process seed scanners align only the guide seed window (guide positions
+    ``seed_start``..``seed_end``) against the miRNA, so ``_mismatch_positions`` returns
+    positions relative to that window (1..len(seed)). Downstream seed/position logic
+    (``seed_mismatches`` counting and ``_calculate_seed_offtarget_score``) is expressed
+    in guide coordinates, so window position ``w`` must be shifted by ``seed_start - 1``.
+    """
+    offset = seed_start - 1
+    return tuple(offset + position for position in window_positions)
+
+
 def _calculate_seed_offtarget_score(
     mismatch_positions: list[int] | tuple[int, ...],
     *,
@@ -363,10 +380,13 @@ def _normalize_bwa_mirna_seed_hits(
             continue
 
         target_window = _normalize_nucleotide_sequence(mirna_sequence[start:window_end])
-        mismatch_positions = tuple(_mismatch_positions(prepared_query.seed_qseq, target_window))
-        if len(mismatch_positions) > max_mismatches:
+        window_positions = _mismatch_positions(prepared_query.seed_qseq, target_window)
+        if len(window_positions) > max_mismatches:
             continue
 
+        # Positions are window-relative (1..len(seed)); shift onto guide coordinates so
+        # seed classification and scoring match the guide-relative seed_start/seed_end frame.
+        mismatch_positions = _seed_window_positions_to_guide(window_positions, seed_start=seed_start)
         seed_mismatches = sum(1 for pos in mismatch_positions if seed_start <= pos <= seed_end)
         normalized_hits[(qname, mirna_id, start, mismatch_positions)] = {
             "qname": qname,
@@ -571,10 +591,14 @@ def scan_mirna_seed_matches(
 
     deduped: dict[tuple[str, str, int, tuple[int, ...]], dict[str, Any]] = {}
     for match in raw_matches:
-        mismatch_positions = list(match.mismatch_positions)
+        # ``_mismatch_positions`` reports positions within the extracted seed window
+        # (1..len(seed)); shift them onto guide coordinates so seed classification and
+        # position-weighted scoring are computed in the same frame as the seed_start/
+        # seed_end thresholds.
+        mismatch_positions = _seed_window_positions_to_guide(match.mismatch_positions, seed_start=seed_start)
         nm = len(mismatch_positions)
         seed_mismatches = sum(1 for pos in mismatch_positions if seed_start <= pos <= seed_end)
-        key = (match.qname, match.mirna_id, match.coord, tuple(mismatch_positions))
+        key = (match.qname, match.mirna_id, match.coord, mismatch_positions)
         deduped[key] = {
             "qname": match.qname,
             "qseq": match.qseq,
@@ -585,7 +609,7 @@ def scan_mirna_seed_matches(
             "mapq": 255,
             "as_score": _alignment_score(len(match.seed_qseq), nm),
             "nm": nm,
-            "mismatch_positions": mismatch_positions,
+            "mismatch_positions": list(mismatch_positions),
             "seed_mismatches": seed_mismatches,
             "offtarget_score": _calculate_seed_offtarget_score(
                 mismatch_positions,
@@ -1650,11 +1674,19 @@ def run_mirna_seed_analysis(
     mirna_species: list[str],
     output_dir: str | Path,
     backend: MiRNASeedBackend | str = MiRNASeedBackend.PYAHOCORASICK,
+    seed_start: int = 2,
+    seed_end: int = 8,
 ) -> Path:
     """Run miRNA seed match analysis for candidate sequences.
 
     This function uses the MiRNADatabaseManager to download and cache miRNA databases,
     builds BWA indices if needed, and performs seed match analysis.
+
+    The scan produces *raw* alignments: the guide seed window placed at every position
+    along each miRNA. Only alignments where the guide seed lands on the miRNA's own seed
+    region (0-based ``coord == seed_start - 1``) are counted as *hits* in the filtered
+    outputs and summary ``total_hits``; perfect matches in non-seed regions are retained
+    in the ``*_raw`` files but are not real miRNA seed off-targets.
 
     Args:
         candidates_file: Path to FASTA file with candidate sequences
@@ -1663,6 +1695,8 @@ def run_mirna_seed_analysis(
         mirna_species: List of species to analyze against
         output_dir: Directory to write results
         backend: miRNA seed backend to use for analysis (pyahocorasick by default)
+        seed_start: Seed region start position (1-based, default 2)
+        seed_end: Seed region end position (1-based, default 8)
 
     Returns:
         Path to output directory containing results
@@ -1708,16 +1742,16 @@ def run_mirna_seed_analysis(
                     seed_length=6,
                     min_score=6,
                     max_hits=_mirna_max_hits(),
-                    seed_start=2,
-                    seed_end=8,
+                    seed_start=seed_start,
+                    seed_end=seed_end,
                 )
                 bwa_results = analyzer.analyze_sequences(sequences)
                 results = _normalize_bwa_mirna_seed_hits(
                     bwa_results,
                     sequences=sequences,
                     mirna_sequences=mirna_sequences,
-                    seed_start=2,
-                    seed_end=8,
+                    seed_start=seed_start,
+                    seed_end=seed_end,
                     max_mismatches=2,
                 )
             else:
@@ -1726,8 +1760,8 @@ def run_mirna_seed_analysis(
                     sequences,
                     mirna_sequences,
                     backend=resolved_backend,
-                    seed_start=2,
-                    seed_end=8,
+                    seed_start=seed_start,
+                    seed_end=seed_end,
                     max_mismatches=2,
                     max_hits=_mirna_max_hits(),
                 )
@@ -1766,9 +1800,12 @@ def run_mirna_seed_analysis(
     if all_raw_hits:
         df_raw = pd.concat(all_raw_hits, ignore_index=True)
 
-        # Keep ALL hits including perfect matches - they're biologically relevant off-targets
-        # Users can filter by score threshold if desired
-        df_filtered = df_raw.copy()
+        # A raw alignment is a real miRNA seed off-target only when the guide seed lands
+        # on the miRNA's own seed region, i.e. the 0-based alignment start equals the seed
+        # start offset (seed_start - 1). Perfect matches elsewhere in the miRNA (e.g. its 3'
+        # region) are retained in the *_raw outputs but are NOT counted as seed hits.
+        seed_region_coord = seed_start - 1
+        df_filtered = df_raw[df_raw["coord"] == seed_region_coord].reset_index(drop=True)
 
         # Calculate per-species filtered stats
         for species in mirna_species:
