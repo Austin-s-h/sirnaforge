@@ -9,8 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.1] - 2026-07-21
 
+This release adds the Zinc Finger Nuclease (ZFN) design/off-target module, multi-species genome
+references, and a correctness fix to miRNA seed-hit scoping. **Behavior note:** the miRNA seed-hit
+fix changes the reported hit census (previously-counted non-seed perfect matches are no longer
+counted as hits), so results are not identical to 0.4.x.
+
 ### Added
 
+- **Zinc Finger Nuclease (ZFN) module** (`sirnaforge.zfn`): typed ZFN pair models, exhaustive and
+  indexed half-site search backends, candidate ranking, annotation, and an optional Nextflow
+  execution bridge. New `sirnaforge zfn` CLI command and `zfn_candidate_summary.json` /
+  `zfn_offtarget_sites.csv` outputs.
 - **Multi-species genome references.** Genome (DNA) references now cover human, mouse, rat, and
   macaque, matching the transcriptome/miRNA species set. Previously only
   `ensembl_human_hg38_primary` was available, so ZFN off-target search could only use a human
@@ -18,17 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ensembl_macaque_mmul10_toplevel`. The human key is unchanged for backward compatibility.
 - New `sirnaforge.data.ensembl_references` module: a single Ensembl assembly table generates both
   the transcriptome cDNA and genome DNA `SOURCES`, so adding a species is a one-line change.
-
-### Changed
-
-- `--zfn-search-space` CLI help now lists the built-in genome keys; `docs/zfn_module.md` documents
-  the reference table. Rat/macaque use Ensembl's `dna.toplevel` file (verified: those assemblies do
-  not publish `dna.primary_assembly`). Transcriptome cDNA keys/URLs (and their cache keys) are
-  unchanged, so existing caches remain valid.
-## [0.5.0] - 2026-07-21
-
-Minor version bump: the miRNA seed-hit fix changes the reported hit census (previously-counted
-non-seed perfect matches are no longer hits), so results are not identical to 0.4.x.
 
 ### Fixed
 
@@ -53,6 +51,10 @@ non-seed perfect matches are no longer hits), so results are not identical to 0.
   and the default `max_hits` for `BwaAnalyzer`, `run_bwa_alignment_analysis`, and
   `run_comprehensive_offtarget_analysis` is `None` instead of `10000`. `SIRNAFORGE_MIRNA_MAX_HITS`
   can still impose a cap. A silent cap biased downstream hit counts.
+- `--zfn-search-space` CLI help now lists the built-in genome keys; `docs/zfn_module.md` documents
+  the reference table. Rat/macaque use Ensembl's `dna.toplevel` file (verified: those assemblies do
+  not publish `dna.primary_assembly`). Transcriptome cDNA keys/URLs (and their cache keys) are
+  unchanged, so existing caches remain valid.
 
 ### Housekeeping
 
