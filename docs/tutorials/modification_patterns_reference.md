@@ -13,26 +13,30 @@ Chemical modifications enhance siRNA stability and reduce off-target effects whi
 **File:** `examples/modification_patterns/standard_2ome.json`
 
 **Strategy:**
+
 - **Guide strand:** Alternating 2'-O-methyl at odd positions (1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
 - **Passenger strand:** Offset alternating at even positions (2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
 - **Overhang:** dTdT (DNA) on both 3' ends
 
 **Properties:**
+
 - Serum stability: ~24 hours
 - Synthesis cost: 1.5× unmodified
 - Nuclease resistance: Moderate-high
 - RISC loading: High efficiency
 
 **Best For:**
+
 - General research applications
 - In vitro efficacy studies
 - Initial in vivo feasibility
 - Industry-standard baseline
 
 **Example:**
+
 ```bash
 sirnaforge workflow TP53 \
-  --modification-file examples/modification_patterns/standard_2ome.json \
+  --modifications standard_2ome \
   --output-dir tp53_standard
 ```
 
@@ -43,31 +47,36 @@ sirnaforge workflow TP53 \
 **File:** `examples/modification_patterns/minimal_terminal.json`
 
 **Strategy:**
+
 - **Guide strand:** 3' terminal only (19, 20, 21)
 - **Passenger strand:** 5' terminal only (1, 2)
 - **Overhang:** dTdT (DNA)
 
 **Properties:**
+
 - Serum stability: ~6 hours
 - Synthesis cost: 1.1× unmodified
 - Nuclease resistance: Low-moderate
 - RISC loading: High efficiency
 
 **Best For:**
+
 - High-throughput screening
 - Cost-sensitive experiments
 - In vitro only (cell culture with serum-free media)
 - Transient knockdown studies
 
 **Limitations:**
+
 - Not suitable for in vivo work
 - Requires frequent media changes
 - Limited serum stability
 
 **Example:**
+
 ```bash
 sirnaforge design input.fasta \
-  --modification-file examples/modification_patterns/minimal_terminal.json \
+  --modifications minimal_terminal \
   --output minimal_cost.csv
 ```
 
@@ -78,36 +87,42 @@ sirnaforge design input.fasta \
 **File:** `examples/modification_patterns/maximal_stability.json`
 
 **Strategy:**
+
 - **Guide strand:** Complete 2'-O-methyl at all positions (1-21) + PS linkages at terminal dinucleotides
 - **Passenger strand:** Complete 2'-O-methyl (1-21) + 5' PS linkages
 - **Overhang:** dTdT with optional PS modifications
 
 **Properties:**
+
 - Serum stability: ~72 hours
 - Synthesis cost: 3.0× unmodified
 - Nuclease resistance: Very high
 - RISC loading: High efficiency
 
 **Best For:**
+
 - In vivo efficacy studies
 - Therapeutic development programs
 - Preclinical toxicology
 - Long-term knockdown experiments
 
 **Requirements:**
+
 - Specialized delivery (LNP or GalNAc conjugates)
 - HPLC purification recommended
 - Extended synthesis time (2-4 weeks)
 
 **Example:**
+
 ```bash
 sirnaforge workflow TTR \
-  --modification-file examples/modification_patterns/maximal_stability.json \
-  --genome-species human \
+  --modifications maximal_stability \
+  --species human \
   --output-dir ttr_therapeutic
 ```
 
 **FDA-Approved References:**
+
 - **Patisiran (Onpattro)** - TTR, 2018, hATTR amyloidosis
 - **Givosiran (Givlaari)** - ALAS1, 2019, Acute hepatic porphyria
 
@@ -124,11 +139,13 @@ First FDA-approved RNAi therapeutic (2018) targeting transthyretin (TTR) for her
 **Sequence:** `AUGGAAUACUCUUGGUUAC`
 
 **Modifications:**
+
 - 2'-O-methyl at positions: 1, 4, 6, 11, 13, 16, 19
 - Overhang: dTdT
 - Strategic pattern optimized for stability + RISC loading
 
 **Rationale:**
+
 - Balances nuclease resistance with guide strand activity
 - Maintains A/U-rich 5' seed region accessibility
 - 7 modifications provide excellent stability without over-modification
@@ -138,11 +155,13 @@ First FDA-approved RNAi therapeutic (2018) targeting transthyretin (TTR) for her
 **Sequence:** `GUAACCAAGAGUAUUCCAU`
 
 **Modifications:**
+
 - 2'-O-methyl at positions: 3, 8, 10, 15
 - Overhang: dTdT
 - Limited modifications to promote degradation
 
 **Rationale:**
+
 - Fewer modifications than guide (intentional)
 - Promotes preferential RISC loading of guide strand
 - Reduces passenger strand activity/off-targets
@@ -150,32 +169,47 @@ First FDA-approved RNAi therapeutic (2018) targeting transthyretin (TTR) for her
 ### Clinical Success
 
 **Efficacy:**
+
 - Significant TTR reduction in Phase III trials (80% knockdown)
 - FDA approved August 2018
 - First-in-class RNAi therapeutic
 
 **Delivery:**
+
 - Lipid nanoparticle (LNP) formulation
 - IV infusion: 0.3 mg/kg every 3 weeks
 - Hepatocyte-targeted delivery
 
 **Use This Pattern For:**
+
 - Liver-targeted therapeutic development
 - Benchmarking modification strategies
 - Regulatory submission templates
 - Educational/training purposes
 
 **Example:**
+
+The Patisiran regimen is provided as a reference exemplar in
+`examples/modification_patterns/fda_approved_onpattro.json`, not as a built-in
+`--modifications` generator pattern. The `--modifications` flag only accepts the
+built-in patterns (`standard_2ome`, `minimal_terminal`, `maximal_stability`, `none`).
+To design TTR-targeting candidates with a built-in pattern and then compare against
+the FDA reference:
+
 ```bash
-# Design TTR-targeting siRNA using Patisiran pattern
+# Design TTR-targeting siRNA with a built-in modification pattern
 sirnaforge workflow TTR \
-  --modification-file examples/modification_patterns/fda_approved_onpattro.json \
-  --genome-species human \
+  --modifications standard_2ome \
+  --species human \
   --output-dir ttr_patisiran_template
+
+# Reference Patisiran (Onpattro) modification layout for comparison:
+#   examples/modification_patterns/fda_approved_onpattro.json
 ```
 
 **References:**
 TODO: Review
+
 - Adams et al. (2018) NEJM 379:11-21. PMID: 30145929
 - US Patent US10060921B2
 - FDA Drug Approval Package (2018)
@@ -195,12 +229,14 @@ TODO: Review
 - **Typical positions:** Alternating or custom patterns
 
 **Pros:**
+
 - Industry standard
 - Well-characterized
 - Compatible with all synthesis platforms
 - Maintains Watson-Crick pairing
 
 **Cons:**
+
 - Moderate cost increase
 - May require 10+ modifications for therapeutic stability
 
@@ -216,16 +252,19 @@ TODO: Review
 - **Typical positions:** Terminal dinucleotides (5' and 3')
 
 **Pros:**
+
 - Excellent nuclease resistance
 - Enhances protein binding (albumin)
 - Can improve pharmacokinetics
 
 **Cons:**
+
 - Potential for non-specific binding
 - Synthesis complexity increases
 - Can affect duplex stability
 
 **Best Practice:**
+
 - Limit to 2-4 linkages per strand
 - Focus on terminal positions
 - Often combined with 2'-O-methyl
@@ -242,11 +281,13 @@ TODO: Review
 - **Typical positions:** All pyrimidines
 
 **Pros:**
+
 - Superior nuclease resistance vs 2OMe
 - Maintains duplex stability
 - Good RISC compatibility
 
 **Cons:**
+
 - Higher synthesis cost
 - Pyrimidine-restricted (can't modify A/G)
 - Less commonly used than 2OMe
@@ -263,17 +304,20 @@ TODO: Review
 - **Typical positions:** Sparse (every 3-4 nt)
 
 **Pros:**
+
 - Extremely high binding affinity
 - Superior nuclease resistance
 - Very effective at low frequency
 
 **Cons:**
+
 - Expensive
 - Can inhibit RISC loading if over-used
 - Requires careful positioning
 - Not all synthesis providers offer
 
 **Best Practice:**
+
 - Use sparingly (2-3 per strand maximum)
 - Avoid seed region (positions 2-8)
 - Often combined with 2'-O-methyl
@@ -289,11 +333,13 @@ TODO: Review
 - **Cost factor:** 1.5-2.0×
 
 **Pros:**
+
 - Good nuclease resistance
 - Reduced immunogenicity vs 2OMe
 - Used in some antisense applications
 
 **Cons:**
+
 - Less common than 2OMe for siRNA
 - Higher cost
 - Limited track record in approved therapeutics
@@ -305,21 +351,25 @@ TODO: Review
 ### Design Principles
 
 **1. Start Conservative**
+
 - Begin with standard patterns
 - Add modifications incrementally
 - Test efficacy at each step
 
 **2. Balance Competing Goals**
+
 - Stability ↔ Cost
 - Nuclease resistance ↔ RISC loading
 - On-target potency ↔ Off-target reduction
 
 **3. Consider Application**
+
 - In vitro: Minimal modifications sufficient
 - In vivo (research): Standard patterns
 - Therapeutic: Maximal stability required
 
 **4. Strand Asymmetry**
+
 - More modifications on guide strand
 - Fewer modifications on passenger strand
 - Promotes guide strand RISC loading
@@ -342,7 +392,10 @@ Create custom JSON files following this structure:
     },
     "PS": {
       "positions": [],
-      "internucleotide_linkages": [[1, 2], [20, 21]],
+      "internucleotide_linkages": [
+        [1, 2],
+        [20, 21]
+      ],
       "rationale": "Terminal linkages for stability"
     }
   },
@@ -380,38 +433,46 @@ Create custom JSON files following this structure:
 ### Position Selection Strategies
 
 **Alternating (Balanced)**
+
 ```
 Guide:     [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
 Passenger: [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
 ```
+
 - Standard industry approach
 - Good stability/cost balance
 - Maintains duplex structure
 
 **Terminal-Heavy (Cost-Optimized)**
+
 ```
 Guide:     [1, 2, 19, 20, 21]
 Passenger: [1, 2]
 ```
+
 - Minimal synthesis cost
 - Protects most vulnerable positions
 - Suitable for in vitro only
 
 **Seed-Region Preservation**
+
 ```
 Guide:     [1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 Passenger: [full complement]
 ```
+
 - Avoids positions 2-8 (seed region)
 - May improve target recognition
 - Based on some miRNA-mimetic designs
 
 **Complete (Therapeutic)**
+
 ```
 Guide:     [1-21] all positions
 Passenger: [1-21] all positions
 + PS linkages at terminals
 ```
+
 - Maximum stability
 - Therapeutic-grade
 - Highest cost
@@ -425,15 +486,17 @@ Passenger: [1-21] all positions
 **Recommended Pattern:** Minimal Terminal
 
 **Rationale:**
+
 - Cost is primary concern
 - Short exposure time (<72 hours)
 - Serum-free or low-serum media
 - High-throughput compatible
 
 **Example:**
+
 ```bash
 sirnaforge design library.fasta \
-  --modification-file examples/modification_patterns/minimal_terminal.json \
+  --modifications minimal_terminal \
   --top-n 500 \
   --output hts_library.csv
 ```
@@ -445,15 +508,17 @@ sirnaforge design library.fasta \
 **Recommended Pattern:** Standard 2'-O-Methyl
 
 **Rationale:**
+
 - Industry standard for publications
 - Good stability in culture media
 - Reproducible results
 - Comparable to literature
 
 **Example:**
+
 ```bash
 sirnaforge workflow GENE \
-  --modification-file examples/modification_patterns/standard_2ome.json \
+  --modifications standard_2ome \
   --top-n 20
 ```
 
@@ -464,16 +529,18 @@ sirnaforge workflow GENE \
 **Recommended Pattern:** Standard or Maximal Stability
 
 **Rationale:**
+
 - Need extended half-life
 - Systemic delivery challenges
 - Nuclease-rich environment
 - Justifies higher cost
 
 **Example:**
+
 ```bash
 sirnaforge workflow TARGET \
-  --modification-file examples/modification_patterns/maximal_stability.json \
-  --genome-species mouse \
+  --modifications maximal_stability \
+  --species mouse \
   --output-dir invivo_poc
 ```
 
@@ -484,18 +551,21 @@ sirnaforge workflow TARGET \
 **Recommended Pattern:** Maximal Stability (Custom Optimized)
 
 **Rationale:**
+
 - Regulatory requirements
 - Long-term efficacy needed
 - Safety/tox studies
 - Cost justified by value
 
 **Requirements:**
+
 - GMP-grade synthesis
 - HPLC purification
 - Mass spec confirmation
 - Batch-to-batch QC
 
 **Consider:**
+
 - GalNAc conjugation for hepatocytes
 - Lipid nanoparticle formulation
 - Antibody conjugates for targeting
@@ -508,6 +578,7 @@ sirnaforge workflow TARGET \
 ### Synthesis Vendors
 
 **Major Providers:**
+
 - Integrated DNA Technologies (IDT)
 - Thermo Fisher (Dharmacon)
 - Sigma-Aldrich
@@ -520,18 +591,21 @@ sirnaforge workflow TARGET \
 **Base siRNA (21bp duplex, unmodified):** ~$200-400
 
 **Modifications (per strand):**
+
 - 2'-O-methyl: +$20-50 per modification
 - Phosphorothioate: +$30-80 per linkage
 - 2'-Fluoro: +$40-100 per modification
 - LNA: +$100-200 per residue
 
 **Additional Costs:**
+
 - HPLC purification: +$100-300
 - Mass spec QC: +$50-150
 - Bulk synthesis (5+ sequences): -30-50% discount
 - GMP-grade: 2-5× standard pricing
 
 **Pattern Cost Examples:**
+
 - Minimal terminal: ~$250-450
 - Standard 2OMe: ~$400-600
 - Maximal stability: ~$800-1,200
@@ -540,6 +614,7 @@ sirnaforge workflow TARGET \
 ### Ordering Checklist
 
 **Required Information:**
+
 1. ✅ Sequences (guide + passenger)
 2. ✅ Modification map (positions + types)
 3. ✅ Overhang specification
@@ -548,6 +623,7 @@ sirnaforge workflow TARGET \
 6. ✅ QC requirements (mass spec, HPLC traces)
 
 **Recommended Documentation:**
+
 - Provide modification JSON file
 - Include synthesis notes from vendor
 - Archive lot numbers and QC data
@@ -610,12 +686,12 @@ sirnaforge workflow TARGET \
 ```bash
 # Apply pattern during design
 sirnaforge design input.fasta \
-  --modification-file pattern.json \
+  --modifications standard_2ome \
   --output designed.csv
 
 # Apply pattern during workflow
 sirnaforge workflow GENE \
-  --modification-file pattern.json \
+  --modifications standard_2ome \
   --output-dir results
 ```
 
@@ -659,11 +735,13 @@ sirnaforge sequences annotate \
 ### Low Efficacy After Modification
 
 **Possible Causes:**
+
 - Over-modification in seed region (positions 2-8)
 - Excessive passenger modifications reducing RISC loading
 - Delivery method incompatibility
 
 **Solutions:**
+
 - Reduce modifications in seed region
 - Ensure guide strand preference (asymmetric modification)
 - Test unmodified sequence as control
@@ -671,11 +749,13 @@ sirnaforge sequences annotate \
 ### High Cost Synthesis
 
 **Possible Causes:**
+
 - Too many modifications
 - Exotic modification types (LNA, custom)
 - Small scale orders
 
 **Solutions:**
+
 - Use minimal or standard patterns
 - Order multiple sequences together (bulk discount)
 - Request quotes from multiple vendors
@@ -683,11 +763,13 @@ sirnaforge sequences annotate \
 ### Inconsistent Results
 
 **Possible Causes:**
+
 - Vendor variability
 - Storage degradation
 - Batch differences
 
 **Solutions:**
+
 - Specify HPLC purification
 - Request lot-to-lot QC data
 - Store properly (-20°C or -80°C)
@@ -736,10 +818,11 @@ To contribute new patterns to siRNAforge:
 5. **Submit PR:** Via GitHub with detailed description
 
 **Example Contribution:**
+
 ```bash
 # Test your pattern
 sirnaforge design test.fasta \
-  --modification-file my_new_pattern.json \
+  --modifications standard_2ome \
   --output test_output.csv
 
 # Verify it works

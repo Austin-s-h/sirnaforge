@@ -4,14 +4,14 @@ process AGGREGATE_RESULTS {
     publishDir "${params.outdir}/aggregated", mode: params.publish_dir_mode
 
     input:
-    path analysis_files
-    path summary_files
+    val analysis_files
+    val summary_files
     val genome_species
 
     output:
     path "combined_*.tsv", emit: combined_analyses, optional: true
-    path "combined_summary.json", emit: combined_summary, optional: true
-    path "final_summary.txt", emit: final_summary
+    path "combined*.json", emit: combined_summary, optional: true
+    path "final*_summary.txt", emit: final_summary
     path "analysis_report.html", emit: html_report, optional: true
     path "versions.yml", emit: versions
 
@@ -19,20 +19,29 @@ process AGGREGATE_RESULTS {
     task.ext.when == null || task.ext.when
 
     script:
+    def analysisFileList = analysis_files instanceof List ? analysis_files.collect { it.toString() } : [analysis_files.toString()]
+    def summaryFileList = summary_files instanceof List ? summary_files.collect { it.toString() } : [summary_files.toString()]
+    def analysisFilesJson = groovy.json.JsonOutput.toJson(analysisFileList)
+    def summaryFilesJson = groovy.json.JsonOutput.toJson(summaryFileList)
     """
     python3 <<'PYEOF'
 import sys
+import json
 sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli
 
 mirna_db = '${params.mirna_db ?: 'mirgenedb'}'.strip()
 mirna_species = '${params.mirna_species ?: 'chicken,pig,rat,mouse,human,macaque'}'.strip()
+analysis_files = json.loads('''${analysisFilesJson}''')
+summary_files = json.loads('''${summaryFilesJson}''')
 
 result = aggregate_results_cli(
     genome_species='${genome_species}',
     output_dir='.',
     mirna_db=mirna_db or None,
     mirna_species=mirna_species or None,
+    analysis_files=analysis_files,
+    summary_files=summary_files,
 )
 
 print(f"Aggregation status: {result.get('status', 'unknown')}")

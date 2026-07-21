@@ -1,25 +1,29 @@
 """Pydantic models for siRNA design data structures."""
 
-from collections.abc import Callable
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any
 
 import pandas as pd
-import pandera.pandas as pa
 from pandera.typing import DataFrame
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import get_modification_summary
+from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed
 
 logger = get_logger(__name__)
 
-# mypy-friendly typed alias for pydantic's untyped decorator factory
-F = TypeVar("F", bound=Callable[..., Any])
-FieldValidatorFactory = Callable[..., Callable[[F], F]]
-field_validator_typed: FieldValidatorFactory = field_validator
+# Sequence-length bounds for observed/input siRNA-like sequences the off-target
+# engine analyzes (SiRNACandidate). The classic siRNA guide is ~19-23 nt, but
+# the engine also handles longer species (e.g. Dicer 3' read-through isoforms,
+# extended guides). We accept up to ENGINE_MAX_GUIDE_LEN and only *warn* above
+# the RECOMMENDED biological max. Note: DesignParameters.sirna_length (what the
+# tool *designs*) stays capped at 23 — this only relaxes what it will *analyze*.
+MIN_GUIDE_LEN = 19
+RECOMMENDED_MAX_GUIDE_LEN = 23
+ENGINE_MAX_GUIDE_LEN = 40
 
 
 class FilterCriteria(BaseModel):
@@ -163,6 +167,7 @@ class DesignMode(str, Enum):
 
     SIRNA = "sirna"  # Standard siRNA design mode
     MIRNA = "mirna"  # miRNA-biogenesis-aware design mode
+    ZFN = "zfn"  # Zinc-finger nuclease pair evaluation with exhaustive off-target search
 
 
 class MiRNADesignConfig(BaseModel):
@@ -218,7 +223,8 @@ class DesignParameters(BaseModel):
 
     # Design mode selection
     design_mode: DesignMode = Field(
-        default=DesignMode.SIRNA, description="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)"
+        default=DesignMode.SIRNA,
+        description="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
     )
 
     # Basic parameters
@@ -279,15 +285,23 @@ class SiRNACandidate(BaseModel):
     transcript_id: str = Field(description="Source transcript ID (e.g., ENST00000123456)")
     position: int = Field(ge=1, description="1-based start position in transcript")
 
-    # Sequences
-    guide_sequence: str = Field(min_length=19, max_length=23, description="Guide strand (antisense, loaded into RISC)")
+    # Sequences (accept up to the engine max; 19-23 nt is the recommended range)
+    guide_sequence: str = Field(
+        min_length=MIN_GUIDE_LEN,
+        max_length=ENGINE_MAX_GUIDE_LEN,
+        description="Guide strand (antisense, loaded into RISC). 19-23 nt recommended; up to 40 nt analyzed.",
+    )
     passenger_sequence: str = Field(
-        min_length=19, max_length=23, description="Passenger strand (sense, typically degraded)"
+        min_length=MIN_GUIDE_LEN,
+        max_length=ENGINE_MAX_GUIDE_LEN,
+        description="Passenger strand (sense, typically degraded). 19-23 nt recommended; up to 40 nt analyzed.",
     )
 
     # Basic properties
     gc_content: float = Field(ge=0, le=100, description="GC content % (optimal: 35-60%)")
-    length: int = Field(ge=19, le=23, description="siRNA duplex length in nucleotides")
+    length: int = Field(
+        ge=MIN_GUIDE_LEN, le=ENGINE_MAX_GUIDE_LEN, description="siRNA length in nucleotides (19-23 recommended)"
+    )
 
     # Thermodynamic properties
     asymmetry_score: float = Field(
@@ -410,6 +424,23 @@ class SiRNACandidate(BaseModel):
             raise ValueError(f"Sequence contains invalid nucleotides: {v}")
         return v.upper()
 
+    @field_validator_typed("guide_sequence", "passenger_sequence")
+    @classmethod
+    def warn_beyond_recommended_length(cls, v: str) -> str:
+        """Warn (do not fail) when a sequence exceeds the recommended biological max.
+
+        19-23 nt is the recommended siRNA range; longer sequences (e.g. Dicer 3'
+        read-through isoforms) are still analyzed up to ENGINE_MAX_GUIDE_LEN.
+        """
+        if len(v) > RECOMMENDED_MAX_GUIDE_LEN:
+            logger.warning(
+                "Sequence length %d nt exceeds the recommended max (%d nt); analyzing anyway (engine max %d nt).",
+                len(v),
+                RECOMMENDED_MAX_GUIDE_LEN,
+                ENGINE_MAX_GUIDE_LEN,
+            )
+        return v
+
     @field_validator_typed("passenger_sequence")
     @classmethod
     def sequences_same_length(cls, v: str, info: ValidationInfo) -> str:
@@ -461,7 +492,7 @@ class DesignResult(BaseModel):
         description=("Candidates discarded during initial filtering (used for dirty controls and auditing)"),
     )
 
-    @pa.check_types
+    @check_types_typed
     def save_csv(self, filepath: str) -> DataFrame[SiRNACandidateSchema]:
         """Save siRNA candidates to CSV file with comprehensive validation.
 

@@ -46,6 +46,8 @@ def aggregate_results_cli(  # noqa: PLR0912
     output_dir: str = ".",
     mirna_db: str | None = None,
     mirna_species: str | None = None,
+    analysis_files: list[str] | None = None,
+    summary_files: list[str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate off-target analysis results from multiple candidates and genomes.
 
@@ -54,6 +56,8 @@ def aggregate_results_cli(  # noqa: PLR0912
         output_dir: Directory to write aggregated results
         mirna_db: The database that provided the reference
         mirna_species: The species code for the matching miRNA
+        analysis_files: Optional explicit list of staged analysis files to aggregate
+        summary_files: Optional explicit list of staged summary files to aggregate
 
     Returns:
         Dictionary with aggregation statistics
@@ -63,12 +67,20 @@ def aggregate_results_cli(  # noqa: PLR0912
 
     # Collect all analysis and summary files from current directory (Nextflow stages them)
     current_dir = Path()
-    analysis_files = list(current_dir.glob("*_analysis.tsv")) + list(current_dir.glob("mirna_analysis.tsv"))
-    summary_files = list(current_dir.glob("*_summary.json")) + list(current_dir.glob("mirna_summary.json"))
+    resolved_analysis_files = (
+        [Path(path) for path in analysis_files]
+        if analysis_files is not None
+        else list(current_dir.rglob("*_analysis.tsv")) + list(current_dir.rglob("mirna_analysis.tsv"))
+    )
+    resolved_summary_files = (
+        [Path(path) for path in summary_files]
+        if summary_files is not None
+        else list(current_dir.rglob("*_summary.json")) + list(current_dir.rglob("mirna_summary.json"))
+    )
 
-    logger.info(f"Found {len(analysis_files)} analysis files and {len(summary_files)} summary files")
+    logger.info(f"Found {len(resolved_analysis_files)} analysis files and {len(resolved_summary_files)} summary files")
 
-    if analysis_files or summary_files:
+    if resolved_analysis_files or resolved_summary_files:
         # Create a temporary results directory structure for aggregation
         results_dir = Path("temp_results")
         results_dir.mkdir(exist_ok=True)
@@ -80,14 +92,14 @@ def aggregate_results_cli(  # noqa: PLR0912
             species_dir.mkdir(exist_ok=True)
 
             # Copy relevant files to species directory
-            for f in analysis_files:
+            for f in resolved_analysis_files:
                 name_lower = f.name.lower()
                 if name_lower.startswith("mirna"):
                     continue
                 if species in f.name:
                     shutil.copy(f, species_dir / f.name)
 
-            for f in summary_files:
+            for f in resolved_summary_files:
                 name_lower = f.name.lower()
                 if name_lower.startswith("mirna"):
                     continue
@@ -98,7 +110,7 @@ def aggregate_results_cli(  # noqa: PLR0912
         mirna_results_dir = results_dir / "mirna"
         mirna_results_dir.mkdir(exist_ok=True)
         mirna_analysis_files: list[Path] = []
-        for f in analysis_files:
+        for f in resolved_analysis_files:
             if "mirna" not in f.name.lower():
                 continue
             dest_name = f.name
@@ -108,7 +120,7 @@ def aggregate_results_cli(  # noqa: PLR0912
             shutil.copy(f, dest_path)
             mirna_analysis_files.append(dest_path)
 
-        for f in summary_files:
+        for f in resolved_summary_files:
             if "mirna" not in f.name.lower():
                 continue
             dest_name = f.name
@@ -143,8 +155,8 @@ def aggregate_results_cli(  # noqa: PLR0912
 
         return {
             "status": "completed",
-            "analysis_files_processed": len(analysis_files),
-            "summary_files_processed": len(summary_files),
+            "analysis_files_processed": len(resolved_analysis_files),
+            "summary_files_processed": len(resolved_summary_files),
             "species": species_list,
             "output_dir": str(result_path),
             "mirna": mirna_summary,

@@ -10,13 +10,13 @@ os.environ.setdefault("TERM", "dumb")
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 import typer
-from Bio import SeqIO
+from Bio.SeqIO import parse as seqio_parse
 from Bio.SeqRecord import SeqRecord
 from rich.console import Console
 from rich.panel import Panel
@@ -51,20 +51,48 @@ from sirnaforge.config import (
     render_reference_selection_label,
 )
 from sirnaforge.core.design import SiRNADesigner
-from sirnaforge.data.base import DatabaseType, FastaUtils
+from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import (
     GeneSearcher,
+    GeneSearchResult,
     search_gene_sync,
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
-from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignParameters,
+    FilterCriteria,
+    MiRNADesignConfig,
+)
 from sirnaforge.models.variant import VariantMode
+from sirnaforge.models.zfn import (
+    DimerMode,
+    GenomicAnnotationConfig,
+    ZFNAlgorithm,
+    ZFNDefaultSubfingerMutationConstraint,
+    ZFNDesignParameters,
+    ZFNHalfSiteConstraints,
+    ZFNMutationConstraints,
+    ZFNMutationType,
+    ZFNOverallMutationConstraint,
+    ZFNSearchBackend,
+    ZFNShardingConfig,
+    ZFNSpacerConstraints,
+    ZFNSubfingerMutationConstraint,
+)
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
+from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
+from sirnaforge.zfn.nextflow_bridge import (
+    aggregate_zfn_shard_results,
+    make_zfn_shard_manifest,
+    run_zfn_shard_search,
+)
+from sirnaforge.zfn.search import build_zfn_search_index
 
 app = typer.Typer(
     name="sirnaforge",
@@ -75,14 +103,72 @@ app = typer.Typer(
 console = Console(force_terminal=False, legacy_windows=True)
 
 # mypy-friendly alias for Typer command decorator
-T = TypeVar("T", bound=Callable[..., object])
-CommandDecorator = Callable[..., Callable[[T], T]]
-app_command: CommandDecorator = app.command
+app_command = command_decorator_typed(app.command)
 
 DEFAULT_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
+REMOTE_RESOURCE_SCHEMES = ("http://", "https://", "ftp://", "file://")
+
+# Internal performance defaults for exhaustive ZFN search.
+DEFAULT_ZFN_WINDOW_STRIDE = 1
+DEFAULT_ZFN_TOP_N_SITES = 5000
+DEFAULT_ZFN_REPORT_N_SITES = 200
 
 
-def filter_transcripts(transcripts, include_types=None, exclude_types=None, canonical_only=False):  # type: ignore
+def _autotune_zfn_sharding(
+    cores_budget: int | None = None,
+    search_backend: ZFNSearchBackend = ZFNSearchBackend.PYAHOCORASICK,
+) -> ZFNShardingConfig:
+    """Return internal sharding defaults tuned by backend and host CPU budget."""
+    cpu_count = cores_budget if cores_budget is not None else (os.cpu_count() or 1)
+
+    if search_backend == ZFNSearchBackend.FM_INDEX:
+        # FM-index can over-fragment and over-allocate quickly on full-primary genomes.
+        max_workers = min(4, max(1, cpu_count // 2 if cpu_count >= 4 else cpu_count))
+        chunk_size_bp = 16_000_000 if cpu_count >= 8 else 20_000_000
+    elif search_backend == ZFNSearchBackend.PYAHOCORASICK:
+        # pyahocorasick is memory-sensitive on large fallback runs; keep a conservative
+        # default worker count and treat workers primarily as a memory-control knob.
+        # chunk_size_bp here acts as the large-contig fallback threshold, not the
+        # primary scheduling unit.
+        max_workers = min(2, max(1, cpu_count))
+        chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
+    else:
+        # exhaustive_python remains baseline-oriented and follows the broader
+        # CPU-parallel profile.
+        max_workers = min(8, max(1, cpu_count))
+        chunk_size_bp = 8_000_000 if cpu_count >= 8 else 12_000_000
+
+    return ZFNShardingConfig(
+        enabled=True,
+        chunk_size_bp=chunk_size_bp,
+        overlap_bp=50,
+        chromosomes=[],
+        max_workers=max_workers,
+    )
+
+
+class TranscriptLike(Protocol):
+    """Minimal transcript-like interface used by CLI filters."""
+
+    transcript_type: str | None
+    is_canonical: bool
+
+
+TTranscript = TypeVar("TTranscript", bound=TranscriptLike)
+
+
+def _parse_fasta_seqrecords(input_file: Path) -> list[SeqRecord]:
+    """Parse FASTA records with an explicit typed boundary for static checkers."""
+    parse_fasta = cast(Callable[[str, str], Iterable[SeqRecord]], seqio_parse)
+    return list(parse_fasta(str(input_file), "fasta"))
+
+
+def filter_transcripts(
+    transcripts: list[TTranscript],
+    include_types: list[str] | None = None,
+    exclude_types: list[str] | None = None,
+    canonical_only: bool = False,
+) -> list[TTranscript]:
     """Filter transcript records by type and canonical status.
 
     Args:
@@ -95,7 +181,7 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
     Returns:
         A list of transcripts that match the requested filters.
     """
-    filtered = transcripts
+    filtered: list[TTranscript] = transcripts
 
     if canonical_only:
         filtered = [t for t in filtered if t.is_canonical]
@@ -109,7 +195,11 @@ def filter_transcripts(transcripts, include_types=None, exclude_types=None, cano
     return filtered
 
 
-def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # type: ignore
+def extract_canonical_transcripts(
+    transcripts: list[TranscriptInfo],
+    gene_name: str,
+    output_dir: Path | str | None = None,
+) -> tuple[Path | None, int]:
     """Write canonical isoforms to a separate FASTA file.
 
     Args:
@@ -128,9 +218,9 @@ def extract_canonical_transcripts(transcripts, gene_name, output_dir=None):  # t
     if not canonical:
         return None, 0
 
-    output_dir = Path.cwd() if output_dir is None else Path(output_dir)
+    output_dir_path = Path.cwd() if output_dir is None else Path(output_dir)
 
-    canonical_file = output_dir / f"{gene_name}_canonical.fasta"
+    canonical_file = output_dir_path / f"{gene_name}_canonical.fasta"
 
     # Create a temporary searcher to use the save method
     # TODO: directly use fasta utils
@@ -154,7 +244,7 @@ def _resolve_design_mode(
     applied when the corresponding option is still set to its siRNA default.
 
     Args:
-        design_mode: Raw user input (e.g., ``sirna`` or ``mirna``).
+        design_mode: Raw user input (e.g., ``sirna``, ``mirna``, or ``zfn``).
         gc_min: Minimum GC percentage.
         gc_max: Maximum GC percentage.
         overhang: Overhang string.
@@ -169,7 +259,7 @@ def _resolve_design_mode(
     try:
         mode_enum = DesignMode(design_mode.lower())
     except ValueError as exc:
-        raise ValueError(f"Invalid design mode '{design_mode}'. Choose 'sirna' or 'mirna'") from exc
+        raise ValueError(f"Invalid design mode '{design_mode}'. Choose 'sirna', 'mirna', or 'zfn'") from exc
 
     if mode_enum == DesignMode.MIRNA:
         mirna_config = MiRNADesignConfig()
@@ -182,6 +272,173 @@ def _resolve_design_mode(
             modification_pattern = mirna_config.modifications
 
     return mode_enum, gc_min, gc_max, overhang, modification_pattern
+
+
+def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
+    """Parse and normalize mutation type tokens."""
+    aliases = {"mismatch": "substitution", "mismatches": "substitution"}
+    mutation_types = [t.strip().lower() for t in raw_types.split(",") if t.strip()]
+    if not mutation_types:
+        raise ValueError(f"Invalid ZFN mutation types in '{raw_constraint}'. At least one type is required.")
+    return [ZFNMutationType(aliases.get(value, value)) for value in mutation_types]
+
+
+def _parse_zfn_mutation_constraints(
+    raw_constraints: list[str],
+) -> tuple[
+    list[ZFNSubfingerMutationConstraint],
+    ZFNDefaultSubfingerMutationConstraint | None,
+    list[ZFNOverallMutationConstraint],
+]:
+    """Parse CLI ZFN mutation constraints in ``scope:max:type1,type2`` format.
+
+    Scope can be:
+      - ``<int>`` for explicit sub-finger index
+      - ``*`` for default per-sub-finger budget
+      - ``overall`` for global mutation budgets
+    """
+    per_subfinger: list[ZFNSubfingerMutationConstraint] = []
+    default_subfinger: ZFNDefaultSubfingerMutationConstraint | None = None
+    overall_constraints: list[ZFNOverallMutationConstraint] = []
+    for raw in raw_constraints:
+        parts = [part.strip() for part in raw.split(":", maxsplit=2)]
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid ZFN sub-finger mutation constraint '{raw}'. "
+                "Expected format: scope:max_mutations:type1,type2 "
+                "(scope: subfinger index, '*', or 'overall')"
+            )
+
+        scope_raw, max_mut_raw, types_raw = parts
+        try:
+            max_mutations = int(max_mut_raw)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ZFN mutation counts in '{raw}'. max_mutations must be an integer.") from exc
+
+        mutation_types = _parse_zfn_mutation_types(types_raw, raw)
+        scope_normalized = scope_raw.lower()
+
+        if scope_normalized == "*":
+            default_subfinger = ZFNDefaultSubfingerMutationConstraint(
+                max_mutations=max_mutations,
+                mutation_types=mutation_types,
+            )
+            continue
+
+        if scope_normalized == "overall":
+            overall_constraints.append(
+                ZFNOverallMutationConstraint(
+                    max_mutations=max_mutations,
+                    mutation_types=mutation_types,
+                )
+            )
+            continue
+
+        try:
+            subfinger_index = int(scope_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid ZFN mutation scope '{scope_raw}' in '{raw}'. "
+                "Use subfinger index, '*' (default per-subfinger), or 'overall'."
+            ) from exc
+
+        per_subfinger.append(
+            ZFNSubfingerMutationConstraint(
+                subfinger_index=subfinger_index,
+                max_mutations=max_mutations,
+                mutation_types=mutation_types,
+            )
+        )
+
+    return per_subfinger, default_subfinger, overall_constraints
+
+
+def _build_zfn_design_configuration(  # noqa: PLR0912
+    *,
+    zfn_subfinger_mutation: list[str],
+    zfn_max_mismatches_per_subfinger: int | None,
+    zfn_max_substitutions_overall: int | None,
+    zfn_left_half_site: str,
+    zfn_right_half_site: str,
+    zfn_search_space: str | None,
+    zfn_search_space_index: str | None,
+    zfn_search_backend: ZFNSearchBackend,
+    zfn_algorithm: ZFNAlgorithm,
+    zfn_dimer_mode: DimerMode,
+    zfn_spacer_lengths: str,
+    zfn_max_mismatches: int,
+    zfn_window_stride: int | None = None,
+    zfn_top_n_sites: int | None = None,
+    zfn_report_n_sites: int | None = None,
+    workflow_cores: int | None = None,
+    zfn_annotation: str | None = None,
+) -> tuple[
+    ZFNDesignParameters,
+    GenomicAnnotationConfig | None,
+    list[ZFNSubfingerMutationConstraint],
+    ZFNDefaultSubfingerMutationConstraint | None,
+    list[ZFNOverallMutationConstraint],
+]:
+    """Parse and validate CLI options into a typed ZFN design configuration."""
+    merged_zfn_constraints = list(zfn_subfinger_mutation)
+    if zfn_max_mismatches_per_subfinger is not None:
+        merged_zfn_constraints.append(f"*:{zfn_max_mismatches_per_subfinger}:mismatch")
+    if zfn_max_substitutions_overall is not None:
+        merged_zfn_constraints.append(f"overall:{zfn_max_substitutions_overall}:substitution")
+
+    zfn_constraints, zfn_default_constraint, zfn_overall_constraints = _parse_zfn_mutation_constraints(
+        merged_zfn_constraints
+    )
+
+    try:
+        parsed_spacers = [int(s.strip()) for s in zfn_spacer_lengths.split(",")]
+    except ValueError as exc:
+        raise ValueError("--zfn-spacer-lengths must be comma-separated integers") from exc
+    mutation_constraints: ZFNMutationConstraints | None = None
+    if zfn_constraints or zfn_default_constraint or zfn_overall_constraints:
+        mutation_constraints = ZFNMutationConstraints(
+            subfinger_mutations=zfn_constraints,
+            default_subfinger_mutation=zfn_default_constraint,
+            overall_mutations=zfn_overall_constraints,
+        )
+
+    search_space_fasta: str | None = None
+    search_space_reference: str | None = "ensembl_human_hg38_primary"
+    if zfn_search_space:
+        if Path(zfn_search_space).exists() or zfn_search_space.startswith(REMOTE_RESOURCE_SCHEMES):
+            search_space_fasta = zfn_search_space
+            search_space_reference = None
+        else:
+            search_space_reference = zfn_search_space
+
+    annotation: GenomicAnnotationConfig | None = None
+    if zfn_annotation:
+        if zfn_annotation.startswith(REMOTE_RESOURCE_SCHEMES):
+            annotation = GenomicAnnotationConfig(annotation_reference=zfn_annotation)
+        else:
+            annotation = GenomicAnnotationConfig(annotation_path=zfn_annotation)
+
+    zfn_design_params = ZFNDesignParameters(
+        left_half_site=zfn_left_half_site,
+        right_half_site=zfn_right_half_site,
+        search_space_reference=search_space_reference,
+        search_space_fasta=search_space_fasta,
+        search_space_index=zfn_search_space_index,
+        search_backend=zfn_search_backend,
+        algorithm=zfn_algorithm,
+        dimer_mode=zfn_dimer_mode,
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=parsed_spacers),
+        half_site_constraints=ZFNHalfSiteConstraints(
+            max_mismatches=zfn_max_mismatches,
+            window_stride=zfn_window_stride or DEFAULT_ZFN_WINDOW_STRIDE,
+        ),
+        top_n_sites=zfn_top_n_sites or DEFAULT_ZFN_TOP_N_SITES,
+        report_n_sites=zfn_report_n_sites or DEFAULT_ZFN_REPORT_N_SITES,
+        mutation_constraints=mutation_constraints,
+        sharding=_autotune_zfn_sharding(workflow_cores, zfn_search_backend),
+    )
+
+    return zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints
 
 
 @app_command()
@@ -277,6 +534,7 @@ def search(  # noqa: PLR0912
         include_types = [t.strip() for t in transcript_types.split(",") if t.strip()] if transcript_types else []
         exclude_types_list = [t.strip() for t in exclude_types.split(",") if t.strip()] if exclude_types else []
 
+        results: list[GeneSearchResult]
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -295,20 +553,20 @@ def search(  # noqa: PLR0912
                 results = [search_gene_sync(query=query, database=db_type, include_sequence=not no_sequence)]
 
         # Display results
-        successful_results = [r for r in results if r.success]
+        successful_results: list[GeneSearchResult] = [r for r in results if r.success]
 
         if not successful_results:
             console.print(f"❌ [red]No results found for:[/red] {query}")
             for result in results:
                 if result.error:
-                    db_name = result.database.value if hasattr(result.database, "value") else str(result.database)
+                    db_name = result.database.value
                     console.print(f"  {db_name}: {result.error}")
             raise typer.Exit(1)
 
         # Apply filtering to all transcripts
-        all_transcripts = []
+        all_transcripts: list[TranscriptInfo] = []
         for result in successful_results:
-            filtered_transcripts = filter_transcripts(
+            filtered_transcripts: list[TranscriptInfo] = filter_transcripts(
                 result.transcripts,
                 include_types=include_types,
                 exclude_types=exclude_types_list,
@@ -344,7 +602,7 @@ def search(  # noqa: PLR0912
                 transcript_count = 0
                 status = f"❌ {result.error}"
 
-            db_name = result.database.value if hasattr(result.database, "value") else str(result.database)
+            db_name = result.database.value
             summary_table.add_row(db_name, gene_id, gene_name, str(transcript_count), status)
 
         console.print(summary_table)
@@ -359,9 +617,7 @@ def search(  # noqa: PLR0912
             transcript_table.add_column("Canonical", style="magenta")
 
             for transcript in all_transcripts[:10]:  # Show first 10
-                db_name = (
-                    transcript.database.value if hasattr(transcript.database, "value") else str(transcript.database)
-                )
+                db_name = transcript.database.value
                 transcript_table.add_row(
                     transcript.transcript_id,
                     db_name,
@@ -378,7 +634,7 @@ def search(  # noqa: PLR0912
         # Save sequences to FASTA if requested
         if not no_sequence and all_transcripts:
             searcher = GeneSearcher()
-            transcripts_with_sequence = [t for t in all_transcripts if t.sequence]
+            transcripts_with_sequence: list[TranscriptInfo] = [t for t in all_transcripts if t.sequence]
 
             if transcripts_with_sequence:
                 searcher.save_transcripts_fasta(transcripts_with_sequence, output)
@@ -439,7 +695,128 @@ def workflow(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
+        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
+    ),
+    zfn_subfinger_mutation: list[str] = typer.Option(
+        [],
+        "--zfn-subfinger-mutation",
+        help=(
+            "ZFN sub-finger mutation allowance. "
+            "Repeatable format: scope:max_mutations:type1,type2. "
+            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
+            "or 'overall' for global budgets. "
+            "Use 'mismatch' as a shorthand alias for 'substitution'."
+        ),
+    ),
+    zfn_max_mismatches_per_subfinger: int | None = typer.Option(
+        None,
+        "--zfn-max-mismatches-per-subfinger",
+        min=0,
+        help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
+    ),
+    zfn_max_substitutions_overall: int | None = typer.Option(
+        None,
+        "--zfn-max-substitutions-overall",
+        min=0,
+        help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
+    ),
+    # ── ZFN half-site and search-space inputs (required when --design-mode zfn) ──
+    zfn_left_half_site: str | None = typer.Option(
+        None,
+        "--zfn-left-half-site",
+        help="Left ZFN half-site sequence (9-18 bp, IUPAC allowed). Required for --design-mode zfn.",
+    ),
+    zfn_right_half_site: str | None = typer.Option(
+        None,
+        "--zfn-right-half-site",
+        help="Right ZFN half-site sequence (9-18 bp, IUPAC allowed). Required for --design-mode zfn.",
+    ),
+    zfn_search_space: str | None = typer.Option(
+        None,
+        "--zfn-search-space",
+        help=(
+            "Genome reference key or local FASTA path for ZFN off-target search space. "
+            "Built-in keys: ensembl_human_hg38_primary, ensembl_mouse_grcm39_primary, "
+            "ensembl_rat_grcr8_toplevel, ensembl_macaque_mmul10_toplevel. "
+            "Default: ensembl_human_hg38_primary when --design-mode zfn."
+        ),
+    ),
+    zfn_search_space_index: str | None = typer.Option(
+        None,
+        "--zfn-search-space-index",
+        help=(
+            "Optional persisted search-space index bundle path for indexed ZFN backends "
+            "(currently fm_index; fm_index is experimental on large references)."
+        ),
+    ),
+    zfn_search_backend: ZFNSearchBackend = typer.Option(
+        ZFNSearchBackend.PYAHOCORASICK,
+        "--zfn-search-backend",
+        help=(
+            "Half-site search backend: pyahocorasick (default), "
+            "exhaustive_python (baseline), or fm_index (experimental)."
+        ),
+    ),
+    zfn_algorithm: ZFNAlgorithm = typer.Option(
+        ZFNAlgorithm.ZFN_V2,
+        "--zfn-algorithm",
+        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
+    ),
+    zfn_dimer_mode: DimerMode = typer.Option(
+        DimerMode.HETERODIMER_ONLY,
+        "--zfn-dimer-mode",
+        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
+    ),
+    zfn_spacer_lengths: str = typer.Option(
+        "5,6,7",
+        "--zfn-spacer-lengths",
+        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
+    ),
+    zfn_max_mismatches: int = typer.Option(
+        2,
+        "--zfn-max-mismatches",
+        min=0,
+        max=6,
+        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
+    ),
+    zfn_window_stride: int | None = typer.Option(
+        None,
+        "--zfn-window-stride",
+        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
+        min=1,
+        max=50,
+        hidden=True,
+        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
+    ),
+    zfn_top_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-top-n-sites",
+        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
+    ),
+    zfn_report_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-report-n-sites",
+        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: number of top ranked sites included in report outputs.",
+    ),
+    cores: int | None = typer.Option(
+        None,
+        "--cores",
+        min=1,
+        envvar="SIRNAFORGE_CORES",
+        help=(
+            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
+        ),
+    ),
+    zfn_annotation: str | None = typer.Option(
+        None,
+        "--zfn-annotation",
+        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
     ),
     top_n_candidates: int = typer.Option(
         100,
@@ -648,6 +1025,71 @@ def workflow(  # noqa: PLR0912
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
+    merged_zfn_constraints = list(zfn_subfinger_mutation)
+    if zfn_max_mismatches_per_subfinger is not None:
+        merged_zfn_constraints.append(f"*:{zfn_max_mismatches_per_subfinger}:mismatch")
+    if zfn_max_substitutions_overall is not None:
+        merged_zfn_constraints.append(f"overall:{zfn_max_substitutions_overall}:substitution")
+
+    try:
+        zfn_constraints, zfn_default_constraint, zfn_overall_constraints = _parse_zfn_mutation_constraints(
+            merged_zfn_constraints
+        )
+    except ValueError as exc:
+        logger.error("Invalid ZFN sub-finger mutation configuration: %s", exc)
+        console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+
+    if mode_enum != DesignMode.ZFN and (zfn_constraints or zfn_default_constraint or zfn_overall_constraints):
+        logger.error("ZFN constraints provided while design mode is %s", mode_enum.value)
+        console.print("❌ Error: --zfn-subfinger-mutation requires --design-mode zfn", style="red")
+        raise typer.Exit(1)
+
+    # ── Assemble ZFNDesignParameters when mode is ZFN ──
+    zfn_design_params: ZFNDesignParameters | None = None
+    annotation: GenomicAnnotationConfig | None = None
+    if mode_enum == DesignMode.ZFN:
+        if not zfn_left_half_site or not zfn_right_half_site:
+            console.print(
+                "❌ Error: --zfn-left-half-site and --zfn-right-half-site are required for --design-mode zfn",
+                style="red",
+            )
+            raise typer.Exit(1)
+
+        try:
+            zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (
+                _build_zfn_design_configuration(
+                    zfn_subfinger_mutation=zfn_subfinger_mutation,
+                    zfn_max_mismatches_per_subfinger=zfn_max_mismatches_per_subfinger,
+                    zfn_max_substitutions_overall=zfn_max_substitutions_overall,
+                    zfn_left_half_site=zfn_left_half_site,
+                    zfn_right_half_site=zfn_right_half_site,
+                    zfn_search_space=zfn_search_space,
+                    zfn_search_space_index=zfn_search_space_index,
+                    zfn_search_backend=zfn_search_backend,
+                    zfn_algorithm=zfn_algorithm,
+                    zfn_dimer_mode=zfn_dimer_mode,
+                    zfn_spacer_lengths=zfn_spacer_lengths,
+                    zfn_max_mismatches=zfn_max_mismatches,
+                    zfn_window_stride=zfn_window_stride,
+                    zfn_top_n_sites=zfn_top_n_sites,
+                    zfn_report_n_sites=zfn_report_n_sites,
+                    workflow_cores=cores,
+                    zfn_annotation=zfn_annotation,
+                )
+            )
+        except ValueError as exc:
+            logger.error("Invalid ZFN configuration: %s", exc)
+            console.print(f"❌ Error: {exc}", style="red")
+            raise typer.Exit(1)
+        except Exception as exc:
+            logger.error("ZFN parameter validation failed: %s", exc)
+            console.print(
+                f"❌ Error: ZFN parameter validation failed: {exc}",
+                style="red",
+            )
+            raise typer.Exit(1)
+
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
         override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
@@ -704,7 +1146,9 @@ def workflow(  # noqa: PLR0912
             f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
-            f"Overhang: [magenta]{overhang}[/magenta]",
+            f"Overhang: [magenta]{overhang}[/magenta]\n"
+            f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
+            f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]",
             title="Workflow Configuration",
         )
     )
@@ -738,6 +1182,8 @@ def workflow(  # noqa: PLR0912
                     sirna_length=sirna_length,
                     modification_pattern=modification_pattern,
                     overhang=overhang,
+                    zfn_design_params=zfn_design_params,
+                    zfn_annotation=annotation if mode_enum == DesignMode.ZFN else None,
                     # Variant parameters
                     variant_ids=list(snp) if snp else None,
                     variant_vcf_file=snp_file,
@@ -747,6 +1193,7 @@ def workflow(  # noqa: PLR0912
                     variant_assembly=variant_assembly,
                     log_file=effective_log,
                     write_json_summary=json_summary,
+                    num_threads=cores,
                     check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
                 )
@@ -763,42 +1210,66 @@ def workflow(  # noqa: PLR0912
         summary_table.add_column("Status", style="green")
         summary_table.add_column("Details", style="white")
 
-        results.get("workflow_config", {})
-        transcript_summary = results.get("transcript_summary", {})
-        design_summary = results.get("design_summary", {})
-        offtarget_summary = results.get("offtarget_summary", {})
+        if mode_enum == DesignMode.ZFN:
+            summary_table.add_row(
+                "ZFN Pair Search",
+                "Complete",
+                f"{results.get('off_target_sites', 0)} off-target sites",
+            )
+            summary_table.add_row(
+                "ZFN Candidate Scoring",
+                "Complete",
+                f"{results.get('candidates', 0)} candidates",
+            )
+            summary_table.add_row(
+                "Annotation",
+                "Complete" if results.get("annotation_source") else "⚠️  Skipped",
+                str(results.get("annotation_source") or "none"),
+            )
+        else:
+            transcript_summary = results.get("transcript_summary", {})
+            design_summary = results.get("design_summary", {})
+            offtarget_summary = results.get("offtarget_summary", {})
 
-        summary_table.add_row(
-            "📄 Transcript Retrieval",
-            "✅ Complete",
-            f"{transcript_summary.get('total_transcripts', 0)} transcripts from {database}",
-        )
+            summary_table.add_row(
+                "Transcript Retrieval",
+                "Complete",
+                f"{transcript_summary.get('total_transcripts', 0)} transcripts from {database}",
+            )
 
-        summary_table.add_row(
-            "🧬 siRNAforge", "✅ Complete", f"{design_summary.get('total_candidates', 0)} candidates generated"
-        )
+            summary_table.add_row(
+                "🧬 siRNAforge", "✅ Complete", f"{design_summary.get('total_candidates', 0)} candidates generated"
+            )
 
-        summary_table.add_row(
-            "🎯 Off-target Analysis",
-            "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
-            f"Method: {offtarget_summary.get('method', 'basic')}",
-        )
+            summary_table.add_row(
+                "Off-target Analysis",
+                "Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
+                f"Method: {offtarget_summary.get('method', 'basic')}",
+            )
 
         console.print(summary_table)
 
         # Output locations
         console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
-        console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
-        console.print(f"   • siRNA candidates (ALL): [blue]sirnaforge/{gene_query}_all.csv[/blue]")
-        console.print(f"   • siRNA candidates (PASS): [blue]sirnaforge/{gene_query}_pass.csv[/blue]")
-        console.print("   • Off-target results: [blue]off_target/results/[/blue]")
-        console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
-        if json_summary:
-            console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
+        if mode_enum == DesignMode.ZFN:
+            console.print("   • Off-target sites: [blue]sirnaforge/offtarget_sites.csv[/blue]")
+            console.print("   • Candidate summary: [blue]sirnaforge/candidate_summary.json[/blue]")
+            console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
+            if json_summary:
+                console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
+        else:
+            offtarget_summary = results.get("offtarget_summary", {})
+            console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
+            console.print("   • siRNA candidates (ALL): [blue]sirnaforge/candidates_all.csv[/blue]")
+            console.print("   • siRNA candidates (PASS): [blue]sirnaforge/candidates_pass.csv[/blue]")
+            console.print("   • Off-target results: [blue]off_target/results/[/blue]")
+            console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
+            if json_summary:
+                console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
 
-        if offtarget_summary.get("method") == "nextflow":
-            console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
+            if offtarget_summary.get("method") == "nextflow":
+                console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
 
     except Exception as e:
         logger.exception("Workflow execution failed")
@@ -1040,6 +1511,246 @@ def offtarget(
 
 
 @app_command()
+def zfn(
+    output_dir: Path = typer.Option(
+        Path("sirna_zfn_output"),
+        "--output-dir",
+        "-o",
+        help="Output directory for ZFN activity evaluation results",
+    ),
+    zfn_subfinger_mutation: list[str] = typer.Option(
+        [],
+        "--zfn-subfinger-mutation",
+        help=(
+            "ZFN sub-finger mutation allowance. "
+            "Repeatable format: scope:max_mutations:type1,type2. "
+            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
+            "or 'overall' for global budgets. "
+            "Use 'mismatch' as a shorthand alias for 'substitution'."
+        ),
+    ),
+    zfn_max_mismatches_per_subfinger: int | None = typer.Option(
+        None,
+        "--zfn-max-mismatches-per-subfinger",
+        min=0,
+        help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
+    ),
+    zfn_max_substitutions_overall: int | None = typer.Option(
+        None,
+        "--zfn-max-substitutions-overall",
+        min=0,
+        help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
+    ),
+    zfn_left_half_site: str = typer.Option(
+        ...,
+        "--zfn-left-half-site",
+        help="Left ZFN half-site sequence (9-18 bp, IUPAC allowed).",
+    ),
+    zfn_right_half_site: str = typer.Option(
+        ...,
+        "--zfn-right-half-site",
+        help="Right ZFN half-site sequence (9-18 bp, IUPAC allowed).",
+    ),
+    zfn_search_space: str | None = typer.Option(
+        None,
+        "--zfn-search-space",
+        help=(
+            "Genome reference key or local FASTA path for ZFN off-target search space. "
+            "Built-in keys: ensembl_human_hg38_primary, ensembl_mouse_grcm39_primary, "
+            "ensembl_rat_grcr8_toplevel, ensembl_macaque_mmul10_toplevel. "
+            "Default: ensembl_human_hg38_primary."
+        ),
+    ),
+    zfn_search_space_index: str | None = typer.Option(
+        None,
+        "--zfn-search-space-index",
+        help=(
+            "Optional persisted search-space index bundle path for indexed ZFN backends "
+            "(currently fm_index; fm_index is experimental on large references)."
+        ),
+    ),
+    zfn_search_backend: ZFNSearchBackend = typer.Option(
+        ZFNSearchBackend.PYAHOCORASICK,
+        "--zfn-search-backend",
+        help=(
+            "Half-site search backend: pyahocorasick (default), "
+            "exhaustive_python (baseline), or fm_index (experimental)."
+        ),
+    ),
+    zfn_algorithm: ZFNAlgorithm = typer.Option(
+        ZFNAlgorithm.ZFN_V2,
+        "--zfn-algorithm",
+        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
+    ),
+    zfn_dimer_mode: DimerMode = typer.Option(
+        DimerMode.HETERODIMER_ONLY,
+        "--zfn-dimer-mode",
+        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
+    ),
+    zfn_spacer_lengths: str = typer.Option(
+        "5,6,7",
+        "--zfn-spacer-lengths",
+        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
+    ),
+    zfn_max_mismatches: int = typer.Option(
+        2,
+        "--zfn-max-mismatches",
+        min=0,
+        max=6,
+        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
+    ),
+    zfn_window_stride: int | None = typer.Option(
+        None,
+        "--zfn-window-stride",
+        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
+        min=1,
+        max=50,
+        hidden=True,
+        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
+    ),
+    zfn_top_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-top-n-sites",
+        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
+    ),
+    zfn_report_n_sites: int | None = typer.Option(
+        None,
+        "--zfn-report-n-sites",
+        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
+        min=1,
+        hidden=True,
+        help="Internal tuning: number of top ranked sites included in report outputs.",
+    ),
+    cores: int | None = typer.Option(
+        None,
+        "--cores",
+        min=1,
+        envvar="SIRNAFORGE_CORES",
+        help=(
+            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
+        ),
+    ),
+    zfn_annotation: str | None = typer.Option(
+        None,
+        "--zfn-annotation",
+        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+    log_file: Path | None = typer.Option(
+        None,
+        "--log-file",
+        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+    ),
+    nextflow_docker_image: str | None = typer.Option(
+        None,
+        "--nextflow-docker-image",
+        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
+        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
+    ),
+    json_summary: bool = typer.Option(
+        True,
+        "--json-summary/--no-json-summary",
+        help="Write logs/workflow_summary.json (disable to skip JSON output)",
+    ),
+) -> None:
+    """Evaluate a ZFN pair and run exhaustive genome-wide off-target search."""
+    log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
+    log_destination.parent.mkdir(parents=True, exist_ok=True)
+    configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
+
+    try:
+        zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (
+            _build_zfn_design_configuration(
+                zfn_subfinger_mutation=zfn_subfinger_mutation,
+                zfn_max_mismatches_per_subfinger=zfn_max_mismatches_per_subfinger,
+                zfn_max_substitutions_overall=zfn_max_substitutions_overall,
+                zfn_left_half_site=zfn_left_half_site,
+                zfn_right_half_site=zfn_right_half_site,
+                zfn_search_space=zfn_search_space,
+                zfn_search_space_index=zfn_search_space_index,
+                zfn_search_backend=zfn_search_backend,
+                zfn_algorithm=zfn_algorithm,
+                zfn_dimer_mode=zfn_dimer_mode,
+                zfn_spacer_lengths=zfn_spacer_lengths,
+                zfn_max_mismatches=zfn_max_mismatches,
+                zfn_window_stride=zfn_window_stride,
+                zfn_top_n_sites=zfn_top_n_sites,
+                zfn_report_n_sites=zfn_report_n_sites,
+                workflow_cores=cores,
+                zfn_annotation=zfn_annotation,
+            )
+        )
+    except ValueError as exc:
+        console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"❌ Error: ZFN parameter validation failed: {exc}", style="red")
+        raise typer.Exit(1)
+
+    console.print(
+        Panel.fit(
+            f"🧬 [bold blue]ZFN Activity Evaluation[/bold blue]\n"
+            f"Left half-site: [yellow]{zfn_design_params.left_half_site}[/yellow]\n"
+            f"Right half-site: [yellow]{zfn_design_params.right_half_site}[/yellow]\n"
+            f"Algorithm: [cyan]{zfn_design_params.algorithm.value}[/cyan]\n"
+            f"Search backend: [cyan]{zfn_design_params.search_backend.value}[/cyan]\n"
+            f"Dimer mode: [cyan]{zfn_design_params.dimer_mode.value}[/cyan]\n"
+            f"Spacer lengths: [cyan]{zfn_design_params.spacer_constraints.allowed_spacer_lengths}[/cyan]\n"
+            f"Internal tuning: [cyan]stride={zfn_design_params.half_site_constraints.window_stride}, "
+            f"top_n={zfn_design_params.top_n_sites}, report_n={zfn_design_params.report_n_sites}[/cyan]\n"
+            f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
+            f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]\n"
+            f"Output Directory: [cyan]{output_dir}[/cyan]",
+            title="ZFN Configuration",
+        )
+    )
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running ZFN activity workflow...", total=None)
+            asyncio.run(
+                run_sirna_workflow(
+                    gene_query="zfn",
+                    output_dir=str(output_dir),
+                    database="ensembl",
+                    design_mode=DesignMode.ZFN.value,
+                    zfn_design_params=zfn_design_params,
+                    zfn_annotation=annotation,
+                    log_file=str(log_destination),
+                    num_threads=cores,
+                    write_json_summary=json_summary,
+                    nextflow_docker_image=nextflow_docker_image,
+                )
+            )
+            progress.remove_task(task)
+
+        console.print("\n✅ [bold green]ZFN workflow completed successfully![/bold green]")
+        console.print(f"📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
+        console.print("📂 Key files:")
+        console.print("   • Off-target sites: [blue]sirnaforge/offtarget_sites.csv[/blue]")
+        console.print("   • Candidate summary: [blue]sirnaforge/candidate_summary.json[/blue]")
+        if json_summary:
+            console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
+    except Exception as e:
+        console.print(f"❌ [red]ZFN workflow error:[/red] {str(e)}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+
+@app_command()
 def design(  # noqa: PLR0912
     input_file: Path = typer.Argument(
         ...,
@@ -1057,7 +1768,7 @@ def design(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware)",
+        help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware). For ZFN use 'sirnaforge zfn'.",
     ),
     length: int = typer.Option(
         21,
@@ -1153,6 +1864,13 @@ def design(  # noqa: PLR0912
         )
     except ValueError as exc:
         console.print(f"❌ Error: {exc}", style="red")
+        raise typer.Exit(1)
+
+    if mode_enum == DesignMode.ZFN:
+        console.print(
+            "❌ Error: --design-mode zfn is not supported in the 'design' command. Use 'sirnaforge zfn' instead.",
+            style="red",
+        )
         raise typer.Exit(1)
 
     # Create parameters
@@ -1288,7 +2006,7 @@ def validate(
     """
     try:
         with console.status("Validating FASTA file..."):
-            sequences = list(SeqIO.parse(input_file, "fasta"))
+            sequences = _parse_fasta_seqrecords(input_file)
 
         if not sequences:
             console.print("❌ [red]No sequences found in FASTA file[/red]")
@@ -1463,7 +2181,7 @@ def cache(
 # Create sequences subcommand group
 sequences_app = typer.Typer(help="Manage siRNA sequences and metadata")
 app.add_typer(sequences_app, name="sequences")
-sequences_command: CommandDecorator = sequences_app.command
+sequences_command = command_decorator_typed(sequences_app.command)
 
 
 class SequencesShowError(RuntimeError):
@@ -1476,7 +2194,7 @@ def _load_fasta_records(input_file: Path) -> list[SeqRecord]:
     Raises:
         SequencesShowError: If the file contains no records.
     """
-    records = list(SeqIO.parse(input_file, "fasta"))
+    records = _parse_fasta_seqrecords(input_file)
     if not records:
         raise SequencesShowError("No sequences found in file")
     return records
@@ -1501,13 +2219,17 @@ def _metadata_value_to_json(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     if isinstance(value, list):
-        return [_metadata_value_to_json(item) for item in value]
+        json_items: list[Any] = []
+        items: list[object] = list(value)
+        for item in items:
+            json_items.append(_metadata_value_to_json(item))
+        return json_items
     return value
 
 
 def _records_to_json(records: list[SeqRecord]) -> str:
     """Render FASTA record header metadata as a JSON string."""
-    payload = []
+    payload: list[dict[str, Any]] = []
     for record in records:
         metadata = parse_header(record)
         payload.append({key: _metadata_value_to_json(val) for key, val in metadata.items()})
@@ -1516,12 +2238,17 @@ def _records_to_json(records: list[SeqRecord]) -> str:
 
 def _summarize_modifications(metadata: dict[str, Any]) -> str:
     """Summarize chemical modifications from parsed header metadata."""
-    mods = metadata.get("chem_mods") or []
-    summary = []
+    raw_mods = metadata.get("chem_mods")
+    mods: list[object] = list(raw_mods) if isinstance(raw_mods, list) else []
+    summary: list[str] = []
     for mod in mods:
         mod_type = getattr(mod, "type", str(mod))
-        positions = getattr(mod, "positions", [])
-        length = len(positions) if isinstance(positions, list) else positions
+        positions_value = getattr(mod, "positions", [])
+        if isinstance(positions_value, list):
+            positions_list: list[object] = list(positions_value)
+            length: int | Any = len(positions_list)
+        else:
+            length = positions_value
         summary.append(f"{mod_type}({length})")
     return ", ".join(summary)
 
@@ -1688,6 +2415,116 @@ def sequences_annotate(
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
+
+
+internal_app = typer.Typer(help="Internal workflow commands", hidden=True)
+app.add_typer(internal_app, name="_internal", hidden=True)
+internal_command = command_decorator_typed(internal_app.command)
+
+
+@internal_command("zfn-make-shards")
+def internal_zfn_make_shards(
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    left_half_site: str = typer.Option(..., "--left-half-site"),
+    right_half_site: str = typer.Option(..., "--right-half-site"),
+    spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
+    max_mismatches: int = typer.Option(..., "--max-mismatches"),
+    sharding_enabled: str = typer.Option("true", "--sharding-enabled"),
+    shard_chunk_mb: float = typer.Option(20.0, "--shard-chunk-mb"),
+    shard_overlap_bp: int = typer.Option(50, "--shard-overlap-bp"),
+    shard_chromosomes: str = typer.Option("", "--shard-chromosomes"),
+    output: Path = typer.Option(Path("zfn_shards.tsv"), "--output"),
+) -> None:
+    """Build ZFN shard manifest for Nextflow execution."""
+    make_zfn_shard_manifest(
+        genome_fasta=genome_fasta,
+        left_half_site=left_half_site,
+        right_half_site=right_half_site,
+        spacer_lengths=spacer_lengths,
+        max_mismatches=max_mismatches,
+        sharding_enabled=sharding_enabled,
+        shard_chunk_mb=shard_chunk_mb,
+        shard_overlap_bp=shard_overlap_bp,
+        shard_chromosomes=shard_chromosomes,
+        output_tsv=output,
+    )
+
+
+@internal_command("zfn-build-search-index")
+def internal_zfn_build_search_index(
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    search_backend: ZFNSearchBackend = typer.Option(ZFNSearchBackend.FM_INDEX, "--search-backend"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+) -> None:
+    """Build a persisted ZFN search-space index bundle for indexed backends."""
+    summary = build_zfn_search_index(
+        backend=search_backend,
+        genome_fasta=genome_fasta,
+        output_dir=output_dir,
+    )
+    console.print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+@internal_command("zfn-search-shard")
+def internal_zfn_search_shard(
+    shard_id: str = typer.Option(..., "--shard-id"),
+    shard_chrom: str = typer.Option(..., "--shard-chrom"),
+    scan_start_1: int = typer.Option(..., "--scan-start-1"),
+    scan_end_1: int = typer.Option(..., "--scan-end-1"),
+    core_start_1: int | None = typer.Option(
+        None, "--core-start-1", help="Core window start (1-based). Defaults to scan-start-1."
+    ),
+    core_end_1: int | None = typer.Option(
+        None, "--core-end-1", help="Core window end (1-based). Defaults to scan-end-1."
+    ),
+    shard_max_mismatches: int = typer.Option(..., "--shard-max-mismatches"),
+    left_half_site: str = typer.Option(..., "--left-half-site"),
+    right_half_site: str = typer.Option(..., "--right-half-site"),
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    search_backend: ZFNSearchBackend = typer.Option(ZFNSearchBackend.EXHAUSTIVE_PYTHON, "--search-backend"),
+    search_space_index: Path | None = typer.Option(None, "--search-space-index"),
+    algorithm: ZFNAlgorithm = typer.Option(..., "--algorithm"),
+    dimer_mode: DimerMode = typer.Option(..., "--dimer-mode"),
+    spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
+    annotation_file: Path | None = typer.Option(None, "--annotation-file"),
+    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+) -> None:
+    """Run one shard-scoped ZFN search and emit shard artifacts."""
+    run_zfn_shard_search(
+        shard_id=shard_id,
+        shard_chrom=shard_chrom,
+        scan_start_1=scan_start_1,
+        scan_end_1=scan_end_1,
+        core_start_1=core_start_1,
+        core_end_1=core_end_1,
+        shard_max_mismatches=shard_max_mismatches,
+        left_half_site=left_half_site,
+        right_half_site=right_half_site,
+        genome_fasta=genome_fasta,
+        search_backend=search_backend,
+        search_space_index=search_space_index,
+        algorithm=algorithm,
+        dimer_mode=dimer_mode,
+        spacer_lengths=spacer_lengths,
+        annotation_file=annotation_file,
+        output_sites_csv=output_sites_csv,
+        output_summary_json=output_summary_json,
+    )
+
+
+@internal_command("zfn-aggregate-shards")
+def internal_zfn_aggregate_shards(
+    shard_csv_glob: str = typer.Option("zfn_offtarget_sites_*.csv", "--shard-csv-glob"),
+    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+) -> None:
+    """Aggregate shard-level ZFN outputs into final ranked outputs."""
+    aggregate_zfn_shard_results(
+        shard_csv_glob=shard_csv_glob,
+        output_sites_csv=output_sites_csv,
+        output_summary_json=output_summary_json,
+    )
 
 
 if __name__ == "__main__":

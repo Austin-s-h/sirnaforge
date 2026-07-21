@@ -11,12 +11,11 @@ uv run sirnaforge workflow TP53 \
   --output-dir tp53_publication \
   --top-n 50 \
   --gc-min 35 --gc-max 60 \
-  --max-poly-runs 2 \
-  --genome-species "human,mouse,rat" \
+  --species "human,mouse,rat" \
   --design-mode mirna \
   --mirna-db mirgenedb \
   --mirna-species "human,mouse" \
-  --modification-file examples/modification_patterns/standard_2ome.json \
+  --modifications standard_2ome \
   --verbose
 ```
 
@@ -38,6 +37,25 @@ uv run sirnaforge workflow TP53 \
 - Pair with `--offtarget-indices human:/refs/hg38 mouse:/refs/mm39` when you maintain your own BWA-MEM2 indices.
 
 ## Gene Search & Design Automations
+
+### ZFN Constraint Composition
+
+```bash
+uv run sirnaforge zfn \
+  --zfn-left-half-site GTCATCCTCATC \
+  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-search-space ensembl_human_hg38_primary \
+  --zfn-spacer-lengths 5,6 \
+  --zfn-max-mismatches 2 \
+  --zfn-max-mismatches-per-subfinger 1 \
+  --zfn-subfinger-mutation "overall:3:substitution" \
+  --zfn-subfinger-mutation "3:2:transition,transversion" \
+  --output-dir zfn_panel_demo
+```
+
+- Use `--zfn-max-mismatches-per-subfinger` for the common baseline.
+- Add `overall:...` constraints to cap mutation classes globally.
+- Override individual subfingers with indexed entries when needed.
 
 ### Curated Transcript Panel
 
@@ -107,7 +125,7 @@ uv run sirnaforge design custom_transcripts.fasta \
   --gc-min 35 --gc-max 60 \
   --max-poly-runs 2 \
   --length 21 \
-  --modification-file examples/modification_patterns/fda_approved_onpattro.json
+  --modifications fda_approved_onpattro
 ```
 
 - Pattern files live in `examples/modification_patterns/` and are parsed by `sirnaforge/utils/modification_patterns.py`.

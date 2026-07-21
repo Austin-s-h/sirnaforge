@@ -25,18 +25,19 @@ def configure_logging(level: str | None = None, log_file: str | None = None) -> 
             SIRNAFORGE_LOG_FILE. If still None, no file handler is added.
     """
     root = logging.getLogger()
-    # Avoid re-configuring if already configured
-    if root.handlers:
-        return
-
     env_level = os.getenv("SIRNAFORGE_LOG_LEVEL")
     lvl_name = (level or env_level or "INFO").upper()
     lvl = getattr(logging, lvl_name, logging.INFO)
     root.setLevel(lvl)
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
-    root.addHandler(console_handler)
+    has_console_handler = any(
+        isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+        for handler in root.handlers
+    )
+    if not has_console_handler:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
+        root.addHandler(console_handler)
 
     logfile = log_file or os.getenv("SIRNAFORGE_LOG_FILE")
     if logfile:
@@ -47,9 +48,15 @@ def configure_logging(level: str | None = None, log_file: str | None = None) -> 
             if parent and not parent.exists():
                 parent.mkdir(parents=True, exist_ok=True)
 
-        file_handler = RotatingFileHandler(logfile, maxBytes=10 * 1024 * 1024, backupCount=5)
-        file_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
-        root.addHandler(file_handler)
+        target_logfile = str(Path(logfile).resolve())
+        has_target_file_handler = any(
+            isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename).resolve() == Path(target_logfile)
+            for handler in root.handlers
+        )
+        if not has_target_file_handler:
+            file_handler = RotatingFileHandler(logfile, maxBytes=10 * 1024 * 1024, backupCount=5)
+            file_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
+            root.addHandler(file_handler)
 
 
 def get_logger(name: str, level: str | None = None) -> logging.Logger:

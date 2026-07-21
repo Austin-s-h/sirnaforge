@@ -13,7 +13,7 @@ uv pip install sirnaforge
 sirnaforge version
 ```
 
-**Requirements:** Python 3.9-3.12
+**Requirements:** Python 3.10-3.12
 
 ## Development Setup
 

@@ -80,19 +80,35 @@ class TestValidationUtils:
         assert result.is_valid
 
     def test_validate_candidate_consistency_mismatched_lengths(self):
-        """Test candidate consistency validation with mismatched sequence lengths."""
-        with pytest.raises(pydantic_core._pydantic_core.ValidationError, match="at most 23 characters"):
+        """Guide and passenger of different (valid) lengths must fail validation."""
+        with pytest.raises(pydantic_core._pydantic_core.ValidationError, match="same length"):
             _ = SiRNACandidate(
                 id="test_1",
                 transcript_id="ENST123",
                 position=100,
                 guide_sequence="ATCGATCGATCGATCGATCGA",  # 21 nt
-                passenger_sequence="TCGATCGATCGATCGATCGAT123",  # 24 nt
+                passenger_sequence="TCGATCGATCGATCGATCGATCG",  # 23 nt, valid bases, longer
                 gc_content=50.0,
                 length=21,
                 asymmetry_score=0.5,
                 composite_score=75.0,
             )
+
+    def test_sirna_candidate_accepts_up_to_engine_max_length(self):
+        """Sequences longer than the 23-nt recommended max (e.g. 3' read-through) are analyzed up to 40 nt."""
+        # 24-nt guide + passenger (a +3 read-through form) should validate now.
+        cand = SiRNACandidate(
+            id="readthrough_1",
+            transcript_id="ENST123",
+            position=100,
+            guide_sequence="ATCGATCGATCGATCGATCGATCG",  # 24 nt
+            passenger_sequence="CGATCGATCGATCGATCGATCGAT",  # 24 nt
+            gc_content=50.0,
+            length=24,
+            asymmetry_score=0.5,
+            composite_score=75.0,
+        )
+        assert len(cand.guide_sequence) == 24
 
 
 class TestValidationConfig:

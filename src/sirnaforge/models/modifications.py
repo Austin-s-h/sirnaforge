@@ -4,18 +4,13 @@ This module provides structured representations for chemical modifications,
 overhangs, and provenance metadata associated with siRNA strands.
 """
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field
 
-F = TypeVar("F", bound=Callable[..., Any])
-FieldValidatorFactory = Callable[..., Callable[[F], F]]
-ModelValidatorFactory = Callable[..., Callable[[F], F]]
-
-field_validator_typed: FieldValidatorFactory = field_validator
-model_validator_typed: ModelValidatorFactory = model_validator
+from sirnaforge.utils.typed_decorators import field_validator_typed, model_validator_typed
 
 
 class ConfirmationStatus(str, Enum):

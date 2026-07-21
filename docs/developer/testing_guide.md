@@ -154,6 +154,48 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:latest \
 - **Release validation**: Use `test-release` with full coverage
 - **Quick validation**: Use `make check` for lint + fast tests
 
+## ZFN Manual Validation
+
+The heavy ZFN benchmarking and real-reference checks are documented as technical validation notes rather than notebook-management policy.
+
+- use [zfn_backend_tuning.md](zfn_backend_tuning.md) for the backend selection rationale
+- use [zfn_hg38_primary_test_commands.md](zfn_hg38_primary_test_commands.md) for full hg38 primary reruns
+- keep chr3 and hg38 durable behavior in `tests/integration/` so reference resolution, search execution, and annotation are exercised together
+
+## miRNA default-backend rollout validation
+
+Use this sequence when touching the internal miRNA backend seam or the Nextflow batch path.
+
+The operational default for miRNA seed analysis is `pyahocorasick`.
+Keep `exhaustive_python` as the correctness oracle for parity checks and treat the BWA path as the semantic comparison baseline in environments where BWA exists.
+Backend selection remains intentionally internal for this slice; do not add a public CLI or workflow knob unless the product surface is being widened on purpose.
+
+```bash
+make lint
+
+docker run --rm \
+  -v $(pwd):/workspace \
+  -w /workspace \
+  -v ~/.cache/sirnaforge:/home/sirnauser/.cache/sirnaforge \
+  -e CI \
+  -e GITHUB_ACTIONS \
+  -e PYTEST_ADDOPTS= \
+  -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge \
+  -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home \
+  sirnaforge:latest \
+  bash -lc 'export PYTHONPATH=/workspace/.pip:/workspace/src && /opt/conda/bin/python -m pytest -n 0 -v \
+    tests/container/test_toy_databases_integration.py::test_toy_mirna_seed_backend_matches_bwa_semantic_hits \
+    tests/container/test_workflow_modes.py::test_nextflow_mirna_batch_path_uses_default_backend \
+    --override-ini="addopts=-ra -q --strict-markers --strict-config --color=yes"'
+```
+
+Treat the default backend as rollout-ready only when all of the following hold:
+
+- `tests/unit/test_mirna_seed_backends.py` continues to protect exhaustive-oracle parity and schema compatibility
+- `test_toy_mirna_seed_backend_matches_bwa_semantic_hits` passes in the container environment
+- `test_nextflow_mirna_batch_path_uses_default_backend` passes and emits aggregated miRNA artifacts through the embedded Nextflow path
+- no new public CLI or workflow backend-selection surface is introduced
+
 ### Timeouts and Expectations
 - **Never cancel** `uv sync --dev` (can take 60-120s first time)
 - **Docker builds** take ~15-20 minutes first time, much faster subsequently

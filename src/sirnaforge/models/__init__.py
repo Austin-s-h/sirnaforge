@@ -39,6 +39,22 @@ from .variant import (
     VariantRecord,
     VariantSource,
 )
+from .zfn import (
+    DimerMode,
+    GenomicAnnotationConfig,
+    IUPACMode,
+    MatchOrientation,
+    Strand,
+    ZFNAlgorithm,
+    ZFNCandidate,
+    ZFNDesignParameters,
+    ZFNDesignResult,
+    ZFNHalfSiteConstraints,
+    ZFNOffTargetFilterCriteria,
+    ZFNOffTargetSite,
+    ZFNScoringWeights,
+    ZFNSpacerConstraints,
+)
 
 __all__ = [
     # siRNA design models
@@ -79,4 +95,19 @@ __all__ = [
     "VariantMode",
     "VariantSource",
     "ClinVarSignificance",
+    # ZFN models
+    "Strand",
+    "DimerMode",
+    "ZFNAlgorithm",
+    "MatchOrientation",
+    "IUPACMode",
+    "ZFNHalfSiteConstraints",
+    "ZFNSpacerConstraints",
+    "ZFNOffTargetFilterCriteria",
+    "ZFNScoringWeights",
+    "ZFNDesignParameters",
+    "GenomicAnnotationConfig",
+    "ZFNOffTargetSite",
+    "ZFNCandidate",
+    "ZFNDesignResult",
 ]

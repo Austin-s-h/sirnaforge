@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 import logging
+import shutil
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -52,7 +53,7 @@ class CacheMetadata:
     extra: dict[str, Any] | None = None  # For subclass-specific metadata
 
     @classmethod
-    def from_dict(cls, data: dict, source_class: type = ReferenceSource) -> "CacheMetadata":
+    def from_dict(cls, data: dict[str, Any], source_class: type[ReferenceSource] = ReferenceSource) -> "CacheMetadata":
         """Create CacheMetadata from dictionary.
 
         Args:
@@ -123,15 +124,30 @@ class ReferenceManager(ABC, Generic[SourceT]):
     def _load_metadata(self) -> None:
         """Load cache metadata from disk."""
         self.metadata: dict[str, CacheMetadata] = {}
+        self.uri_index: dict[str, str] = {}
 
         if self.metadata_file.exists():
             try:
                 with self.metadata_file.open("r") as f:
                     data = json.load(f)
-                    for key, meta_dict in data.items():
-                        self.metadata[key] = self._metadata_from_dict(meta_dict)
+                    if isinstance(data, dict) and "entries" in data:
+                        entries = data.get("entries", {})
+                        for key, meta_dict in entries.items():
+                            self.metadata[key] = self._metadata_from_dict(meta_dict)
+                        raw_uri_index = data.get("uri_index", {})
+                        if isinstance(raw_uri_index, dict):
+                            self.uri_index = {str(uri): str(key) for uri, key in raw_uri_index.items()}
+                    else:
+                        for key, meta_dict in data.items():
+                            self.metadata[key] = self._metadata_from_dict(meta_dict)
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Failed to load cache metadata: {e}")
+
+        # Backfill URI index from metadata so older cache files upgrade in-place.
+        for cache_key, meta in self.metadata.items():
+            source_url = meta.source.url
+            if self._is_remote_location(source_url):
+                self.uri_index[source_url] = cache_key
 
     @abstractmethod
     def _metadata_from_dict(self, data: dict) -> CacheMetadata:
@@ -144,7 +160,11 @@ class ReferenceManager(ABC, Generic[SourceT]):
     def _save_metadata(self) -> None:
         """Save cache metadata to disk."""
         try:
-            data = {key: meta.to_dict() for key, meta in self.metadata.items()}
+            data = {
+                "version": "2.0",
+                "entries": {key: meta.to_dict() for key, meta in self.metadata.items()},
+                "uri_index": self.uri_index,
+            }
             # Compute from cache_dir so callers/tests that monkeypatch cache_dir stay consistent.
             metadata_path = self.cache_dir / "cache_metadata.json"
             self.metadata_file = metadata_path
@@ -186,6 +206,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
                 continue
 
         self.metadata.clear()
+        self.uri_index.clear()
         return {
             "cache_directory": str(self.cache_dir),
             "files_deleted": deleted,
@@ -200,6 +221,70 @@ class ReferenceManager(ABC, Generic[SourceT]):
             for chunk in iter(lambda: f.read(4096), b""):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
+
+    def _record_cache_entry(
+        self,
+        cache_key: str,
+        source: ReferenceSource,
+        cache_file: Path,
+        *,
+        extra: dict[str, Any] | None = None,
+        downloaded_at: str | None = None,
+        persist: bool = False,
+    ) -> CacheMetadata:
+        """Create/replace metadata for a cache entry from an on-disk file."""
+        metadata = CacheMetadata(
+            source=source,
+            downloaded_at=downloaded_at or datetime.now().isoformat(),
+            file_size=cache_file.stat().st_size,
+            checksum=self._compute_file_checksum(cache_file),
+            file_path=str(cache_file),
+            extra=extra,
+        )
+        self.metadata[cache_key] = metadata
+        if self._is_remote_location(source.url):
+            self.uri_index[source.url] = cache_key
+        if persist:
+            self._save_metadata()
+        return metadata
+
+    def _cache_key_for_remote_uri(self, uri: str) -> str | None:
+        """Return an indexed cache key for a remote URI when available."""
+        cache_key = self.uri_index.get(uri)
+        if cache_key is None:
+            return None
+        if cache_key not in self.metadata:
+            # Remove stale mappings so future lookups do not repeatedly miss.
+            self.uri_index.pop(uri, None)
+            return None
+        return cache_key
+
+    def _recover_remote_cache_entry(
+        self,
+        *,
+        source: ReferenceSource,
+        cache_key: str,
+        cache_file: Path,
+        persist: bool = True,
+    ) -> bool:
+        """Recover metadata for an already-downloaded remote artifact.
+
+        This handles interrupted runs where the file exists on disk but metadata
+        was never flushed, preventing unnecessary re-downloads.
+        """
+        if cache_key in self.metadata:
+            return self._is_cache_valid(cache_key)
+
+        if not cache_file.exists() or cache_file.stat().st_size == 0:
+            return False
+
+        self._record_cache_entry(cache_key, source, cache_file, persist=persist)
+        logger.info(
+            "Recovered remote cache metadata for %s from existing file %s",
+            source.url,
+            cache_file,
+        )
+        return self._is_cache_valid(cache_key)
 
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached data is still valid.
@@ -290,23 +375,76 @@ class ReferenceManager(ABC, Generic[SourceT]):
             logger.error(f"❌ Failed to download {source.url}: {e}")
             return None
 
+    def _download_to_path(self, source: ReferenceSource, destination: Path, timeout: int = 600) -> bool:
+        """Stream a source URL directly to destination, optionally decompressing gzip content."""
+        try:
+            logger.info(f"📥 Downloading {source.name} ({source.species}): {source.url}")
+            request = urllib.request.Request(
+                source.url,
+                headers={
+                    "User-Agent": "sirnaforge/1.0 (+https://github.com/austin-s-h/sirnaforge)",
+                    "Accept": "text/plain,application/octet-stream",
+                },
+            )
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                if source.compressed and source.url.endswith(".gz"):
+                    logger.info("🔄 Decompressing gzipped file...")
+                    with gzip.GzipFile(fileobj=response) as decompressed, destination.open("wb") as handle:
+                        shutil.copyfileobj(decompressed, handle, length=1024 * 1024)
+                else:
+                    with destination.open("wb") as handle:
+                        shutil.copyfileobj(response, handle, length=1024 * 1024)
+
+            if destination.stat().st_size == 0:
+                logger.error("Received empty response from %s", source.url)
+                destination.unlink(missing_ok=True)
+                return False
+
+            logger.info("✅ Downloaded %s bytes to %s", destination.stat().st_size, destination)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to download {source.url}: {e}")
+            destination.unlink(missing_ok=True)
+            return False
+
+    def _is_remote_location(self, resource_location: str) -> bool:
+        """Return whether a user resource string points to a remote URL."""
+        return resource_location.startswith(("http://", "https://", "ftp://"))
+
+    def _default_cache_name_for_resource(self, resource_location: str) -> str:
+        """Derive a stable cache name from a user-supplied local path or URL."""
+        name = resource_location.rstrip("/").split("/")[-1] if resource_location else "resource"
+        normalized = name.replace(".gz", "").replace(".fa", "").replace(".fasta", "")
+        return normalized or "resource"
+
+    def _cache_info_files(self) -> list[Path]:
+        """Return cache files included in aggregate size/count stats."""
+        return list(self.cache_dir.glob("*.fa")) + list(self.cache_dir.glob("*.fasta"))
+
+    def _cache_info_extra(self, _total_files: int, _total_size_bytes: int) -> dict[str, Any]:
+        """Return subclass-specific fields for cache_info."""
+        return {}
+
     def cache_info(self) -> dict[str, Any]:
         """Get information about the current cache state.
 
         Returns:
             Dictionary containing cache statistics
         """
-        files = list(self.cache_dir.glob("*.fa")) + list(self.cache_dir.glob("*.fasta"))
+        files = self._cache_info_files()
         total_files = len(files)
         total_size = sum(f.stat().st_size for f in files if f.exists())
-
-        return {
+        info: dict[str, Any] = {
             "cache_directory": str(self.cache_dir),
             "total_files": total_files,
             "total_size_mb": total_size / (1024 * 1024),
             "cache_ttl_days": self.cache_ttl.days,
             "cached_items": list(self.metadata.keys()),
         }
+        info.update(self._cache_info_extra(total_files, total_size))
+        return info
 
     def clean_cache(self, older_than_days: int | None = None) -> None:
         """Clean old cache files.

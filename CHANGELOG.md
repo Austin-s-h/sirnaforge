@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-21
+
+This release adds the Zinc Finger Nuclease (ZFN) design/off-target module, multi-species genome
+references, and a correctness fix to miRNA seed-hit scoping. **Behavior note:** the miRNA seed-hit
+fix changes the reported hit census (previously-counted non-seed perfect matches are no longer
+counted as hits), so results are not identical to 0.4.x.
+
+### Added
+
+- **Zinc Finger Nuclease (ZFN) module** (`sirnaforge.zfn`): typed ZFN pair models, exhaustive and
+  indexed half-site search backends, candidate ranking, annotation, and an optional Nextflow
+  execution bridge. New `sirnaforge zfn` CLI command and `zfn_candidate_summary.json` /
+  `zfn_offtarget_sites.csv` outputs.
+- **Multi-species genome references.** Genome (DNA) references now cover human, mouse, rat, and
+  macaque, matching the transcriptome/miRNA species set. Previously only
+  `ensembl_human_hg38_primary` was available, so ZFN off-target search could only use a human
+  search space. New keys: `ensembl_mouse_grcm39_primary`, `ensembl_rat_grcr8_toplevel`,
+  `ensembl_macaque_mmul10_toplevel`. The human key is unchanged for backward compatibility.
+- New `sirnaforge.data.ensembl_references` module: a single Ensembl assembly table generates both
+  the transcriptome cDNA and genome DNA `SOURCES`, so adding a species is a one-line change.
+
+### Fixed
+
+- **miRNA seed hits are now scoped to the seed region.** `run_mirna_seed_analysis` previously
+  copied all raw alignments into the filtered output (`df_filtered = df_raw.copy()`), so perfect
+  guide-seed matches anywhere in a miRNA — including the 3′ region — were counted as hits,
+  inflating `total_hits`/`mirna_hits_0mm_seed`. A raw alignment is now counted as a hit only when
+  the guide seed lands on the miRNA's own seed region (0-based `coord == seed_start - 1`);
+  non-seed matches are retained in the `*_raw` outputs but excluded from filtered hits.
+- **Seed-mismatch coordinate frame.** Mismatch positions from the seed scanners were window-relative
+  (`1..len(seed)`) but filtered with the guide-relative `seed_start..seed_end` threshold, so a
+  mismatch at guide position 2 was dropped and the hit mislabeled a perfect seed. Window positions
+  are now mapped onto guide coordinates in all three scan paths (exhaustive, pyahocorasick, BWA).
+
+### Changed
+
+- Raised the max analyzable guide/passenger length from 23 nt to 40 nt (`SiRNACandidate`), so longer
+  observed species (e.g. Dicer 3′ read-through isoforms) can be scored. A validator warns above the
+  23 nt recommended biological range; `DesignParameters.sirna_length` (what the tool _designs_) stays
+  capped at 23.
+- Off-target hit reporting is now exhaustive by default: `_mirna_max_hits()` returns `None` (no cap),
+  and the default `max_hits` for `BwaAnalyzer`, `run_bwa_alignment_analysis`, and
+  `run_comprehensive_offtarget_analysis` is `None` instead of `10000`. `SIRNAFORGE_MIRNA_MAX_HITS`
+  can still impose a cap. A silent cap biased downstream hit counts.
+- `--zfn-search-space` CLI help now lists the built-in genome keys; `docs/zfn_module.md` documents
+  the reference table. Rat/macaque use Ensembl's `dna.toplevel` file (verified: those assemblies do
+  not publish `dna.primary_assembly`). Transcriptome cDNA keys/URLs (and their cache keys) are
+  unchanged, so existing caches remain valid.
+
+### Housekeeping
+
+- Cleared embedded execution outputs from `notebooks/zfn_backend_runtime_comparison.ipynb`
+  (~1 MB → 68 KB); benchmark methodology preserved.
+
+## [0.4.3] - 2026-03-22
+
+### New Features
+
+- Changed default ZFN search backend from EXHAUSTIVE_PYTHON to PYAHOCORASICK for improved performance.
+- Added new fields to ZFNShardingConfig: memory_budget_gb, memory_reserve_gb, target_cpu_utilization, and max_cpu_workers to allow for better resource management.
+- Enhanced memory and CPU utilization handling in ExhaustiveZFNOffTargetSearcher to dynamically adjust worker counts based on available resources and user-defined limits.
+- Introduced warnings for using fm_index on large references to prevent high memory consumption.
+- Added integration tests for ZFN annotation and reference resolution, ensuring compatibility with real genomic data.
+- Updated unit tests to validate new sharding parameters and their impact on worker allocation and chunk sizing.
+
+- **Pluggable ZFN search backends**:
+  - Added `ZFNSearchBackend` support across workflow, CLI, and typed ZFN contracts.
+  - Added optional backend engines for `pyahocorasick` and `fm_index` alongside `exhaustive_python`.
+
+- **Persisted ZFN search-space index bundles**:
+  - Added `fm_index` bundle build/load support with manifest + artifact validation.
+  - Added internal CLI command `sirnaforge internal zfn-build-search-index` for reproducible bundle generation.
+
+### Improvements
+
+- **Cache-aligned reproducibility for `fm_index`**:
+  - Index bundle creation now resolves FASTA inputs through the shared genome cache pipeline.
+  - Default bundle output paths are stable and cache-derived for repeatable runs.
+- **miRNA backend rollout readiness**:
+  - Clarified the internal miRNA seed-scanning seam around `pyahocorasick` as the operational default.
+  - Kept `exhaustive_python` as the correctness oracle and BWA as the semantic comparison baseline for parity validation.
+  - Preserved the existing miRNA output contract and embedded Nextflow batch behavior without adding a public backend-selection flag.
+- **Strict typing and enum-driven CLI contracts**:
+  - Replaced string validation paths for backend/algorithm/dimer mode with imported enum types.
+  - Updated Nextflow bridge and shard execution paths to accept typed enums directly.
+- **Documentation and tests**:
+  - Expanded CLI reference with backend/index usage guidance and reproducible prebuild examples.
+  - Added/updated unit coverage for persisted index flow and internal index command delegation.
+
+### Dependencies
+
+- Added runtime dependencies for optional accelerated backends:
+  - `pyahocorasick>=2.1.0`
+  - `fm-index>=2.3.4`
+
+## [0.4.2] - 2026-03-01
+
+### New Features
+
+- **ZFN workflow maturity for release**:
+  - Added robust ZFN workflow mode coverage for constrained half-site design and off-target site discovery.
+  - Documented and stabilized ZFN algorithm selection (`homology`, `conserved_g`, `zfn_v2`) and dimer controls.
+  - Added explicit reporting expectations for `zfn_candidate_summary.json` and `zfn_offtarget_sites.csv` outputs.
+
+### Improvements
+
+- **Documentation completeness and command correctness**:
+  - Reconciled stale CLI examples with current command options (`--species`, `--modifications`, ZFN-required half-site flags).
+  - Added curated ZFN guidance to complement auto-generated CLI help output.
+  - Updated installation docs to reflect Python support (`3.10-3.12`).
+- **Release metadata consistency**:
+  - Aligned release-facing documentation for the 0.4.2 train across changelog and release notes.
+
 ## [0.4.0] - 2025-1-5
 
 ### Breaking
@@ -16,8 +129,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typing features. Update developer environments, CI, and pre-commit hooks to
   use Python 3.10 or later.
 
-
 ### New Features
+
 - **Variant Targeting Implementation**: Complete Phase 1-5 implementation for targeting specific genetic variants
   - Core variant models and resolver infrastructure with Parquet-based caching
   - Population-specific AF filtering for geographic variant targeting
@@ -34,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Improved Docker entrypoint and health checks
 
 ### Improvements
+
 - **Performance Optimizations**:
   - Parquet-based variant cache for improved performance
   - Cache-first index reuse with complete validation
@@ -51,21 +165,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Improved documentation with live CLI output examples
 
 ### Dependencies
+
 - **Python 3.12 Support**: Full upgrade to Python 3.12 with modern syntax
 - **Enhanced Dependencies**: Added `pyarrow>=18.0.0` for Parquet support
 - **Updated Packages**: Modernized dependency versions with improved compatibility
 - **uv Package Manager**: Full alignment with uv for faster dependency resolution
 
 ### Performance
+
 - **Variant Caching**: Parquet-based storage for improved variant data performance
 - **Memory Optimization**: Reduced memory requirements for Docker-constrained environments
 - **Parallel Processing**: Enhanced concurrent execution for variant analysis
 - **Index Reuse**: Cache-first approach for transcriptome indices
 
-
 ## [0.3.4] - 2025-12-31
 
 ### Added
+
 - **Transcript Annotation Provider Layer**: New data provider interface for fetching genomic transcript annotations
   - Added `AbstractTranscriptAnnotationClient` interface in `src/sirnaforge/data/base.py`
   - Implemented `EnsemblTranscriptModelClient` using Ensembl REST API (lookup/id and overlap/region endpoints)
@@ -77,18 +193,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Integration tests for real Ensembl REST API (gated by `@pytest.mark.requires_network`)
 
 ### Improvements
+
 - **Extensible Architecture**: Transcript annotation provider follows the same layered pattern as existing data providers (gene search, ORF analysis, transcriptome management)
 - **Reference Tracking**: Annotations include provenance metadata (provider, endpoint, reference choice) for reproducibility
 - **Error Handling**: Robust handling of unresolved IDs and network errors with fallback to unresolved list
 
 ### Documentation
+
 - Added comprehensive docstrings for all new classes and methods
 - Unit and integration tests serve as usage examples
-
 
 ## [0.3.3] - 2025-12-15
 
 ### Bug Fixes
+
 - **Docker Login Shell PATH**: Fixed issue #37 where login shells (`/bin/bash -lc`) would reset PATH and drop `/opt/conda/bin`, making `sirnaforge` and `nextflow` unavailable
   - Added `/etc/profile.d/conda-path.sh` to preserve conda toolchain paths in login shells
   - Non-login shells continue to work as before
@@ -98,28 +216,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaced invalid `ifEmpty([])`/`ifEmpty('')` usage with `ifEmpty { [] }`/`ifEmpty { '' }`
   - Switched from `collect()` to `toList()` for explicit channel materialization before combining genome + miRNA result lists
 
-
 ## [0.3.1] - 2025-12-04
 
 ### Added
+
 - **Dirty Control Injection**: `workflow.py` now carries the worst rejected guides forward as "dirty control" candidates (see `sirnaforge/utils/control_candidates.py`) so every Nextflow/off-target run includes known-failing sentinels for health checks.
 
 ### Improvements
+
 - **Resilient Aggregation & Reporting**: Nextflow modules (`modules/local/aggregate_results.nf`, `mirna_offtarget_analysis.nf`, `split_candidates.nf`, etc.) plus `pipeline/nextflow_cli.py` were refactored to emit consolidated TSV/JSON artefacts even when some analyses are skipped, ensuring miRNA/genome summaries always arrive in `workflow_output/`.
 - **Deterministic Caching**: New cache utilities expose `SIRNAFORGE_CACHE_DIR`/XDG-aware paths and tag Nextflow workdirs with metadata, dramatically reducing repeated downloads and making cleanup predictable.
 - **Workflow Parameter Safety**: CLI defaults now enforce valid GC range/length boundaries and automatically fall back to the bundled Ensembl transcriptome set (`ensembl_human_cdna`, `ensembl_mouse_cdna`, `ensembl_rat_cdna`, `ensembl_macaque_cdna`) when no input is provided, preventing empty design runs.
 
 ### Bug Fixes
+
 - **Pipeline Robustness**: Aggregation handles missing combined TSVs, gracefully copies per-species miRNA batches, and logs explicit workdir pointers so failed runs can be recovered without manual spelunking.
 - **Nextflow Reliability**: All embedded DSL2 modules gained scoped retries, consistent BWA-MEM2 index prep, and container profile detection, eliminating the intermittent crashes seen in long off-target analyses.
 
 ### Documentation
+
 - **Docs v2 Stack**: Added a parallel `docs_v2/` tree with autogenerated CLI/API references, live `sirnaforge` command output, and refreshed installation guides focused on Docker + Nextflow workflows.
 - **Workflow & Tutorial Refresh**: `docs/getting_started.md`, `docs/usage_examples.md`, and the new Nextflow tutorial now describe dirty controls, cache locations, and off-target artefacts so users can reproduce the updated pipeline end-to-end.
 
 ## [0.3.0] - 2025-11-21
 
 ### Improvements
+
 - **Documentation Standardization**: Unified tab-based execution examples across all documentation
   - Added sphinx-design tab-sets for uv/Docker execution in all usage examples
   - Standardized command patterns in `usage_examples.md`, `gene_search.md`, `getting_started.md`
@@ -137,6 +259,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added coverage summary to GitHub Actions workflow UI
 
 ### Bug Fixes
+
 - **Off Target and miRNA seed match search now works!**
 - **Docker Test Environment**: Fixed environment conflicts in `make docker-test`
   - Removed uv sync from Docker container execution (conflicts with conda)
@@ -151,6 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - All 20 container tests now passing (was 18 passed, 2 skipped)
 
 ### Testing
+
 - **Comprehensive Test Coverage**: Enhanced `make test-release` to run all test tiers
   - Now runs 179 tests (dev + ci + release markers) with 55% coverage
   - Generates XML, HTML, and terminal coverage reports
@@ -162,6 +286,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Better CI/CD integration with proper test selection
 
 ### Build & Infrastructure
+
 - **Makefile Improvements**: Enhanced test targets with better coverage support
   - `test-release` now comprehensive (dev + ci + release tests)
   - All test targets include appropriate coverage/junit reporting
@@ -174,6 +299,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.2] - 2025-10-26
 
 ### New Features
+
 - **miRNA Design Mode**: New `--design-mode mirna` option for microRNA-specific siRNA design
   - Specialized `MiRNADesigner` subclass with miRNA-biogenesis-aware scoring
   - Enhanced CSV schema with miRNA-specific columns (strand_role, biogenesis_score)
@@ -189,6 +315,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Support for multi-species analysis with consistent naming
 
 ### Improvements
+
 - **Nextflow Pipeline Enhancements**:
   - Reduced memory requirements for Docker-constrained environments (2GB → 1GB for most processes)
   - Added miRNA seed analysis module with BWA-based matching
@@ -199,11 +326,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **miRNA Database Manager**: Enhanced with species normalization and canonical name mapping
 
 ### Bug Fixes
+
 - Fixed Nextflow Docker configuration for resource-constrained CI environments
 - Resolved schema validation errors for miRNA columns in mixed-mode workflows
 - Fixed typing issues in pipeline CLI functions
 
 ### Documentation
+
 - **Major Documentation Consolidation**: Reorganized structure for improved user experience
   - Simplified navigation from 4 to 3 main sections (Getting Started, User Guide, Reference, Developer)
   - Consolidated `getting_started.md` and `quick_reference.md` into comprehensive guide
@@ -218,6 +347,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Usage Examples**: Added miRNA seed analysis workflow documentation
 
 ### Testing
+
 - **New Test Coverage**: 232 new tests for miRNA design mode
   - Comprehensive unit tests for MiRNADesigner scoring
   - Schema validation tests for miRNA-specific columns
@@ -226,6 +356,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation Tests**: Verified all doc builds and cross-references work correctly
 
 ### Dependencies
+
 - No new runtime dependencies (leverages existing httpx, pydantic, pandera)
 - Enhanced development dependencies for documentation generation
 
@@ -237,20 +368,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [X.Y.Z] - YYYY-MM-DD
 
 ### New Features
+
 - Brief description of new features
 
 ### Improvements
+
 - Improvements to existing functionality
 - Performance enhancements
 
 ### Bug Fixes
+
 - Fixed specific issues
 - Resolved edge cases
 
 ### 📊 Performance
+
 - Performance improvements with metrics if available
 
 ### Testing
+
 - New tests added
 - Test coverage improvements
 ```
@@ -260,6 +396,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.1] - 2025-10-24
 
 ### New Features
+
 - **Chemical Modification System**: Comprehensive infrastructure for siRNA chemical modifications
   - Default modification patterns automatically applied to designed siRNAs (standard_2ome, minimal_terminal, maximal_stability)
   - New `--modifications` and `--overhang` CLI flags for workflow and design commands
@@ -270,6 +407,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enhanced Pandera Schemas**: Runtime DataFrame validation with @pa.check_types decorators, automatic addition of modification columns
 
 ### Improvements
+
 - Modification columns (guide/passenger overhangs and modifications) now included in CSV outputs
 - CLI `sequences show` command with JSON/FASTA/table output formats
 - CLI `sequences annotate` command for merging metadata into FASTA files
@@ -278,11 +416,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved type safety with Pandera schema validation on DesignResult.save_csv() and _generate_orf_report()
 
 ### Bug Fixes
+
 - Fixed JSON metadata loading regression with StrandMetadata subscripting
 - Resolved mypy typing issues for optional FASTA descriptions
 - Fixed CLI output handling for modification metadata
 
 ### Documentation
+
 - **Chemical Modification Review** (551 lines): Comprehensive analysis and integration guide
 - **Modification Integration Guide** (543 lines): Developer documentation with code examples
 - **Modification Annotation Spec** (381 lines): Complete FASTA header specification
@@ -291,6 +431,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remote FASTA usage documented in CLI and gene search guides
 
 ### Testing
+
 - **18 new tests** for chemical modifications (100% passing):
   - 11 integration tests for workflow roundtrip validation
   - 7 tests validating example pattern files
@@ -299,9 +440,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All 164 tests passing with enhanced Pandera validation
 
 ### Dependencies
+
 - No new runtime dependencies added (uses existing Pydantic, Pandera, httpx)
 
 ### Performance
+
 - Removed Bowtie indexing (standardized on BWA-MEM2)
 - Streamlined off-target analysis pipeline configuration
 
@@ -310,6 +453,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - 2025-09-27
 
 ### New Features
+
 - **miRNA Database Cache System** (`sirnaforge cache`) - Local caching and management of miRNA databases from multiple sources with automatic updates
 - **Comprehensive Data Validation** - Pandera DataFrameSchemas for type-safe output validation ensuring consistent CSV/TSV report formatting
 - **Enhanced Thermodynamic Scoring** - Modified composite score to heavily favor (90%) duplex binding energy for improved siRNA selection accuracy
@@ -317,6 +461,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Embedded Nextflow Pipeline** - Integrated Nextflow execution directly within Python API for scalable processing
 
 ### Improvements
+
 - **Performance Optimization** - Parallelized off-target analysis and improved memory efficiency for large transcript sets
 - **CLI Enhancement** - Better Unicode support, cleaner help text, and improved error reporting
 - **Data Schema Validation** - Robust output validation with detailed error messages using modern Pandera 0.26.1 patterns
@@ -324,28 +469,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Development Workflow** - Enhanced Makefile with Docker testing categories, release validation, and conda environment support
 
 ### � Bug Fixes
+
 - **Security Improvements** - Resolved security linting issues and improved dependency management
 - **Off-target Analysis** - Fixed alignment indexing and improved multi-species database handling
 - **CI/CD Pipeline** - Resolved build failures, improved test categorization, and enhanced release automation
 - **Unicode Handling** - Fixed CLI display issues in various terminal environments
 
 ### 📊 Performance
+
 - **10-100x Faster Dependencies** - Full migration to uv package manager for ultra-fast installs and environment management
 - **Optimized Algorithms** - Improved thermodynamic calculation efficiency with better filtering strategies
 - **Parallel Processing** - Enhanced concurrent execution for off-target analysis across multiple genomes
 
 ### Testing & Infrastructure
+
 - **Enhanced Test Categories** - Smoke tests (256MB), integration tests (2GB), and full CI validation
 - **Docker Improvements** - Multi-stage builds, intelligent entrypoint, and resource-aware testing
 - **Release Automation** - Comprehensive GitHub Actions workflow with quality gates and artifact management
 
 ### Documentation
+
 - **Testing Guide** - Comprehensive documentation for all test categories and Docker workflows
 - **Thermodynamic Guide** - Detailed explanation of scoring algorithms and parameter optimization
 - **CLI Reference** - Auto-generated command documentation with examples
 - **Development Setup** - Streamlined onboarding with conda environment and uv integration
 
 ### Dependencies & Architecture
+
 - **Modern Python Support** - Maintained compatibility across Python 3.9-3.12 with improved type safety
 - **Pydantic Integration** - Enhanced data models with validation middleware and error handling
 - **Containerization** - Production-ready Docker images with conda bioinformatics stack
@@ -354,6 +504,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2025-09-06
 
 ### Added
+
 - Initial release of siRNAforge toolkit
 - Core siRNA design algorithms with thermodynamic scoring
 - Multi-database gene search (Ensembl, RefSeq, GENCODE)
@@ -367,6 +518,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modern development tooling with uv, black, ruff, mypy
 
 ### Core Features
+
 - **Gene Search**: Multi-database transcript retrieval
 - **siRNA Design**: Algorithm-driven candidate generation
 - **Quality Control**: GC content, structure, and specificity filters
@@ -376,6 +528,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Python API**: Programmatic access for automation
 
 ### Supported Operations
+
 - `sirnaforge workflow`: Complete gene-to-siRNA analysis
 - `sirnaforge search`: Gene and transcript search
 - `sirnaforge design`: siRNA candidate generation
@@ -384,6 +537,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sirnaforge version`: Version information
 
 ### Technical Stack
+
 - **Language**: Python 3.9-3.12
 - **Package Management**: uv for fast dependency resolution
 - **Data Models**: Pydantic for type-safe data handling

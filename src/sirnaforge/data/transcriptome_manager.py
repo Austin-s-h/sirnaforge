@@ -7,11 +7,14 @@ transcriptome FASTA files with automatic BWA-MEM2 index building and cache manag
 
 import hashlib
 import logging
+import shutil
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .ensembl_references import build_transcriptome_sources
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 
 logger = logging.getLogger(__name__)
@@ -30,62 +33,61 @@ class TranscriptomeSource(ReferenceSource):
 class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     """Transcriptome database manager with caching and automatic BWA-MEM2 index building."""
 
-    # Common transcriptome sources
-    SOURCES = {
-        "ensembl_human_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz",
-            species="human",
-            format="fasta",
-            compressed=True,
-            description="Ensembl human cDNA sequences (GRCh38)",
-        ),
-        "ensembl_mouse_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/mus_musculus/cdna/Mus_musculus.GRCm39.cdna.all.fa.gz",
-            species="mouse",
-            format="fasta",
-            compressed=True,
-            description="Ensembl mouse cDNA sequences (GRCm39)",
-        ),
-        "ensembl_rat_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
-            species="rat",
-            format="fasta",
-            compressed=True,
-            description="Ensembl rat cDNA sequences (GRCr8)",
-        ),
-        "ensembl_macaque_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
-            species="macaque",
-            format="fasta",
-            compressed=True,
-            description="Ensembl rhesus macaque cDNA sequences (Mmul_10)",
-        ),
-    }
+    SOURCE_LABEL = "transcriptome"
 
-    def __init__(self, cache_dir: str | Path | None = None, cache_ttl_days: int = 90, auto_build_indices: bool = True):
+    # Common transcriptome sources, generated from the shared Ensembl assembly table
+    # (sirnaforge.data.ensembl_references) so cDNA and genome references stay in lockstep
+    # and adding a species is a single table entry. Keys/URLs are unchanged from the
+    # previously hand-written entries (ensembl_human_cdna, ensembl_mouse_cdna, ...).
+    SOURCES = build_transcriptome_sources()
+
+    def __init__(
+        self,
+        cache_dir: str | Path | None = None,
+        cache_ttl_days: int = 90,
+        auto_build_indices: bool = True,
+        local_content_dedupe: bool = True,
+        cache_subdir: str = "transcriptomes",
+        sources: dict[str, TranscriptomeSource] | None = None,
+        source_label: str | None = None,
+    ):
         """Initialize the transcriptome database manager.
 
         Args:
             cache_dir: Directory for caching transcriptomes (default: ~/.cache/sirnaforge/transcriptomes)
             cache_ttl_days: Cache time-to-live in days (default: 90 days for large files)
             auto_build_indices: Automatically build BWA-MEM2 indices when missing
+            local_content_dedupe: Reuse cached local files by content hash across different input paths
+            cache_subdir: Cache subdirectory override for composable manager reuse
+            sources: Optional source dictionary override
+            source_label: Optional source label used in status/error reporting
         """
-        super().__init__(cache_subdir="transcriptomes", cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
+        super().__init__(cache_subdir=cache_subdir, cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
         self.auto_build_indices = auto_build_indices
+        self.local_content_dedupe = local_content_dedupe
+        self.sources: dict[str, TranscriptomeSource] = dict(sources or self.SOURCES)
+        self.source_label = source_label or self.SOURCE_LABEL
+        self.local_content_index: dict[str, str] = {}
+        self._rebuild_local_content_index()
+
+    def _rebuild_local_content_index(self) -> None:
+        """Rebuild local content-hash index from loaded metadata."""
+        self.local_content_index.clear()
+        for cache_key, meta in self.metadata.items():
+            extra = meta.extra or {}
+            content_hash = extra.get("local_content_hash")
+            if isinstance(content_hash, str) and content_hash:
+                self.local_content_index[content_hash] = cache_key
 
     def describe_source_status(self, source_name: str) -> dict[str, Any]:
         """Return cache metadata for a configured source."""
-        source = self.SOURCES.get(source_name)
+        source = self.sources.get(source_name)
         if source is None:
             return {
-                "namespace": "transcriptome",
+                "namespace": self.source_label,
                 "identifier": source_name,
                 "species": "unknown",
-                "description": "unknown transcriptome source",
+                "description": f"unknown {self.source_label} source",
                 "cached": False,
                 "indexed": False,
                 "cache_path": None,
@@ -117,7 +119,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         last_updated = meta.downloaded_at if meta else None
 
         return {
-            "namespace": "transcriptome",
+            "namespace": self.source_label,
             "identifier": source_name,
             "species": source.species,
             "description": source.description,
@@ -131,7 +133,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def describe_sources_status(self, source_names: list[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """Return cache statuses for multiple transcriptome sources."""
-        targets = source_names or list(self.SOURCES.keys())
+        targets = source_names or list(self.sources.keys())
         return [self.describe_source_status(name) for name in targets]
 
     def _metadata_from_dict(self, data: dict[str, Any]) -> CacheMetadata:
@@ -150,6 +152,43 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             meta.extra = {}
         meta.extra["index_path"] = str(index_path)
         meta.extra["index_built_at"] = datetime.now().isoformat()
+
+    @staticmethod
+    def _cache_dir_is_writable(cache_dir: Path) -> bool:
+        """Return whether a cache directory can be created and written to."""
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            probe = cache_dir / f".sirnaforge_write_probe_{uuid.uuid4().hex}"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+
+    def _resolve_remote_cache_file(self, cache_key: str, suffix: str = ".fa") -> Path:
+        """Resolve a writable remote-cache destination for a cache key.
+
+        Stale metadata can reference old host paths (for example from a prior
+        non-container run). When that parent directory is no longer writable,
+        re-home new downloads to the active manager cache directory.
+        """
+        default_cache_file = self.cache_dir / f"{cache_key}{suffix}"
+        if cache_key not in self.metadata:
+            return default_cache_file
+
+        metadata_cache_file = Path(self.metadata[cache_key].file_path)
+        if self._is_cache_valid(cache_key):
+            return metadata_cache_file
+
+        if self._cache_dir_is_writable(metadata_cache_file.parent):
+            return metadata_cache_file
+
+        logger.warning(
+            "Transcriptome metadata path '%s' is not writable; re-homing download to '%s'",
+            metadata_cache_file,
+            default_cache_file,
+        )
+        return default_cache_file
 
     def _is_index_complete(self, index_prefix: Path) -> bool:
         """Check if all required BWA-MEM2 index files exist and are non-empty.
@@ -219,14 +258,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         Returns:
             Dictionary with 'fasta' and optionally 'index' paths, or None if failed
         """
-        if source_name not in self.SOURCES:
-            available = ", ".join(self.SOURCES.keys())
-            logger.error(f"Unknown transcriptome source: {source_name}. Available: {available}")
+        if source_name not in self.sources:
+            available = ", ".join(self.sources.keys())
+            logger.error(f"Unknown {self.source_label} source: {source_name}. Available: {available}")
             return None
 
-        source = self.SOURCES[source_name]
-        cache_key = source.cache_key()
-        cache_file = self.cache_dir / f"{cache_key}.fa"
+        source = self.sources[source_name]
+        cache_key = self._cache_key_for_remote_uri(source.url) or source.cache_key()
+        cache_file = self._resolve_remote_cache_file(cache_key)
         index_prefix = self.cache_dir / f"{cache_key}_index"
 
         # Use cached version if valid
@@ -234,25 +273,20 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             logger.info(f"✅ Using cached {source.name} ({source.species}): {cache_file}")
             return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
+        # Recover from interrupted prior runs where file exists but metadata is missing.
+        if not force_refresh and self._recover_remote_cache_entry(
+            source=source, cache_key=cache_key, cache_file=cache_file
+        ):
+            logger.info(f"✅ Using recovered cached {source.name} ({source.species}): {cache_file}")
+            return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
+
         # Download transcriptome
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
-        content = self._download_file(source)
-        if not content or not content.strip():
-            return None
-
-        cache_file.write_text(content, encoding="utf-8")
-        if cache_file.stat().st_size == 0:
-            cache_file.unlink()
+        if not self._download_to_path(source, cache_file):
             return None
 
         # Update metadata
-        self.metadata[cache_key] = CacheMetadata(
-            source=source,
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
-        )
+        self._record_cache_entry(cache_key, source, cache_file)
         logger.info(f"✅ Cached {source.name}: {cache_file} ({cache_file.stat().st_size:,} bytes)")
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -273,7 +307,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         fasta_str = str(fasta_path)
 
         # Handle URL downloads
-        if fasta_str.startswith(("http://", "https://", "ftp://")):
+        if self._is_remote_location(fasta_str):
             return self._handle_url_transcriptome(fasta_str, cache_name, build_index)
 
         # Handle local files
@@ -291,7 +325,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def _handle_url_transcriptome(self, url: str, cache_name: str | None, build_index: bool) -> dict[str, Path] | None:
         """Download and cache transcriptome from URL."""
-        cache_name = cache_name or url.split("/")[-1].replace(".gz", "").replace(".fa", "").replace(".fasta", "")
+        cache_name = cache_name or self._default_cache_name_for_resource(url)
         source = TranscriptomeSource(
             name=cache_name,
             url=url,
@@ -300,8 +334,8 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             description=f"Custom transcriptome from {url}",
         )
 
-        cache_key = source.cache_key()
-        cache_file = self.cache_dir / f"{cache_key}.fa"
+        cache_key = self._cache_key_for_remote_uri(url) or source.cache_key()
+        cache_file = self._resolve_remote_cache_file(cache_key)
         index_prefix = self.cache_dir / f"{cache_key}_index"
 
         # Check cache
@@ -309,67 +343,82 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             logger.info(f"✅ Using cached custom transcriptome: {cache_file}")
             return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
-        # Download
-        content = self._download_file(source)
-        if not content or not content.strip():
-            return None
+        if self._recover_remote_cache_entry(source=source, cache_key=cache_key, cache_file=cache_file):
+            logger.info(f"✅ Using recovered cached custom transcriptome: {cache_file}")
+            return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
-        cache_file.write_text(content, encoding="utf-8")
-        if cache_file.stat().st_size == 0:
-            cache_file.unlink()
+        # Download
+        if not self._download_to_path(source, cache_file):
             return None
 
         # Save metadata
-        self.metadata[cache_key] = CacheMetadata(
-            source=source,
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
-        )
+        self._record_cache_entry(cache_key, source, cache_file)
         logger.info(f"✅ Cached custom transcriptome: {cache_file} ({cache_file.stat().st_size:,} bytes)")
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
     def _handle_cached_file(self, file_path: Path, cache_name: str, build_index: bool) -> dict[str, Path]:
         """Handle transcriptome file already in cache directory."""
-        cache_key = hashlib.md5(f"local_{cache_name}_{file_path}".encode()).hexdigest()[:12]
+        extra: dict[str, Any] | None = None
+        if self.local_content_dedupe:
+            content_hash = self._compute_file_checksum(file_path)
+            cache_key = hashlib.md5(f"local_content_{content_hash}".encode()).hexdigest()[:12]
+            extra = {"local_content_hash": content_hash}
+            self.local_content_index[content_hash] = cache_key
+        else:
+            cache_key = hashlib.md5(f"local_{cache_name}_{file_path}".encode()).hexdigest()[:12]
         index_prefix = file_path.parent / f"{file_path.stem}_index"
 
         # Ensure metadata exists
         if cache_key not in self.metadata:
-            self.metadata[cache_key] = CacheMetadata(
-                source=TranscriptomeSource(
+            self._record_cache_entry(
+                cache_key,
+                TranscriptomeSource(
                     name=cache_name, url=str(file_path), species="custom", description=f"Local: {file_path}"
                 ),
-                downloaded_at=datetime.now().isoformat(),
-                file_size=file_path.stat().st_size,
-                checksum=self._compute_file_checksum(file_path),
-                file_path=str(file_path),
+                file_path,
+                extra=extra,
             )
 
         return self._prepare_result_with_index(file_path, index_prefix, cache_key, build_index)
 
     def _cache_local_file(self, input_path: Path, cache_name: str, build_index: bool) -> dict[str, Path]:
         """Copy local file to cache and prepare it."""
-        cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
-        cache_file = self.cache_dir / f"{cache_name}_{cache_key}.fa"
-        index_prefix = self.cache_dir / f"{cache_name}_{cache_key}_index"
+        extra: dict[str, Any] | None = None
+        if self.local_content_dedupe:
+            content_hash = self._compute_file_checksum(input_path)
+            known_cache_key = self.local_content_index.get(content_hash)
+            if known_cache_key and known_cache_key in self.metadata:
+                known_meta = self.metadata[known_cache_key]
+                known_path = Path(known_meta.file_path)
+                if known_path.exists():
+                    logger.info("✅ Reusing local cached transcriptome by content hash: %s", known_path)
+                    index_prefix = self._get_index_path(known_meta) or (known_path.parent / f"{known_path.stem}_index")
+                    return self._prepare_result_with_index(known_path, index_prefix, known_cache_key, build_index)
+
+            cache_key = hashlib.md5(f"local_content_{content_hash}".encode()).hexdigest()[:12]
+            cache_file = self.cache_dir / f"{cache_key}.fa"
+            index_prefix = self.cache_dir / f"{cache_key}_index"
+            extra = {"local_content_hash": content_hash}
+            self.local_content_index[content_hash] = cache_key
+        else:
+            cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
+            cache_file = self.cache_dir / f"{cache_name}_{cache_key}.fa"
+            index_prefix = self.cache_dir / f"{cache_name}_{cache_key}_index"
 
         # Check if already cached
         if not cache_file.exists():
             logger.info(f"🔄 Copying {input_path.name} to cache...")
-            cache_file.write_text(input_path.read_text())
+            shutil.copyfile(input_path, cache_file)
 
         # Save metadata
-        self.metadata[cache_key] = CacheMetadata(
-            source=TranscriptomeSource(
+        self._record_cache_entry(
+            cache_key,
+            TranscriptomeSource(
                 name=cache_name, url=str(input_path), species="custom", description=f"Local: {input_path}"
             ),
-            downloaded_at=datetime.now().isoformat(),
-            file_size=cache_file.stat().st_size,
-            checksum=self._compute_file_checksum(cache_file),
-            file_path=str(cache_file),
+            cache_file,
+            extra=extra,
         )
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -402,7 +451,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         from .transcriptome_filter import TranscriptFilter  # noqa: PLC0415
 
-        source = self.SOURCES[source_name]
+        source = self.sources[source_name]
         filter_spec = "+".join(sorted(filters))
         filtered_cache_key = f"{source.cache_key()}_{filter_spec}"
         filtered_fasta = self.cache_dir / f"{filtered_cache_key}.fa"
@@ -422,17 +471,15 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return None
 
         # Cache metadata
-        self.metadata[filtered_cache_key] = CacheMetadata(
-            source=TranscriptomeSource(
+        self._record_cache_entry(
+            filtered_cache_key,
+            TranscriptomeSource(
                 name=f"{source.name}_filtered",
                 url=source.url,
                 species=source.species,
                 description=f"{source.description} [filtered: {filter_spec}]",
             ),
-            downloaded_at=datetime.now().isoformat(),
-            file_size=filtered_fasta.stat().st_size,
-            checksum=self._compute_file_checksum(filtered_fasta),
-            file_path=str(filtered_fasta),
+            filtered_fasta,
             extra={"filters": filters, "kept_count": kept},
         )
 
@@ -467,61 +514,32 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def list_available_sources(self) -> dict[str, TranscriptomeSource]:
         """List all pre-configured transcriptome sources."""
-        return self.SOURCES
+        return self.sources
 
-    def cache_info(self) -> dict[str, Any]:
-        """Get information about the current cache state."""
-        total_files = len(list(self.cache_dir.glob("*.fa")))
-        total_size = sum(f.stat().st_size for f in self.cache_dir.glob("*.fa"))
+    def _cache_info_files(self) -> list[Path]:
+        """Return transcriptome FASTA files to include in total cache stats."""
+        return list(self.cache_dir.glob("*.fa"))
+
+    def _cache_info_extra(self, total_files: int, _total_size_bytes: int) -> dict[str, Any]:
+        """Augment base cache stats with transcriptome/index-specific fields."""
         index_files = len(list(self.cache_dir.glob("*_index.amb")))
 
         return {
-            "cache_directory": str(self.cache_dir),
             "total_fasta_files": total_files,
-            "total_size_mb": total_size / (1024 * 1024),
             "index_files": index_files,
-            "cache_ttl_days": self.cache_ttl.days,
             "auto_build_indices": self.auto_build_indices,
+            "local_content_dedupe": self.local_content_dedupe,
+            "cached_references": list(self.metadata.keys()),
             "cached_transcriptomes": list(self.metadata.keys()),
         }
 
-    def clean_cache(self, older_than_days: int | None = None) -> None:
-        """Clean old cache files.
+    def _clean_extra_files(self, meta: CacheMetadata) -> None:
+        """Remove BWA index files associated with a cached transcriptome entry."""
+        index_path = self._get_index_path(meta)
+        if index_path is None:
+            return
 
-        Args:
-            older_than_days: Remove files older than this (default: use TTL)
-        """
-        if older_than_days is None:
-            older_than_days = self.cache_ttl.days
-
-        cutoff = datetime.now() - timedelta(days=older_than_days)
-        removed_count = 0
-
-        for cache_key in list(self.metadata.keys()):
-            meta = self.metadata[cache_key]
-            downloaded_at = datetime.fromisoformat(meta.downloaded_at)
-
-            if downloaded_at < cutoff:
-                # Remove FASTA file
-                fasta_path = Path(meta.file_path)
-                if fasta_path.exists():
-                    fasta_path.unlink()
-                    removed_count += 1
-
-                # Remove index files if they exist
-                index_path = self._get_index_path(meta)
-                if index_path:
-                    # Remove marker file for the index prefix (if present)
-                    index_path.unlink(missing_ok=True)
-                    for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
-                        index_file = index_path.with_suffix(ext)
-                        if index_file.exists():
-                            index_file.unlink()
-
-                del self.metadata[cache_key]
-
-        if removed_count > 0:
-            self._save_metadata()
-            logger.info(f"🧹 Cleaned {removed_count} old cache files")
-        else:
-            logger.info("🧹 No old cache files to clean")
+        # Remove marker file for the index prefix (if present)
+        index_path.unlink(missing_ok=True)
+        for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
+            index_path.with_suffix(ext).unlink(missing_ok=True)

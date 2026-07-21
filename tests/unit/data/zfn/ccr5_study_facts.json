@@ -1,0 +1,47 @@
+{
+  "dataset_id": "prognos_ccr5_extractable_facts",
+  "source": "PROGNOS (Fine et al., NAR 2014)",
+  "nuclease": "CCR5 ZFNs",
+  "facts": [
+    {
+      "dataset_id": "prognos_ccr5_validated_sites",
+      "assertion_type": "validated-offtargets-count",
+      "assertion": "Two independent experimental methods (in vitro cleavage and IDLV) reported a total of 12 heterodimeric bona fide off-target sites for the CCR5 ZFNs.",
+      "sirnaforge_mapping": "Assert known validated-site panel appears in top-N once per-site sequence/coordinates are ingested.",
+      "extractable_now": true,
+      "requires_supplementary_tables": true
+    },
+    {
+      "dataset_id": "prognos_ccr5_prediction_recovery_3x",
+      "assertion_type": "algorithm-performance",
+      "assertion": "Using PROGNOS Homology/Conserved G's and analyzing top 3× the number of sites interrogated by Pattanayak et al., PROGNOS could predict 10 out of 12 bona fide off-target sites.",
+      "sirnaforge_mapping": "Use majority-recovery regression threshold once golden-site coordinates/sequences are available.",
+      "extractable_now": true,
+      "requires_supplementary_tables": true
+    },
+    {
+      "dataset_id": "prognos_ccr5_novel_site",
+      "assertion_type": "novel-offtarget",
+      "assertion": "A novel CCR5 ZFN off-target site near CSNK1G3 was experimentally validated by interrogating predicted sites not found by other methods.",
+      "sirnaforge_mapping": "Assert CSNK1G3-near site presence/ranking once supplementary per-site records are ingested.",
+      "extractable_now": true,
+      "requires_supplementary_tables": true
+    },
+    {
+      "dataset_id": "prognos_ranking_tiebreak",
+      "assertion_type": "ranking-policy",
+      "assertion": "If two sites have equal algorithm scores, PROGNOS tie-breaks by region Exon > Promoter > Intron > Intergenic, then chromosomal location.",
+      "sirnaforge_mapping": "Future rank_sites() should apply this tie-break policy when score ties occur.",
+      "extractable_now": true,
+      "requires_supplementary_tables": false
+    },
+    {
+      "dataset_id": "prognos_site_sequence_orientation_rule",
+      "assertion_type": "output-format",
+      "assertion": "Site sequences are represented as 5′—(+) half-site—spacer—(–) half-site—3′; for ZFNs the (+) half-site is listed reverse anti-sense relative to bound DNA strand.",
+      "sirnaforge_mapping": "Use canonical sequence/orientation convention for ZFNOffTargetSite.sequence, MatchOrientation, and spacer_len derivation.",
+      "extractable_now": true,
+      "requires_supplementary_tables": false
+    }
+  ]
+}

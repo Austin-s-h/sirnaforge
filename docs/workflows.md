@@ -62,6 +62,32 @@ for gene in TP53 BRCA1 EGFR KRAS; do
 done
 ```
 
+## ZFN Workflow
+
+Use the dedicated ZFN command when you want half-site constrained off-target discovery.
+
+```bash
+sirnaforge zfn \
+  --zfn-left-half-site GTCATCCTCATC \
+  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-search-space ensembl_human_hg38_primary \
+  --zfn-spacer-lengths 5,6 \
+  --zfn-max-mismatches 2 \
+  --zfn-algorithm zfn_v2 \
+  --output-dir zfn_output/
+```
+
+Expected artifacts:
+
+- `zfn_output/sirnaforge/zfn_candidate_summary.json`
+- `zfn_output/sirnaforge/zfn_offtarget_sites.csv`
+- `zfn_output/logs/workflow_summary.json`
+
+Advanced runtime controls:
+
+- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` to force Nextflow-backed ZFN search path.
+- `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "chunk_size_mb": 3, "overlap_bp": 40000}'` for custom shard/window behavior on large references.
+
 ## Variant Targeting (documented runs)
 
 Five offline variant-resolution runs were executed with the bundled FASTA (`examples/sample_transcripts.fasta`) and demo VCF (`examples/variant_demo.vcf`). Minimal outputs live under `docs/documented_workflows/`:
@@ -113,3 +139,9 @@ Advanced: discover and run the embedded pipeline directly:
 PIPELINE_NF=$(uv run python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
 nextflow run "$PIPELINE_NF" --help
 ```
+
+## Developer Validation Notes
+
+For maintainers and advanced users validating the internal ZFN Nextflow bridge behavior (including `uv run --project ...` usage outside repository root), see:
+
+- [ZFN Nextflow Bridge: Sanity Validation](developer/zfn_nextflow_bridge_validation.md)

@@ -1,0 +1,2 @@
+dataset_id,source,left_half_site,right_half_site,max_mismatches,seed_len_from_fokI,seed_max_mismatches,allowed_spacer_lengths,dimer_mode,algorithm,notes
+prognos_ccr5_zfn,PROGNOS (Fine et al., 2014),NEEDS_TABLE1_SUPP,NEEDS_TABLE1_SUPP,NEEDS_SUPP_NOTE4,6,1,NEEDS_TABLE1_SUPP,heterodimer_only,"homology|conserved_g|zfn_v2",Populate with Table 1/Supplementary records when available

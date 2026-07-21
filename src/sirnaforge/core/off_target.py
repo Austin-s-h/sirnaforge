@@ -2,17 +2,22 @@
 
 This module provides comprehensive off-target analysis functionality for siRNA design,
 including both miRNA seed match analysis and transcriptome off-target detection.
-Uses BWA-MEM2 for both short and long sequence alignments.
+Uses BWA-MEM2 for transcriptome alignments and supports in-process miRNA seed scanning.
 Optimized for both standalone use and parallelized Nextflow workflows.
 """
 
+import importlib
 import json
+import os
 import shutil
 import statistics
 import subprocess  # nosec B404
 import tempfile
+from collections import defaultdict
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pandas as pd
 
@@ -35,6 +40,123 @@ from sirnaforge.utils.species import human_vs_other_totals
 
 logger = get_logger(__name__)
 
+_NUCLEOTIDE_ALPHABET = ("A", "C", "G", "T")
+
+
+def _mirna_max_hits() -> int | None:
+    """Resolve the miRNA seed-hit cap (per species, batched across candidates).
+
+    Exhaustive by default (``None`` = report every seed match) — a truncated cap
+    silently loses hits and biases downstream counts. Set
+    ``SIRNAFORGE_MIRNA_MAX_HITS`` to a positive int to impose a cap if desired.
+    """
+    raw = os.getenv("SIRNAFORGE_MIRNA_MAX_HITS")
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+            logger.warning("SIRNAFORGE_MIRNA_MAX_HITS must be positive; ignoring (exhaustive).")
+        except ValueError:
+            logger.warning("Invalid SIRNAFORGE_MIRNA_MAX_HITS=%r; ignoring (exhaustive).", raw)
+    return None
+
+
+class MiRNASeedBackend(str, Enum):
+    """Internal backend options for miRNA seed scanning."""
+
+    BWA = "bwa"
+    EXHAUSTIVE_PYTHON = "exhaustive_python"
+    PYAHOCORASICK = "pyahocorasick"
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSeedQuery:
+    """Normalized siRNA query plus extracted seed sequence."""
+
+    qname: str
+    qseq: str
+    seed_qseq: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MiRNASeedMatch:
+    """Semantic seed-match hit used by in-process backends."""
+
+    qname: str
+    qseq: str
+    seed_qseq: str
+    mirna_id: str
+    coord: int
+    mismatch_positions: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedMiRNASeedHit:
+    """Backend-independent miRNA seed hit contract used by adapters and parity checks."""
+
+    qname: str
+    qseq: str
+    mirna_id: str
+    coord: int
+    strand: str
+    cigar: str
+    mapq: int
+    as_score: int | None
+    nm: int
+    mismatch_positions: tuple[int, ...]
+    seed_mismatches: int
+    offtarget_score: float
+
+    def to_alignment_row(self, *, species: str, database: str) -> dict[str, Any]:
+        """Project the normalized hit onto the stable MiRNAAlignmentSchema row contract."""
+        return {
+            "qname": self.qname,
+            "qseq": self.qseq,
+            "species": species,
+            "database": database,
+            "mirna_id": self.mirna_id,
+            "coord": self.coord,
+            "strand": self.strand,
+            "cigar": self.cigar,
+            "mapq": self.mapq,
+            "as_score": self.as_score,
+            "nm": self.nm,
+            "seed_mismatches": self.seed_mismatches,
+            "offtarget_score": self.offtarget_score,
+        }
+
+    def semantic_identity(self) -> tuple[str, str, int, int, int, float]:
+        """Return the backend-independent semantic identity used for parity checks."""
+        return (
+            self.qname,
+            self.mirna_id,
+            self.coord,
+            self.nm,
+            self.seed_mismatches,
+            self.offtarget_score,
+        )
+
+
+class _MiRNASeedScanner(Protocol):
+    """Internal contract for miRNA seed scanners."""
+
+    backend: MiRNASeedBackend
+
+    def scan(
+        self,
+        queries: list[_PreparedSeedQuery],
+        mirna_sequences: dict[str, str],
+        *,
+        max_mismatches: int,
+    ) -> list[_MiRNASeedMatch]:
+        """Return semantic seed hits across one miRNA FASTA dictionary."""
+        ...
+
+
+class _MiRNASeedBackendUnavailableError(RuntimeError):
+    """Raised when an in-process backend dependency is unavailable."""
+
 
 def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
     """Build a frequency map for the 'species' column in a DataFrame."""
@@ -48,6 +170,465 @@ def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
             label = str(value)
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+def _normalize_nucleotide_sequence(sequence: str) -> str:
+    """Normalize RNA/DNA sequences into the comparison alphabet used by seed scanners."""
+    return sequence.upper().replace("U", "T")
+
+
+def _optional_int(value: Any) -> int | None:
+    """Convert loose backend metadata to int while preserving explicit missing sentinels."""
+    if value in (None, "", "NA"):
+        return None
+    return int(value)
+
+
+def _prepare_seed_queries(
+    sequences: dict[str, str],
+    *,
+    seed_start: int,
+    seed_end: int,
+) -> list[_PreparedSeedQuery]:
+    """Extract normalized seed queries from full siRNA guide sequences."""
+    prepared: list[_PreparedSeedQuery] = []
+    for name, sequence in sequences.items():
+        normalized = _normalize_nucleotide_sequence(sequence)
+        if len(normalized) >= seed_end:
+            seed_qseq = normalized[seed_start - 1 : seed_end]
+        else:
+            logger.warning(f"Sequence {name} too short for seed extraction: {sequence}")
+            seed_qseq = normalized
+        prepared.append(_PreparedSeedQuery(qname=name, qseq=normalized, seed_qseq=seed_qseq))
+    return prepared
+
+
+def _mismatch_positions(query: str, window: str) -> tuple[int, ...]:
+    """Return 1-based mismatch positions for two equal-length sequences."""
+    return tuple(index + 1 for index, (left, right) in enumerate(zip(query, window, strict=True)) if left != right)
+
+
+def _seed_window_positions_to_guide(
+    window_positions: tuple[int, ...] | list[int],
+    *,
+    seed_start: int,
+) -> tuple[int, ...]:
+    """Map 1-based positions within the extracted seed window onto 1-based guide positions.
+
+    The in-process seed scanners align only the guide seed window (guide positions
+    ``seed_start``..``seed_end``) against the miRNA, so ``_mismatch_positions`` returns
+    positions relative to that window (1..len(seed)). Downstream seed/position logic
+    (``seed_mismatches`` counting and ``_calculate_seed_offtarget_score``) is expressed
+    in guide coordinates, so window position ``w`` must be shifted by ``seed_start - 1``.
+    """
+    offset = seed_start - 1
+    return tuple(offset + position for position in window_positions)
+
+
+def _calculate_seed_offtarget_score(
+    mismatch_positions: list[int] | tuple[int, ...],
+    *,
+    seed_start: int,
+    seed_end: int,
+) -> float:
+    """Calculate the same mismatch-weighted penalty used by BWA-derived seed hits."""
+    num_mismatches = len(mismatch_positions)
+    if num_mismatches == 0:
+        return 0.0
+
+    base_score = num_mismatches * 10.0
+    position_penalty = 0.0
+
+    for pos in mismatch_positions:
+        if seed_start <= pos <= seed_end:
+            position_penalty += 5.0
+        elif pos <= 10:
+            position_penalty += 3.0
+        else:
+            position_penalty += 1.0
+
+    continuous_bonus = 0.0
+    if num_mismatches >= 2:
+        sorted_positions = sorted(mismatch_positions)
+        continuous_count = 0
+        for index in range(len(sorted_positions) - 1):
+            if sorted_positions[index + 1] - sorted_positions[index] == 1:
+                continuous_count += 1
+        continuous_bonus = continuous_count * 2.0
+
+    return base_score + position_penalty + continuous_bonus
+
+
+def _alignment_score(query_length: int, mismatch_count: int) -> int:
+    """Approximate ungapped seed alignment score used for audit metadata."""
+    return max(0, (query_length * 2) - (mismatch_count * 3))
+
+
+def mirna_seed_hit_identity(
+    hit: dict[str, Any],
+    *,
+    coord_is_one_based: bool = False,
+) -> tuple[str, str, int, int, int, float]:
+    """Return the semantic identity tuple used for backend comparison.
+
+    This normalizes the current in-process seed-scan rows and the existing
+    BWA-derived rows onto the same comparison contract.
+    """
+    return normalize_mirna_seed_hit(hit, coord_is_one_based=coord_is_one_based).semantic_identity()
+
+
+def normalize_mirna_seed_hit(
+    hit: dict[str, Any],
+    *,
+    coord_is_one_based: bool = False,
+) -> _NormalizedMiRNASeedHit:
+    """Normalize backend-specific miRNA seed hit metadata onto one adapter/parity contract."""
+    mirna_id = str(hit.get("mirna_id") or hit.get("rname") or "")
+
+    coord_value = hit.get("coord", 0)
+    if isinstance(coord_value, str) and ":" in coord_value:
+        coord = int(str(coord_value).rsplit(":", maxsplit=1)[-1])
+    else:
+        coord = int(coord_value)
+    if coord_is_one_based:
+        coord -= 1
+
+    mismatch_positions_value = hit.get("mismatch_positions", ())
+    if mismatch_positions_value in (None, "", "NA"):
+        mismatch_positions: tuple[int, ...] = ()
+    elif isinstance(mismatch_positions_value, str):
+        stripped = mismatch_positions_value.strip().strip("[]()")
+        mismatch_positions = tuple(int(part.strip()) for part in stripped.split(",") if part.strip())
+    else:
+        mismatch_positions = tuple(int(position) for position in mismatch_positions_value)
+
+    as_score = _optional_int(hit.get("as_score"))
+
+    nm = _optional_int(hit.get("nm"))
+    if nm is None:
+        nm = len(mismatch_positions)
+
+    seed_mismatches = _optional_int(hit.get("seed_mismatches"))
+    if seed_mismatches is None:
+        seed_mismatches = nm
+
+    return _NormalizedMiRNASeedHit(
+        qname=str(hit["qname"]),
+        qseq=_normalize_nucleotide_sequence(str(hit.get("qseq", ""))),
+        mirna_id=mirna_id,
+        coord=coord,
+        strand=str(hit.get("strand", "+")),
+        cigar=str(hit.get("cigar", "")),
+        mapq=int(hit.get("mapq", 255)),
+        as_score=as_score,
+        nm=nm,
+        mismatch_positions=mismatch_positions,
+        seed_mismatches=seed_mismatches,
+        offtarget_score=float(hit.get("offtarget_score", 0.0)),
+    )
+
+
+def _build_mirna_alignment_frame(
+    hits: list[dict[str, Any]],
+    *,
+    species: str,
+    database: str,
+    coord_is_one_based: bool = False,
+) -> pd.DataFrame:
+    """Adapt backend-specific hit rows into the stable miRNA alignment table contract."""
+    schema_columns = list(MiRNAAlignmentSchema.to_schema().columns.keys())
+    rows = [
+        normalize_mirna_seed_hit(hit, coord_is_one_based=coord_is_one_based).to_alignment_row(
+            species=species,
+            database=database,
+        )
+        for hit in hits
+    ]
+    return pd.DataFrame(rows, columns=schema_columns)
+
+
+def _normalize_bwa_mirna_seed_hits(
+    hits: list[dict[str, Any]],
+    *,
+    sequences: dict[str, str],
+    mirna_sequences: dict[str, str],
+    seed_start: int,
+    seed_end: int,
+    max_mismatches: int,
+) -> list[dict[str, Any]]:
+    """Project BWA seed alignments onto the backend-independent semantic seed-hit contract."""
+    prepared_queries = {
+        query.qname: query for query in _prepare_seed_queries(sequences, seed_start=seed_start, seed_end=seed_end)
+    }
+    normalized_hits: dict[tuple[str, str, int, tuple[int, ...]], dict[str, Any]] = {}
+
+    for hit in hits:
+        qname = str(hit["qname"])
+        prepared_query = prepared_queries.get(qname)
+        mirna_id = str(hit.get("rname", ""))
+        mirna_sequence = mirna_sequences.get(mirna_id)
+        if prepared_query is None or mirna_sequence is None:
+            continue
+
+        coord_value = str(hit.get("coord", ""))
+        start = int(coord_value.rsplit(":", maxsplit=1)[-1]) - 1 if ":" in coord_value else int(coord_value) - 1
+        if start < 0:
+            continue
+
+        window_end = start + len(prepared_query.seed_qseq)
+        if window_end > len(mirna_sequence):
+            continue
+
+        target_window = _normalize_nucleotide_sequence(mirna_sequence[start:window_end])
+        window_positions = _mismatch_positions(prepared_query.seed_qseq, target_window)
+        if len(window_positions) > max_mismatches:
+            continue
+
+        # Positions are window-relative (1..len(seed)); shift onto guide coordinates so
+        # seed classification and scoring match the guide-relative seed_start/seed_end frame.
+        mismatch_positions = _seed_window_positions_to_guide(window_positions, seed_start=seed_start)
+        seed_mismatches = sum(1 for pos in mismatch_positions if seed_start <= pos <= seed_end)
+        normalized_hits[(qname, mirna_id, start, mismatch_positions)] = {
+            "qname": qname,
+            "qseq": prepared_query.qseq,
+            "rname": mirna_id,
+            "coord": start,
+            "strand": "+",
+            "cigar": f"{len(prepared_query.seed_qseq)}M",
+            "mapq": 255,
+            "as_score": _alignment_score(len(prepared_query.seed_qseq), len(mismatch_positions)),
+            "nm": len(mismatch_positions),
+            "mismatch_positions": list(mismatch_positions),
+            "seed_mismatches": seed_mismatches,
+            "offtarget_score": _calculate_seed_offtarget_score(
+                mismatch_positions,
+                seed_start=seed_start,
+                seed_end=seed_end,
+            ),
+        }
+
+    results = list(normalized_hits.values())
+    results.sort(
+        key=lambda row: (
+            row["offtarget_score"],
+            -int(row.get("as_score") or 0),
+            row["qname"],
+            row["rname"],
+            row["coord"],
+        )
+    )
+    return results
+
+
+def _candidate_patterns(query: str, max_mismatches: int) -> dict[str, tuple[int, ...]]:
+    """Generate exact candidate patterns up to a maximum mismatch count."""
+    patterns: dict[str, tuple[int, ...]] = {query: ()}
+    query_chars = list(query)
+
+    def walk(index: int, mismatch_positions: tuple[int, ...], current: list[str]) -> None:
+        if len(mismatch_positions) > max_mismatches:
+            return
+        if index == len(query_chars):
+            candidate = "".join(current)
+            existing = patterns.get(candidate)
+            if existing is None or len(mismatch_positions) < len(existing):
+                patterns[candidate] = mismatch_positions
+            return
+
+        original = query_chars[index]
+        current.append(original)
+        walk(index + 1, mismatch_positions, current)
+        current.pop()
+
+        if len(mismatch_positions) == max_mismatches:
+            return
+
+        for base in _NUCLEOTIDE_ALPHABET:
+            if base == original:
+                continue
+            current.append(base)
+            walk(index + 1, mismatch_positions + (index + 1,), current)
+            current.pop()
+
+    walk(0, (), [])
+    return patterns
+
+
+class _ExhaustivePythonMiRNASeedScanner:
+    """Baseline seed scanner used as the correctness oracle in tests."""
+
+    backend = MiRNASeedBackend.EXHAUSTIVE_PYTHON
+
+    def scan(
+        self,
+        queries: list[_PreparedSeedQuery],
+        mirna_sequences: dict[str, str],
+        *,
+        max_mismatches: int,
+    ) -> list[_MiRNASeedMatch]:
+        matches: list[_MiRNASeedMatch] = []
+        normalized_mirnas = {mirna_id: _normalize_nucleotide_sequence(seq) for mirna_id, seq in mirna_sequences.items()}
+
+        for query in queries:
+            query_length = len(query.seed_qseq)
+            if query_length == 0:
+                continue
+
+            for mirna_id, mirna_seq in normalized_mirnas.items():
+                if len(mirna_seq) < query_length:
+                    continue
+                for start in range(len(mirna_seq) - query_length + 1):
+                    window = mirna_seq[start : start + query_length]
+                    mismatch_positions = _mismatch_positions(query.seed_qseq, window)
+                    if len(mismatch_positions) > max_mismatches:
+                        continue
+                    matches.append(
+                        _MiRNASeedMatch(
+                            qname=query.qname,
+                            qseq=query.qseq,
+                            seed_qseq=query.seed_qseq,
+                            mirna_id=mirna_id,
+                            coord=start,
+                            mismatch_positions=mismatch_positions,
+                        )
+                    )
+
+        return matches
+
+
+class _PyAhoCorasickMiRNASeedScanner:
+    """pyahocorasick-based scanner using pre-expanded mismatch patterns."""
+
+    backend = MiRNASeedBackend.PYAHOCORASICK
+
+    @staticmethod
+    def _load_module() -> Any:
+        try:
+            return importlib.import_module("ahocorasick")
+        except ImportError as exc:
+            raise _MiRNASeedBackendUnavailableError(
+                "miRNA seed backend 'pyahocorasick' is unavailable because the installed environment is missing "
+                "the required 'pyahocorasick' package"
+            ) from exc
+
+    def scan(
+        self,
+        queries: list[_PreparedSeedQuery],
+        mirna_sequences: dict[str, str],
+        *,
+        max_mismatches: int,
+    ) -> list[_MiRNASeedMatch]:
+        ahocorasick = self._load_module()
+        automaton = ahocorasick.Automaton()
+        payloads_by_pattern: dict[str, list[_PreparedSeedQuery]] = defaultdict(list)
+
+        for query in queries:
+            if not query.seed_qseq:
+                continue
+            for pattern in _candidate_patterns(query.seed_qseq, max_mismatches):
+                payloads_by_pattern[pattern].append(query)
+
+        for pattern, pattern_queries in payloads_by_pattern.items():
+            automaton.add_word(pattern, (pattern, tuple(pattern_queries)))
+        automaton.make_automaton()
+
+        matches: list[_MiRNASeedMatch] = []
+        normalized_mirnas = {mirna_id: _normalize_nucleotide_sequence(seq) for mirna_id, seq in mirna_sequences.items()}
+
+        for mirna_id, mirna_seq in normalized_mirnas.items():
+            for end_index, (pattern, pattern_queries) in automaton.iter(mirna_seq):
+                start = end_index - len(pattern) + 1
+                window = mirna_seq[start : end_index + 1]
+                for query in pattern_queries:
+                    mismatch_positions = _mismatch_positions(query.seed_qseq, window)
+                    if len(mismatch_positions) > max_mismatches:
+                        continue
+                    matches.append(
+                        _MiRNASeedMatch(
+                            qname=query.qname,
+                            qseq=query.qseq,
+                            seed_qseq=query.seed_qseq,
+                            mirna_id=mirna_id,
+                            coord=start,
+                            mismatch_positions=mismatch_positions,
+                        )
+                    )
+
+        return matches
+
+
+def _get_mirna_seed_scanner(backend: MiRNASeedBackend) -> _MiRNASeedScanner:
+    """Resolve one in-process miRNA seed backend implementation."""
+    if backend == MiRNASeedBackend.EXHAUSTIVE_PYTHON:
+        return _ExhaustivePythonMiRNASeedScanner()
+    if backend == MiRNASeedBackend.PYAHOCORASICK:
+        return _PyAhoCorasickMiRNASeedScanner()
+    raise ValueError(f"Unsupported in-process miRNA seed backend: {backend.value}")
+
+
+def scan_mirna_seed_matches(
+    sequences: dict[str, str],
+    mirna_sequences: dict[str, str],
+    *,
+    backend: MiRNASeedBackend | str = MiRNASeedBackend.PYAHOCORASICK,
+    seed_start: int = 2,
+    seed_end: int = 8,
+    max_mismatches: int = 2,
+    max_hits: int | None = None,
+) -> list[dict[str, Any]]:
+    """Scan miRNA FASTA records using an in-process seed-scanning backend.
+
+    The returned rows preserve the existing internal hit shape used by miRNA analysis,
+    so callers can continue adapting them to DataFrame-based outputs.
+    """
+    resolved_backend = MiRNASeedBackend(backend)
+    if resolved_backend == MiRNASeedBackend.BWA:
+        raise ValueError("scan_mirna_seed_matches only supports in-process backends")
+
+    queries = _prepare_seed_queries(sequences, seed_start=seed_start, seed_end=seed_end)
+    scanner = _get_mirna_seed_scanner(resolved_backend)
+    raw_matches = scanner.scan(queries, mirna_sequences, max_mismatches=max_mismatches)
+
+    deduped: dict[tuple[str, str, int, tuple[int, ...]], dict[str, Any]] = {}
+    for match in raw_matches:
+        # ``_mismatch_positions`` reports positions within the extracted seed window
+        # (1..len(seed)); shift them onto guide coordinates so seed classification and
+        # position-weighted scoring are computed in the same frame as the seed_start/
+        # seed_end thresholds.
+        mismatch_positions = _seed_window_positions_to_guide(match.mismatch_positions, seed_start=seed_start)
+        nm = len(mismatch_positions)
+        seed_mismatches = sum(1 for pos in mismatch_positions if seed_start <= pos <= seed_end)
+        key = (match.qname, match.mirna_id, match.coord, mismatch_positions)
+        deduped[key] = {
+            "qname": match.qname,
+            "qseq": match.qseq,
+            "rname": match.mirna_id,
+            "coord": match.coord,
+            "strand": "+",
+            "cigar": f"{len(match.seed_qseq)}M",
+            "mapq": 255,
+            "as_score": _alignment_score(len(match.seed_qseq), nm),
+            "nm": nm,
+            "mismatch_positions": list(mismatch_positions),
+            "seed_mismatches": seed_mismatches,
+            "offtarget_score": _calculate_seed_offtarget_score(
+                mismatch_positions,
+                seed_start=seed_start,
+                seed_end=seed_end,
+            ),
+        }
+
+    results = list(deduped.values())
+    results.sort(
+        key=lambda row: (
+            row["offtarget_score"],
+            -int(row.get("as_score") or 0),
+            row["qname"],
+            row["rname"],
+            row["coord"],
+        )
+    )
+    return results if max_hits is None else results[:max_hits]
 
 
 # =============================================================================
@@ -91,7 +672,7 @@ class BwaAnalyzer:
         mode: str = "transcriptome",  # "transcriptome" or "mirna_seed"
         seed_length: int = 12,
         min_score: int = 15,
-        max_hits: int = 10000,
+        max_hits: int | None = None,
         seed_start: int = 2,
         seed_end: int = 8,
     ):
@@ -102,7 +683,7 @@ class BwaAnalyzer:
             mode: Analysis mode - "transcriptome" for long targets, "mirna_seed" for short targets
             seed_length: BWA seed length parameter
             min_score: Minimum alignment score
-            max_hits: Maximum hits to return
+            max_hits: Maximum hits to return (``None`` = no limit / exhaustive)
             seed_start: Seed region start (1-based)
             seed_end: Seed region end (1-based)
         """
@@ -165,24 +746,15 @@ class BwaAnalyzer:
         finally:
             Path(temp_fasta_path).unlink(missing_ok=True)
 
-        return results[: self.max_hits]
+        return results if self.max_hits is None else results[: self.max_hits]
 
     def _prepare_sequences_for_analysis(self, sequences: dict[str, str]) -> dict[str, str]:
         """Prepare sequences for analysis based on mode."""
         if self.mode == "mirna_seed":
-            # Extract seed region (positions 2-8, 1-based) from siRNA sequences
-            prepared = {}
-            for name, seq in sequences.items():
-                if len(seq) >= self.seed_end:
-                    seed_seq = seq[self.seed_start - 1 : self.seed_end]  # Convert to 0-based indexing
-                    prepared[name] = seed_seq
-                    logger.debug(f"Extracted seed region for {name}: {seed_seq} (from {seq})")
-                else:
-                    logger.warning(f"Sequence {name} too short for seed extraction: {seq}")
-                    prepared[name] = seq  # Use full sequence if too short
-            return prepared
+            prepared = _prepare_seed_queries(sequences, seed_start=self.seed_start, seed_end=self.seed_end)
+            return {query.qname: query.seed_qseq for query in prepared}
         # For transcriptome mode, use full sequences
-        return sequences
+        return {name: _normalize_nucleotide_sequence(seq) for name, seq in sequences.items()}
 
     def _build_bwa_command(self, bwa_path: str, temp_fasta_path: str) -> list[str]:
         """Build BWA command based on analysis mode."""
@@ -340,45 +912,11 @@ class BwaAnalyzer:
             - Birmingham et al. 2006 (position-specific effects)
             - Huesken et al. 2005 (thermodynamic contributions)
         """
-        num_mismatches = len(mismatch_positions)
-
-        # Perfect match = highest off-target risk
-        if num_mismatches == 0:
-            return 0.0
-
-        # Base score: number of mismatches (most fundamental property)
-        # Each mismatch significantly reduces binding affinity
-        base_score = num_mismatches * 10.0
-
-        # Position-specific penalties (seed region is critical)
-        position_penalty = 0.0
-        seed_mismatches = 0
-
-        for pos in mismatch_positions:
-            if self.seed_start <= pos <= self.seed_end:
-                # Seed region (pos 2-8): mismatches here strongly disrupt binding
-                position_penalty += 5.0
-                seed_mismatches += 1
-            elif pos <= 10:
-                # 5' region (pos 1, 9-10): moderately important
-                position_penalty += 3.0
-            else:
-                # 3' region (pos 11-19): less critical but still relevant
-                position_penalty += 1.0
-
-        # Continuous mismatch bonus (clusters disrupt binding more)
-        continuous_bonus = 0.0
-        if num_mismatches >= 2:
-            sorted_positions = sorted(mismatch_positions)
-            continuous_count = 0
-            for i in range(len(sorted_positions) - 1):
-                if sorted_positions[i + 1] - sorted_positions[i] == 1:
-                    continuous_count += 1
-            # Adjacent mismatches create stronger disruption
-            continuous_bonus = continuous_count * 2.0
-
-        # Total score: base + position weights + continuity bonus
-        return base_score + position_penalty + continuous_bonus
+        return _calculate_seed_offtarget_score(
+            mismatch_positions,
+            seed_start=self.seed_start,
+            seed_end=self.seed_end,
+        )
 
     def _filter_and_rank(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter and rank results by off-target score."""
@@ -736,7 +1274,7 @@ def run_comprehensive_offtarget_analysis(
     mode: str = "transcriptome",
     bwa_k: int = 12,
     bwa_T: int = 15,
-    max_hits: int = 10000,
+    max_hits: int | None = None,
     seed_start: int = 2,
     seed_end: int = 8,
 ) -> tuple[str, str, str]:
@@ -806,7 +1344,7 @@ def run_bwa_alignment_analysis(
     index_prefix: str | Path,
     species: str,
     output_dir: str | Path,
-    max_hits: int = 10000,
+    max_hits: int | None = None,
     bwa_k: int = 12,
     bwa_T: int = 15,
     seed_start: int = 2,
@@ -821,7 +1359,7 @@ def run_bwa_alignment_analysis(
         index_prefix: Path to BWA-MEM2 index prefix
         species: Species identifier
         output_dir: Directory to write results
-        max_hits: Maximum hits to report per candidate
+        max_hits: Maximum hits to report per candidate (``None`` = no limit / exhaustive)
         bwa_k: BWA seed length parameter
         bwa_T: BWA minimum score threshold
         seed_start: Seed region start position (1-based)
@@ -1135,11 +1673,20 @@ def run_mirna_seed_analysis(
     mirna_db: str,  # Review, can this be linked to a class describing all miRNA database protocol/ABC?
     mirna_species: list[str],
     output_dir: str | Path,
+    backend: MiRNASeedBackend | str = MiRNASeedBackend.PYAHOCORASICK,
+    seed_start: int = 2,
+    seed_end: int = 8,
 ) -> Path:
     """Run miRNA seed match analysis for candidate sequences.
 
     This function uses the MiRNADatabaseManager to download and cache miRNA databases,
     builds BWA indices if needed, and performs seed match analysis.
+
+    The scan produces *raw* alignments: the guide seed window placed at every position
+    along each miRNA. Only alignments where the guide seed lands on the miRNA's own seed
+    region (0-based ``coord == seed_start - 1``) are counted as *hits* in the filtered
+    outputs and summary ``total_hits``; perfect matches in non-seed regions are retained
+    in the ``*_raw`` files but are not real miRNA seed off-targets.
 
     Args:
         candidates_file: Path to FASTA file with candidate sequences
@@ -1147,6 +1694,9 @@ def run_mirna_seed_analysis(
         mirna_db: miRNA database name (mirgenedb, mirbase, etc.)
         mirna_species: List of species to analyze against
         output_dir: Directory to write results
+        backend: miRNA seed backend to use for analysis (pyahocorasick by default)
+        seed_start: Seed region start position (1-based, default 2)
+        seed_end: Seed region end position (1-based, default 8)
 
     Returns:
         Path to output directory containing results
@@ -1164,8 +1714,10 @@ def run_mirna_seed_analysis(
     species_raw_stats = {}
     species_filtered_stats = {}
 
+    resolved_backend = MiRNASeedBackend(backend)
+
     logger.info(f"Running miRNA seed analysis for {candidate_id}")
-    logger.info(f"Database: {mirna_db}, Species: {mirna_species}")
+    logger.info(f"Database: {mirna_db}, Species: {mirna_species}, Backend: {resolved_backend.value}")
 
     for species in mirna_species:
         try:
@@ -1177,44 +1729,48 @@ def run_mirna_seed_analysis(
                 logger.warning(f"miRNA database not available for {species}, skipping")
                 continue
 
-            # Build BWA index for miRNA database if it doesn't exist
-            index_prefix = db_fasta_path.with_suffix("")
-            if not validate_index_files(index_prefix, "bwa-mem2"):
-                logger.info(f"Building BWA index for {species} miRNA database")
-                build_bwa_index(db_fasta_path, index_prefix)
+            if resolved_backend == MiRNASeedBackend.BWA:
+                mirna_sequences = parse_fasta_file(db_fasta_path)
+                index_prefix = db_fasta_path.with_suffix("")
+                if not validate_index_files(index_prefix, "bwa-mem2"):
+                    logger.info(f"Building BWA index for {species} miRNA database")
+                    build_bwa_index(db_fasta_path, index_prefix)
 
-            # Run BWA analysis in miRNA seed mode
-            analyzer = BwaAnalyzer(
-                index_prefix=index_prefix,
-                mode="mirna_seed",
-                seed_length=6,  # Short seed for miRNA seed region
-                min_score=6,  # Low threshold for sensitivity
-                max_hits=1000,  # Reasonable limit per candidate
-                seed_start=2,
-                seed_end=8,
-            )
-
-            results = analyzer.analyze_sequences(sequences)
-
-            # Convert BWA results to DataFrame directly - let Pandera handle validation
-            results_df = pd.DataFrame(results)
-
-            # Parse coord field: for miRNA it's "miRNA_ID:position", extract integer position
-            if "coord" in results_df.columns:
-                results_df["coord"] = results_df["coord"].apply(
-                    lambda x: int(x.split(":")[-1]) if isinstance(x, str) and ":" in x else int(x)
+                analyzer = BwaAnalyzer(
+                    index_prefix=index_prefix,
+                    mode="mirna_seed",
+                    seed_length=6,
+                    min_score=6,
+                    max_hits=_mirna_max_hits(),
+                    seed_start=seed_start,
+                    seed_end=seed_end,
+                )
+                bwa_results = analyzer.analyze_sequences(sequences)
+                results = _normalize_bwa_mirna_seed_hits(
+                    bwa_results,
+                    sequences=sequences,
+                    mirna_sequences=mirna_sequences,
+                    seed_start=seed_start,
+                    seed_end=seed_end,
+                    max_mismatches=2,
+                )
+            else:
+                mirna_sequences = parse_fasta_file(db_fasta_path)
+                results = scan_mirna_seed_matches(
+                    sequences,
+                    mirna_sequences,
+                    backend=resolved_backend,
+                    seed_start=seed_start,
+                    seed_end=seed_end,
+                    max_mismatches=2,
+                    max_hits=_mirna_max_hits(),
                 )
 
-            # Add miRNA-specific columns
-            results_df["species"] = species
-            results_df["database"] = mirna_db
-            results_df["mirna_id"] = results_df["rname"]  # BWA uses rname for reference ID
-
-            # Remove internal columns not part of the MiRNAAlignmentSchema
-            # - rname: copied to mirna_id (schema uses domain-specific naming)
-            # - mismatch_positions: internal debugging data, not needed in output
-            columns_to_drop = ["rname", "mismatch_positions"]
-            results_df = results_df.drop(columns=[col for col in columns_to_drop if col in results_df.columns])
+            results_df = _build_mirna_alignment_frame(
+                results,
+                species=species,
+                database=mirna_db,
+            )
 
             # Validate and coerce types using Pandera schema
             try:
@@ -1228,6 +1784,13 @@ def run_mirna_seed_analysis(
                 species_filtered_stats[species] = 0
                 continue
 
+        except _MiRNASeedBackendUnavailableError as backend_error:
+            message = (
+                f"miRNA seed analysis backend '{resolved_backend.value}' is unavailable for species "
+                f"{species}: {backend_error}"
+            )
+            logger.error(message)
+            raise RuntimeError(message) from backend_error
         except Exception as e:
             logger.error(f"Failed to process miRNA analysis for {species}: {e}")
             species_raw_stats[species] = 0
@@ -1237,9 +1800,12 @@ def run_mirna_seed_analysis(
     if all_raw_hits:
         df_raw = pd.concat(all_raw_hits, ignore_index=True)
 
-        # Keep ALL hits including perfect matches - they're biologically relevant off-targets
-        # Users can filter by score threshold if desired
-        df_filtered = df_raw.copy()
+        # A raw alignment is a real miRNA seed off-target only when the guide seed lands
+        # on the miRNA's own seed region, i.e. the 0-based alignment start equals the seed
+        # start offset (seed_start - 1). Perfect matches elsewhere in the miRNA (e.g. its 3'
+        # region) are retained in the *_raw outputs but are NOT counted as seed hits.
+        seed_region_coord = seed_start - 1
+        df_filtered = df_raw[df_raw["coord"] == seed_region_coord].reset_index(drop=True)
 
         # Calculate per-species filtered stats
         for species in mirna_species:
@@ -1444,6 +2010,7 @@ __all__ = [
     # Core classes
     "BwaAnalyzer",
     "OffTargetAnalysisManager",
+    "MiRNASeedBackend",
     # Utility functions
     "create_temp_fasta",
     "validate_and_write_sequences",
@@ -1453,9 +2020,12 @@ __all__ = [
     "write_fasta_file",
     "check_tool_availability",
     "validate_index_files",
+    "mirna_seed_hit_identity",
+    "normalize_mirna_seed_hit",
     # Nextflow integration functions (called directly from Nextflow modules)
     "run_bwa_alignment_analysis",
     "aggregate_offtarget_results",
+    "scan_mirna_seed_matches",
     "run_mirna_seed_analysis",
     "aggregate_mirna_results",
 ]

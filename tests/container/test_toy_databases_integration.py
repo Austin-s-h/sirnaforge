@@ -4,13 +4,46 @@ These tests require BWA-MEM2 which is only available inside the Docker container
 They are marked with `runs_in_container` to run via `make docker-test`.
 """
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 
-from sirnaforge.core.off_target import OffTargetAnalysisManager, build_bwa_index
+from sirnaforge.core.off_target import (
+    MiRNASeedBackend,
+    OffTargetAnalysisManager,
+    build_bwa_index,
+    mirna_seed_hit_identity,
+    run_mirna_seed_analysis,
+)
 from sirnaforge.data.base import FastaUtils
+
+
+def _load_semantic_mirna_hit_identities(
+    output_dir: Path, candidate_id: str
+) -> set[tuple[str, str, int, int, int, float]]:
+    """Load normalized miRNA hits from a backend run and project them onto the parity contract."""
+    hits_path = output_dir / f"{candidate_id}_mirna_hits_raw.json"
+    hits = json.loads(hits_path.read_text())
+    return {mirna_seed_hit_identity(hit) for hit in hits}
+
+
+def _assert_semantic_hit_parity(
+    *,
+    baseline_hits: set[tuple[str, str, int, int, int, float]],
+    candidate_hits: set[tuple[str, str, int, int, int, float]],
+    baseline_label: str,
+    candidate_label: str,
+) -> None:
+    """Assert semantic parity with a diff that makes backend drift obvious to maintainers."""
+    missing_hits = sorted(baseline_hits - candidate_hits)
+    extra_hits = sorted(candidate_hits - baseline_hits)
+    assert candidate_hits == baseline_hits, (
+        f"{candidate_label} semantic miRNA seed hits diverged from {baseline_label}: "
+        f"missing={missing_hits[:10]}, extra={extra_hits[:10]}, "
+        f"baseline_count={len(baseline_hits)}, candidate_count={len(candidate_hits)}"
+    )
 
 
 @pytest.mark.runs_in_container
@@ -117,3 +150,57 @@ def test_combined_offtarget_analysis(tmp_path: Path):
     assert transcriptome_json.exists()
     assert mirna_tsv.exists()
     assert mirna_json.exists()
+
+
+@pytest.mark.runs_in_container
+@pytest.mark.integration
+def test_toy_mirna_seed_backend_matches_bwa_semantic_hits(tmp_path: Path):
+    """The optimized miRNA backend should match BWA on toy-data semantic hit identities."""
+    if shutil.which("bwa-mem2") is None:
+        pytest.skip("bwa-mem2 not available - run this test in the Docker container")
+
+    test_data_dir = Path(__file__).parent.parent / "unit" / "data"
+    mirna_db = test_data_dir / "toy_mirna_bwa_parity_db.fasta"
+    candidate_file = test_data_dir / "toy_mirna_bwa_parity_candidates.fasta"
+    candidate_id = "toy"
+
+    assert mirna_db.exists(), "Semantic-parity miRNA toy database should exist"
+    assert candidate_file.exists(), "Toy candidate sequences should exist"
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "sirnaforge.data.mirna_manager.MiRNADatabaseManager.get_database",
+        lambda *_args, **_kwargs: mirna_db,
+    )
+    try:
+        bwa_output_dir = run_mirna_seed_analysis(
+            candidates_file=candidate_file,
+            candidate_id=candidate_id,
+            mirna_db="toy_db",
+            mirna_species=["human"],
+            output_dir=tmp_path / "bwa",
+            backend=MiRNASeedBackend.BWA,
+        )
+        optimized_output_dir = run_mirna_seed_analysis(
+            candidates_file=candidate_file,
+            candidate_id=candidate_id,
+            mirna_db="toy_db",
+            mirna_species=["human"],
+            output_dir=tmp_path / "optimized",
+            backend=MiRNASeedBackend.PYAHOCORASICK,
+        )
+    finally:
+        monkeypatch.undo()
+
+    bwa_identity = _load_semantic_mirna_hit_identities(bwa_output_dir, candidate_id)
+    optimized_identity = _load_semantic_mirna_hit_identities(optimized_output_dir, candidate_id)
+
+    assert bwa_identity, "toy fixture should produce BWA miRNA seed hits"
+    assert optimized_identity, "toy fixture should produce optimized miRNA seed hits"
+
+    _assert_semantic_hit_parity(
+        baseline_hits=bwa_identity,
+        candidate_hits=optimized_identity,
+        baseline_label="bwa",
+        candidate_label="pyahocorasick",
+    )

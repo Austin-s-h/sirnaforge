@@ -1,8 +1,8 @@
-# 🧬 siRNAforge v0.4.0
+# 🧬 siRNAforge v0.4.2
 
 **Comprehensive siRNA design toolkit with multi-species off-target analysis**
 
-## [0.4.1] - 2025-1-10
+## [0.4.2] - 2026-03-01
 
 ### Breaking
 
@@ -13,6 +13,23 @@
 
 
 ### New Features
+- **ZFN workflow release-readiness**:
+  - End-to-end ZFN design mode support with validated CLI workflow path.
+  - Configurable algorithm selection (`homology`, `conserved_g`, `zfn_v2`) and dimer modes.
+  - Stable ZFN output artifacts for downstream review and benchmarking.
+
+### Improvements
+- **Documentation and command accuracy**:
+  - Reconciled stale workflow flags in examples (`--species`, `--modifications`).
+  - Added required ZFN half-site guidance for `--design-mode zfn` usage.
+  - Added curated ZFN usage notes alongside auto-generated CLI reference content.
+- **miRNA backend rollout readiness**:
+  - Set `pyahocorasick` as the internal operational default for miRNA seed analysis while keeping the workflow and reporting surface unchanged.
+  - Kept `exhaustive_python` as the deterministic correctness oracle and BWA as the semantic parity baseline.
+  - Verified the embedded Nextflow miRNA batch path still emits the expected aggregated artifacts through the default backend.
+  - Documented the release-facing validation sequence for future miRNA backend changes without widening the public interface.
+
+### Previous 0.4.1 highlights
 - **Variant Targeting Implementation**: Complete Phase 1-5 implementation for targeting specific genetic variants
   - Core variant models and resolver infrastructure with Parquet-based caching
   - Population-specific AF filtering for geographic variant targeting
@@ -28,7 +45,7 @@
   - Enhanced container testing with dedicated test categories
   - Improved Docker entrypoint and health checks
 
-### Improvements
+### Additional 0.4.1 improvements
 - **Performance Optimizations**:
   - Parquet-based variant cache for improved performance
   - Cache-first index reuse with complete validation
@@ -86,19 +103,19 @@
 ### Docker (recommended)
 ```bash
 # Pull the latest release
-docker pull ghcr.io/austin-s-h/sirnaforge:0.4.0
+docker pull ghcr.io/austin-s-h/sirnaforge:0.4.2
 
 # Quick test - should complete in ~2 seconds
-docker run --rm ghcr.io/austin-s-h/sirnaforge:0.4.0 sirnaforge --help
+docker run --rm ghcr.io/austin-s-h/sirnaforge:0.4.2 sirnaforge --help
 ```
 
 ### Python package
 ```bash
 # Via pip
-pip install sirnaforge==0.4.0
+pip install sirnaforge==0.4.2
 
 # Via uv (recommended for speed)
-uv add sirnaforge==0.4.0
+uv add sirnaforge==0.4.2
 
 # Verify installation
 sirnaforge --help
@@ -123,12 +140,12 @@ make test-dev  # ~15 seconds
 ```bash
 # Complete gene-to-siRNA workflow
 docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:0.4.0 \
-  sirnaforge workflow TP53 --output-dir results --genome-species human
+  ghcr.io/austin-s-h/sirnaforge:0.4.2 \
+  sirnaforge workflow TP53 --output-dir results --species human
 
 # Custom transcript file
 docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:0.4.0 \
+  ghcr.io/austin-s-h/sirnaforge:0.4.2 \
   sirnaforge design transcripts.fasta --output results.csv
 ```
 
@@ -156,7 +173,7 @@ sirnaforge cache      # Manage miRNA databases
 sirnaforge version    # Version information
 ```
 
-## Key features in v0.4.0
+## Key features in v0.4.2
 
 - **Smart siRNA design** - Thermodynamic scoring with 90% duplex binding weight
 - **Off-target analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes
@@ -165,6 +182,7 @@ sirnaforge version    # Version information
 - **uv package manager** - Fast dependency resolution
 - **Production Docker** - Pre-built images with all bioinformatics tools
 - **Nextflow pipeline** - Scalable execution with automatic parallelization
+- **ZFN design mode** - Constraint-aware left/right half-site evaluation and ranked off-target reporting
 
 ## Testing & quality
 
@@ -184,7 +202,7 @@ sirnaforge version    # Version information
 - [**Development guide**](https://github.com/austin-s-h/sirnaforge/blob/main/CONTRIBUTING.md) - Contributing instructions
 
 ### Container images
-- **Versioned:** `ghcr.io/austin-s-h/sirnaforge:0.4.0`
+- **Versioned:** `ghcr.io/austin-s-h/sirnaforge:0.4.2`
 - **Latest:** `ghcr.io/austin-s-h/sirnaforge:latest`
 - **Registry:** [ghcr.io/austin-s-h/sirnaforge](ghcr.io/austin-s-h/sirnaforge)
 
@@ -200,9 +218,9 @@ sirnaforge version    # Version information
 **Quick verification:**
 ```bash
 # Test Docker image (should complete in ~2 seconds)
-docker run --rm ghcr.io/austin-s-h/sirnaforge:0.4.0 sirnaforge version
+docker run --rm ghcr.io/austin-s-h/sirnaforge:0.4.2 sirnaforge version
 
-# Expected output: siRNAforge v0.4.0
+# Expected output: siRNAforge v0.4.2
 ```
 
 
