@@ -21,23 +21,45 @@ from sirnaforge.models.schemas import MiRNAAlignmentSchema
 TEST_DATA_DIR = Path(__file__).parent / "data"
 TOY_PARITY_CANDIDATES = TEST_DATA_DIR / "toy_mirna_parity_candidates.fasta"
 TOY_PARITY_DB = TEST_DATA_DIR / "toy_mirna_parity_db.fasta"
-TOY_PARITY_SEMANTIC_IDENTITIES = {
-    ("cand_exact", "mir1", 2, 0, 0, 0.0),
-    ("cand_exact", "mir2", 2, 1, 1, 15.0),
-    ("cand_exact", "mir3", 2, 2, 2, 30.0),
-    ("cand_exact", "mir_repeat", 2, 0, 0, 0.0),
-    ("cand_exact", "mir_repeat", 13, 0, 0, 0.0),
-    ("cand_one", "mir1", 2, 1, 1, 15.0),
-    ("cand_one", "mir2", 2, 0, 0, 0.0),
-    ("cand_one", "mir3", 2, 1, 1, 15.0),
-    ("cand_one", "mir_repeat", 2, 1, 1, 15.0),
-    ("cand_one", "mir_repeat", 13, 1, 1, 15.0),
-    ("cand_two", "mir1", 2, 2, 2, 30.0),
-    ("cand_two", "mir2", 2, 1, 1, 15.0),
-    ("cand_two", "mir3", 2, 0, 0, 0.0),
-    ("cand_two", "mir_repeat", 2, 2, 2, 30.0),
-    ("cand_two", "mir_repeat", 13, 2, 2, 30.0),
+
+# The parity fixtures exercise the seed-region contract explicitly. Guide seeds
+# (guide positions 2-8) are scanned across each miRNA; ``coord`` is the 0-based start
+# of that match in the miRNA. A match is only a real seed off-target when the guide seed
+# lands on the miRNA's own seed region (0-based coord == seed_start - 1 == 1).
+#
+# Fixture design:
+# - mir_seed_exact (UACGUACG...ACGUACG): carries cand_exact's seed at coord 1 (seed hit)
+#   plus a perfect but NON-seed copy at coord 9 -> raw-only, must NOT count as a hit.
+# - mir_seed_one: carries cand_one's seed at coord 1.
+# - mir_nonseed: only contains cand_exact's seed away from the seed region (coord 5) ->
+#   perfect match but raw-only, never a hit.
+# - cand_pos2 differs from cand_exact only at guide position 2 (window position 1); it is
+#   a regression guard for the seed-window -> guide coordinate mapping. A position-2
+#   mismatch must be counted in seed_mismatches (=1), NOT silently dropped to a perfect seed.
+
+# RAW alignments (every guide-seed placement within max_mismatches), keyed by semantic identity
+# (qname, mirna_id, coord, nm, seed_mismatches, offtarget_score).
+TOY_PARITY_RAW_SEMANTIC_IDENTITIES = {
+    ("cand_exact", "mir_nonseed", 5, 0, 0, 0.0),
+    ("cand_exact", "mir_seed_exact", 1, 0, 0, 0.0),
+    ("cand_exact", "mir_seed_exact", 5, 1, 1, 15.0),
+    ("cand_exact", "mir_seed_exact", 9, 0, 0, 0.0),
+    ("cand_exact", "mir_seed_one", 1, 1, 1, 15.0),
+    ("cand_one", "mir_nonseed", 5, 1, 1, 15.0),
+    ("cand_one", "mir_seed_exact", 1, 1, 1, 15.0),
+    ("cand_one", "mir_seed_exact", 5, 2, 2, 32.0),
+    ("cand_one", "mir_seed_exact", 9, 1, 1, 15.0),
+    ("cand_one", "mir_seed_one", 1, 0, 0, 0.0),
+    ("cand_pos2", "mir_nonseed", 5, 1, 1, 15.0),
+    ("cand_pos2", "mir_seed_exact", 1, 1, 1, 15.0),
+    ("cand_pos2", "mir_seed_exact", 5, 2, 2, 30.0),
+    ("cand_pos2", "mir_seed_exact", 9, 1, 1, 15.0),
+    ("cand_pos2", "mir_seed_one", 1, 2, 2, 30.0),
 }
+
+# FILTERED hits: only the raw alignments whose guide seed lands on the miRNA seed region
+# (0-based coord == 1). Perfect non-seed matches (coord 5 / coord 9) are excluded.
+TOY_PARITY_SEMANTIC_IDENTITIES = {identity for identity in TOY_PARITY_RAW_SEMANTIC_IDENTITIES if identity[2] == 1}
 
 
 def _run_toy_mirna_seed_analysis(
@@ -116,13 +138,73 @@ def test_deterministic_mirna_parity_fixture_locks_exhaustive_semantic_contract(
     raw_hits_rows = _read_json_rows(output_dir / "toy_parity_exhaustive_mirna_hits_raw.json")
     summary = json.loads((output_dir / "toy_parity_exhaustive_mirna_summary.json").read_text())
 
+    # Filtered outputs keep only seed-region hits (coord == 1); raw outputs keep every alignment.
     assert _semantic_identities(analysis_rows) == TOY_PARITY_SEMANTIC_IDENTITIES
-    assert _semantic_identities(raw_analysis_rows) == TOY_PARITY_SEMANTIC_IDENTITIES
     assert _semantic_identities(hits_rows) == TOY_PARITY_SEMANTIC_IDENTITIES
-    assert _semantic_identities(raw_hits_rows) == TOY_PARITY_SEMANTIC_IDENTITIES
+    assert _semantic_identities(raw_analysis_rows) == TOY_PARITY_RAW_SEMANTIC_IDENTITIES
+    assert _semantic_identities(raw_hits_rows) == TOY_PARITY_RAW_SEMANTIC_IDENTITIES
+
+    # Perfect matches outside the seed region are retained as raw alignments but must NOT be hits.
+    assert TOY_PARITY_RAW_SEMANTIC_IDENTITIES - TOY_PARITY_SEMANTIC_IDENTITIES, (
+        "fixture must include non-seed alignments to exercise the seed-region filter"
+    )
+    assert all(identity[2] == 1 for identity in _semantic_identities(analysis_rows))
+
     assert summary["total_hits"] == len(TOY_PARITY_SEMANTIC_IDENTITIES)
-    assert summary["total_raw_alignments"] == len(TOY_PARITY_SEMANTIC_IDENTITIES)
-    assert summary["hits_per_species"] == {"human": len(TOY_PARITY_SEMANTIC_IDENTITIES)}
+    assert summary["total_raw_alignments"] == len(TOY_PARITY_RAW_SEMANTIC_IDENTITIES)
+    # hits_per_species reports RAW alignment counts (documented on MiRNASummary).
+    assert summary["hits_per_species"] == {"human": len(TOY_PARITY_RAW_SEMANTIC_IDENTITIES)}
+
+
+@pytest.mark.parametrize("backend", [MiRNASeedBackend.EXHAUSTIVE_PYTHON, MiRNASeedBackend.PYAHOCORASICK])
+def test_perfect_non_seed_match_is_raw_only_not_a_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: MiRNASeedBackend,
+) -> None:
+    """A perfect guide-seed match outside the miRNA seed region must be raw-only, never a hit.
+
+    ``mir_nonseed`` and the coord-9 copy inside ``mir_seed_exact`` are perfect (nm==0) matches
+    that fall outside the seed region; they must appear in the raw outputs but must NOT be
+    counted in the filtered analysis or ``total_hits``.
+    """
+    output_dir = _run_toy_mirna_seed_analysis(
+        tmp_path, monkeypatch, backend=backend, candidate_id=f"nonseed_{backend.value}"
+    )
+
+    filtered = _read_tsv_rows(output_dir / f"nonseed_{backend.value}_mirna_analysis.tsv")
+    raw = _read_tsv_rows(output_dir / f"nonseed_{backend.value}_mirna_analysis_raw.tsv")
+
+    # The non-seed perfect match exists in raw output...
+    assert any(row["mirna_id"] == "mir_nonseed" and int(row["nm"]) == 0 for row in raw)
+    assert any(row["mirna_id"] == "mir_seed_exact" and int(row["coord"]) == 9 for row in raw)
+    # ...but never survives into the filtered (seed-region) hits.
+    assert all(int(row["coord"]) == 1 for row in filtered)
+    assert not any(row["mirna_id"] == "mir_nonseed" for row in filtered)
+
+
+@pytest.mark.parametrize("backend", [MiRNASeedBackend.EXHAUSTIVE_PYTHON, MiRNASeedBackend.PYAHOCORASICK])
+def test_seed_position_two_mismatch_is_counted_not_treated_as_perfect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: MiRNASeedBackend,
+) -> None:
+    """A mismatch at guide position 2 (seed-window position 1) must count as a seed mismatch.
+
+    Regression guard for the seed-window -> guide coordinate mapping: ``cand_pos2`` differs
+    from the miRNA seed only at guide position 2. Its seed-region alignment must report
+    seed_mismatches == nm == 1 (not 0), so it is never mislabeled as a perfect seed match.
+    """
+    output_dir = _run_toy_mirna_seed_analysis(
+        tmp_path, monkeypatch, backend=backend, candidate_id=f"pos2_{backend.value}"
+    )
+    filtered = _read_tsv_rows(output_dir / f"pos2_{backend.value}_mirna_analysis.tsv")
+
+    seed_hit = next(row for row in filtered if row["qname"] == "cand_pos2" and row["mirna_id"] == "mir_seed_exact")
+    assert int(seed_hit["coord"]) == 1
+    assert int(seed_hit["nm"]) == 1
+    assert int(seed_hit["seed_mismatches"]) == 1, "position-2 mismatch must be counted in the seed region"
+    assert float(seed_hit["offtarget_score"]) > 0.0, "a seed mismatch must not score as a perfect match"
 
 
 def test_run_mirna_seed_analysis_pyahocorasick_matches_exhaustive_semantic_contract(
@@ -144,15 +226,15 @@ def test_run_mirna_seed_analysis_pyahocorasick_matches_exhaustive_semantic_contr
     )
 
     output_pairs = [
-        ("mirna_analysis.tsv", _read_tsv_rows),
-        ("mirna_analysis_raw.tsv", _read_tsv_rows),
-        ("mirna_hits.json", _read_json_rows),
-        ("mirna_hits_raw.json", _read_json_rows),
+        ("mirna_analysis.tsv", _read_tsv_rows, TOY_PARITY_SEMANTIC_IDENTITIES),
+        ("mirna_analysis_raw.tsv", _read_tsv_rows, TOY_PARITY_RAW_SEMANTIC_IDENTITIES),
+        ("mirna_hits.json", _read_json_rows, TOY_PARITY_SEMANTIC_IDENTITIES),
+        ("mirna_hits_raw.json", _read_json_rows, TOY_PARITY_RAW_SEMANTIC_IDENTITIES),
     ]
-    for suffix, reader in output_pairs:
+    for suffix, reader, expected_identities in output_pairs:
         exhaustive_rows = reader(exhaustive_output_dir / f"toy_parity_exhaustive_{suffix}")
         pyahocorasick_rows = reader(pyahocorasick_output_dir / f"toy_parity_pyaho_{suffix}")
-        assert _semantic_identities(pyahocorasick_rows) == TOY_PARITY_SEMANTIC_IDENTITIES
+        assert _semantic_identities(pyahocorasick_rows) == expected_identities
         assert _semantic_identities(pyahocorasick_rows) == _semantic_identities(exhaustive_rows)
 
     exhaustive_summary = json.loads((exhaustive_output_dir / "toy_parity_exhaustive_mirna_summary.json").read_text())
@@ -203,7 +285,13 @@ def test_run_mirna_seed_analysis_pyahocorasick_writes_schema_compatible_outputs(
     raw_analysis_df = pd.read_csv(raw_analysis_path, sep="\t")
     raw_validated_df = MiRNAAlignmentSchema.validate(raw_analysis_df, lazy=True)
     assert raw_analysis_df.columns.tolist() == schema_columns
-    pd.testing.assert_frame_equal(validated_df.reset_index(drop=True), raw_validated_df.reset_index(drop=True))
+
+    # Filtered = seed-region hits only (0-based coord == 1); raw keeps every alignment.
+    # The toy database intentionally contains non-seed matches, so filtered ⊂ raw.
+    assert (validated_df["coord"] == 1).all(), "filtered analysis must contain only seed-region hits"
+    assert len(validated_df) < len(raw_validated_df), "toy fixture should exercise the seed-region filter"
+    seed_region_raw = raw_validated_df[raw_validated_df["coord"] == 1].reset_index(drop=True)
+    pd.testing.assert_frame_equal(validated_df.reset_index(drop=True), seed_region_raw)
 
     hits = json.loads(hits_path.read_text())
     raw_hits = json.loads(raw_hits_path.read_text())
@@ -214,8 +302,9 @@ def test_run_mirna_seed_analysis_pyahocorasick_writes_schema_compatible_outputs(
 
     summary = json.loads(summary_path.read_text())
     assert summary["total_hits"] == len(validated_df)
-    assert summary["total_raw_alignments"] == len(validated_df)
-    assert summary["hits_per_species"]["human"] == len(validated_df)
+    assert summary["total_raw_alignments"] == len(raw_validated_df)
+    # hits_per_species reports RAW alignment counts (documented on MiRNASummary).
+    assert summary["hits_per_species"]["human"] == len(raw_validated_df)
 
 
 def test_normalize_mirna_seed_hit_normalizes_bwa_and_in_process_hits() -> None:
