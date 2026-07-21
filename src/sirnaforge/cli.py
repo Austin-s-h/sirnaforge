@@ -736,6 +736,8 @@ def workflow(  # noqa: PLR0912
         "--zfn-search-space",
         help=(
             "Genome reference key or local FASTA path for ZFN off-target search space. "
+            "Built-in keys: ensembl_human_hg38_primary, ensembl_mouse_grcm39_primary, "
+            "ensembl_rat_grcr8_toplevel, ensembl_macaque_mmul10_toplevel. "
             "Default: ensembl_human_hg38_primary when --design-mode zfn."
         ),
     ),
@@ -1554,6 +1556,8 @@ def zfn(
         "--zfn-search-space",
         help=(
             "Genome reference key or local FASTA path for ZFN off-target search space. "
+            "Built-in keys: ensembl_human_hg38_primary, ensembl_mouse_grcm39_primary, "
+            "ensembl_rat_grcr8_toplevel, ensembl_macaque_mmul10_toplevel. "
             "Default: ensembl_human_hg38_primary."
         ),
     ),

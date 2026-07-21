@@ -59,6 +59,7 @@ Outputs are written under:
 - `zfn_output/logs/workflow_summary.json`
 
 `zfn_candidate_summary.json` uses a stable envelope with:
+
 - `schema_version` (currently `zfn_candidate_summary.v1`)
 - `search_contract` (canonical half-sites, spacer list, mismatch budgets, dimer mode, algorithm)
 - `candidates` and `summary`
@@ -72,6 +73,22 @@ Outputs are written under:
 - `--zfn-spacer-lengths`: comma-separated allowed spacers (for example `5,6`)
 - `--zfn-max-mismatches`: mismatch cap per half-site during exhaustive search
 - `--zfn-annotation`: optional GTF/GFF annotation for region classification
+
+### Search-space references
+
+`--zfn-search-space` accepts a local FASTA path, an HTTP(S) URL, or one of the built-in
+Ensembl genome keys (auto-downloaded and cached on first use):
+
+| Key                                    | Species        | Assembly | Ensembl DNA file |
+| -------------------------------------- | -------------- | -------- | ---------------- |
+| `ensembl_human_hg38_primary` (default) | human          | GRCh38   | primary assembly |
+| `ensembl_mouse_grcm39_primary`         | mouse          | GRCm39   | primary assembly |
+| `ensembl_rat_grcr8_toplevel`           | rat            | GRCr8    | toplevel         |
+| `ensembl_macaque_mmul10_toplevel`      | rhesus macaque | Mmul_10  | toplevel         |
+
+Rat and macaque use Ensembl's `toplevel` DNA file because those assemblies do not publish a
+separate `primary_assembly` FASTA. Genomic DNA references are large (~700 MB–3 GB); the first
+run downloads and caches them under `~/.cache/sirnaforge/genomes/`.
 
 ### Backend choice
 

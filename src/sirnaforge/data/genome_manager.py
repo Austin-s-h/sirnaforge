@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .transcriptome_manager import TranscriptomeManager, TranscriptomeSource
+from .ensembl_references import build_genome_sources
+from .transcriptome_manager import TranscriptomeManager
 
 
 class GenomeManager(TranscriptomeManager):
@@ -13,20 +14,17 @@ class GenomeManager(TranscriptomeManager):
 
     SOURCE_LABEL = "genome"
 
-    SOURCES = {
-        "ensembl_human_hg38_primary": TranscriptomeSource(
-            name="ensembl_human_hg38_primary",
-            url=(
-                "https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/dna/"
-                "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
-            ),
-            species="human",
-            format="fasta",
-            compressed=True,
-            description="Ensembl human GRCh38 primary assembly genomic reference",
-        ),
-        # TODO: Add other genomes...
-    }
+    # Genome DNA sources are generated from the shared Ensembl assembly table
+    # (sirnaforge.data.ensembl_references), matching the transcriptome/miRNA species
+    # set (human, mouse, rat, macaque). The human key is preserved as
+    # "ensembl_human_hg38_primary" for backward compatibility with the ZFN default,
+    # CLI help, and existing caches. Rat/macaque use dna.toplevel (Ensembl does not
+    # publish dna.primary_assembly for those assemblies).
+    #
+    # NOTE: genomic DNA FASTAs are large (~700 MB - 3 GB). Building a BWA-MEM2 index
+    # over a full mammalian genome needs substantial RAM/disk; callers that do not
+    # need an index (e.g. ZFN search) should pass build_index=False.
+    SOURCES = build_genome_sources()
 
     def __init__(
         self,
