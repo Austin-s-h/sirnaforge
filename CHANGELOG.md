@@ -25,6 +25,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reference table. Rat/macaque use Ensembl's `dna.toplevel` file (verified: those assemblies do
   not publish `dna.primary_assembly`). Transcriptome cDNA keys/URLs (and their cache keys) are
   unchanged, so existing caches remain valid.
+## [0.5.0] - 2026-07-21
+
+Minor version bump: the miRNA seed-hit fix changes the reported hit census (previously-counted
+non-seed perfect matches are no longer hits), so results are not identical to 0.4.x.
+
+### Fixed
+
+- **miRNA seed hits are now scoped to the seed region.** `run_mirna_seed_analysis` previously
+  copied all raw alignments into the filtered output (`df_filtered = df_raw.copy()`), so perfect
+  guide-seed matches anywhere in a miRNA — including the 3′ region — were counted as hits,
+  inflating `total_hits`/`mirna_hits_0mm_seed`. A raw alignment is now counted as a hit only when
+  the guide seed lands on the miRNA's own seed region (0-based `coord == seed_start - 1`);
+  non-seed matches are retained in the `*_raw` outputs but excluded from filtered hits.
+- **Seed-mismatch coordinate frame.** Mismatch positions from the seed scanners were window-relative
+  (`1..len(seed)`) but filtered with the guide-relative `seed_start..seed_end` threshold, so a
+  mismatch at guide position 2 was dropped and the hit mislabeled a perfect seed. Window positions
+  are now mapped onto guide coordinates in all three scan paths (exhaustive, pyahocorasick, BWA).
+
+### Changed
+
+- Raised the max analyzable guide/passenger length from 23 nt to 40 nt (`SiRNACandidate`), so longer
+  observed species (e.g. Dicer 3′ read-through isoforms) can be scored. A validator warns above the
+  23 nt recommended biological range; `DesignParameters.sirna_length` (what the tool _designs_) stays
+  capped at 23.
+- Off-target hit reporting is now exhaustive by default: `_mirna_max_hits()` returns `None` (no cap),
+  and the default `max_hits` for `BwaAnalyzer`, `run_bwa_alignment_analysis`, and
+  `run_comprehensive_offtarget_analysis` is `None` instead of `10000`. `SIRNAFORGE_MIRNA_MAX_HITS`
+  can still impose a cap. A silent cap biased downstream hit counts.
+
+### Housekeeping
+
+- Cleared embedded execution outputs from `notebooks/zfn_backend_runtime_comparison.ipynb`
+  (~1 MB → 68 KB); benchmark methodology preserved.
 
 ## [0.4.3] - 2026-03-22
 
