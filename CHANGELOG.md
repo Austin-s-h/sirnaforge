@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-21
+
+### Added
+
+- **Multi-species genome references.** Genome (DNA) references now cover human, mouse, rat, and
+  macaque, matching the transcriptome/miRNA species set. Previously only
+  `ensembl_human_hg38_primary` was available, so ZFN off-target search could only use a human
+  search space. New keys: `ensembl_mouse_grcm39_primary`, `ensembl_rat_grcr8_toplevel`,
+  `ensembl_macaque_mmul10_toplevel`. The human key is unchanged for backward compatibility.
+- New `sirnaforge.data.ensembl_references` module: a single Ensembl assembly table generates both
+  the transcriptome cDNA and genome DNA `SOURCES`, so adding a species is a one-line change.
+
+### Changed
+
+- `--zfn-search-space` CLI help now lists the built-in genome keys; `docs/zfn_module.md` documents
+  the reference table. Rat/macaque use Ensembl's `dna.toplevel` file (verified: those assemblies do
+  not publish `dna.primary_assembly`). Transcriptome cDNA keys/URLs (and their cache keys) are
+  unchanged, so existing caches remain valid.
 ## [0.5.0] - 2026-07-21
 
 Minor version bump: the miRNA seed-hit fix changes the reported hit census (previously-counted

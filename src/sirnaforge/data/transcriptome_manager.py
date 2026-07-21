@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .ensembl_references import build_transcriptome_sources
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 
 logger = logging.getLogger(__name__)
@@ -34,41 +35,11 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     SOURCE_LABEL = "transcriptome"
 
-    # Common transcriptome sources
-    SOURCES = {
-        "ensembl_human_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz",
-            species="human",
-            format="fasta",
-            compressed=True,
-            description="Ensembl human cDNA sequences (GRCh38)",
-        ),
-        "ensembl_mouse_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/mus_musculus/cdna/Mus_musculus.GRCm39.cdna.all.fa.gz",
-            species="mouse",
-            format="fasta",
-            compressed=True,
-            description="Ensembl mouse cDNA sequences (GRCm39)",
-        ),
-        "ensembl_rat_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
-            species="rat",
-            format="fasta",
-            compressed=True,
-            description="Ensembl rat cDNA sequences (GRCr8)",
-        ),
-        "ensembl_macaque_cdna": TranscriptomeSource(
-            name="ensembl_cdna",
-            url="https://ftp.ensembl.org/pub/current_fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
-            species="macaque",
-            format="fasta",
-            compressed=True,
-            description="Ensembl rhesus macaque cDNA sequences (Mmul_10)",
-        ),
-    }
+    # Common transcriptome sources, generated from the shared Ensembl assembly table
+    # (sirnaforge.data.ensembl_references) so cDNA and genome references stay in lockstep
+    # and adding a species is a single table entry. Keys/URLs are unchanged from the
+    # previously hand-written entries (ensembl_human_cdna, ensembl_mouse_cdna, ...).
+    SOURCES = build_transcriptome_sources()
 
     def __init__(
         self,
