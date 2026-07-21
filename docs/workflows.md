@@ -11,6 +11,7 @@ sirnaforge workflow TP53 --output-dir results/
 ```
 
 (output-structure)=
+
 ### Output Structure
 
 ```
@@ -118,9 +119,70 @@ Inside the container, Nextflow uses the `local` profile automatically—no Docke
 :::
 
 (nextflow-pipeline)=
+
 ## Nextflow Pipeline
 
 siRNAforge runs off-target analysis via an embedded Nextflow workflow.
+
+### Off-target analysis flow (mRNA + miRNA seed)
+
+The `SIRNA_OFFTARGET_ANALYSIS` subworkflow runs two independent scans over the same
+candidate FASTA and aggregates them into a single report. The **miRNA seed scan always
+runs** (lightweight, no reference download beyond the miRNA database); the
+**transcriptome/genome scan is conditional** on a reference being supplied via
+`--genome_fastas`, `--genome_indices`, or `--transcriptome_indices`.
+
+```{mermaid}
+flowchart TD
+    IN["Candidate guide FASTA<br/>(from design, or --input-candidates-fasta)"]
+
+    IN --> MIR
+    IN --> GATE
+
+    subgraph MIRNA["miRNA seed scan — ALWAYS runs (MIRNA_SEED_ANALYSIS)"]
+        direction TB
+        MIR["run_mirna_seed_analysis()<br/>default db: mirgenedb<br/>default species: chicken,pig,rat,mouse,human,macaque"]
+        MIR --> SEED["Extract guide seed = guide positions 2-8"]
+        SEED --> SCAN["Scan seed across every miRNA<br/>backend: pyahocorasick (exhaustive_python oracle)"]
+        SCAN --> RAW["RAW alignments: seed match at any offset<br/>(*_mirna_analysis_raw.tsv)"]
+        RAW --> FILT{"guide seed on the miRNA's<br/>own seed region?<br/>0-based coord == seed_start-1"}
+        FILT -->|yes| HIT["Counted hit<br/>(*_mirna_analysis.tsv, total_hits)"]
+        FILT -->|"no (e.g. 3' region)"| RAWONLY["Retained in *_raw only,<br/>NOT a hit"]
+    end
+
+    GATE{"--genome_fastas /<br/>--genome_indices /<br/>--transcriptome_indices<br/>provided?"}
+    GATE -->|no| SKIP["Transcriptome scan skipped<br/>(miRNA-only run)"]
+    GATE -->|yes| GENOME
+
+    subgraph GENOME["Transcriptome/genome scan — CONDITIONAL"]
+        direction TB
+        BIDX["BUILD_BWA_INDEX<br/>(only for FASTA inputs; indices reused as-is)"]
+        BIDX --> OT["OFFTARGET_ANALYSIS per species<br/>run_bwa_alignment_analysis()<br/>one BWA-MEM2 session, all candidates"]
+        OT --> GHITS["Per-species alignments + seed_mismatches<br/>(species_analysis.tsv)"]
+    end
+
+    HIT --> AGG
+    RAWONLY --> AGG
+    GHITS --> AGG
+    SKIP --> AGG
+
+    subgraph AGGREGATE["AGGREGATE_RESULTS"]
+        direction TB
+        AGG["aggregate_results_cli()"]
+        AGG --> AMIR["aggregate_mirna_results()"]
+        AGG --> AGEN["aggregate_offtarget_results()<br/>(miRNA files excluded)"]
+    end
+
+    AMIR --> OUT["combined_*.tsv / combined*.json<br/>final_summary.txt"]
+    AGEN --> OUT
+```
+
+Both scans compute `seed_mismatches` over the same seed window (guide positions 2–8), but
+they answer different questions: the transcriptome scan finds where a guide aligns in the
+target transcriptome (BWA-MEM2), while the miRNA scan asks whether a guide's seed mimics a
+known miRNA seed. Only seed-region matches count as miRNA hits; perfect matches elsewhere in
+a miRNA are kept as raw records for transparency but are not off-target hits. See
+[Models & Scoring](models_and_scoring.md) for the scoring details.
 
 ```bash
 # Full workflow (includes embedded Nextflow off-target analysis)
