@@ -1,3 +1,5 @@
+
+
 <div align="center">
   <img src="docs/branding/sirnaforge_logo_4.png" alt="siRNAforge Logo" width="400"/>
 
@@ -95,7 +97,7 @@ uv run sirnaforge workflow TP53 --output-dir results
 **What you get:**
 - Transcript sequences from Ensembl
 - Thermodynamically-scored siRNA candidates
-- Off-target analysis (Docker only)
+- Off-target analysis (Docker recommended; requires local bioinformatics tools otherwise)
 - Ranked results in CSV and FASTA formats
 - Automatic Ensembl transcriptome indexing across human, mouse, rat, and rhesus macaque (override with `--transcriptome-fasta`, or supply design-ready transcripts via `--input-fasta`)
 - A `reference_summary` block in `logs/workflow_summary.json` that records whether each reference was explicit, defaulted, or disabled
