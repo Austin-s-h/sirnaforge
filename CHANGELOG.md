@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "HTTP 503: Access denied" errors on networks that block direct outbound access to Ensembl/NCBI
   but allow it via an authenticated proxy.
 
+- **Embedded Nextflow off-target pipeline failed to start under Nextflow's strict config parser
+  (`ConfigParserV2`, Nextflow 24+).** The bundled `nextflow.config` defined a `check_max()` Groovy
+  method to cap per-process resource requests, which the strict parser rejects (and, once
+  converted to a closure, still can't resolve from nested `withLabel:` scopes). Replaced the
+  helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
+  remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
+  closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
+
 ## [0.5.1] - 2026-07-21
 
 This release adds the Zinc Finger Nuclease (ZFN) design/off-target module, multi-species genome
