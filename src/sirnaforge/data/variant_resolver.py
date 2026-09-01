@@ -225,7 +225,9 @@ class VariantResolver:
             return None
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True
+            ) as session:
                 # Search ClinVar
                 search_url = f"{base_url}/esearch.fcgi"
                 params: dict[str, str] = {"db": "clinvar", "term": search_term, "retmode": "json", "retmax": "1"}
@@ -317,7 +319,9 @@ class VariantResolver:
         base_url = "https://rest.ensembl.org"
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True
+            ) as session:
                 headers = {"Content-Type": "application/json"}
 
                 # Build API endpoint based on query type

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ensembl/RefSeq/ClinVar HTTP clients now honor `HTTP_PROXY`/`HTTPS_PROXY` environment
+  variables.** All `aiohttp.ClientSession` instances in `sirnaforge.data.base`,
+  `sirnaforge.data.transcript_annotation`, and `sirnaforge.data.variant_resolver` were created
+  without `trust_env=True`, so requests bypassed configured corporate proxies entirely (unlike
+  `curl`/`requests`, `aiohttp` does not read proxy env vars by default). This caused misleading
+  "HTTP 503: Access denied" errors on networks that block direct outbound access to Ensembl/NCBI
+  but allow it via an authenticated proxy.
+
 ## [0.5.1] - 2026-07-21
 
 This release adds the Zinc Finger Nuclease (ZFN) design/off-target module, multi-species genome
