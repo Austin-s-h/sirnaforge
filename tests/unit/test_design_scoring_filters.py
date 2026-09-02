@@ -6,14 +6,23 @@ miRNA-mode composite score ceiling.
 """
 
 import importlib.util
+import inspect
 
 import pytest
 from Bio import SeqIO
 from Bio.Seq import Seq
+from pydantic import ValidationError
 
 from sirnaforge.core.design import DUPLEX_DG_PER_NT_STRONG, DUPLEX_DG_PER_NT_WEAK, SiRNADesigner
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
-from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
+from sirnaforge.models.sirna import (
+    DEFAULT_MIN_ASYMMETRY_SCORE,
+    EMPIRICAL_SCORE_MAX,
+    EMPIRICAL_SCORE_MIN,
+    DesignParameters,
+    FilterCriteria,
+    SiRNACandidate,
+)
 
 VIENNA_AVAILABLE = importlib.util.find_spec("RNA") is not None
 
@@ -101,6 +110,105 @@ def test_duplex_score_does_not_saturate(realistic_transcripts_fasta):
     assert len(scores) > 100, "expected a substantial candidate pool"
     assert not any(score == 1.0 for score in scores), "duplex score is clamped at the strong edge"
     assert max(scores) - min(scores) > 0.3, "duplex score does not discriminate"
+
+
+@pytest.mark.unit
+def test_empirical_score_range_matches_the_declared_bounds():
+    """The declared EMPIRICAL_SCORE_MIN/MAX must match what the rule can produce.
+
+    `min_empirical_score` is bounded by those constants, so drift between them and
+    the rule would reintroduce an unsatisfiable threshold.
+    """
+    designer = SiRNADesigner(DesignParameters())
+    middle = "CGTACGTACGTACGTAC"  # 17 nt between position 1 and position 19
+    scores = {
+        designer._calculate_empirical_score(_candidate(f"{first}{middle}{last}")) for first in "ACGT" for last in "ACGT"
+    }
+
+    assert min(scores) == pytest.approx(EMPIRICAL_SCORE_MIN)
+    assert max(scores) == pytest.approx(EMPIRICAL_SCORE_MAX)
+
+
+@pytest.mark.unit
+def test_empirical_score_credits_t_as_the_dna_spelling_of_u():
+    """Guides are DNA, so T at position 19 must earn the A/U bonus."""
+    designer = SiRNADesigner(DesignParameters())
+    middle = "CGTACGTACGTACGTAC"
+
+    with_t = designer._calculate_empirical_score(_candidate(f"G{middle}T"))
+    with_a = designer._calculate_empirical_score(_candidate(f"G{middle}A"))
+    with_c = designer._calculate_empirical_score(_candidate(f"G{middle}C"))
+
+    assert with_t == pytest.approx(with_a)
+    assert with_t > with_c
+
+
+@pytest.mark.unit
+def test_unsatisfiable_empirical_threshold_is_rejected():
+    """A threshold above the attainable maximum must fail loudly, not reject everything."""
+    with pytest.raises(ValidationError):
+        FilterCriteria(min_empirical_score=EMPIRICAL_SCORE_MAX + 0.01)
+
+
+@pytest.mark.unit
+def test_asymmetry_threshold_default_is_shared():
+    """FilterCriteria and the thermodynamics gate must not drift apart."""
+    gate_default = inspect.signature(ThermodynamicCalculator.is_thermodynamically_favorable).parameters["threshold"]
+
+    assert FilterCriteria().min_asymmetry_score == DEFAULT_MIN_ASYMMETRY_SCORE
+    assert gate_default.default == DEFAULT_MIN_ASYMMETRY_SCORE
+
+
+@pytest.mark.unit
+def test_low_asymmetry_label_tracks_the_asymmetry_score(realistic_transcripts_fasta):
+    """The LOW_ASYMMETRY label must be consistent with the column it is named after."""
+    result = _design_gaphd(realistic_transcripts_fasta)
+    threshold = result.parameters.filters.min_asymmetry_score
+    labelled = [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_ASYMMETRY]
+    passing = [c for c in result.candidates if c.passes_filters is True]
+
+    assert labelled, "expected some candidates to fail the asymmetry gate"
+    assert passing, "expected some candidates to pass"
+    assert all(c.asymmetry_score < threshold for c in labelled)
+    assert all(c.asymmetry_score >= threshold for c in passing)
+
+
+@pytest.mark.unit
+def test_low_empirical_label_tracks_the_empirical_score(realistic_transcripts_fasta):
+    """The empirical rule gets its own status, gated on its own threshold."""
+    result = _design_gaphd(realistic_transcripts_fasta)
+    threshold = result.parameters.filters.min_empirical_score
+    labelled = [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_EMPIRICAL_SCORE]
+
+    assert labelled, "expected some candidates to fail the empirical gate"
+    assert all(c.component_scores["empirical"] < threshold for c in labelled)
+    assert all(c.component_scores["empirical"] >= threshold for c in result.candidates if c.passes_filters is True)
+
+
+@pytest.mark.unit
+def test_pass_is_no_longer_decided_by_two_nucleotides(realistic_transcripts_fasta):
+    """Eligibility must not reduce to `guide[0] in {G,C} and guide[18] == 'A'`.
+
+    That two-nucleotide rule reproduced the emitted labels exactly while
+    min_asymmetry_score was applied to the empirical score.
+    """
+    result = _design_gaphd(realistic_transcripts_fasta)
+    passing = [c for c in result.candidates if c.passes_filters is True]
+
+    assert passing
+    assert any(c.guide_sequence[18] != "A" for c in passing), "pass still requires A at guide position 19"
+    assert any(c.guide_sequence[0] not in ("G", "C") for c in passing), "pass still requires G/C at position 1"
+
+
+@pytest.mark.unit
+def test_new_filter_label_survives_csv_schema_validation(realistic_transcripts_fasta, tmp_path):
+    """LOW_EMPIRICAL_SCORE must be registered with the candidate CSV schema."""
+    result = _design_gaphd(realistic_transcripts_fasta)
+    output = tmp_path / "candidates.csv"
+
+    validated = result.save_csv(str(output))
+
+    assert "LOW_EMPIRICAL_SCORE" in set(validated["passes_filters"])
 
 
 @pytest.mark.unit

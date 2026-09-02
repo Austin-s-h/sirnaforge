@@ -10,7 +10,13 @@ from Bio.Seq import Seq
 
 from sirnaforge import __version__
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
-from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
+from sirnaforge.models.sirna import (
+    EMPIRICAL_SCORE_MAX,
+    EMPIRICAL_SCORE_MIN,
+    DesignParameters,
+    DesignResult,
+    SiRNACandidate,
+)
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
 # Duplex ΔG scales with duplex length, so it is normalised per nucleotide before
@@ -259,6 +265,7 @@ class SiRNADesigner:
             access_score = self._calculate_accessibility_score(candidate)
             ot_score = self._calculate_off_target_score(candidate)
             empirical_score = self._calculate_empirical_score(candidate)
+            self._apply_score_filters(candidate, asym_score, empirical_score)
 
             # Optional melting temperature estimation (rough)
             tm_c = float("nan")
@@ -402,17 +409,7 @@ class SiRNADesigner:
 
             # Accessibility score: 1 - paired_fraction
             # Flag excessive pairing per filter threshold
-            try:
-                if (
-                    hasattr(_ModelCandidate, "FilterStatus")
-                    and paired_fraction is not None
-                    and paired_fraction > self.parameters.filters.max_paired_fraction
-                    and candidate.passes_filters is True
-                ):
-                    candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
-            except (AttributeError, ValueError, TypeError):  # nosec B110 acceptable narrow handling
-                # Ignore unexpected attribute/value issues; filtering status remains unchanged.
-                pass
+            self._flag_excess_pairing(candidate, paired_fraction)
             return 1.0 - paired_fraction
 
         except ImportError:
@@ -423,16 +420,13 @@ class SiRNADesigner:
             # Moderate AT content suggests better accessibility
             paired_fraction = abs(at_content - 0.5) * 2.0  # heuristic inverse
             candidate.paired_fraction = paired_fraction
-            try:
-                if (
-                    hasattr(_ModelCandidate, "FilterStatus")
-                    and paired_fraction > self.parameters.filters.max_paired_fraction
-                    and candidate.passes_filters is True
-                ):
-                    candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
-            except (AttributeError, ValueError, TypeError):  # nosec B110
-                pass
+            self._flag_excess_pairing(candidate, paired_fraction)
             return 1.0 - paired_fraction
+
+    def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
+        """Flag a candidate whose guide is too structured to be accessible."""
+        if candidate.passes_filters is True and paired_fraction > self.parameters.filters.max_paired_fraction:
+            candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
         """Calculate off-target score using simplified analysis."""
@@ -453,35 +447,46 @@ class SiRNADesigner:
         return math.exp(-penalty / 50)
 
     def _calculate_empirical_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate empirical score using Reynolds et al. rules (simplified)."""
-        guide = candidate.guide_sequence
+        """Calculate empirical score using Reynolds et al. rules (simplified).
+
+        Guides are stored as DNA, so the sequence is read as RNA (T is U) before the
+        position-19 test; otherwise a T there never earned the A/U bonus. The
+        attainable range is EMPIRICAL_SCORE_MIN..EMPIRICAL_SCORE_MAX, not 0..1.
+        """
+        guide = candidate.guide_sequence.upper().replace("T", "U")
         score = 0.5  # Base score
 
         # Some simplified Reynolds rules
         # Prefer A/U at position 19 (3' end of guide)
-        if len(guide) >= 19 and guide[18] in ["A", "U"]:
+        if len(guide) >= 19 and guide[18] in ("A", "U"):
             score += 0.1
 
         # Prefer G/C at position 1
-        if guide[0] in ["G", "C"]:
+        if guide[0] in ("G", "C"):
             score += 0.1
 
         # Avoid C at position 19
         if len(guide) >= 19 and guide[18] == "C":
             score -= 0.1
 
-        result = max(0.0, min(1.0, score))
-        # Enforce minimal asymmetry threshold as a filter
-        try:
-            if (
-                hasattr(_ModelCandidate, "FilterStatus")
-                and result < self.parameters.filters.min_asymmetry_score
-                and candidate.passes_filters is True
-            ):
-                candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
-        except (AttributeError, ValueError, TypeError):  # nosec B110
-            pass
-        return result
+        return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
+
+    def _apply_score_filters(self, candidate: SiRNACandidate, asymmetry_score: float, empirical_score: float) -> None:
+        """Flag candidates failing the asymmetry or empirical-rule thresholds.
+
+        Each threshold gates the quantity it is named after: min_asymmetry_score
+        gates the thermodynamic asymmetry score, min_empirical_score gates the
+        empirical design-rule score. Only the first failure is recorded, matching
+        the earlier GC / poly-run / excess-pairing gates.
+        """
+        if candidate.passes_filters is not True:
+            return
+
+        filters = self.parameters.filters
+        if not ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score):
+            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
+        elif empirical_score < filters.min_empirical_score:
+            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE
 
     def _get_tool_versions(self) -> dict[str, str]:
         """Get versions of tools used in the analysis."""

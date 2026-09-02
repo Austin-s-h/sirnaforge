@@ -4,7 +4,7 @@ import RNA
 from Bio.Seq import Seq
 from Bio.SeqUtils import MeltingTemp
 
-from sirnaforge.models.sirna import SiRNACandidate
+from sirnaforge.models.sirna import DEFAULT_MIN_ASYMMETRY_SCORE, SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -158,10 +158,21 @@ class ThermodynamicCalculator:
         )
         return float(tm)
 
-    def is_thermodynamically_favorable(self, candidate: SiRNACandidate, threshold: float = 0.5) -> bool:
+    @staticmethod
+    def meets_asymmetry_threshold(asymmetry_score: float, threshold: float) -> bool:
+        """Check an already-computed asymmetry score against a threshold.
+
+        Callers that have just computed the score use this instead of
+        :meth:`is_thermodynamically_favorable` to avoid re-folding both duplex ends.
+        """
+        return asymmetry_score >= threshold
+
+    def is_thermodynamically_favorable(
+        self, candidate: SiRNACandidate, threshold: float = DEFAULT_MIN_ASYMMETRY_SCORE
+    ) -> bool:
         """Check if candidate meets thermodynamic asymmetry threshold."""
         _, _, asymmetry_score = self.calculate_asymmetry_score(candidate)
-        return asymmetry_score >= threshold
+        return self.meets_asymmetry_threshold(asymmetry_score, threshold)
 
     def calculate_secondary_structure(self, sequence: str) -> tuple[str, float, float]:
         """Calculate secondary structure for a sequence.

@@ -201,6 +201,7 @@ class SiRNACandidateSchema(DataFrameModel):
             "POLY_RUNS",
             "EXCESS_PAIRING",
             "LOW_ASYMMETRY",
+            "LOW_EMPIRICAL_SCORE",
             "TRANSCRIPTOME_PERFECT_MATCH",
             "TRANSCRIPTOME_HITS_1MM",
             "TRANSCRIPTOME_HITS_2MM",

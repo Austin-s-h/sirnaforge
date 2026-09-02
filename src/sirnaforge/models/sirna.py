@@ -25,6 +25,18 @@ MIN_GUIDE_LEN = 19
 RECOMMENDED_MAX_GUIDE_LEN = 23
 ENGINE_MAX_GUIDE_LEN = 40
 
+# Default RISC-loading asymmetry gate, shared with
+# ThermodynamicCalculator.is_thermodynamically_favorable so the two cannot drift.
+DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
+
+# Attainable range of SiRNADesigner._calculate_empirical_score. The simplified
+# Reynolds rule adjusts a 0.5 base score by +/-0.1 per criterion, so it can never
+# reach 1.0; min_empirical_score is bounded by these so an unsatisfiable
+# threshold fails at construction instead of rejecting every candidate.
+EMPIRICAL_SCORE_MIN = 0.4
+EMPIRICAL_SCORE_MAX = 0.7
+DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
+
 
 class FilterCriteria(BaseModel):
     """Quality filters for siRNA candidate selection based on thermodynamic and empirical criteria."""
@@ -47,12 +59,25 @@ class FilterCriteria(BaseModel):
 
     # Thermodynamic asymmetry filters
     min_asymmetry_score: float = Field(
-        default=0.65,
+        default=DEFAULT_MIN_ASYMMETRY_SCORE,
         ge=0.3,
         le=1,
         description=(
             "Minimum thermodynamic asymmetry score for guide strand selection into RISC. "
+            "Applied to SiRNACandidate.asymmetry_score. "
             "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading."
+        ),
+    )
+
+    # Empirical (simplified Reynolds) design-rule filter
+    min_empirical_score: float = Field(
+        default=DEFAULT_MIN_EMPIRICAL_SCORE,
+        ge=EMPIRICAL_SCORE_MIN,
+        le=EMPIRICAL_SCORE_MAX,
+        description=(
+            "Minimum empirical design-rule score. Applied to the 'empirical' component score, "
+            f"whose attainable range is {EMPIRICAL_SCORE_MIN}-{EMPIRICAL_SCORE_MAX}; the default rejects only "
+            "candidates penalised at guide position 19 with no G/C at position 1."
         ),
     )
 
@@ -387,6 +412,7 @@ class SiRNACandidate(BaseModel):
         POLY_RUNS = "POLY_RUNS"
         EXCESS_PAIRING = "EXCESS_PAIRING"
         LOW_ASYMMETRY = "LOW_ASYMMETRY"
+        LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"
         DIRTY_CONTROL = "DIRTY_CONTROL"
 
     # Either True (passed) or one of the FilterStatus reasons (failed)

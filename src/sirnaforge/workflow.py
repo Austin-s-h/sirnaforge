@@ -316,6 +316,7 @@ class SiRNAWorkflow:
                 "max_poly_runs": dp.filters.max_poly_runs,
                 "max_paired_fraction": dp.filters.max_paired_fraction,
                 "min_asymmetry_score": dp.filters.min_asymmetry_score,
+                "min_empirical_score": dp.filters.min_empirical_score,
             },
             "scoring": {
                 "asymmetry": dp.scoring.asymmetry,
