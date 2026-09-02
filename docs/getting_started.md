@@ -65,7 +65,7 @@ siRNAforge surfaces the same thermodynamic metrics described in the code under `
 
 Typical “green zone” checkpoints:
 
-- `composite_score` ≥ 8 for top-tier candidates
+- `composite_score` — ranked 0-100; compare within a run rather than against a fixed cut-off
 - `asymmetry_score` ≥ 0.65 to ensure the guide strand loads into RISC
 - `gc_content` between 35–60% (optimal 40–55%)
 

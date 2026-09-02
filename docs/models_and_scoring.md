@@ -38,7 +38,7 @@ class SiRNACandidate(BaseModel):
 
     # Thermodynamic properties
     asymmetry_score: float     # RISC loading preference (optimal: ≥0.65)
-    duplex_stability: float    # ΔG in kcal/mol (optimal: -15 to -25)
+    duplex_stability: float    # ΔG in kcal/mol (fully paired 21mer: -32 to -43)
 
     # Secondary structure
     structure: str             # Dot-bracket notation
@@ -46,6 +46,7 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float     # Fraction paired bases (optimal: 0.4-0.6)
 
     # Off-target metrics
+    off_target_screened: bool  # False = never screened, so the counts below are unknown
     off_target_count: int      # Potential off-target sites (goal: ≤3)
     transcriptome_hits_0mm: int   # Perfect match hits
     transcriptome_hits_1mm: int   # 1-mismatch hits
@@ -62,6 +63,7 @@ class SiRNACandidate(BaseModel):
 #### Sequence Validation
 
 All sequences undergo validation:
+
 - **Allowed nucleotides**: A, T, C, G, U
 - **Length constraints**: 19-23 nucleotides (siRNA length)
 - **Strand matching**: Guide and passenger must be same length
@@ -109,14 +111,20 @@ class FilterCriteria(BaseModel):
     # Secondary structure
     max_paired_fraction: float = 0.6  # Prevent rigid structures
 
-    # Thermodynamic asymmetry
+    # Thermodynamic asymmetry -> gates asymmetry_score
     min_asymmetry_score: float = 0.65  # Guide strand selection
+
+    # Empirical design rules -> gates the empirical component score (range 0.4-0.7)
+    min_empirical_score: float = 0.5
+
+    # --- Reference ranges below: NOT enforced by SiRNADesigner (see issue #78) ---
 
     # MFE thresholds (kcal/mol)
     mfe_min: float = -8.0      # Too stable (more negative)
     mfe_max: float = -2.0      # Too unstable (less negative)
 
-    # Duplex stability (kcal/mol)
+    # Duplex stability (kcal/mol). Legacy window, predates the strand-orientation
+    # fix: a fully paired 21mer measures -32 to -43 kcal/mol.
     duplex_stability_min: float = -25.0
     duplex_stability_max: float = -15.0
 
@@ -124,13 +132,19 @@ class FilterCriteria(BaseModel):
     melting_temp_min: float = 60.0
     melting_temp_max: float = 78.0
 
-    # End asymmetry ΔΔG (kcal/mol)
+    # End asymmetry ΔΔG = dg_5p - dg_3p (kcal/mol)
     delta_dg_end_min: float = 2.0
     delta_dg_end_max: float = 6.0
 
     # Off-target limits
     max_off_target_count: int = 3
 ```
+
+Each threshold gates the quantity it is named after: `min_asymmetry_score` is compared
+against `asymmetry_score`, `min_empirical_score` against the empirical component score.
+`min_empirical_score` is bounded by the empirical rule's attainable range (0.4-0.7), so a
+value the rule can never reach is rejected at construction instead of silently failing
+every candidate.
 
 ### 1.4 OffTargetFilterCriteria
 
@@ -159,11 +173,11 @@ Relative weights for composite scoring:
 class ScoringWeights(BaseModel):
     """Component weights for composite scoring (must sum to 1.0)."""
 
-    asymmetry: float = 0.25      # Thermodynamic asymmetry
-    gc_content: float = 0.20     # GC optimization
-    accessibility: float = 0.25  # Target accessibility
-    off_target: float = 0.20     # Specificity
-    empirical: float = 0.10      # Position-specific rules
+    asymmetry: float = 0.15      # Thermodynamic asymmetry
+    gc_content: float = 0.15     # GC optimization
+    accessibility: float = 0.20  # Target accessibility
+    off_target: float = 0.30     # Design-time off-target proxy (see 2.6)
+    empirical: float = 0.20      # Position-specific rules
 ```
 
 ---
@@ -185,29 +199,41 @@ Where $w_i$ are configurable weights and $S_i$ are normalized component scores (
 RISC preferentially loads the strand with the less thermodynamically stable 5' end. The asymmetry score measures this preference:
 
 **Algorithm**:
-1. Calculate 5' end stability (positions 1-7): $\Delta G_{5'}$
-2. Calculate 3' end stability (positions 15-21): $\Delta G_{3'}$
+
+1. Calculate 5' end stability (guide 5' 7-mer against the passenger 3' end): $\Delta G_{5'}$
+2. Calculate 3' end stability (guide 3' 7-mer against the passenger 5' end): $\Delta G_{3'}$
 3. Compute asymmetry: $\text{raw} = \Delta G_{5'} - \Delta G_{3'}$
 4. Normalize: $\text{score} = \max(0, \min(1, (\text{raw} + 5) / 10))$
 
+The duplex is antiparallel, so each end window pairs with the _opposite_ end of the other
+strand. Both windows use the same width, so the two ΔG values stay comparable.
+
 **Implementation** (ViennaRNA):
+
 ```python
 def calculate_asymmetry_score(candidate) -> tuple[float, float, float]:
     """Returns (dg_5p, dg_3p, asymmetry_score)"""
-    dg_5p = calculate_end_stability(guide[:7], passenger[:7])
-    dg_3p = calculate_end_stability(guide[14:21], passenger[14:21])
+    window = min(END_WINDOW_NT, len(guide), len(passenger))
+    dg_5p = calculate_end_stability(guide[:window], passenger[-window:])
+    dg_3p = calculate_end_stability(guide[-window:], passenger[:window])
     asymmetry_raw = dg_5p - dg_3p
     asymmetry_score = max(0.0, min(1.0, (asymmetry_raw + 5.0) / 10.0))
     return dg_5p, dg_3p, asymmetry_score
 ```
 
+`passenger` is already the guide's complement, so neither strand is reverse-complemented
+before folding — ViennaRNA's `&` cofold notation pairs two 5'->3' strands antiparallel by
+itself. Reverse-complementing the passenger folded the guide against itself, which pinned
+`asymmetry_score` to exactly 0.5 for every 21 nt candidate (fixed in 0.5.2).
+
 **Interpretation**:
-| Score | Interpretation |
-|-------|----------------|
-| 0.8-1.0 | Excellent - strong guide strand bias |
-| 0.65-0.8 | Good - likely correct strand selection |
+
+| Score    | Interpretation                           |
+| -------- | ---------------------------------------- |
+| 0.8-1.0  | Excellent - strong guide strand bias     |
+| 0.65-0.8 | Good - likely correct strand selection   |
 | 0.5-0.65 | Moderate - mixed strand loading possible |
-| <0.5 | Poor - passenger strand may dominate |
+| <0.5     | Poor - passenger strand may dominate     |
 
 ### 2.3 GC Content Score
 
@@ -218,6 +244,7 @@ GC content affects duplex stability and target accessibility. The scoring uses a
 $$\text{GC\_score} = \exp\left(-\left(\frac{\text{GC} - 40}{10}\right)^2\right)$$
 
 **Implementation**:
+
 ```python
 def _calculate_gc_score(gc_content: float) -> float:
     """Gaussian penalty around 40% GC."""
@@ -225,33 +252,42 @@ def _calculate_gc_score(gc_content: float) -> float:
 ```
 
 **Interpretation**:
-| GC Range | Effect |
-|----------|--------|
-| <35% | Unstable duplex, poor RISC loading |
-| 35-40% | Acceptable, monitor stability |
-| **40-55%** | **Optimal range** |
-| 55-60% | Acceptable, may reduce accessibility |
-| >60% | Overly stable, poor target release |
+
+| GC Range   | Effect                               |
+| ---------- | ------------------------------------ |
+| <35%       | Unstable duplex, poor RISC loading   |
+| 35-40%     | Acceptable, monitor stability        |
+| **40-55%** | **Optimal range**                    |
+| 55-60%     | Acceptable, may reduce accessibility |
+| >60%       | Overly stable, poor target release   |
 
 ### 2.4 Duplex Stability Score
 
 **Research basis**: Naito et al. (2009), Ichihara et al. (2017)
 
-Duplex formation ΔG affects RISC loading efficiency. Score normalized from ΔG range [-40, -5] kcal/mol:
+Duplex formation ΔG affects RISC loading efficiency. ΔG scales with duplex length, so it
+is normalised per nucleotide before scoring: -2.1 kcal/mol/nt maps to 1.0, -1.4 to 0.0.
 
-$$\text{score} = \frac{-\Delta G - 5}{40 - 5}$$
+$$\text{score} = \frac{-1.4 - \Delta G / L}{-1.4 - (-2.1)}$$
 
 **Implementation**:
+
 ```python
 def _calculate_duplex_score(candidate) -> tuple[float, float]:
     """Returns (normalized_score, dg_value)"""
     dg = calculate_duplex_stability(guide, passenger)
-    dg_clamped = max(-40.0, min(-5.0, dg))
-    score = (-(dg_clamped) - 5.0) / (40.0 - 5.0)
+    dg_per_nt = dg / len(candidate.guide_sequence)
+    span = DUPLEX_DG_PER_NT_WEAK - DUPLEX_DG_PER_NT_STRONG
+    score = (DUPLEX_DG_PER_NT_WEAK - dg_per_nt) / span
     return max(0.0, min(1.0, score)), dg
 ```
 
-**Optimal range**: -15 to -25 kcal/mol
+**Measured range** (ViennaRNA, 37 °C): a fully paired 21mer duplex is -32 to -43 kcal/mol,
+i.e. -1.55 to -2.06 kcal/mol/nt. The fixed [-40, -5] kcal/mol window used before 0.5.2 was
+calibrated against the pre-fix self-fold ΔG; against real duplex ΔG it put 41% of
+candidates at exactly 1.0, and it rewarded longer designs for their length alone.
+
+`duplex_stability_score` is reported but does not feed `composite_score`.
 
 ### 2.5 Target Accessibility Score
 
@@ -262,6 +298,7 @@ Target site accessibility affects siRNA efficacy. Score based on guide strand se
 $$\text{Accessibility} = 1 - \text{paired\_fraction}$$
 
 **Implementation** (ViennaRNA):
+
 ```python
 def _calculate_accessibility_score(candidate) -> float:
     """Accessibility inversely related to secondary structure."""
@@ -278,6 +315,7 @@ Specificity prediction based on internal repetitive sequences:
 $$\text{OT\_score} = \exp\left(-\frac{\text{penalty}}{50}\right)$$
 
 **Implementation**:
+
 ```python
 def _calculate_off_target_score(candidate) -> float:
     """Penalty for repetitive 7-mer sequences."""
@@ -300,24 +338,31 @@ Position-specific sequence preferences:
 ```python
 def _calculate_empirical_score(candidate) -> float:
     """Simplified Reynolds rules."""
+    guide = candidate.guide_sequence.upper().replace("T", "U")  # guides are stored as DNA
     score = 0.5  # Base score
 
     # Prefer A/U at position 19 (3' end)
-    if guide[18] in ["A", "U"]:
+    if guide[18] in ("A", "U"):
         score += 0.1
 
     # Prefer G/C at position 1
-    if guide[0] in ["G", "C"]:
+    if guide[0] in ("G", "C"):
         score += 0.1
 
     # Avoid C at position 19
     if guide[18] == "C":
         score -= 0.1
 
-    return max(0.0, min(1.0, score))
+    return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
 ```
 
+The attainable range is **0.4-0.7**, not 0-1: three ±0.1 adjustments on a 0.5 base, and the
+A/U and C tests at position 19 are mutually exclusive. `min_empirical_score` is bounded by
+that range. Reading the guide as RNA matters — guides are stored as DNA, so before 0.5.2 a
+T at position 19 never earned the A/U bonus.
+
 **`[REVIEW NEEDED]`**: Additional Reynolds criteria could be implemented:
+
 - Position 10 preferences
 - A/U content in positions 15-19
 - Avoid GGG stretches
@@ -355,10 +400,15 @@ def _enumerate_candidates(sequence, transcript_id):
 
 Additional filters applied during scoring:
 
-| Filter | Condition | Rationale |
-|--------|-----------|-----------|
-| `EXCESS_PAIRING` | paired_fraction > 0.6 | Prevents rigid structures |
-| `LOW_ASYMMETRY` | asymmetry_score < min_asymmetry_score | Ensures guide strand selection |
+| Filter                | Condition                             | Rationale                              |
+| --------------------- | ------------------------------------- | -------------------------------------- |
+| `EXCESS_PAIRING`      | paired_fraction > 0.6                 | Prevents rigid structures              |
+| `LOW_ASYMMETRY`       | asymmetry_score < min_asymmetry_score | Ensures guide strand selection         |
+| `LOW_EMPIRICAL_SCORE` | empirical score < min_empirical_score | Position-specific sequence preferences |
+
+Only the first failure is recorded. Before 0.5.2, `LOW_ASYMMETRY` was assigned by comparing
+the _empirical_ score against `min_asymmetry_score`: it reported the wrong reason, and
+`asymmetry_score` was never gated at all.
 
 ### 3.3 Filter Status Codes
 
@@ -369,6 +419,7 @@ class FilterStatus(str, Enum):
     POLY_RUNS = "POLY_RUNS"          # Homopolymer runs exceed limit
     EXCESS_PAIRING = "EXCESS_PAIRING"    # Too much secondary structure
     LOW_ASYMMETRY = "LOW_ASYMMETRY"  # Poor thermodynamic asymmetry
+    LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"  # Fails the empirical design rules
     DIRTY_CONTROL = "DIRTY_CONTROL"  # Reserved for controls
 ```
 
@@ -379,17 +430,20 @@ class FilterStatus(str, Enum):
 ### 4.1 GC Content: 35-60%
 
 **Literature support**:
+
 - Reynolds et al. (2004): Optimal 30-52% for maximum silencing
 - Ui-Tei et al. (2004): Functional siRNAs have 35-65% GC
 - Jackson et al. (2006): Higher GC correlates with off-targets
 
 **Rationale**: Balance between:
+
 - **Lower bound (35%)**: Minimum duplex stability for RISC loading
 - **Upper bound (60%)**: Maximum to prevent over-stabilization and off-targeting
 
 ### 4.2 Asymmetry Score: ≥0.65
 
 **Literature support**:
+
 - Khvorova et al. (2003): Thermodynamic asymmetry determines strand selection
 - Schwarz et al. (2003): ΔΔG of 2+ kcal/mol ensures correct loading
 
@@ -398,6 +452,7 @@ class FilterStatus(str, Enum):
 ### 4.3 Poly-runs: ≤3 consecutive
 
 **Literature support**:
+
 - Jackson et al. (2003): AAAA runs associated with off-targets
 - Synthesis considerations: Long homopolymers cause synthesis issues
 
@@ -406,6 +461,7 @@ class FilterStatus(str, Enum):
 ### 4.4 MFE: -2 to -8 kcal/mol
 
 **Literature support**:
+
 - Tafer et al. (2008): Moderate structure optimal for target binding
 - Too stable (<-10): Impaired target access
 - Too unstable (>0): Poor duplex integrity
@@ -413,10 +469,12 @@ class FilterStatus(str, Enum):
 ### 4.5 Melting Temperature: 60-78°C
 
 **Literature support**:
+
 - Standard for mammalian cell culture at 37°C
 - Allows duplex stability while permitting RISC-mediated unwinding
 
 **`[REVIEW NEEDED]`**: Temperature thresholds may need adjustment for:
+
 - Plant cells (different optimal ranges)
 - In vivo applications (serum stability requirements)
 
@@ -449,14 +507,17 @@ class MiRNADesignConfig(BaseModel):
 ### 5.2 miRNA-Specific Scoring
 
 **Position 1 analysis**:
+
 - Argonaute preferentially loads strands with A/U at position 1
 - G:U wobble or mismatch at position 1 improves loading
 
 **Seed region (positions 2-8)**:
+
 - Critical for target recognition
 - Clean seed = lower off-target potential
 
 **3' Supplementary pairing (positions 13-16)**:
+
 - Contributes to target specificity
 - Lower stability preferred (more specific)
 
@@ -496,12 +557,12 @@ class MiRNAHit(BaseModel):
 
 ### 6.3 Supported miRNA Databases
 
-| Database | Description |
-|----------|-------------|
-| `mirgenedb` | High-confidence, manually curated |
-| `mirbase` | Comprehensive, all mature miRNAs |
-| `mirbase_high_conf` | miRBase high-confidence subset |
-| `targetscan` | miRNA family conservation data |
+| Database            | Description                       |
+| ------------------- | --------------------------------- |
+| `mirgenedb`         | High-confidence, manually curated |
+| `mirbase`           | Comprehensive, all mature miRNAs  |
+| `mirbase_high_conf` | miRBase high-confidence subset    |
+| `targetscan`        | miRNA family conservation data    |
 
 ---
 
@@ -532,12 +593,12 @@ class ChemicalModification(BaseModel):
 
 ### 7.3 Supported Modification Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `standard_2ome` | 2'-O-methyl at alternating positions |
-| `minimal_terminal` | Terminal modifications only |
-| `maximal_stability` | Full backbone modifications |
-| `none` | No modifications |
+| Pattern             | Description                          |
+| ------------------- | ------------------------------------ |
+| `standard_2ome`     | 2'-O-methyl at alternating positions |
+| `minimal_terminal`  | Terminal modifications only          |
+| `maximal_stability` | Full backbone modifications          |
+| `none`              | No modifications                     |
 
 ---
 
@@ -546,16 +607,19 @@ class ChemicalModification(BaseModel):
 **`[DOCUMENTATION NEEDED]`**: The following workflows exist but require detailed documentation:
 
 ### 8.1 Nextflow Pipeline
+
 - Multi-genome off-target analysis
 - BWA-MEM2 alignment parameters
 - Species-specific reference handling
 
 ### 8.2 ORF Validation
+
 - Start/stop codon detection
 - Frame shift analysis
 - Kozak sequence scoring
 
 ### 8.3 Transcript Retrieval
+
 - Ensembl/RefSeq/GENCODE integration
 - Isoform selection criteria
 - Sequence validation
@@ -564,54 +628,58 @@ class ChemicalModification(BaseModel):
 
 ## 9. References
 
-1. **Khvorova A, Reynolds A, Jayasena SD** (2003). Functional siRNAs and miRNAs exhibit strand bias. *Cell* 115(2):209-216.
+1. **Khvorova A, Reynolds A, Jayasena SD** (2003). Functional siRNAs and miRNAs exhibit strand bias. _Cell_ 115(2):209-216.
 
-2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). Asymmetry in the assembly of the RNAi enzyme complex. *Cell* 115(2):199-208.
+2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). Asymmetry in the assembly of the RNAi enzyme complex. _Cell_ 115(2):199-208.
 
-3. **Reynolds A, Leake D, Boese Q, Scaringe S, Marshall WS, Khvorova A** (2004). Rational siRNA design for RNA interference. *Nature Biotechnology* 22(3):326-330.
+3. **Reynolds A, Leake D, Boese Q, Scaringe S, Marshall WS, Khvorova A** (2004). Rational siRNA design for RNA interference. _Nature Biotechnology_ 22(3):326-330.
 
-4. **Ui-Tei K, Naito Y, Takahashi F, Haraguchi T, Ohki-Hamazaki H, Juni A, Ueda R, Saigo K** (2004). Guidelines for the selection of highly effective siRNA sequences for mammalian and chick RNA interference. *Nucleic Acids Research* 32(3):936-948.
+4. **Ui-Tei K, Naito Y, Takahashi F, Haraguchi T, Ohki-Hamazaki H, Juni A, Ueda R, Saigo K** (2004). Guidelines for the selection of highly effective siRNA sequences for mammalian and chick RNA interference. _Nucleic Acids Research_ 32(3):936-948.
 
-5. **Naito Y, Yoshimura J, Morishita S, Ui-Tei K** (2009). siDirect 2.0: updated software for designing functional siRNA with reduced seed-dependent off-target effect. *BMC Bioinformatics* 10:392.
+5. **Naito Y, Yoshimura J, Morishita S, Ui-Tei K** (2009). siDirect 2.0: updated software for designing functional siRNA with reduced seed-dependent off-target effect. _BMC Bioinformatics_ 10:392.
 
-6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2007). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. *Nucleic Acids Research* 35(18):e123.
+6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2007). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. _Nucleic Acids Research_ 35(18):e123.
 
-7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. *Nature Biotechnology* 26(5):578-583.
+7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. _Nature Biotechnology_ 26(5):578-583.
 
-8. **Jackson AL, Bartz SR, Schelter J, Kobayashi SV, Burchard J, Mao M, Li B, Cavet G, Linsley PS** (2003). Expression profiling reveals off-target gene regulation by RNAi. *Nature Biotechnology* 21(6):635-637.
+8. **Jackson AL, Bartz SR, Schelter J, Kobayashi SV, Burchard J, Mao M, Li B, Cavet G, Linsley PS** (2003). Expression profiling reveals off-target gene regulation by RNAi. _Nature Biotechnology_ 21(6):635-637.
 
 ---
 
 ## Appendix A: Default Parameter Summary
 
-| Parameter | Default | Range | Justification |
-|-----------|---------|-------|---------------|
-| `sirna_length` | 21 | 19-23 | Standard duplex length |
-| `gc_min` | 35.0 | 0-100 | Minimum stability |
-| `gc_max` | 60.0 | 0-100 | Maximum stability |
-| `max_poly_runs` | 3 | 1+ | Synthesis/specificity |
-| `max_paired_fraction` | 0.6 | 0-1 | Accessibility |
-| `min_asymmetry_score` | 0.65 | 0.3-1 | Strand selection |
-| `mfe_min` | -8.0 | kcal/mol | Structure stability |
-| `mfe_max` | -2.0 | kcal/mol | Structure stability |
-| `duplex_stability_min` | -25.0 | kcal/mol | Duplex formation |
-| `duplex_stability_max` | -15.0 | kcal/mol | Duplex formation |
-| `melting_temp_min` | 60.0 | °C | Mammalian cells |
-| `melting_temp_max` | 78.0 | °C | Mammalian cells |
-| `max_off_target_count` | 3 | 0+ | Specificity |
+| Parameter              | Default | Range    | Justification          |
+| ---------------------- | ------- | -------- | ---------------------- |
+| `sirna_length`         | 21      | 19-23    | Standard duplex length |
+| `gc_min`               | 35.0    | 0-100    | Minimum stability      |
+| `gc_max`               | 60.0    | 0-100    | Maximum stability      |
+| `max_poly_runs`        | 3       | 1+       | Synthesis/specificity  |
+| `max_paired_fraction`  | 0.6     | 0-1      | Accessibility          |
+| `min_asymmetry_score`  | 0.65    | 0.3-1    | Strand selection       |
+| `min_empirical_score`  | 0.5     | 0.4-0.7  | Position preferences   |
+| `mfe_min`              | -8.0    | kcal/mol | Structure stability    |
+| `mfe_max`              | -2.0    | kcal/mol | Structure stability    |
+| `duplex_stability_min` | -25.0   | kcal/mol | Duplex formation       |
+| `duplex_stability_max` | -15.0   | kcal/mol | Duplex formation       |
+| `melting_temp_min`     | 60.0    | °C       | Mammalian cells        |
+| `melting_temp_max`     | 78.0    | °C       | Mammalian cells        |
+| `max_off_target_count` | 3       | 0+       | Specificity            |
+
+`mfe_*`, `duplex_stability_*`, `melting_temp_*`, `delta_dg_end_*` and
+`max_off_target_count` are reference ranges: `SiRNADesigner` does not enforce them.
 
 ## Appendix B: Scoring Weight Defaults
 
-| Component | Weight | Rationale |
-|-----------|--------|-----------|
-| Asymmetry | 0.25 | Most predictive single factor |
-| GC Content | 0.20 | Stability/accessibility balance |
-| Accessibility | 0.25 | Target site availability |
-| Off-target | 0.20 | Specificity importance |
-| Empirical | 0.10 | Position-specific fine-tuning |
+| Component     | Weight | Rationale                       |
+| ------------- | ------ | ------------------------------- |
+| Asymmetry     | 0.15   | Most predictive single factor   |
+| GC Content    | 0.15   | Stability/accessibility balance |
+| Accessibility | 0.20   | Target site availability        |
+| Off-target    | 0.30   | Specificity importance          |
+| Empirical     | 0.20   | Position-specific fine-tuning   |
 
 ---
 
-*Document version: 1.0*
-*Last updated: Auto-generated from source code*
-*Review status: Initial draft - Expert review recommended*
+_Document version: 1.0_
+_Last updated: Auto-generated from source code_
+_Review status: Initial draft - Expert review recommended_

@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-02
+
+Correctness release for the candidate selection/scoring arm, from the audit in
+[#78](https://github.com/Austin-s-h/sirnaforge/issues/78). **Behavior note: every
+thermodynamic column and the pass/fail composition change. Results are not comparable with
+0.5.1 or earlier, and re-running an earlier design will select different candidates.** The
+off-target arm (transcriptome + miRNA seed) is unaffected.
+
+### Fixed
+
+- **Duplex thermodynamics folded each strand against itself.** `passenger_sequence` is
+  already the reverse complement of `guide_sequence`, but both ViennaRNA call sites
+  reverse-complemented it again, so `calculate_duplex_stability` folded `guide & guide` and
+  `_calculate_end_stability` folded `guide[:7] & guide[-7:]`. ViennaRNA's cofold MFE is
+  symmetric in its two strands, so at the default `sirna_length=21` the 5' and 3' end folds
+  were the _same_ pair of 7-mers: `dg_5p == dg_3p` exactly, which pinned `asymmetry_score`
+  to the constant 0.5 for every candidate and `delta_dg_end` to 0.0 (making the documented
+  +2 to +6 kcal/mol optimum unreachable). 23 nt designs desynchronised the two windows and
+  so produced a spread of wrong values instead of one wrong value. Measured on the 505
+  candidates of the packaged GAPDH transcript: duplex ΔG moves from -24.2..+0.2 (median
+  -8.8) to -43.3..-32.5 (median -39.2), and the 199 rows with a non-physical positive
+  `dg_5p`/`dg_3p` drop to zero. Both end windows now use the same width, which also fixes
+  19-20 nt guides comparing a 7-mer 5' window against a 5-mer 3' window.
+- **`LOW_ASYMMETRY` was assigned by testing the empirical score.**
+  `_calculate_empirical_score` compared its own value against
+  `filters.min_asymmetry_score`; `asymmetry_score` was computed, stored, exported, and never
+  gated. Since the simplified Reynolds rule caps at 0.70, the default threshold of 0.65
+  reduced eligibility to `guide[0] in {G,C} and guide[18] == "A"` — a two-nucleotide test
+  that rejected 84.6% of candidates as "low asymmetry", including ones the same run ranked
+  at the top. Each threshold now gates the quantity it is named after.
+- **The position-19 A/U test never matched T.** Guides are stored as DNA, so 141 of 505
+  GAPDH guides were denied a bonus they qualified for. The same defect affected three
+  miRNA-mode bonuses: `ago_start_bonus` skipped all 144 T-initiated guides; every A:U pair
+  at guide position 1 (257 of 505) was classified `mismatch` and collected an undeserved
+  `pos1_mismatch_bonus`, while the G:U wobble branch could never fire at all; and
+  `supp_13_16_score` counted no T, capping at 0.75 with 176 candidates stuck at 0.0.
+- **Melting temperature was a scaled ΔG.** `37 + 2 * -ΔG` cannot yield a physical Tm (that
+  needs ΔH and ΔS separately) and only looked plausible because it was reading the self-fold
+  ΔG; on corrected input it returns 102.0-123.6 °C (median 115.4). Replaced with Biopython's `Tm_NN` on the RNA
+  nearest-neighbour table of Xia et al. (1998) at 100 mM Na+ / 100 nM strands: 66.3-81.7 °C,
+  median 75.3 °C. These are physical values for a 21 bp RNA duplex; a quarter of them sit
+  above the advisory 60-78 °C reference range, which is not enforced.
+- **The miRNA composite score was clamped at its 100-point ceiling.** Bonuses of up to 0.25
+  were added to a 0-100 score and the sum truncated, flattening the top of the ranking —
+  nine GAPDH candidates tied at exactly 100.0. Now rescaled by the maximum attainable total,
+  which is monotone in `base + bonus` and so preserves the order the clamp was destroying.
+- **`duplex_stability_score` saturated.** Its [-40, -5] kcal/mol window was calibrated
+  against the self-fold ΔG; against real duplex ΔG it put 209 of 505 candidates at exactly
+  1.0. Now normalised per nucleotide (-2.1 kcal/mol/nt -> 1.0, -1.4 -> 0.0), which also
+  stops longer designs scoring higher for their length alone. Reported only; it does not
+  feed `composite_score`.
+- **The run manifest was not a record of the run.** `manifest.json` listed four design
+  parameters, so `min_asymmetry_score`, the homopolymer gate, the scoring weights and the
+  design mode appeared nowhere in it. Both `manifest.json` and
+  `logs/workflow_summary.json` now dump `DesignParameters` wholesale, so a newly added
+  parameter cannot go unrecorded; the manifest also carries `tool_version`.
+- Corrected the `delta_dg_end` sign convention in `FilterCriteria`, `SiRNACandidateSchema`
+  and the tutorials: it is `dg_5p - dg_3p` (positive = destabilised 5' end), not the
+  reverse.
+
+### Added
+
+- `FilterCriteria.min_empirical_score` (default 0.5), bounded by the empirical rule's
+  attainable range 0.4-0.7, so a threshold the rule can never satisfy raises at
+  construction instead of silently rejecting every candidate.
+- `FilterStatus.LOW_EMPIRICAL_SCORE`, so an empirical-rule rejection is no longer reported
+  as an asymmetry failure. Registered with the candidate CSV schema.
+- `SiRNACandidate.off_target_screened` (new CSV column). The hit-count columns default to 0
+  and only the top-N selection is screened, so previously a candidate that was never
+  screened was indistinguishable from one that came back clean.
+- `ThermodynamicCalculator.meets_asymmetry_threshold`, which gates an already-computed score
+  without re-folding both duplex ends. `is_thermodynamically_favorable` — previously dead
+  code — now delegates to it, and its default threshold matches
+  `FilterCriteria.min_asymmetry_score` (it was 0.5 against a documented 0.65).
+
+### Changed
+
+- Default filter composition on the GAPDH set: PASS 12.3% -> 26.1%, `LOW_ASYMMETRY` 84.6%
+  (mislabelled) -> 66.1% (real thermodynamic asymmetry), plus `LOW_EMPIRICAL_SCORE` 4.6%.
+  `min_empirical_score` defaults to 0.5 rather than 0.65 deliberately: at 0.65 the empirical
+  gate alone passes 4.8% of candidates, which is the degenerate behaviour being fixed. The
+  rule still influences ranking through its 0.20 composite weight.
+- Removed three `except (AttributeError, ValueError, TypeError): pass` blocks around filter
+  assignment rather than making them log. `FilterStatus` is always present and assigning a
+  str-enum to a Pydantic field without `validate_assignment` cannot raise, so the handlers
+  only ever hid the real defect — that the wrong field was being compared.
+- Documented that the composite score's 0.30 off-target weight is a design-time proxy
+  (repeated 7-mers _within_ the guide). Transcriptome/miRNA screening runs after design and
+  gates `passes_filters`; it does not contribute to `composite_score`.
+- Documented that `mfe_*`, `duplex_stability_*`, `melting_temp_*`, `delta_dg_end_*` and
+  `max_off_target_count` in `FilterCriteria` have no reader in `src/` — they are reference
+  ranges, not filters. Wiring them up needs calibration against truth data, and the
+  `duplex_stability` window in particular is unreachable now that duplex ΔG is correct.
+- Rewrote the `awk` filter examples in `docs/thermodynamic_guide.md` to resolve columns by
+  header name, so they survive column-set changes such as `off_target_screened`.
+
 ## [0.5.1] - 2026-07-21
 
 This release adds the Zinc Finger Nuclease (ZFN) design/off-target module, multi-species genome
