@@ -13,6 +13,12 @@ from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
+# Duplex ΔG scales with duplex length, so it is normalised per nucleotide before
+# scoring. Window taken from the ViennaRNA range measured for canonical siRNA
+# duplexes at 37 °C: strong -> 1.0, weak -> 0.0.
+DUPLEX_DG_PER_NT_STRONG = -2.1
+DUPLEX_DG_PER_NT_WEAK = -1.4
+
 
 class SiRNADesigner:
     """Main siRNA design engine following the algorithm specification."""
@@ -308,17 +314,17 @@ class SiRNADesigner:
     def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, float | None]:
         """Compute duplex stability ΔG and a normalized score in [0,1].
 
-        Mapping: dg in [-40, -5] kcal/mol -> score in [1, 0]. Clamp outside this range.
+        ΔG is normalised per nucleotide so 19-23 nt designs stay comparable:
+        DUPLEX_DG_PER_NT_STRONG -> 1.0, DUPLEX_DG_PER_NT_WEAK -> 0.0, clamped outside.
         On failure or missing backend, returns (asymmetry_score, None) as a fallback.
         """
         try:
             calc = ThermodynamicCalculator()
             dg = calc.calculate_duplex_stability(candidate.guide_sequence, candidate.passenger_sequence)
-            # Normalize: more negative is better
-            # Clamp dg to [-40, -5]
-            lo, hi = -40.0, -5.0
-            dg_clamped = max(lo, min(hi, dg))
-            score = (-(dg_clamped) - 5.0) / (40.0 - 5.0)
+            # Normalize per nucleotide: more negative is better
+            dg_per_nt = dg / len(candidate.guide_sequence)
+            span = DUPLEX_DG_PER_NT_WEAK - DUPLEX_DG_PER_NT_STRONG
+            score = (DUPLEX_DG_PER_NT_WEAK - dg_per_nt) / span
             score = max(0.0, min(1.0, score))
             return score, float(dg)
         except Exception:

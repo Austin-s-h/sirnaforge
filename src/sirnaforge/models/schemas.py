@@ -77,15 +77,15 @@ class SiRNACandidateSchema(DataFrameModel):
     structure: Series[Any] = Field(description="RNA secondary structure in dot-bracket notation", nullable=True)
     mfe: Series[float] = Field(description="Minimum free energy in kcal/mol (optimal: -2 to -8)", nullable=True)
     duplex_stability_dg: Series[float] = Field(
-        description="siRNA duplex ΔG in kcal/mol (optimal: -15 to -25)", nullable=True
+        description="siRNA duplex ΔG in kcal/mol (fully paired 21mer: -32 to -43)", nullable=True
     )
     duplex_stability_score: Series[float] = Field(
-        ge=0.0, le=1.0, description="Normalized duplex stability score [0-1]", nullable=True
+        ge=0.0, le=1.0, description="Duplex stability score [0-1], normalized per nucleotide", nullable=True
     )
-    dg_5p: Series[float] = Field(description="5' end ΔG kcal/mol (positions 1-7)", nullable=True)
-    dg_3p: Series[float] = Field(description="3' end ΔG kcal/mol (positions 15-21)", nullable=True)
+    dg_5p: Series[float] = Field(description="Guide 5' end ΔG kcal/mol (terminal 7 bp)", nullable=True)
+    dg_3p: Series[float] = Field(description="Guide 3' end ΔG kcal/mol (terminal 7 bp)", nullable=True)
     delta_dg_end: Series[float] = Field(
-        description="End asymmetry ΔΔG = dg_3p - dg_5p (optimal: +2 to +6)", nullable=True
+        description="End asymmetry ΔΔG = dg_5p - dg_3p (optimal: +2 to +6)", nullable=True
     )
     melting_temp_c: Series[float] = Field(description="Duplex melting temperature °C (optimal: 60-78°C)", nullable=True)
 

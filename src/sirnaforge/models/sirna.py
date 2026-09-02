@@ -56,6 +56,12 @@ class FilterCriteria(BaseModel):
         ),
     )
 
+    # NOTE: the MFE, duplex-stability, melting-temperature, end-asymmetry and
+    # off-target windows below are reference ranges only -- SiRNADesigner does not
+    # enforce them today (see issue #78). The duplex ΔG window also predates the
+    # strand-orientation fix: a fully paired 21 nt RNA duplex measures -32 to -43
+    # kcal/mol, so the -15/-25 window is unreachable and awaits recalibration.
+
     # Minimum Free Energy filters (optimal: -2 to -8 kcal/mol)
     mfe_min: float | None = Field(
         default=-8.0, description="Minimum MFE threshold in kcal/mol (more negative = too stable)"
@@ -76,12 +82,12 @@ class FilterCriteria(BaseModel):
     melting_temp_min: float | None = Field(default=60.0, description="Minimum melting temperature in °C")
     melting_temp_max: float | None = Field(default=78.0, description="Maximum melting temperature in °C")
 
-    # End asymmetry filters (optimal: +2 to +6 kcal/mol)
+    # End asymmetry filters (optimal: +2 to +6 kcal/mol; positive = destabilised 5' end)
     delta_dg_end_min: float | None = Field(
-        default=2.0, description="Minimum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
+        default=2.0, description="Minimum end asymmetry ΔΔG (dg_5p - dg_3p) in kcal/mol"
     )
     delta_dg_end_max: float | None = Field(
-        default=6.0, description="Maximum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
+        default=6.0, description="Maximum end asymmetry ΔΔG (dg_5p - dg_3p) in kcal/mol"
     )
 
     # Off-target filters
