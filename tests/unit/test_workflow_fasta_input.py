@@ -124,6 +124,7 @@ async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
     assert "transcript_summary" in results
     assert results["transcript_summary"]["total_transcripts"] == 2
     assert results["design_summary"]["total_candidates"] == 1
+    assert results["reference_summary"]["transcriptome"]["enabled"] is True
 
 
 @pytest.mark.asyncio

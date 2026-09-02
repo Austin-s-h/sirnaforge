@@ -373,6 +373,18 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_seed_0mm: int = Field(
         default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8)"
     )
+    on_target_transcriptome_hits: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Perfect-match transcriptome hits identified (by transcript ID) as the intended source "
+            "transcript. Excluded from transcriptome_hits_0mm/off-target filtering."
+        ),
+    )
+    on_target_confirmed: bool = Field(
+        default=False,
+        description="Whether the source transcript was found among the 0-mismatch transcriptome hits",
+    )
 
     # miRNA off-target metrics
     mirna_hits_total: int = Field(default=0, ge=0, description="Total miRNA seed match hits")

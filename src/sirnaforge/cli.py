@@ -263,7 +263,7 @@ def _resolve_design_mode(
 
     if mode_enum == DesignMode.MIRNA:
         mirna_config = MiRNADesignConfig()
-        if gc_min == 30.0 and gc_max == 52.0:
+        if gc_min == 30.0 and gc_max == 60.0:
             gc_min = mirna_config.gc_min
             gc_max = mirna_config.gc_max
         if overhang == "dTdT":
@@ -989,6 +989,16 @@ def workflow(  # noqa: PLR0912
         envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
         help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
     ),
+    max_hits: int | None = typer.Option(
+        None,
+        "--max-hits",
+        min=1,
+        help=(
+            "Cap off-target hits retained per candidate per species (default: exhaustive, no cap). "
+            "Set a lower value (e.g. 10000) to speed up analysis of large gene families at the cost of "
+            "censoring per-species hit counts."
+        ),
+    ),
     json_summary: bool = typer.Option(
         True,
         "--json-summary/--no-json-summary",
@@ -1123,6 +1133,7 @@ def workflow(  # noqa: PLR0912
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
         design_only=skip_off_targets,
+        allow_transcriptome_for_input_fasta=True,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
@@ -1196,6 +1207,7 @@ def workflow(  # noqa: PLR0912
                     num_threads=cores,
                     check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
+                    max_hits=max_hits,
                 )
             )
 

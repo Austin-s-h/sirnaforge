@@ -298,7 +298,7 @@ class EnsemblClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, headers=headers) as response,
             ):
                 if response.status == 200:
@@ -368,7 +368,7 @@ class EnsemblClient(AbstractDatabaseClient):
 
         last_error = None
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session:
             for url in lookup_urls:
                 try:
                     async with session.get(url, headers=headers) as response:
@@ -492,7 +492,7 @@ class RefSeqClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, params=params) as response,
             ):
                 if response.status == 200:
@@ -528,7 +528,7 @@ class RefSeqClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, params=params) as response,
             ):
                 if response.status == 200:
@@ -560,7 +560,7 @@ class RefSeqClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, params=params) as response,
             ):
                 if response.status == 200:
@@ -672,7 +672,7 @@ class RefSeqClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, params=params) as response,
             ):
                 if response.status == 200:
@@ -726,7 +726,7 @@ class RefSeqClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, params=params) as response,
             ):
                 if response.status == 200:

@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -964,6 +965,10 @@ class SiRNAWorkflow:
                         "transcriptome_hits_1mm": _maybe_attr(candidate, "transcriptome_hits_1mm", default=0),
                         "transcriptome_hits_2mm": _maybe_attr(candidate, "transcriptome_hits_2mm", default=0),
                         "transcriptome_hits_seed_0mm": _maybe_attr(candidate, "transcriptome_hits_seed_0mm", default=0),
+                        "on_target_transcriptome_hits": _maybe_attr(
+                            candidate, "on_target_transcriptome_hits", default=0
+                        ),
+                        "on_target_confirmed": _maybe_attr(candidate, "on_target_confirmed", default=False),
                         "mirna_hits_total": _maybe_attr(candidate, "mirna_hits_total", default=0),
                         "mirna_hits_0mm_seed": _maybe_attr(candidate, "mirna_hits_0mm_seed", default=0),
                         "mirna_hits_1mm_seed": _maybe_attr(candidate, "mirna_hits_1mm_seed", default=0),
@@ -1846,6 +1851,9 @@ class SiRNAWorkflow:
             if human_mirna or other_mirna:
                 console.print(f"   🌱 miRNA hits — human: {human_mirna}, other: {other_mirna}")
 
+        missing_on_target = stats.get("missing_on_target_hit", 0)
+        self._log_missing_on_target(missing_on_target)
+
         if aggregated_views:
             tx_summary = aggregated_views.get("transcriptome")
             if tx_summary:
@@ -1877,6 +1885,15 @@ class SiRNAWorkflow:
         trace_file = Path(output_dir) / "pipeline_info" / "execution_trace.txt"
         if trace_file.exists():
             console.print(f"   📘 Nextflow execution trace: {trace_file}")
+
+    @staticmethod
+    def _log_missing_on_target(missing_on_target: int) -> None:
+        """Warn when no candidates confirmed a 0-mismatch hit against their own source transcript."""
+        if missing_on_target:
+            console.print(
+                f"   ⚠️ {missing_on_target} candidate(s) had no confirmed 0-mismatch hit against their own "
+                "source transcript (on-target self-match not found in the transcriptome index)"
+            )
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict[str, Any]:
         """Fallback basic off-target analysis."""
@@ -2066,6 +2083,11 @@ class SiRNAWorkflow:
 
         return False, None
 
+    @staticmethod
+    def _normalize_transcript_id(transcript_id: str) -> str:
+        """Strip Ensembl-style version suffixes (e.g. ``.9``) for identity comparisons."""
+        return re.sub(r"\.\d+$", "", transcript_id.strip())
+
     def _integrate_offtarget_results(  # noqa: PLR0912
         self,
         candidates: list[SiRNACandidate],
@@ -2102,6 +2124,7 @@ class SiRNAWorkflow:
             "other_transcriptome_hits": 0,
             "human_mirna_hits": 0,
             "other_mirna_hits": 0,
+            "missing_on_target_hit": 0,
         }
 
         for candidate in candidates:
@@ -2129,6 +2152,8 @@ class SiRNAWorkflow:
             mirna_1mm_seed = 0
             mirna_high_risk_total = 0
             mirna_high_risk_human = 0
+            on_target_hits = 0
+            source_transcript_id = self._normalize_transcript_id(candidate.transcript_id)
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
@@ -2156,6 +2181,15 @@ class SiRNAWorkflow:
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
+                    # A 0-mismatch hit against the candidate's own source transcript is the
+                    # expected on-target match, not an off-target - identify and exclude it
+                    # by transcript ID (version-suffix tolerant) instead of relying on a count
+                    # threshold that can't distinguish self-hits from genuine off-targets.
+                    hit_transcript_id = self._normalize_transcript_id(str(hit.get("rname", "")))
+                    if nm == 0 and hit_transcript_id and hit_transcript_id == source_transcript_id:
+                        on_target_hits += 1
+                        continue
+
                     # Transcriptome hit
                     treated_as_human = species_is_human or not species_label
                     if nm == 0:
@@ -2183,12 +2217,21 @@ class SiRNAWorkflow:
             candidate.transcriptome_hits_1mm = transcriptome_totals[1]
             candidate.transcriptome_hits_2mm = transcriptome_totals[2]
             candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
+            candidate.on_target_transcriptome_hits = on_target_hits
+            candidate.on_target_confirmed = on_target_hits > 0
             candidate.mirna_hits_total = mirna_total
             candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total
             candidate.mirna_hits_1mm_seed = mirna_1mm_seed
             candidate.mirna_hits_high_risk = mirna_high_risk_total
-            candidate.off_target_count = len(offtarget_entry.get("hits", []))
+            candidate.off_target_count = len(offtarget_entry.get("hits", [])) - on_target_hits
             candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
+
+            if on_target_hits == 0:
+                stats["missing_on_target_hit"] += 1
+                logger.debug(
+                    f"Candidate {candidate_id}: no 0-mismatch transcriptome hit found against its own "
+                    f"source transcript ({candidate.transcript_id}); on-target self-match was not confirmed."
+                )
 
             stats["human_transcriptome_hits"] += human_transcriptome_hits
             stats["other_transcriptome_hits"] += transcriptome_total_hits - human_transcriptome_hits
@@ -2499,10 +2542,11 @@ async def run_sirna_workflow(
     log_file: str | None = None,
     write_json_summary: bool = True,
     num_threads: int | None = None,
-    allow_transcriptome_with_input_fasta: bool = False,
+    allow_transcriptome_with_input_fasta: bool = True,
     default_transcriptome_sources: Sequence[str] = DEFAULT_TRANSCRIPTOME_SOURCES,
     keep_nextflow_work: bool = False,
     nextflow_docker_image: str | None = None,
+    max_hits: int | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -2537,10 +2581,12 @@ async def run_sirna_workflow(
         log_file: Path to centralized log file
         write_json_summary: Write logs/workflow_summary.json
         num_threads: Optional override for design parallelism
-        allow_transcriptome_with_input_fasta: Force transcriptome analysis even when using input FASTA
+        allow_transcriptome_with_input_fasta: Allow default transcriptome analysis when using input FASTA
         default_transcriptome_sources: Ordered list of transcriptome identifiers evaluated by default
         keep_nextflow_work: Keep Nextflow work directory symlink in output
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
+        max_hits: Override the pipeline's per-candidate off-target hit cap (None keeps the pipeline's
+            exhaustive default; set a lower value, e.g. 10000, to speed up large gene-family searches)
 
     Returns:
         Dictionary with complete workflow results
@@ -2612,6 +2658,8 @@ async def run_sirna_workflow(
     nextflow_config_overrides: dict[str, Any] = {}
     if nextflow_docker_image:
         nextflow_config_overrides["docker_image"] = nextflow_docker_image
+    if max_hits is not None:
+        nextflow_config_overrides["max_hits"] = max_hits
 
     # Build ZFN workflow config when in ZFN mode
     zfn_workflow_config: ZFNWorkflowConfig | None = None

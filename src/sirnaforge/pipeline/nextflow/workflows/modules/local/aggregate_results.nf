@@ -19,8 +19,8 @@ process AGGREGATE_RESULTS {
     task.ext.when == null || task.ext.when
 
     script:
-    def analysisFileList = analysis_files instanceof List ? analysis_files.collect { it.toString() } : [analysis_files.toString()]
-    def summaryFileList = summary_files instanceof List ? summary_files.collect { it.toString() } : [summary_files.toString()]
+    def analysisFileList = analysis_files instanceof List ? analysis_files.collect { f -> f.toString() } : [analysis_files.toString()]
+    def summaryFileList = summary_files instanceof List ? summary_files.collect { f -> f.toString() } : [summary_files.toString()]
     def analysisFilesJson = groovy.json.JsonOutput.toJson(analysisFileList)
     def summaryFilesJson = groovy.json.JsonOutput.toJson(summaryFileList)
     """
