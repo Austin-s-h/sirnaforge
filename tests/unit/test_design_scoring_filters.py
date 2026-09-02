@@ -244,12 +244,58 @@ def test_mirna_composite_score_is_the_normalised_sirna_score(realistic_transcrip
 
     for candidate in mirna.candidates[:50]:
         bonus = weights["supp_13_16_bonus"] * candidate.supp_13_16_score
-        if candidate.guide_pos1_base in ("A", "U"):
+        if candidate.guide_pos1_base in ("A", "U", "T"):
             bonus += weights["ago_start_bonus"]
         if candidate.pos1_pairing_state in ("wobble", "mismatch"):
             bonus += weights["pos1_mismatch_bonus"]
         expected = (base_scores[candidate.id] + bonus * 100) / (1.0 + max_bonus)
         assert candidate.composite_score == pytest.approx(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("guide_base", "passenger_base", "expected"),
+    [
+        ("A", "T", "perfect"),  # DNA spelling of A:U
+        ("T", "A", "perfect"),
+        ("A", "U", "perfect"),
+        ("G", "C", "perfect"),
+        ("G", "T", "wobble"),  # DNA spelling of the G:U wobble
+        ("G", "U", "wobble"),
+        ("A", "G", "mismatch"),
+        ("C", "T", "mismatch"),
+    ],
+)
+def test_pos1_pairing_reads_dna_as_rna(guide_base, passenger_base, expected):
+    """A:T is a Watson-Crick pair, not a mismatch."""
+    designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
+
+    assert designer._classify_pos1_pairing(guide_base, passenger_base) == expected
+
+
+@pytest.mark.unit
+def test_supplementary_score_counts_t_as_u():
+    """Positions 13-16 are AU-rich whether spelled with T or U."""
+    designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
+
+    assert designer._calculate_supplementary_score("GCGCGCGCGCGCTTTTGCGCG") == pytest.approx(1.0)
+    assert designer._calculate_supplementary_score("GCGCGCGCGCGCGCGCGCGCG") == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_designed_duplexes_are_perfectly_paired_at_position_1(realistic_transcripts_fasta):
+    """The passenger is the exact reverse complement, so position 1 always pairs.
+
+    Reading DNA as DNA classified all 257 A:T pairs on this transcript as
+    mismatches, handing them an undeserved pos1_mismatch_bonus.
+    """
+    record = next(SeqIO.parse(realistic_transcripts_fasta, "fasta"))
+    designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
+
+    result = designer.design_from_sequence(str(record.seq).upper(), record.id)
+
+    assert result.candidates
+    assert {c.pos1_pairing_state for c in result.candidates} == {"perfect"}
 
 
 @pytest.mark.unit

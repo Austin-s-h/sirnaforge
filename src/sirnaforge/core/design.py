@@ -26,6 +26,11 @@ DUPLEX_DG_PER_NT_STRONG = -2.1
 DUPLEX_DG_PER_NT_WEAK = -1.4
 
 
+def _as_rna(sequence: str) -> str:
+    """Read a stored (DNA) sequence as RNA so T and U compare equal."""
+    return sequence.upper().replace("T", "U")
+
+
 class SiRNADesigner:
     """Main siRNA design engine following the algorithm specification."""
 
@@ -549,9 +554,10 @@ class MiRNADesigner(SiRNADesigner):
             passenger = candidate.passenger_sequence
 
             # 1. Argonaute selection: prefer A/U at guide position 1
+            # The reported base keeps the stored (DNA) spelling; the test does not.
             guide_pos1_base = guide[0] if guide else ""
             candidate.guide_pos1_base = guide_pos1_base
-            ago_start_bonus = scoring_weights["ago_start_bonus"] if guide_pos1_base in ["A", "U"] else 0.0
+            ago_start_bonus = scoring_weights["ago_start_bonus"] if _as_rna(guide_pos1_base) in ("A", "U") else 0.0
 
             # 2. Position 1 pairing state: prefer G:U wobble or mismatch over perfect pair
             pos1_pairing_state = self._classify_pos1_pairing(guide_pos1_base, passenger[-1] if passenger else "")
@@ -598,7 +604,9 @@ class MiRNADesigner(SiRNADesigner):
         # G:U wobble pair
         wobble_pairs = {("G", "U"), ("U", "G")}
 
-        pair = (guide_base, passenger_base)
+        # Bases are stored as DNA, so read them as RNA before lookup: otherwise A:T
+        # is not found in perfect_pairs and every A:U pair is called a mismatch.
+        pair = (_as_rna(guide_base), _as_rna(passenger_base))
         if pair in perfect_pairs:
             return "perfect"
         if pair in wobble_pairs:
@@ -620,7 +628,7 @@ class MiRNADesigner(SiRNADesigner):
             return 0.5  # Default for short sequences
 
         # Extract positions 13-16 (0-indexed: 12-15)
-        supp_region = guide[12:16]
+        supp_region = _as_rna(guide[12:16])
 
         # Simple heuristic: count A/U content (lower stability)
         au_count = supp_region.count("A") + supp_region.count("U")
