@@ -30,6 +30,7 @@ from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
+from sirnaforge import __version__
 from sirnaforge.config import (
     DEFAULT_TRANSCRIPTOME_SOURCES,
     ReferenceChoice,
@@ -306,31 +307,8 @@ class SiRNAWorkflow:
 
         # Compile final results
         # Serialize authoritative design parameters into the workflow summary.
-        dp = self.config.design_params
-        design_parameters: dict[str, Any] = {
-            "top_n": dp.top_n,
-            "sirna_length": dp.sirna_length,
-            "filters": {
-                "gc_min": dp.filters.gc_min,
-                "gc_max": dp.filters.gc_max,
-                "max_poly_runs": dp.filters.max_poly_runs,
-                "max_paired_fraction": dp.filters.max_paired_fraction,
-                "min_asymmetry_score": dp.filters.min_asymmetry_score,
-                "min_empirical_score": dp.filters.min_empirical_score,
-            },
-            "scoring": {
-                "asymmetry": dp.scoring.asymmetry,
-                "gc_content": dp.scoring.gc_content,
-                "accessibility": dp.scoring.accessibility,
-                "off_target": dp.scoring.off_target,
-                "empirical": dp.scoring.empirical,
-            },
-            "avoid_snps": dp.avoid_snps,
-            "check_off_targets": dp.check_off_targets,
-            "predict_structure": dp.predict_structure,
-            "snp_file": dp.snp_file,
-            "genome_index": dp.genome_index,
-        }
+        # Dumped wholesale so a newly added threshold cannot go unrecorded.
+        design_parameters: dict[str, Any] = self.config.design_params.model_dump(mode="json")
 
         final_results: dict[str, Any] = {
             "workflow_config": {
@@ -1217,14 +1195,12 @@ class SiRNAWorkflow:
 
         return {
             "tool": "sirnaforge",
+            "tool_version": __version__,
             "gene_query": self.config.gene_query,
             "run_timestamp": now,
-            "design_parameters": {
-                "top_n": self.config.top_n,
-                "sirna_length": self.config.design_params.sirna_length,
-                "gc_min": self.config.design_params.filters.gc_min,
-                "gc_max": self.config.design_params.filters.gc_max,
-            },
+            # Dumped wholesale: hand-listing fields silently dropped thresholds
+            # (min_asymmetry_score, max_poly_runs, ...) from the run record.
+            "design_parameters": self.config.design_params.model_dump(mode="json"),
             "files": files,
         }
 
