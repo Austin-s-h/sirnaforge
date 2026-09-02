@@ -25,6 +25,18 @@ MIN_GUIDE_LEN = 19
 RECOMMENDED_MAX_GUIDE_LEN = 23
 ENGINE_MAX_GUIDE_LEN = 40
 
+# Default RISC-loading asymmetry gate, shared with
+# ThermodynamicCalculator.is_thermodynamically_favorable so the two cannot drift.
+DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
+
+# Attainable range of SiRNADesigner._calculate_empirical_score. The simplified
+# Reynolds rule adjusts a 0.5 base score by +/-0.1 per criterion, so it can never
+# reach 1.0; min_empirical_score is bounded by these so an unsatisfiable
+# threshold fails at construction instead of rejecting every candidate.
+EMPIRICAL_SCORE_MIN = 0.4
+EMPIRICAL_SCORE_MAX = 0.7
+DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
+
 
 class FilterCriteria(BaseModel):
     """Quality filters for siRNA candidate selection based on thermodynamic and empirical criteria."""
@@ -47,14 +59,33 @@ class FilterCriteria(BaseModel):
 
     # Thermodynamic asymmetry filters
     min_asymmetry_score: float = Field(
-        default=0.65,
+        default=DEFAULT_MIN_ASYMMETRY_SCORE,
         ge=0.3,
         le=1,
         description=(
             "Minimum thermodynamic asymmetry score for guide strand selection into RISC. "
+            "Applied to SiRNACandidate.asymmetry_score. "
             "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading."
         ),
     )
+
+    # Empirical (simplified Reynolds) design-rule filter
+    min_empirical_score: float = Field(
+        default=DEFAULT_MIN_EMPIRICAL_SCORE,
+        ge=EMPIRICAL_SCORE_MIN,
+        le=EMPIRICAL_SCORE_MAX,
+        description=(
+            "Minimum empirical design-rule score. Applied to the 'empirical' component score, "
+            f"whose attainable range is {EMPIRICAL_SCORE_MIN}-{EMPIRICAL_SCORE_MAX}; the default rejects only "
+            "candidates penalised at guide position 19 with no G/C at position 1."
+        ),
+    )
+
+    # NOTE: the MFE, duplex-stability, melting-temperature, end-asymmetry and
+    # off-target windows below are reference ranges only -- SiRNADesigner does not
+    # enforce them today (see issue #78). The duplex ΔG window also predates the
+    # strand-orientation fix: a fully paired 21 nt RNA duplex measures -32 to -43
+    # kcal/mol, so the -15/-25 window is unreachable and awaits recalibration.
 
     # Minimum Free Energy filters (optimal: -2 to -8 kcal/mol)
     mfe_min: float | None = Field(
@@ -76,12 +107,12 @@ class FilterCriteria(BaseModel):
     melting_temp_min: float | None = Field(default=60.0, description="Minimum melting temperature in °C")
     melting_temp_max: float | None = Field(default=78.0, description="Maximum melting temperature in °C")
 
-    # End asymmetry filters (optimal: +2 to +6 kcal/mol)
+    # End asymmetry filters (optimal: +2 to +6 kcal/mol; positive = destabilised 5' end)
     delta_dg_end_min: float | None = Field(
-        default=2.0, description="Minimum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
+        default=2.0, description="Minimum end asymmetry ΔΔG (dg_5p - dg_3p) in kcal/mol"
     )
     delta_dg_end_max: float | None = Field(
-        default=6.0, description="Maximum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
+        default=6.0, description="Maximum end asymmetry ΔΔG (dg_5p - dg_3p) in kcal/mol"
     )
 
     # Off-target filters
@@ -147,7 +178,16 @@ class ScoringWeights(BaseModel):
     accessibility: float = Field(
         default=0.20, ge=0, le=1, description="Target accessibility weight (secondary structure)"
     )
-    off_target: float = Field(default=0.30, ge=0, le=1, description="Off-target avoidance weight (specificity)")
+    off_target: float = Field(
+        default=0.30,
+        ge=0,
+        le=1,
+        description=(
+            "Weight for the design-time off-target proxy (guide self-repetitiveness). "
+            "Transcriptome/miRNA screening runs after design and gates pass/fail; it is "
+            "not part of composite_score."
+        ),
+    )
     empirical: float = Field(
         default=0.20, ge=0, le=1, description="Empirical design rules weight (established patterns)"
     )
@@ -315,6 +355,13 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.6)")
 
     # Off-target analysis
+    off_target_screened: bool = Field(
+        default=False,
+        description=(
+            "True once off-target screening has run for this candidate. Distinguishes "
+            "'screened, no hits' from 'never screened' -- both leave the hit counts below at 0."
+        ),
+    )
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
 
@@ -393,6 +440,7 @@ class SiRNACandidate(BaseModel):
         POLY_RUNS = "POLY_RUNS"
         EXCESS_PAIRING = "EXCESS_PAIRING"
         LOW_ASYMMETRY = "LOW_ASYMMETRY"
+        LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"
         DIRTY_CONTROL = "DIRTY_CONTROL"
 
     # Either True (passed) or one of the FilterStatus reasons (failed)
@@ -546,6 +594,7 @@ class DesignResult(BaseModel):
                 "dg_3p": cs.get("dg_3p"),
                 "delta_dg_end": cs.get("delta_dg_end"),
                 "melting_temp_c": cs.get("melting_temp_c"),
+                "off_target_screened": candidate.off_target_screened,
                 "off_target_count": candidate.off_target_count,
                 # miRNA-specific columns (nullable)
                 "guide_pos1_base": candidate.guide_pos1_base,

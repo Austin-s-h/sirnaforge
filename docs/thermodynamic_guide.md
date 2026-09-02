@@ -10,10 +10,17 @@ This guide helps you interpret the thermodynamic metrics in siRNAforge output fi
 | **Asymmetry Score** | 0.7-1.0 | 0.6-0.8 | <0.5 | 0-1 scale |
 | **Paired Fraction** | 0.5-0.7 | 0.4-0.8 | <0.3 or >0.9 | 0-1 scale |
 | **MFE** | -4 to -7 | -2 to -8 | <-10 or >0 | kcal/mol |
-| **Duplex Stability ΔG** | -18 to -22 | -15 to -25 | <-30 or >-10 | kcal/mol |
-| **Delta ΔG End** | +2 to +5 | +1 to +6 | <0 | kcal/mol |
+| **Duplex Stability ΔG** | see note | see note | — | kcal/mol |
+| **Delta ΔG End** (`dg_5p - dg_3p`) | +2 to +5 | +1 to +6 | <0 | kcal/mol |
 | **Melting Temp** | 65-75°C | 60-78°C | <50°C or >80°C | °C |
 | **Off-target Count** | 0-1 | 0-3 | >5 | count |
+
+**Note on `duplex_stability_dg`**: since 0.5.2 this is the ΔG of the full guide:passenger
+duplex, which scales with length — a fully paired 21mer measures **-32 to -43 kcal/mol**
+(median -39). There is no efficacy-validated window for it in siRNAforge: it is not
+enforced as a filter and does not feed `composite_score`. Compare candidates by the
+length-normalised `duplex_stability_score` within a run instead. Pre-0.5.2 values (roughly
+-5 to -25) came from folding the guide against itself and are not comparable.
 
 ## Analyzing Your Results
 
@@ -24,8 +31,12 @@ This guide helps you interpret the thermodynamic metrics in siRNAforge output fi
 head -10 your_results/sirna_design/GENE_pass.csv
 
 # Check distribution of key metrics
-cut -d',' -f6,7,9,11,15,16,17 your_results/sirna_design/GENE_pass.csv | head -20
+csvcut -c gc_content,asymmetry_score,mfe,duplex_stability_dg,delta_dg_end,melting_temp_c \
+  your_results/sirna_design/GENE_pass.csv | head -20
 ```
+
+The awk filters below resolve columns by header name rather than by position, so they keep
+working when the column set changes (0.5.2 added `off_target_screened`).
 
 ### Step 2: Identify High-Quality Candidates
 
@@ -33,14 +44,15 @@ Look for siRNAs that meet multiple criteria:
 
 ```bash
 # Filter for high-quality candidates (example thresholds)
+# GC 40-55%, asymmetry >=0.7, MFE -7..-4, less stable guide 5-prime end, <=3 off-targets
 awk -F',' '
-NR==1 {print; next}  # Print header
-$6>=40 && $6<=55 &&    # GC content 40-55%
-$7>=0.7 &&             # Asymmetry score ≥0.7
-$9>=-7 && $9<=-4 &&    # MFE between -7 and -4
-$15>=+2 &&             # Positive delta_dg_end
-$17<=3                 # Low off-target count
-{print}' your_results/sirna_design/GENE_pass.csv
+NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
+$c["gc_content"]>=40 && $c["gc_content"]<=55 &&
+$c["asymmetry_score"]>=0.7 &&
+$c["mfe"]>=-7 && $c["mfe"]<=-4 &&
+$c["delta_dg_end"]>=2 &&
+$c["off_target_count"]<=3 { print }
+' your_results/sirna_design/GENE_pass.csv
 ```
 
 ### Step 3: Troubleshoot Poor Performance
@@ -58,7 +70,7 @@ If few candidates meet optimal criteria:
 - **Check**: Verify end stability differences (delta_dg_end should be positive)
 
 #### **Overly Stable Duplexes**
-- **Problem**: MFE values <-10 kcal/mol or very negative duplex_stability_dg
+- **Problem**: MFE values <-10 kcal/mol (guide secondary structure)
 - **Solution**: Consider candidates with less negative (higher) MFE values
 - **Alternative**: Test experimentally as some cell types handle stable duplexes better
 
@@ -70,12 +82,14 @@ When maximum knockdown is critical:
 
 ```bash
 # Prioritize asymmetry and low off-targets
+# High asymmetry, actually screened, very few off-targets, good end asymmetry
 awk -F',' '
-NR==1 {print; next}
-$7>=0.8 &&             # High asymmetry score
-$17<=1 &&              # Very low off-targets
-$15>=+2                # Good end asymmetry
-{print}' results.csv
+NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
+$c["asymmetry_score"]>=0.8 &&
+$c["off_target_screened"]=="True" &&
+$c["off_target_count"]<=1 &&
+$c["delta_dg_end"]>=2 { print }
+' results.csv
 ```
 
 ### For Broad Target Coverage
@@ -84,12 +98,13 @@ When targeting multiple isoforms:
 
 ```bash
 # Balance efficiency with transcript coverage
+# Moderate asymmetry, hits at least half the input transcripts, few off-targets
 awk -F',' '
-NR==1 {print; next}
-$7>=0.6 &&             # Moderate asymmetry acceptable
-$18>=0.5 &&            # Good transcript hit fraction
-$17<=5                 # Moderate off-target tolerance
-{print}' results.csv
+NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
+$c["asymmetry_score"]>=0.6 &&
+$c["transcript_hit_fraction"]>=0.5 &&
+$c["off_target_count"]<=5 { print }
+' results.csv
 ```
 
 ### For Sensitive Cell Types
@@ -98,12 +113,13 @@ When working with difficult-to-transfect cells:
 
 ```bash
 # Favor stability and moderate parameters
+# Higher GC for stability, strong length-normalised duplex, mid-range Tm
 awk -F',' '
-NR==1 {print; next}
-$6>=45 && $6<=60 &&    # Higher GC for stability
-$11>=-20 &&            # Moderate duplex stability
-$16>=65 && $16<=75     # Optimal melting temp
-{print}' results.csv
+NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
+$c["gc_content"]>=45 && $c["gc_content"]<=60 &&
+$c["duplex_stability_score"]>=0.7 &&
+$c["melting_temp_c"]>=65 && $c["melting_temp_c"]<=75 { print }
+' results.csv
 ```
 
 ## Experimental Validation Tips

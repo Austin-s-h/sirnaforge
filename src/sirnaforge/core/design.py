@@ -10,8 +10,25 @@ from Bio.Seq import Seq
 
 from sirnaforge import __version__
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
-from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
+from sirnaforge.models.sirna import (
+    EMPIRICAL_SCORE_MAX,
+    EMPIRICAL_SCORE_MIN,
+    DesignParameters,
+    DesignResult,
+    SiRNACandidate,
+)
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
+
+# Duplex ΔG scales with duplex length, so it is normalised per nucleotide before
+# scoring. Window taken from the ViennaRNA range measured for canonical siRNA
+# duplexes at 37 °C: strong -> 1.0, weak -> 0.0.
+DUPLEX_DG_PER_NT_STRONG = -2.1
+DUPLEX_DG_PER_NT_WEAK = -1.4
+
+
+def _as_rna(sequence: str) -> str:
+    """Read a stored (DNA) sequence as RNA so T and U compare equal."""
+    return sequence.upper().replace("T", "U")
 
 
 class SiRNADesigner:
@@ -253,6 +270,7 @@ class SiRNADesigner:
             access_score = self._calculate_accessibility_score(candidate)
             ot_score = self._calculate_off_target_score(candidate)
             empirical_score = self._calculate_empirical_score(candidate)
+            self._apply_score_filters(candidate, asym_score, empirical_score)
 
             # Optional melting temperature estimation (rough)
             tm_c = float("nan")
@@ -308,17 +326,17 @@ class SiRNADesigner:
     def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, float | None]:
         """Compute duplex stability ΔG and a normalized score in [0,1].
 
-        Mapping: dg in [-40, -5] kcal/mol -> score in [1, 0]. Clamp outside this range.
+        ΔG is normalised per nucleotide so 19-23 nt designs stay comparable:
+        DUPLEX_DG_PER_NT_STRONG -> 1.0, DUPLEX_DG_PER_NT_WEAK -> 0.0, clamped outside.
         On failure or missing backend, returns (asymmetry_score, None) as a fallback.
         """
         try:
             calc = ThermodynamicCalculator()
             dg = calc.calculate_duplex_stability(candidate.guide_sequence, candidate.passenger_sequence)
-            # Normalize: more negative is better
-            # Clamp dg to [-40, -5]
-            lo, hi = -40.0, -5.0
-            dg_clamped = max(lo, min(hi, dg))
-            score = (-(dg_clamped) - 5.0) / (40.0 - 5.0)
+            # Normalize per nucleotide: more negative is better
+            dg_per_nt = dg / len(candidate.guide_sequence)
+            span = DUPLEX_DG_PER_NT_WEAK - DUPLEX_DG_PER_NT_STRONG
+            score = (DUPLEX_DG_PER_NT_WEAK - dg_per_nt) / span
             score = max(0.0, min(1.0, score))
             return score, float(dg)
         except Exception:
@@ -396,17 +414,7 @@ class SiRNADesigner:
 
             # Accessibility score: 1 - paired_fraction
             # Flag excessive pairing per filter threshold
-            try:
-                if (
-                    hasattr(_ModelCandidate, "FilterStatus")
-                    and paired_fraction is not None
-                    and paired_fraction > self.parameters.filters.max_paired_fraction
-                    and candidate.passes_filters is True
-                ):
-                    candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
-            except (AttributeError, ValueError, TypeError):  # nosec B110 acceptable narrow handling
-                # Ignore unexpected attribute/value issues; filtering status remains unchanged.
-                pass
+            self._flag_excess_pairing(candidate, paired_fraction)
             return 1.0 - paired_fraction
 
         except ImportError:
@@ -417,21 +425,25 @@ class SiRNADesigner:
             # Moderate AT content suggests better accessibility
             paired_fraction = abs(at_content - 0.5) * 2.0  # heuristic inverse
             candidate.paired_fraction = paired_fraction
-            try:
-                if (
-                    hasattr(_ModelCandidate, "FilterStatus")
-                    and paired_fraction > self.parameters.filters.max_paired_fraction
-                    and candidate.passes_filters is True
-                ):
-                    candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
-            except (AttributeError, ValueError, TypeError):  # nosec B110
-                pass
+            self._flag_excess_pairing(candidate, paired_fraction)
             return 1.0 - paired_fraction
 
+    def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
+        """Flag a candidate whose guide is too structured to be accessible."""
+        if candidate.passes_filters is True and paired_fraction > self.parameters.filters.max_paired_fraction:
+            candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
+
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate off-target score using simplified analysis."""
-        # Simplified version - comprehensive off-target analysis would require
-        # external databases and more complex alignment tools
+        """Score internal sequence repetitiveness as a design-time off-target proxy.
+
+        This looks only at repeated 7-mers *within* the guide. It is not informed by
+        transcriptome or miRNA screening: those run after design and are applied as
+        a pass/fail gate (see SiRNAWorkflow._integrate_offtarget_results), never fed
+        back into composite_score. `off_target_screened` records whether a candidate
+        reached that stage.
+        """
+        # Comprehensive off-target analysis would require external databases and
+        # more complex alignment tools
         guide = candidate.guide_sequence
 
         # Simple penalty for repetitive sequences
@@ -447,35 +459,46 @@ class SiRNADesigner:
         return math.exp(-penalty / 50)
 
     def _calculate_empirical_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate empirical score using Reynolds et al. rules (simplified)."""
-        guide = candidate.guide_sequence
+        """Calculate empirical score using Reynolds et al. rules (simplified).
+
+        Guides are stored as DNA, so the sequence is read as RNA (T is U) before the
+        position-19 test; otherwise a T there never earned the A/U bonus. The
+        attainable range is EMPIRICAL_SCORE_MIN..EMPIRICAL_SCORE_MAX, not 0..1.
+        """
+        guide = candidate.guide_sequence.upper().replace("T", "U")
         score = 0.5  # Base score
 
         # Some simplified Reynolds rules
         # Prefer A/U at position 19 (3' end of guide)
-        if len(guide) >= 19 and guide[18] in ["A", "U"]:
+        if len(guide) >= 19 and guide[18] in ("A", "U"):
             score += 0.1
 
         # Prefer G/C at position 1
-        if guide[0] in ["G", "C"]:
+        if guide[0] in ("G", "C"):
             score += 0.1
 
         # Avoid C at position 19
         if len(guide) >= 19 and guide[18] == "C":
             score -= 0.1
 
-        result = max(0.0, min(1.0, score))
-        # Enforce minimal asymmetry threshold as a filter
-        try:
-            if (
-                hasattr(_ModelCandidate, "FilterStatus")
-                and result < self.parameters.filters.min_asymmetry_score
-                and candidate.passes_filters is True
-            ):
-                candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
-        except (AttributeError, ValueError, TypeError):  # nosec B110
-            pass
-        return result
+        return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
+
+    def _apply_score_filters(self, candidate: SiRNACandidate, asymmetry_score: float, empirical_score: float) -> None:
+        """Flag candidates failing the asymmetry or empirical-rule thresholds.
+
+        Each threshold gates the quantity it is named after: min_asymmetry_score
+        gates the thermodynamic asymmetry score, min_empirical_score gates the
+        empirical design-rule score. Only the first failure is recorded, matching
+        the earlier GC / poly-run / excess-pairing gates.
+        """
+        if candidate.passes_filters is not True:
+            return
+
+        filters = self.parameters.filters
+        if not ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score):
+            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
+        elif empirical_score < filters.min_empirical_score:
+            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE
 
     def _get_tool_versions(self) -> dict[str, str]:
         """Get versions of tools used in the analysis."""
@@ -522,6 +545,12 @@ class MiRNADesigner(SiRNADesigner):
 
         mirna_config = MiRNADesignConfig()
         scoring_weights = mirna_config.scoring_weights
+        # Every bonus below is capped by its weight (supp_bonus scales a [0,1] score).
+        max_mirna_bonus = (
+            scoring_weights["ago_start_bonus"]
+            + scoring_weights["pos1_mismatch_bonus"]
+            + scoring_weights["supp_13_16_bonus"]
+        )
 
         # First, run the standard scoring
         candidates = super()._score_candidates(candidates)
@@ -532,9 +561,10 @@ class MiRNADesigner(SiRNADesigner):
             passenger = candidate.passenger_sequence
 
             # 1. Argonaute selection: prefer A/U at guide position 1
+            # The reported base keeps the stored (DNA) spelling; the test does not.
             guide_pos1_base = guide[0] if guide else ""
             candidate.guide_pos1_base = guide_pos1_base
-            ago_start_bonus = scoring_weights["ago_start_bonus"] if guide_pos1_base in ["A", "U"] else 0.0
+            ago_start_bonus = scoring_weights["ago_start_bonus"] if _as_rna(guide_pos1_base) in ("A", "U") else 0.0
 
             # 2. Position 1 pairing state: prefer G:U wobble or mismatch over perfect pair
             pos1_pairing_state = self._classify_pos1_pairing(guide_pos1_base, passenger[-1] if passenger else "")
@@ -555,10 +585,13 @@ class MiRNADesigner(SiRNADesigner):
             # 5. Apply miRNA-specific bonuses to composite score
             mirna_bonus = ago_start_bonus + pos1_mismatch_bonus + supp_bonus
 
-            # Update composite score (scale is 0-100, bonuses are fractions)
-            candidate.composite_score = candidate.composite_score + (mirna_bonus * 100)
+            # The bonuses widen the attainable range, so rescale by the maximum
+            # attainable total instead of clamping: clamping parked every strong
+            # candidate at exactly 100.0 and erased the ranking at the top.
+            # Order is preserved, since this is monotone in (base score + bonus).
+            candidate.composite_score = (candidate.composite_score + mirna_bonus * 100) / (1.0 + max_mirna_bonus)
 
-            # Clamp to 0-100 range
+            # Guard the model's 0-100 bound for non-default scoring weights
             candidate.composite_score = max(0.0, min(100.0, candidate.composite_score))
 
         return candidates
@@ -578,7 +611,9 @@ class MiRNADesigner(SiRNADesigner):
         # G:U wobble pair
         wobble_pairs = {("G", "U"), ("U", "G")}
 
-        pair = (guide_base, passenger_base)
+        # Bases are stored as DNA, so read them as RNA before lookup: otherwise A:T
+        # is not found in perfect_pairs and every A:U pair is called a mismatch.
+        pair = (_as_rna(guide_base), _as_rna(passenger_base))
         if pair in perfect_pairs:
             return "perfect"
         if pair in wobble_pairs:
@@ -600,7 +635,7 @@ class MiRNADesigner(SiRNADesigner):
             return 0.5  # Default for short sequences
 
         # Extract positions 13-16 (0-indexed: 12-15)
-        supp_region = guide[12:16]
+        supp_region = _as_rna(guide[12:16])
 
         # Simple heuristic: count A/U content (lower stability)
         au_count = supp_region.count("A") + supp_region.count("U")

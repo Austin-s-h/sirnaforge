@@ -6,26 +6,28 @@ siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. 
 
 | Metric | Optimal Range | What It Means |
 |--------|---------------|---------------|
-| `composite_score` | 7-10 | Overall quality (higher = better) |
+| `composite_score` | 0-100 scale, higher is better | Overall quality |
 | `asymmetry_score` | ≥0.65 | Guide strand selection preference |
 | `gc_content` | 40-55% | Stability vs. accessibility balance |
-| `melting_temp` | 55-65°C | Duplex stability |
+| `melting_temp_c` | 60-78°C | Duplex stability (nearest-neighbour Tm) |
 | `mfe` | -4 to -7 kcal/mol | Secondary structure stability |
+| `duplex_stability_dg` | -32 to -43 kcal/mol for a 21mer | Guide:passenger duplex ΔG |
 
 ## Composite Score
 
 The composite score combines multiple factors with research-validated weights:
 
-- **Thermodynamic asymmetry** (25%) - Guide strand preferentially enters RISC
-- **GC content** (20%) - Balance between stability and accessibility
-- **Target accessibility** (25%) - mRNA region accessibility
-- **Off-target potential** (20%) - Specificity prediction
-- **Empirical rules** (10%) - Position-specific sequence features
+- **Thermodynamic asymmetry** (15%) - Guide strand preferentially enters RISC
+- **GC content** (15%) - Balance between stability and accessibility
+- **Target accessibility** (20%) - mRNA region accessibility
+- **Off-target potential** (30%) - Design-time proxy: repeated 7-mers *within* the guide.
+  Transcriptome and miRNA screening run after design and gate `passes_filters`; they do not
+  contribute to `composite_score`.
+- **Empirical rules** (20%) - Position-specific sequence features
 
-**Interpreting scores:**
-- **8-10**: Excellent candidates for experiments
-- **6-8**: Good candidates, may need validation
-- **<6**: Consider alternatives
+The score is reported on a 0-100 scale. Compare candidates within one run rather than
+against a fixed cut-off: the attainable maximum depends on the configured weights, and
+scores are not comparable across versions (0.5.2 corrected the thermodynamics).
 
 ## Asymmetry Score
 
@@ -102,7 +104,11 @@ The `*_pass.csv` and `*_all.csv` files include:
 | `gc_content` | GC percentage |
 | `melting_temp_c` | Melting temperature (°C) |
 | `mfe` | Minimum free energy (kcal/mol) |
-| `quality_flags` | Any warnings or notes |
+| `duplex_stability_dg` | Guide:passenger duplex ΔG (kcal/mol) |
+| `dg_5p` / `dg_3p` | Terminal 7 bp ΔG at each duplex end |
+| `delta_dg_end` | `dg_5p - dg_3p`; positive favours guide loading |
+| `off_target_screened` | `False` means this candidate was never screened, so the hit counts are unknown rather than zero |
+| `passes_filters` | `PASS` or the first failed filter |
 
 ## References
 
