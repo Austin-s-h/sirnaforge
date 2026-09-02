@@ -90,6 +90,11 @@ class SiRNACandidateSchema(DataFrameModel):
     melting_temp_c: Series[float] = Field(description="Duplex melting temperature °C (optimal: 60-78°C)", nullable=True)
 
     # Off-target analysis results
+    off_target_screened: Series[bool] = Field(
+        description="True if off-target screening ran (0 hits then means clean, not unscreened)",
+        nullable=True,
+        coerce=True,
+    )
     off_target_count: Series[int] = Field(ge=0, description="Number of potential off-target sites (goal: ≤3)")
 
     # miRNA-specific columns (populated when design_mode == "mirna")

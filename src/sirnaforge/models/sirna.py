@@ -178,7 +178,16 @@ class ScoringWeights(BaseModel):
     accessibility: float = Field(
         default=0.20, ge=0, le=1, description="Target accessibility weight (secondary structure)"
     )
-    off_target: float = Field(default=0.30, ge=0, le=1, description="Off-target avoidance weight (specificity)")
+    off_target: float = Field(
+        default=0.30,
+        ge=0,
+        le=1,
+        description=(
+            "Weight for the design-time off-target proxy (guide self-repetitiveness). "
+            "Transcriptome/miRNA screening runs after design and gates pass/fail; it is "
+            "not part of composite_score."
+        ),
+    )
     empirical: float = Field(
         default=0.20, ge=0, le=1, description="Empirical design rules weight (established patterns)"
     )
@@ -346,6 +355,13 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.6)")
 
     # Off-target analysis
+    off_target_screened: bool = Field(
+        default=False,
+        description=(
+            "True once off-target screening has run for this candidate. Distinguishes "
+            "'screened, no hits' from 'never screened' -- both leave the hit counts below at 0."
+        ),
+    )
     off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
 
@@ -566,6 +582,7 @@ class DesignResult(BaseModel):
                 "dg_3p": cs.get("dg_3p"),
                 "delta_dg_end": cs.get("delta_dg_end"),
                 "melting_temp_c": cs.get("melting_temp_c"),
+                "off_target_screened": candidate.off_target_screened,
                 "off_target_count": candidate.off_target_count,
                 # miRNA-specific columns (nullable)
                 "guide_pos1_base": candidate.guide_pos1_base,

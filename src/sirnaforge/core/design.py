@@ -434,9 +434,16 @@ class SiRNADesigner:
             candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate off-target score using simplified analysis."""
-        # Simplified version - comprehensive off-target analysis would require
-        # external databases and more complex alignment tools
+        """Score internal sequence repetitiveness as a design-time off-target proxy.
+
+        This looks only at repeated 7-mers *within* the guide. It is not informed by
+        transcriptome or miRNA screening: those run after design and are applied as
+        a pass/fail gate (see SiRNAWorkflow._integrate_offtarget_results), never fed
+        back into composite_score. `off_target_screened` records whether a candidate
+        reached that stage.
+        """
+        # Comprehensive off-target analysis would require external databases and
+        # more complex alignment tools
         guide = candidate.guide_sequence
 
         # Simple penalty for repetitive sequences

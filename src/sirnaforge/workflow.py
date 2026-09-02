@@ -978,6 +978,7 @@ class SiRNAWorkflow:
                         "dg_3p": cs.get("dg_3p"),
                         "delta_dg_end": cs.get("delta_dg_end"),
                         "melting_temp_c": cs.get("melting_temp_c"),
+                        "off_target_screened": candidate.off_target_screened,
                         "off_target_count": candidate.off_target_count,
                         "off_target_penalty": candidate.off_target_penalty,
                         "transcriptome_hits_total": _maybe_attr(candidate, "transcriptome_hits_total", default=0),
@@ -2130,6 +2131,10 @@ class SiRNAWorkflow:
         for candidate in candidates:
             candidate_id = candidate.id
             offtarget_entry = results.get(candidate_id, {})
+
+            # Every candidate in this list was submitted to the pipeline, so it has
+            # been screened even when it produced no hit rows at all.
+            candidate.off_target_screened = True
 
             if not offtarget_entry or not offtarget_entry.get("hits"):
                 continue

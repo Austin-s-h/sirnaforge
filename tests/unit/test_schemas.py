@@ -51,6 +51,7 @@ class TestSiRNACandidateSchema:
         )
         result = SiRNACandidateSchema.validate(df)
         extra_columns = {
+            "off_target_screened",
             "guide_overhang",
             "guide_modifications",
             "passenger_overhang",
