@@ -9,9 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **On-target self-hit exclusion only matched a candidate's exact source transcript (or, in a
+  first pass, other isoforms present in the input FASTA), so uncapping `max_hits` turned the
+  off-target filter into a near-total kill switch: 3,259 of 3,288 candidates failed
+  "perfect transcriptome match" and zero survivors sat on the primary isoform.** A guide derived
+  from one isoform necessarily also perfectly matches sibling isoforms (shared exons) — including
+  novel/NMD-variant isoforms the gene search never returned, so they aren't in the 13-transcript
+  input FASTA either. `_integrate_offtarget_results` now also builds a transcript→gene lookup by
+  parsing the human transcriptome reference FASTA headers (`gene:ENSG...`, `gene_symbol:...`) once
+  per run, and treats a human 0-mismatch hit as on-target if it maps to the queried gene's ID or
+  symbol — not just an isoform present in the input FASTA. Cross-species hits (mouse/rat/macaque
+  orthologs) are never treated as on-target, since detecting those is the point of the analysis.
 - **Exhaustive off-target search is now the default, and `--max-hits` is finally exposed on the CLI.** The embedded Nextflow off-target pipeline capped retained hits per candidate/species at `params.max_hits = 10000` with no way to override it from `sirnaforge workflow` (the option didn't exist; `nextflow_config_overrides` only forwarded `docker_image` and ZFN params). Because `_filter_and_rank` sorts ascending by `offtarget_score`, the retained rows were the _most_ dangerous hits, not the least — but for genes with many perfect-match paralogs, human/rhesus hits filled all 10,000 slots, silently censoring the true per-species hit count and giving ~80% of candidates a false "zero off-target hits" result. `params.max_hits` now defaults to effectively unlimited (100,000,000); pass `--max-hits <n>` to cap it again for speed on large gene families `sirnaforge.workflow.run_sirna_workflow()` gained a matching `max_hits` parameter.
 - **`--design-mode mirna` no longer silently designs with siRNA GC bounds.** `_resolve_design_mode` only applied the miRNA-specific GC range when the CLI's GC flags still equaled `(30.0, 52.0)`, but the actual `--gc-max` default is `60.0` — so the guard was never true and every miRNA-mode run used the siRNA GC ceiling under a "mirna" label. The guard now compares against the real siRNA defaults `(30.0, 60.0)`.
-- **On-target self-hits are now identified by transcript ID instead of assumed via a hit-count threshold.** A guide's 0-mismatch match against its own source transcript in the transcriptome reference is expected (it's the on-target gene), not an off-target — but `_integrate_offtarget_results` previously had no way to tell that hit apart from a genuine paralog/off-target match; it relied on `max_transcriptome_hits_0mm = 1` implicitly tolerating "at most one" perfect hit. Perfect transcriptome hits are now matched against the candidate's own `transcript_id` (version-suffix tolerant) and excluded from `transcriptome_hits_0mm`/off-target filtering when they match; the result is recorded on new `SiRNACandidate.on_target_transcriptome_hits` / `on_target_confirmed` fields (surfaced in `candidates_all.csv`/`candidates_pass.csv`), and a console warning is emitted if no self-hit is confirmed at all (e.g. species/version mismatch).
 - **Ensembl/RefSeq/ClinVar HTTP clients now honor `HTTP_PROXY`/`HTTPS_PROXY` environment
   variables.** All `aiohttp.ClientSession` instances in `sirnaforge.data.base`,
   `sirnaforge.data.transcript_annotation`, and `sirnaforge.data.variant_resolver` were created
@@ -26,16 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
   remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
   closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
-
-## [0.5.2] - 2026-09-02
-
-Correctness release for the candidate selection/scoring arm, from the audit in
-[#78](https://github.com/Austin-s-h/sirnaforge/issues/78). **Behavior note: every
-thermodynamic column and the pass/fail composition change. Results are not comparable with
-0.5.1 or earlier, and re-running an earlier design will select different candidates.** The
-off-target arm (transcriptome + miRNA seed) is unaffected.
-
-### Fixed
 
 - **Duplex thermodynamics folded each strand against itself.** `passenger_sequence` is
   already the reverse complement of `guide_sequence`, but both ViennaRNA call sites

@@ -7,7 +7,7 @@ import pytest
 
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.models.modifications import StrandMetadata
-from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
+from sirnaforge.models.sirna import DesignParameters, DesignResult, OffTargetFilterCriteria, SiRNACandidate
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig, run_sirna_workflow
 
@@ -268,6 +268,52 @@ def test_offtarget_selection_includes_dirty_controls(tmp_path):
     assert primary in selected
     assert dirty in selected
     assert len(selected) == 2
+
+
+@pytest.mark.unit
+def test_offtarget_integration_excludes_same_gene_hits_only(tmp_path):
+    """Same-gene human isoforms are on-target; paralogs and orthologs remain off-targets."""
+    config = WorkflowConfig(output_dir=tmp_path / "out_on_target", gene_query="MSH3", design_params=DesignParameters())
+    workflow = SiRNAWorkflow(config)
+    workflow._gene_transcript_ids = {"ENST00000000001"}
+    workflow._query_gene_ids = {"ENSG00000000001"}
+    workflow._query_gene_symbols = {"MSH3"}
+
+    reference = tmp_path / "human_cdna.fasta"
+    reference.write_text(
+        ">ENST00000000001.2 gene:ENSG00000000001.3 gene_symbol:MSH3\n"
+        "ACGT\n"
+        ">ENST00000000002 gene:ENSG00000000001 gene_symbol:MSH3\n"
+        "ACGT\n"
+        ">ENST00000000009 gene:ENSG00000000009 gene_symbol:OTHER\n"
+        "ACGT\n"
+    )
+    workflow._build_transcript_gene_index(reference)
+
+    candidate = _make_candidate("candidate", "ATGCGATGCGATGCGATGCGC")
+    candidate.transcript_id = "ENST00000000001.8"
+    hits = [
+        {"rname": "ENST00000000001.2", "species": "human", "nm": 0, "seed_mismatches": 0},
+        {"rname": "ENST00000000002", "species": "human", "nm": 0, "seed_mismatches": 0},
+        {"rname": "ENST00000000009", "species": "human", "nm": 0, "seed_mismatches": 0},
+        {"rname": "ENSM00000000002", "species": "mouse", "nm": 0, "seed_mismatches": 0},
+        {"rname": "ENST00000000002", "species": "human", "nm": 1, "seed_mismatches": 1},
+    ]
+
+    _, stats = workflow._integrate_offtarget_results(
+        [candidate],
+        {"status": "completed", "results": {candidate.id: {"hits": hits, "off_target_score": 0.0}}},
+        OffTargetFilterCriteria(),
+    )
+
+    assert candidate.on_target_transcriptome_hits == 2
+    assert candidate.on_target_confirmed is True
+    assert candidate.transcriptome_hits_0mm == 2
+    assert candidate.transcriptome_hits_1mm == 1
+    assert candidate.off_target_count == 3
+    assert stats["human_transcriptome_hits"] == 2
+    assert stats["other_transcriptome_hits"] == 1
+    assert candidate.passes_filters is True
 
 
 def test_load_offtarget_aggregates_reads_summaries(tmp_path):

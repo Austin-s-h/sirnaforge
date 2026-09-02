@@ -241,6 +241,11 @@ class SiRNAWorkflow:
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
         self._annotation_summary: dict[str, Any] = {}
+        self._gene_transcript_ids: set[str] = set()
+        self._query_gene_ids: set[str] = set()
+        self._query_gene_symbols: set[str] = set()
+        self._transcript_gene_index: dict[str, str] = {}
+        self._transcript_gene_symbol_index: dict[str, str] = {}
 
         # Optional: Initialize transcript annotation client (not used by default yet)
         # This can be enabled via environment variable or config flag in the future
@@ -272,6 +277,16 @@ class SiRNAWorkflow:
             progress.update(main_task, description="[cyan]Retrieving transcripts...")
             transcripts = await self.step1_retrieve_transcripts(progress)
             progress.advance(main_task)
+
+            # All isoforms of the queried gene are "on-target" - a guide hitting a sibling
+            # isoform (shared exon) perfectly is not an off-target, it's the intended gene.
+            self._gene_transcript_ids = {
+                self._normalize_transcript_id(t.transcript_id) for t in transcripts if t.transcript_id
+            }
+            self._query_gene_ids = {self._normalize_transcript_id(t.gene_id) for t in transcripts if t.gene_id}
+            self._query_gene_symbols = {t.gene_name.strip().upper() for t in transcripts if t.gene_name}
+            if not self._query_gene_symbols and self.config.gene_query:
+                self._query_gene_symbols = {self.config.gene_query.strip().upper()}
 
             # Variant Resolution (optional, after transcript retrieval)
             # Save resolved variants on the workflow instance for later use
@@ -1377,6 +1392,12 @@ class SiRNAWorkflow:
         # Normalize species name to canonical form (e.g., 'hsa' -> 'human', 'mmu' -> 'mouse')
         transcriptome_species = normalize_species_name(raw_species)
 
+        # Build a transcript->gene lookup from the human reference so on-target isoforms that
+        # aren't part of the input FASTA (novel/NMD transcripts the query gene search didn't
+        # return) can still be recognized as on-target rather than off-target hits.
+        if transcriptome_species == "human" and not self._transcript_gene_index:
+            self._build_transcript_gene_index(transcriptome_result["fasta"])
+
         # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
         # Nextflow will build the index in Docker if needed
         transcriptome_path = transcriptome_result.get("index") or transcriptome_result["fasta"]
@@ -2088,6 +2109,32 @@ class SiRNAWorkflow:
         """Strip Ensembl-style version suffixes (e.g. ``.9``) for identity comparisons."""
         return re.sub(r"\.\d+$", "", transcript_id.strip())
 
+    def _build_transcript_gene_index(self, fasta_path: Path) -> None:
+        """Parse Ensembl cDNA FASTA headers into transcript->gene lookups for on-target matching.
+
+        Headers look like: ``>ENST... cdna ... gene:ENSG00000116062.14 ... gene_symbol:MSH3 ...``
+        """
+        try:
+            with Path(fasta_path).open() as fh:
+                for line in fh:
+                    if not line.startswith(">"):
+                        continue
+                    tokens = line[1:].split()
+                    if not tokens:
+                        continue
+                    transcript_id = self._normalize_transcript_id(tokens[0])
+                    for token in tokens[1:]:
+                        if token.startswith("gene:"):
+                            self._transcript_gene_index[transcript_id] = self._normalize_transcript_id(
+                                token[len("gene:") :]
+                            )
+                        elif token.startswith("gene_symbol:"):
+                            self._transcript_gene_symbol_index[transcript_id] = (
+                                token[len("gene_symbol:") :].strip().upper()
+                            )
+        except OSError as exc:
+            logger.warning(f"Failed to parse transcriptome FASTA for gene-level on-target index: {exc}")
+
     def _integrate_offtarget_results(  # noqa: PLR0912
         self,
         candidates: list[SiRNACandidate],
@@ -2154,6 +2201,7 @@ class SiRNAWorkflow:
             mirna_high_risk_human = 0
             on_target_hits = 0
             source_transcript_id = self._normalize_transcript_id(candidate.transcript_id)
+            on_target_transcript_ids = self._gene_transcript_ids or {source_transcript_id}
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
@@ -2181,17 +2229,30 @@ class SiRNAWorkflow:
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
-                    # A 0-mismatch hit against the candidate's own source transcript is the
-                    # expected on-target match, not an off-target - identify and exclude it
-                    # by transcript ID (version-suffix tolerant) instead of relying on a count
-                    # threshold that can't distinguish self-hits from genuine off-targets.
+                    # A 0-mismatch hit against any isoform of the candidate's own gene (shared
+                    # exons make cross-isoform perfect matches routine) is the expected on-target
+                    # match, not an off-target. Excluded by transcript ID for isoforms present in
+                    # the input FASTA, and by gene ID/symbol (via the human reference FASTA
+                    # headers) for isoforms the gene search didn't return (novel/NMD variants).
+                    # Cross-species hits (mouse/rat/macaque orthologs) are never treated as
+                    # on-target - those are exactly what off-target analysis is meant to catch.
+                    treated_as_human = species_is_human or not species_label
                     hit_transcript_id = self._normalize_transcript_id(str(hit.get("rname", "")))
-                    if nm == 0 and hit_transcript_id and hit_transcript_id == source_transcript_id:
+                    is_on_target = hit_transcript_id and (
+                        hit_transcript_id in on_target_transcript_ids
+                        or (
+                            treated_as_human
+                            and (
+                                self._transcript_gene_index.get(hit_transcript_id) in self._query_gene_ids
+                                or self._transcript_gene_symbol_index.get(hit_transcript_id) in self._query_gene_symbols
+                            )
+                        )
+                    )
+                    if nm == 0 and is_on_target:
                         on_target_hits += 1
                         continue
 
                     # Transcriptome hit
-                    treated_as_human = species_is_human or not species_label
                     if nm == 0:
                         transcriptome_totals[0] += 1
                         if treated_as_human:

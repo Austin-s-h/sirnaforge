@@ -208,11 +208,11 @@ class SiRNACandidateSchema(DataFrameModel):
             "LOW_ASYMMETRY",
             "LOW_EMPIRICAL_SCORE",
             "TRANSCRIPTOME_PERFECT_MATCH",
-            "TRANSCRIPTOME_HITS_1MM",
-            "TRANSCRIPTOME_HITS_2MM",
+            "TRANSCRIPTOME_1MM",
+            "TRANSCRIPTOME_2MM",
             "MIRNA_PERFECT_SEED",
-            "MIRNA_SEED_HITS",
-            "MIRNA_HIGH_RISK",
+            "HIGH_RISK_MIRNA",
+            "TOTAL_OFFTARGETS",
             "DIRTY_CONTROL",
         }
         series = df["passes_filters"]
