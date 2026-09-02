@@ -1,9 +1,12 @@
 """Thermodynamic calculations for siRNA design using ViennaRNA."""
 
 import RNA
-from Bio.Seq import Seq
 
 from sirnaforge.models.sirna import SiRNACandidate
+
+# Number of terminal base pairs compared when scoring duplex-end asymmetry.
+# Applied symmetrically to both ends so the two ΔG values are comparable.
+END_WINDOW_NT = 7
 
 
 class ThermodynamicCalculator:
@@ -23,35 +26,34 @@ class ThermodynamicCalculator:
         self.model_details.temperature = temperature
 
     def calculate_duplex_stability(self, guide: str, passenger: str) -> float:
-        """Calculate duplex stability (deltaG) using ViennaRNA."""
+        """Calculate duplex stability (deltaG) using ViennaRNA.
+
+        Both strands are supplied 5'->3' and are already complementary, so neither
+        is reverse-complemented here: ViennaRNA's ``&`` cofold notation pairs the
+        two strands antiparallel on its own.
+        """
         if len(guide) != len(passenger):
             # TODO: convert to warning and generate opposite sequence from the guide strand
             raise ValueError("Guide and passenger sequences must be same length")
-        # Create duplex string for ViennaRNA
-        duplex_seq = guide + "&" + str(Seq(passenger).reverse_complement())
-
-        # Calculate duplex MFE (removed RNA.OPTION_EVAL_ONLY to fix segfault)
-        fc = RNA.fold_compound(duplex_seq, self.model_details)
-        mfe_structure, mfe = fc.mfe()
         # TODO we should save this mfe structure to have alongside the other dotplot?
-        return float(mfe)
+        return self._cofold_mfe(guide, passenger)
 
     def calculate_asymmetry_score(self, candidate: SiRNACandidate) -> tuple[float, float, float]:
         """Calculate thermodynamic asymmetry score using ViennaRNA.
+
+        Duplex ends are antiparallel, so the guide 5' end pairs with the passenger
+        3' end and vice versa. Both windows are ``END_WINDOW_NT`` long so the two
+        ΔG values are directly comparable.
 
         Returns:
             Tuple of (5' end stability, 3' end stability, asymmetry score)
         """
         guide = candidate.guide_sequence
         passenger = candidate.passenger_sequence
+        window = min(END_WINDOW_NT, len(guide), len(passenger))
 
-        # Calculate stability of 5' end (positions 1-7)
-        dg_5p = self._calculate_end_stability(guide[:7], passenger[:7])
-
-        # Calculate stability of 3' end (positions 15-21)
-        guide_3p = guide[14:21] if len(guide) >= 21 else guide[14:]
-        passenger_3p = passenger[14:21] if len(passenger) >= 21 else passenger[14:]
-        dg_3p = self._calculate_end_stability(guide_3p, passenger_3p)
+        dg_5p = self._calculate_end_stability(guide[:window], passenger[-window:])
+        dg_3p = self._calculate_end_stability(guide[-window:], passenger[:window])
 
         # Asymmetry score: favor when 5' end is less stable (higher dG)
         # Higher score when dg_5p > dg_3p (5' end less stable)
@@ -97,14 +99,21 @@ class ThermodynamicCalculator:
         return avg_unpaired, mfe
 
     def _calculate_end_stability(self, guide_end: str, passenger_end: str) -> float:
-        """Calculate stability of duplex end using ViennaRNA."""
+        """Calculate stability of duplex end using ViennaRNA.
+
+        Args:
+            guide_end: Guide-strand terminal window, 5'->3'
+            passenger_end: The passenger window that pairs with it, 5'->3'
+        """
         if not guide_end or not passenger_end:
             return 0.0
-        # Create duplex for the end region
-        duplex_seq = guide_end + "&" + str(Seq(passenger_end).reverse_complement())
-        fc = RNA.fold_compound(duplex_seq, self.model_details)
-        _, mfe = fc.mfe()
+        return self._cofold_mfe(guide_end, passenger_end)
 
+    def _cofold_mfe(self, strand_a: str, strand_b: str) -> float:
+        """Return the cofold MFE of two complementary strands, each given 5'->3'."""
+        # Removed RNA.OPTION_EVAL_ONLY to fix segfault
+        fc = RNA.fold_compound(f"{strand_a}&{strand_b}", self.model_details)
+        _, mfe = fc.mfe()
         return float(mfe)
 
     def calculate_melting_temperature(self, guide: str, passenger: str) -> float:
