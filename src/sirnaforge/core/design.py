@@ -533,6 +533,12 @@ class MiRNADesigner(SiRNADesigner):
 
         mirna_config = MiRNADesignConfig()
         scoring_weights = mirna_config.scoring_weights
+        # Every bonus below is capped by its weight (supp_bonus scales a [0,1] score).
+        max_mirna_bonus = (
+            scoring_weights["ago_start_bonus"]
+            + scoring_weights["pos1_mismatch_bonus"]
+            + scoring_weights["supp_13_16_bonus"]
+        )
 
         # First, run the standard scoring
         candidates = super()._score_candidates(candidates)
@@ -566,10 +572,13 @@ class MiRNADesigner(SiRNADesigner):
             # 5. Apply miRNA-specific bonuses to composite score
             mirna_bonus = ago_start_bonus + pos1_mismatch_bonus + supp_bonus
 
-            # Update composite score (scale is 0-100, bonuses are fractions)
-            candidate.composite_score = candidate.composite_score + (mirna_bonus * 100)
+            # The bonuses widen the attainable range, so rescale by the maximum
+            # attainable total instead of clamping: clamping parked every strong
+            # candidate at exactly 100.0 and erased the ranking at the top.
+            # Order is preserved, since this is monotone in (base score + bonus).
+            candidate.composite_score = (candidate.composite_score + mirna_bonus * 100) / (1.0 + max_mirna_bonus)
 
-            # Clamp to 0-100 range
+            # Guard the model's 0-100 bound for non-default scoring weights
             candidate.composite_score = max(0.0, min(100.0, candidate.composite_score))
 
         return candidates
