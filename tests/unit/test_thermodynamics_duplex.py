@@ -144,6 +144,53 @@ def test_asymmetry_score_is_not_a_constant(realistic_transcripts_fasta):
 
 
 @pytest.mark.unit
+def test_melting_temperature_is_physically_plausible():
+    """A 21mer siRNA duplex melts around 60-80 °C, not above 100 °C.
+
+    Scaling the corrected duplex ΔG (about -39 kcal/mol) by the old empirical
+    factor returned 101-124 °C.
+    """
+    calc = ThermodynamicCalculator(temperature=37.0)
+
+    tm = calc.calculate_melting_temperature(GUIDE_21, PASSENGER_21)
+
+    assert 50.0 < tm < 90.0, f"implausible melting temperature: {tm} °C"
+
+
+@pytest.mark.unit
+def test_melting_temperature_tracks_gc_content():
+    """Tm must rise with GC content."""
+    calc = ThermodynamicCalculator(temperature=37.0)
+    gc_rich = _candidate("GCGCGCGCGGCCGGCCGCGCG")
+    au_rich = _candidate("ATATATATAATTAATTATATA")
+
+    tm_gc = calc.calculate_melting_temperature(gc_rich.guide_sequence, gc_rich.passenger_sequence)
+    tm_au = calc.calculate_melting_temperature(au_rich.guide_sequence, au_rich.passenger_sequence)
+
+    assert tm_gc > tm_au
+
+
+@pytest.mark.unit
+def test_melting_temperature_is_alphabet_agnostic():
+    """The same duplex spelled with T or U must give the same Tm."""
+    calc = ThermodynamicCalculator(temperature=37.0)
+
+    tm_dna = calc.calculate_melting_temperature(GUIDE_21, PASSENGER_21)
+    tm_rna = calc.calculate_melting_temperature(GUIDE_21.replace("T", "U"), PASSENGER_21.replace("T", "U"))
+
+    assert tm_dna == pytest.approx(tm_rna)
+
+
+@pytest.mark.unit
+def test_melting_temperature_rejects_length_mismatch():
+    """A passenger of a different length is a caller error, not a silent result."""
+    calc = ThermodynamicCalculator(temperature=37.0)
+
+    with pytest.raises(ValueError, match="same length"):
+        calc.calculate_melting_temperature(GUIDE_21, PASSENGER_21[:-1])
+
+
+@pytest.mark.unit
 def test_asymmetry_score_follows_end_stability_difference():
     """An AU-rich guide 5' end (less stable) must score above the 0.5 midpoint."""
     calc = ThermodynamicCalculator(temperature=37.0)

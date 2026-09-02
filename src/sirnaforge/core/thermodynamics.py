@@ -1,12 +1,22 @@
 """Thermodynamic calculations for siRNA design using ViennaRNA."""
 
 import RNA
+from Bio.Seq import Seq
+from Bio.SeqUtils import MeltingTemp
 
 from sirnaforge.models.sirna import SiRNACandidate
+from sirnaforge.utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 # Number of terminal base pairs compared when scoring duplex-end asymmetry.
 # Applied symmetrically to both ends so the two ΔG values are comparable.
 END_WINDOW_NT = 7
+
+# Conditions for the nearest-neighbour melting temperature: roughly physiological
+# ionic strength and a typical transfection-scale duplex concentration.
+TM_SODIUM_MM = 100.0
+TM_STRAND_CONC_NM = 100.0
 
 
 class ThermodynamicCalculator:
@@ -117,20 +127,36 @@ class ThermodynamicCalculator:
         return float(mfe)
 
     def calculate_melting_temperature(self, guide: str, passenger: str) -> float:
-        """Calculate melting temperature using ViennaRNA thermodynamics."""
-        # Calculate duplex stability
-        dg = self.calculate_duplex_stability(guide, passenger)
+        """Calculate duplex melting temperature in °C.
 
-        # Simplified Tm estimation: Tm = dH/dS (assumes dH ≈ -dG for rough estimate)
-        # More accurate would require separate enthalpy calculation
-        # This is a rough approximation
-        if dg >= 0:
-            return 25.0  # Low melting temp for unstable duplexes
+        Uses the RNA nearest-neighbour parameters of Xia et al. (1998) via
+        Biopython. Tm needs ΔH and ΔS separately, which ViennaRNA's MFE does not
+        provide, so scaling ΔG cannot produce a physical Tm: at the corrected
+        duplex ΔG of a 21mer (about -39 kcal/mol) the previous
+        ``37 + 2 * -ΔG`` approximation returned 101-124 °C.
 
-        # Rough conversion: more negative dG → higher Tm
-        tm = 37.0 + (-dg * 2.0)  # Empirical scaling factor
+        Args:
+            guide: Guide strand, 5'->3'
+            passenger: Passenger strand, 5'->3' (expected reverse complement of guide)
+        """
+        if len(guide) != len(passenger):
+            raise ValueError("Guide and passenger sequences must be same length")
 
-        return max(0.0, tm)
+        guide_rna = guide.upper().replace("T", "U")
+        if passenger.upper().replace("T", "U") != str(Seq(guide_rna).reverse_complement_rna()):
+            logger.warning(
+                "Passenger is not the exact reverse complement of the guide; "
+                "melting temperature assumes a perfectly paired duplex."
+            )
+
+        tm = MeltingTemp.Tm_NN(
+            Seq(guide_rna),
+            nn_table=MeltingTemp.RNA_NN2,
+            Na=TM_SODIUM_MM,
+            dnac1=TM_STRAND_CONC_NM,
+            dnac2=TM_STRAND_CONC_NM,
+        )
+        return float(tm)
 
     def is_thermodynamically_favorable(self, candidate: SiRNACandidate, threshold: float = 0.5) -> bool:
         """Check if candidate meets thermodynamic asymmetry threshold."""
