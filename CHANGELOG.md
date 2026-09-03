@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-03
+
+Correctness release for the off-target arm, from the audit in
+[#80](https://github.com/Austin-s-h/sirnaforge/issues/80). **Composite scoring now runs after
+off-target screening**, using a seven-term weight set; off-target counts are decomposed into
+on-target/ortholog/repeat/genuine-off-target classes; and every distinct candidate sequence is
+screened rather than only the top-ranked subset. Scores from this release are not comparable to
+0.5.x, and ranking order changes for essentially every candidate — this is the intended outcome
+of the redefinition, not a regression. Off-target counts for the same target will drop
+substantially, for the same reason.
 
 ### Fixed
 
@@ -15,11 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "perfect transcriptome match" and zero survivors sat on the primary isoform.** A guide derived
   from one isoform necessarily also perfectly matches sibling isoforms (shared exons) — including
   novel/NMD-variant isoforms the gene search never returned, so they aren't in the 13-transcript
-  input FASTA either. `_integrate_offtarget_results` now also builds a transcript→gene lookup by
-  parsing the human transcriptome reference FASTA headers (`gene:ENSG...`, `gene_symbol:...`) once
-  per run, and treats a human 0-mismatch hit as on-target if it maps to the queried gene's ID or
-  symbol — not just an isoform present in the input FASTA. Cross-species hits (mouse/rat/macaque
-  orthologs) are never treated as on-target, since detecting those is the point of the analysis.
+  input FASTA either. A hit is now recognised as on-target when it maps to the queried gene's ID
+  or symbol, not only when its transcript appears in the input FASTA, so sibling isoforms stop
+  being counted against the guide. The transcript→gene lookup that makes this possible is built
+  per screened species — see the ortholog-recognition entry under Changed, which replaced a
+  first-pass version of this fix that only ever worked for human.
 - **Exhaustive off-target search is now the default, and `--max-hits` is finally exposed on the CLI.** The embedded Nextflow off-target pipeline capped retained hits per candidate/species at `params.max_hits = 10000` with no way to override it from `sirnaforge workflow` (the option didn't exist; `nextflow_config_overrides` only forwarded `docker_image` and ZFN params). Because `_filter_and_rank` sorts ascending by `offtarget_score`, the retained rows were the _most_ dangerous hits, not the least — but for genes with many perfect-match paralogs, human/rhesus hits filled all 10,000 slots, silently censoring the true per-species hit count and giving ~80% of candidates a false "zero off-target hits" result. `params.max_hits` now defaults to effectively unlimited (100,000,000); pass `--max-hits <n>` to cap it again for speed on large gene families `sirnaforge.workflow.run_sirna_workflow()` gained a matching `max_hits` parameter.
 - **`--design-mode mirna` no longer silently designs with siRNA GC bounds.** `_resolve_design_mode` only applied the miRNA-specific GC range when the CLI's GC flags still equaled `(30.0, 52.0)`, but the actual `--gc-max` default is `60.0` — so the guard was never true and every miRNA-mode run used the siRNA GC ceiling under a "mirna" label. The guard now compares against the real siRNA defaults `(30.0, 60.0)`.
 - **Ensembl/RefSeq/ClinVar HTTP clients now honor `HTTP_PROXY`/`HTTPS_PROXY` environment
@@ -36,6 +45,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
   remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
   closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
+
+### Added
+
+- **Four new pure modules** the hit-classification/scoring overhaul is built on:
+  `sirnaforge.data.transcript_index` (per-species `TranscriptGeneIndex`/`SpeciesTranscriptIndex`),
+  `sirnaforge.core.hit_classification` (`classify_hit`, `HitClass`, `HitClassCounts` — the
+  four-way on-target/ortholog/repeat/off-target classifier), `sirnaforge.core.repeat_detection`
+  (`RepeatDetector`, a numpy-vectorized k-mer scanner), and `sirnaforge.core.scoring`
+  (`compute_composite` and the per-term sub-score helpers).
+- Design-time repeat-element flagging: every distinct guide is scanned against the query
+  species' cDNA reference, and a guide occurring in more than 0.1%
+  (`DEFAULT_REPEAT_TRANSCRIPT_FRACTION`) of reference transcripts is flagged. New
+  `SiRNACandidate.repeat_flagged` / `repeat_transcript_fraction` fields record the verdict;
+  flagged, currently-passing candidates get the new `FilterStatus.REPEAT_ELEMENT` verdict and
+  are excluded from ranking. Costs roughly 47 s against the ~1 GB human cDNA reference (measured:
+  0.47 s for a 10.1 MB reference, 1,082 needles across three lengths), once per run against the
+  query species' reference only.
+- `FilterStatus.EXCESS_OFF_TARGETS`, raised when the redefined genuine off-target count exceeds
+  `OffTargetFilterCriteria.max_off_target_count`.
+- New output columns in `SiRNACandidate`, `SiRNACandidateSchema` and the results CSVs:
+  `on_target_hits`, `ortholog_hits`, `repeat_hits`, `ortholog_species`, `repeat_flagged`,
+  `repeat_transcript_fraction`, `isoform_coverage`, `conservation_score`, `score_asymmetry`,
+  `score_gc_content`, `score_accessibility`, `score_empirical`, `score_off_target`,
+  `score_isoform_coverage`, `score_conservation`, `scored_after_screening`, `weight_set_version`.
+- `design_summary` gains `repeat_excluded_count` and `repeat_threshold_fraction`.
+  `offtarget_summary` gains `hit_classes` (`on_target`/`ortholog`/`repeat`/`off_target` totals),
+  `query_gene_transcripts_recognised`, `ortholog_symbol_lookup_misses` and
+  `species_index_misses`.
+- `manifest.json` gains a `scoring` block: `{weight_set_version, weights, active_terms}`.
+
+### Changed
+
+- **`composite_score` is now computed _after_ off-target screening, from a seven-term weight
+  set (`asymmetry`, `gc_content`, `accessibility`, `empirical`, `off_target`, `isoform_coverage`,
+  `conservation`); prior scores are NOT COMPARABLE, and ranking order changes for essentially
+  every candidate. This is the intended outcome of the redefinition, not a regression.** The
+  weight-set version that produced a score is recorded in `manifest.json` as
+  `scoring.weight_set_version` (currently `"2.0.0"`; `1.x` denotes the pre-#80 five-term set),
+  so the two regimes cannot be silently compared. Weights, term by term:
+
+  | Term               | Old weight | New weight | Note                                                                                                 |
+  | ------------------ | ---------- | ---------- | ---------------------------------------------------------------------------------------------------- |
+  | `asymmetry`        | 0.15       | 0.12       |                                                                                                      |
+  | `gc_content`       | 0.15       | 0.10       |                                                                                                      |
+  | `accessibility`    | 0.20       | 0.13       |                                                                                                      |
+  | `empirical`        | 0.20       | 0.15       |                                                                                                      |
+  | `off_target`       | 0.30       | 0.25       | redefined: post-screen genuine-off-target specificity, not the design-time self-repetitiveness proxy |
+  | `isoform_coverage` | —          | 0.15       | new, post-screen                                                                                     |
+  | `conservation`     | —          | 0.10       | new, post-screen                                                                                     |
+
+- **`off_target_count` is redefined to count GENUINE off-targets only.** On-target, ortholog and
+  repeat-mediated hits are now classified into their own columns (`on_target_hits`,
+  `ortholog_hits`, `repeat_hits`) instead of inflating `off_target_count`; off-target counts for
+  the same target will drop substantially. The mismatch-stratified
+  `transcriptome_hits_{0,1,2}mm` counters are likewise redefined to count genuine off-targets
+  only, and the `max_transcriptome_hits_*` thresholds in `OffTargetFilterCriteria` are read
+  against those.
+- **Ortholog recognition previously worked only when the screened species was human.** The
+  transcript→gene index was built behind an `if transcriptome_species == "human"` gate into one
+  shared dict, so a mouse/rat/macaque hit could never be recognised as an ortholog of the query
+  gene. `TranscriptGeneIndex` now builds a separate index per species for every species
+  screened, keyed on gene symbol compared case-insensitively. Where a species' annotation
+  carries no symbol for a hit transcript, the hit stays `off_target` and the shortfall is
+  counted (`ortholog_symbol_lookup_misses`) rather than guessed at.
+- **Every distinct candidate sequence is now screened, not just the top-ranked passing
+  subset.** `_prepare_offtarget_input` deduplicates candidates by normalized guide sequence
+  before writing the off-target FASTA, and result integration fans the screening result for
+  each distinct sequence back out to every candidate sharing it, so per-record CSV output is
+  unchanged by the dedup. `top_n` no longer gates which candidates are screened — it keeps its
+  reporting meaning only (how many candidates land in `top_candidates`). Candidates are
+  re-ranked by the post-screen composite score once screening completes, and `top_candidates`
+  is rebuilt from the viable (passing, non-repeat-flagged) subset rather than staying frozen at
+  its design-time order.
+- The design-time self-repetitiveness proxy (repeated 7-mers _within_ the guide) is retained as
+  an unweighted diagnostic, `component_scores["design_off_target_proxy"]`; it no longer feeds
+  `composite_score` under any name. For the standalone `sirnaforge design` path (no screening),
+  the same scorer runs with the three post-screen terms inactive and renormalised, so
+  design-only and post-screen runs share one score definition.
+- `ScoringWeights` validation moved from a positional `field_validator` on `empirical` (which
+  summed only the fields Pydantic had already validated at that point, so it silently stopped
+  checking new weights as the term set grew) to a `model_validator(mode="after")` that sums all
+  seven fields by name; an out-of-tolerance sum now always raises at configuration time.
+- `SiRNACandidate.FilterStatus` gained the six off-target verdicts that previously existed only
+  as raw strings in `workflow.py` (`TRANSCRIPTOME_PERFECT_MATCH`, `TRANSCRIPTOME_1MM`,
+  `TRANSCRIPTOME_2MM`, `MIRNA_PERFECT_SEED`, `HIGH_RISK_MIRNA`, `TOTAL_OFFTARGETS`), plus
+  `REPEAT_ELEMENT` and `EXCESS_OFF_TARGETS`. The Pandera allow-list in `SiRNACandidateSchema`
+  now derives from the enum instead of maintaining its own copy, so the two cannot drift again.
+
+### Removed
+
+- **Eight `FilterCriteria` thermodynamic windows that were declared but never enforced** — no
+  CLI flag exposed any of them: `mfe_min`, `mfe_max`, `duplex_stability_min`,
+  `duplex_stability_max`, `melting_temp_min`, `melting_temp_max`, `delta_dg_end_min`,
+  `delta_dg_end_max`. Re-deriving correct windows is deliberately out of scope for this change.
+- `FilterCriteria.max_off_target_count` — design time cannot know the genuine off-target count,
+  so it never gated anything there. Moved to `OffTargetFilterCriteria.max_off_target_count`,
+  where it is now enforced post-screen (see `FilterStatus.EXCESS_OFF_TARGETS` above).
+- `SiRNACandidate.on_target_transcriptome_hits` (and its CSV column), superseded by
+  `on_target_hits`: two columns for the same quantity would drift, and the older one was only
+  one release old. `on_target_confirmed` is unchanged — it still answers "was any hit recognised
+  as the query gene?", a different question from the new hit count.
+
+## [0.5.2] - 2026-09-02
+
+Correctness release for the candidate selection/scoring arm, from the audit in
+[#78](https://github.com/Austin-s-h/sirnaforge/issues/78). **Behavior note: every
+thermodynamic column and the pass/fail composition change. Results are not comparable with
+0.5.1 or earlier, and re-running an earlier design will select different candidates.** The
+off-target arm (transcriptome + miRNA seed) is unaffected.
+
+### Fixed
 
 - **Duplex thermodynamics folded each strand against itself.** `passenger_sequence` is
   already the reverse complement of `guide_sequence`, but both ViennaRNA call sites

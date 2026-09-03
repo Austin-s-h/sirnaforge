@@ -25,10 +25,14 @@ graph TD
     C --> C1[siRNA Design]
     C --> C2[Thermodynamics]
     C --> C3[Off-target Analysis]
+    C --> C4[Hit Classification]
+    C --> C5[Repeat Detection]
+    C --> C6[Composite Scoring]
 
     D --> D1[Gene Search]
     D --> D2[ORF Analysis]
     D --> D3[External APIs]
+    D --> D4[Transcript-Gene Index]
 
     E --> E1[Nextflow Pipeline]
     E --> E2[Docker Integration]
@@ -67,8 +71,11 @@ sequenceDiagram
 
     Workflow->>Core: design_sirnas(transcripts)
     Core->>Core: thermodynamic_analysis()
-    Core->>Core: off_target_prediction()
-    Core-->>Workflow: scored_candidates
+    Core->>Core: repeat_detection() (distinct guides vs. query species reference)
+    Workflow->>Core: dedupe_by_sequence() + off_target_prediction() (every distinct sequence)
+    Core->>Core: classify_hit() x4 (on-target / ortholog / repeat / off-target)
+    Core->>Core: compute_composite() (score once, post-screen)
+    Core-->>Workflow: scored_candidates, ranked
 
     Workflow->>CLI: results_summary
     CLI->>User: formatted_output + files
@@ -89,6 +96,9 @@ graph TB
             D[design.py<br/>siRNA Design]
             E[thermodynamics.py<br/>RNA Folding]
             F[off_target.py<br/>Off-target Analysis]
+            P[hit_classification.py<br/>4-way Hit Classifier]
+            Q[repeat_detection.py<br/>Repeat-element Scan]
+            R[scoring.py<br/>Composite Scorer]
         end
 
         subgraph "Data Models"
@@ -100,6 +110,7 @@ graph TB
             I[gene_search.py<br/>Gene/Transcript Search]
             J[orf_analysis.py<br/>ORF Analysis]
             K[base.py<br/>Base Classes]
+            S[transcript_index.py<br/>Per-species Transcript-Gene Index]
         end
 
         subgraph "Pipeline Integration"
@@ -119,27 +130,39 @@ graph TB
     C --> F
     C --> I
     C --> J
+    C --> P
+    C --> Q
+    C --> R
+    P --> S
+    P --> Q
 
     D --> G
     E --> G
     F --> G
     I --> G
     J --> G
+    P --> G
+    R --> G
 
     C --> L
 
     style D fill:#e8f5e8
     style E fill:#e8f5e8
     style F fill:#e8f5e8
+    style P fill:#e8f5e8
+    style Q fill:#e8f5e8
+    style R fill:#e8f5e8
     style G fill:#fff3e0
     style H fill:#fff3e0
     style I fill:#f3e5f5
     style J fill:#f3e5f5
     style K fill:#f3e5f5
+    style S fill:#f3e5f5
 </div>
 ```
 
 ### Directory Structure
+
 ```
 src/sirnaforge/
 ├── __init__.py          # Package initialization and version
@@ -147,9 +170,12 @@ src/sirnaforge/
 ├── workflow.py         # High-level workflow orchestration
 │
 ├── core/               # Core algorithms and business logic
-│   ├── design.py      # siRNA design algorithms
-│   ├── thermodynamics.py  # RNA folding and energy calculations
-│   └── off_target.py  # Off-target prediction algorithms
+│   ├── design.py             # siRNA design algorithms
+│   ├── thermodynamics.py     # RNA folding and energy calculations
+│   ├── off_target.py         # Off-target prediction algorithms
+│   ├── hit_classification.py # Four-way hit classifier (on-target/ortholog/repeat/off-target)
+│   ├── repeat_detection.py   # Reference-relative repeat-element flagging (numpy k-mer scan)
+│   └── scoring.py            # Composite scorer (compute_composite, sub-score helpers)
 │
 ├── models/             # Data models and validation
 │   ├── sirna.py       # Pydantic models for siRNA data
@@ -158,7 +184,8 @@ src/sirnaforge/
 ├── data/               # Data access and external APIs
 │   ├── base.py        # Base classes for data providers
 │   ├── gene_search.py # Gene/transcript search functionality
-│   └── orf_analysis.py # Open reading frame analysis
+│   ├── orf_analysis.py # Open reading frame analysis
+│   └── transcript_index.py # Per-species transcript->gene index for hit classification
 │
 ├── pipeline/           # Pipeline and workflow integration
 │   ├── nextflow/      # Nextflow workflow configs and runners
@@ -180,10 +207,12 @@ src/sirnaforge/
 **Purpose**: User interface and command orchestration
 
 **Technologies**:
+
 - [Typer](https://typer.tiangolo.com/) for CLI framework
 - [Rich](https://rich.readthedocs.io/) for beautiful output
 
 **Responsibilities**:
+
 - Command parsing and validation
 - Progress indicators and user feedback
 - Error handling and user-friendly messages
@@ -200,6 +229,7 @@ The `sirnaforge.config.reference_policy` module centralizes how user inputs and 
 **Pattern**: Facade/Coordinator
 
 **Responsibilities**:
+
 - Coordinate multi-step workflows
 - Handle data flow between components
 - Manage temporary files and outputs
@@ -214,6 +244,7 @@ The `sirnaforge.config.reference_policy` module centralizes how user inputs and 
 #### Core Components:
 
 ##### `design.py` - siRNA Design Engine
+
 ```python
 class SiRNADesigner:
     """Main siRNA design orchestrator"""
@@ -226,6 +257,7 @@ class DesignParameters:
 ```
 
 ##### `thermodynamics.py` - RNA Structure Analysis
+
 ```python
 class ThermodynamicsCalculator:
     """ViennaRNA integration for structure prediction and asymmetry scoring"""
@@ -242,18 +274,21 @@ class SecondaryStructure:
 The thermodynamic asymmetry scoring is a critical component that predicts guide strand selection into RISC (RNA-induced silencing complex). This implementation is based on research showing that siRNAs with less stable 5' ends on the guide strand are more effectively incorporated into RISC.
 
 **Key Research Foundation:**
+
 - Khvorova A et al. (2003): Demonstrated thermodynamic asymmetry importance for RISC incorporation
 - Naito Y et al. (2009): Established thermodynamic stability as a major determinant of siRNA efficiency
 - Amarzguioui M and Prydz H (2004): Identified asymmetry as critical for distinguishing target genes
 - Ichihara M et al. (2017): Comprehensive principles including thermodynamic asymmetry for efficacy prediction
 
 **Algorithm Components:**
+
 1. **5' End Stability Analysis**: Calculates free energy of duplex 5' terminus (positions 1-4)
 2. **3' End Stability Analysis**: Calculates free energy of duplex 3' terminus (positions -4 to -1)
 3. **Asymmetry Ratio Calculation**: Measures stability difference (ΔG₃' - ΔG₅')
 4. **Strand Bias Prediction**: Predicts likelihood of correct guide strand selection
 
 ##### `off_target.py` - Specificity Analysis
+
 ```python
 class OffTargetPredictor:
     """Multi-genome off-target prediction"""
@@ -270,6 +305,55 @@ class AlignmentResult:
 - `exhaustive_python` remains the strict correctness oracle for parity and regression testing.
 - `BWA` remains available as the semantic comparison baseline for container-backed validation, not as the default user path.
 - The ZFN and miRNA systems share the same rollout policy pattern: keep a trusted baseline, promote an optimized default only after parity coverage exists, and avoid widening the public backend-selection surface until the behavior is well proven.
+
+**Alignment vs. classification split (issue #80):** `off_target.py`/Nextflow produce raw
+alignment hits only (transcript ID, mismatch count, species); they do not know which hits are
+on-target, ortholog, repeat-mediated or genuinely off-target. That decomposition happens
+entirely downstream, in Python, after the Nextflow run completes. The Nextflow layer itself is
+unchanged by this work: no `.nf` file or Nextflow config references a candidate-level column
+like `off_target_count`, `on_target_hits` or `composite_score` (verified by grep across
+`pipeline/nextflow/workflows/`).
+
+##### `hit_classification.py` - Four-way Hit Classifier
+
+```python
+class HitClass(str, Enum):
+    """ON_TARGET | ORTHOLOG | REPEAT | OFF_TARGET"""
+
+def classify_hit(hit, guide_sequence, context: ClassificationContext) -> HitClassification:
+    """Pure function: no I/O, no alignment, no logging side effects."""
+```
+
+Precedence order: `ON_TARGET` (query gene, query species), then `ORTHOLOG` (same gene symbol,
+case-insensitive, in another screened species), then `REPEAT` (guide is design-time
+repeat-flagged), then `OFF_TARGET` (everything else). Consumes a multi-species
+`TranscriptGeneIndex` (`data/transcript_index.py`), which holds one `SpeciesTranscriptIndex` per
+species so a hit's species is never confused with another species' index.
+
+##### `repeat_detection.py` - Reference-relative Repeat Flagging
+
+```python
+class RepeatDetector:
+    """Flags guides occurring in more than threshold_fraction of reference transcripts."""
+    def scan(self, sequences, reference_fasta) -> RepeatScanResult: ...
+```
+
+Runs once per workflow, over the distinct guide set, against the query species' cDNA reference
+only — never per candidate, never per species. Vectorised with numpy (2-bit-encoded rolling
+k-mer codes + `np.searchsorted`) rather than a per-window Python loop, because a 1 GB reference
+has on the order of 10^9 k-mer windows.
+
+##### `scoring.py` - Composite Scorer
+
+```python
+def compute_composite(features, weights, active_terms=None) -> CompositeScore:
+    """Pure function. Renormalises weights over the active term set."""
+```
+
+The single place `composite_score` is computed, for both the design-time-only path (three
+post-screen terms inactive) and the post-screen path (all seven terms active). `workflow.py` and
+`core/design.py` both call into this one function rather than each computing their own weighted
+sum.
 
 ### 4. Model Layer (`models/`)
 
@@ -307,12 +391,14 @@ class FilterCriteria(BaseModel):
     min_asymmetry_score: float = 0.65
 
 class ScoringWeights(BaseModel):
-    """Relative weights for composite scoring"""
-    asymmetry: float = 0.25
-    gc_content: float = 0.20
-    accessibility: float = 0.25
-    off_target: float = 0.20
-    empirical: float = 0.10
+    """Relative weights for composite scoring (seven terms, must sum to 1.0)"""
+    asymmetry: float = 0.12
+    gc_content: float = 0.10
+    accessibility: float = 0.13
+    empirical: float = 0.15
+    off_target: float = 0.25         # post-screen genuine off-target specificity
+    isoform_coverage: float = 0.15   # post-screen, new in issue #80
+    conservation: float = 0.10       # post-screen, new in issue #80
 ```
 
 ### 5. Data Layer (`data/`)
@@ -324,6 +410,7 @@ class ScoringWeights(BaseModel):
 #### Data Providers:
 
 ##### `gene_search.py` - Gene Information Retrieval
+
 ```python
 class GeneSearcher:
     """Multi-database gene search"""
@@ -342,6 +429,7 @@ class GencodeClient(AbstractDatabaseClient):
 ```
 
 ##### `orf_analysis.py` - Sequence Analysis
+
 ```python
 class ORFAnalyzer:
     """Open reading frame validation"""
@@ -358,6 +446,7 @@ class ORFAnalyzer:
 #### Validation Components:
 
 ##### `config.py` - Validation Configuration
+
 ```python
 class ValidationConfig(BaseModel):
     """Configuration for validation system"""
@@ -376,6 +465,7 @@ class ValidationStage(str, Enum):
 ```
 
 ##### `utils.py` - Validation Utilities
+
 ```python
 class ValidationResult:
     """Container for validation results"""
@@ -394,6 +484,7 @@ def validate_fasta_sequences(sequences: list) -> ValidationResult:
 **Technologies**: Nextflow, Docker
 
 **Responsibilities**:
+
 - Nextflow workflow orchestration
 - Docker container management
 - Batch processing coordination
@@ -402,6 +493,7 @@ def validate_fasta_sequences(sequences: list) -> ValidationResult:
 #### Pipeline Components:
 
 ##### `nextflow/` - Workflow Management
+
 ```python
 class NextflowConfig:
     """Nextflow execution configuration"""
@@ -411,6 +503,7 @@ class NextflowRunner:
 ```
 
 ##### `resources/` - Resource Management
+
 ```python
 class ResourceManager:
     """Compute resource allocation and monitoring"""
@@ -435,6 +528,7 @@ class DesignParameters(BaseModel):
 ### 2. Separation of Concerns
 
 Each layer has distinct responsibilities:
+
 - **CLI**: User interaction
 - **Workflow**: Process orchestration
 - **Core**: Algorithm implementation
@@ -500,16 +594,23 @@ class NextflowConfig(BaseModel):
 
 ### 1. Complete Workflow
 
+As of issue #80, off-target screening happens once per **distinct guide sequence**, and
+classification/scoring happen after screening completes, not interleaved with design:
+
 ```{mermaid}
 graph TD
     A[Gene Query] --> B[Gene Search]
     B --> C[Transcript Retrieval]
     C --> D[ORF Analysis]
-    D --> E[siRNA Design]
-    E --> F[Thermodynamic Analysis]
-    F --> G[Off-target Prediction]
-    G --> H[Scoring & Ranking]
-    H --> I[Output Generation]
+    D --> E[siRNA Design: enumerate + component filters]
+    E --> F[Repeat Detection: distinct guides vs. query species reference]
+    F --> G[Dedupe by normalized guide sequence]
+    G --> H[Screen every distinct sequence: BWA-MEM2 + Nextflow]
+    H --> I[Classify each hit: on-target / ortholog / repeat / off-target]
+    I --> J[Aggregate hit counts per candidate, fan out to shared sequences]
+    J --> K[Score once: compute_composite over the active term set]
+    K --> L[Rank]
+    L --> M[Output Generation]
 ```
 
 ### 2. Component Interaction
@@ -615,16 +716,19 @@ def calculate_thermodynamics(sequence: str) -> ThermodynamicResult:
 ## Testing Architecture
 
 ### 1. Unit Tests (`tests/unit/`)
+
 - Test individual components in isolation
 - Mock external dependencies
 - Focus on algorithm correctness
 
 ### 2. Integration Tests (`tests/integration/`)
+
 - Test component interactions
 - Use real external services (with rate limiting)
 - Validate end-to-end workflows
 
 ### 3. Pipeline Tests (`tests/pipeline/`)
+
 - Test Nextflow pipeline components
 - Container-based testing
 - Resource usage validation
@@ -632,16 +736,19 @@ def calculate_thermodynamics(sequence: str) -> ThermodynamicResult:
 ## Deployment Architecture
 
 ### 1. Local Development
+
 - `uv` for dependency management
 - Direct Python execution
 - Local debugging and testing
 
 ### 2. Container Deployment
+
 - Multi-stage Docker builds
 - Optimized for size and security
 - Environment-specific configurations
 
 ### 3. Pipeline Deployment
+
 - Nextflow for workflow orchestration
 - Support for multiple execution platforms
 - Resource management and monitoring
@@ -649,16 +756,19 @@ def calculate_thermodynamics(sequence: str) -> ThermodynamicResult:
 ## Future Architecture Considerations
 
 ### 1. Microservices
+
 - Potential split into specialized services
 - API gateway for service coordination
 - Independent scaling of components
 
 ### 2. Cloud Integration
+
 - Cloud storage for large datasets
 - Serverless functions for lightweight operations
 - Managed services for databases
 
 ### 3. Plugin System
+
 - Dynamic loading of algorithms
 - Third-party extensions
 - Community contributions

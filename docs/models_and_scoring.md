@@ -47,16 +47,41 @@ class SiRNACandidate(BaseModel):
 
     # Off-target metrics
     off_target_screened: bool  # False = never screened, so the counts below are unknown
-    off_target_count: int      # Potential off-target sites (goal: ≤3)
-    transcriptome_hits_0mm: int   # Perfect match hits
-    transcriptome_hits_1mm: int   # 1-mismatch hits
-    transcriptome_hits_2mm: int   # 2-mismatch hits
+    off_target_count: int      # Genuine off-target sites only (goal: ≤3); on-target,
+                                # ortholog and repeat-mediated hits are excluded
+    transcriptome_hits_0mm: int   # Perfect match GENUINE off-target hits
+    transcriptome_hits_1mm: int   # 1-mismatch GENUINE off-target hits
+    transcriptome_hits_2mm: int   # 2-mismatch GENUINE off-target hits
     mirna_hits_total: int         # Total miRNA seed matches
     mirna_hits_0mm_seed: int      # Perfect seed matches
 
+    # Hit classification (four-way: on-target, ortholog, repeat, off-target)
+    on_target_hits: int        # Hits on the query gene in the query species
+    ortholog_hits: int         # Hits on the query gene's ortholog in another screened species
+    repeat_hits: int           # Hits attributable to a flagged repeat element
+    ortholog_species: str      # Comma-separated canonical species with an ortholog hit
+
+    # Repeat detection (design-time k-mer frequency check)
+    repeat_flagged: bool             # Guide exceeds the repeat transcript-fraction threshold
+    repeat_transcript_fraction: float  # Fraction of reference transcripts containing the guide
+
+    # Post-screen sub-scores (inactive/None until screening has run, or when there is no
+    # evidence to compute them from -- see ScoringWeights below)
+    isoform_coverage: float | None     # Protein-coding isoform coverage sub-score
+    conservation_score: float | None   # Cross-species ortholog conservation sub-score
+
     # Scoring
-    composite_score: float     # Overall quality (0-100 scale)
-    component_scores: dict     # Individual scoring components
+    composite_score: float     # Overall quality (0-100 scale), computed once, after screening
+    component_scores: dict     # Individual scoring components (design-time diagnostics)
+    score_asymmetry: float | None       # Per-term composite contributions
+    score_gc_content: float | None
+    score_accessibility: float | None
+    score_empirical: float | None
+    score_off_target: float | None
+    score_isoform_coverage: float | None
+    score_conservation: float | None
+    scored_after_screening: bool  # True once off_target/isoform_coverage/conservation are active
+    weight_set_version: str       # Weight set that produced composite_score ("" = not yet scored)
     passes_filters: bool|FilterStatus  # Quality control status
 ```
 
@@ -116,28 +141,6 @@ class FilterCriteria(BaseModel):
 
     # Empirical design rules -> gates the empirical component score (range 0.4-0.7)
     min_empirical_score: float = 0.5
-
-    # --- Reference ranges below: NOT enforced by SiRNADesigner (see issue #78) ---
-
-    # MFE thresholds (kcal/mol)
-    mfe_min: float = -8.0      # Too stable (more negative)
-    mfe_max: float = -2.0      # Too unstable (less negative)
-
-    # Duplex stability (kcal/mol). Legacy window, predates the strand-orientation
-    # fix: a fully paired 21mer measures -32 to -43 kcal/mol.
-    duplex_stability_min: float = -25.0
-    duplex_stability_max: float = -15.0
-
-    # Melting temperature (°C, for mammalian cells)
-    melting_temp_min: float = 60.0
-    melting_temp_max: float = 78.0
-
-    # End asymmetry ΔΔG = dg_5p - dg_3p (kcal/mol)
-    delta_dg_end_min: float = 2.0
-    delta_dg_end_max: float = 6.0
-
-    # Off-target limits
-    max_off_target_count: int = 3
 ```
 
 Each threshold gates the quantity it is named after: `min_asymmetry_score` is compared
@@ -146,39 +149,61 @@ against `asymmetry_score`, `min_empirical_score` against the empirical component
 value the rule can never reach is rejected at construction instead of silently failing
 every candidate.
 
+Issue #80 removed eight thermodynamic windows that used to live here (`mfe_min`, `mfe_max`,
+`duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`, `melting_temp_max`,
+`delta_dg_end_min`, `delta_dg_end_max`): they were declared but never enforced by
+`SiRNADesigner` (no CLI flag exposed any of them), and re-deriving correct windows against
+truth data is deliberately out of scope. `max_off_target_count` also used to live here; it
+moved to `OffTargetFilterCriteria` below, since design time cannot know a genuine off-target
+count that only exists after screening.
+
 ### 1.4 OffTargetFilterCriteria
 
-Specialized filtering for off-target analysis results:
+Specialized filtering for off-target analysis results, applied after screening:
 
 ```python
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
-    # Transcriptome off-targets (mismatch tolerance)
-    max_transcriptome_hits_0mm: int = 0    # Perfect matches
-    max_transcriptome_hits_1mm: int = 5    # 1-mismatch hits
-    max_transcriptome_hits_2mm: int = 20   # 2-mismatch hits
+    # Genuine off-target count (on-target, ortholog and repeat hits excluded)
+    max_off_target_count: int = 3
+
+    # Transcriptome GENUINE off-targets (mismatch tolerance)
+    max_transcriptome_hits_0mm: int = 1    # Perfect matches
+    max_transcriptome_hits_1mm: int = 10   # 1-mismatch hits
+    max_transcriptome_hits_2mm: int = 50   # 2-mismatch hits
 
     # miRNA seed matches (positions 2-8)
-    max_mirna_perfect_seed: int = 3
+    max_mirna_perfect_seed: int = 0
     max_mirna_1mm_seed: int = 10
     fail_on_high_risk_mirna: bool = True
 ```
 
 ### 1.5 ScoringWeights
 
-Relative weights for composite scoring:
+Relative weights for composite scoring (seven terms as of issue #80; must sum to 1.0):
 
 ```python
 class ScoringWeights(BaseModel):
     """Component weights for composite scoring (must sum to 1.0)."""
 
-    asymmetry: float = 0.15      # Thermodynamic asymmetry
-    gc_content: float = 0.15     # GC optimization
-    accessibility: float = 0.20  # Target accessibility
-    off_target: float = 0.30     # Design-time off-target proxy (see 2.6)
-    empirical: float = 0.20      # Position-specific rules
+    asymmetry: float = 0.12         # Thermodynamic asymmetry
+    gc_content: float = 0.10        # GC optimization
+    accessibility: float = 0.13     # Target accessibility
+    empirical: float = 0.15         # Position-specific rules
+    off_target: float = 0.25        # Post-screen genuine off-target specificity (see 2.6)
+    isoform_coverage: float = 0.15  # Post-screen protein-coding isoform coverage (new)
+    conservation: float = 0.10      # Post-screen cross-species ortholog conservation (new)
 ```
+
+Validation is a `@model_validator(mode="after")` that sums all seven fields by name
+(`COMPOSITE_TERM_NAMES`), not a `field_validator` that only sees fields declared earlier in the
+class -- the previous positional check silently stopped seeing new weights as the term set grew.
+
+`off_target`, `isoform_coverage` and `conservation` cannot be evaluated until off-target
+screening has run, so they are inactive at design time. `compute_composite` (see 2.1) renormalises
+the weights of whichever terms _are_ active, so a design-time-only score and a post-screen score
+are both legitimate 0-100 values from the same weight set, not two incompatible scales.
 
 ---
 
@@ -186,11 +211,15 @@ class ScoringWeights(BaseModel):
 
 ### 2.1 Composite Score Calculation
 
-The composite score integrates multiple evidence-based components:
+The composite score integrates seven evidence-based components, computed once by
+`compute_composite` over whichever terms are _active_ for that candidate:
 
-$$\text{Composite} = \sum_{i} w_i \times S_i \times 100$$
+$$\text{Composite} = \sum_{i \in \text{active}} w_i' \times S_i \times 100, \quad w_i' = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
-Where $w_i$ are configurable weights and $S_i$ are normalized component scores (0-1).
+Where $w_i$ are the configured `ScoringWeights`, $w_i'$ is the weight renormalised over the
+active term set, and $S_i$ are normalized component scores (0-1). A term is active when its
+sub-score could be computed for that candidate (see 1.5); inactive terms are omitted, not
+scored zero, so $\sum_i w_i'$ over the active set is always 1.
 
 ### 2.2 Thermodynamic Asymmetry Score
 
@@ -310,15 +339,24 @@ def _calculate_accessibility_score(candidate) -> float:
 
 ### 2.6 Off-Target Score
 
-Specificity prediction based on internal repetitive sequences:
+As of issue #80, the `off_target` term contributing to `composite_score` is the **post-screen
+genuine-off-target specificity** sub-score, computed by
+`sirnaforge.core.scoring.off_target_sub_score` from the redefined `off_target_count` (on-target,
+ortholog and repeat-mediated hits excluded):
 
-$$\text{OT\_score} = \exp\left(-\frac{\text{penalty}}{50}\right)$$
+$$\text{off\_target} = \exp\left(-\frac{\text{genuine\_off\_target\_count}}{10}\right)$$
 
-**Implementation**:
+Zero genuine off-targets scores 1.0; the score decays toward 0 as the count grows. This term is
+inactive until screening has run (see 1.5), so it is absent from a design-time-only score.
+
+**Design-time diagnostic (not part of `composite_score`)**: `SiRNADesigner` still computes a
+self-repetitiveness proxy over internal repeated 7-mers, based on internal repetitive sequences:
+
+$$\text{design\_off\_target\_proxy} = \exp\left(-\frac{\text{penalty}}{50}\right)$$
 
 ```python
 def _calculate_off_target_score(candidate) -> float:
-    """Penalty for repetitive 7-mer sequences."""
+    """Diagnostic only: penalty for repetitive 7-mer sequences within the guide."""
     penalty = 0
     for i in range(len(guide) - 6):
         seed = guide[i:i+7]
@@ -327,7 +365,12 @@ def _calculate_off_target_score(candidate) -> float:
     return math.exp(-penalty / 50)
 ```
 
-**`[REVIEW NEEDED]`**: Current implementation is simplified. Full off-target analysis uses BWA-MEM2 alignment against reference genomes in the Nextflow pipeline.
+This value is stored in `component_scores["design_off_target_proxy"]` and reported for
+diagnostic purposes only; it does not feed `composite_score` under any name. Full off-target
+analysis uses BWA-MEM2 alignment against reference transcriptomes in the Nextflow pipeline,
+followed by the four-way hit classifier (`sirnaforge.core.hit_classification`); that
+decomposition, not the internal-repeat proxy, is what `off_target_count` and the `off_target`
+scoring term are based on.
 
 ### 2.7 Empirical Score (Reynolds Rules)
 
@@ -410,7 +453,36 @@ Only the first failure is recorded. Before 0.5.2, `LOW_ASYMMETRY` was assigned b
 the _empirical_ score against `min_asymmetry_score`: it reported the wrong reason, and
 `asymmetry_score` was never gated at all.
 
-### 3.3 Filter Status Codes
+Between design-time filtering and post-screen filtering, issue #80 added one more design-time
+gate, applied to every distinct guide against the query species' cDNA reference:
+
+| Filter           | Condition                                       | Rationale                                 |
+| ---------------- | ----------------------------------------------- | ----------------------------------------- |
+| `REPEAT_ELEMENT` | guide occurs in > 0.1% of reference transcripts | Flags guides overlapping a repeat element |
+
+`REPEAT_ELEMENT` is applied only if the candidate is currently passing (existing failures are not
+overwritten), and it excludes the candidate from ranking.
+
+### 3.3 Post-Screen Off-Target Filters
+
+Applied once transcriptome/miRNA screening has run, against `OffTargetFilterCriteria`
+(see 1.4). These now gate the **redefined, genuine-off-target-only** counts:
+
+| Filter                        | Condition                                                        | Rationale                          |
+| ----------------------------- | ---------------------------------------------------------------- | ---------------------------------- |
+| `TRANSCRIPTOME_PERFECT_MATCH` | 0-mismatch genuine off-targets > `max_transcriptome_hits_0mm`    | Perfect-match specificity          |
+| `TRANSCRIPTOME_1MM`           | 1-mismatch genuine off-targets > `max_transcriptome_hits_1mm`    | Near-miss specificity              |
+| `TRANSCRIPTOME_2MM`           | 2-mismatch genuine off-targets > `max_transcriptome_hits_2mm`    | Broader specificity                |
+| `MIRNA_PERFECT_SEED`          | perfect miRNA seed hits > `max_mirna_perfect_seed`               | miRNA-mimicry risk                 |
+| `HIGH_RISK_MIRNA`             | perfect seed + `offtarget_score` < 5.0                           | Strong-binding miRNA mimicry       |
+| `TOTAL_OFFTARGETS`            | combined transcriptome + miRNA hits > `max_total_offtarget_hits` | Aggregate specificity              |
+| `EXCESS_OFF_TARGETS`          | genuine off-target count > `max_off_target_count`                | Overall genuine-off-target ceiling |
+
+These six verdicts previously existed only as raw strings assembled in `workflow.py`; they are
+now members of `FilterStatus` (see 3.4), and the Pandera allow-list for the `passes_filters`
+column derives from the enum instead of maintaining an independent copy that could drift from it.
+
+### 3.4 Filter Status Codes
 
 ```python
 class FilterStatus(str, Enum):
@@ -421,7 +493,33 @@ class FilterStatus(str, Enum):
     LOW_ASYMMETRY = "LOW_ASYMMETRY"  # Poor thermodynamic asymmetry
     LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"  # Fails the empirical design rules
     DIRTY_CONTROL = "DIRTY_CONTROL"  # Reserved for controls
+    REPEAT_ELEMENT = "REPEAT_ELEMENT"  # Design-time repeat k-mer verdict
+    EXCESS_OFF_TARGETS = "EXCESS_OFF_TARGETS"  # Post-screen genuine off-target ceiling
+    TRANSCRIPTOME_PERFECT_MATCH = "TRANSCRIPTOME_PERFECT_MATCH"
+    TRANSCRIPTOME_1MM = "TRANSCRIPTOME_1MM"
+    TRANSCRIPTOME_2MM = "TRANSCRIPTOME_2MM"
+    MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
+    HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
+    TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
 ```
+
+### 3.5 Hit Classes (`sirnaforge.core.hit_classification.HitClass`)
+
+Every transcriptome hit is classified into exactly one of four mutually exclusive classes,
+checked in this precedence order (on-target and ortholog deliberately outrank repeat, so a
+repeat-flagged guide's hits on its own gene or orthologs are still counted as such):
+
+| Class        | Meaning                                                                                                                                         |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ON_TARGET`  | Hit is in the query species and matches the query gene (transcript ID, gene ID or symbol)                                                       |
+| `ORTHOLOG`   | Hit is in a different screened species, and that species' gene symbol for the hit transcript matches the query gene's symbol (case-insensitive) |
+| `REPEAT`     | The guide is in the design-time repeat-flagged set                                                                                              |
+| `OFF_TARGET` | Everything else -- this is what `off_target_count` counts                                                                                       |
+
+A hit whose species label is blank/missing is treated as the query species. When an ortholog
+check cannot run because the hit species' annotation carries no gene symbol for that transcript,
+the hit stays `OFF_TARGET` (never guessed at) and the shortfall is counted separately
+(`ortholog_symbol_lookup_misses` in `offtarget_summary`).
 
 ---
 
@@ -648,35 +746,36 @@ class ChemicalModification(BaseModel):
 
 ## Appendix A: Default Parameter Summary
 
-| Parameter              | Default | Range    | Justification          |
-| ---------------------- | ------- | -------- | ---------------------- |
-| `sirna_length`         | 21      | 19-23    | Standard duplex length |
-| `gc_min`               | 35.0    | 0-100    | Minimum stability      |
-| `gc_max`               | 60.0    | 0-100    | Maximum stability      |
-| `max_poly_runs`        | 3       | 1+       | Synthesis/specificity  |
-| `max_paired_fraction`  | 0.6     | 0-1      | Accessibility          |
-| `min_asymmetry_score`  | 0.65    | 0.3-1    | Strand selection       |
-| `min_empirical_score`  | 0.5     | 0.4-0.7  | Position preferences   |
-| `mfe_min`              | -8.0    | kcal/mol | Structure stability    |
-| `mfe_max`              | -2.0    | kcal/mol | Structure stability    |
-| `duplex_stability_min` | -25.0   | kcal/mol | Duplex formation       |
-| `duplex_stability_max` | -15.0   | kcal/mol | Duplex formation       |
-| `melting_temp_min`     | 60.0    | °C       | Mammalian cells        |
-| `melting_temp_max`     | 78.0    | °C       | Mammalian cells        |
-| `max_off_target_count` | 3       | 0+       | Specificity            |
+| Parameter             | Default | Range   | Justification          |
+| --------------------- | ------- | ------- | ---------------------- |
+| `sirna_length`        | 21      | 19-23   | Standard duplex length |
+| `gc_min`              | 35.0    | 0-100   | Minimum stability      |
+| `gc_max`              | 60.0    | 0-100   | Maximum stability      |
+| `max_poly_runs`       | 3       | 1+      | Synthesis/specificity  |
+| `max_paired_fraction` | 0.6     | 0-1     | Accessibility          |
+| `min_asymmetry_score` | 0.65    | 0.3-1   | Strand selection       |
+| `min_empirical_score` | 0.5     | 0.4-0.7 | Position preferences   |
 
-`mfe_*`, `duplex_stability_*`, `melting_temp_*`, `delta_dg_end_*` and
-`max_off_target_count` are reference ranges: `SiRNADesigner` does not enforce them.
+`mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
+`melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
+in issue #80: they were declared but never enforced by `SiRNADesigner`, and re-deriving correct
+windows against truth data is deliberately out of scope. `max_off_target_count` (default `3`,
+range `0+`, justification: specificity) moved to `OffTargetFilterCriteria`, where it is enforced
+post-screen against the genuine off-target count (see 1.4 and 3.3).
 
 ## Appendix B: Scoring Weight Defaults
 
-| Component     | Weight | Rationale                       |
-| ------------- | ------ | ------------------------------- |
-| Asymmetry     | 0.15   | Most predictive single factor   |
-| GC Content    | 0.15   | Stability/accessibility balance |
-| Accessibility | 0.20   | Target site availability        |
-| Off-target    | 0.30   | Specificity importance          |
-| Empirical     | 0.20   | Position-specific fine-tuning   |
+| Component        | Weight | Rationale                                           |
+| ---------------- | ------ | --------------------------------------------------- |
+| Asymmetry        | 0.12   | Most predictive single factor                       |
+| GC Content       | 0.10   | Stability/accessibility balance                     |
+| Accessibility    | 0.13   | Target site availability                            |
+| Empirical        | 0.15   | Position-specific fine-tuning                       |
+| Off-target       | 0.25   | Post-screen genuine off-target specificity          |
+| Isoform coverage | 0.15   | Protein-coding isoform targeting completeness (new) |
+| Conservation     | 0.10   | Cross-species ortholog specificity check (new)      |
+
+Weight-set version `2.0.0`; `1.x` denotes the pre-issue-#80 five-term set and is not comparable.
 
 ---
 

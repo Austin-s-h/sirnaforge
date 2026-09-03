@@ -4,16 +4,22 @@ This guide helps you interpret the thermodynamic metrics in siRNAforge output fi
 
 ## Quick Reference Table
 
-| Metric | Optimal Range | Good Range | Poor Range | Units |
-|--------|---------------|------------|------------|-------|
-| **GC Content** | 40-55% | 35-60% | <35% or >65% | % |
-| **Asymmetry Score** | 0.7-1.0 | 0.6-0.8 | <0.5 | 0-1 scale |
-| **Paired Fraction** | 0.5-0.7 | 0.4-0.8 | <0.3 or >0.9 | 0-1 scale |
-| **MFE** | -4 to -7 | -2 to -8 | <-10 or >0 | kcal/mol |
-| **Duplex Stability ΔG** | see note | see note | — | kcal/mol |
-| **Delta ΔG End** (`dg_5p - dg_3p`) | +2 to +5 | +1 to +6 | <0 | kcal/mol |
-| **Melting Temp** | 65-75°C | 60-78°C | <50°C or >80°C | °C |
-| **Off-target Count** | 0-1 | 0-3 | >5 | count |
+| Metric                             | Optimal Range | Good Range | Poor Range     | Units     |
+| ---------------------------------- | ------------- | ---------- | -------------- | --------- |
+| **GC Content**                     | 40-55%        | 35-60%     | <35% or >65%   | %         |
+| **Asymmetry Score**                | 0.7-1.0       | 0.6-0.8    | <0.5           | 0-1 scale |
+| **Paired Fraction**                | 0.5-0.7       | 0.4-0.8    | <0.3 or >0.9   | 0-1 scale |
+| **MFE**                            | -4 to -7      | -2 to -8   | <-10 or >0     | kcal/mol  |
+| **Duplex Stability ΔG**            | see note      | see note   | —              | kcal/mol  |
+| **Delta ΔG End** (`dg_5p - dg_3p`) | +2 to +5      | +1 to +6   | <0             | kcal/mol  |
+| **Melting Temp**                   | 65-75°C       | 60-78°C    | <50°C or >80°C | °C        |
+| **Off-target Count**               | 0-1           | 0-3        | >5             | count     |
+
+**Note on `off_target_count`**: as of 0.6.0 this column counts _genuine_ off-targets only —
+hits classified on-target, ortholog (same gene in another screened species) or repeat-mediated
+are excluded and reported in their own columns (`on_target_hits`, `ortholog_hits`,
+`repeat_hits`). A threshold carried over from an earlier version is now stricter than the author
+intended, because the same numeric cutoff now applies to a smaller, cleaner count.
 
 **Note on `duplex_stability_dg`**: since 0.5.2 this is the ΔG of the full guide:passenger
 duplex, which scales with length — a fully paired 21mer measures **-32 to -43 kcal/mol**
@@ -40,11 +46,12 @@ working when the column set changes (0.5.2 added `off_target_screened`).
 
 ### Step 2: Identify High-Quality Candidates
 
-Look for siRNAs that meet multiple criteria:
+Look for siRNAs that meet multiple criteria. Note: `off_target_count` now counts genuine
+off-targets only (see the note above), so `<=3` here is a stricter bar than it was pre-0.6.0.
 
 ```bash
 # Filter for high-quality candidates (example thresholds)
-# GC 40-55%, asymmetry >=0.7, MFE -7..-4, less stable guide 5-prime end, <=3 off-targets
+# GC 40-55%, asymmetry >=0.7, MFE -7..-4, less stable guide 5-prime end, <=3 GENUINE off-targets
 awk -F',' '
 NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
 $c["gc_content"]>=40 && $c["gc_content"]<=55 &&
@@ -60,16 +67,19 @@ $c["off_target_count"]<=3 { print }
 If few candidates meet optimal criteria:
 
 #### **Low GC Content Issues**
+
 - **Problem**: GC content consistently <35%
 - **Solution**: Consider relaxing GC minimum to 30% or target different transcript regions
 - **Alternative**: Focus on asymmetry and MFE scores instead
 
 #### **Poor Asymmetry Scores**
+
 - **Problem**: Most candidates have asymmetry_score <0.6
 - **Solution**: Prioritize candidates with highest available asymmetry scores
 - **Check**: Verify end stability differences (delta_dg_end should be positive)
 
 #### **Overly Stable Duplexes**
+
 - **Problem**: MFE values <-10 kcal/mol (guide secondary structure)
 - **Solution**: Consider candidates with less negative (higher) MFE values
 - **Alternative**: Test experimentally as some cell types handle stable duplexes better
@@ -78,11 +88,13 @@ If few candidates meet optimal criteria:
 
 ### For High-Efficiency Applications
 
-When maximum knockdown is critical:
+When maximum knockdown is critical. `off_target_count` is genuine off-targets only, so `<=1`
+is stricter than it reads pre-0.6.0 — a candidate with one ortholog hit and zero genuine
+off-targets now passes this filter, where it would have failed before the redefinition.
 
 ```bash
 # Prioritize asymmetry and low off-targets
-# High asymmetry, actually screened, very few off-targets, good end asymmetry
+# High asymmetry, actually screened, very few GENUINE off-targets, good end asymmetry
 awk -F',' '
 NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
 $c["asymmetry_score"]>=0.8 &&
@@ -94,11 +106,12 @@ $c["delta_dg_end"]>=2 { print }
 
 ### For Broad Target Coverage
 
-When targeting multiple isoforms:
+When targeting multiple isoforms. `off_target_count` excludes on-target/ortholog/repeat hits,
+so `<=5` genuine off-targets is a stricter bar than the same number was before the redefinition.
 
 ```bash
 # Balance efficiency with transcript coverage
-# Moderate asymmetry, hits at least half the input transcripts, few off-targets
+# Moderate asymmetry, hits at least half the input transcripts, few GENUINE off-targets
 awk -F',' '
 NR==1 { for (i=1; i<=NF; i++) c[$i]=i; print; next }
 $c["asymmetry_score"]>=0.6 &&
@@ -162,11 +175,13 @@ sns.heatmap(correlations, annot=True)
 ### No High-Quality Candidates
 
 **Possible Causes:**
+
 - Target sequence has unfavorable composition
 - Overly strict filtering parameters
 - Transcript region lacks optimal sites
 
 **Solutions:**
+
 1. Relax one parameter at a time (start with GC content)
 2. Increase candidate pool size (`--top-n 50`)
 3. Try different transcript isoforms
@@ -175,6 +190,7 @@ sns.heatmap(correlations, annot=True)
 ### All Candidates Have High Off-targets
 
 **Approach:**
+
 1. Prioritize candidates with lowest off-target counts
 2. Use experimental validation to test specificity
 3. Consider tissue-specific expression of off-targets
