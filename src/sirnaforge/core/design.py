@@ -1,5 +1,6 @@
 """Core siRNA design algorithms and functionality."""
 
+import logging
 import math
 import sys
 import time
@@ -9,6 +10,8 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 from sirnaforge import __version__
+from sirnaforge.core.repeat_detection import RepeatObservation, normalize_guide_sequence
+from sirnaforge.core.scoring import ScoringError, compute_composite
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
@@ -18,6 +21,8 @@ from sirnaforge.models.sirna import (
     SiRNACandidate,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
+
+logger = logging.getLogger(__name__)
 
 # Duplex ΔG scales with duplex length, so it is normalised per nucleotide before
 # scoring. Window taken from the ViennaRNA range measured for canonical siRNA
@@ -37,6 +42,7 @@ class SiRNADesigner:
     def __init__(self, parameters: DesignParameters) -> None:
         """Initialize designer with given parameters."""
         self.parameters = parameters
+        self.last_guide_to_transcripts: dict[str, set[str]] | None = None
 
     def design_from_file(self, input_file: str) -> DesignResult:
         """Design siRNAs from input FASTA file."""
@@ -92,6 +98,9 @@ class SiRNADesigner:
             hits = len(guide_to_transcripts.get(c.guide_sequence, {c.transcript_id}))
             c.transcript_hit_count = hits
             c.transcript_hit_fraction = hits / total_seqs if total_seqs > 0 else 0.0
+
+        # Expose guide_to_transcripts mapping for workflow's protein-coding coverage computation
+        self.last_guide_to_transcripts = guide_to_transcripts
 
         return DesignResult(
             input_file=input_file,
@@ -284,7 +293,6 @@ class SiRNADesigner:
                 tm_c = float("nan")
 
             # Store component scores
-            # TODO: The composite_score needs to have basic weighting applied with truth data
             # Combine thermodynamic components: favor asymmetry with contribution from duplex stability
             thermo_combo = 0.7 * asym_score + 0.3 * dg_score
 
@@ -300,25 +308,51 @@ class SiRNADesigner:
                 "melting_temp_c": float(tm_c),
                 "gc_content": gc_score,
                 "accessibility": access_score,
-                "off_target": ot_score,
+                "design_off_target_proxy": ot_score,  # Diagnostic only, not fed into composite
                 "empirical": empirical_score,
             }
 
-            # Calculate composite score using configurable weights from parameters
-            # Access the configured scoring weights
-            weights = self.parameters.scoring
+            # Compute composite score via the shared scorer with design-time terms only.
+            # Build features mapping, omitting any NaN values (ViennaRNA failures).
+            features: dict[str, float] = {}
+            if not math.isnan(asym_score):
+                features["asymmetry"] = asym_score
+            if not math.isnan(gc_score):
+                features["gc_content"] = gc_score
+            if not math.isnan(access_score):
+                features["accessibility"] = access_score
+            if not math.isnan(empirical_score):
+                features["empirical"] = empirical_score
 
-            # Apply the configured weights to each component
-            composite = (
-                weights.asymmetry * asym_score
-                + weights.gc_content * gc_score
-                + weights.accessibility * access_score
-                + weights.off_target * ot_score
-                + weights.empirical * empirical_score
-            )
+            # Compute composite; if all features are NaN, leave composite_score at 0.0.
+            if features:
+                try:
+                    result = compute_composite(features, self.parameters.scoring)
+                    candidate.composite_score = result.score
+                    candidate.weight_set_version = result.weight_set_version
+                    candidate.scored_after_screening = False
+                    # Write per-term contributions
+                    candidate.score_asymmetry = result.contributions.get("asymmetry")
+                    candidate.score_gc_content = result.contributions.get("gc_content")
+                    candidate.score_accessibility = result.contributions.get("accessibility")
+                    candidate.score_empirical = result.contributions.get("empirical")
+                    # Post-screen terms stay None at design time
+                    candidate.score_off_target = None
+                    candidate.score_isoform_coverage = None
+                    candidate.score_conservation = None
+                except ScoringError as e:
+                    logger.warning(f"Scoring failed for candidate {candidate.id}: {e}. Setting composite_score=0.0.")
+                    candidate.composite_score = 0.0
+                    candidate.weight_set_version = ""
+                    candidate.scored_after_screening = False
+            else:
+                # All features were NaN; leave composite_score at its default (0.0)
+                logger.warning(
+                    f"All component scores are NaN for candidate {candidate.id}. Leaving composite_score=0.0."
+                )
+                candidate.weight_set_version = ""
+                candidate.scored_after_screening = False
 
-            # Normalize to 0-100 scale
-            candidate.composite_score = composite * 100
             candidate.asymmetry_score = asym_score
 
         return candidates
@@ -499,6 +533,34 @@ class SiRNADesigner:
             candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
         elif empirical_score < filters.min_empirical_score:
             candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE
+
+    @staticmethod
+    def stamp_repeat_verdict(candidate: SiRNACandidate, observations: dict[str, RepeatObservation]) -> None:
+        """Stamp repeat metadata and verdict on a single candidate if its guide is flagged.
+
+        The REPEAT_ELEMENT verdict is applied only if the candidate is currently passing
+        (passes_filters is True or PASS). A candidate that already failed for another
+        reason (GC, asymmetry, etc.) retains its earlier verdict — precedence is:
+        existing failure > REPEAT_ELEMENT > PASS.
+
+        Args:
+            candidate: Candidate to potentially flag.
+            observations: Mapping from normalized guide sequence to RepeatObservation.
+        """
+        norm_guide = normalize_guide_sequence(candidate.guide_sequence)
+        obs = observations.get(norm_guide)
+        if obs is None:
+            return
+
+        # Write repeat metadata regardless of verdict
+        candidate.repeat_flagged = obs.is_repeat
+        candidate.repeat_transcript_fraction = obs.transcript_fraction
+
+        # Apply REPEAT_ELEMENT verdict only if currently passing
+        if obs.is_repeat and (
+            candidate.passes_filters is True or candidate.passes_filters == _ModelCandidate.FilterStatus.PASS
+        ):
+            candidate.passes_filters = _ModelCandidate.FilterStatus.REPEAT_ELEMENT
 
     def _get_tool_versions(self) -> dict[str, str]:
         """Get versions of tools used in the analysis."""

@@ -115,16 +115,18 @@ class OffTargetFilterCriteria(BaseModel):
     )
 
     # Transcriptome off-target thresholds
+    # The three transcriptome thresholds below count GENUINE off-target hits only: on-target,
+    # ortholog and repeat-mediated hits are classified out before they reach these counters.
     max_transcriptome_hits_0mm: int | None = Field(
         default=1,
         ge=0,
-        description="Maximum perfect match transcriptome hits. 1 hit may indicate ontarget effect.",
+        description="Maximum perfect-match genuine off-target transcriptome hits (excludes on-target isoforms)",
     )
     max_transcriptome_hits_1mm: int | None = Field(
-        default=10, ge=0, description="Maximum 1-mismatch transcriptome hits (typical: 5-10, None = no limit)"
+        default=10, ge=0, description="Maximum 1-mismatch genuine off-target hits (typical: 5-10, None = no limit)"
     )
     max_transcriptome_hits_2mm: int | None = Field(
-        default=50, ge=0, description="Maximum 2-mismatch transcriptome hits (typical: 20-50, None = no limit)"
+        default=50, ge=0, description="Maximum 2-mismatch genuine off-target hits (typical: 20-50, None = no limit)"
     )
     max_transcriptome_seed_perfect: int | None = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
@@ -255,8 +257,9 @@ class DesignParameters(BaseModel):
         default=500,
         ge=1,
         description=(
-            "Number of top-ranked candidates to select for off-target analysis "
-            "(does not change how many candidates are enumerated)"
+            "Number of top-ranked candidates reported in top_candidates. Screening is applied to "
+            "every distinct candidate sequence regardless of this value, so it no longer gates "
+            "off-target analysis, and it does not change how many candidates are enumerated."
         ),
     )
 
@@ -359,17 +362,9 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_seed_0mm: int = Field(
         default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8)"
     )
-    on_target_transcriptome_hits: int = Field(
-        default=0,
-        ge=0,
-        description=(
-            "Perfect-match transcriptome hits identified (by transcript ID) as the intended source "
-            "transcript. Excluded from transcriptome_hits_0mm/off-target filtering."
-        ),
-    )
     on_target_confirmed: bool = Field(
         default=False,
-        description="Whether the source transcript was found among the 0-mismatch transcriptome hits",
+        description="Whether any hit was recognised as the query gene (see on_target_hits for the count)",
     )
 
     # Hit classification metrics (four-way classifier: on-target, ortholog, repeat, off-target)
