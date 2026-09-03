@@ -1,5 +1,6 @@
 """Pydantic models for siRNA design data structures."""
 
+import json
 from enum import Enum
 from typing import Any
 
@@ -354,11 +355,17 @@ class SiRNACandidate(BaseModel):
     )
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
 
-    # Detailed transcriptome off-target metrics
-    transcriptome_hits_total: int = Field(default=0, ge=0, description="Total transcriptome off-target hits")
-    transcriptome_hits_0mm: int = Field(default=0, ge=0, description="Perfect match transcriptome hits (0 mismatches)")
-    transcriptome_hits_1mm: int = Field(default=0, ge=0, description="Transcriptome hits with 1 mismatch")
-    transcriptome_hits_2mm: int = Field(default=0, ge=0, description="Transcriptome hits with 2 mismatches")
+    # Detailed transcriptome off-target metrics. _total counts every genuine off-target hit at
+    # any mismatch count (so it always agrees with off_target_count); _0mm/_1mm/_2mm are
+    # stratified nm<=2 SUBSETS of _total, not addends -- nm>=3 hits land in _total only.
+    transcriptome_hits_total: int = Field(
+        default=0, ge=0, description="Total genuine off-target transcriptome hits (any mismatch count)"
+    )
+    transcriptome_hits_0mm: int = Field(
+        default=0, ge=0, description="Perfect-match subset of transcriptome_hits_total (0 mismatches)"
+    )
+    transcriptome_hits_1mm: int = Field(default=0, ge=0, description="1-mismatch subset of transcriptome_hits_total")
+    transcriptome_hits_2mm: int = Field(default=0, ge=0, description="2-mismatch subset of transcriptome_hits_total")
     transcriptome_hits_seed_0mm: int = Field(
         default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8)"
     )
@@ -575,6 +582,101 @@ class SiRNACandidate(BaseModel):
         return f">{self.id}\n{self.guide_sequence}\n"
 
 
+def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
+    """Map one SiRNACandidate to its canonical output-row dict.
+
+    The single source of truth for candidate CSV columns, shared by DesignResult.save_csv (the
+    `sirnaforge design` path) and SiRNAWorkflow.step6_generate_reports (the `sirnaforge workflow`
+    path) so the two writers cannot drift on which columns they emit. Optional attributes use a
+    tolerant getattr since the workflow path feeds candidates from several producers.
+    """
+    cs = candidate.component_scores or {}
+    mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
+    pass_state = candidate.passes_filters
+    passes_filters = pass_state.value if hasattr(pass_state, "value") else pass_state
+
+    def _maybe_attr(name: str, default: Any = None) -> Any:
+        return getattr(candidate, name, default)
+
+    return {
+        "id": candidate.id,
+        "transcript_id": candidate.transcript_id,
+        "position": candidate.position,
+        "guide_sequence": candidate.guide_sequence,
+        "passenger_sequence": candidate.passenger_sequence,
+        "gc_content": candidate.gc_content,
+        "asymmetry_score": candidate.asymmetry_score,
+        # Thermodynamics and structure
+        "structure": _maybe_attr("structure"),
+        "mfe": _maybe_attr("mfe"),
+        "paired_fraction": candidate.paired_fraction,
+        "duplex_stability_dg": candidate.duplex_stability,
+        "duplex_stability_score": cs.get("duplex_stability_score"),
+        "dg_5p": cs.get("dg_5p"),
+        "dg_3p": cs.get("dg_3p"),
+        "delta_dg_end": cs.get("delta_dg_end"),
+        "melting_temp_c": cs.get("melting_temp_c"),
+        "off_target_screened": candidate.off_target_screened,
+        "off_target_count": candidate.off_target_count,
+        "off_target_penalty": candidate.off_target_penalty,
+        # Hit classification metrics (issue #80)
+        "on_target_hits": candidate.on_target_hits,
+        "ortholog_hits": candidate.ortholog_hits,
+        "repeat_hits": candidate.repeat_hits,
+        "ortholog_species": candidate.ortholog_species,
+        "repeat_flagged": candidate.repeat_flagged,
+        "repeat_transcript_fraction": candidate.repeat_transcript_fraction,
+        # Legacy transcriptome/miRNA hit metrics
+        "transcriptome_hits_total": _maybe_attr("transcriptome_hits_total", 0),
+        "transcriptome_hits_0mm": _maybe_attr("transcriptome_hits_0mm", 0),
+        "transcriptome_hits_1mm": _maybe_attr("transcriptome_hits_1mm", 0),
+        "transcriptome_hits_2mm": _maybe_attr("transcriptome_hits_2mm", 0),
+        "transcriptome_hits_seed_0mm": _maybe_attr("transcriptome_hits_seed_0mm", 0),
+        "on_target_confirmed": _maybe_attr("on_target_confirmed", False),
+        "mirna_hits_total": _maybe_attr("mirna_hits_total", 0),
+        "mirna_hits_0mm_seed": _maybe_attr("mirna_hits_0mm_seed", 0),
+        "mirna_hits_1mm_seed": _maybe_attr("mirna_hits_1mm_seed", 0),
+        "mirna_hits_high_risk": _maybe_attr("mirna_hits_high_risk", 0),
+        # miRNA-specific columns (nullable)
+        "guide_pos1_base": _maybe_attr("guide_pos1_base"),
+        "pos1_pairing_state": _maybe_attr("pos1_pairing_state"),
+        "seed_class": _maybe_attr("seed_class"),
+        "supp_13_16_score": _maybe_attr("supp_13_16_score"),
+        "seed_7mer_hits": _maybe_attr("seed_7mer_hits"),
+        "seed_8mer_hits": _maybe_attr("seed_8mer_hits"),
+        "seed_hits_weighted": _maybe_attr("seed_hits_weighted"),
+        "off_target_seed_risk_class": _maybe_attr("off_target_seed_risk_class"),
+        # Transcript hit metrics
+        "transcript_hit_count": candidate.transcript_hit_count,
+        "transcript_hit_fraction": candidate.transcript_hit_fraction,
+        # Post-screen sub-scores
+        "isoform_coverage": candidate.isoform_coverage,
+        "conservation_score": candidate.conservation_score,
+        # Composite scoring
+        "composite_score": candidate.composite_score,
+        "score_asymmetry": candidate.score_asymmetry,
+        "score_gc_content": candidate.score_gc_content,
+        "score_accessibility": candidate.score_accessibility,
+        "score_empirical": candidate.score_empirical,
+        "score_off_target": candidate.score_off_target,
+        "score_isoform_coverage": candidate.score_isoform_coverage,
+        "score_conservation": candidate.score_conservation,
+        "scored_after_screening": candidate.scored_after_screening,
+        "weight_set_version": candidate.weight_set_version,
+        "passes_filters": passes_filters,
+        # Chemical modifications
+        "guide_overhang": mod_summary.get("guide_overhang", ""),
+        "guide_modifications": mod_summary.get("guide_modifications", ""),
+        "passenger_overhang": mod_summary.get("passenger_overhang", ""),
+        "passenger_modifications": mod_summary.get("passenger_modifications", ""),
+        # Variant-aware annotations
+        "variant_mode": _maybe_attr("variant_mode"),
+        "allele_specific": _maybe_attr("allele_specific", False),
+        "targeted_alleles": json.dumps(_maybe_attr("targeted_alleles", [])),
+        "overlapped_variants": json.dumps(_maybe_attr("overlapped_variants", [])),
+    }
+
+
 class DesignResult(BaseModel):
     """Complete results from siRNA design workflow with metadata and statistics."""
 
@@ -618,79 +720,7 @@ class DesignResult(BaseModel):
         Raises:
             pandera.errors.SchemaError: If data validation fails
         """
-        df_data = []
-        for candidate in self.candidates:
-            cs = candidate.component_scores or {}
-
-            # Get modification summary if modifications were applied
-            mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
-
-            row = {
-                "id": candidate.id,
-                "transcript_id": candidate.transcript_id,
-                "position": candidate.position,
-                "guide_sequence": candidate.guide_sequence,
-                "passenger_sequence": candidate.passenger_sequence,
-                "gc_content": candidate.gc_content,
-                "asymmetry_score": candidate.asymmetry_score,
-                # Thermodynamics and structure
-                "structure": getattr(candidate, "structure", None),
-                "mfe": getattr(candidate, "mfe", None),
-                "paired_fraction": candidate.paired_fraction,
-                "duplex_stability_dg": candidate.duplex_stability,
-                "duplex_stability_score": cs.get("duplex_stability_score"),
-                "dg_5p": cs.get("dg_5p"),
-                "dg_3p": cs.get("dg_3p"),
-                "delta_dg_end": cs.get("delta_dg_end"),
-                "melting_temp_c": cs.get("melting_temp_c"),
-                "off_target_screened": candidate.off_target_screened,
-                "off_target_count": candidate.off_target_count,
-                # Hit classification metrics
-                "on_target_hits": candidate.on_target_hits,
-                "ortholog_hits": candidate.ortholog_hits,
-                "repeat_hits": candidate.repeat_hits,
-                "ortholog_species": candidate.ortholog_species,
-                "repeat_flagged": candidate.repeat_flagged,
-                "repeat_transcript_fraction": candidate.repeat_transcript_fraction,
-                # miRNA-specific columns (nullable)
-                "guide_pos1_base": candidate.guide_pos1_base,
-                "pos1_pairing_state": candidate.pos1_pairing_state,
-                "seed_class": candidate.seed_class,
-                "supp_13_16_score": candidate.supp_13_16_score,
-                "seed_7mer_hits": candidate.seed_7mer_hits,
-                "seed_8mer_hits": candidate.seed_8mer_hits,
-                "seed_hits_weighted": candidate.seed_hits_weighted,
-                "off_target_seed_risk_class": candidate.off_target_seed_risk_class,
-                # Transcript hit metrics
-                "transcript_hit_count": candidate.transcript_hit_count,
-                "transcript_hit_fraction": candidate.transcript_hit_fraction,
-                # Post-screen sub-scores
-                "isoform_coverage": candidate.isoform_coverage,
-                "conservation_score": candidate.conservation_score,
-                # Composite scoring
-                "composite_score": candidate.composite_score,
-                "score_asymmetry": candidate.score_asymmetry,
-                "score_gc_content": candidate.score_gc_content,
-                "score_accessibility": candidate.score_accessibility,
-                "score_empirical": candidate.score_empirical,
-                "score_off_target": candidate.score_off_target,
-                "score_isoform_coverage": candidate.score_isoform_coverage,
-                "score_conservation": candidate.score_conservation,
-                "scored_after_screening": candidate.scored_after_screening,
-                "weight_set_version": candidate.weight_set_version,
-                "passes_filters": (
-                    candidate.passes_filters.value
-                    if hasattr(candidate.passes_filters, "value")
-                    else candidate.passes_filters
-                ),
-                # Chemical modifications
-                "guide_overhang": mod_summary.get("guide_overhang", ""),
-                "guide_modifications": mod_summary.get("guide_modifications", ""),
-                "passenger_overhang": mod_summary.get("passenger_overhang", ""),
-                "passenger_modifications": mod_summary.get("passenger_modifications", ""),
-            }
-            df_data.append(row)
-
+        df_data = [build_candidate_row(candidate) for candidate in self.candidates]
         df = pd.DataFrame(df_data)
 
         # Convert nullable integer columns to pandas Int64 dtype for proper None handling

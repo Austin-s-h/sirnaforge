@@ -77,6 +77,7 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
+    build_candidate_row,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.variant import VariantRecord
@@ -90,7 +91,7 @@ from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
-from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
+from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
@@ -1061,73 +1062,9 @@ class SiRNAWorkflow:
         is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
 
         try:
-            rows: list[dict[str, Any]] = []
-            for candidate in design_results.candidates:
-                cs = getattr(candidate, "component_scores", {}) or {}
-                mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
-
-                pass_state = candidate.passes_filters
-                if isinstance(pass_state, _ModelSiRNACandidate.FilterStatus):
-                    normalized_pass_field: Any = pass_state.value
-                else:
-                    normalized_pass_field = pass_state
-
-                def _maybe_attr(obj: Any, name: str, *, default: Any = None) -> Any:
-                    return getattr(obj, name, default)
-
-                rows.append(
-                    {
-                        "id": candidate.id,
-                        "transcript_id": candidate.transcript_id,
-                        "position": candidate.position,
-                        "guide_sequence": candidate.guide_sequence,
-                        "passenger_sequence": candidate.passenger_sequence,
-                        "gc_content": candidate.gc_content,
-                        "asymmetry_score": candidate.asymmetry_score,
-                        "paired_fraction": candidate.paired_fraction,
-                        "structure": getattr(candidate, "structure", None),
-                        "mfe": getattr(candidate, "mfe", None),
-                        "duplex_stability_dg": candidate.duplex_stability,
-                        "duplex_stability_score": cs.get("duplex_stability_score"),
-                        "dg_5p": cs.get("dg_5p"),
-                        "dg_3p": cs.get("dg_3p"),
-                        "delta_dg_end": cs.get("delta_dg_end"),
-                        "melting_temp_c": cs.get("melting_temp_c"),
-                        "off_target_screened": candidate.off_target_screened,
-                        "off_target_count": candidate.off_target_count,
-                        "off_target_penalty": candidate.off_target_penalty,
-                        "transcriptome_hits_total": _maybe_attr(candidate, "transcriptome_hits_total", default=0),
-                        "transcriptome_hits_0mm": _maybe_attr(candidate, "transcriptome_hits_0mm", default=0),
-                        "transcriptome_hits_1mm": _maybe_attr(candidate, "transcriptome_hits_1mm", default=0),
-                        "transcriptome_hits_2mm": _maybe_attr(candidate, "transcriptome_hits_2mm", default=0),
-                        "transcriptome_hits_seed_0mm": _maybe_attr(candidate, "transcriptome_hits_seed_0mm", default=0),
-                        "on_target_confirmed": _maybe_attr(candidate, "on_target_confirmed", default=False),
-                        "mirna_hits_total": _maybe_attr(candidate, "mirna_hits_total", default=0),
-                        "mirna_hits_0mm_seed": _maybe_attr(candidate, "mirna_hits_0mm_seed", default=0),
-                        "mirna_hits_1mm_seed": _maybe_attr(candidate, "mirna_hits_1mm_seed", default=0),
-                        "mirna_hits_high_risk": _maybe_attr(candidate, "mirna_hits_high_risk", default=0),
-                        "guide_pos1_base": _maybe_attr(candidate, "guide_pos1_base"),
-                        "pos1_pairing_state": _maybe_attr(candidate, "pos1_pairing_state"),
-                        "seed_class": _maybe_attr(candidate, "seed_class"),
-                        "supp_13_16_score": _maybe_attr(candidate, "supp_13_16_score"),
-                        "seed_7mer_hits": _maybe_attr(candidate, "seed_7mer_hits"),
-                        "seed_8mer_hits": _maybe_attr(candidate, "seed_8mer_hits"),
-                        "seed_hits_weighted": _maybe_attr(candidate, "seed_hits_weighted"),
-                        "off_target_seed_risk_class": _maybe_attr(candidate, "off_target_seed_risk_class"),
-                        "transcript_hit_count": candidate.transcript_hit_count,
-                        "transcript_hit_fraction": candidate.transcript_hit_fraction,
-                        "composite_score": candidate.composite_score,
-                        "passes_filters": normalized_pass_field,
-                        "guide_overhang": mod_summary.get("guide_overhang", ""),
-                        "guide_modifications": mod_summary.get("guide_modifications", ""),
-                        "passenger_overhang": mod_summary.get("passenger_overhang", ""),
-                        "passenger_modifications": mod_summary.get("passenger_modifications", ""),
-                        "variant_mode": getattr(candidate, "variant_mode", None),
-                        "allele_specific": getattr(candidate, "allele_specific", False),
-                        "targeted_alleles": json.dumps(getattr(candidate, "targeted_alleles", [])),
-                        "overlapped_variants": json.dumps(getattr(candidate, "overlapped_variants", [])),
-                    }
-                )
+            # Single shared row-builder (models/sirna.py) so this CSV and DesignResult.save_csv
+            # can never drift on which columns they emit (issue #80 F2).
+            rows: list[dict[str, Any]] = [build_candidate_row(candidate) for candidate in design_results.candidates]
 
             if rows:
                 all_df = pd.DataFrame(rows)
@@ -1377,6 +1314,9 @@ class SiRNAWorkflow:
         additional_params: dict[str, Any] = dict(self.config.nextflow_config)
         has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
         self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
+        # Exclude repeat-flagged candidates from top_candidates now, so the exclusion holds even
+        # if screening below never runs (user-disabled, Nextflow unavailable/failed).
+        self._apply_post_screen_ranking(design_results)
 
         # If user disabled off-target checking via design parameters, skip entirely
         if not getattr(self.config.design_params, "check_off_targets", True):
@@ -1447,6 +1387,10 @@ class SiRNAWorkflow:
         design-time order no longer reflects the final ranking. Re-sorts design_results.candidates
         in place (step6_generate_reports writes CSVs in this order) and rebuilds top_candidates
         from the viable subset (excluding repeat-flagged and failing candidates).
+
+        Called once right after repeat detection (so the exclusion holds even if screening
+        never runs) and again after successful screening (so post-screen scores take effect).
+        Idempotent: re-sorting/re-filtering an already-ranked list is harmless.
         """
         design_results.candidates.sort(key=lambda c: c.composite_score, reverse=True)
         rankable = [c for c in design_results.candidates if not c.repeat_flagged and self._passes_filters(c)]
@@ -1462,6 +1406,19 @@ class SiRNAWorkflow:
         representative ID to all candidates sharing that sequence for later fan-out.
         """
         input_fasta = self.config.output_dir / "off_target" / "input_candidates.fasta"
+
+        # Candidate ids must be globally unique: a collision would silently fan one
+        # candidate's screening results onto a different candidate's sequence below.
+        id_counts: dict[str, int] = {}
+        for candidate in candidates:
+            id_counts[candidate.id] = id_counts.get(candidate.id, 0) + 1
+        duplicate_ids = sorted(cid for cid, count in id_counts.items() if count > 1)
+        if duplicate_ids:
+            raise ValueError(
+                f"Duplicate candidate id(s) before off-target screening: {duplicate_ids[:5]}"
+                f"{' (+more)' if len(duplicate_ids) > 5 else ''}. Refusing to screen: results "
+                "cannot be safely attributed to the correct sequence."
+            )
 
         # Deduplicate by normalized guide sequence
         sequence_to_candidates: dict[str, list[SiRNACandidate]] = {}
@@ -1483,9 +1440,8 @@ class SiRNAWorkflow:
 
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
 
-        # Store the mappings for fan-out during integration. Candidate IDs are unique
-        # (SIRNAF_<transcript>_<start>_<end>, see _enumerate_candidates), so this id->id
-        # lookup is O(1) and never needs to compare SiRNACandidate models by value.
+        # Store the mappings for fan-out during integration. Duplicate ids are rejected
+        # above, so this id->id lookup is O(1) and never needs to compare candidates by value.
         self._representative_to_candidates = representative_to_candidates
         self._candidate_id_to_representative = candidate_id_to_representative
 
@@ -2395,6 +2351,21 @@ class SiRNAWorkflow:
         for repr_id, entry in results.items():
             representative_results[repr_id] = entry
 
+        # Pre-seeded with every requested species (zero-filled) so a species that was screened
+        # but produced no hits is distinguishable from one never requested (absent key). Species
+        # seen on a hit but not requested (unexpected) still get a bucket via setdefault below.
+        per_species: dict[str, dict[str, int]] = {
+            species: {
+                "on_target": 0,
+                "ortholog": 0,
+                "repeat": 0,
+                "off_target": 0,
+                "symbol_lookup_missing": 0,
+                "species_index_missing": 0,
+            }
+            for species in requested_species
+        }
+
         stats: dict[str, Any] = {
             "candidates_analyzed": len(candidates),
             "candidates_with_offtargets": 0,
@@ -2402,7 +2373,7 @@ class SiRNAWorkflow:
             "query_gene_transcripts_recognised": len(self._gene_transcript_ids),
             "ortholog_symbol_lookup_misses": 0,
             "species_index_misses": 0,
-            "per_species": {},
+            "per_species": per_species,
             "failed_perfect_match": 0,
             "failed_transcriptome_1mm": 0,
             "failed_transcriptome_2mm": 0,
@@ -2437,8 +2408,13 @@ class SiRNAWorkflow:
 
             # Classify each transcriptome hit and aggregate miRNA hits (unchanged)
             hit_counts = HitClassCounts()
+            # transcriptome_totals/_human are stratified SUBSETS of transcriptome_off_target_total
+            # / transcriptome_human_total below (nm>=3 hits count toward the totals but land in
+            # no bucket), so the two families never contradict each other.
             transcriptome_totals = {0: 0, 1: 0, 2: 0}
             transcriptome_human = {0: 0, 1: 0, 2: 0}
+            transcriptome_off_target_total = 0
+            transcriptome_human_total = 0
             transcriptome_seed_0mm = 0
             mirna_total = 0
             mirna_human_total = 0
@@ -2474,26 +2450,44 @@ class SiRNAWorkflow:
                 else:
                     # Classify transcriptome hit using the four-way classifier
                     classification = classify_hit(hit, candidate.guide_sequence, classification_context)
+                    # A blank/missing species label belongs to the query species (see classifier).
+                    hit_species = normalize_species_name(species_label) if species_label else query_species
+                    species_bucket = per_species.setdefault(
+                        hit_species,
+                        {
+                            "on_target": 0,
+                            "ortholog": 0,
+                            "repeat": 0,
+                            "off_target": 0,
+                            "symbol_lookup_missing": 0,
+                            "species_index_missing": 0,
+                        },
+                    )
 
                     # Aggregate by class
                     if classification.hit_class == HitClass.ON_TARGET:
                         hit_counts.on_target += 1
+                        species_bucket["on_target"] += 1
                     elif classification.hit_class == HitClass.ORTHOLOG:
                         hit_counts.ortholog += 1
+                        species_bucket["ortholog"] += 1
                         if classification.matched_symbol:
                             # Track which species had ortholog hits
-                            norm_species = normalize_species_name(species_label) if species_label else query_species
-                            hit_counts.ortholog_species = frozenset(hit_counts.ortholog_species | {norm_species})
+                            hit_counts.ortholog_species = frozenset(hit_counts.ortholog_species | {hit_species})
                     elif classification.hit_class == HitClass.REPEAT:
                         hit_counts.repeat += 1
+                        species_bucket["repeat"] += 1
                     elif classification.hit_class == HitClass.OFF_TARGET:
                         hit_counts.off_target += 1
+                        species_bucket["off_target"] += 1
 
                     # Track shortfall counters
                     if classification.symbol_lookup_missing:
                         hit_counts.symbol_lookup_missing += 1
+                        species_bucket["symbol_lookup_missing"] += 1
                     if classification.species_index_missing:
                         hit_counts.no_species_index += 1
+                        species_bucket["species_index_missing"] += 1
 
                     # Only genuine off-targets feed the mismatch-stratified counters. Letting
                     # on-target isoform hits through here would fail every guide on a
@@ -2502,7 +2496,14 @@ class SiRNAWorkflow:
                     if classification.hit_class is not HitClass.OFF_TARGET:
                         continue
 
+                    # Every genuine off-target hit counts toward the totals regardless of nm, so
+                    # transcriptome_hits_total agrees with off_target_count even when nm>=3 hits
+                    # occur (the default exhaustive search no longer caps hits at nm<=2).
+                    transcriptome_off_target_total += 1
                     treated_as_human = species_is_human or not species_label
+                    if treated_as_human:
+                        transcriptome_human_total += 1
+
                     if nm == 0:
                         transcriptome_totals[0] += 1
                         if treated_as_human:
@@ -2519,8 +2520,10 @@ class SiRNAWorkflow:
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
 
-            transcriptome_total_hits = sum(transcriptome_totals.values())
-            human_transcriptome_hits = sum(transcriptome_human.values())
+            # Totals count every genuine off-target hit (any nm); the _totals/_human dicts above
+            # are stratified nm<=2 subsets, not addends -- do not replace these with a sum().
+            transcriptome_total_hits = transcriptome_off_target_total
+            human_transcriptome_hits = transcriptome_human_total
 
             # Write per-candidate hit class fields
             candidate.on_target_hits = hit_counts.on_target
@@ -2612,31 +2615,32 @@ class SiRNAWorkflow:
             if value is not None and not math.isnan(value):
                 features[term] = value
 
-        # Post-screen terms
-        off_target_score = off_target_sub_score(hit_counts.off_target)
-        features["off_target"] = off_target_score
-
-        # Numerator is how many of the query gene's protein-coding transcripts contain THIS
-        # guide (from step3's guide->source-transcripts map), not the single transcript the
-        # candidate happened to be enumerated from. Absent for design_from_sequence/miRNA
-        # paths, in which case the term stays inactive rather than computing a wrong number.
-        guide_transcripts = self._guide_to_transcripts.get(normalize_guide_sequence(candidate.guide_sequence))
-        if guide_transcripts is not None:
-            isoform_cov = isoform_coverage_sub_score(
-                len(self._protein_coding_transcript_ids & guide_transcripts),
-                self._protein_coding_transcript_count,
-            )
-            if isoform_cov is not None:
-                features["isoform_coverage"] = isoform_cov
-                candidate.isoform_coverage = isoform_cov
-
-        conservation = conservation_sub_score(len(hit_counts.ortholog_species), n_requested_non_query)
-        if conservation is not None:
-            features["conservation"] = conservation
-            candidate.conservation_score = conservation
-
-        # Compute composite score
+        # The sub-score helpers raise on a numerator exceeding its denominator. Both numerators are
+        # subsets of their denominators today, so neither is reachable -- but the guarantee rests on
+        # invariants several call sites away, and the cost of one being broken later must not be an
+        # aborted run after screening has already been paid for.
         try:
+            features["off_target"] = off_target_sub_score(hit_counts.off_target)
+
+            # Numerator is how many of the query gene's protein-coding transcripts contain THIS
+            # guide (from step3's guide->source-transcripts map), not the single transcript the
+            # candidate happened to be enumerated from. Absent for design_from_sequence/miRNA
+            # paths, in which case the term stays inactive rather than computing a wrong number.
+            guide_transcripts = self._guide_to_transcripts.get(normalize_guide_sequence(candidate.guide_sequence))
+            if guide_transcripts is not None:
+                isoform_cov = isoform_coverage_sub_score(
+                    len(self._protein_coding_transcript_ids & guide_transcripts),
+                    self._protein_coding_transcript_count,
+                )
+                if isoform_cov is not None:
+                    features["isoform_coverage"] = isoform_cov
+                    candidate.isoform_coverage = isoform_cov
+
+            conservation = conservation_sub_score(len(hit_counts.ortholog_species), n_requested_non_query)
+            if conservation is not None:
+                features["conservation"] = conservation
+                candidate.conservation_score = conservation
+
             result = compute_composite(features, self.config.design_params.scoring)
             candidate.composite_score = result.score
             candidate.weight_set_version = result.weight_set_version

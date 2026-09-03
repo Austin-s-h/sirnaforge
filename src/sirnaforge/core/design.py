@@ -1,5 +1,6 @@
 """Core siRNA design algorithms and functionality."""
 
+import hashlib
 import logging
 import math
 import sys
@@ -29,6 +30,13 @@ logger = logging.getLogger(__name__)
 # duplexes at 37 °C: strong -> 1.0, weak -> 0.0.
 DUPLEX_DG_PER_NT_STRONG = -2.1
 DUPLEX_DG_PER_NT_WEAK = -1.4
+
+# Sanitized transcript ids embedded in candidate ids are truncated to this length. Beyond it,
+# the last ID_DIGEST_LEN chars are replaced by a deterministic digest of the FULL sanitized id
+# (hashlib, not hash(), which is PYTHONHASHSEED-dependent) so two ids that share a long common
+# prefix cannot collide after truncation.
+TRANSCRIPT_ID_MAX_LEN = 24
+ID_DIGEST_LEN = 8
 
 
 def _as_rna(sequence: str) -> str:
@@ -209,9 +217,12 @@ class SiRNADesigner:
             # Format: SIRNAF_<TRANSCRIPT>_<start>_<end>
             # Sanitize transcript_id: keep alphanumerics and underscore, replace others with '-'
             safe_tid = "".join([c if (c.isalnum() or c == "_") else "-" for c in transcript_id])
-            # Truncate long transcript ids to keep IDs short while retaining uniqueness
-            if len(safe_tid) > 24:
-                safe_tid = safe_tid[:24]
+            # Truncate long transcript ids, disambiguating with a digest of the full id so two
+            # ids sharing a >=24-char prefix (e.g. de-novo assembly isoforms) cannot collide.
+            if len(safe_tid) > TRANSCRIPT_ID_MAX_LEN:
+                digest = hashlib.sha256(safe_tid.encode()).hexdigest()[:ID_DIGEST_LEN]
+                keep = TRANSCRIPT_ID_MAX_LEN - ID_DIGEST_LEN - 1
+                safe_tid = f"{safe_tid[:keep]}-{digest}"
             candidate_id = f"SIRNAF_{safe_tid}_{i + 1}_{i + sirna_length}"
 
             candidate = SiRNACandidate(
