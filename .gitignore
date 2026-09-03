@@ -117,3 +117,6 @@ notebooks/zfn_experiment_runs/
 /*.vcf.gz
 /*.vcf.gz.tbi
 /nextflow_pipeline/
+
+# Local scratch notes for in-flight work
+.dev/

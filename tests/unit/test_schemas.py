@@ -68,6 +68,25 @@ class TestSiRNACandidateSchema:
             "allele_specific",
             "targeted_alleles",
             "overlapped_variants",
+            # Four-way hit classification (issue #80)
+            "on_target_hits",
+            "ortholog_hits",
+            "repeat_hits",
+            "ortholog_species",
+            "repeat_flagged",
+            "repeat_transcript_fraction",
+            # Post-screen sub-scores and per-term contributions (issue #80)
+            "isoform_coverage",
+            "conservation_score",
+            "score_asymmetry",
+            "score_gc_content",
+            "score_accessibility",
+            "score_empirical",
+            "score_off_target",
+            "score_isoform_coverage",
+            "score_conservation",
+            "scored_after_screening",
+            "weight_set_version",
         }
 
         expected_cols = len(test_data.keys()) + len(extra_columns)

@@ -11,7 +11,7 @@ from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import get_modification_summary
-from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed
+from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed, model_validator_typed
 
 logger = get_logger(__name__)
 
@@ -36,6 +36,17 @@ DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
 EMPIRICAL_SCORE_MIN = 0.4
 EMPIRICAL_SCORE_MAX = 0.7
 DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
+
+# Canonical composite-score term names, shared by ScoringWeights and the scorer.
+COMPOSITE_TERM_NAMES = (
+    "asymmetry",
+    "gc_content",
+    "accessibility",
+    "empirical",
+    "off_target",
+    "isoform_coverage",
+    "conservation",
+)
 
 
 class FilterCriteria(BaseModel):
@@ -81,43 +92,6 @@ class FilterCriteria(BaseModel):
         ),
     )
 
-    # NOTE: the MFE, duplex-stability, melting-temperature, end-asymmetry and
-    # off-target windows below are reference ranges only -- SiRNADesigner does not
-    # enforce them today (see issue #78). The duplex ΔG window also predates the
-    # strand-orientation fix: a fully paired 21 nt RNA duplex measures -32 to -43
-    # kcal/mol, so the -15/-25 window is unreachable and awaits recalibration.
-
-    # Minimum Free Energy filters (optimal: -2 to -8 kcal/mol)
-    mfe_min: float | None = Field(
-        default=-8.0, description="Minimum MFE threshold in kcal/mol (more negative = too stable)"
-    )
-    mfe_max: float | None = Field(
-        default=-2.0, description="Maximum MFE threshold in kcal/mol (less negative = too unstable)"
-    )
-
-    # Duplex stability filters (optimal: -15 to -25 kcal/mol)
-    duplex_stability_min: float | None = Field(
-        default=-25.0, description="Minimum duplex ΔG threshold in kcal/mol (more negative = too stable)"
-    )
-    duplex_stability_max: float | None = Field(
-        default=-15.0, description="Maximum duplex ΔG threshold in kcal/mol (less negative = too unstable)"
-    )
-
-    # Melting temperature filters (optimal: 60-78°C for human cells)
-    melting_temp_min: float | None = Field(default=60.0, description="Minimum melting temperature in °C")
-    melting_temp_max: float | None = Field(default=78.0, description="Maximum melting temperature in °C")
-
-    # End asymmetry filters (optimal: +2 to +6 kcal/mol; positive = destabilised 5' end)
-    delta_dg_end_min: float | None = Field(
-        default=2.0, description="Minimum end asymmetry ΔΔG (dg_5p - dg_3p) in kcal/mol"
-    )
-    delta_dg_end_max: float | None = Field(
-        default=6.0, description="Maximum end asymmetry ΔΔG (dg_5p - dg_3p) in kcal/mol"
-    )
-
-    # Off-target filters
-    max_off_target_count: int | None = Field(default=3, ge=0, description="Maximum allowed off-target sites (goal: ≤3)")
-
     @field_validator_typed("gc_max")
     @classmethod
     def gc_max_greater_than_min(cls, v: float, info: ValidationInfo) -> float:
@@ -132,6 +106,13 @@ class OffTargetFilterCriteria(BaseModel):
 
     Controls which siRNA candidates fail due to excessive off-target potential.
     """
+
+    # Genuine off-target threshold (on-target, ortholog and repeat-mediated hits excluded)
+    max_off_target_count: int | None = Field(
+        default=3,
+        ge=0,
+        description="Maximum genuine off-target sites (goal: ≤3). Excludes on-target, ortholog and repeat hits.",
+    )
 
     # Transcriptome off-target thresholds
     max_transcriptome_hits_0mm: int | None = Field(
@@ -170,36 +151,37 @@ class ScoringWeights(BaseModel):
     """Relative weights for composite siRNA scoring components."""
 
     asymmetry: float = Field(
-        default=0.15, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+        default=0.12, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
     )
     gc_content: float = Field(
-        default=0.15, ge=0, le=1, description="GC content optimization weight (stability balance)"
+        default=0.10, ge=0, le=1, description="GC content optimization weight (stability balance)"
     )
     accessibility: float = Field(
-        default=0.20, ge=0, le=1, description="Target accessibility weight (secondary structure)"
-    )
-    off_target: float = Field(
-        default=0.30,
-        ge=0,
-        le=1,
-        description=(
-            "Weight for the design-time off-target proxy (guide self-repetitiveness). "
-            "Transcriptome/miRNA screening runs after design and gates pass/fail; it is "
-            "not part of composite_score."
-        ),
+        default=0.13, ge=0, le=1, description="Target accessibility weight (secondary structure)"
     )
     empirical: float = Field(
-        default=0.20, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+        default=0.15, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+    )
+    off_target: float = Field(
+        default=0.25,
+        ge=0,
+        le=1,
+        description="Post-screen genuine off-target specificity weight (on-target, ortholog and repeat excluded)",
+    )
+    isoform_coverage: float = Field(
+        default=0.15, ge=0, le=1, description="Protein-coding isoform coverage weight (targeting completeness)"
+    )
+    conservation: float = Field(
+        default=0.10, ge=0, le=1, description="Cross-species ortholog conservation weight (specificity check)"
     )
 
-    @field_validator_typed("empirical")
-    @classmethod
-    def weights_sum_to_one(cls, v: float, info: ValidationInfo) -> float:
+    @model_validator_typed(mode="after")
+    def weights_sum_to_one(self) -> "ScoringWeights":
         """Validate that scoring weights sum to approximately 1.0."""
-        total = sum(info.data.values()) + v
-        if not (0.95 <= total <= 1.05):  # Allow small floating point errors
-            raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
-        return v
+        total = sum(getattr(self, term) for term in COMPOSITE_TERM_NAMES)
+        if not (0.95 <= total <= 1.05):
+            raise ValueError(f"Scoring weights must sum to 1.0, got {total:.3f}")
+        return self
 
 
 class DesignMode(str, Enum):
@@ -362,7 +344,11 @@ class SiRNACandidate(BaseModel):
             "'screened, no hits' from 'never screened' -- both leave the hit counts below at 0."
         ),
     )
-    off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
+    off_target_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of genuine off-target sites (on-target, ortholog and repeat hits excluded, goal: ≤3)",
+    )
     off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
 
     # Detailed transcriptome off-target metrics
@@ -384,6 +370,24 @@ class SiRNACandidate(BaseModel):
     on_target_confirmed: bool = Field(
         default=False,
         description="Whether the source transcript was found among the 0-mismatch transcriptome hits",
+    )
+
+    # Hit classification metrics (four-way classifier: on-target, ortholog, repeat, off-target)
+    on_target_hits: int = Field(
+        default=0, ge=0, description="Hits classified as on-target (query gene in query species)"
+    )
+    ortholog_hits: int = Field(default=0, ge=0, description="Hits classified as ortholog (same gene, other species)")
+    repeat_hits: int = Field(default=0, ge=0, description="Hits classified as repeat element")
+    ortholog_species: str = Field(
+        default="", description="Comma-separated canonical species with at least one ortholog hit"
+    )
+
+    # Repeat detection (design-time k-mer frequency check)
+    repeat_flagged: bool = Field(
+        default=False, description="True if guide exceeds repeat transcript-fraction threshold at design time"
+    )
+    repeat_transcript_fraction: float = Field(
+        default=0.0, ge=0, le=1, description="Fraction of reference transcripts containing this guide"
     )
 
     # miRNA off-target metrics
@@ -426,9 +430,51 @@ class SiRNACandidate(BaseModel):
         default=1.0, ge=0, le=1, description="Fraction of input transcripts targeted by this guide (1.0 = all)"
     )
 
+    # Post-screen sub-scores (isoform coverage and conservation)
+    isoform_coverage: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Protein-coding isoform coverage sub-score (hit/total, inactive if no protein-coding isoforms)",
+    )
+    conservation_score: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Cross-species conservation sub-score (ortholog species hit / requested, inactive in single-species)",
+    )
+
     # Composite scoring
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
     composite_score: float = Field(ge=0, le=100, description="Overall siRNA quality score (higher is better)")
+    score_asymmetry: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of asymmetry term to composite score"
+    )
+    score_gc_content: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of GC content term to composite score"
+    )
+    score_accessibility: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of accessibility term to composite score"
+    )
+    score_empirical: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of empirical term to composite score"
+    )
+    score_off_target: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of off-target term to composite score"
+    )
+    score_isoform_coverage: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of isoform coverage term to composite score"
+    )
+    score_conservation: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of conservation term to composite score"
+    )
+    scored_after_screening: bool = Field(
+        default=False,
+        description="True if composite score includes post-screen terms (off-target, isoform, conservation)",
+    )
+    weight_set_version: str = Field(
+        default="", description="Scoring weight set version that produced composite_score (empty = not yet scored)"
+    )
 
     # Quality flags
     class FilterStatus(str, Enum):
@@ -442,6 +488,14 @@ class SiRNACandidate(BaseModel):
         LOW_ASYMMETRY = "LOW_ASYMMETRY"
         LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"
         DIRTY_CONTROL = "DIRTY_CONTROL"
+        REPEAT_ELEMENT = "REPEAT_ELEMENT"
+        EXCESS_OFF_TARGETS = "EXCESS_OFF_TARGETS"
+        TRANSCRIPTOME_PERFECT_MATCH = "TRANSCRIPTOME_PERFECT_MATCH"
+        TRANSCRIPTOME_1MM = "TRANSCRIPTOME_1MM"
+        TRANSCRIPTOME_2MM = "TRANSCRIPTOME_2MM"
+        MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
+        HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
+        TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
 
     # Either True (passed) or one of the FilterStatus reasons (failed)
     passes_filters: bool | FilterStatus = Field(
@@ -596,6 +650,13 @@ class DesignResult(BaseModel):
                 "melting_temp_c": cs.get("melting_temp_c"),
                 "off_target_screened": candidate.off_target_screened,
                 "off_target_count": candidate.off_target_count,
+                # Hit classification metrics
+                "on_target_hits": candidate.on_target_hits,
+                "ortholog_hits": candidate.ortholog_hits,
+                "repeat_hits": candidate.repeat_hits,
+                "ortholog_species": candidate.ortholog_species,
+                "repeat_flagged": candidate.repeat_flagged,
+                "repeat_transcript_fraction": candidate.repeat_transcript_fraction,
                 # miRNA-specific columns (nullable)
                 "guide_pos1_base": candidate.guide_pos1_base,
                 "pos1_pairing_state": candidate.pos1_pairing_state,
@@ -608,7 +669,20 @@ class DesignResult(BaseModel):
                 # Transcript hit metrics
                 "transcript_hit_count": candidate.transcript_hit_count,
                 "transcript_hit_fraction": candidate.transcript_hit_fraction,
+                # Post-screen sub-scores
+                "isoform_coverage": candidate.isoform_coverage,
+                "conservation_score": candidate.conservation_score,
+                # Composite scoring
                 "composite_score": candidate.composite_score,
+                "score_asymmetry": candidate.score_asymmetry,
+                "score_gc_content": candidate.score_gc_content,
+                "score_accessibility": candidate.score_accessibility,
+                "score_empirical": candidate.score_empirical,
+                "score_off_target": candidate.score_off_target,
+                "score_isoform_coverage": candidate.score_isoform_coverage,
+                "score_conservation": candidate.score_conservation,
+                "scored_after_screening": candidate.scored_after_screening,
+                "weight_set_version": candidate.weight_set_version,
                 "passes_filters": (
                     candidate.passes_filters.value
                     if hasattr(candidate.passes_filters, "value")

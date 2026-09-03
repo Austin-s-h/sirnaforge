@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 
 from sirnaforge.models.schemas import OffTargetHitsSchema, ORFValidationSchema, SiRNACandidateSchema
-from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
+from sirnaforge.models.sirna import COMPOSITE_TERM_NAMES, DesignParameters, SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -113,14 +113,9 @@ class ValidationUtils:
         if params.filters.gc_max - params.filters.gc_min < 5:
             result.add_warning("Very narrow GC content range may yield few candidates")
 
-        # Check scoring weights
-        total_weight = (
-            params.scoring.asymmetry
-            + params.scoring.gc_content
-            + params.scoring.accessibility
-            + params.scoring.off_target
-            + params.scoring.empirical
-        )
+        # Sum by name from the canonical term list; enumerating the terms here is how this
+        # check silently stopped seeing new weights when the term set last grew.
+        total_weight = sum(getattr(params.scoring, term) for term in COMPOSITE_TERM_NAMES)
 
         if abs(total_weight - 1.0) > 0.01:
             result.add_error(f"Scoring weights sum to {total_weight:.3f}, should be 1.0")
