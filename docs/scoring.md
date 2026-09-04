@@ -26,8 +26,9 @@ once per candidate by `sirnaforge.core.scoring.compute_composite`:
   count (on-target, ortholog and repeat-mediated hits excluded), `exp(-count / 10)`
 - **Isoform coverage** (weight 0.15) - Post-screen: fraction of the query gene's protein-coding
   isoforms the guide hits
-- **Conservation** (weight 0.10) - Post-screen: fraction of requested non-query species with an
-  ortholog hit
+- **Conservation** (weight 0.10) - Post-screen: fraction of the _screened_ non-query species with
+  an ortholog hit. Screened, not requested: species reaching the pipeline only through
+  `--genome-indices`/`--genome-fastas` count, and a species whose alignment never ran does not
 
 These weights (`ScoringWeights`, `weight_set_version = "2.0.0"`) sum to 1.00 and are the
 _post-screen_ set. Off-target, isoform coverage and conservation cannot be evaluated until
@@ -43,7 +44,7 @@ A term is _active_ for a candidate only when its sub-score could actually be com
 - `off_target`, `isoform_coverage` and `conservation` are inactive before screening has run.
 - `isoform_coverage` stays inactive if the query gene has no protein-coding transcript (an
   annotation gap, not a candidate defect).
-- `conservation` stays inactive when the user requested no species beyond the query species —
+- `conservation` stays inactive when no species beyond the query species was screened —
   a single-species run has no evidence to compute it from.
 
 `compute_composite` renormalises the _remaining_ weights to sum to 1 before combining them, so a
@@ -64,7 +65,9 @@ Each candidate carries `score_asymmetry`, `score_gc_content`, `score_accessibili
 renormalised-weight × sub-score × 100 contribution of each active term. These sum to
 `composite_score` (to floating-point tolerance) and are `None`/empty for any term that was
 inactive for that candidate, so you can see exactly which terms carried a given score rather than
-inferring it from the total alone.
+inferring it from the total alone. In `--design-mode mirna` they sum to the composite _before_ the
+miRNA biogenesis bonuses (ago-start, position-1 pairing, 3' supplementary), which that mode folds
+into `composite_score` on top of the term set both at design time and after screening.
 
 ### The design-time off-target proxy is now a diagnostic only
 

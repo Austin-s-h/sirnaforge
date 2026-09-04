@@ -589,6 +589,26 @@ class SiRNADesigner:
         }
 
 
+# component_scores keys carrying the miRNA biogenesis bonus past the design stage. The bonus is
+# folded into composite_score, not into the composite term set, so post-screen rescoring (which
+# rebuilds the composite from the term set) has to be able to reapply it from the candidate itself.
+MIRNA_BONUS_KEY = "mirna_biogenesis_bonus"
+MIRNA_BONUS_MAX_KEY = "mirna_biogenesis_bonus_max"
+
+
+def apply_mirna_biogenesis_bonus(base_score: float, mirna_bonus: float, max_mirna_bonus: float) -> float:
+    """Fold the miRNA biogenesis bonus into a 0-100 composite score.
+
+    The bonuses widen the attainable range, so rescale by the maximum attainable total
+    instead of clamping: clamping parked every strong candidate at exactly 100.0 and
+    erased the ranking at the top. Order is preserved, since this is monotone in
+    (base score + bonus).
+    """
+    scaled = (base_score + mirna_bonus * 100) / (1.0 + max_mirna_bonus)
+    # Guard the model's 0-100 bound for non-default scoring weights
+    return max(0.0, min(100.0, scaled))
+
+
 class MiRNADesigner(SiRNADesigner):
     """miRNA-biogenesis-aware siRNA designer with specialized scoring.
 
@@ -658,14 +678,14 @@ class MiRNADesigner(SiRNADesigner):
             # 5. Apply miRNA-specific bonuses to composite score
             mirna_bonus = ago_start_bonus + pos1_mismatch_bonus + supp_bonus
 
-            # The bonuses widen the attainable range, so rescale by the maximum
-            # attainable total instead of clamping: clamping parked every strong
-            # candidate at exactly 100.0 and erased the ranking at the top.
-            # Order is preserved, since this is monotone in (base score + bonus).
-            candidate.composite_score = (candidate.composite_score + mirna_bonus * 100) / (1.0 + max_mirna_bonus)
+            # Recorded on the candidate so off-target screening, which recomputes the composite
+            # from the term set afterwards, can reapply the same bonus instead of dropping it.
+            candidate.component_scores[MIRNA_BONUS_KEY] = mirna_bonus
+            candidate.component_scores[MIRNA_BONUS_MAX_KEY] = max_mirna_bonus
 
-            # Guard the model's 0-100 bound for non-default scoring weights
-            candidate.composite_score = max(0.0, min(100.0, candidate.composite_score))
+            candidate.composite_score = apply_mirna_biogenesis_bonus(
+                candidate.composite_score, mirna_bonus, max_mirna_bonus
+            )
 
         return candidates
 
