@@ -19,6 +19,13 @@ from typing import Any
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
+from sirnaforge.utils.cache_utils import (
+    ARTIFACT_MIRNA_COMBINED,
+    fingerprint_inputs,
+    is_artifact_stamp_current,
+    write_artifact_stamp,
+)
+
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 from .species_registry import (
     CANONICAL_SPECIES_ALIAS_MAP,
@@ -546,15 +553,21 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 return None
             source_files.append(source_file)
 
-        # Check if combined file is newer than all sources
-        if combined_file.exists():
-            combined_mtime = combined_file.stat().st_mtime
-            if all(source_file.stat().st_mtime <= combined_mtime for source_file in source_files):
-                logger.info(f"✅ Using existing combined database: {combined_file}")
-                return combined_file
+        # The combined file is derived, so it inherits every defect of the FASTAs it
+        # was built from. Reuse it only when its stamp proves the producer version and
+        # the exact input bytes still match: the previous mtime-only test could not
+        # notice a rewritten source of identical age, and never expired.
+        input_digests = fingerprint_inputs(source_files)
+        if combined_file.exists() and is_artifact_stamp_current(
+            ARTIFACT_MIRNA_COMBINED,
+            combined_file,
+            inputs=input_digests,
+            max_age_days=self.cache_ttl.days,
+        ):
+            logger.info(f"✅ Using existing combined database: {combined_file}")
+            return combined_file
 
-            # Combine databases
-            logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
+        logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
 
         seen_sequences = set()
         total_sequences = 0
@@ -575,6 +588,13 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                     )
                     SeqIO.write(annotated_record, outfile, "fasta")
                     total_sequences += 1
+
+        write_artifact_stamp(
+            ARTIFACT_MIRNA_COMBINED,
+            combined_file,
+            inputs=input_digests,
+            extra={"sources": sources, "species": canonical_species, "sequences": total_sequences},
+        )
 
         logger.info(f"✅ Combined database created: {combined_file} ({total_sequences} unique sequences)")
         return combined_file

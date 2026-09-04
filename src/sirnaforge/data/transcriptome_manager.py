@@ -14,6 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sirnaforge.utils.cache_utils import (
+    ARTIFACT_TRANSCRIPTOME_INDEX,
+    discard_artifact_stamp,
+    is_artifact_stamp_current,
+    log_discarded_artifact,
+    read_artifact_stamp,
+    write_artifact_stamp,
+)
+
 from .ensembl_references import build_transcriptome_sources
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 
@@ -207,6 +216,47 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         except Exception as e:
             logger.debug(f"Index validation failed: {e}")
             return False
+
+    @staticmethod
+    def _index_inputs(meta: CacheMetadata) -> dict[str, str]:
+        """Fingerprint of the content an index must have been built from.
+
+        Uses the checksum already recorded for the cached FASTA rather than hashing
+        it again: a transcriptome is tens of GB and the digest is computed anyway
+        when the file is cached.
+        """
+        return {"fasta": meta.checksum}
+
+    def _index_is_trustworthy(self, meta: CacheMetadata, index_path: Path) -> bool:
+        """Whether an existing index may be reused for the currently cached content.
+
+        bwa-mem2 aligns against the index files alone and never re-reads the FASTA,
+        so an index that outlived the content it was built from silently reports hits
+        with the previous release's transcript IDs and coordinates.
+        """
+        inputs = self._index_inputs(meta)
+        if read_artifact_stamp(index_path) is not None:
+            # Stamped: the stamp is the whole answer (and logs the mismatch itself).
+            return is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, index_path, inputs=inputs)
+
+        # Unstamped index from an older siRNAforge. Rebuilding a human transcriptome
+        # index costs an hour of CPU, so do not force that on everyone; our own
+        # metadata already answers the question. An index recorded as built *after*
+        # the cached content was written must have been built from that content
+        # (_record_cache_entry rewrites downloaded_at whenever content is replaced),
+        # so adopt it and stamp it. Anything we cannot date is discarded.
+        built_at = (meta.extra or {}).get("index_built_at")
+        if isinstance(built_at, str) and built_at >= meta.downloaded_at:
+            write_artifact_stamp(ARTIFACT_TRANSCRIPTOME_INDEX, index_path, inputs=inputs)
+            logger.info("Adopted pre-existing BWA-MEM2 index %s (built after the cached content)", index_path)
+            return True
+
+        log_discarded_artifact(
+            ARTIFACT_TRANSCRIPTOME_INDEX,
+            index_path,
+            "it cannot be shown to have been built from the cached reference",
+        )
+        return False
 
     def _build_index(self, fasta_path: Path, index_prefix: Path) -> bool:
         """Build BWA-MEM2 index for transcriptome FASTA.
@@ -496,15 +546,19 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         meta = self.metadata[cache_key]
         index_path = self._get_index_path(meta) or index_prefix
 
-        if self._is_index_complete(index_path):
+        if self._is_index_complete(index_path) and self._index_is_trustworthy(meta, index_path):
             self._ensure_index_marker(index_path)
             logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
             return {"fasta": fasta, "index": index_path}
 
         logger.info(f"⚠️  Building index: {index_prefix}")
+        # Drop any stamp first so a build that dies half-way cannot leave a stamp
+        # vouching for a partial index.
+        discard_artifact_stamp(index_prefix)
         if self._build_index(fasta, index_prefix):
             self._ensure_index_marker(index_prefix)
             self._set_index_path(meta, index_prefix)
+            write_artifact_stamp(ARTIFACT_TRANSCRIPTOME_INDEX, index_prefix, inputs=self._index_inputs(meta))
             self._save_metadata()
             return {"fasta": fasta, "index": index_prefix}
 
@@ -543,3 +597,5 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         index_path.unlink(missing_ok=True)
         for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
             index_path.with_suffix(ext).unlink(missing_ok=True)
+        # Leave no stamp behind to vouch for an index that is gone.
+        discard_artifact_stamp(index_path)
