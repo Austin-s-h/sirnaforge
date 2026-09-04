@@ -2022,6 +2022,7 @@ class SiRNAWorkflow:
                 ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
                 ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
                 ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
+                ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
                 ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
                 ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
             )
@@ -2230,6 +2231,7 @@ class SiRNAWorkflow:
         transcriptome_0mm: int,
         transcriptome_1mm: int,
         transcriptome_2mm: int,
+        transcriptome_seed_0mm: int,
         mirna_0mm_seed: int,
         mirna_high_risk: int,
         total_hits: int,
@@ -2237,6 +2239,15 @@ class SiRNAWorkflow:
         filter_criteria: OffTargetFilterCriteria,
     ) -> tuple[bool, SiRNACandidate.FilterStatus | None]:
         """Check if candidate fails off-target filters.
+
+        ``transcriptome_seed_0mm`` is the only input that sees a *partial* hit whose seed paired
+        perfectly. ``nm`` is a guide-level distance, so a clipped or gapped hit carries nm > 2 and
+        lands in none of the ``transcriptome_{0,1,2}mm`` strata even when its seed is intact; the
+        seed counter and ``genuine_off_target_count`` are the only signals left. Its threshold
+        (``max_transcriptome_seed_perfect``) defaults to ``None``, so this check is inert until a
+        user opts in. Unlike the three mismatch counts it is not species-split -- it is the
+        reported ``transcriptome_hits_seed_0mm`` column verbatim, so the gate fires on exactly the
+        number the user sees.
 
         Returns:
             Tuple of (should_fail, fail_status enum or None)
@@ -2257,6 +2268,11 @@ class SiRNAWorkflow:
                 filter_criteria.max_transcriptome_hits_2mm,
                 transcriptome_2mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM,
+            ),
+            (
+                filter_criteria.max_transcriptome_seed_perfect,
+                transcriptome_seed_0mm,
+                SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT,
             ),
             (
                 filter_criteria.max_mirna_perfect_seed,
@@ -2377,6 +2393,7 @@ class SiRNAWorkflow:
             "failed_perfect_match": 0,
             "failed_transcriptome_1mm": 0,
             "failed_transcriptome_2mm": 0,
+            "failed_transcriptome_seed_perfect": 0,
             "failed_mirna_seed": 0,
             "failed_high_risk_mirna": 0,
             "failed_excess_off_targets": 0,
@@ -2566,6 +2583,7 @@ class SiRNAWorkflow:
                 transcriptome_human[0],
                 transcriptome_human[1],
                 transcriptome_human[2],
+                transcriptome_seed_0mm,
                 mirna_human_0mm_seed,
                 mirna_high_risk_human,
                 human_total_hits_for_filters,
@@ -2584,6 +2602,8 @@ class SiRNAWorkflow:
                     stats["failed_transcriptome_1mm"] += 1
                 elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM:
                     stats["failed_transcriptome_2mm"] += 1
+                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT:
+                    stats["failed_transcriptome_seed_perfect"] += 1
                 elif fail_status == SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED:
                     stats["failed_mirna_seed"] += 1
                 elif fail_status == SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA:

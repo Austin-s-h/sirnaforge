@@ -467,7 +467,15 @@ class MiRNAAlignmentSchema(DataFrameModel):
 
     # Scoring
     as_score: Series[pd.Int64Dtype] = Field(nullable=True, description="Alignment score (AS tag)")
-    nm: Series[int] = Field(ge=0, description="Edit distance / total mismatches")
+    # See OffTargetHit.nm: a GUIDE-level distance, so clipped/inserted/bulged guide bases
+    # count as mismatch-equivalents and nm >= the aligner's NM tag on partial or gapped hits.
+    nm: Series[int] = Field(
+        ge=0,
+        description=(
+            "Guide mismatch-equivalent count: aligner edit distance plus guide bases left "
+            "unpaired by clipping or gaps (>= the NM tag)"
+        ),
+    )
     seed_mismatches: Series[int] = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: Series[float] = Field(ge=0.0, description="Off-target penalty score")
 
@@ -530,7 +538,15 @@ class GenomeAlignmentSchema(DataFrameModel):
 
     # Scoring
     as_score: Series[pd.Int64Dtype] = Field(nullable=True, description="Alignment score (AS tag)")
-    nm: Series[int] = Field(ge=0, description="Edit distance / total mismatches")
+    # See OffTargetHit.nm: a GUIDE-level distance, so clipped/inserted/bulged guide bases
+    # count as mismatch-equivalents and nm >= the aligner's NM tag on partial or gapped hits.
+    nm: Series[int] = Field(
+        ge=0,
+        description=(
+            "Guide mismatch-equivalent count: aligner edit distance plus guide bases left "
+            "unpaired by clipping or gaps (>= the NM tag)"
+        ),
+    )
     seed_mismatches: Series[int] = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: Series[float] = Field(ge=0.0, description="Off-target penalty score")
 

@@ -71,7 +71,18 @@ class BaseAlignmentHit(BaseModel, ABC):
 
     # Scoring (common to all hits)
     as_score: int | None = Field(default=None, description="Alignment score (AS tag)")
-    nm: int = Field(ge=0, description="Edit distance / number of mismatches")
+    # nm is a GUIDE-level distance, not the aligner's NM tag: clipped, inserted and bulged
+    # bases are mismatch-equivalents because those guide positions never paired with the
+    # target, so nm >= NM for any partial or gapped alignment. The mismatch-stratified
+    # transcriptome_hits_{0,1,2}mm counters are read off this field, which is what keeps a
+    # 15M6S "NM:i:0" partial hit out of the perfect-match stratum.
+    nm: int = Field(
+        ge=0,
+        description=(
+            "Guide mismatch-equivalent count: aligner edit distance plus guide bases left "
+            "unpaired by clipping or gaps (>= the NM tag)"
+        ),
+    )
     seed_mismatches: int = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: float = Field(ge=0.0, description="Off-target penalty score")
 
@@ -214,7 +225,18 @@ class AnalysisSummary(BaseSummary):
 
     # Alignment statistics
     mean_mapq: float | None = Field(default=None, ge=0.0, le=255.0, description="Mean mapping quality")
-    mean_mismatches: float | None = Field(default=None, ge=0.0, description="Mean number of mismatches")
+    # Mean of OffTargetHit.nm, which is a GUIDE-level distance rather than the aligner's NM tag,
+    # so this value rose for any run containing clipped or gapped hits (a 15M6S/NM:i:0 hit
+    # contributes 6, not 0). It is not comparable with the same field from a pre-0.6.0 summary
+    # JSON, and it is not the aligner's mean edit distance.
+    mean_mismatches: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Mean guide mismatch-equivalent count over hits (mean of nm, not of the aligner's "
+            "NM tag; counts guide bases left unpaired by clipping or gaps)"
+        ),
+    )
     mean_seed_mismatches: float | None = Field(default=None, ge=0.0, description="Mean seed region mismatches")
 
 

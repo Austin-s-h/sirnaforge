@@ -18,6 +18,78 @@ substantially, for the same reason.
 
 ### Fixed
 
+- **`BwaAnalyzer._parse_sam_output` read SAM/MD positions as if they were guide positions, so
+  seed-mismatch classification was inverted for the majority of real transcriptome hits, and
+  partial or gapped alignments were scored as zero-risk perfect matches.** Four separate frame
+  errors, all of which corrupted `mismatch_positions`, `seed_mismatches`, `offtarget_score`,
+  `transcriptome_hits_seed_0mm`, `mean_seed_mismatches` and the `_filter_and_rank` ordering that
+  `max_hits` truncation depends on:
+  - **Minus strand was not handled.** BWA stores `flag & 16` records reverse-complemented, so
+    SEQ/MD/CIGAR are in the revcomp frame while the seed window (`seed_start`..`seed_end`) is
+    defined in guide coordinates: read position `r` of a length-`L` record is guide position
+    `L + 1 - r`. Because `core/design.py` builds every guide as `reverse_complement(target_seq)`,
+    minus strand is the normal path, not an edge case. A mismatch at true guide position 3 (inside
+    the seed) was recorded as position 19 with `seed_mismatches=0` and `offtarget_score=11.0`
+    instead of 1 and 15.0. The mirror now uses the length of the query the aligner was actually
+    handed, so it still applies when the record carries no CIGAR (`*`).
+  - **Clipping and gaps were ignored.** MD offsets count only reference-aligned read bases, so a
+    leading clip or an insertion desynchronised every position from the read; and clipped,
+    inserted and bulged bases were not counted at all, making a `15M6S`/`NM:i:0` alignment of a
+    21 nt guide indistinguishable from a full-length perfect match (`bwa mem -T 15` emits these
+    routinely) and giving a 2 bp-deletion hit `offtarget_score=0.0`. Since `_filter_and_rank`
+    sorts **ascending**, those zero scores sorted ahead of genuine perfect matches and survived
+    any `max_hits` truncation. Guide bases left unpaired by clipping or insertion now count as
+    mismatches; deleted reference bases have no guide position of their own, so they raise `nm`
+    and the score anchored on the guide base flanking the bulge. A hit with `nm > 0` can no longer
+    score `0.0`.
+  - **`mirna_seed` mode used the wrong frame entirely.** In that mode the aligner is handed only
+    the extracted 7 nt seed window, so read positions are _window_ positions and must be shifted
+    by `seed_start - 1` — the correction `_normalize_bwa_mirna_seed_hits` and
+    `scan_mirna_seed_matches` already applied to their own rows. It matters even though
+    `_normalize_bwa_mirna_seed_hits` recomputes positions afterwards, because `analyze_sequences`
+    ranks and applies `max_hits` truncation on the raw scores first.
+  - **`_filter_and_rank` raised `TypeError`** on any record with no `AS` tag: it used
+    `-x.get("as_score", 0)`, but the key is always present and set to `None`, so the dict default
+    never applied. It now matches the sibling sort sites (`-int(row.get("as_score") or 0)`).
+
+  **`nm` is now documented as a guide-level distance rather than "edit distance"** in
+  `OffTargetHit`, `GenomeAlignmentSchema`, `MiRNAAlignmentSchema` and `docs/models_and_scoring.md`:
+  it is the aligner's `NM` plus the guide bases left unpaired by clipping or gaps, so `nm >= NM`
+  for any partial or gapped hit. The column name is unchanged. See the `off_target_count` entry
+  under Changed for what this means for the `transcriptome_hits_{0,1,2}mm` strata and the
+  `max_transcriptome_hits_*` thresholds read against them — a clipped partial hit no longer fails
+  a candidate as `TRANSCRIPTOME_PERFECT_MATCH`, but is still counted by `transcriptome_hits_total`
+  and `off_target_count`. Two further values change meaning with it:
+  - **`mean_mismatches`** in every `*_summary.json` (`AnalysisSummary.mean_mismatches`) is the mean
+    of `nm`, so it is now a mean guide mismatch-equivalent count, not a mean aligner edit distance,
+    and it rises for any run with clipped or gapped hits (two `15M6S`/`NM:i:0` hits report `6.0`
+    where they reported `0.0`). Not comparable across the 0.6.0 boundary.
+  - **`off_target_penalty`** was already misdocumented as "lower is better": post-screen it holds
+    the **maximum** `offtarget_score` over a candidate's hits, where higher is _safer_ and `0.0` is
+    reserved for a full-length exact match — while at design time it holds an internal-repeat
+    penalty where higher is worse. Widening `nm` widened the post-screen values (a clipped
+    minus-strand hit reports ~76 where it reported `0.0`). Reporting only; nothing scores or
+    filters on it. The field description and `docs/models_and_scoring.md` §6.1 now say so.
+
+  **A seed-perfect _partial_ hit falls in no mismatch stratum, so
+  `max_transcriptome_hits_0mm` cannot gate it.** A minus-strand `6S15M` / `MD:Z:15` / `NM:i:0`
+  record puts the clip on guide positions 16-21, leaving guide positions 2-8 pairing perfectly; its
+  guide-level `nm` is 6, so it is counted in `transcriptome_hits_seed_0mm`,
+  `transcriptome_hits_total` and `off_target_count` but in none of `_0mm`/`_1mm`/`_2mm`. Two such
+  hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`, and on stock defaults only
+  `max_off_target_count` (3) stands between them and a PASS. `max_transcriptome_seed_perfect` is
+  therefore now **enforced** in `_check_offtarget_filters` (new verdict
+  `TRANSCRIPTOME_SEED_PERFECT`, new `failed_transcriptome_seed_perfect` stat). It still defaults to
+  `None`, so behaviour is unchanged unless a user sets it — picking a calibrated default is a
+  separate product decision. Unlike the three mismatch thresholds it is **not** species-split: it
+  gates the reported `transcriptome_hits_seed_0mm` column verbatim.
+
+  **Clear the Nextflow work directory before re-running an existing target.** Off-target
+  alignments are parsed inside the `OFFTARGET_ANALYSIS`/`MIRNA_SEED_ANALYSIS` processes and
+  `sirnaforge` always passes `-resume`, so a re-run against an unchanged input FASTA will replay
+  the cached, wrongly-parsed `*_analysis.tsv` from the previous run. Delete the Nextflow work
+  directory (`./nextflow_work` by default) to pick this fix up.
+
 - **On-target self-hit exclusion only matched a candidate's exact source transcript (or, in a
   first pass, other isoforms present in the input FASTA), so uncapping `max_hits` turned the
   off-target filter into a near-total kill switch: 3,259 of 3,288 candidates failed
@@ -113,7 +185,12 @@ substantially, for the same reason.
   the same target will drop substantially. The mismatch-stratified
   `transcriptome_hits_{0,1,2}mm` counters are likewise redefined to count genuine off-targets
   only, and the `max_transcriptome_hits_*` thresholds in `OffTargetFilterCriteria` are read
-  against those.
+  against those. The stratum a hit lands in is its **guide-level** mismatch count (`nm`, see the
+  SAM-frame entry under Fixed), which is not the same as the aligner's `NM` tag for a clipped or
+  gapped alignment: a `15M6S`/`NM:i:0` partial hit counts as 6, so it lands in no stratum rather
+  than in `0mm`. Such hits are still counted in full by `transcriptome_hits_total` and
+  `off_target_count`, which `max_off_target_count` (default 3) gates — the strata are nm≤2
+  subsets, not the whole picture.
 - **Ortholog recognition previously worked only when the screened species was human.** The
   transcript→gene index was built behind an `if transcriptome_species == "human"` gate into one
   shared dict, so a mouse/rat/macaque hit could never be recognised as an ortholog of the query

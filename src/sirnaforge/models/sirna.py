@@ -129,6 +129,13 @@ class OffTargetFilterCriteria(BaseModel):
     max_transcriptome_hits_2mm: int | None = Field(
         default=50, ge=0, description="Maximum 2-mismatch genuine off-target hits (typical: 20-50, None = no limit)"
     )
+    # Read against transcriptome_hits_seed_0mm. This is the only *targeted* gate on a partial
+    # (clipped or gapped) hit whose seed paired perfectly: such a hit has a guide-level nm > 2, so
+    # it lands in no mismatch stratum and max_transcriptome_hits_{0,1,2}mm never see it. The only
+    # other thing that counts it is the blunt max_off_target_count ceiling (default 3).
+    # Unlike the three mismatch thresholds this one counts ALL screened species, matching the
+    # reported transcriptome_hits_seed_0mm column exactly. Defaults to None (off) because a safe
+    # ceiling has not been calibrated against truth data; set it to opt in.
     max_transcriptome_seed_perfect: int | None = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
     )
@@ -353,7 +360,25 @@ class SiRNACandidate(BaseModel):
         ge=0,
         description="Number of genuine off-target sites (on-target, ortholog and repeat hits excluded, goal: ≤3)",
     )
-    off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
+    # Reporting only -- nothing scores or filters on this field, and its direction depends on
+    # which stage wrote it last, so do not compare values across candidates screened differently:
+    #   * design time (SiRNADesigner._calculate_off_target_score) writes an internal-repeat 7-mer
+    #     penalty, where HIGHER is worse;
+    #   * after screening, _integrate_offtarget_results overwrites it with the MAXIMUM
+    #     ``offtarget_score`` over the candidate's hits, where higher is SAFER -- 0.0 is reserved
+    #     for a full-length exact match (the highest-risk hit there is). Taking the max therefore
+    #     reports the candidate's *least* worrying hit, and since ``nm`` became a guide-level
+    #     distance the values got wider (a clipped minus-strand partial hit reports ~76-98 where
+    #     it used to report 0.0).
+    off_target_penalty: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Reporting only, direction depends on provenance: design-time internal-repeat penalty "
+            "(higher = worse), overwritten post-screen by max offtarget_score (higher = safer, "
+            "0.0 = perfect match). Use off_target_count / the hit strata to judge risk."
+        ),
+    )
 
     # Detailed transcriptome off-target metrics. _total counts every genuine off-target hit at
     # any mismatch count (so it always agrees with off_target_count); _0mm/_1mm/_2mm are
@@ -366,8 +391,15 @@ class SiRNACandidate(BaseModel):
     )
     transcriptome_hits_1mm: int = Field(default=0, ge=0, description="1-mismatch subset of transcriptome_hits_total")
     transcriptome_hits_2mm: int = Field(default=0, ge=0, description="2-mismatch subset of transcriptome_hits_total")
+    # The only counter that sees a PARTIAL hit whose seed paired perfectly. Because nm is a
+    # guide-level distance, a clipped or gapped hit (e.g. 6S15M/NM:i:0 on the minus strand, where
+    # the clip lands on guide positions 16-21 and leaves the seed intact) carries nm=6: it is
+    # counted here and in transcriptome_hits_total / off_target_count, but falls in NO mismatch
+    # stratum, so max_transcriptome_hits_{0,1,2}mm cannot gate it. Only
+    # max_transcriptome_seed_perfect (default None) and max_off_target_count (default 3) do.
+    # Unlike the _0mm/_1mm/_2mm counters this one is not split by species.
     transcriptome_hits_seed_0mm: int = Field(
-        default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8)"
+        default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species"
     )
     on_target_confirmed: bool = Field(
         default=False,
@@ -495,6 +527,7 @@ class SiRNACandidate(BaseModel):
         TRANSCRIPTOME_PERFECT_MATCH = "TRANSCRIPTOME_PERFECT_MATCH"
         TRANSCRIPTOME_1MM = "TRANSCRIPTOME_1MM"
         TRANSCRIPTOME_2MM = "TRANSCRIPTOME_2MM"
+        TRANSCRIPTOME_SEED_PERFECT = "TRANSCRIPTOME_SEED_PERFECT"
         MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
         HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
         TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
