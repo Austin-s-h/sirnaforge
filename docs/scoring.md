@@ -26,8 +26,13 @@ once per candidate by `sirnaforge.core.scoring.compute_composite`:
   count (on-target, ortholog and repeat-mediated hits excluded), `exp(-count / 10)`
 - **Isoform coverage** (weight 0.15) - Post-screen: fraction of the query gene's protein-coding
   isoforms the guide hits
-- **Conservation** (weight 0.10) - Post-screen: fraction of requested non-query species with an
-  ortholog hit
+- **Conservation** (weight 0.10) - Post-screen: fraction of the non-query species _handed to the
+  aligner_ with an ortholog hit. That set is wider than `--genome-species`: species reaching the
+  pipeline only through `--genome-indices`, `--genome-fastas` or `--transcriptome-indices` are
+  screened, so they count. A species whose alignment produced nothing **stays in the denominator**
+  — it cannot contribute an ortholog hit, so conservation becomes a lower bound. Dropping it
+  instead would let a degraded run outscore the complete run it degraded from, because a
+  conservation term that goes inactive has its weight redistributed to the surviving terms
 
 These weights (`ScoringWeights`, `weight_set_version = "2.0.0"`) sum to 1.00 and are the
 _post-screen_ set. Off-target, isoform coverage and conservation cannot be evaluated until
@@ -43,7 +48,7 @@ A term is _active_ for a candidate only when its sub-score could actually be com
 - `off_target`, `isoform_coverage` and `conservation` are inactive before screening has run.
 - `isoform_coverage` stays inactive if the query gene has no protein-coding transcript (an
   annotation gap, not a candidate defect).
-- `conservation` stays inactive when the user requested no species beyond the query species —
+- `conservation` stays inactive when no species beyond the query species was handed to the aligner —
   a single-species run has no evidence to compute it from.
 
 `compute_composite` renormalises the _remaining_ weights to sum to 1 before combining them, so a
@@ -57,14 +62,44 @@ table as an implicit zero.
 pre-issue-#80 five-term set) are **not comparable** to `2.x` scores — always compare candidates
 within one run, one weight-set version.
 
+### What `top_candidates` excludes
+
+`top_candidates` is rebuilt after screening from the candidates that clear **three** gates, so it
+can be shorter than `min(top_n, number passing)`. (`candidates_all.csv` and `candidates_pass.csv`
+are filtered on `passes_filters` alone, but both are written in the re-ranked order.) The gates:
+
+1. `passes_filters` is `PASS` — a failed off-target filter is a rejection, not a low score;
+2. `repeat_flagged` is `False` — a guide that saturates the query transcriptome is excluded even
+   when screening never ran;
+3. `scored_after_screening` is `True`, **whenever some but not all candidates were scored after
+   screening**. A design-time score lacks the three post-screen terms and is systematically the
+   more optimistic number, so letting it compete against post-screen neighbours would put exactly
+   the candidates whose evidence is missing at the top. Those rows stay in `candidates_all.csv`
+   with their design-time score, and the run logs an ERROR naming the count. If _no_ candidate was
+   scored after screening (a wholly failed or wholly pre-screen run) the list is internally
+   consistent and this gate does not apply.
+
 ### Per-term contribution columns
 
 Each candidate carries `score_asymmetry`, `score_gc_content`, `score_accessibility`,
 `score_empirical`, `score_off_target`, `score_isoform_coverage` and `score_conservation`: the
-renormalised-weight × sub-score × 100 contribution of each active term. These sum to
-`composite_score` (to floating-point tolerance) and are `None`/empty for any term that was
-inactive for that candidate, so you can see exactly which terms carried a given score rather than
-inferring it from the total alone.
+renormalised-weight × sub-score × 100 contribution of each active term. They are `None`/empty for
+any term that was inactive for that candidate, so you can see exactly which terms carried a given
+score rather than inferring it from the total alone.
+
+In siRNA mode they sum to `composite_score` (to floating-point tolerance). **In
+`--design-mode mirna` they do not**, and not merely by the bonus: that mode divides by the maximum
+attainable bonus to keep the range at 0-100, so
+
+```
+composite_score = (Σ contributions + mirna_bonus × 100) / (1 + max_mirna_bonus)
+```
+
+with `max_mirna_bonus = 0.25` under the default miRNA weights (ago-start 0.10 + position-1 pairing
+0.05 + 3' supplementary 0.10). A candidate that earns _no_ bonus therefore reports a
+`composite_score` 20% below the sum of its own contribution columns; the columns still show the
+relative weight each term carried, and the divisor is the same for every row of a miRNA run
+(including injected dirty controls), so within-run comparisons hold.
 
 ### The design-time off-target proxy is now a diagnostic only
 
@@ -141,29 +176,29 @@ sirnaforge workflow GENE --gc-min 30 --gc-max 65
 
 The `candidates_pass.csv` and `candidates_all.csv` files include:
 
-| Column                                             | Description                                                                                     |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `sirna_id`                                         | Unique identifier                                                                               |
-| `guide_sequence`                                   | 21nt guide strand (5'→3')                                                                       |
-| `passenger_sequence`                               | Passenger/sense strand                                                                          |
-| `position`                                         | Start position in transcript                                                                    |
-| `composite_score`                                  | Overall quality score                                                                           |
-| `asymmetry_score`                                  | Thermodynamic asymmetry                                                                         |
-| `gc_content`                                       | GC percentage                                                                                   |
-| `melting_temp_c`                                   | Melting temperature (°C)                                                                        |
-| `mfe`                                              | Minimum free energy (kcal/mol)                                                                  |
-| `duplex_stability_dg`                              | Guide:passenger duplex ΔG (kcal/mol)                                                            |
-| `dg_5p` / `dg_3p`                                  | Terminal 7 bp ΔG at each duplex end                                                             |
-| `delta_dg_end`                                     | `dg_5p - dg_3p`; positive favours guide loading                                                 |
-| `off_target_screened`                              | `False` means this candidate was never screened, so the hit counts are unknown rather than zero |
-| `off_target_count`                                 | Genuine off-target hits only (on-target, ortholog and repeat-mediated hits excluded)            |
-| `on_target_hits` / `ortholog_hits` / `repeat_hits` | The other three classes from the same four-way split                                            |
-| `ortholog_species`                                 | Comma-joined canonical species names with at least one ortholog hit                             |
-| `repeat_flagged` / `repeat_transcript_fraction`    | Design-time k-mer repeat verdict and the frequency it was based on                              |
-| `isoform_coverage` / `conservation_score`          | Post-screen sub-scores (empty when inactive for that candidate)                                 |
-| `score_*`                                          | Per-term contribution to `composite_score` (see Composite Score above)                          |
-| `scored_after_screening` / `weight_set_version`    | Which scoring regime produced this row's `composite_score`                                      |
-| `passes_filters`                                   | `PASS` or the first failed filter                                                               |
+| Column                                             | Description                                                                               |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `sirna_id`                                         | Unique identifier                                                                         |
+| `guide_sequence`                                   | 21nt guide strand (5'→3')                                                                 |
+| `passenger_sequence`                               | Passenger/sense strand                                                                    |
+| `position`                                         | Start position in transcript                                                              |
+| `composite_score`                                  | Overall quality score                                                                     |
+| `asymmetry_score`                                  | Thermodynamic asymmetry                                                                   |
+| `gc_content`                                       | GC percentage                                                                             |
+| `melting_temp_c`                                   | Melting temperature (°C)                                                                  |
+| `mfe`                                              | Minimum free energy (kcal/mol)                                                            |
+| `duplex_stability_dg`                              | Guide:passenger duplex ΔG (kcal/mol)                                                      |
+| `dg_5p` / `dg_3p`                                  | Terminal 7 bp ΔG at each duplex end                                                       |
+| `delta_dg_end`                                     | `dg_5p - dg_3p`; positive favours guide loading                                           |
+| `off_target_screened`                              | `False` means the screen was incomplete, so the hit counts are a lower bound, not a total |
+| `off_target_count`                                 | Genuine off-target hits only (on-target, ortholog and repeat-mediated hits excluded)      |
+| `on_target_hits` / `ortholog_hits` / `repeat_hits` | The other three classes from the same four-way split                                      |
+| `ortholog_species`                                 | Comma-joined canonical species names with at least one ortholog hit                       |
+| `repeat_flagged` / `repeat_transcript_fraction`    | Design-time k-mer repeat verdict and the frequency it was based on                        |
+| `isoform_coverage` / `conservation_score`          | Post-screen sub-scores (empty when inactive for that candidate)                           |
+| `score_*`                                          | Per-term contribution to `composite_score` (see Composite Score above)                    |
+| `scored_after_screening` / `weight_set_version`    | Which scoring regime produced this row's `composite_score`                                |
+| `passes_filters`                                   | `PASS` or the first failed filter                                                         |
 
 ## References
 

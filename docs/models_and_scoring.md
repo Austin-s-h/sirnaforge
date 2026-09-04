@@ -46,7 +46,10 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float     # Fraction paired bases (optimal: 0.4-0.6)
 
     # Off-target metrics
-    off_target_screened: bool  # False = never screened, so the counts below are unknown
+    off_target_screened: bool  # False = the screen was INCOMPLETE (never screened, or a run whose
+                                # query-species alignment produced nothing), so the counts below
+                                # are a lower bound, not a total — hits found in the species that
+                                # did align are still reported, and still applied as filters
     off_target_count: int      # Genuine off-target sites only (goal: ≤3); on-target,
                                 # ortholog and repeat-mediated hits are excluded
     transcriptome_hits_0mm: int   # Perfect match GENUINE off-target hits
@@ -538,6 +541,13 @@ A hit whose species label is blank/missing is treated as the query species. When
 check cannot run because the hit species' annotation carries no gene symbol for that transcript,
 the hit stays `OFF_TARGET` (never guessed at) and the shortfall is counted separately
 (`ortholog_symbol_lookup_misses` in `offtarget_summary`).
+
+The **query species** is the organism the _target_ transcripts belong to. It is read from the
+database the gene query was answered by (Ensembl/RefSeq/GENCODE are all human-only), never from
+`--species`, which is an unordered set of genomes to screen _against_ and whose order carries no
+meaning. Pass `--query-species` when designing against an input FASTA from another organism — it
+also decides which species' alignment must have succeeded before candidates can be scored after
+screening.
 
 ---
 

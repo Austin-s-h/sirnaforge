@@ -117,6 +117,67 @@ substantially, for the same reason.
   helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
   remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
   closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
+- **`--design-mode mirna` had no effect on the ranking of any run that reached off-target
+  screening.** `MiRNADesigner` folds the ago-start, position-1 pairing and 3' supplementary
+  bonuses into `composite_score` only, never into the composite term set. Moving scoring after
+  screening meant the composite was rebuilt from that term set and the bonuses were dropped, so
+  every screened miRNA run was ranked by the plain siRNA composite. The bonus and its normalising
+  maximum are now recorded on the candidate and reapplied through one shared helper. Rows that
+  never passed through `MiRNADesigner` — injected dirty controls, which are copies of _rejected_
+  candidates — fall back to the mode's own maximum bonus rather than to zero, so they are divided
+  by the same `1 + max_mirna_bonus` as everything else instead of sitting ~25% high in the same
+  CSV. `docs/scoring.md` now states the exact relation between the `score_*` contribution columns
+  and `composite_score` in miRNA mode; they do not sum to it, and not only by the bonus.
+- **A screen that partly or wholly failed was scored as a clean, complete screen — and could
+  outrank one.** A candidate with no results entry took the no-hits branch and received
+  `off_target_sub_score(0) = 1.0`, maximal specificity, with `off_target_screened = True`. Three
+  separate shapes of this: a species whose alignment stage produced no files (a BWA-MEM2 index
+  OOM), a candidate that never reached the aligner at all, and — the common case — a run where
+  _aggregation itself_ failed, where the aggregate's own `missing_species` list is empty because
+  nothing wrote one. The guard now keys on positive evidence, the per-species alignment files the
+  aggregator actually read, so its absence cannot read as success; miRNA-only runs, which align
+  against no transcriptome at all, are covered by the same rule. Candidates in that state keep
+  their design-time score, report `off_target_screened = False`, and are counted in
+  `offtarget_summary.filtering_stats.candidates_not_scored_after_screening`. Hits that _were_ found are still
+  classified, still reported, and still applied as filters — real evidence can only fail a
+  candidate, never wrongly pass one — so `off_target_screened = False` now means "this screen was
+  incomplete, the counts are a lower bound", not "the counts are zero". Where only some candidates
+  could be scored after screening, the rest are sorted below every scored one and held out of
+  `top_candidates` (a third exclusion beyond passing and non-repeat-flagged, so `top_candidates`
+  can be shorter than `min(top_n, n_passing)`) rather than competing on an optimistic, differently
+  scaled number; the run logs an ERROR and a console line naming the count.
+- **Conservation was scored against the CLI species list rather than the species actually handed
+  to the aligner, and a failed alignment inflated it.** `--genome-indices`, `--genome-fastas` and
+  `--transcriptome-indices` all reach the same alignment channel in `main.nf`, but only
+  `--genome-species` fed the conservation denominator, so an ortholog hit in one of the extra
+  species could make the numerator exceed the denominator; `conservation_sub_score` raised and the
+  `except` around the whole scoring block abandoned scoring silently, leaving the candidate with a
+  design-time score while its neighbours carried post-screen ones. The denominator is now the set
+  of non-query species handed to the aligner and the numerator is intersected with it. A species
+  whose alignment produced nothing **stays** in that denominator: removing it emptied the term for
+  single-ortholog-species runs, `compute_composite` redistributed its 0.10 weight to the surviving
+  terms, and a partial screen scored 57.9 where the complete screen scored 51.1. Conservation is
+  measured across the species that were screened: one that was screened and produced nothing can
+  only lower the term, never raise it. A failure to score after screening is loud rather
+  than silent: ERROR level, a counter, and a console line.
+  **Re-run to pick this up** — rankings and `top_candidates` membership change, so
+  `candidates_all.csv`/`candidates_pass.csv` from an earlier build must be regenerated. Runs that
+  supply species through `--transcriptome-indices` also get a new Nextflow work-dir cache key (the
+  key includes the resolved species list), so the first run after upgrading re-screens instead of
+  resuming; nothing needs to be cleared by hand.
+- **The query species was read out of a list position, which turned the guard above on against
+  every default run.** `--species` is an unordered set of genomes to screen _against_, and its own
+  default starts with chicken (`chicken,pig,rat,mouse,human,rhesus,macaque`), but the workflow took
+  element 0 of it as the organism of the _target_ transcripts. So a plain `sirnaforge workflow TP53`
+  called itself a chicken run, found no chicken alignment among the four human/mouse/rat/macaque
+  transcriptomes it had just screened successfully, and kept design-time scores for every candidate
+  (`scored_after_screening = False`, `off_target_screened = False` on a complete screen) while still
+  reporting `run_status = "completed"`; repeat detection was skipped in the same runs for want of a
+  chicken cDNA. The query species now comes from where the target transcripts came from — the
+  gene-query database, via `GeneSearcher.query_species` (Ensembl, RefSeq and GENCODE are all
+  human-only) — and a new `--query-species` (`query_species=` on `run_sirna_workflow`,
+  `run_offtarget_only_workflow` and `WorkflowConfig`) states it outright for an input FASTA from
+  another organism.
 
 ### Added
 
@@ -205,8 +266,9 @@ substantially, for the same reason.
   unchanged by the dedup. `top_n` no longer gates which candidates are screened — it keeps its
   reporting meaning only (how many candidates land in `top_candidates`). Candidates are
   re-ranked by the post-screen composite score once screening completes, and `top_candidates`
-  is rebuilt from the viable (passing, non-repeat-flagged) subset rather than staying frozen at
-  its design-time order.
+  is rebuilt from the viable subset rather than staying frozen at its design-time order — viable
+  meaning passing, non-repeat-flagged, and (where a screen only partly succeeded) scored after
+  screening; see the partial-screen entry above for that third exclusion.
 - The design-time self-repetitiveness proxy (repeated 7-mers _within_ the guide) is retained as
   an unweighted diagnostic, `component_scores["design_off_target_proxy"]`; it no longer feeds
   `composite_score` under any name. For the standalone `sirnaforge design` path (no screening),
