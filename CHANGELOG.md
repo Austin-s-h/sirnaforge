@@ -45,6 +45,26 @@ substantially, for the same reason.
   helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
   remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
   closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
+- **The transcriptome cache could hand off-target screening a reference other than the one it
+  reported: a filtered FASTA claimed the unfiltered source URI, and a BWA-MEM2 index outlived the
+  FASTA it was built from.** A single `--transcriptome-filter protein_coding` run recorded its
+  filtered output under the bare source URL, so every later _unfiltered_ request resolved to the
+  protein-coding-only subset while logging the full source name, and filters compounded (filtering
+  an already-filtered file). Filtered artifacts now carry their own filter-qualified cache identity
+  (`<url>#filters=<spec>`) and a derived entry can never answer for the base URI, in this process or
+  after a reload. They also record the checksum of the base bytes they were cut from: the Ensembl
+  FTP URL is release-agnostic, and a filtered entry has no download of its own to time out, so a new
+  release used to be filtered once and then served forever. Separately, any cached FASTA that gets
+  rewritten — remote re-download, TTL refresh, re-filter, a file replaced inside the cache
+  directory, or an edited local FASTA (which, with content dedupe disabled, was previously never
+  re-copied at all) — now invalidates the index built from the previous bytes. This one is silent by
+  construction: `bwa-mem2 mem` aligns against the index alone and never reads the FASTA, so hits
+  came back with the _previous_ release's transcript IDs and coordinates, logged as "Using cached
+  BWA-MEM2 index". Index cleanup now also removes the `.0123` file bwa-mem2 writes, which was
+  leaking as a multi-GB orphan. Stale entries written by earlier versions are discarded
+  automatically on first use; index files an earlier version orphaned under a differently-derived
+  prefix are not, so run `sirnaforge cache --clear-transcriptome` to reclaim that space (the same
+  command is what to run if a run logs that it could not delete a stale index).
 
 ### Added
 
