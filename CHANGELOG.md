@@ -80,11 +80,13 @@ substantially, for the same reason.
 - **The ZFN arm ships EXPERIMENTAL, and now says so everywhere.** `sirnaforge zfn`,
   `sirnaforge workflow --design-mode zfn` and the `ZFNDesigner().evaluate_pair()` Python API all
   emit a notice naming the deferred defects and linking
-  [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); the notice appears exactly once per
-  run, so the layered entry points (CLI → workflow → designer) no longer stack copies of it.
-  Library callers who configure no logging still see it — it is logged at `WARNING`, which
-  reaches stderr via logging's last-resort handler. Every ZFN documentation surface carries the
-  same warning, including the pages that previously did not: `docs/ccr5_zfn_benchmark.md` (which
+  [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); the notice is _rendered_ exactly once
+  per run, so the layered entry points (CLI → workflow → designer) no longer stack copies of it and
+  the rich panel no longer repeats the log line it sits under. Library callers still get it as a
+  `WARNING` log record; with sirnaforge's own logging that surfaces on **stdout** (`get_logger`
+  always installs a stdout handler, so logging's last-resort stderr handler never applies). Every
+  ZFN documentation surface carries the same warning, including the pages that previously did
+  not: `docs/ccr5_zfn_benchmark.md` (which
   defines the `(+)`/`(−)` half-site convention the orientation defect turns on),
   `README.md`, the "ZFN Manual Validation" section of `docs/developer/testing_guide.md`, the
   `sirnaforge.zfn` API reference, and `notebooks/zfn_backend_runtime_comparison.ipynb`. **Nothing

@@ -8,12 +8,22 @@ The doc-page set is **discovered**, not listed. An earlier version of this file 
 exactly the files that had been edited, which structurally cannot fail -- and in fact missed
 `docs/ccr5_zfn_benchmark.md`, a user-guide ZFN page in the toctree. Discovery means a new ZFN
 page fails this file until it is marked.
+
+The runtime notice is asserted two ways, and both are needed. The `_logs_the_warning_exactly_once`
+tests count *log records*, which pins the once-per-process latch across layered entry points. The
+`_visible_notice_count` tests count *rendered notices on stdout/stderr*, which is what a user
+actually reads: a single log record was being printed twice (raw log line plus rich panel) while
+every record-count test stayed green.
 """
 
 from __future__ import annotations
 
+import io
 import logging
+import os
 import re
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -35,10 +45,12 @@ from sirnaforge.zfn import (
 )
 from sirnaforge.zfn.experimental import reset_zfn_experimental_warning
 
-# A file with at least this many case-insensitive "zfn" mentions is a ZFN surface, not a page
-# that happens to name the feature once. `docs/index.rst` sits at 3 (three toctree entries),
-# which is the level this is calibrated to exclude.
-ZFN_MENTION_THRESHOLD = 4
+# A file with more than one case-insensitive "zfn" mention is a ZFN surface, not a page that
+# happens to name the feature in passing. This was 4, which excluded exactly one page that
+# would otherwise have failed (`docs/index.rst`, at 3) -- a threshold tuned to hide the one
+# failing case. That page is now an explicit, reasoned exemption below, so the threshold can
+# sit at the lowest defensible value instead of carrying a hidden exemption.
+ZFN_MENTION_THRESHOLD = 2
 
 # Surfaces that mention ZFN often but must not carry a usage banner. Each needs a reason:
 # a blanket exemption list is how the transcribed page list went wrong in the first place.
@@ -47,15 +59,34 @@ BANNER_EXEMPT_PAGES: dict[str, str] = {
     "release_notes.md": "release history, same reason as CHANGELOG.md",
     "docs/changelog.md": "rendered release history",
     "docs/developer/index.rst": "toctree plus one-line link descriptions; every page it links carries the banner",
+    "docs/index.rst": (
+        "documentation landing page: its three ZFN mentions are bare toctree entries "
+        "(zfn_module, zfn_ranking, ccr5_zfn_benchmark) with no prose and no usage, and all "
+        "three linked pages carry the banner. Same rationale as docs/developer/index.rst"
+    ),
 }
 
 # Globs covering every prose/notebook surface a user could learn ZFN usage from.
+#
+# Scope choice: prose and notebooks only, wherever they live -- Markdown, reStructuredText and
+# Jupyter. Source trees are deliberately out of scope, because `src/` states the status at
+# runtime instead (`emit_zfn_experimental_warning`, asserted by the entry-point tests below)
+# and `tests/` prose is covered by `tests/README.md`, which these globs do reach. The
+# directories below beyond `docs/`/`notebooks/` currently contain no ZFN mentions at all; they
+# are listed so that a ZFN usage page added to any of them fails this file rather than
+# escaping a glob set that only knew about `docs/`.
 DOC_SURFACE_GLOBS = (
     "*.md",
     "docs/**/*.md",
     "docs/**/*.rst",
     "notebooks/**/*.md",
     "notebooks/**/*.ipynb",
+    "examples/**/*.md",
+    "examples/**/*.ipynb",
+    "docker/**/*.md",
+    "tests/**/*.md",
+    "scripts/**/*.md",
+    ".github/**/*.md",
 )
 
 # Anchors proving discovery actually walked the tree. Without these a broken glob would make
@@ -121,6 +152,42 @@ def _run_cli(args: list[str], capsys: pytest.CaptureFixture[str]) -> str:
         result = CliRunner().invoke(cli_module.app, args)
     assert result.exit_code == 0, result.output
     return _unwrapped(result.output)
+
+
+# One sentence that occurs exactly once inside ZFN_EXPERIMENTAL_WARNING, so counting it counts
+# whole renderings of the notice. Counting "EXPERIMENTAL" instead would be ambiguous: the rich
+# panel's own title line adds a second occurrence of that word per render.
+NOTICE_SENTINEL = "Do not use ZFN results for decisions without independent validation."
+
+
+def _visible_notice_count(text: str) -> int:
+    """How many times a user reading ``text`` is shown the experimental notice.
+
+    Counts rendered notices, not log records. A record-count assertion cannot see the failure
+    this guards: with a rich console the notice used to be *printed twice* (log line plus
+    panel) from a single log record.
+    """
+    assert NOTICE_SENTINEL in ZFN_EXPERIMENTAL_WARNING, "sentinel drifted out of the warning text"
+    return _unwrapped(text).count(_unwrapped(NOTICE_SENTINEL).strip())
+
+
+def _run_in_child(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run ``args`` under this interpreter so stdout and stderr are the real, separate streams.
+
+    In-process capture cannot answer "what does the user see": ``CliRunner`` merges the two
+    streams by default, and pytest's capture replaces them after the CLI has already bound a
+    log handler to one of them.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "SIRNAFORGE_LOG_FILE"}
+    env["COLUMNS"] = "100"  # deterministic rich wrapping
+    return subprocess.run(  # noqa: S603 - fixed argv, same interpreter as the test session
+        [sys.executable, *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+        check=False,
+    )
 
 
 def _tiny_zfn_genome(tmp_path: Path, left: str, right: str) -> Path:
@@ -398,3 +465,98 @@ def test_zfn_cli_run_logs_the_warning_exactly_once(
 
     records = _warning_records(caplog)
     assert len(records) == 1, f"expected one experimental notice per CLI run, got {len(records)}"
+
+
+@pytest.mark.unit
+def test_console_notice_is_rendered_once_and_still_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """One console render *and* one log record, when both share a stream.
+
+    This is the production topology: `logging_utils.configure_logging` puts a StreamHandler on
+    the same stream rich writes to, so emitting the log record and the panel used to print the
+    whole notice twice in a row. Muting the record for that stream must not delete the record
+    itself -- log files and library callers still need it.
+    """
+    from rich.console import Console  # noqa: PLC0415 - local to keep the module import light
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert emit_zfn_experimental_warning(Console(file=stream, width=100)) is True
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+
+    visible = _visible_notice_count(stream.getvalue())
+    assert visible == 1, f"user saw the notice {visible} times on one stream, expected 1"
+    assert len(_warning_records(caplog)) == 1, "the log record was dropped, not just kept off the console"
+
+
+@pytest.mark.unit
+def test_zfn_cli_notice_is_visible_exactly_once_to_a_user(tmp_path: Path) -> None:
+    """`sirnaforge zfn`: exactly one notice across the real stdout and stderr of a real run.
+
+    Counts what lands on the terminal, in a child process, because the once-per-run contract is
+    about what a user reads. The sibling record-count tests above pass even when a single log
+    record is rendered twice, which is exactly what shipped.
+    """
+    left = "GCGTACGTA"
+    right = "TACGGCATA"
+    fasta = _tiny_zfn_genome(tmp_path, left, right)
+    output_dir = tmp_path / "cli_out"
+
+    result = _run_in_child(
+        [
+            "-m",
+            "sirnaforge.cli",
+            "zfn",
+            "--zfn-left-half-site",
+            left,
+            "--zfn-right-half-site",
+            right,
+            "--zfn-search-space",
+            str(fasta),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    on_stdout = _visible_notice_count(result.stdout)
+    on_stderr = _visible_notice_count(result.stderr)
+    assert on_stdout + on_stderr == 1, (
+        f"user saw the notice {on_stdout + on_stderr} times "
+        f"(stdout={on_stdout}, stderr={on_stderr}); expected exactly once"
+    )
+    # Pinned to stdout deliberately: that is where the rich panel and sirnaforge's log handler
+    # both write today. Moving the notice to stderr is a legitimate change -- it must update
+    # this assertion and the docs, not happen silently.
+    assert (on_stdout, on_stderr) == (1, 0)
+
+    # The run's log file keeps the record even though it was muted on the console stream.
+    log_file = output_dir / "logs" / "sirnaforge.log"
+    assert log_file.exists(), f"no run log written to {log_file}"
+    assert _visible_notice_count(log_file.read_text(encoding="utf-8")) == 1
+
+
+@pytest.mark.unit
+def test_library_notice_lands_on_stdout_not_stderr() -> None:
+    """The no-console path: one notice, on stdout.
+
+    An earlier revision of this module claimed the notice "reaches stderr via logging's
+    last-resort handler". It does not, and cannot: `get_logger` installs a
+    `StreamHandler(sys.stdout)` on the root logger on first use, so `logging.lastResort` never
+    fires. This test pins the real stream so the claim cannot be reinstated untested.
+    """
+    result = _run_in_child(
+        [
+            "-c",
+            "from sirnaforge.zfn import emit_zfn_experimental_warning as e; assert e() is True",
+        ]
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    assert _visible_notice_count(result.stdout) == 1, f"expected one notice on stdout, got:\n{result.stdout}"
+    assert _visible_notice_count(result.stderr) == 0, f"unexpected notice on stderr:\n{result.stderr}"
