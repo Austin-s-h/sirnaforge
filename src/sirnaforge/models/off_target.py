@@ -71,7 +71,18 @@ class BaseAlignmentHit(BaseModel, ABC):
 
     # Scoring (common to all hits)
     as_score: int | None = Field(default=None, description="Alignment score (AS tag)")
-    nm: int = Field(ge=0, description="Edit distance / number of mismatches")
+    # nm is a GUIDE-level distance, not the aligner's NM tag: clipped, inserted and bulged
+    # bases are mismatch-equivalents because those guide positions never paired with the
+    # target, so nm >= NM for any partial or gapped alignment. The mismatch-stratified
+    # transcriptome_hits_{0,1,2}mm counters are read off this field, which is what keeps a
+    # 15M6S "NM:i:0" partial hit out of the perfect-match stratum.
+    nm: int = Field(
+        ge=0,
+        description=(
+            "Guide mismatch-equivalent count: aligner edit distance plus guide bases left "
+            "unpaired by clipping or gaps (>= the NM tag)"
+        ),
+    )
     seed_mismatches: int = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: float = Field(ge=0.0, description="Off-target penalty score")
 

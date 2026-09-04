@@ -636,10 +636,31 @@ class OffTargetHit(BaseModel):
     rname: str           # Reference (chromosome/transcript)
     coord: int           # Alignment position
     strand: str          # + or -
-    nm: int              # Edit distance
+    nm: int              # Guide mismatch-equivalents (>= the aligner's NM tag)
     seed_mismatches: int # Mismatches in seed (pos 2-8)
     offtarget_score: float
 ```
+
+`nm` is a **guide-level** distance, not a copy of the aligner's `NM` tag. `NM` counts only
+differences inside the aligned block, so a `bwa mem -T 15` hit reported as `15M6S` with `NM:i:0`
+looks like a perfect match even though 6 of the guide's 21 bases never paired with the target.
+`nm` therefore counts the aligner's edit distance **plus** every guide base left unpaired by soft
+or hard clipping and by insertions, plus the reference bases skipped by a deletion. Consequences
+worth knowing:
+
+- `mismatch_positions` and `seed_mismatches` are in **guide coordinates**. BWA stores minus-strand
+  records reverse-complemented, and `design.py` builds every guide as
+  `reverse_complement(target_seq)`, so minus-strand is the common case; read position `r` of a
+  length-`L` record is guide position `L + 1 - r`. In `mirna_seed` mode the aligner only sees the
+  extracted seed window, so positions are additionally shifted by `seed_start - 1`.
+- `mismatch_positions` lists only positions that exist on the guide. A deletion has no guide
+  position of its own, so it raises `nm` and the score without adding an entry — that is the one
+  case where `len(mismatch_positions) < nm`.
+- `offtarget_score` is a penalty: `0.0` means highest risk, and it is reserved for full-length
+  exact matches. `_filter_and_rank` sorts ascending on it and `max_hits` keeps the head of that
+  list, so a hit with `nm > 0` never scores `0.0`.
+- The mismatch-stratified `transcriptome_hits_{0,1,2}mm` counters are read off `nm`, so a clipped
+  partial hit lands in the stratum matching its guide-level distance rather than in `0mm`.
 
 ### 6.2 MiRNAHit
 
