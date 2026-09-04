@@ -18,6 +18,32 @@ substantially, for the same reason.
 
 ### Fixed
 
+- **`--input-fasta` and `--skip-off-targets` no longer download and index multi-gigabyte
+  transcriptome references.** 0.5.2's exhaustive-search work silently flipped
+  `run_sirna_workflow(allow_transcriptome_with_input_fasta=...)` from `False` to `True` and set
+  `allow_transcriptome_for_input_fasta=True` in the `workflow` CLI command — undocumented at the
+  time, and directly contradicting the documented design-only behaviour of `--input-fasta`. The
+  consequence: `sirnaforge workflow GENE --input-fasta my.fa` and
+  `run_sirna_workflow(input_fasta="my.fa", ...)` resolved all four
+  `DEFAULT_TRANSCRIPTOME_SOURCES` (human, mouse, rat and macaque Ensembl cDNA) and fetched plus
+  BWA-MEM2-indexed every one of them, so supplying your own sequences triggered several
+  gigabytes of downloads nobody asked for (this is also what timed out the toy container
+  workflow at 300 s). Separately, `run_sirna_workflow` hardcoded `design_only=False` when
+  resolving the reference policy, and `step5_offtarget_analysis` materialized the transcriptome
+  and ran the ~47 s repeat scan _above_ the `check_off_targets` guard — so
+  `check_off_targets=False` paid for the references and the scan and then printed "Off-target
+  analysis skipped by user request". Restored and now explicit in both directions: an
+  input-FASTA run is design-only unless you name a reference with `--transcriptome-fasta`
+  (which accepts presets such as `ensembl_human_cdna`), the CLI prints exactly that when it
+  applies, and library callers can still opt in with
+  `allow_transcriptome_with_input_fasta=True`. `--skip-off-targets` / `check_off_targets=False`
+  now resolves no reference at all, and consequently **also skips repeat-element detection**
+  (it scans against the same query-species cDNA reference), reported as
+  `repeat_summary.reason = "user_disabled"` in `logs/workflow_summary.json`. Runs made with the
+  flipped default may have left unused Ensembl cDNA FASTAs and indexes in
+  `~/.cache/sirnaforge/transcriptomes/`; run `sirnaforge cache --info` to see how much, and
+  `sirnaforge cache --clear-transcriptome` to reclaim it. Nothing in this fix requires clearing
+  the cache to take effect — a populated cache is simply no longer consulted on these paths.
 - **On-target self-hit exclusion only matched a candidate's exact source transcript (or, in a
   first pass, other isoforms present in the input FASTA), so uncapping `max_hits` turned the
   off-target filter into a near-total kill switch: 3,259 of 3,288 candidates failed

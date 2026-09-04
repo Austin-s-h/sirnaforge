@@ -1127,16 +1127,28 @@ def workflow(  # noqa: PLR0912
     if input_fasta:
         input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
 
-    # Resolve transcriptome policy once so downstream layers receive metadata
+    # Resolve transcriptome policy once so downstream layers receive metadata.
+    # allow_transcriptome_for_input_fasta stays False: --input-fasta means "design against MY
+    # sequences", and auto-resolving DEFAULT_TRANSCRIPTOME_SOURCES there downloads and indexes
+    # four multi-gigabyte cDNA references nobody asked for (it also contradicted the documented
+    # design-only behaviour and timed out the toy container workflow). --transcriptome-fasta is
+    # the explicit opt-in, and it accepts a bundled source name such as ensembl_human_cdna.
     transcriptome_spec = WorkflowInputSpec(
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
         design_only=skip_off_targets,
-        allow_transcriptome_for_input_fasta=True,
+        allow_transcriptome_for_input_fasta=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
+    if input_fasta and not transcriptome_fasta and not skip_off_targets:
+        console.print(
+            "ℹ️  --input-fasta without --transcriptome-fasta: transcriptome off-target screening and "
+            "repeat detection are disabled (design-only). Pass --transcriptome-fasta "
+            "ensembl_human_cdna (or a path/URL) to screen against a reference.",
+            style="yellow",
+        )
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
     nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE

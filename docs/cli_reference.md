@@ -46,6 +46,10 @@ siRNAforge accepts complementary inputs when you need to bypass gene search or c
 
 Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow stage. Remote resources are cached under `~/.cache/sirnaforge/` and reused automatically.
 
+Design-only mode is a deliberate cost guard, not an oversight: resolving the built-in defaults means downloading and indexing four multi-gigabyte Ensembl cDNA references (human, mouse, rat, macaque). Supplying your own sequences never triggers that implicitly. Library callers get the same policy — `run_sirna_workflow(input_fasta=...)` is design-only unless you pass `transcriptome_fasta=...` or opt in with `allow_transcriptome_with_input_fasta=True`.
+
+`--skip-off-targets` disables **all** reference-based screening for the run: no transcriptome reference is resolved, downloaded or indexed, the Nextflow off-target stage does not run, **and repeat-element detection is skipped as well**. Repeat detection scans guides against the query species' cDNA reference, so it cannot run without the very download the flag exists to avoid; `logs/workflow_summary.json` reports it as `repeat_summary.status = "skipped"` with `reason = "user_disabled"`, and candidates keep `repeat_flagged = false`. Drop `--skip-off-targets` (optionally with `--transcriptome-fasta`) whenever you need repeat verdicts.
+
 Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` include a `species` column so you can filter hits directly. Aggregated summaries collapse those values into `human` vs `other` buckets, exposing `hits_per_species`, `human_hits`, and `other_species_hits` in `combined_summary.json` plus the workflow console output. The workflow also records the resolved reference decision in `logs/workflow_summary.json` (`reference_summary.transcriptome`) so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
 
 ---
