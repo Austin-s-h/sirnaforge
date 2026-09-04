@@ -2465,8 +2465,10 @@ class SiRNAWorkflow:
         # first pass at this fix did) let a degraded run outscore the complete run it degraded
         # from: with the only non-query species removed the term goes inactive, compute_composite
         # renormalises its weight onto the surviving terms, and one candidate scored 57.9 on the
-        # broken screen against 51.1 on the good one (see the regression test). A missing alignment
-        # can only lower conservation, never raise it.
+        # broken screen against 51.1 on the good one (see the regression test). The term is scoped to
+        # the species that were screened: one that was screened and produced nothing can only lower
+        # conservation, never raise it. Species with no resolvable index never enter this set at all,
+        # so conservation is a statement about what was compared, not about the CLI species list.
         conservation_denominator = requested_species - {query_species}
 
         if screened_species is None:

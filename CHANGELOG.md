@@ -84,8 +84,9 @@ substantially, for the same reason.
   of non-query species handed to the aligner and the numerator is intersected with it. A species
   whose alignment produced nothing **stays** in that denominator: removing it emptied the term for
   single-ortholog-species runs, `compute_composite` redistributed its 0.10 weight to the surviving
-  terms, and a partial screen scored 57.9 where the complete screen scored 51.1. A failed
-  alignment can now only lower conservation. A failure to score after screening is loud rather
+  terms, and a partial screen scored 57.9 where the complete screen scored 51.1. Conservation is
+  measured across the species that were screened: one that was screened and produced nothing can
+  only lower the term, never raise it. A failure to score after screening is loud rather
   than silent: ERROR level, a counter, and a console line.
   **Re-run to pick this up** — rankings and `top_candidates` membership change, so
   `candidates_all.csv`/`candidates_pass.csv` from an earlier build must be regenerated. Runs that
