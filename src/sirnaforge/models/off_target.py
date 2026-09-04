@@ -225,7 +225,18 @@ class AnalysisSummary(BaseSummary):
 
     # Alignment statistics
     mean_mapq: float | None = Field(default=None, ge=0.0, le=255.0, description="Mean mapping quality")
-    mean_mismatches: float | None = Field(default=None, ge=0.0, description="Mean number of mismatches")
+    # Mean of OffTargetHit.nm, which is a GUIDE-level distance rather than the aligner's NM tag,
+    # so this value rose for any run containing clipped or gapped hits (a 15M6S/NM:i:0 hit
+    # contributes 6, not 0). It is not comparable with the same field from a pre-0.6.0 summary
+    # JSON, and it is not the aligner's mean edit distance.
+    mean_mismatches: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Mean guide mismatch-equivalent count over hits (mean of nm, not of the aligner's "
+            "NM tag; counts guide bases left unpaired by clipping or gaps)"
+        ),
+    )
     mean_seed_mismatches: float | None = Field(default=None, ge=0.0, description="Mean seed region mismatches")
 
 

@@ -59,7 +59,30 @@ substantially, for the same reason.
   under Changed for what this means for the `transcriptome_hits_{0,1,2}mm` strata and the
   `max_transcriptome_hits_*` thresholds read against them — a clipped partial hit no longer fails
   a candidate as `TRANSCRIPTOME_PERFECT_MATCH`, but is still counted by `transcriptome_hits_total`
-  and `off_target_count`.
+  and `off_target_count`. Two further values change meaning with it:
+  - **`mean_mismatches`** in every `*_summary.json` (`AnalysisSummary.mean_mismatches`) is the mean
+    of `nm`, so it is now a mean guide mismatch-equivalent count, not a mean aligner edit distance,
+    and it rises for any run with clipped or gapped hits (two `15M6S`/`NM:i:0` hits report `6.0`
+    where they reported `0.0`). Not comparable across the 0.6.0 boundary.
+  - **`off_target_penalty`** was already misdocumented as "lower is better": post-screen it holds
+    the **maximum** `offtarget_score` over a candidate's hits, where higher is _safer_ and `0.0` is
+    reserved for a full-length exact match — while at design time it holds an internal-repeat
+    penalty where higher is worse. Widening `nm` widened the post-screen values (a clipped
+    minus-strand hit reports ~76 where it reported `0.0`). Reporting only; nothing scores or
+    filters on it. The field description and `docs/models_and_scoring.md` §6.1 now say so.
+
+  **A seed-perfect _partial_ hit falls in no mismatch stratum, so
+  `max_transcriptome_hits_0mm` cannot gate it.** A minus-strand `6S15M` / `MD:Z:15` / `NM:i:0`
+  record puts the clip on guide positions 16-21, leaving guide positions 2-8 pairing perfectly; its
+  guide-level `nm` is 6, so it is counted in `transcriptome_hits_seed_0mm`,
+  `transcriptome_hits_total` and `off_target_count` but in none of `_0mm`/`_1mm`/`_2mm`. Two such
+  hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`, and on stock defaults only
+  `max_off_target_count` (3) stands between them and a PASS. `max_transcriptome_seed_perfect` is
+  therefore now **enforced** in `_check_offtarget_filters` (new verdict
+  `TRANSCRIPTOME_SEED_PERFECT`, new `failed_transcriptome_seed_perfect` stat). It still defaults to
+  `None`, so behaviour is unchanged unless a user sets it — picking a calibrated default is a
+  separate product decision. Unlike the three mismatch thresholds it is **not** species-split: it
+  gates the reported `transcriptome_hits_seed_0mm` column verbatim.
 
   **Clear the Nextflow work directory before re-running an existing target.** Off-target
   alignments are parsed inside the `OFFTARGET_ANALYSIS`/`MIRNA_SEED_ANALYSIS` processes and

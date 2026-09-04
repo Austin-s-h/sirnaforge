@@ -172,12 +172,27 @@ class OffTargetFilterCriteria(BaseModel):
     max_transcriptome_hits_0mm: int = 1    # Perfect matches
     max_transcriptome_hits_1mm: int = 10   # 1-mismatch hits
     max_transcriptome_hits_2mm: int = 50   # 2-mismatch hits
+    max_transcriptome_seed_perfect: int | None = None  # off by default; see the warning below
 
     # miRNA seed matches (positions 2-8)
     max_mirna_perfect_seed: int = 0
     max_mirna_1mm_seed: int = 10
     fail_on_high_risk_mirna: bool = True
 ```
+
+> **A seed-perfect partial hit falls in no mismatch stratum.** The three
+> `max_transcriptome_hits_{0,1,2}mm` thresholds are read against counters stratified by the
+> **guide-level** `nm` (see 6.1), so a clipped or gapped hit is stratified by how many guide bases
+> failed to pair, not by the aligner's `NM` tag. A minus-strand `6S15M` / `MD:Z:15` / `NM:i:0`
+> record puts the clip on guide positions 16-21 and leaves guide positions 2-8 pairing perfectly:
+> it carries `nm = 6`, so it is counted in `transcriptome_hits_seed_0mm`,
+> `transcriptome_hits_total` and `off_target_count`, but in **none** of `_0mm`/`_1mm`/`_2mm`. Two
+> such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. With stock defaults
+> the only thing gating them is `max_off_target_count` (3), so one or two of them pass. Set
+> `max_transcriptome_seed_perfect` to gate them directly — it is enforced (verdict
+> `TRANSCRIPTOME_SEED_PERFECT`) but ships as `None` because no ceiling has been calibrated against
+> truth data. Unlike the three mismatch thresholds it is **not** species-split: it is compared
+> against the reported `transcriptome_hits_seed_0mm` column across all screened species.
 
 ### 1.5 ScoringWeights
 
@@ -468,19 +483,21 @@ overwritten), and it excludes the candidate from ranking.
 Applied once transcriptome/miRNA screening has run, against `OffTargetFilterCriteria`
 (see 1.4). These now gate the **redefined, genuine-off-target-only** counts:
 
-| Filter                        | Condition                                                        | Rationale                          |
-| ----------------------------- | ---------------------------------------------------------------- | ---------------------------------- |
-| `TRANSCRIPTOME_PERFECT_MATCH` | 0-mismatch genuine off-targets > `max_transcriptome_hits_0mm`    | Perfect-match specificity          |
-| `TRANSCRIPTOME_1MM`           | 1-mismatch genuine off-targets > `max_transcriptome_hits_1mm`    | Near-miss specificity              |
-| `TRANSCRIPTOME_2MM`           | 2-mismatch genuine off-targets > `max_transcriptome_hits_2mm`    | Broader specificity                |
-| `MIRNA_PERFECT_SEED`          | perfect miRNA seed hits > `max_mirna_perfect_seed`               | miRNA-mimicry risk                 |
-| `HIGH_RISK_MIRNA`             | perfect seed + `offtarget_score` < 5.0                           | Strong-binding miRNA mimicry       |
-| `TOTAL_OFFTARGETS`            | combined transcriptome + miRNA hits > `max_total_offtarget_hits` | Aggregate specificity              |
-| `EXCESS_OFF_TARGETS`          | genuine off-target count > `max_off_target_count`                | Overall genuine-off-target ceiling |
+| Filter                        | Condition                                                                        | Rationale                                          |
+| ----------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `TRANSCRIPTOME_PERFECT_MATCH` | 0-mismatch genuine off-targets > `max_transcriptome_hits_0mm`                    | Perfect-match specificity                          |
+| `TRANSCRIPTOME_1MM`           | 1-mismatch genuine off-targets > `max_transcriptome_hits_1mm`                    | Near-miss specificity                              |
+| `TRANSCRIPTOME_2MM`           | 2-mismatch genuine off-targets > `max_transcriptome_hits_2mm`                    | Broader specificity                                |
+| `TRANSCRIPTOME_SEED_PERFECT`  | seed-perfect hits > `max_transcriptome_seed_perfect` (`None` = off, all species) | Catches partial hits that no mismatch stratum sees |
+| `MIRNA_PERFECT_SEED`          | perfect miRNA seed hits > `max_mirna_perfect_seed`                               | miRNA-mimicry risk                                 |
+| `HIGH_RISK_MIRNA`             | perfect seed + `offtarget_score` < 5.0                                           | Strong-binding miRNA mimicry                       |
+| `TOTAL_OFFTARGETS`            | combined transcriptome + miRNA hits > `max_total_offtarget_hits`                 | Aggregate specificity                              |
+| `EXCESS_OFF_TARGETS`          | genuine off-target count > `max_off_target_count`                                | Overall genuine-off-target ceiling                 |
 
-These six verdicts previously existed only as raw strings assembled in `workflow.py`; they are
-now members of `FilterStatus` (see 3.4), and the Pandera allow-list for the `passes_filters`
-column derives from the enum instead of maintaining an independent copy that could drift from it.
+Six of these seven verdicts previously existed only as raw strings assembled in `workflow.py`
+(`TRANSCRIPTOME_SEED_PERFECT` is new); they are all now members of `FilterStatus` (see 3.4), and
+the Pandera allow-list for the `passes_filters` column derives from the enum instead of
+maintaining an independent copy that could drift from it.
 
 ### 3.4 Filter Status Codes
 
@@ -498,6 +515,7 @@ class FilterStatus(str, Enum):
     TRANSCRIPTOME_PERFECT_MATCH = "TRANSCRIPTOME_PERFECT_MATCH"
     TRANSCRIPTOME_1MM = "TRANSCRIPTOME_1MM"
     TRANSCRIPTOME_2MM = "TRANSCRIPTOME_2MM"
+    TRANSCRIPTOME_SEED_PERFECT = "TRANSCRIPTOME_SEED_PERFECT"  # opt-in, see 1.4
     MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
     HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
     TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
@@ -660,7 +678,28 @@ worth knowing:
   exact matches. `_filter_and_rank` sorts ascending on it and `max_hits` keeps the head of that
   list, so a hit with `nm > 0` never scores `0.0`.
 - The mismatch-stratified `transcriptome_hits_{0,1,2}mm` counters are read off `nm`, so a clipped
-  partial hit lands in the stratum matching its guide-level distance rather than in `0mm`.
+  partial hit lands in the stratum matching its guide-level distance rather than in `0mm` — and if
+  that distance exceeds 2 it lands in **no** stratum, which is why a seed-perfect partial hit needs
+  `max_transcriptome_seed_perfect` (see the warning in 1.4) rather than
+  `max_transcriptome_hits_0mm`.
+- **`AnalysisSummary.mean_mismatches`** (the `mean_mismatches` key of every
+  `*_summary.json`) is the mean of this `nm`, so it also changed meaning: it is the mean
+  guide mismatch-equivalent count, **not** the mean aligner edit distance, and it rose for any run
+  containing clipped or gapped hits. Two `15M6S`/`NM:i:0` hits now report `mean_mismatches = 6.0`
+  where they used to report `0.0`. Values are not comparable across the 0.6.0 boundary.
+  `mean_seed_mismatches` and `mean_mapq` are unaffected in definition (though
+  `mean_seed_mismatches` changes numerically, since the frame fix corrected which positions are
+  in the seed).
+- **`SiRNACandidate.off_target_penalty` is reporting only** and its direction depends on which
+  stage wrote it last, so treat it as a diagnostic, not a risk metric. At design time
+  `SiRNADesigner._calculate_off_target_score` writes an internal-repeat 7-mer penalty where higher
+  is worse; after screening `_integrate_offtarget_results` overwrites it with the **maximum**
+  `offtarget_score` over the candidate's hits, where higher is _safer_ and `0.0` is reserved for a
+  full-length exact match. Taking the **max** means the field reports a candidate's _least_
+  worrying hit: a candidate with one full-length perfect off-target reports
+  `off_target_penalty = 0.0`, while a candidate whose only hit is a clipped partial reports 76
+  (`6S15M`) or 98 (`15M6S`). Widening `nm` widened these numbers too. Judge risk from
+  `off_target_count` and the hit strata.
 
 ### 6.2 MiRNAHit
 
