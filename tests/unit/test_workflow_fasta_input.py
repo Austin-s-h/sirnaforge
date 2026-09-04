@@ -125,7 +125,11 @@ async def test_workflow_runs_from_fasta(tmp_path, monkeypatch):
     assert "transcript_summary" in results
     assert results["transcript_summary"]["total_transcripts"] == 2
     assert results["design_summary"]["total_candidates"] == 1
-    assert results["reference_summary"]["transcriptome"]["enabled"] is True
+    # An input-FASTA run with no explicit --transcriptome-fasta is design-only: resolving the
+    # four default cDNA sources here would download/index multi-gigabyte references the caller
+    # never asked for. See tests/unit/test_input_fasta_reference_policy.py.
+    assert results["reference_summary"]["transcriptome"]["enabled"] is False
+    assert "design-only" in results["reference_summary"]["transcriptome"]["disabled_reason"]
 
 
 @pytest.mark.asyncio

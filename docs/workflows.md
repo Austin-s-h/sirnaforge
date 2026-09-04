@@ -28,6 +28,8 @@ results/
     └── input_candidates.fasta # For Nextflow pipeline
 ```
 
+That tree is the default run. Two entries are conditional: `off_target/` stays empty under `--skip-off-targets` (the skip is honoured before any candidate FASTA is staged or any reference resolved), and `TP53_canonical.fasta` only appears on the gene-search path, so `--input-fasta` runs write just `<GENE>_transcripts.fasta`.
+
 ### Common Options
 
 ```bash

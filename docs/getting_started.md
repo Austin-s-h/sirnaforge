@@ -40,12 +40,20 @@ uv run sirnaforge workflow TP53 \
 
 Key files in every workflow run:
 
-| File | Why it matters |
-|------|----------------|
-| `sirnaforge/candidates_pass.csv` | High-quality candidates ready for experiments |
-| `sirnaforge/candidates_all.csv` | Full candidate list with all metrics for custom filtering |
+| File                             | Why it matters                                            |
+| -------------------------------- | --------------------------------------------------------- |
+| `sirnaforge/candidates_pass.csv` | High-quality candidates ready for experiments             |
+| `sirnaforge/candidates_all.csv`  | Full candidate list with all metrics for custom filtering  |
 | `logs/workflow_summary.json` | Summary of search/design stats, reference decisions, and QC flags |
-| `off_target/input_candidates.fasta` | FASTA handed to the Nextflow off-target pipeline |
+
+Written only when off-target screening actually runs — a `--skip-off-targets` run leaves `off_target/` empty, because the skip is honoured before any candidate FASTA is staged or any reference is resolved:
+
+| File                                | When it appears                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| `off_target/input_candidates.fasta` | FASTA handed to the Nextflow off-target pipeline                                     |
+| `off_target/results/`               | Per-species hit tables and aggregated summaries; also needs Nextflow to be available |
+
+An `--input-fasta` run still reaches this stage: design-only mode changes which _reference_ is screened, not whether screening is attempted. `transcripts/<GENE>_canonical.fasta` is conditional in the other direction — it comes from the gene-search path, so an `--input-fasta` run writes only `transcripts/<GENE>_transcripts.fasta`.
 
 Use standard CLI tools to browse:
 

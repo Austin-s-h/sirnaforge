@@ -1027,7 +1027,9 @@ class SiRNAWorkflow:
         guides overlapping repeat elements. Costs ~47s for a ~1GB human reference. Runs from
         within step5_offtarget_analysis (after screening but before scoring) so it can reuse
         the transcriptome reference already materialized for off-target screening rather than
-        fetching a second, redundant copy just to find the query species' FASTA.
+        fetching a second, redundant copy just to find the query species' FASTA. Its caller
+        does not reach it at all when the user disabled off-target analysis, because there is
+        then no reference to reuse.
         """
         distinct_guides = {normalize_guide_sequence(c.guide_sequence) for c in candidates}
 
@@ -1316,7 +1318,10 @@ class SiRNAWorkflow:
 
         Repeat detection runs here rather than as its own workflow step so it can reuse the
         transcriptome reference this step already materializes for screening, instead of
-        fetching it a second time just to locate the query species' FASTA.
+        fetching it a second time just to locate the query species' FASTA. The corollary is
+        that ``check_off_targets=False`` (``--skip-off-targets``) skips repeat detection as
+        well: both are reference-based scans, and the reference is what the flag exists to
+        avoid paying for.
         """
         candidates_for_offtarget = self._select_candidates_for_offtarget(design_results)
 
@@ -1330,6 +1335,25 @@ class SiRNAWorkflow:
             }
             return {"status": "skipped", "reason": "no_candidates"}
 
+        # Honour the skip request BEFORE touching any reference: materializing the default
+        # transcriptomes downloads and indexes multi-gigabyte cDNA files, and repeat detection
+        # scans against that same reference (~47s). Doing either first made
+        # --skip-off-targets/check_off_targets=False cost nearly as much as a real screen, and
+        # made "skipped by user request" a lie about work already done.
+        if not getattr(self.config.design_params, "check_off_targets", True):
+            console.print("⚠️  Off-target analysis skipped by user request")
+            console.print("   ↳ repeat-element detection skipped too: it needs the same cDNA reference")
+            self._repeat_summary = {
+                "status": "skipped",
+                "reason": "user_disabled",
+                "repeat_flagged_count": 0,
+                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+            }
+            # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
+            # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
+            self._apply_post_screen_ranking(design_results)
+            return {"status": "skipped", "reason": "user_disabled"}
+
         # Prepare input files
         input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
 
@@ -1339,13 +1363,8 @@ class SiRNAWorkflow:
         has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
         self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
         # Exclude repeat-flagged candidates from top_candidates now, so the exclusion holds even
-        # if screening below never runs (user-disabled, Nextflow unavailable/failed).
+        # if screening below never runs (Nextflow unavailable/failed).
         self._apply_post_screen_ranking(design_results)
-
-        # If user disabled off-target checking via design parameters, skip entirely
-        if not getattr(self.config.design_params, "check_off_targets", True):
-            console.print("⚠️  Off-target analysis skipped by user request")
-            return {"status": "skipped", "reason": "user_disabled"}
 
         # Try Nextflow pipeline first. We do NOT run the simplistic sequence-based fallback
         # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
@@ -3190,7 +3209,7 @@ async def run_sirna_workflow(
     log_file: str | None = None,
     write_json_summary: bool = True,
     num_threads: int | None = None,
-    allow_transcriptome_with_input_fasta: bool = True,
+    allow_transcriptome_with_input_fasta: bool = False,
     default_transcriptome_sources: Sequence[str] = DEFAULT_TRANSCRIPTOME_SOURCES,
     keep_nextflow_work: bool = False,
     nextflow_docker_image: str | None = None,
@@ -3232,7 +3251,11 @@ async def run_sirna_workflow(
         log_file: Path to centralized log file
         write_json_summary: Write logs/workflow_summary.json
         num_threads: Optional override for design parallelism
-        allow_transcriptome_with_input_fasta: Allow default transcriptome analysis when using input FASTA
+        allow_transcriptome_with_input_fasta: Opt in to resolving ``default_transcriptome_sources``
+            when ``input_fasta`` is supplied (default: False). Left False, an input-FASTA run is
+            design-only unless ``transcriptome_fasta`` names a reference explicitly: supplying your
+            own sequences should never trigger a multi-gigabyte reference download you did not ask
+            for. Set True to screen an input-FASTA run against the bundled defaults.
         default_transcriptome_sources: Ordered list of transcriptome identifiers evaluated by default
         keep_nextflow_work: Keep Nextflow work directory symlink in output
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
@@ -3282,7 +3305,10 @@ async def run_sirna_workflow(
             input_fasta=input_fasta,
             transcriptome_argument=transcriptome_fasta,
             default_transcriptomes=default_transcriptome_sources,
-            design_only=False,
+            # check_off_targets=False means "do not screen", so there is nothing to resolve a
+            # reference for. Hardcoding design_only=False here made the flag download and index
+            # multi-gigabyte references before announcing that screening was skipped.
+            design_only=not check_off_targets,
             allow_transcriptome_for_input_fasta=allow_transcriptome_with_input_fasta,
         )
         resolver = ReferencePolicyResolver(input_spec)
