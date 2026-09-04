@@ -87,7 +87,7 @@ from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
-from sirnaforge.zfn import ZFN_EXPERIMENTAL_WARNING
+from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
     make_zfn_shard_manifest,
@@ -113,17 +113,6 @@ REMOTE_RESOURCE_SCHEMES = ("http://", "https://", "ftp://", "file://")
 DEFAULT_ZFN_WINDOW_STRIDE = 1
 DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
-
-
-def _warn_zfn_experimental() -> None:
-    """Announce the experimental status of the ZFN arm before any ZFN run starts."""
-    console.print(
-        Panel.fit(
-            f"⚠️  [bold yellow]EXPERIMENTAL: ZFN module[/bold yellow]\n{ZFN_EXPERIMENTAL_WARNING}",
-            title="Experimental Feature",
-            border_style="yellow",
-        )
-    )
 
 
 def _autotune_zfn_sharding(
@@ -1048,8 +1037,7 @@ def workflow(  # noqa: PLR0912
         raise typer.Exit(1)
 
     if mode_enum == DesignMode.ZFN:
-        _warn_zfn_experimental()
-        logger.warning(ZFN_EXPERIMENTAL_WARNING)
+        emit_zfn_experimental_warning(console)
 
     merged_zfn_constraints = list(zfn_subfinger_mutation)
     if zfn_max_mismatches_per_subfinger is not None:
@@ -1694,8 +1682,7 @@ def zfn(
     log_destination.parent.mkdir(parents=True, exist_ok=True)
     configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
 
-    _warn_zfn_experimental()
-    logging.getLogger(__name__).warning(ZFN_EXPERIMENTAL_WARNING)
+    emit_zfn_experimental_warning(console)
 
     try:
         zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (

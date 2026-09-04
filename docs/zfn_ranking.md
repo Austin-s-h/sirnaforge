@@ -1,8 +1,12 @@
 # ZFN Off-Target Ranking
 
-> **⚠️ EXPERIMENTAL.** The ZFN arm has known unfixed defects tracked in the ZFN experimental-status
-> issue; do not use ZFN output for any decision without independent validation. See
-> [ZFN Module Guide](zfn_module.md).
+> **⚠️ EXPERIMENTAL.** The ZFN arm has known unfixed defects tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); do not use ZFN output for any decision
+> without independent validation. Relevant to ranking specifically: the exported
+> `worst_site_score` / `best_offtarget_score` fields are inverted (minimum and maximum site score
+> respectively, whereas the highest-scoring off-target is the most dangerous), and the region
+> tie-break can be fed a wrong `region` because a site inside a large containing gene may be
+> classified `intergenic`. See [ZFN Module Guide](zfn_module.md).
 
 `siRNAforge` provides deterministic ZFN off-target ordering via `sirnaforge.zfn.rank.rank_sites`.
 

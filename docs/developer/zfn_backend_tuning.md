@@ -2,8 +2,7 @@
 
 > ## ⚠️ EXPERIMENTAL — these runs are not authoritative
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in the ZFN
-> experimental-status issue. **Do not use ZFN output for any decision without independent
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any decision without independent
 > validation.**
 >
 > Every run summarised below used the published CCR5 half-site pair as written. Under the default

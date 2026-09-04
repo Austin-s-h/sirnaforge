@@ -2,19 +2,29 @@
 
 > ## ⚠️ EXPERIMENTAL — results are not decision-grade
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects, tracked in the ZFN
-> experimental-status issue. **Do not use ZFN output for any decision without independent
-> validation.** The known defects affect:
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects, tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any
+> decision without independent validation.** The known defects affect:
 >
-> - **Half-site orientation.** With the default `require_opposite_strands=True`, the CCR5
->   half-site pair used in the examples below (`GTCATCCTCATC` / `AAACTGCAAAAG`) does not match
->   its own on-target site, because both sequences occur on the hg38 plus strand. The
->   undocumented convention is that `right_half_site` must be given as the reverse complement
->   of the published text (`CTTTTGCAGTTT`), and there is no CLI escape hatch.
+> - **Half-site orientation.** With the default `require_opposite_strands=True`, the published
+>   CCR5 pair `GTCATCCTCATC` / `AAACTGCAAAAG` does not match its own on-target site, because
+>   both sequences occur on the hg38 plus strand. The undocumented convention is that
+>   `right_half_site` must be given as the reverse complement of the published (−) text, and
+>   there is no CLI escape hatch. The examples on this page therefore pass
+>   `--zfn-right-half-site CTTTTGCAGTTT`, which does match; anything you copy from the
+>   literature or from the [CCR5 benchmark page](ccr5_zfn_benchmark.md) needs the same
+>   substitution.
 > - **FokI seed region and polarity weighting** on the right half-site, which guard the end of
 >   the half-site farthest from FokI rather than the nearest.
 > - **Off-target region classification**, which can report a site inside a large containing gene
 >   as `intergenic` and therefore undercount exonic/promoter hits used by the pass/fail filters.
+> - **`worst_site_score` and `best_offtarget_score` are inverted** in every exported artifact:
+>   `worst_site_score` holds the _minimum_ site score and `best_offtarget_score` the _maximum_.
+>   Among off-targets the highest-scoring site is the most dangerous one, so both field names
+>   read backwards. Nothing in the output flags this — read the values, not the names.
+> - **The default `pyahocorasick` backend rejects mismatch budgets above 3** on a 12 bp
+>   half-site and raises `ValueError` rather than searching. See
+>   [CLI Reference](cli_reference.md) for the exact limit and the workaround.
 >
 > Because of the half-site convention issue, the ZFN validation runs recorded in this
 > documentation set are **not authoritative** and must be re-run once the convention is fixed.
@@ -33,8 +43,7 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
   - `logs/workflow_summary.json`
 - ✅ Workflow provenance is captured in `workflow_summary.json`.
 - ⚠️ Nextflow-backed ZFN execution path is present (including internal shard commands), but it is
-  **not reachable** from either CLI entry point: every run uses the in-process path. See the ZFN
-  experimental-status issue.
+  **not reachable** from either CLI entry point: every run uses the in-process path. See [#82](https://github.com/Austin-s-h/sirnaforge/issues/82).
 - ✅ Automated tests exist for ZFN workflow, search/design behavior, and integration paths.
 - ✅ User/developer documentation for ZFN workflow usage is present.
 
@@ -65,13 +74,20 @@ The workflow exits with a validation error if either flag is missing.
 ```bash
 sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
-  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
   --zfn-spacer-lengths 5,6 \
   --zfn-max-mismatches 2 \
   --zfn-algorithm zfn_v2 \
   --output-dir zfn_output
 ```
+
+`CTTTTGCAGTTT` is the reverse complement of the published CCR5 (−) half-site `AAACTGCAAAAG`.
+Passing the published text verbatim returns **0 sites**, including the on-target locus — see the
+half-site orientation defect in the banner above and
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Keep `--zfn-max-mismatches` at 3 or
+below on the default backend, or the run aborts with `ValueError`
+([CLI Reference](cli_reference.md) has the numbers).
 
 Outputs are written under:
 
@@ -136,13 +152,20 @@ from sirnaforge.zfn.design import ZFNDesigner
 
 params = ZFNDesignParameters(
     left_half_site="GTCATCCTCATC",
-    right_half_site="AAACTGCAAAAG",
+    # Reverse complement of the published (-) half-site AAACTGCAAAAG. The published text
+    # matches nothing under the default require_opposite_strands=True -- see issue #82.
+    right_half_site="CTTTTGCAGTTT",
     search_space_reference="ensembl_human_hg38_primary",
 )
 
 result = ZFNDesigner().evaluate_pair(params=params)
 print(result.get_summary())
 ```
+
+`evaluate_pair` logs the experimental notice (issue
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82)) at `WARNING` on first use, so it
+appears even in a script that configures no logging. `result.candidates[0].worst_site_score` and
+`.best_offtarget_score` are inverted, as described in the banner above.
 
 ## API map for ZFN users
 

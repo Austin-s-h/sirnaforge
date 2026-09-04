@@ -35,9 +35,10 @@ The workflow command searches for gene transcripts, designs siRNA candidates, sc
 
 :::{warning}
 **EXPERIMENTAL.** `--design-mode zfn` runs the experimental ZFN arm, which has known unfixed defects
-(half-site orientation handling, FokI seed-region weighting, off-target region classification) tracked
-in the ZFN experimental-status issue. Do not use ZFN output for any decision without independent
-validation. See [ZFN Module Guide](zfn_module.md).
+(half-site orientation handling, FokI seed-region weighting, off-target region classification,
+inverted `worst_site_score`/`best_offtarget_score` exports) tracked in
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Do not use ZFN output for any decision
+without independent validation. See [ZFN Module Guide](zfn_module.md).
 :::
 
 ZFN activity/off-target evaluation now has a dedicated command: `sirnaforge zfn`.
@@ -97,10 +98,16 @@ Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 :::{warning}
 **EXPERIMENTAL — results are not decision-grade.** The ZFN arm ships experimental in 0.6.0 with known
 unfixed defects in half-site orientation handling, FokI seed-region weighting and off-target region
-classification, tracked in the ZFN experimental-status issue. Do not use ZFN output for any decision
-without independent validation. The published CCR5 half-site pair used throughout these docs does not
-match its own on-target site under the default strand-pairing rule, which also invalidates the
-recorded ZFN validation runs. See [ZFN Module Guide](zfn_module.md).
+classification, tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Do not use ZFN
+output for any decision without independent validation. The published CCR5 half-site pair does not
+match its own on-target site under the default strand-pairing rule — pass
+`--zfn-right-half-site CTTTTGCAGTTT` rather than the published `AAACTGCAAAAG` — which also
+invalidates the recorded ZFN validation runs. Two further defects change nothing visible in the
+output: the exported `worst_site_score` and `best_offtarget_score` fields are inverted
+(`worst_site_score` is the minimum site score, `best_offtarget_score` the maximum, whereas the
+highest-scoring off-target is the most dangerous one), and a site inside a large containing gene can
+be classified `intergenic`, which undercounts the exonic/promoter tallies the pass/fail filters read.
+See [ZFN Module Guide](zfn_module.md).
 :::
 
 ### Help
@@ -120,9 +127,27 @@ recorded ZFN validation runs. See [ZFN Module Guide](zfn_module.md).
 Operational guidance from the backend tuning work — measured before the half-site convention issue was
 found, so read it as a runtime observation only, not as a validated correctness result:
 
-- prefer `pyahocorasick` for the first run on large references
+- prefer `pyahocorasick` for the first run on large references, **but only for
+  `--zfn-max-mismatches` of 3 or less**
 - use `fm_index` only for repeated persisted-index workflows; treat it as experimental on large references
 - keep `exhaustive_python` as the baseline comparator and fallback implementation
+
+:::{warning}
+**The default `pyahocorasick` backend aborts above 3 mismatches on a 12 bp half-site.** Both
+pattern-enumerating backends (`pyahocorasick`, `fm_index`) expand the query over the full 15-letter
+IUPAC alphabet rather than the four bases a genome contains, and reject the search when the expansion
+exceeds 1,000,000 patterns. A 12 bp half-site at `--zfn-max-mismatches 4` expands to 5,498,165
+patterns and an 18 bp half-site at 3 mismatches to 1,717,605, so both raise:
+
+```text
+ValueError: ZFN L half-site is too complex for the pyahocorasick backend: 5498165 candidate
+patterns exceed the safety limit of 1000000.
+```
+
+`--zfn-max-mismatches 4` is the budget the CCR5 benchmark needs, so pass
+`--zfn-search-backend exhaustive_python` for those runs. Tracked in
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82).
+:::
 
 For reproducible `fm_index` runs, prebuild one search-space bundle once, then reuse it across runs:
 

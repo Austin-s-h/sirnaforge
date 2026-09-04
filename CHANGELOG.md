@@ -77,6 +77,35 @@ substantially, for the same reason.
 
 ### Changed
 
+- **The ZFN arm ships EXPERIMENTAL, and now says so everywhere.** `sirnaforge zfn`,
+  `sirnaforge workflow --design-mode zfn` and the `ZFNDesigner().evaluate_pair()` Python API all
+  emit a notice naming the deferred defects and linking
+  [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); the notice appears exactly once per
+  run, so the layered entry points (CLI → workflow → designer) no longer stack copies of it.
+  Library callers who configure no logging still see it — it is logged at `WARNING`, which
+  reaches stderr via logging's last-resort handler. Every ZFN documentation surface carries the
+  same warning, including the pages that previously did not: `docs/ccr5_zfn_benchmark.md` (which
+  defines the `(+)`/`(−)` half-site convention the orientation defect turns on),
+  `README.md`, the "ZFN Manual Validation" section of `docs/developer/testing_guide.md`, the
+  `sirnaforge.zfn` API reference, and `notebooks/zfn_backend_runtime_comparison.ipynb`. **Nothing
+  here fixes a ZFN defect** — #82 tracks the fixes. What changes for a user is that the status is
+  now unmissable, and that four specific things are stated rather than implied:
+  - **The published CCR5 half-site pair does not match its own on-target site.** Under the default
+    `require_opposite_strands=True`, `--zfn-right-half-site` must be the reverse complement of the
+    published `(−)` text, so every ZFN example in the docs and notebooks now passes
+    `CTTTTGCAGTTT` rather than `AAACTGCAAAAG`, which returned 0 sites. If you have a saved ZFN
+    command, apply the same substitution.
+  - **`worst_site_score` and `best_offtarget_score` are inverted** in `candidate_summary.json`:
+    `worst_site_score` is the _minimum_ site score and `best_offtarget_score` the _maximum_,
+    whereas among off-targets the highest-scoring site is the most dangerous. The values are
+    unchanged; only the names mislead. Read them accordingly until #82 lands.
+  - **The default `pyahocorasick` backend raises `ValueError` above 3 mismatches** on a 12 bp
+    half-site (a 4-mismatch budget expands to 5,498,165 candidate patterns against a 1,000,000
+    limit). `docs/cli_reference.md` previously recommended that default with no such caveat; use
+    `--zfn-search-backend exhaustive_python` for those budgets.
+  - **The recorded hg38 and Nextflow-bridge ZFN validation runs are not correctness evidence,**
+    because they used the non-matching pair. `docs/developer/testing_guide.md` no longer routes
+    reviewers to those runbooks as validation.
 - **`composite_score` is now computed _after_ off-target screening, from a seven-term weight
   set (`asymmetry`, `gc_content`, `accessibility`, `empirical`, `off_target`, `isoform_coverage`,
   `conservation`); prior scores are NOT COMPARABLE, and ranking order changes for essentially
