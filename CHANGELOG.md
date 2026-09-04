@@ -63,8 +63,10 @@ substantially, for the same reason.
   BWA-MEM2 index". Index cleanup now also removes the `.0123` file bwa-mem2 writes, which was
   leaking as a multi-GB orphan. Stale entries written by earlier versions are discarded
   automatically on first use; index files an earlier version orphaned under a differently-derived
-  prefix are not, so run `sirnaforge cache --clear-transcriptome` to reclaim that space (the same
-  command is what to run if a run logs that it could not delete a stale index).
+  prefix are not, so run `sirnaforge cache --clear-transcriptome` to reclaim that space. If a stale
+  index cannot be deleted (read-only or shared cache directory), it is recorded as unusable and
+  screening proceeds with no cached index rather than reusing it; that record is persisted, so a
+  later run refuses it too, and clears itself once the leftover files are gone.
 
 ### Added
 

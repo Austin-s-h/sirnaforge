@@ -452,3 +452,118 @@ def test_index_removal_survives_unwritable_cache_parent(
         manager._remove_index_files(index_prefix)
 
     assert "locked_index" in caplog.text
+
+
+def _refuse_to_unlink(monkeypatch: pytest.MonkeyPatch, index_prefix: Path) -> None:
+    """Make every file sharing `index_prefix` undeletable, as a read-only cache dir would."""
+    real_unlink = Path.unlink
+
+    def _refuse(self: Path, missing_ok: bool = False) -> None:
+        if self.name.startswith(index_prefix.name):
+            raise PermissionError(f"read-only cache: {self}")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _refuse)
+
+
+@pytest.mark.unit
+def test_undeletable_stale_index_is_not_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stale index we failed to delete must not come back as a cached index.
+
+    Reached through the public `get_transcriptome`, because the escalation and the
+    "using cached index" decision live in different methods: logging the failure and
+    then handing the same files out anyway is the corruption this branch exists to stop.
+    """
+    manager = TranscriptomeManager(cache_dir=tmp_path)
+    _fake_index_builder(manager, monkeypatch)
+    calls: list[Path] = []
+
+    monkeypatch.setattr(manager, "_download_to_path", _fake_downloader(OLD_CONTENT, calls))
+    first = manager.get_transcriptome("ensembl_human_cdna")
+    assert first is not None
+    index_prefix = first["index"]
+    assert Path(f"{index_prefix}.amb").read_text(encoding="utf-8") == OLD_CONTENT
+
+    # The cache directory has become read-only (shared/bind-mounted cache), so neither
+    # deleting the stale index nor writing a replacement can succeed.
+    _refuse_to_unlink(monkeypatch, index_prefix)
+    monkeypatch.setattr(manager, "_build_index", lambda fasta_path, prefix: False)  # noqa: ARG005
+    monkeypatch.setattr(manager, "_download_to_path", _fake_downloader(NEW_CONTENT, calls))
+
+    with caplog.at_level(logging.INFO, logger="sirnaforge.data.transcriptome_manager"):
+        second = manager.get_transcriptome("ensembl_human_cdna", force_refresh=True)
+
+    assert second is not None
+    assert second["fasta"].read_text(encoding="utf-8") == NEW_CONTENT
+    # Scenario sanity check: the stale files really did survive, still holding OLD_CONTENT.
+    assert Path(f"{index_prefix}.amb").read_text(encoding="utf-8") == OLD_CONTENT
+    # The point of the test: an index built from replaced content is never handed back...
+    assert "index" not in second
+    # ...and the logs stop contradicting themselves about it.
+    assert "Using cached BWA-MEM2 index" not in caplog.text
+
+
+@pytest.mark.unit
+def test_undeletable_stale_index_stays_refused_in_a_later_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal must be persisted, not just remembered by the manager that saw it."""
+    first_manager = TranscriptomeManager(cache_dir=tmp_path)
+    _fake_index_builder(first_manager, monkeypatch)
+    calls: list[Path] = []
+
+    monkeypatch.setattr(first_manager, "_download_to_path", _fake_downloader(OLD_CONTENT, calls))
+    first = first_manager.get_transcriptome("ensembl_human_cdna")
+    assert first is not None
+    index_prefix = first["index"]
+
+    _refuse_to_unlink(monkeypatch, index_prefix)
+    monkeypatch.setattr(first_manager, "_build_index", lambda fasta_path, prefix: False)  # noqa: ARG005
+    monkeypatch.setattr(first_manager, "_download_to_path", _fake_downloader(NEW_CONTENT, calls))
+    assert first_manager.get_transcriptome("ensembl_human_cdna", force_refresh=True) is not None
+
+    # A later run finds the cache entry valid and in-TTL, so it never re-reconciles;
+    # only the persisted refusal keeps it from adopting the leftovers.
+    second_manager = TranscriptomeManager(cache_dir=tmp_path)
+    _fake_index_builder(second_manager, monkeypatch)
+    monkeypatch.setattr(second_manager, "_download_to_path", _fake_downloader(NEW_CONTENT, calls))
+
+    reused = second_manager.get_transcriptome("ensembl_human_cdna")
+
+    assert reused is not None
+    assert reused["fasta"].read_text(encoding="utf-8") == NEW_CONTENT
+    assert "index" not in reused
+
+
+@pytest.mark.unit
+def test_index_is_rebuilt_once_the_undeletable_leftovers_are_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refusing the prefix must be recoverable, not a permanent loss of indexing."""
+    manager = TranscriptomeManager(cache_dir=tmp_path)
+    _fake_index_builder(manager, monkeypatch)
+    calls: list[Path] = []
+
+    monkeypatch.setattr(manager, "_download_to_path", _fake_downloader(OLD_CONTENT, calls))
+    first = manager.get_transcriptome("ensembl_human_cdna")
+    assert first is not None
+    index_prefix = first["index"]
+
+    with monkeypatch.context() as locked:
+        _refuse_to_unlink(locked, index_prefix)
+        locked.setattr(manager, "_build_index", lambda fasta_path, prefix: False)  # noqa: ARG005
+        locked.setattr(manager, "_download_to_path", _fake_downloader(NEW_CONTENT, calls))
+        assert "index" not in (manager.get_transcriptome("ensembl_human_cdna", force_refresh=True) or {})
+
+    # The operator follows the escalation and deletes the leftovers by hand.
+    for stale in tmp_path.glob(f"{index_prefix.name}*"):
+        stale.unlink()
+
+    _fake_index_builder(manager, monkeypatch)
+    monkeypatch.setattr(manager, "_download_to_path", _fake_downloader(NEW_CONTENT, calls))
+    recovered = manager.get_transcriptome("ensembl_human_cdna", force_refresh=True)
+
+    assert recovered is not None
+    assert Path(f"{recovered['index']}.amb").read_text(encoding="utf-8") == NEW_CONTENT

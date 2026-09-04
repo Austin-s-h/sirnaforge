@@ -46,6 +46,11 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     # reachable through the URI of the unfiltered download it was cut from.
     FILTER_URI_FRAGMENT = "#filters="
 
+    # `extra` key naming an index prefix whose files outlived the content they were
+    # built from and could not be deleted. Persisted, so a later process that finds the
+    # cache entry valid (and therefore never re-reconciles) still refuses the leftovers.
+    UNREMOVABLE_INDEX_KEY = "unremovable_stale_index"
+
     # Common transcriptome sources, generated from the shared Ensembl assembly table
     # (sirnaforge.data.ensembl_references) so cDNA and genome references stay in lockstep
     # and adding a species is a single table entry. Keys/URLs are unchanged from the
@@ -320,16 +325,50 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
                 logger.info("🗑️  Discarding BWA-MEM2 index built from replaced content: %s", prefix)
             self._remove_index_files(prefix)
 
-        # An index we failed to delete still looks complete to _prepare_result_with_index,
-        # which would log "Using cached BWA-MEM2 index" and screen against the previous
-        # content. Nothing here can fix that, so tell the user what to run.
+        # An index we failed to delete still looks complete to _is_index_complete, so
+        # record it as unusable. Escalating and then letting _prepare_result_with_index
+        # hand the same files back would be the corruption the escalation warns about.
         if self._is_index_complete(index_prefix):
             logger.error(
                 "❌ Stale BWA-MEM2 index at %s could not be removed and no longer matches the cached "
-                "reference. Delete %s.* or run `sirnaforge cache --clear-transcriptome` before screening.",
+                "reference; it will not be used. Delete %s.* or run `sirnaforge cache "
+                "--clear-transcriptome` to get a cached index back.",
                 index_prefix,
                 index_prefix,
             )
+            if current.extra is None:
+                current.extra = {}
+            current.extra[self.UNREMOVABLE_INDEX_KEY] = str(index_prefix)
+            # Belt and braces: an index_path carried in from anywhere must not outlive
+            # the content it described.
+            current.extra.pop("index_path", None)
+
+    def _unremovable_index_blocks_reuse(self, meta: CacheMetadata) -> bool:
+        """Whether this entry's index prefix is quarantined leftovers we must not serve.
+
+        Set by `_reconcile_index_for_new_content` when a stale index outlived the content
+        it was built from and the filesystem refused to delete it. Rebuilding onto the
+        same prefix is not an option either: a directory that rejects `unlink` rejects
+        the writes too, and a partly-overwritten prefix would still pass
+        `_is_index_complete` while mixing old and new files. So the run proceeds with no
+        index until the leftovers are gone, which is the one thing that clears this.
+        """
+        quarantined = (meta.extra or {}).get(self.UNREMOVABLE_INDEX_KEY)
+        if not quarantined:
+            return False
+
+        if self._is_index_complete(Path(quarantined)):
+            logger.error(
+                "🚫 Not using BWA-MEM2 index %s: it was built from reference content that has since "
+                "been replaced and could not be deleted. Proceeding without a cached index.",
+                quarantined,
+            )
+            return True
+
+        logger.info("♻️  Stale BWA-MEM2 index %s is gone; the prefix can be rebuilt.", quarantined)
+        if meta.extra is not None:
+            meta.extra.pop(self.UNREMOVABLE_INDEX_KEY, None)
+        return False
 
     def get_transcriptome(  # noqa: PLR0911
         self, source_name: str, force_refresh: bool = False, build_index: bool = True
@@ -635,6 +674,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return {"fasta": fasta}
 
         meta = self.metadata[cache_key]
+
+        # Checked before the completeness test below, which cannot tell a fresh index
+        # from leftovers of the content this entry replaced.
+        if self._unremovable_index_blocks_reuse(meta):
+            self._save_metadata()
+            return {"fasta": fasta}
+
         index_path = self._get_index_path(meta) or index_prefix
 
         if self._is_index_complete(index_path):
