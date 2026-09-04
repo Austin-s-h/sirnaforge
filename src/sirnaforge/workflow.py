@@ -101,6 +101,7 @@ from sirnaforge.workflow_variant import (
     parse_clinvar_filter_string,
     resolve_workflow_variants,
 )
+from sirnaforge.zfn import ZFN_EXPERIMENTAL_WARNING
 from sirnaforge.zfn.design import ZFNDesigner
 
 logger = get_logger(__name__)
@@ -455,6 +456,11 @@ class SiRNAWorkflow:
                 annotation_source = annotation.annotation_path
             elif annotation.annotation_reference:
                 annotation_source = annotation.annotation_reference
+
+        # Also warned at the CLI entry points; repeated here so Python API callers and the
+        # run log carry the experimental status too.
+        console.print(f"\n⚠️  [bold yellow]EXPERIMENTAL: {ZFN_EXPERIMENTAL_WARNING}[/bold yellow]")
+        logger.warning(ZFN_EXPERIMENTAL_WARNING)
 
         console.print("\n🧬 [bold cyan]Starting ZFN Pair Evaluation Workflow[/bold cyan]")
         console.print(f"Left half-site:  [yellow]{zfn_params.left_half_site}[/yellow]")

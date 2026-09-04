@@ -1,5 +1,16 @@
 # ZFN Backend Tuning Summary
 
+> ## ⚠️ EXPERIMENTAL — these runs are not authoritative
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in the ZFN
+> experimental-status issue. **Do not use ZFN output for any decision without independent
+> validation.**
+>
+> Every run summarised below used the published CCR5 half-site pair as written. Under the default
+> `require_opposite_strands=True` that pair matches no site at all — including its own on-target
+> site — so the conclusions here describe runtime behaviour only and must be re-measured once the
+> half-site convention is fixed.
+
 This note captures the engineering outcome from the ZFN backend tuning work so the rationale no longer lives only in notebooks.
 
 ## Question Answered

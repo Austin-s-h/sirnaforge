@@ -40,6 +40,11 @@ uv run sirnaforge workflow TP53 \
 
 ### ZFN Constraint Composition
 
+> **⚠️ EXPERIMENTAL.** The ZFN arm has known unfixed defects tracked in the ZFN experimental-status
+> issue; do not use ZFN output for any decision without independent validation. The published CCR5
+> pair below does not match its own on-target site under the default strand-pairing rule — see
+> [ZFN Module Guide](zfn_module.md).
+
 ```bash
 uv run sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \

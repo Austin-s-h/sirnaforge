@@ -33,6 +33,13 @@ The workflow command searches for gene transcripts, designs siRNA candidates, sc
 
 #### ZFN Notes
 
+:::{warning}
+**EXPERIMENTAL.** `--design-mode zfn` runs the experimental ZFN arm, which has known unfixed defects
+(half-site orientation handling, FokI seed-region weighting, off-target region classification) tracked
+in the ZFN experimental-status issue. Do not use ZFN output for any decision without independent
+validation. See [ZFN Module Guide](zfn_module.md).
+:::
+
 ZFN activity/off-target evaluation now has a dedicated command: `sirnaforge zfn`.
 Use the `workflow` command for transcript-centric siRNA/miRNA runs.
 
@@ -87,6 +94,15 @@ Design siRNA/miRNA candidates from FASTA sequences.
 
 Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 
+:::{warning}
+**EXPERIMENTAL — results are not decision-grade.** The ZFN arm ships experimental in 0.6.0 with known
+unfixed defects in half-site orientation handling, FokI seed-region weighting and off-target region
+classification, tracked in the ZFN experimental-status issue. Do not use ZFN output for any decision
+without independent validation. The published CCR5 half-site pair used throughout these docs does not
+match its own on-target site under the default strand-pairing rule, which also invalidates the
+recorded ZFN validation runs. See [ZFN Module Guide](zfn_module.md).
+:::
+
 ### Help
 
 ```{program-output} uv run sirnaforge zfn --help
@@ -101,7 +117,8 @@ Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 * `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
 * Outputs are written as `sirnaforge/zfn_candidate_summary.json` and `sirnaforge/zfn_offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
 
-Operational guidance from the backend tuning work:
+Operational guidance from the backend tuning work — measured before the half-site convention issue was
+found, so read it as a runtime observation only, not as a validated correctness result:
 
 - prefer `pyahocorasick` for the first run on large references
 - use `fm_index` only for repeated persisted-index workflows; treat it as experimental on large references

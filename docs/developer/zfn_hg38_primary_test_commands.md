@@ -1,5 +1,17 @@
 # ZFN Hg38 Primary Validation Commands
 
+> ## ⚠️ EXPERIMENTAL — these commands do not validate correctness
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in the ZFN
+> experimental-status issue. **Do not use ZFN output for any decision without independent
+> validation.**
+>
+> The commands below pass the published CCR5 right half-site (`AAACTGCAAAAG`) as written. Both
+> published half-sites occur on the hg38 plus strand, so under the default
+> `require_opposite_strands=True` the pair cannot match its own on-target site and the recorded
+> results are not a correctness signal. To reproduce a run that finds the CCR5 site today, pass the
+> reverse complement (`CTTTTGCAGTTT`) as `--zfn-right-half-site`.
+
 These commands are the manual validation reference for real hg38 primary ZFN runs. They are the heavyweight reruns behind the backend conclusions summarized in [zfn_backend_tuning.md](zfn_backend_tuning.md).
 
 They use:
@@ -10,8 +22,6 @@ They use:
 - the `workflow --design-mode zfn` entrypoint
 
 ## Annotation URL
-
-
 
 ## Recommended output root
 

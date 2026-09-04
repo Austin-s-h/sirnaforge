@@ -1,5 +1,9 @@
 # ZFN Off-Target Ranking
 
+> **⚠️ EXPERIMENTAL.** The ZFN arm has known unfixed defects tracked in the ZFN experimental-status
+> issue; do not use ZFN output for any decision without independent validation. See
+> [ZFN Module Guide](zfn_module.md).
+
 `siRNAforge` provides deterministic ZFN off-target ordering via `sirnaforge.zfn.rank.rank_sites`.
 
 ## Policy

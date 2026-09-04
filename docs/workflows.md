@@ -65,6 +65,15 @@ done
 
 ## ZFN Workflow
 
+> ### ⚠️ EXPERIMENTAL — results are not decision-grade
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects (half-site orientation
+> handling, FokI seed-region weighting, off-target region classification), tracked in the ZFN
+> experimental-status issue. **Do not use ZFN output for any decision without independent
+> validation.** In particular the CCR5 half-site pair below does not match its own on-target site
+> under the default strand-pairing rule, which also invalidates the ZFN validation runs recorded
+> in this documentation set. See [ZFN Module Guide](zfn_module.md) for details.
+
 Use the dedicated ZFN command when you want half-site constrained off-target discovery.
 
 ```bash
@@ -86,7 +95,9 @@ Expected artifacts:
 
 Advanced runtime controls:
 
-- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` to force Nextflow-backed ZFN search path.
+- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` is currently **inert**: the ZFN workflow always runs in-process, so
+  this flag does not switch execution to the Nextflow-backed search path (tracked in the ZFN
+  experimental-status issue).
 - `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "chunk_size_mb": 3, "overlap_bp": 40000}'` for custom shard/window behavior on large references.
 
 ## Variant Targeting (documented runs)

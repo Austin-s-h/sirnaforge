@@ -1,5 +1,24 @@
 # ZFN Module Guide
 
+> ## ⚠️ EXPERIMENTAL — results are not decision-grade
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects, tracked in the ZFN
+> experimental-status issue. **Do not use ZFN output for any decision without independent
+> validation.** The known defects affect:
+>
+> - **Half-site orientation.** With the default `require_opposite_strands=True`, the CCR5
+>   half-site pair used in the examples below (`GTCATCCTCATC` / `AAACTGCAAAAG`) does not match
+>   its own on-target site, because both sequences occur on the hg38 plus strand. The
+>   undocumented convention is that `right_half_site` must be given as the reverse complement
+>   of the published text (`CTTTTGCAGTTT`), and there is no CLI escape hatch.
+> - **FokI seed region and polarity weighting** on the right half-site, which guard the end of
+>   the half-site farthest from FokI rather than the nearest.
+> - **Off-target region classification**, which can report a site inside a large containing gene
+>   as `intergenic` and therefore undercount exonic/promoter hits used by the pass/fail filters.
+>
+> Because of the half-site convention issue, the ZFN validation runs recorded in this
+> documentation set are **not authoritative** and must be re-run once the convention is fixed.
+
 This guide is the user-facing entry point for ZFN design and off-target analysis in siRNAforge.
 
 ## Current implementation status (PR #61: dev → master)
@@ -13,7 +32,9 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
   - `sirnaforge/zfn_offtarget_sites.csv`
   - `logs/workflow_summary.json`
 - ✅ Workflow provenance is captured in `workflow_summary.json`.
-- ✅ Nextflow-backed ZFN execution path is present (including internal shard commands).
+- ⚠️ Nextflow-backed ZFN execution path is present (including internal shard commands), but it is
+  **not reachable** from either CLI entry point: every run uses the in-process path. See the ZFN
+  experimental-status issue.
 - ✅ Automated tests exist for ZFN workflow, search/design behavior, and integration paths.
 - ✅ User/developer documentation for ZFN workflow usage is present.
 
@@ -98,7 +119,10 @@ The backend tuning work settled on this operational order:
 2. `fm_index` only for repeated persisted-index reuse workflows (experimental on large references)
 3. `exhaustive_python` as the strict baseline and fallback path
 
-See [Developer Documentation](developer/index.rst) for the backend tuning summary and the hg38 primary validation commands used to reach that conclusion.
+See [Developer Documentation](developer/index.rst) for the backend tuning summary and the hg38 primary
+validation commands used to reach that conclusion. Those runs used the published CCR5 half-site pair
+directly, so they matched no on-target site; treat the backend ordering as a runtime observation only,
+not as a correctness result.
 
 For larger genomes or advanced runtime control, see the workflow-level environment toggles documented in [Workflows](workflows.md).
 
