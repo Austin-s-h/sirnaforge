@@ -108,6 +108,7 @@ from sirnaforge.workflow_variant import (
     parse_clinvar_filter_string,
     resolve_workflow_variants,
 )
+from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.design import ZFNDesigner
 
 logger = get_logger(__name__)
@@ -479,6 +480,10 @@ class SiRNAWorkflow:
                 annotation_source = annotation.annotation_path
             elif annotation.annotation_reference:
                 annotation_source = annotation.annotation_reference
+
+        # Covers callers who drive SiRNAWorkflow directly. Under the CLI the entry point
+        # already emitted it, and the once-per-process latch keeps this from repeating.
+        emit_zfn_experimental_warning(console)
 
         console.print("\n🧬 [bold cyan]Starting ZFN Pair Evaluation Workflow[/bold cyan]")
         console.print(f"Left half-site:  [yellow]{zfn_params.left_half_site}[/yellow]")

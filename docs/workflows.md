@@ -67,18 +67,34 @@ done
 
 ## ZFN Workflow
 
+> ### ⚠️ EXPERIMENTAL — results are not decision-grade
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects — half-site orientation
+> handling, FokI seed-region weighting, off-target region classification, inverted
+> `worst_site_score`/`best_offtarget_score` exports, and a default backend that rejects mismatch
+> budgets above 3 — all tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any
+> decision without independent validation.** In particular the published CCR5 half-site pair does
+> not match its own on-target site under the default strand-pairing rule, which also invalidates
+> the ZFN validation runs recorded in this documentation set. See
+> [ZFN Module Guide](zfn_module.md) for details.
+
 Use the dedicated ZFN command when you want half-site constrained off-target discovery.
 
 ```bash
 sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
-  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
   --zfn-spacer-lengths 5,6 \
   --zfn-max-mismatches 2 \
   --zfn-algorithm zfn_v2 \
   --output-dir zfn_output/
 ```
+
+`CTTTTGCAGTTT` is the reverse complement of the published CCR5 (−) half-site `AAACTGCAAAAG`;
+passing the published text verbatim returns 0 sites. Keep `--zfn-max-mismatches` at 3 or below
+unless you also pass `--zfn-search-backend exhaustive_python`.
 
 Expected artifacts:
 
@@ -88,7 +104,8 @@ Expected artifacts:
 
 Advanced runtime controls:
 
-- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` to force Nextflow-backed ZFN search path.
+- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` is currently **inert**: the ZFN workflow always runs in-process, so
+  this flag does not switch execution to the Nextflow-backed search path (tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)).
 - `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "chunk_size_mb": 3, "overlap_bp": 40000}'` for custom shard/window behavior on large references.
 
 ## Variant Targeting (documented runs)

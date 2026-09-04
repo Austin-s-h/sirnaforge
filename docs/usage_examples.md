@@ -40,10 +40,17 @@ uv run sirnaforge workflow TP53 \
 
 ### ZFN Constraint Composition
 
+> **⚠️ EXPERIMENTAL.** The ZFN arm has known unfixed defects tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); do not use ZFN output for any decision
+> without independent validation. The right half-site below is the reverse complement
+> (`CTTTTGCAGTTT`) of the published CCR5 (−) half-site `AAACTGCAAAAG`, because the published text
+> matches no site at all under the default strand-pairing rule — see
+> [ZFN Module Guide](zfn_module.md).
+
 ```bash
 uv run sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
-  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
   --zfn-spacer-lengths 5,6 \
   --zfn-max-mismatches 2 \

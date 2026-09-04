@@ -208,11 +208,23 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:latest \
 
 ## ZFN Manual Validation
 
+> **⚠️ EXPERIMENTAL — the two runbooks below validate runtime, not correctness.** The ZFN arm ships
+> experimental in 0.6.0 with known unfixed defects tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Every run recorded in those notes used
+> the published CCR5 half-site pair verbatim, which under the default `require_opposite_strands=True`
+> matches **no site at all** — not even its own on-target locus — because both published sequences
+> occur on the hg38 plus strand. So the recorded site counts, recovery figures and backend
+> conclusions are timing and plumbing evidence only. **Do not sign off a ZFN change on them, do not
+> cite them as validation, and do not use ZFN output for any decision without independent
+> validation.** Re-derive them with `--zfn-right-half-site CTTTTGCAGTTT` (the reverse complement of
+> the published `AAACTGCAAAAG`) once #82's orientation defect is resolved.
+
 The heavy ZFN benchmarking and real-reference checks are documented as technical validation notes rather than notebook-management policy.
 
-- use [zfn_backend_tuning.md](zfn_backend_tuning.md) for the backend selection rationale
-- use [zfn_hg38_primary_test_commands.md](zfn_hg38_primary_test_commands.md) for full hg38 primary reruns
+- use [zfn_backend_tuning.md](zfn_backend_tuning.md) for the backend selection rationale — runtime ordering only, per the caveat above
+- use [zfn_hg38_primary_test_commands.md](zfn_hg38_primary_test_commands.md) for full hg38 primary reruns — that page carries the reverse-complement workaround needed to make its commands match
 - keep chr3 and hg38 durable behavior in `tests/integration/` so reference resolution, search execution, and annotation are exercised together
+- when adding ZFN half-site fixtures, build them from the **published** genomic text rather than from `reverse_complement(published)`. The existing fixtures do the latter, which is why #82's orientation defect survived a file named `test_zfn_realworld_ccr5_data.py`.
 
 ## miRNA default-backend rollout validation
 

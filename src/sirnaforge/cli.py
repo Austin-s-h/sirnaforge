@@ -87,6 +87,7 @@ from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
+from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
     make_zfn_shard_manifest,
@@ -695,7 +696,7 @@ def workflow(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
+        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn (EXPERIMENTAL)",
     ),
     zfn_subfinger_mutation: list[str] = typer.Option(
         [],
@@ -1046,6 +1047,9 @@ def workflow(  # noqa: PLR0912
         logger.error("Invalid design mode: %s", exc)
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
+
+    if mode_enum == DesignMode.ZFN:
+        emit_zfn_experimental_warning(console)
 
     merged_zfn_constraints = list(zfn_subfinger_mutation)
     if zfn_max_mismatches_per_subfinger is not None:
@@ -1708,10 +1712,12 @@ def zfn(
         help="Write logs/workflow_summary.json (disable to skip JSON output)",
     ),
 ) -> None:
-    """Evaluate a ZFN pair and run exhaustive genome-wide off-target search."""
+    """Evaluate a ZFN pair and run exhaustive genome-wide off-target search (EXPERIMENTAL)."""
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
     log_destination.parent.mkdir(parents=True, exist_ok=True)
     configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
+
+    emit_zfn_experimental_warning(console)
 
     try:
         zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (

@@ -1,5 +1,17 @@
 # ZFN Nextflow Bridge: Sanity Validation
 
+> ## ⚠️ EXPERIMENTAL — this check is not authoritative
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any decision without independent
+> validation.**
+>
+> Two caveats apply to the run recorded below. First, the fixtures were built around the published
+> CCR5 half-site pair, which does not match its own on-target site under the default strand-pairing
+> rule, so the site counts are not evidence about real genomic behaviour. Second, the Nextflow ZFN
+> arm exercised here is not reachable from either CLI entry point — the workflow always runs the
+> in-process path — and the aggregator emits a narrower CSV schema and a different ranking than the
+> direct route.
+
 Date: 2026-03-01
 
 This note records a focused sanity check of the ZFN Nextflow bridge refactor where Nextflow orchestrates processes and Python (via CLI entrypoints) owns the higher-order logic.
