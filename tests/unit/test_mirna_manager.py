@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from Bio import SeqIO
 
+from sirnaforge.data import mirna_manager
 from sirnaforge.data.mirna_manager import FASTA_PARSE_FORMAT, MiRNADatabaseManager
 
 
@@ -199,16 +200,30 @@ class TestMiRNADatabaseManager:
             pytest.skip(f"Network download failed: {e}")
 
     @pytest.mark.unit
-    def test_get_combined_database_empty(self, manager_with_temp_cache):
-        """Test combining databases with empty cache."""
-        # This should handle the case where no databases are cached
-        result = manager_with_temp_cache.get_combined_database(
-            sources=["mirbase_high_conf"], species="human", output_name="test_combined.fa"
+    def test_get_combined_database_empty(self, manager_with_temp_cache, monkeypatch, caplog):
+        """An empty cache plus an unreachable source yields None and writes nothing.
+
+        `_download_file` is the network boundary (it is what calls `urlopen`), so stubbing it is
+        what keeps this a unit test: it used to reach out to mirbase.org for real and then accept
+        either answer via `result is None or isinstance(result, Path)`, which no implementation
+        could fail.
+        """
+        monkeypatch.setattr(
+            MiRNADatabaseManager,
+            "_download_file",
+            lambda _self, _source, timeout=600: None,  # noqa: ARG005
         )
 
-        # Should either return None or handle gracefully
-        # (depends on implementation - adjust as needed)
-        assert result is None or isinstance(result, Path)
+        with caplog.at_level(logging.ERROR, logger="sirnaforge.data.mirna_manager"):
+            result = manager_with_temp_cache.get_combined_database(
+                sources=["mirbase_high_conf"], species="human", output_name="test_combined.fa"
+            )
+
+        assert result is None
+        assert "Failed to get mirbase_high_conf database" in caplog.text
+        # A failed source must not leave a half-built combined artifact behind for the next run.
+        assert not (manager_with_temp_cache.cache_dir / "test_combined.fa").exists()
+        assert manager_with_temp_cache.metadata == {}
 
     @pytest.mark.integration
     @pytest.mark.skipif(
@@ -377,32 +392,128 @@ class TestFilterSpeciesSequences:
             "hsa-miR-21-5p three [source:mirgenedb]": "UAGCUUAUCAGACUGAUGUUGA",
         }
 
-    @pytest.mark.unit
-    def test_combined_database_is_rebuilt_not_reused(self, manager_with_temp_cache, monkeypatch):
-        """A stale combined_*.fa must never be served: it carries no TTL and no checksum.
+    REAL_RECORD = {"hsa-miR-21-5p real [source:mirbase]": "UAGCUUAUCAGACUGAUGUUGA"}
 
-        The old reuse test was "combined mtime >= every source mtime", which cannot detect wrong
-        *contents*, so a combined database written by a buggy producer survived indefinitely — even
-        after the per-source caches had been re-validated and refreshed.
-        """
-        source = manager_with_temp_cache.cache_dir / "only.fa"
-        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+    @staticmethod
+    def _stub_single_source(monkeypatch, source_file):
         monkeypatch.setattr(
             MiRNADatabaseManager,
             "get_database",
-            lambda _self, _source_name, _species, force_refresh=False: source,  # noqa: ARG005
+            lambda _self, _source_name, _species, force_refresh=False: source_file,  # noqa: ARG005
         )
+
+    @staticmethod
+    def _forbid_rebuild(monkeypatch):
+        """Make any attempt to re-write the combined FASTA an outright failure.
+
+        Reuse is otherwise indistinguishable from a rebuild that happens to produce identical
+        bytes, which is exactly the confusion the previous test name papered over.
+        """
+
+        def _explode(*_args, **_kwargs):
+            raise AssertionError("combined database was rebuilt instead of reused")
+
+        monkeypatch.setattr(mirna_manager.SeqIO, "write", _explode)
+
+    @pytest.mark.unit
+    def test_unstamped_combined_database_is_not_served(self, manager_with_temp_cache, monkeypatch):
+        """A combined_*.fa found on disk with no cache stamp is rebuilt, not trusted.
+
+        This is the file the pre-fix producer left behind: the mtime-only check ("combined is
+        newer than every source") accepted it on the strength of its timestamp alone, so a
+        combined database written by the header-cloning parser was served indefinitely. Nothing
+        about the bytes is knowable without a stamp, so there is nothing to reuse.
+        """
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
 
         combined_path = manager_with_temp_cache.cache_dir / "combined_human_mirbase.fa"
         combined_path.write_text(">poisoned poisoned\nAAAAAAAAAAAAAAAAAAAAAA\n")
-        # Make the stale artifact look fresh relative to its source, which is all the old check saw.
+        # Make the unstamped artifact look fresh relative to its source, which is all the old
+        # check ever looked at.
         stale_mtime = source.stat().st_mtime + 1000
         os.utime(combined_path, (stale_mtime, stale_mtime))
 
         combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
 
         assert combined == combined_path
-        assert self._records(combined.read_text()) == {"hsa-miR-21-5p real [source:mirbase]": "UAGCUUAUCAGACUGAUGUUGA"}
+        assert self._records(combined.read_text()) == self.REAL_RECORD
+
+    @pytest.mark.unit
+    def test_stamped_combined_database_is_reused(self, manager_with_temp_cache, monkeypatch):
+        """A stamp whose inputs and output bytes still check out means no rebuild.
+
+        Reuse is the point of the stamp: re-combining reads and rewrites every source FASTA, and
+        the same machinery has to protect artifacts (a BWA index) that cannot be rebuilt cheaply
+        at all.
+        """
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        first = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+        assert first is not None
+
+        self._forbid_rebuild(monkeypatch)
+        second = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        assert second == first
+        assert self._records(second.read_text()) == self.REAL_RECORD
+
+    @pytest.mark.unit
+    def test_stamped_combined_database_is_rebuilt_when_its_bytes_are_corrupted(
+        self, manager_with_temp_cache, monkeypatch
+    ):
+        """Corruption *after* stamping must still be caught.
+
+        An input fingerprint alone cannot see this: the sources are untouched and the producer
+        version is current, so an input-only stamp happily vouches for a truncated file. The stamp
+        therefore also records the output's own size and digest, and both are re-read from disk
+        before the artifact is served.
+        """
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+        assert combined is not None
+        stamped_inputs = dict(manager_with_temp_cache.metadata["combined:combined_human_mirbase.fa"].extra["inputs"])
+
+        # Truncate mid-sequence, exactly as an interrupted write or a full disk would.
+        combined.write_text(">hsa-miR-21-5p real [source:mirbase]\nUAGCUU")
+
+        reused = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        assert reused == combined
+        assert self._records(reused.read_text()) == self.REAL_RECORD
+        # The sources never moved, so the input half of the stamp is unchanged; only the output
+        # half could have rejected the corrupted file.
+        assert dict(manager_with_temp_cache.metadata["combined:combined_human_mirbase.fa"].extra["inputs"]) == (
+            stamped_inputs
+        )
+
+    @pytest.mark.unit
+    def test_stamped_combined_database_is_rebuilt_when_a_source_changes(self, manager_with_temp_cache, monkeypatch):
+        """Rewriting a source in place must invalidate the derived file, whatever its mtime."""
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+        assert combined is not None
+        original_mtime = combined.stat().st_mtime
+
+        source.write_text(">hsa-let-7a-5p refreshed\nUGAGGUAGUAGGUUGUAUAGUU\n")
+        # Backdate the source so an mtime comparison would still call the combined file fresh.
+        os.utime(source, (original_mtime - 1000, original_mtime - 1000))
+
+        rebuilt = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        assert rebuilt == combined
+        assert self._records(rebuilt.read_text()) == {
+            "hsa-let-7a-5p refreshed [source:mirbase]": "UGAGGUAGUAGGUUGUAUAGUU"
+        }
 
 
 class TestGetDatabaseFiltering:

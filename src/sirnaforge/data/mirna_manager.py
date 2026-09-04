@@ -559,9 +559,10 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             output_name = f"combined_{canonical_species}_{'_'.join(sources)}.fa"
 
         combined_file = self.cache_dir / output_name
+        # Keyed on the output filename, not on species+sources: `output_name` is caller-supplied,
+        # so two calls can differ only in where they want the result written.
+        combined_key = f"combined:{combined_file.name}"
 
-        # Source lookups own the caching (TTL + checksum via `_is_cache_valid`); this method only
-        # concatenates and de-duplicates them.
         source_files = []
         for source_name in sources:
             source_file = self.get_database(source_name, species)
@@ -570,11 +571,26 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 return None
             source_files.append(source_file)
 
-        # Always rebuild. The previous mtime-only reuse check ("combined is newer than every
-        # source") had no TTL and no checksum, so it could never notice that the combined file's
-        # *contents* were wrong — a combined database written by a buggy producer was served
-        # forever, even after the source caches themselves had been re-validated and refreshed.
-        # Re-combining is a local pass over a few thousand records, so the cache bought nothing.
+        # The combined file is derived, so it inherits every defect of the FASTAs it was built
+        # from — and, being an ordinary file, it can also be truncated or corrupted *after* it was
+        # written. So reuse is gated on a stamp recorded at write time that pins both halves:
+        #   * the exact input bytes it was combined from (`extra["inputs"]`), and
+        #   * the output's own size + MD5, which `_is_cache_valid` re-reads from disk and compares,
+        #     along with the cache TTL.
+        # The mtime-only predecessor ("combined is newer than every source") had neither a TTL nor
+        # a checksum of any kind, so a wrong, stale or half-written combined database was served
+        # forever. Rebuilding unconditionally would also work here but is the wrong default: it
+        # re-reads and re-writes every source on every call for no information gained.
+        input_digests = {
+            f"{position}:{source_file.name}": self._compute_file_checksum(source_file)
+            for position, source_file in enumerate(source_files)
+        }
+        if self._is_cache_valid(combined_key) and Path(self.metadata[combined_key].file_path) == combined_file:
+            if (self.metadata[combined_key].extra or {}).get("inputs") == input_digests:
+                logger.info(f"✅ Using existing combined database: {combined_file}")
+                return combined_file
+            logger.info("♻️  %s was combined from different source bytes; rebuilding", combined_file)
+
         logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
 
         seen_sequences = set()
@@ -596,6 +612,22 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                     )
                     SeqIO.write(annotated_record, outfile, "fasta")
                     total_sequences += 1
+
+        # Stamp the result *after* the bytes are on disk, so the recorded size/checksum describe
+        # what a later run will actually read back.
+        self._record_cache_entry(
+            combined_key,
+            MiRNASource(
+                name="combined",
+                url=str(combined_file),
+                species=canonical_species,
+                format="fasta",
+                description=f"Combined miRNA database from {', '.join(sources)}",
+            ),
+            combined_file,
+            extra={"inputs": input_digests, "sources": list(sources), "sequences": total_sequences},
+            persist=True,
+        )
 
         logger.info(f"✅ Combined database created: {combined_file} ({total_sequences} unique sequences)")
         return combined_file

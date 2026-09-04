@@ -40,8 +40,11 @@ substantially, for the same reason.
   **Any miRBase database cached by an affected build is wrong on disk and is now discarded
   automatically** by the reference cache's producer-version check, so the first run after
   upgrading re-downloads it; to force it sooner, run `sirnaforge cache --clear-mirna`.
-  Alongside this: combined databases are always rebuilt rather than reused on an mtime
-  comparison that carried no TTL and no checksum and so could never notice wrong contents; a
+  Alongside this: combined databases are reused only when a stamp written at build time still
+  vouches for them — the exact input bytes they were combined from, plus the output file's own
+  size and digest, re-read from disk and subject to the cache TTL. The mtime comparison it
+  replaces ("combined is newer than every source") had no TTL and no checksum of any kind, so it
+  could neither notice wrong contents nor notice a file truncated after it was written; a
   species with no miRBase code now raises instead of silently returning every species; and
   HTML-wrapped payloads have their pre-record preamble stripped, so block-style `<pre>` wrappers
   no longer leave leading blank lines that Biopython 1.86 warns about and a future release will
