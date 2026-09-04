@@ -478,20 +478,24 @@ class TestFilterSpeciesSequences:
 
         combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
         assert combined is not None
-        stamped_inputs = dict(manager_with_temp_cache.metadata["combined:combined_human_mirbase.fa"].extra["inputs"])
 
-        # Truncate mid-sequence, exactly as an interrupted write or a full disk would.
+        # First half: an intact artifact must be REUSED. Without this, "always rebuild" would
+        # satisfy the corruption half trivially and the test would pin nothing.
+        with monkeypatch.context() as intact:
+            self._forbid_rebuild(intact)
+            assert manager_with_temp_cache.get_combined_database(["mirbase"], "human") == combined
+
+        # Second half: truncate mid-sequence, exactly as an interrupted write or a full disk would.
         combined.write_text(">hsa-miR-21-5p real [source:mirbase]\nUAGCUU")
 
         reused = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
 
+        # The sources never moved and the producer version is current, so only a check on the
+        # output's own bytes could have rejected the truncated file. Asserted through the public
+        # result rather than through the stamp's storage layout, so this stays valid whichever
+        # spelling of the stamp survives the merge with the shared cache-invalidation mechanism.
         assert reused == combined
         assert self._records(reused.read_text()) == self.REAL_RECORD
-        # The sources never moved, so the input half of the stamp is unchanged; only the output
-        # half could have rejected the corrupted file.
-        assert dict(manager_with_temp_cache.metadata["combined:combined_human_mirbase.fa"].extra["inputs"]) == (
-            stamped_inputs
-        )
 
     @pytest.mark.unit
     def test_stamped_combined_database_is_rebuilt_when_a_source_changes(self, manager_with_temp_cache, monkeypatch):
