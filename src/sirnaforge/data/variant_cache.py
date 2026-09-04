@@ -23,9 +23,13 @@ class VariantParquetCache:
     - Batch operations instead of individual file I/O
     """
 
-    # Canonical on-disk schema. ``put`` writes exactly these columns rather than
-    # whatever the existing file happens to have, so a cache written by an older
-    # version gains new columns instead of silently dropping them from new rows.
+    # Canonical on-disk schema: every column this version reads and writes, one per
+    # persisted ``VariantRecord`` field plus the two bookkeeping columns. ``put``
+    # writes all of them rather than whatever the existing file happens to have, so
+    # a cache written by an older version gains new columns instead of silently
+    # dropping them from new rows; columns it does not recognise are carried
+    # through untouched (see ``put``). Keep in step with ``VariantRecord`` --
+    # ``test_columns_match_variant_record_fields`` fails if the two drift.
     _COLUMNS = (
         "cache_key",
         "id",
@@ -77,9 +81,71 @@ class VariantParquetCache:
     @staticmethod
     def _normalize_timestamp(value: Any) -> Any:
         """Coerce a timestamp value to the ISO string form used on disk."""
+        # ``pd.NaT`` subclasses ``datetime`` and its isoformat() is the literal
+        # string "NaT", which round-trips back to NaT and made the TTL readers
+        # disagree about the row, so it has to be caught before the datetime
+        # branch. Persist a real null instead: every reader treats an unknown
+        # timestamp the same way (stale).
+        if value is pd.NaT:
+            return None
         if isinstance(value, datetime):
             return value.isoformat()
         return value
+
+    @staticmethod
+    def _parse_cached_at(values: Any) -> Any:
+        """Parse ``cached_at`` values into datetimes, tolerating mixed ISO layouts.
+
+        ``datetime.now().isoformat()`` omits the ``.%f`` suffix when microsecond is
+        exactly 0, so one column can legitimately hold two ISO layouts; pandas 2.x
+        infers a single format from the first element and raises on the rest, which
+        silently disabled both TTL readers. ``format="ISO8601"`` accepts either
+        layout and ``errors="coerce"`` maps anything still unreadable (including a
+        null written by ``_normalize_timestamp``) to NaT.
+        """
+        return pd.to_datetime(values, format="ISO8601", errors="coerce")
+
+    def _fresh_mask(self, df: pd.DataFrame) -> pd.Series:
+        """Return a boolean mask of entries still inside the TTL.
+
+        ``cleanup_stale_entries`` and ``get_stats`` share this so they can never
+        disagree about a row: NaT comparisons are always False, so a row with an
+        unreadable timestamp is stale for both.
+        """
+        cutoff_date = datetime.now() - timedelta(days=self.ttl_days)
+        fresh: pd.Series = self._parse_cached_at(df["cached_at"]) > cutoff_date
+        return fresh
+
+    def _is_servable(self, frame: pd.DataFrame, row: "pd.Series[Any]", cache_key: str) -> bool:
+        """Decide whether a matched row may be handed back to the caller."""
+        # An unreadable timestamp parses to NaT and counts as stale here too, so
+        # get, cleanup_stale_entries and get_stats agree about the same row.
+        cached_at = self._parse_cached_at(row["cached_at"])
+        if pd.isna(cached_at):
+            logger.debug(f"Cache entry for {cache_key} has an unreadable cached_at; treating as stale")
+            return False
+
+        age = datetime.now() - cached_at.to_pydatetime()
+        if age > timedelta(days=self.ttl_days):
+            logger.debug(f"Cache entry for {cache_key} is stale (age: {age.days} days)")
+            # Don't delete here, let cleanup handle it
+            return False
+
+        # ``population_afs`` was not persisted at all before this fix, and the
+        # current writer always stores at least "{}". A null therefore means
+        # "never written", not "this variant has no population AFs" -- and
+        # avoid-mode filtering keys off exactly those AFs, so serving the row
+        # would silently reinstate the bug for the 90-day TTL of every cache that
+        # already exists. Report a miss so the caller re-fetches.
+        population_afs = row["population_afs"] if "population_afs" in frame.columns else None
+        if population_afs is None or (isinstance(population_afs, float) and pd.isna(population_afs)):
+            logger.info(
+                f"Discarding pre-0.6.0 cache entry for {cache_key}: population allele frequencies "
+                "were never stored, so the entry cannot be trusted for avoid-mode filtering"
+            )
+            return False
+
+        return True
 
     def _init_empty_cache(self) -> None:
         """Initialize an empty cache file."""
@@ -108,20 +174,15 @@ class VariantParquetCache:
             if matches.empty:
                 return None
 
-            # Check TTL
+            # Check TTL and that the row was written by a version that stored
+            # everything the caller will read back.
             row = matches.iloc[0]
-            cached_at = pd.to_datetime(row["cached_at"])
-            age = datetime.now() - cached_at.to_pydatetime()
-
-            if age > timedelta(days=self.ttl_days):
-                logger.debug(f"Cache entry for {cache_key} is stale (age: {age.days} days)")
-                # Don't delete here, let cleanup handle it
+            if not self._is_servable(matches, row, cache_key):
                 return None
 
             # Reconstruct VariantRecord
             sources = self._deserialize_value(row["sources"], [])
-            # ``row.get`` tolerates cache files written before a column existed.
-            population_afs = self._deserialize_value(row.get("population_afs"), {})
+            population_afs = self._deserialize_value(row["population_afs"], {})
             annotations = self._deserialize_value(row["annotations"], {})
             provenance = self._deserialize_value(row["provenance"], {})
 
@@ -192,13 +253,20 @@ class VariantParquetCache:
             # left the cache permanently unwritable). Rebuilding sidesteps both,
             # and also avoids the pandas FutureWarning that concat emits on
             # empty/all-NA frames.
+            #
+            # Columns the canonical schema does not know about are carried through
+            # rather than dropped: with a 90-day TTL one cache directory is easily
+            # shared with a newer sirnaforge, and dropping its columns would destroy
+            # data the other version still needs. The new row simply has no value
+            # for them.
+            unknown_columns = [column for column in kept.columns if column not in self._COLUMNS]
             df = pd.DataFrame(
                 {
                     column: [
                         *(kept[column].tolist() if column in kept.columns else [None] * len(kept)),
-                        new_row[column],
+                        new_row.get(column),
                     ]
-                    for column in self._COLUMNS
+                    for column in (*self._COLUMNS, *unknown_columns)
                 }
             )
 
@@ -230,13 +298,11 @@ class VariantParquetCache:
 
             original_count = len(df)
 
-            # Compare on a temporary series: writing datetime64 back into
-            # ``cached_at`` would break every later put, which appends an ISO string.
-            cached_at = pd.to_datetime(df["cached_at"])
-            cutoff_date = datetime.now() - timedelta(days=self.ttl_days)
-
-            # Filter out stale entries
-            df = df[cached_at > cutoff_date].reset_index(drop=True)
+            # Compare on a temporary mask and leave ``cached_at`` untouched: writing
+            # datetime64 back into it would break every later put, which appends an
+            # ISO string. Whatever type the file already holds is written back
+            # unchanged here; the next ``put`` is what normalises it to ISO strings.
+            df = df[self._fresh_mask(df)].reset_index(drop=True)
 
             # Write back
             df.to_parquet(self.cache_file, index=False, engine="pyarrow", compression="snappy")
@@ -263,11 +329,9 @@ class VariantParquetCache:
             if df.empty:
                 return {"total_entries": 0, "stale_entries": 0}
 
-            cached_at = pd.to_datetime(df["cached_at"])
-            cutoff_date = datetime.now() - timedelta(days=self.ttl_days)
-
             total = len(df)
-            stale = int((cached_at <= cutoff_date).sum())
+            # Complement of the mask cleanup uses, so the two always agree.
+            stale = int((~self._fresh_mask(df)).sum())
 
             return {
                 "total_entries": total,

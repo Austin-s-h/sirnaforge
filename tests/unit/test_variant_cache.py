@@ -1,6 +1,7 @@
 """Unit tests for Parquet-based variant cache."""
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -275,26 +276,151 @@ class TestVariantParquetCacheIntegrity:
 
         assert retrieved is not None
         assert retrieved.population_afs == {"AFR": 0.15, "EUR": 0.02}
-        # Drives avoid-mode filtering, so a dropped dict changes which variants pass.
+        # Avoid-mode filtering reads these, so dropping them made the record the
+        # resolver hands back on a warm run differ from the cold-run record.
         assert retrieved.get_effective_af_for_mode(VariantMode.AVOID) == 0.15
 
-    def test_reads_legacy_cache_without_population_afs(self, tmp_path: Path):
-        """A cache file written before the population_afs column stays readable."""
+    @pytest.mark.parametrize("legacy_style", ["column_absent", "column_null"])
+    def test_legacy_row_without_population_afs_is_a_miss(self, tmp_path: Path, legacy_style: str, caplog):
+        """A row that predates the population_afs column must not be served.
+
+        The current writer always stores at least ``"{}"``, so a null is a reliable
+        "never written" marker rather than "no population AFs". Reading it as an
+        empty dict would keep serving the original defect out of every cache that
+        already exists, for the full 90-day TTL.
+        """
         cache = VariantParquetCache(tmp_path)
         cache.put("key", self._variant(100, id="rs1", af=0.005))
 
-        legacy = pd.read_parquet(cache.cache_file, engine="pyarrow").drop(columns=["population_afs"])
+        legacy = pd.read_parquet(cache.cache_file, engine="pyarrow")
+        if legacy_style == "column_absent":
+            legacy = legacy.drop(columns=["population_afs"])
+        else:
+            legacy["population_afs"] = None
         legacy.to_parquet(cache.cache_file, index=False, engine="pyarrow", compression="snappy")
 
-        retrieved = cache.get("key")
-        assert retrieved is not None
-        assert retrieved.population_afs == {}
+        with caplog.at_level(logging.INFO, logger="sirnaforge.data.variant_cache"):
+            assert cache.get("key") is None, "pre-fix row served as if it had no population AFs"
+
+        # The user has to be told, otherwise the extra re-fetch looks like a bug.
+        assert any("pre-0.6.0 cache entry" in r.message for r in caplog.records)
 
         # And the missing column must not be dropped from newly written rows.
         cache.put("key2", self._variant(101, id="rs2", population_afs={"AFR": 0.2}))
-        retrieved2 = cache.get("key2")
-        assert retrieved2 is not None
-        assert retrieved2.population_afs == {"AFR": 0.2}
+        retrieved = cache.get("key2")
+        assert retrieved is not None
+        assert retrieved.population_afs == {"AFR": 0.2}
+
+    def test_columns_match_variant_record_fields(self):
+        """The hand-maintained schema must cover exactly the model's fields.
+
+        The root cause of the dropped population AFs was schema drift: ``_COLUMNS``
+        and the field-by-field serialisation in ``put``/``get`` are maintained by
+        hand against a model with ``extra="forbid"``, so a field added to
+        ``VariantRecord`` is silently absent from the cache instead of failing.
+        """
+        bookkeeping = {"cache_key", "cached_at"}
+        persisted = set(VariantParquetCache._COLUMNS) - bookkeeping
+
+        assert persisted == set(VariantRecord.model_fields), (
+            "VariantParquetCache._COLUMNS has drifted from VariantRecord: "
+            f"missing {sorted(set(VariantRecord.model_fields) - persisted)}, "
+            f"unexpected {sorted(persisted - set(VariantRecord.model_fields))}. "
+            "Add the field to _COLUMNS and to both put() and get()."
+        )
+        assert bookkeeping <= set(VariantParquetCache._COLUMNS)
+
+    def test_every_field_survives_round_trip(self, tmp_path: Path):
+        """Covering _COLUMNS is not enough; put/get must actually carry each field."""
+        cache = VariantParquetCache(tmp_path)
+        variant = VariantRecord(
+            id="rs1",
+            chr="chr1",
+            pos=100,
+            ref="A",
+            alt="T",
+            assembly="GRCh38",
+            sources=[VariantSource.CLINVAR, VariantSource.ENSEMBL],
+            clinvar_significance=ClinVarSignificance.PATHOGENIC,
+            af=0.005,
+            population_afs={"AFR": 0.15},
+            annotations={"gene": "TP53"},
+            provenance={"queried_at": "2026-01-01"},
+        )
+
+        cache.put("key", variant)
+
+        assert cache.get("key") == variant
+
+    def test_unknown_on_disk_columns_are_preserved(self, tmp_path: Path):
+        """A column written by a newer sirnaforge must survive an older put.
+
+        With a 90-day TTL one cache directory is easily shared between versions, so
+        dropping everything outside ``_COLUMNS`` would destroy the newer version's
+        data on the first write from the older one.
+        """
+        cache = VariantParquetCache(tmp_path)
+        cache.put("key", self._variant(100, id="rs1"))
+
+        with_future = pd.read_parquet(cache.cache_file, engine="pyarrow")
+        with_future["future_col"] = ["from a newer version"]
+        with_future.to_parquet(cache.cache_file, index=False, engine="pyarrow", compression="snappy")
+
+        cache.put("key2", self._variant(101, id="rs2"))
+
+        written = pd.read_parquet(cache.cache_file, engine="pyarrow")
+        assert "future_col" in written.columns, "unknown column dropped by put"
+        assert written.loc[written["cache_key"] == "key", "future_col"].iloc[0] == "from a newer version"
+        # The new row has no value for a column this version knows nothing about.
+        assert written.loc[written["cache_key"] == "key2", "future_col"].iloc[0] is None
+
+    def test_ttl_readers_tolerate_mixed_iso_timestamps(self, tmp_path: Path):
+        """Mixed ISO layouts in cached_at must not disable the TTL readers.
+
+        ``datetime.now().isoformat()`` omits ``.%f`` when microsecond is exactly 0,
+        so the column heterogeneity arises on its own; pandas then infers one format
+        and raises, which left cleanup and get_stats permanently no-ops.
+        """
+        cache = VariantParquetCache(tmp_path)
+        cache.put("second_precision", self._variant(100, id="rs1"))
+        cache.put("microsecond_precision", self._variant(101, id="rs2"))
+
+        mixed = pd.read_parquet(cache.cache_file, engine="pyarrow")
+        mixed.loc[0, "cached_at"] = datetime.now().replace(microsecond=0).isoformat()
+        mixed.to_parquet(cache.cache_file, index=False, engine="pyarrow", compression="snappy")
+
+        stats = cache.get_stats()
+        assert "error" not in stats
+        assert stats["total_entries"] == 2
+        assert stats["stale_entries"] == 0
+        assert cache.cleanup_stale_entries() == 0
+        assert cache.get("second_precision") is not None
+
+    def test_unreadable_timestamp_is_stale_everywhere(self, tmp_path: Path):
+        """cleanup, get_stats and get must agree about a row with no usable timestamp.
+
+        ``pd.NaT`` subclasses ``datetime``, so normalising it produced the literal
+        string "NaT": cleanup removed the row while get_stats called it fresh and
+        get kept serving it.
+        """
+        cache = VariantParquetCache(tmp_path)
+        cache.put("bad", self._variant(100, id="rs1"))
+        cache.put("good", self._variant(101, id="rs2"))
+
+        with_nat = pd.read_parquet(cache.cache_file, engine="pyarrow")
+        with_nat["cached_at"] = pd.to_datetime(with_nat["cached_at"], format="ISO8601")
+        with_nat.loc[with_nat["cache_key"] == "bad", "cached_at"] = pd.NaT
+        with_nat.to_parquet(cache.cache_file, index=False, engine="pyarrow", compression="snappy")
+
+        # A put rewrites the column; NaT must become a null, never the string "NaT".
+        cache.put("third", self._variant(102, id="rs3"))
+        assert "NaT" not in pd.read_parquet(cache.cache_file, engine="pyarrow")["cached_at"].tolist()
+
+        assert cache.get("bad") is None, "row with no usable timestamp still served"
+        assert cache.get_stats()["stale_entries"] == 1
+        assert cache.cleanup_stale_entries() == 1
+        assert cache.get("good") is not None
+        assert cache.get("third") is not None
 
     def test_write_failure_warns_once(self, tmp_path: Path, caplog):
         """A cache that cannot be written warns on the first failure, not on every one."""

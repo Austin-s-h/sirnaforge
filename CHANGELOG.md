@@ -45,6 +45,26 @@ substantially, for the same reason.
   helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
   remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
   closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
+- **The Parquet variant cache (`~/.cache/sirnaforge/variants/variants.parquet`) returned different
+  variant data for identical invocations, and every cache already on disk kept doing so.** Four
+  defects around one write path: re-putting a key appended onto an index label the key-removal mask
+  had preserved, silently destroying an unrelated entry; `cleanup_stale_entries` persisted a
+  datetime64 `cached_at`, after which every `put` raised and the cache was permanently write-dead
+  with only one warning to show for it; `population_afs` was never stored at all, so a warm run
+  returned a record with no population allele frequencies — the field `--variant-mode avoid`
+  filters on; and the cache key omitted `variant_mode`, which matters because `resolve_variant`
+  serves a hit **without** re-running the filters, so an `avoid` run and a `target` run at the same
+  `--min-af` shared entries and inherited each other's admission decisions even though the two
+  modes filter on different frequencies (max population AF vs global AF). Separately,
+  `datetime.now().isoformat()` omits `.%f` when microsecond is exactly 0, and pandas 2.x raises on
+  the resulting mixed-layout column, which quietly turned `cleanup_stale_entries()` and
+  `get_stats()` into no-ops. Fixed: `put` rebuilds the frame against a canonical schema (and now
+  carries through any column a newer sirnaforge added rather than dropping it), the cache key
+  covers `variant_mode`, and `get`/`cleanup_stale_entries()`/`get_stats()` share one TTL rule so
+  they agree about a row whose timestamp is unreadable. **Existing caches need no manual clearing:
+  entries written by an affected version are discarded automatically** — the key change orphans
+  them, and any row that has no stored population allele frequencies is treated as a miss and
+  re-fetched (logged as `Discarding pre-0.6.0 cache entry ...`).
 
 ### Added
 
