@@ -52,6 +52,20 @@ def _get_persistent_output_dir(tmp_path: Path, test_name: str) -> Path:
     return output_dir
 
 
+def _first_records(source: Path, destination: Path, count: int) -> Path:
+    """Copy the first `count` FASTA records of `source` to `destination`."""
+    kept: list[str] = []
+    seen = 0
+    for line in source.read_text().splitlines(keepends=True):
+        if line.startswith(">"):
+            seen += 1
+            if seen > count:
+                break
+        kept.append(line)
+    destination.write_text("".join(kept))
+    return destination
+
+
 def _print_failure_location(output_dir: Path) -> None:
     """Print output directory location on test failure for easy inspection."""
     print(f"\n{'=' * 80}")
@@ -630,13 +644,20 @@ def test_minimal_toy_workflow(tmp_path: Path):
     if not toy_fasta.exists():
         pytest.skip("Toy transcripts not available")
 
+    # toy_transcriptome_db.fasta is an off-target REFERENCE fixture: 367 records, 2.05 Mbp. Handing
+    # all of it to --input-fasta designs guides across the whole thing -- 173,026 candidates,
+    # measured at 428s wall / 321s user of single-threaded scoring with zero downloads and zero
+    # screening. That is neither a "fast sanity test" nor inside the timeout below. A short slice
+    # exercises the same pipeline flow in seconds.
+    design_input = _first_records(toy_fasta, tmp_path / "toy_design_input.fasta", 5)
+
     result = subprocess.run(
         [
             "sirnaforge",
             "workflow",
             "TOY",
             "--input-fasta",
-            str(toy_fasta),
+            str(design_input),
             "--output-dir",
             str(output_dir),
             "--species",
