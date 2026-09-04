@@ -9,6 +9,7 @@ Optimized for both standalone use and parallelized Nextflow workflows.
 import importlib
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess  # nosec B404
@@ -41,6 +42,8 @@ from sirnaforge.utils.species import human_vs_other_totals
 logger = get_logger(__name__)
 
 _NUCLEOTIDE_ALPHABET = ("A", "C", "G", "T")
+
+_CIGAR_OP_PATTERN = re.compile(r"(\d+)([MIDNSHP=X])")
 
 
 def _mirna_max_hits() -> int | None:
@@ -223,6 +226,35 @@ def _seed_window_positions_to_guide(
     """
     offset = seed_start - 1
     return tuple(offset + position for position in window_positions)
+
+
+def _parse_cigar_query_layout(cigar: str) -> tuple[int, int, int]:
+    """Split a CIGAR into ``(leading_clip, aligned_query_bases, trailing_clip)`` read offsets.
+
+    Read coordinates include hard-clipped bases so that offsets stay comparable to the
+    original query the aligner was handed: MD-tag positions are relative to the *aligned*
+    block only, so they must be shifted past ``leading_clip`` before they mean anything in
+    query coordinates. Returns all zeros for an absent CIGAR (``*``).
+    """
+    if not cigar or cigar == "*":
+        return (0, 0, 0)
+
+    ops = _CIGAR_OP_PATTERN.findall(cigar)
+    query_ops = [(int(length), op) for length, op in ops if op in "MIS=XH"]
+    leading = 0
+    index = 0
+    while index < len(query_ops) and query_ops[index][1] in "SH":
+        leading += query_ops[index][0]
+        index += 1
+
+    trailing = 0
+    end = len(query_ops)
+    while end > index and query_ops[end - 1][1] in "SH":
+        trailing += query_ops[end - 1][0]
+        end -= 1
+
+    aligned = sum(length for length, _ in query_ops[index:end])
+    return (leading, aligned, trailing)
 
 
 def _calculate_seed_offtarget_score(
@@ -841,8 +873,26 @@ class BwaAnalyzer:
             nm = int(tags.get("NM", 0))
             as_score = int(tags.get("AS", 0)) if "AS" in tags else None
 
-            # Parse mismatch positions from MD tag
-            mismatch_positions = self._parse_md_tag(tags.get("MD", ""))
+            leading_clip, aligned_len, trailing_clip = _parse_cigar_query_layout(cigar)
+            query_len = leading_clip + aligned_len + trailing_clip
+
+            # MD positions are relative to the aligned block, so shift past the leading clip.
+            read_positions = [leading_clip + offset for offset in self._parse_md_tag(tags.get("MD", ""))]
+            # Clipped query bases never paired with the target, so they are mismatches as far as
+            # off-target risk goes. Without this a 15M6S hit of a 21nt guide with NM:i:0 is
+            # indistinguishable from a full-length perfect match and fails the candidate.
+            read_positions += list(range(1, leading_clip + 1))
+            read_positions += list(range(query_len - trailing_clip + 1, query_len + 1))
+            nm += leading_clip + trailing_clip
+
+            # BWA stores flag&16 records reverse-complemented, so SEQ/MD/CIGAR are in the
+            # revcomp frame while the seed window is defined in guide coordinates: read
+            # position r is guide position query_len + 1 - r. design.py builds every guide as
+            # reverse_complement(target_seq), which makes minus-strand the common case.
+            if flag & 16 and query_len:
+                mismatch_positions = sorted(query_len + 1 - offset for offset in read_positions)
+            else:
+                mismatch_positions = sorted(read_positions)
             seed_mismatches = sum(1 for pos in mismatch_positions if self.seed_start <= pos <= self.seed_end)
 
             # Calculate off-target score
@@ -920,7 +970,8 @@ class BwaAnalyzer:
 
     def _filter_and_rank(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter and rank results by off-target score."""
-        results.sort(key=lambda x: (x["offtarget_score"], -x.get("as_score", 0)))
+        # as_score is None for records with no AS tag, so the dict default never fires.
+        results.sort(key=lambda x: (x["offtarget_score"], -int(x.get("as_score") or 0)))
         return results
 
 
