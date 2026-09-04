@@ -46,8 +46,10 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float     # Fraction paired bases (optimal: 0.4-0.6)
 
     # Off-target metrics
-    off_target_screened: bool  # False = never screened (including a run whose query-species
-                                # alignment never ran), so the counts below are unknown
+    off_target_screened: bool  # False = the screen was INCOMPLETE (never screened, or a run whose
+                                # query-species alignment produced nothing), so the counts below
+                                # are a lower bound, not a total — hits found in the species that
+                                # did align are still reported, and still applied as filters
     off_target_count: int      # Genuine off-target sites only (goal: ≤3); on-target,
                                 # ortholog and repeat-mediated hits are excluded
     transcriptome_hits_0mm: int   # Perfect match GENUINE off-target hits

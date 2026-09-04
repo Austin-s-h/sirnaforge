@@ -45,6 +45,7 @@ from sirnaforge.core.design import (
     MiRNADesigner,
     SiRNADesigner,
     apply_mirna_biogenesis_bonus,
+    mirna_max_biogenesis_bonus,
 )
 from sirnaforge.core.hit_classification import (
     ClassificationContext,
@@ -1607,7 +1608,12 @@ class SiRNAWorkflow:
         """Filter genome species down to those with available indices."""
         requested = [species.strip() for species in self.config.mirna_genome_species if species.strip()]
         available: set[str] = set()
-        for key in ("genome_indices", "genome_fastas"):
+        # transcriptome_indices belongs in this list: main.nf mixes it into the SAME ch_genomes
+        # alignment channel as genome_indices/genome_fastas, so those species really are screened.
+        # Omitting it dropped every transcriptome-only species from the list below — including the
+        # ones _configure_transcriptome_inputs had just appended to mirna_genome_species — and the
+        # conservation denominator then excluded species that had in fact been aligned.
+        for key in ("genome_indices", "genome_fastas", "transcriptome_indices"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
             available.update(self._parse_species_entries(raw_value))
 
@@ -2004,7 +2010,6 @@ class SiRNAWorkflow:
         run_status = "completed"
         workflow_warnings: list[str] = []
 
-        missing_species: list[str] = []
         tx_summary = aggregated_views.get("transcriptome") if aggregated_views else None
         if tx_summary:
             missing_species = cast(list[str], tx_summary.get("missing_species") or [])
@@ -2018,12 +2023,28 @@ class SiRNAWorkflow:
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
 
-        # Integrate off-target results into candidates with filtering. The missing species are
-        # passed through because a candidate with no hits from an alignment that never ran must not
-        # be scored as if it had come back clean.
+        # POSITIVE evidence, deliberately not the aggregate's self-reported missing_species: this
+        # method reports "completed" whenever the output directory merely exists, and
+        # _load_offtarget_aggregates returns {} when combined_summary.json is absent — which is
+        # exactly the shape of a run where aggregation itself failed. missing_species is then empty
+        # and the run looks complete. Only a species with a published alignment file has earned the
+        # reading "no hits here means clean".
+        screened_species = self._species_with_alignment_evidence(tx_summary)
+        if not screened_species:
+            run_status = "partial"
+            warning_msg = (
+                "⚠️  No transcriptome alignment evidence for any species (no aggregated summary, or "
+                "miRNA-only mode): off-target counts are unknown, so candidates keep their design-time scores."
+            )
+            console.print(warning_msg)
+            workflow_warnings.append(warning_msg)
+
+        # Integrate off-target results into candidates with filtering. The species that produced
+        # alignments are passed through because a candidate with no hits from an alignment that
+        # never ran must not be scored as if it had come back clean.
         filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
         updated_candidates, stats = self._integrate_offtarget_results(
-            candidates, parsed, filter_criteria, missing_species=missing_species
+            candidates, parsed, filter_criteria, screened_species=screened_species
         )
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
@@ -2051,6 +2072,34 @@ class SiRNAWorkflow:
             "aggregated": aggregated_views,
             "warnings": workflow_warnings,
         }
+
+    @staticmethod
+    def _species_with_alignment_evidence(tx_summary: Mapping[str, Any] | None) -> list[str]:
+        """Species with a published transcriptome alignment file, per the aggregated summary.
+
+        Returns the species for which the aggregator actually saw analysis output — the only
+        positive evidence available that an alignment ran. Returns an empty list when there is no
+        such evidence for any species, which covers three different failures that all used to look
+        like a clean complete run:
+
+        - the aggregate is missing entirely (aggregation never ran, so nothing reported anything);
+        - the aggregate exists but names no species (a hand-written or legacy summary);
+        - miRNA-only mode, where sirna_offtarget_analysis.nf derives the species list from
+          ch_genome_indices and falls back to '' — no transcriptome alignment happened at all, so
+          the off-target term has nothing to stand on.
+        """
+        if not tx_summary:
+            return []
+        # species_file_counts is the aggregator's own per-species file tally: >0 means it read
+        # alignment output for that species.
+        file_counts = cast(dict[str, int], tx_summary.get("species_file_counts") or {})
+        if file_counts:
+            return [species for species, count in file_counts.items() if count]
+        # Older summaries carry no per-species counts; species_analyzed minus the species the
+        # aggregator itself flagged as producing no files is the same evidence, coarser.
+        analyzed = [str(species) for species in cast(list[Any], tx_summary.get("species_analyzed") or [])]
+        missing = {str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])}
+        return [species for species in analyzed if species not in missing]
 
     def _log_offtarget_statistics(
         self,
@@ -2352,7 +2401,7 @@ class SiRNAWorkflow:
         candidates: list[SiRNACandidate],
         offtarget_data: dict[str, Any],
         filter_criteria: OffTargetFilterCriteria | None = None,
-        missing_species: Sequence[str] | None = None,
+        screened_species: Sequence[str] | None = None,
     ) -> tuple[list[SiRNACandidate], dict[str, Any]]:
         """Integrate off-target analysis results, classify hits, and score candidates.
 
@@ -2369,10 +2418,11 @@ class SiRNAWorkflow:
             candidates: List of siRNA candidates to update
             offtarget_data: Off-target results from Nextflow pipeline
             filter_criteria: Optional filtering criteria for off-targets
-            missing_species: Species whose alignment stage produced no files (a partial run).
-                Their absence of hits is unknown, not clean, so they are dropped from the
-                conservation denominator, and a missing query species suppresses post-screen
-                scoring entirely rather than award every candidate perfect specificity.
+            screened_species: Species with positive evidence of a published alignment. A run that
+                produced no alignment for the query species cannot support an off-target term, so
+                its candidates keep their design-time scores instead of being awarded perfect
+                specificity. None means the caller has no per-species evidence to offer (direct
+                callers, the basic analysis fallback) and the requested set is assumed screened.
 
         Returns:
             Tuple of (updated candidates, statistics dict with hit class decomposition)
@@ -2389,25 +2439,45 @@ class SiRNAWorkflow:
         # Single authoritative query species, set once in __init__ (see comment there).
         query_species = self._query_species
 
-        # Conservation is keyed on the screened set, not on whether species were typed on the
-        # CLI: the term goes inactive exactly when the screened set is query-species-only.
+        # Conservation is keyed on the set handed to the aligner, not on whether species were typed
+        # on the CLI: the term goes inactive exactly when that set is query-species-only.
         # _active_genome_species, not config.mirna_genome_species, is what Nextflow was handed:
-        # extra species supplied only via --genome-indices/--genome-fastas are screened and can
-        # return ortholog hits, so scoring them against the shorter list made the conservation
-        # numerator exceed its denominator.
-        screened_species = self._active_genome_species or self.config.mirna_genome_species
-        requested_species = frozenset(normalize_species_name(s) for s in screened_species)
-        unscreened = frozenset(normalize_species_name(s) for s in (missing_species or ()))
-        requested_non_query = requested_species - {query_species} - unscreened
-        query_species_unscreened = query_species in unscreened
+        # extra species can arrive via --genome-indices/--genome-fastas/--transcriptome-indices and
+        # can return ortholog hits, so scoring them against the shorter config list made the
+        # conservation numerator exceed its denominator.
+        requested_species = frozenset(
+            normalize_species_name(s) for s in (self._active_genome_species or self.config.mirna_genome_species)
+        )
+        # A species whose alignment never ran STAYS in this denominator. Subtracting it (as the
+        # first pass at this fix did) let a degraded run outscore the complete run it degraded
+        # from: with the only non-query species removed the term goes inactive, compute_composite
+        # renormalises its weight onto the surviving terms, and one candidate scored 57.9 on the
+        # broken screen against 51.1 on the good one (see the regression test). A missing alignment
+        # can only lower conservation, never raise it.
+        conservation_denominator = requested_species - {query_species}
+
+        if screened_species is None:
+            # No per-species evidence offered; assume what was requested was screened, which is
+            # what every caller outside the Nextflow path can honestly claim.
+            screened = requested_species | {query_species}
+        else:
+            screened = frozenset(normalize_species_name(s) for s in screened_species)
+        unscreened = requested_species - screened
+        query_species_unscreened = query_species not in screened
+        if unscreened - {query_species}:
+            logger.warning(
+                f"No alignment evidence for {sorted(unscreened - {query_species})}; those species stay in the "
+                "conservation denominator, so conservation is a lower bound for every candidate in this run."
+            )
         if query_species_unscreened:
             logger.error(
-                f"Query species '{query_species}' produced no alignment files; off-target counts are unknown. "
-                "Refusing to compute post-screen scores: candidates keep their design-time scores."
+                f"No alignment evidence for query species '{query_species}' (its alignment produced no files, or "
+                "aggregation reported nothing at all); off-target counts are unknown. Refusing to compute "
+                "post-screen scores: candidates keep their design-time scores."
             )
             console.print(
-                f"❌ No {query_species} alignments: candidates cannot be scored after screening and are reported "
-                "with design-time scores. Re-run the screen before trusting the ranking."
+                f"❌ No {query_species} alignment evidence: candidates cannot be scored after screening and are "
+                "reported with design-time scores. Re-run the screen before trusting the ranking."
             )
 
         classification_context = ClassificationContext(
@@ -2490,7 +2560,11 @@ class SiRNAWorkflow:
                 )
 
             # Mark as screened even if no hits -- but only when the alignments it would have
-            # appeared in were actually produced.
+            # appeared in were actually produced. off_target_screened=False therefore means "this
+            # candidate's screen was incomplete": any hit counts written below are a LOWER BOUND,
+            # not a total. They are still written, because hits that were found are real evidence
+            # and are still applied as filters -- a row showing a filter failure with zeroed counts
+            # would be the more confusing contradiction (see the field docs in models/sirna.py).
             unscreened_candidate = query_species_unscreened or never_submitted
             candidate.off_target_screened = not unscreened_candidate
 
@@ -2503,7 +2577,7 @@ class SiRNAWorkflow:
                     candidate.scored_after_screening = False
                     stats["candidates_not_scored_after_screening"] += 1
                     continue
-                if not self._score_candidate_post_screen(candidate, HitClassCounts(), requested_non_query):
+                if not self._score_candidate_post_screen(candidate, HitClassCounts(), conservation_denominator):
                     stats["candidates_not_scored_after_screening"] += 1
                 continue
 
@@ -2667,7 +2741,7 @@ class SiRNAWorkflow:
             if unscreened_candidate:
                 candidate.scored_after_screening = False
                 stats["candidates_not_scored_after_screening"] += 1
-            elif not self._score_candidate_post_screen(candidate, hit_counts, requested_non_query):
+            elif not self._score_candidate_post_screen(candidate, hit_counts, conservation_denominator):
                 stats["candidates_not_scored_after_screening"] += 1
 
             # Apply filtering criteria
@@ -2706,15 +2780,15 @@ class SiRNAWorkflow:
         return candidates, stats
 
     def _score_candidate_post_screen(
-        self, candidate: SiRNACandidate, hit_counts: HitClassCounts, requested_non_query: frozenset[str]
+        self, candidate: SiRNACandidate, hit_counts: HitClassCounts, conservation_denominator: frozenset[str]
     ) -> bool:
         """Compute post-screen composite score with the full term set.
 
         Args:
             candidate: Candidate to score
             hit_counts: Aggregated hit class counts
-            requested_non_query: Non-query species actually screened, i.e. the conservation
-                denominator
+            conservation_denominator: Non-query species handed to the aligner. A species whose
+                alignment failed stays in here, so a degraded run cannot outscore a complete one.
 
         Returns:
             True when the candidate now carries a post-screen score; False when scoring failed
@@ -2753,17 +2827,17 @@ class SiRNAWorkflow:
                     features["isoform_coverage"] = isoform_cov
                     candidate.isoform_coverage = isoform_cov
 
-            # Numerator is intersected with the denominator on purpose: an ortholog hit from a
-            # species outside the screened set is not part of this ratio, and counting it would
-            # make the fraction exceed 1.
-            conserved_species = hit_counts.ortholog_species & requested_non_query
-            unexpected_species = hit_counts.ortholog_species - requested_non_query
+            # Numerator is intersected with the denominator on purpose: an ortholog hit in a species
+            # this run never asked the aligner for (a stale cached result, a hand-edited hit table)
+            # is not part of this ratio, and counting it would make the fraction exceed 1.
+            conserved_species = hit_counts.ortholog_species & conservation_denominator
+            unexpected_species = hit_counts.ortholog_species - conservation_denominator
             if unexpected_species:
                 logger.warning(
-                    f"Ortholog hits for {candidate.id} in unscreened species {sorted(unexpected_species)}; "
+                    f"Ortholog hits for {candidate.id} in unrequested species {sorted(unexpected_species)}; "
                     "excluded from the conservation term."
                 )
-            conservation = conservation_sub_score(len(conserved_species), len(requested_non_query))
+            conservation = conservation_sub_score(len(conserved_species), len(conservation_denominator))
             if conservation is not None:
                 features["conservation"] = conservation
                 candidate.conservation_score = conservation
@@ -2774,8 +2848,15 @@ class SiRNAWorkflow:
             # composite here drops them unless they are reapplied -- which made --design-mode mirna
             # have no effect at all on the final ranking of any screened run.
             if self.config.design_params.design_mode == DesignMode.MIRNA:
+                # The normalising maximum falls back to the mode's own maximum rather than 0.0:
+                # a candidate that never went through MiRNADesigner._score_candidates carries no
+                # bonus keys (dirty controls are deep copies of rejected candidates, which are
+                # never scored), and dividing everyone else by 1 + max_bonus while leaving those
+                # rows undivided put them ~25% high in the same CSV.
                 candidate.composite_score = apply_mirna_biogenesis_bonus(
-                    result.score, float(cs.get(MIRNA_BONUS_KEY, 0.0)), float(cs.get(MIRNA_BONUS_MAX_KEY, 0.0))
+                    result.score,
+                    float(cs.get(MIRNA_BONUS_KEY, 0.0)),
+                    float(cs.get(MIRNA_BONUS_MAX_KEY, mirna_max_biogenesis_bonus())),
                 )
             else:
                 candidate.composite_score = result.score
