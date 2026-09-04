@@ -42,15 +42,15 @@ Key files in every workflow run:
 
 | File | Why it matters |
 |------|----------------|
-| `sirnaforge/*_pass.csv` | High-quality candidates ready for experiments |
-| `sirnaforge/*_all.csv` | Full candidate list with all metrics for custom filtering |
+| `sirnaforge/candidates_pass.csv` | High-quality candidates ready for experiments |
+| `sirnaforge/candidates_all.csv` | Full candidate list with all metrics for custom filtering |
 | `logs/workflow_summary.json` | Summary of search/design stats, reference decisions, and QC flags |
 | `off_target/input_candidates.fasta` | FASTA handed to the Nextflow off-target pipeline |
 
 Use standard CLI tools to browse:
 
 ```bash
-head -6 tp53_run/sirnaforge/TP53_pass.csv
+head -6 tp53_run/sirnaforge/candidates_pass.csv
 jq '.' tp53_run/logs/workflow_summary.json | less
 ```
 

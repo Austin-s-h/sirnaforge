@@ -99,7 +99,7 @@ Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 * `--zfn-search-backend` selects the half-site scan engine: `pyahocorasick` (default), `exhaustive_python` (baseline), or `fm_index` (experimental).
 * `--zfn-search-space-index` accepts a persisted index-bundle directory for indexed backends. This is currently supported by `fm_index`.
 * `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
-* Outputs are written as `sirnaforge/zfn_candidate_summary.json` and `sirnaforge/zfn_offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
+* Outputs are written as `sirnaforge/candidate_summary.json` and `sirnaforge/offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
 
 Operational guidance from the backend tuning work:
 

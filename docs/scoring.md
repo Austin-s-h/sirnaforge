@@ -139,7 +139,7 @@ sirnaforge workflow GENE --gc-min 30 --gc-max 65
 
 ## Output Columns
 
-The `*_pass.csv` and `*_all.csv` files include:
+The `candidates_pass.csv` and `candidates_all.csv` files include:
 
 | Column                                             | Description                                                                                     |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |

@@ -77,6 +77,18 @@ substantially, for the same reason.
 
 ### Changed
 
+- **BREAKING: workflow output filenames are now gene-agnostic.** The siRNA candidate artifacts
+  `<gene>_all.csv` / `<gene>_pass.csv` / `<gene>_pass.fasta` are now
+  `candidates_all.csv` / `candidates_pass.csv` / `candidates_pass.fasta`, and the ZFN artifacts
+  `zfn_offtarget_sites.csv` / `zfn_candidate_summary.json` are now `offtarget_sites.csv` /
+  `candidate_summary.json`. Scripts no longer have to interpolate the gene symbol to find their
+  own outputs, and the two ZFN execution paths agree: the Nextflow modules
+  (`zfn_offtarget_search.nf`, `zfn_aggregate_results.nf`) and the `--output-sites-csv` /
+  `--output-summary-json` / `--shard-csv-glob` defaults on the internal ZFN commands were still
+  emitting the `zfn_`-prefixed names, so aggregated shard output did not match what
+  `sirnaforge workflow --design-mode zfn` wrote. **Migration:** replace `${gene}_pass.csv` with
+  `candidates_pass.csv` in downstream scripts. The `zfn_candidate_summary.v1` _schema_ identifier
+  inside `candidate_summary.json` is unchanged — only filenames moved.
 - **`composite_score` is now computed _after_ off-target screening, from a seven-term weight
   set (`asymmetry`, `gc_content`, `accessibility`, `empirical`, `off_target`, `isoform_coverage`,
   `conservation`); prior scores are NOT COMPARABLE, and ranking order changes for essentially

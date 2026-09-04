@@ -14,6 +14,7 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_network
 def test_snp_avoid_mode_tp53():
     """Test SNP avoid mode with TP53 and a common variant.
 
@@ -94,6 +95,7 @@ def test_snp_avoid_mode_tp53():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_network
 def test_snp_target_mode_tp53():
     """Test SNP target mode with TP53 and a pathogenic variant.
 
@@ -169,6 +171,7 @@ def test_snp_target_mode_tp53():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_network
 def test_snp_both_mode_tp53():
     """Test SNP both mode (target and avoid) with TP53.
 
@@ -231,6 +234,7 @@ def test_snp_both_mode_tp53():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_network
 def test_variant_coordinate_format():
     """Test variant specification using coordinate format instead of rsID.
 
@@ -279,6 +283,7 @@ def test_variant_coordinate_format():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_network
 def test_multiple_variants():
     """Test specifying multiple variants for TP53.
 
