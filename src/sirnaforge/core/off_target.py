@@ -9,6 +9,7 @@ Optimized for both standalone use and parallelized Nextflow workflows.
 import importlib
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess  # nosec B404
@@ -41,6 +42,8 @@ from sirnaforge.utils.species import human_vs_other_totals
 logger = get_logger(__name__)
 
 _NUCLEOTIDE_ALPHABET = ("A", "C", "G", "T")
+
+_CIGAR_OP_PATTERN = re.compile(r"(\d+)([MIDNSHP=X])")
 
 
 def _mirna_max_hits() -> int | None:
@@ -223,6 +226,71 @@ def _seed_window_positions_to_guide(
     """
     offset = seed_start - 1
     return tuple(offset + position for position in window_positions)
+
+
+@dataclass(frozen=True)
+class _QueryLayout:
+    """Where every base of one SAM record's read sits, in full-read coordinates.
+
+    Read coordinates include hard-clipped bases so offsets stay comparable to the original
+    query the aligner was handed. Three separate facts have to come out of the CIGAR before
+    an MD tag means anything in read coordinates:
+
+    * MD offsets count only reference-aligned read bases (``M``/``=``/``X``), so an insertion
+      or a leading clip desynchronises them from read positions -- hence ``md_to_read``.
+    * clipped and inserted read bases never appear in the MD tag at all, yet they failed to
+      pair with the target, so they carry off-target risk -- hence ``clipped``/``inserted``.
+    * ``D``/``N`` skip *reference* bases, so there is no read position to blame; the penalty
+      is anchored on the read base immediately 5' of the gap -- hence ``deletions``.
+    """
+
+    read_length: int
+    md_to_read: tuple[int, ...]
+    """1-based MD offset -> 1-based read position (index 0 is an unused placeholder)."""
+    clipped: tuple[int, ...]
+    inserted: tuple[int, ...]
+    deletions: tuple[tuple[int, int], ...]
+    """``(anchor read position, skipped reference bases)`` for each ``D``/``N`` op."""
+
+    @property
+    def unpaired(self) -> tuple[int, ...]:
+        """Read positions with no target base opposite them (clipped or inserted)."""
+        return self.clipped + self.inserted
+
+
+def _parse_cigar_query_layout(cigar: str, *, read_length: int = 0) -> _QueryLayout:
+    """Map one CIGAR onto read coordinates, keeping clips, insertions and gaps separate.
+
+    ``read_length`` is the length of the query the aligner was handed; it is used as the
+    fallback layout when the record carries no CIGAR (``*``), in which case the whole read
+    is assumed to have aligned ungapped and MD offsets are already read positions.
+    """
+    md_to_read: list[int] = [0]  # 1-based indexing; slot 0 is never read
+    clipped: list[int] = []
+    inserted: list[int] = []
+    deletions: list[tuple[int, int]] = []
+
+    if not cigar or cigar == "*":
+        md_to_read.extend(range(1, read_length + 1))
+        return _QueryLayout(read_length, tuple(md_to_read), (), (), ())
+
+    position = 1
+    for length_str, op in _CIGAR_OP_PATTERN.findall(cigar):
+        length = int(length_str)
+        if op in "M=X":
+            md_to_read.extend(range(position, position + length))
+            position += length
+        elif op in "SH":
+            clipped.extend(range(position, position + length))
+            position += length
+        elif op == "I":
+            inserted.extend(range(position, position + length))
+            position += length
+        elif op in "DN":
+            deletions.append((max(1, position - 1), length))
+        # P (padding) consumes neither read nor reference bases.
+
+    return _QueryLayout(position - 1, tuple(md_to_read), tuple(clipped), tuple(inserted), tuple(deletions))
 
 
 def _calculate_seed_offtarget_score(
@@ -805,9 +873,106 @@ class BwaAnalyzer:
 
         return cmd
 
+    def _query_frames(self, original_sequences: dict[str, str]) -> dict[str, tuple[int, int]]:
+        """Map each query name onto ``(query length, guide-coordinate offset)``.
+
+        The aligner is handed a different query per mode (see
+        ``_prepare_sequences_for_analysis``): the whole normalized guide in ``transcriptome``
+        mode, but only the extracted seed window in ``mirna_seed`` mode. Read positions in the
+        latter are therefore *window* positions and must be shifted by ``seed_start - 1`` before
+        they can be compared against the guide-relative ``seed_start``/``seed_end`` thresholds --
+        the same frame correction ``_normalize_bwa_mirna_seed_hits`` and
+        ``scan_mirna_seed_matches`` already apply to their own rows. The lengths also give the
+        true read length for records whose CIGAR is absent (``*``).
+        """
+        if self.mode == "mirna_seed":
+            return {
+                query.qname: (
+                    len(query.seed_qseq),
+                    # _prepare_seed_queries falls back to the whole guide when the guide is
+                    # shorter than seed_end; read positions are then already guide positions.
+                    self.seed_start - 1 if len(query.qseq) >= self.seed_end else 0,
+                )
+                for query in _prepare_seed_queries(
+                    original_sequences, seed_start=self.seed_start, seed_end=self.seed_end
+                )
+            }
+        return {name: (len(_normalize_nucleotide_sequence(seq)), 0) for name, seq in original_sequences.items()}
+
+    def _guide_frame_mismatches(
+        self,
+        *,
+        flag: int,
+        cigar: str,
+        md_tag: str,
+        edit_distance: int,
+        query_len: int,
+        guide_offset: int,
+    ) -> tuple[list[int], int, float]:
+        """Return ``(mismatch_positions, nm, offtarget_score)`` in guide coordinates.
+
+        ``mismatch_positions`` are the 1-based *guide* positions that failed to pair with the
+        target: MD substitutions plus every clipped or inserted guide base. Reference bases
+        skipped by a ``D``/``N`` op have no guide position of their own, so they only enter the
+        score, anchored on the guide base flanking the bulge. ``nm`` counts all of those
+        mismatch-equivalents (see ``OffTargetHit.nm``), which is why it can exceed the
+        aligner's ``NM`` tag.
+        """
+        layout = _parse_cigar_query_layout(cigar, read_length=query_len)
+        read_length = layout.read_length or query_len
+        if query_len and layout.read_length and layout.read_length != query_len:
+            logger.warning(
+                f"CIGAR '{cigar}' covers {layout.read_length} read bases but the aligner was handed "
+                f"{query_len}; using the CIGAR length for guide-frame mapping"
+            )
+
+        md_offsets = self._parse_md_tag(md_tag)
+        substitutions = [layout.md_to_read[offset] for offset in md_offsets if 0 < offset < len(layout.md_to_read)]
+        if len(substitutions) != len(md_offsets):
+            logger.warning(
+                f"MD tag '{md_tag}' does not fit CIGAR '{cigar}': "
+                f"{len(md_offsets) - len(substitutions)} mismatch position(s) dropped"
+            )
+
+        # BWA stores flag&16 records reverse-complemented, so SEQ/MD/CIGAR are in the revcomp
+        # frame while the seed window is defined in guide coordinates: read position r is guide
+        # position read_length + 1 - r. design.py builds every guide as
+        # reverse_complement(target_seq), which makes minus-strand the common case, not an edge.
+        if flag & 16 and not read_length:
+            logger.warning(
+                f"Minus-strand record with no CIGAR and unknown query length (MD '{md_tag}'): mismatch "
+                "positions stay in the read frame, so seed classification for this hit is unreliable"
+            )
+
+        def to_guide(read_positions: list[int]) -> list[int]:
+            mirrored = (
+                [read_length + 1 - pos for pos in read_positions] if (flag & 16 and read_length) else read_positions
+            )
+            return sorted(guide_offset + pos for pos in mirrored)
+
+        unpaired = list(layout.unpaired)
+        scoring_reads = substitutions + unpaired
+        for anchor, gap_length in layout.deletions:
+            scoring_reads.extend([anchor] * gap_length)
+
+        mismatch_positions = to_guide(substitutions + unpaired)
+        # Never fall below what the aligner itself reported, so a missing or garbled MD tag can
+        # only ever over-penalise a hit.
+        nm = max(len(scoring_reads), edit_distance + len(layout.clipped))
+        offtarget_score = self._calculate_offtarget_score(to_guide(scoring_reads))
+        if nm and not offtarget_score:
+            # Invariant: only a full-length exact match may score 0.0 (= highest risk), because
+            # _filter_and_rank sorts ASCENDING and max_hits truncation keeps the head of that
+            # list. When differences are known to exist but could not be placed on the guide,
+            # charge the position-agnostic base term instead of letting the hit sort ahead of
+            # genuine perfect matches.
+            offtarget_score = nm * 10.0
+        return mismatch_positions, nm, offtarget_score
+
     def _parse_sam_output(self, sam_output: str, original_sequences: dict[str, str]) -> list[dict[str, Any]]:
         """Parse SAM output from BWA-MEM2."""
         results = []
+        query_frames = self._query_frames(original_sequences)
 
         for line in sam_output.splitlines():
             if line.startswith("@") or not line.strip():
@@ -838,15 +1003,23 @@ class BwaAnalyzer:
                     if len(tag_parts) == 3:
                         tags[tag_parts[0]] = tag_parts[2]
 
-            nm = int(tags.get("NM", 0))
             as_score = int(tags.get("AS", 0)) if "AS" in tags else None
 
-            # Parse mismatch positions from MD tag
-            mismatch_positions = self._parse_md_tag(tags.get("MD", ""))
-            seed_mismatches = sum(1 for pos in mismatch_positions if self.seed_start <= pos <= self.seed_end)
+            query_len, guide_offset = query_frames.get(qname, (0, 0))
+            if not query_len and parts[9] != "*":
+                # SEQ is the read as the aligner stored it, so its length is the read length for
+                # everything but hard-clipped records -- a last resort for an unrecognised qname.
+                query_len = len(parts[9])
 
-            # Calculate off-target score
-            offtarget_score = self._calculate_offtarget_score(mismatch_positions)
+            mismatch_positions, nm, offtarget_score = self._guide_frame_mismatches(
+                flag=flag,
+                cigar=cigar,
+                md_tag=tags.get("MD", ""),
+                edit_distance=int(tags.get("NM", 0)),
+                query_len=query_len,
+                guide_offset=guide_offset,
+            )
+            seed_mismatches = sum(1 for pos in mismatch_positions if self.seed_start <= pos <= self.seed_end)
 
             result = {
                 "qname": qname,
@@ -920,7 +1093,8 @@ class BwaAnalyzer:
 
     def _filter_and_rank(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter and rank results by off-target score."""
-        results.sort(key=lambda x: (x["offtarget_score"], -x.get("as_score", 0)))
+        # as_score is None for records with no AS tag, so the dict default never fires.
+        results.sort(key=lambda x: (x["offtarget_score"], -int(x.get("as_score") or 0)))
         return results
 
 

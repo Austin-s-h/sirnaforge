@@ -4,12 +4,18 @@ Tests cover downloading, caching, and combining miRNA databases from various sou
 """
 
 import contextlib
+import logging
+import os
 import tempfile
+import warnings
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from Bio import SeqIO
 
-from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.data import mirna_manager
+from sirnaforge.data.mirna_manager import FASTA_PARSE_FORMAT, MiRNADatabaseManager
 
 
 @pytest.fixture
@@ -194,16 +200,30 @@ class TestMiRNADatabaseManager:
             pytest.skip(f"Network download failed: {e}")
 
     @pytest.mark.unit
-    def test_get_combined_database_empty(self, manager_with_temp_cache):
-        """Test combining databases with empty cache."""
-        # This should handle the case where no databases are cached
-        result = manager_with_temp_cache.get_combined_database(
-            sources=["mirbase_high_conf"], species="human", output_name="test_combined.fa"
+    def test_get_combined_database_empty(self, manager_with_temp_cache, monkeypatch, caplog):
+        """An empty cache plus an unreachable source yields None and writes nothing.
+
+        `_download_file` is the network boundary (it is what calls `urlopen`), so stubbing it is
+        what keeps this a unit test: it used to reach out to mirbase.org for real and then accept
+        either answer via `result is None or isinstance(result, Path)`, which no implementation
+        could fail.
+        """
+        monkeypatch.setattr(
+            MiRNADatabaseManager,
+            "_download_file",
+            lambda _self, _source, timeout=600: None,  # noqa: ARG005
         )
 
-        # Should either return None or handle gracefully
-        # (depends on implementation - adjust as needed)
-        assert result is None or isinstance(result, Path)
+        with caplog.at_level(logging.ERROR, logger="sirnaforge.data.mirna_manager"):
+            result = manager_with_temp_cache.get_combined_database(
+                sources=["mirbase_high_conf"], species="human", output_name="test_combined.fa"
+            )
+
+        assert result is None
+        assert "Failed to get mirbase_high_conf database" in caplog.text
+        # A failed source must not leave a half-built combined artifact behind for the next run.
+        assert not (manager_with_temp_cache.cache_dir / "test_combined.fa").exists()
+        assert manager_with_temp_cache.metadata == {}
 
     @pytest.mark.integration
     @pytest.mark.skipif(
@@ -226,6 +246,335 @@ class TestMiRNADatabaseManager:
                 # Should contain miRNA sequences in FASTA format
                 assert content.count(">") > 0  # Has at least one sequence
                 assert "hsa-" in content or "human" in content.lower()  # Contains human sequences
+
+
+class TestFilterSpeciesSequences:
+    """Species filtering must key off each record's own header, not the first record's."""
+
+    # miRBase mature.fa style: three species, deliberately distinct sequences so a
+    # mislabelled record cannot be mistaken for the right one.
+    MULTI_SPECIES_FASTA = (
+        ">hsa-let-7a-5p MIMAT0000062 Homo sapiens let-7a-5p\n"
+        "UGAGGUAGUAGGUUGUAUAGUU\n"
+        ">mmu-miR-1a-3p MIMAT0000123 Mus musculus miR-1a-3p\n"
+        "UGGAAUGUAAAGAAGUAUGUAU\n"
+        ">rno-miR-21-5p MIMAT0000790 Rattus norvegicus miR-21-5p\n"
+        "UAGCUUAUCAGACUGAUGUUGA\n"
+    )
+
+    # miRBase's real mature.fa is ordered by species, so the requested species is usually *not*
+    # first. A whole-header-cloning parser therefore drives filtering to zero matches, which is
+    # the second, silent failure mode: `get_database` returns None and seed screening vanishes.
+    HUMAN_NOT_FIRST_FASTA = (
+        ">cel-let-7-5p MIMAT0000001 Caenorhabditis elegans let-7-5p\n"
+        "UGAGGUAGUAGGUUGUAUAGUU\n"
+        ">hsa-miR-16-5p MIMAT0000069 Homo sapiens miR-16-5p\n"
+        "UAGCAGCACGUAAAUAUUGGCG\n"
+        ">hsa-miR-21-5p MIMAT0000076 Homo sapiens miR-21-5p\n"
+        "UAGCUUAUCAGACUGAUGUUGA\n"
+    )
+
+    @staticmethod
+    def _records(fasta_content):
+        """Parse FASTA text into {full header: sequence}.
+
+        Keyed on the *description*, not `record.id`: the species predicate reads
+        `record.description`, and the runtime consumer (`FastaUtils.parse_fasta_to_dict`) keys its
+        dict on the full header too, so a parser that preserved ids while cloning descriptions
+        would still corrupt screening. Full headers also make collapsing visible — duplicate keys
+        silently overwrite rather than showing up as an extra entry.
+        """
+        return {record.description: str(record.seq) for record in SeqIO.parse(StringIO(fasta_content), "fasta")}
+
+    @pytest.mark.unit
+    def test_parse_format_is_per_record(self):
+        """Pin the constant: "fasta-blast"/"fasta-pearson" clone the first header onto every record.
+
+        Guards the constant itself, so re-introducing a comment-aware reader is a test failure
+        rather than something only a source comment discourages.
+        """
+        assert FASTA_PARSE_FORMAT == "fasta"
+
+        descriptions = [
+            record.description for record in SeqIO.parse(StringIO(self.MULTI_SPECIES_FASTA), FASTA_PARSE_FORMAT)
+        ]
+        assert len(set(descriptions)) == 3
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("species", "expected_header", "expected_seq"),
+        [
+            ("human", "hsa-let-7a-5p MIMAT0000062 Homo sapiens let-7a-5p", "UGAGGUAGUAGGUUGUAUAGUU"),
+            ("mouse", "mmu-miR-1a-3p MIMAT0000123 Mus musculus miR-1a-3p", "UGGAAUGUAAAGAAGUAUGUAU"),
+            ("rat", "rno-miR-21-5p MIMAT0000790 Rattus norvegicus miR-21-5p", "UAGCUUAUCAGACUGAUGUUGA"),
+        ],
+    )
+    def test_filters_to_requested_species_only(self, manager_with_temp_cache, species, expected_header, expected_seq):
+        """Each species must yield exactly its own record, whatever the first header is."""
+        filtered = manager_with_temp_cache._filter_species_sequences(self.MULTI_SPECIES_FASTA, species)
+
+        assert self._records(filtered) == {expected_header: expected_seq}
+
+    @pytest.mark.unit
+    def test_filter_keeps_every_match_when_species_is_not_first(self, manager_with_temp_cache, caplog):
+        """Zero-match mode: a cloned first header drops all real matches and logs an error."""
+        with caplog.at_level(logging.ERROR, logger="sirnaforge.data.mirna_manager"):
+            filtered = manager_with_temp_cache._filter_species_sequences(self.HUMAN_NOT_FIRST_FASTA, "human")
+
+        assert self._records(filtered) == {
+            "hsa-miR-16-5p MIMAT0000069 Homo sapiens miR-16-5p": "UAGCAGCACGUAAAUAUUGGCG",
+            "hsa-miR-21-5p MIMAT0000076 Homo sapiens miR-21-5p": "UAGCUUAUCAGACUGAUGUUGA",
+        }
+        assert "No sequences found for species" not in caplog.text
+
+    @pytest.mark.unit
+    def test_filter_logs_error_when_species_genuinely_absent(self, manager_with_temp_cache, caplog):
+        """The `filtered_count == 0` branch must be loud, since callers treat "" as a failure."""
+        with caplog.at_level(logging.ERROR, logger="sirnaforge.data.mirna_manager"):
+            filtered = manager_with_temp_cache._filter_species_sequences(self.MULTI_SPECIES_FASTA, "worm")
+
+        assert filtered == ""
+        assert "No sequences found for species 'worm' after filtering" in caplog.text
+
+    @pytest.mark.unit
+    def test_unmapped_species_raises_instead_of_returning_every_species(self, manager_with_temp_cache):
+        """Never silently hand ~270 species of miRNAs back under a single-species label."""
+        with pytest.raises(ValueError, match="No miRBase species code known for 'axolotl'"):
+            manager_with_temp_cache._filter_species_sequences(self.MULTI_SPECIES_FASTA, "axolotl")
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("label", "wrapper"),
+        [
+            # Per-line markup: `<pre>` around each FASTA line.
+            ("per_line", lambda text: "".join(f"<pre>{line}</pre>\n" for line in text.strip().split("\n"))),
+            # Block markup: one `<pre>` around the whole payload. Stripping the tags leaves blank
+            # lines ahead of the first record, which Biopython 1.86's "fasta" reader answers with
+            # BiopythonDeprecationWarning and a future release will answer with ValueError.
+            ("block", lambda text: f"<pre>\n{text}</pre>\n"),
+            ("block_with_heading", lambda text: f"<html>\n<body>\n<h1>mature.fa</h1>\n<pre>\n{text}</pre>\n"),
+        ],
+    )
+    def test_html_wrapped_fasta_is_normalized(self, manager_with_temp_cache, label, wrapper):
+        """Upstream endpoints sometimes wrap FASTA in markup, per-line or as one block."""
+        wrapped = wrapper(self.MULTI_SPECIES_FASTA)
+
+        with warnings.catch_warnings():
+            # Any Biopython parser warning here is a latent hard failure on a future release.
+            warnings.simplefilter("error")
+            filtered = manager_with_temp_cache._filter_species_sequences(wrapped, "mouse")
+
+        assert self._records(filtered) == {
+            "mmu-miR-1a-3p MIMAT0000123 Mus musculus miR-1a-3p": "UGGAAUGUAAAGAAGUAUGUAU"
+        }, label
+
+    @pytest.mark.unit
+    def test_combined_database_preserves_record_identity(self, manager_with_temp_cache, monkeypatch):
+        """Combining sources must not relabel every record with the first record's id."""
+        first = manager_with_temp_cache.cache_dir / "first.fa"
+        second = manager_with_temp_cache.cache_dir / "second.fa"
+        first.write_text(">hsa-let-7a-5p one\nUGAGGUAGUAGGUUGUAUAGUU\n>hsa-miR-16-5p two\nUAGCAGCACGUAAAUAUUGGCG\n")
+        second.write_text(">hsa-miR-21-5p three\nUAGCUUAUCAGACUGAUGUUGA\n")
+
+        source_files = {"mirbase": first, "mirgenedb": second}
+        monkeypatch.setattr(
+            MiRNADatabaseManager,
+            "get_database",
+            lambda _self, source_name, _species, force_refresh=False: source_files[source_name],  # noqa: ARG005
+        )
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase", "mirgenedb"], "human")
+
+        assert combined is not None
+        assert self._records(combined.read_text()) == {
+            "hsa-let-7a-5p one [source:mirbase]": "UGAGGUAGUAGGUUGUAUAGUU",
+            "hsa-miR-16-5p two [source:mirbase]": "UAGCAGCACGUAAAUAUUGGCG",
+            "hsa-miR-21-5p three [source:mirgenedb]": "UAGCUUAUCAGACUGAUGUUGA",
+        }
+
+    REAL_RECORD = {"hsa-miR-21-5p real [source:mirbase]": "UAGCUUAUCAGACUGAUGUUGA"}
+
+    @staticmethod
+    def _stub_single_source(monkeypatch, source_file):
+        monkeypatch.setattr(
+            MiRNADatabaseManager,
+            "get_database",
+            lambda _self, _source_name, _species, force_refresh=False: source_file,  # noqa: ARG005
+        )
+
+    @staticmethod
+    def _forbid_rebuild(monkeypatch):
+        """Make any attempt to re-write the combined FASTA an outright failure.
+
+        Reuse is otherwise indistinguishable from a rebuild that happens to produce identical
+        bytes, which is exactly the confusion the previous test name papered over.
+        """
+
+        def _explode(*_args, **_kwargs):
+            raise AssertionError("combined database was rebuilt instead of reused")
+
+        monkeypatch.setattr(mirna_manager.SeqIO, "write", _explode)
+
+    @pytest.mark.unit
+    def test_unstamped_combined_database_is_not_served(self, manager_with_temp_cache, monkeypatch):
+        """A combined_*.fa found on disk with no cache stamp is rebuilt, not trusted.
+
+        This is the file the pre-fix producer left behind: the mtime-only check ("combined is
+        newer than every source") accepted it on the strength of its timestamp alone, so a
+        combined database written by the header-cloning parser was served indefinitely. Nothing
+        about the bytes is knowable without a stamp, so there is nothing to reuse.
+        """
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        combined_path = manager_with_temp_cache.cache_dir / "combined_human_mirbase.fa"
+        combined_path.write_text(">poisoned poisoned\nAAAAAAAAAAAAAAAAAAAAAA\n")
+        # Make the unstamped artifact look fresh relative to its source, which is all the old
+        # check ever looked at.
+        stale_mtime = source.stat().st_mtime + 1000
+        os.utime(combined_path, (stale_mtime, stale_mtime))
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        assert combined == combined_path
+        assert self._records(combined.read_text()) == self.REAL_RECORD
+
+    @pytest.mark.unit
+    def test_stamped_combined_database_is_reused(self, manager_with_temp_cache, monkeypatch):
+        """A stamp whose inputs and output bytes still check out means no rebuild.
+
+        Reuse is the point of the stamp: re-combining reads and rewrites every source FASTA, and
+        the same machinery has to protect artifacts (a BWA index) that cannot be rebuilt cheaply
+        at all.
+        """
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        first = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+        assert first is not None
+
+        self._forbid_rebuild(monkeypatch)
+        second = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        assert second == first
+        assert self._records(second.read_text()) == self.REAL_RECORD
+
+    @pytest.mark.unit
+    def test_stamped_combined_database_is_rebuilt_when_its_bytes_are_corrupted(
+        self, manager_with_temp_cache, monkeypatch
+    ):
+        """Corruption *after* stamping must still be caught.
+
+        An input fingerprint alone cannot see this: the sources are untouched and the producer
+        version is current, so an input-only stamp happily vouches for a truncated file. The stamp
+        therefore also records the output's own size and digest, and both are re-read from disk
+        before the artifact is served.
+        """
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+        assert combined is not None
+
+        # First half: an intact artifact must be REUSED. Without this, "always rebuild" would
+        # satisfy the corruption half trivially and the test would pin nothing.
+        with monkeypatch.context() as intact:
+            self._forbid_rebuild(intact)
+            assert manager_with_temp_cache.get_combined_database(["mirbase"], "human") == combined
+
+        # Second half: truncate mid-sequence, exactly as an interrupted write or a full disk would.
+        combined.write_text(">hsa-miR-21-5p real [source:mirbase]\nUAGCUU")
+
+        reused = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        # The sources never moved and the producer version is current, so only a check on the
+        # output's own bytes could have rejected the truncated file. Asserted through the public
+        # result rather than through the stamp's storage layout, so this stays valid whichever
+        # spelling of the stamp survives the merge with the shared cache-invalidation mechanism.
+        assert reused == combined
+        assert self._records(reused.read_text()) == self.REAL_RECORD
+
+    @pytest.mark.unit
+    def test_stamped_combined_database_is_rebuilt_when_a_source_changes(self, manager_with_temp_cache, monkeypatch):
+        """Rewriting a source in place must invalidate the derived file, whatever its mtime."""
+        source = manager_with_temp_cache.cache_dir / "only.fa"
+        source.write_text(">hsa-miR-21-5p real\nUAGCUUAUCAGACUGAUGUUGA\n")
+        self._stub_single_source(monkeypatch, source)
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+        assert combined is not None
+        original_mtime = combined.stat().st_mtime
+
+        source.write_text(">hsa-let-7a-5p refreshed\nUGAGGUAGUAGGUUGUAUAGUU\n")
+        # Backdate the source so an mtime comparison would still call the combined file fresh.
+        os.utime(source, (original_mtime - 1000, original_mtime - 1000))
+
+        rebuilt = manager_with_temp_cache.get_combined_database(["mirbase"], "human")
+
+        assert rebuilt == combined
+        assert self._records(rebuilt.read_text()) == {
+            "hsa-let-7a-5p refreshed [source:mirbase]": "UGAGGUAGUAGGUUGUAUAGUU"
+        }
+
+
+class TestGetDatabaseFiltering:
+    """`get_database`'s miRBase filtering branch, including the silent zero-match failure."""
+
+    @staticmethod
+    def _stub_download(monkeypatch, content):
+        monkeypatch.setattr(
+            MiRNADatabaseManager,
+            "_download_file",
+            lambda _self, _source, timeout=600: content,  # noqa: ARG005
+        )
+
+    @pytest.mark.unit
+    def test_returns_cache_file_when_species_is_not_first_record(self, manager_with_temp_cache, monkeypatch):
+        """The whole point: a mid-file species must still produce a usable cached database."""
+        self._stub_download(monkeypatch, TestFilterSpeciesSequences.HUMAN_NOT_FIRST_FASTA)
+
+        cache_file = manager_with_temp_cache.get_database("mirbase", "human")
+
+        assert cache_file is not None
+        # Keyed by full header, exactly as `FastaUtils.parse_fasta_to_dict` does downstream, so a
+        # header-cloning parser shows up as a collapsed dict rather than mislabelled entries.
+        assert TestFilterSpeciesSequences._records(cache_file.read_text()) == {
+            "hsa-miR-16-5p MIMAT0000069 Homo sapiens miR-16-5p": "UAGCAGCACGUAAAUAUUGGCG",
+            "hsa-miR-21-5p MIMAT0000076 Homo sapiens miR-21-5p": "UAGCUUAUCAGACUGAUGUUGA",
+        }
+
+    @pytest.mark.unit
+    def test_returns_none_and_leaves_no_cache_when_filter_empties_content(
+        self, manager_with_temp_cache, monkeypatch, caplog
+    ):
+        """Zero-match mode: discard the cache update rather than persist an empty database."""
+        self._stub_download(monkeypatch, ">cel-let-7-5p Caenorhabditis elegans let-7-5p\nUGAGGUAGUAGGUUGUAUAGUU\n")
+
+        with caplog.at_level(logging.ERROR, logger="sirnaforge.data.mirna_manager"):
+            result = manager_with_temp_cache.get_database("mirbase", "human")
+
+        assert result is None
+        assert "produced no sequences; discarding cache update" in caplog.text
+        assert not list(manager_with_temp_cache.cache_dir.glob("*.fa"))
+        assert manager_with_temp_cache.metadata == {}
+
+    @pytest.mark.unit
+    def test_mirgenedb_content_is_not_species_filtered(self, manager_with_temp_cache, monkeypatch):
+        """Filtering is gated on `source_name.startswith("mirbase")`; MirGeneDB is pre-filtered.
+
+        This is why the default `--mirna-db mirgenedb` path never saw the mislabelling: its cache
+        files are written straight from the download without going through a FASTA parser.
+        """
+        content = ">Hsa-Let-7-P2a_5p one\nUGAGGUAGUAGGUUGUAUAGUU\n>Hsa-Mir-21_5p two\nUAGCUUAUCAGACUGAUGUUGA\n"
+        self._stub_download(monkeypatch, content)
+
+        cache_file = manager_with_temp_cache.get_database("mirgenedb", "human")
+
+        assert cache_file is not None
+        assert cache_file.read_text() == content
 
 
 class TestMiRNAManagerErrorHandling:

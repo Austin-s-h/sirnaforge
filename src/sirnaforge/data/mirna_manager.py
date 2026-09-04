@@ -19,6 +19,13 @@ from typing import Any
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
+from sirnaforge.utils.cache_utils import (
+    ARTIFACT_MIRNA_COMBINED,
+    fingerprint_inputs,
+    is_artifact_stamp_current,
+    write_artifact_stamp,
+)
+
 from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 from .species_registry import (
     CANONICAL_SPECIES_ALIAS_MAP,
@@ -28,7 +35,10 @@ from .species_registry import (
 )
 
 logger = logging.getLogger(__name__)
-FASTA_PARSE_FORMAT = "fasta-blast"
+# Plain "fasta" only. Biopython's "fasta-blast" reader assigns every record the *first*
+# record's id/description, which silently collapses miRBase's ~270 species prefixes into
+# one, and it does not exist at all below Biopython 1.85.
+FASTA_PARSE_FORMAT = "fasta"
 
 
 @dataclass
@@ -377,7 +387,14 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         return CacheMetadata.from_dict(data, source_class=MiRNASource)
 
     def _filter_species_sequences(self, fasta_content: str, species: str) -> str:
-        """Filter FASTA content for specific species using miRBase three-letter codes."""
+        """Filter FASTA content for specific species using miRBase three-letter codes.
+
+        Returns the matching records as FASTA text, or an empty string when the species is
+        absent from the payload (callers treat that as a download failure).
+
+        Raises:
+            ValueError: if no miRBase code is known for `species`.
+        """
         # Species prefix mapping - simplified and clear
         species_codes = {
             "human": "hsa-",
@@ -393,11 +410,24 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
 
         code = species_codes.get(species)
         if not code:
-            logger.warning(f"Unknown species '{species}', returning all sequences")
-            return fasta_content
+            # Falling back to "return every species" would hand ~48k miRNAs from ~270 species
+            # to seed screening under a single-species label, which looks like a successful run.
+            # `get_database` only ever passes species it has already validated against SOURCES,
+            # so reaching this is a programming error and must be loud rather than permissive.
+            raise ValueError(
+                f"No miRBase species code known for '{species}'; supported: {', '.join(sorted(species_codes))}"
+            )
 
         # Some upstream endpoints occasionally return HTML-wrapped FASTA lines.
         normalized_content = re.sub(r"</?[^>\n]+>", "", fasta_content)
+        # Block-style wrappers (a bare `<pre>` line around the whole payload) leave blank lines
+        # ahead of the first record. Biopython 1.86's "fasta" reader treats anything before the
+        # first ">" as a deprecated leading comment (BiopythonDeprecationWarning) and a future
+        # release turns that into a ValueError, so drop the preamble instead of parsing it.
+        lines = normalized_content.splitlines()
+        first_record = next((index for index, line in enumerate(lines) if line.startswith(">")), None)
+        normalized_content = "\n".join(lines[first_record:]) + "\n" if first_record is not None else ""
+
         input_handle = StringIO(normalized_content)
         output_handle = StringIO()
         filtered_count = 0
@@ -536,8 +566,6 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             output_name = f"combined_{canonical_species}_{'_'.join(sources)}.fa"
 
         combined_file = self.cache_dir / output_name
-
-        # Check if we need to regenerate
         source_files = []
         for source_name in sources:
             source_file = self.get_database(source_name, species)
@@ -546,15 +574,26 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 return None
             source_files.append(source_file)
 
-        # Check if combined file is newer than all sources
-        if combined_file.exists():
-            combined_mtime = combined_file.stat().st_mtime
-            if all(source_file.stat().st_mtime <= combined_mtime for source_file in source_files):
-                logger.info(f"✅ Using existing combined database: {combined_file}")
-                return combined_file
+        # The combined file is derived, so it inherits every defect of the FASTAs it was built
+        # from -- and, being an ordinary file, it can also be truncated or corrupted *after* it was
+        # written. Reuse is therefore gated on a stamp recorded at write time that pins three
+        # things: the producer version, the exact input bytes it was combined from, and the
+        # output's own size and digest, re-read from disk and subject to the cache TTL. The
+        # mtime-only predecessor ("combined is newer than every source") had neither a TTL nor a
+        # checksum of any kind, so a wrong, stale or half-written database was served forever.
+        # Rebuilding unconditionally would also be correct but is the wrong default: it re-reads
+        # and re-writes every source on every call for no information gained.
+        input_digests = fingerprint_inputs(source_files)
+        if combined_file.exists() and is_artifact_stamp_current(
+            ARTIFACT_MIRNA_COMBINED,
+            combined_file,
+            inputs=input_digests,
+            max_age_days=self.cache_ttl.days,
+        ):
+            logger.info(f"✅ Using existing combined database: {combined_file}")
+            return combined_file
 
-            # Combine databases
-            logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
+        logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
 
         seen_sequences = set()
         total_sequences = 0
@@ -575,6 +614,15 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                     )
                     SeqIO.write(annotated_record, outfile, "fasta")
                     total_sequences += 1
+
+        # Stamp the result *after* the bytes are on disk, so the recorded size/digest describe
+        # what a later run will actually read back.
+        write_artifact_stamp(
+            ARTIFACT_MIRNA_COMBINED,
+            combined_file,
+            inputs=input_digests,
+            extra={"sources": sources, "species": canonical_species, "sequences": total_sequences},
+        )
 
         logger.info(f"✅ Combined database created: {combined_file} ({total_sequences} unique sequences)")
         return combined_file

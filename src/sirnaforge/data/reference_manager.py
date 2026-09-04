@@ -18,7 +18,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-from sirnaforge.utils.cache_utils import resolve_cache_subdir
+from sirnaforge.utils.cache_utils import (
+    LEGACY_PRODUCER_VERSION,
+    current_producer_version,
+    is_producer_version_current,
+    log_discarded_artifact,
+    normalize_producer_version,
+    resolve_cache_subdir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +56,9 @@ class CacheMetadata:
     file_size: int
     checksum: str
     file_path: str
-    version: str = "1.0"
+    # Version of the code that *produced* this artifact, compared on load by
+    # `ReferenceManager._is_cache_valid`. See `cache_utils.PRODUCER_VERSIONS`.
+    version: str = LEGACY_PRODUCER_VERSION
     extra: dict[str, Any] | None = None  # For subclass-specific metadata
 
     @classmethod
@@ -67,7 +76,7 @@ class CacheMetadata:
             file_size=data["file_size"],
             checksum=data["checksum"],
             file_path=data["file_path"],
-            version=data.get("version", "1.0"),
+            version=normalize_producer_version(data.get("version")),
             extra=data.get("extra"),
         )
 
@@ -98,6 +107,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
         cache_subdir: str,
         cache_dir: str | Path | None = None,
         cache_ttl_days: int = 30,
+        artifact_class: str | None = None,
     ):
         """Initialize the reference manager.
 
@@ -105,7 +115,13 @@ class ReferenceManager(ABC, Generic[SourceT]):
             cache_subdir: Subdirectory name under cache root (e.g., 'mirna', 'transcriptomes')
             cache_dir: Directory for caching databases (default: ~/.cache/sirnaforge/{cache_subdir})
             cache_ttl_days: Cache time-to-live in days
+            artifact_class: Producer-version scope for this cache (default: `cache_subdir`).
+                One subdirectory holds one kind of artifact, so the subdirectory name is
+                also the natural invalidation scope; override only when two managers share
+                a directory but not a producer.
         """
+        self.artifact_class = artifact_class or cache_subdir
+        self.producer_version = current_producer_version(self.artifact_class)
         self.cache_dir = self._resolve_cache_directory(cache_dir, cache_subdir)
         self.cache_ttl = timedelta(days=cache_ttl_days)
         self.metadata_file = self.cache_dir / "cache_metadata.json"
@@ -231,6 +247,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
         extra: dict[str, Any] | None = None,
         downloaded_at: str | None = None,
         persist: bool = False,
+        producer_version: str | None = None,
     ) -> CacheMetadata:
         """Create/replace metadata for a cache entry from an on-disk file."""
         metadata = CacheMetadata(
@@ -239,6 +256,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
             file_size=cache_file.stat().st_size,
             checksum=self._compute_file_checksum(cache_file),
             file_path=str(cache_file),
+            version=producer_version or self.producer_version,
             extra=extra,
         )
         self.metadata[cache_key] = metadata
@@ -278,6 +296,10 @@ class ReferenceManager(ABC, Generic[SourceT]):
         if not cache_file.exists() or cache_file.stat().st_size == 0:
             return False
 
+        # Recovery only ever adopts a raw download whose bytes came straight from
+        # upstream, so no producer of ours shaped its content and stamping it with
+        # the current version is honest. Derived artifacts must never be recovered
+        # this way; they carry their own stamps (see cache_utils artifact stamps).
         self._record_cache_entry(cache_key, source, cache_file, persist=persist)
         logger.info(
             "Recovered remote cache metadata for %s from existing file %s",
@@ -286,7 +308,19 @@ class ReferenceManager(ABC, Generic[SourceT]):
         )
         return self._is_cache_valid(cache_key)
 
-    def _is_cache_valid(self, cache_key: str) -> bool:
+    def is_producer_version_current(self, meta: CacheMetadata) -> bool:
+        """Whether `meta` was written by the producer version this build ships.
+
+        Public because it is the one question every cache consumer needs to be able
+        to ask (and test) directly, independently of TTL and checksums.
+        """
+        return is_producer_version_current(self.artifact_class, meta.version)
+
+    def stale_producer_entries(self) -> list[str]:
+        """Cache keys whose recorded producer version is no longer current."""
+        return [key for key, meta in self.metadata.items() if not self.is_producer_version_current(meta)]
+
+    def _is_cache_valid(self, cache_key: str) -> bool:  # noqa: PLR0911
         """Check if cached data is still valid.
 
         Args:
@@ -308,6 +342,18 @@ class ReferenceManager(ABC, Generic[SourceT]):
         # Reject zero-byte cache entries
         if cache_file.stat().st_size == 0:
             logger.warning("Cache file %s is empty; marking as invalid", cache_file)
+            return False
+
+        # Reject artifacts written by a producer we have since fixed. This has to
+        # come before the checksum check, which compares the file against the md5
+        # recorded when that same file was written and therefore can only detect
+        # corruption after the fact, never wrong content the writer itself put there.
+        if not self.is_producer_version_current(meta):
+            log_discarded_artifact(
+                self.artifact_class,
+                cache_file,
+                f"producer version {normalize_producer_version(meta.version)} != {self.producer_version}",
+            )
             return False
 
         # Check TTL
@@ -442,6 +488,10 @@ class ReferenceManager(ABC, Generic[SourceT]):
             "total_size_mb": total_size / (1024 * 1024),
             "cache_ttl_days": self.cache_ttl.days,
             "cached_items": list(self.metadata.keys()),
+            "artifact_class": self.artifact_class,
+            "producer_version": self.producer_version,
+            # Surfaced so `sirnaforge cache --info` can explain an upcoming refresh.
+            "stale_producer_entries": self.stale_producer_entries(),
         }
         info.update(self._cache_info_extra(total_files, total_size))
         return info

@@ -40,10 +40,17 @@ uv run sirnaforge workflow TP53 \
 
 ### ZFN Constraint Composition
 
+> **⚠️ EXPERIMENTAL.** The ZFN arm has known unfixed defects tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); do not use ZFN output for any decision
+> without independent validation. The right half-site below is the reverse complement
+> (`CTTTTGCAGTTT`) of the published CCR5 (−) half-site `AAACTGCAAAAG`, because the published text
+> matches no site at all under the default strand-pairing rule — see
+> [ZFN Module Guide](zfn_module.md).
+
 ```bash
 uv run sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
-  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
   --zfn-spacer-lengths 5,6 \
   --zfn-max-mismatches 2 \
@@ -95,8 +102,8 @@ for gene in "${genes[@]}"; do
     --species "human,mouse" \
     --verbose
 
-  pass_csv="${out_dir}/${gene}/sirnaforge/${gene}_pass.csv"
-  total_csv="${out_dir}/${gene}/sirnaforge/${gene}_all.csv"
+  pass_csv="${out_dir}/${gene}/sirnaforge/candidates_pass.csv"
+  total_csv="${out_dir}/${gene}/sirnaforge/candidates_all.csv"
 
   python - <<'PY'
 import csv, pathlib, sys
@@ -113,7 +120,7 @@ PY "$pass_csv" "$total_csv"
 done
 ```
 
-- Uses the exact CSV schema emitted by `workflow.py` (`sirnaforge/*_pass.csv` and `sirnaforge/*_all.csv`).
+- Uses the exact CSV schema emitted by `workflow.py` (`sirnaforge/candidates_pass.csv` and `sirnaforge/candidates_all.csv`).
 - Swap the inline Python block for pandas or DuckDB once you’re ready to integrate with LIMS.
 
 ## Design-Only with Chemical Modifications
@@ -181,5 +188,5 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 
 - [Getting Started](getting_started.md) — installation and your first workflow.
 - [Workflows](workflows.md) — command-by-command explanations and output diagrams.
-- [Scoring Overview](scoring.md) — interpret the metrics in `*_pass.csv`.
+- [Scoring Overview](scoring.md) — interpret the metrics in `candidates_pass.csv`.
 - [CLI Reference](cli_reference.md) — authoritative `--help` output captured during the docs build.

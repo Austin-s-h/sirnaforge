@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 import aiohttp
 from pydantic import BaseModel, ConfigDict
 
+from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.typed_decorators import field_validator_typed
 
@@ -155,6 +156,20 @@ class AbstractDatabaseClient(ABC):
         """Return the database type this client handles."""
         pass
 
+    @property
+    def query_species(self) -> str:
+        """Canonical organism whose transcripts a gene query against this database returns.
+
+        Every concrete client here is wired to exactly one organism -- ``EnsemblClient`` pins
+        ``species=homo_sapiens`` on every lookup, ``RefSeqClient`` appends
+        ``AND Homo sapiens[Organism]`` to every esearch term, and ``GencodeClient`` targets the
+        human GENCODE release -- so the organism of a retrieved transcript set is a property of
+        *where the transcripts came from*. Callers that need the "query species" must read it from
+        here rather than infer it from the off-target species list, which is an unordered set of
+        genomes to screen against and says nothing about the target.
+        """
+        return "human"
+
 
 class AbstractTranscriptAnnotationClient(ABC):
     """Abstract base class for transcript annotation clients.
@@ -252,6 +267,11 @@ class EnsemblClient(AbstractDatabaseClient):
     def database_type(self) -> DatabaseType:
         """Return the database type this client handles."""
         return DatabaseType.ENSEMBL
+
+    @property
+    def query_species(self) -> str:
+        """Canonical form of the single Ensembl species this client queries."""
+        return normalize_species_name(self.species)
 
     async def search_gene(
         self, query: str, include_sequence: bool = True

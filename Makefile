@@ -29,7 +29,7 @@ SIRNAFORGE_CACHE_MOUNT = -v $(SIRNAFORGE_CACHE_DIR):/home/sirnauser/.cache/sirna
 DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIRNAFORGE_CACHE_MOUNT)
 # Propagate CI-related env vars into the container so tests can reliably
 # skip known-flaky network flows in CI (e.g., Ensembl blocks runner IPs).
-DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE
+DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE
 DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
 # GitHub Actions checkouts (and many local workspaces) are often owned by a
@@ -123,7 +123,7 @@ test-release-container: cache-ensure docker-ensure ## Container release suite (e
 	fi
 	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
 		pip install --quiet pytest pytest-cov --target /workspace/.pip; \
 		set +e; \
@@ -172,18 +172,33 @@ test-requires-nextflow: ## Tests requiring Nextflow
 #==============================================================================
 
 docker-build: ## Build Docker image
-	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
+	docker build -f docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
 	@echo "Docker image: $(DOCKER_IMAGE):$(VERSION)"
 
-docker-ensure: ## Ensure Docker image exists (build if missing)
-	@docker image inspect $(DOCKER_IMAGE):latest >/dev/null 2>&1 || $(MAKE) docker-build
+# Rebuild when :latest is absent OR was built from a different version. Checking
+# only for existence silently validates stale code: :latest lingers pointing at
+# the previous release after a version bump, and container tests exercise the
+# image's installed package, so they would pass against the old version.
+docker-ensure: ## Ensure Docker image exists and matches the project version (build if missing or stale)
+	@built=$$(docker image inspect $(DOCKER_IMAGE):latest \
+		--format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+		| sed -n 's/^BUILD_VERSION=//p'); \
+	if [ -z "$$built" ]; then \
+		echo "Image $(DOCKER_IMAGE):latest missing or unversioned - building $(VERSION)..."; \
+		$(MAKE) docker-build; \
+	elif [ "$$built" != "$(VERSION)" ]; then \
+		echo "Image $(DOCKER_IMAGE):latest was built from $$built but project is $(VERSION) - rebuilding..."; \
+		$(MAKE) docker-build; \
+	else \
+		echo "Image $(DOCKER_IMAGE):latest matches project version $(VERSION)"; \
+	fi
 
 cache-ensure: ## Ensure the host cache directory exists
 	@mkdir -p "$(SIRNAFORGE_CACHE_DIR)"
 
 docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
 		pip install --quiet pytest --target /workspace/.pip; \
 		set +e; \

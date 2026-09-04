@@ -55,6 +55,24 @@ Off-Target Prediction
 ZFN Design
 ~~~~~~~~~~
 
+.. warning::
+
+   **EXPERIMENTAL.** Every ``sirnaforge.zfn.*`` and ``sirnaforge.models.zfn`` API below is
+   experimental in 0.6.0 with known unfixed defects, tracked in
+   `#82 <https://github.com/Austin-s-h/sirnaforge/issues/82>`_. Do not use ZFN output for any
+   decision without independent validation. Calling
+   :meth:`sirnaforge.zfn.design.ZFNDesigner.evaluate_pair` logs the full notice at ``WARNING``
+   on first use in a process. Two defects that change nothing visible in the returned objects:
+   ``ZFNCandidate.worst_site_score`` / ``best_offtarget_score`` are inverted (minimum and
+   maximum site score respectively, whereas the highest-scoring off-target is the most
+   dangerous one), and ``right_half_site`` must be supplied as the reverse complement of its
+   published plus-strand text or it matches nothing. See :doc:`zfn_module`.
+
+.. automodule:: sirnaforge.zfn.experimental
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: sirnaforge.zfn.design
    :members:
    :undoc-members:

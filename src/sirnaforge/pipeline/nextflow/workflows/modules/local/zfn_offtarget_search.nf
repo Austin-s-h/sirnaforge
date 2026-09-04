@@ -27,8 +27,8 @@ process ZFN_OFFTARGET_SEARCH {
     path annotation_file
 
     output:
-    path "zfn_offtarget_sites_${shard_id}.csv", emit: sites
-    path "zfn_candidate_summary_${shard_id}.json", emit: summary
+    path "offtarget_sites_${shard_id}.csv", emit: sites
+    path "candidate_summary_${shard_id}.json", emit: summary
     path "versions.yml", emit: versions
 
     when:
@@ -51,8 +51,8 @@ process ZFN_OFFTARGET_SEARCH {
       --algorithm '${algorithm}' \
       --dimer-mode '${dimer_mode}' \
       --spacer-lengths '${spacer_lengths}' \
-    ${annotation_arg}      --output-sites-csv zfn_offtarget_sites_${shard_id}.csv \
-      --output-summary-json zfn_candidate_summary_${shard_id}.json
+    ${annotation_arg}      --output-sites-csv offtarget_sites_${shard_id}.csv \
+      --output-summary-json candidate_summary_${shard_id}.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
@@ -63,8 +63,8 @@ process ZFN_OFFTARGET_SEARCH {
 
     stub:
     """
-    echo "site_id,chrom,start_1based,end_1based,strand,orientation,spacer_len,sequence,left_mismatches,right_mismatches,total_mismatches,score,region,nearest_gene,left_aligned,right_aligned" > zfn_offtarget_sites_${shard_id}.csv
-    echo '{"candidates": [], "summary": {"candidates": 0, "off_target_sites": 0}}' > zfn_candidate_summary_${shard_id}.json
+    echo "site_id,chrom,start_1based,end_1based,strand,orientation,spacer_len,sequence,left_mismatches,right_mismatches,total_mismatches,score,region,nearest_gene,left_aligned,right_aligned" > offtarget_sites_${shard_id}.csv
+    echo '{"candidates": [], "summary": {"candidates": 0, "off_target_sites": 0}}' > candidate_summary_${shard_id}.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

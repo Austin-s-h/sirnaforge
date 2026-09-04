@@ -34,11 +34,11 @@ length-normalised `duplex_stability_score` within a run instead. Pre-0.5.2 value
 
 ```bash
 # View top candidates sorted by composite score
-head -10 your_results/sirna_design/GENE_pass.csv
+head -10 your_results/sirna_design/candidates_pass.csv
 
 # Check distribution of key metrics
 csvcut -c gc_content,asymmetry_score,mfe,duplex_stability_dg,delta_dg_end,melting_temp_c \
-  your_results/sirna_design/GENE_pass.csv | head -20
+  your_results/sirna_design/candidates_pass.csv | head -20
 ```
 
 The awk filters below resolve columns by header name rather than by position, so they keep
@@ -59,7 +59,7 @@ $c["asymmetry_score"]>=0.7 &&
 $c["mfe"]>=-7 && $c["mfe"]<=-4 &&
 $c["delta_dg_end"]>=2 &&
 $c["off_target_count"]<=3 { print }
-' your_results/sirna_design/GENE_pass.csv
+' your_results/sirna_design/candidates_pass.csv
 ```
 
 ### Step 3: Troubleshoot Poor Performance

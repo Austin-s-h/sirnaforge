@@ -18,6 +18,136 @@ substantially, for the same reason.
 
 ### Fixed
 
+- **`BwaAnalyzer._parse_sam_output` read SAM/MD positions as if they were guide positions, so
+  seed-mismatch classification was inverted for the majority of real transcriptome hits, and
+  partial or gapped alignments were scored as zero-risk perfect matches.** Four separate frame
+  errors, all of which corrupted `mismatch_positions`, `seed_mismatches`, `offtarget_score`,
+  `transcriptome_hits_seed_0mm`, `mean_seed_mismatches` and the `_filter_and_rank` ordering that
+  `max_hits` truncation depends on:
+  - **Minus strand was not handled.** BWA stores `flag & 16` records reverse-complemented, so
+    SEQ/MD/CIGAR are in the revcomp frame while the seed window (`seed_start`..`seed_end`) is
+    defined in guide coordinates: read position `r` of a length-`L` record is guide position
+    `L + 1 - r`. Because `core/design.py` builds every guide as `reverse_complement(target_seq)`,
+    minus strand is the normal path, not an edge case. A mismatch at true guide position 3 (inside
+    the seed) was recorded as position 19 with `seed_mismatches=0` and `offtarget_score=11.0`
+    instead of 1 and 15.0. The mirror now uses the length of the query the aligner was actually
+    handed, so it still applies when the record carries no CIGAR (`*`).
+  - **Clipping and gaps were ignored.** MD offsets count only reference-aligned read bases, so a
+    leading clip or an insertion desynchronised every position from the read; and clipped,
+    inserted and bulged bases were not counted at all, making a `15M6S`/`NM:i:0` alignment of a
+    21 nt guide indistinguishable from a full-length perfect match (`bwa mem -T 15` emits these
+    routinely) and giving a 2 bp-deletion hit `offtarget_score=0.0`. Since `_filter_and_rank`
+    sorts **ascending**, those zero scores sorted ahead of genuine perfect matches and survived
+    any `max_hits` truncation. Guide bases left unpaired by clipping or insertion now count as
+    mismatches; deleted reference bases have no guide position of their own, so they raise `nm`
+    and the score anchored on the guide base flanking the bulge. A hit with `nm > 0` can no longer
+    score `0.0`.
+  - **`mirna_seed` mode used the wrong frame entirely.** In that mode the aligner is handed only
+    the extracted 7 nt seed window, so read positions are _window_ positions and must be shifted
+    by `seed_start - 1` — the correction `_normalize_bwa_mirna_seed_hits` and
+    `scan_mirna_seed_matches` already applied to their own rows. It matters even though
+    `_normalize_bwa_mirna_seed_hits` recomputes positions afterwards, because `analyze_sequences`
+    ranks and applies `max_hits` truncation on the raw scores first.
+  - **`_filter_and_rank` raised `TypeError`** on any record with no `AS` tag: it used
+    `-x.get("as_score", 0)`, but the key is always present and set to `None`, so the dict default
+    never applied. It now matches the sibling sort sites (`-int(row.get("as_score") or 0)`).
+
+  **`nm` is now documented as a guide-level distance rather than "edit distance"** in
+  `OffTargetHit`, `GenomeAlignmentSchema`, `MiRNAAlignmentSchema` and `docs/models_and_scoring.md`:
+  it is the aligner's `NM` plus the guide bases left unpaired by clipping or gaps, so `nm >= NM`
+  for any partial or gapped hit. The column name is unchanged. See the `off_target_count` entry
+  under Changed for what this means for the `transcriptome_hits_{0,1,2}mm` strata and the
+  `max_transcriptome_hits_*` thresholds read against them — a clipped partial hit no longer fails
+  a candidate as `TRANSCRIPTOME_PERFECT_MATCH`, but is still counted by `transcriptome_hits_total`
+  and `off_target_count`. Two further values change meaning with it:
+  - **`mean_mismatches`** in every `*_summary.json` (`AnalysisSummary.mean_mismatches`) is the mean
+    of `nm`, so it is now a mean guide mismatch-equivalent count, not a mean aligner edit distance,
+    and it rises for any run with clipped or gapped hits (two `15M6S`/`NM:i:0` hits report `6.0`
+    where they reported `0.0`). Not comparable across the 0.6.0 boundary.
+  - **`off_target_penalty`** was already misdocumented as "lower is better": post-screen it holds
+    the **maximum** `offtarget_score` over a candidate's hits, where higher is _safer_ and `0.0` is
+    reserved for a full-length exact match — while at design time it holds an internal-repeat
+    penalty where higher is worse. Widening `nm` widened the post-screen values (a clipped
+    minus-strand hit reports ~76 where it reported `0.0`). Reporting only; nothing scores or
+    filters on it. The field description and `docs/models_and_scoring.md` §6.1 now say so.
+
+  **A seed-perfect _partial_ hit falls in no mismatch stratum, so
+  `max_transcriptome_hits_0mm` cannot gate it.** A minus-strand `6S15M` / `MD:Z:15` / `NM:i:0`
+  record puts the clip on guide positions 16-21, leaving guide positions 2-8 pairing perfectly; its
+  guide-level `nm` is 6, so it is counted in `transcriptome_hits_seed_0mm`,
+  `transcriptome_hits_total` and `off_target_count` but in none of `_0mm`/`_1mm`/`_2mm`. Two such
+  hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`, and on stock defaults only
+  `max_off_target_count` (3) stands between them and a PASS. `max_transcriptome_seed_perfect` is
+  therefore now **enforced** in `_check_offtarget_filters` (new verdict
+  `TRANSCRIPTOME_SEED_PERFECT`, new `failed_transcriptome_seed_perfect` stat). It still defaults to
+  `None`, so behaviour is unchanged unless a user sets it — picking a calibrated default is a
+  separate product decision. Unlike the three mismatch thresholds it is **not** species-split: it
+  gates the reported `transcriptome_hits_seed_0mm` column verbatim.
+
+  **Clear the Nextflow work directory before re-running an existing target.** Off-target
+  alignments are parsed inside the `OFFTARGET_ANALYSIS`/`MIRNA_SEED_ANALYSIS` processes and
+  `sirnaforge` always passes `-resume`, so a re-run against an unchanged input FASTA will replay
+  the cached, wrongly-parsed `*_analysis.tsv` from the previous run. Delete the Nextflow work
+  directory (`./nextflow_work` by default) to pick this fix up.
+- **`--input-fasta` and `--skip-off-targets` no longer download and index multi-gigabyte
+  transcriptome references.** 0.5.2's exhaustive-search work silently flipped
+  `run_sirna_workflow(allow_transcriptome_with_input_fasta=...)` from `False` to `True` and set
+  `allow_transcriptome_for_input_fasta=True` in the `workflow` CLI command — undocumented at the
+  time, and directly contradicting the documented design-only behaviour of `--input-fasta`. The
+  consequence: `sirnaforge workflow GENE --input-fasta my.fa` and
+  `run_sirna_workflow(input_fasta="my.fa", ...)` resolved all four
+  `DEFAULT_TRANSCRIPTOME_SOURCES` (human, mouse, rat and macaque Ensembl cDNA) and fetched plus
+  BWA-MEM2-indexed every one of them, so supplying your own sequences triggered several
+  gigabytes of downloads nobody asked for (this is also what timed out the toy container
+  workflow at 300 s). Separately, `run_sirna_workflow` hardcoded `design_only=False` when
+  resolving the reference policy, and `step5_offtarget_analysis` materialized the transcriptome
+  and ran the ~47 s repeat scan _above_ the `check_off_targets` guard — so
+  `check_off_targets=False` paid for the references and the scan and then printed "Off-target
+  analysis skipped by user request". Restored and now explicit in both directions: an
+  input-FASTA run is design-only unless you name a reference with `--transcriptome-fasta`
+  (which accepts presets such as `ensembl_human_cdna`), the CLI prints exactly that when it
+  applies, and library callers can still opt in with
+  `allow_transcriptome_with_input_fasta=True`. `--skip-off-targets` / `check_off_targets=False`
+  now resolves no reference at all, and consequently **also skips repeat-element detection**
+  (it scans against the same query-species cDNA reference), reported as
+  `repeat_summary.reason = "user_disabled"` in `logs/workflow_summary.json`. A skipped run also
+  leaves `off_target/` empty — no `input_candidates.fasta` is staged — so the getting-started and
+  workflows output inventories now separate every-run files from screening-only ones. Runs made with the
+  flipped default may have left unused Ensembl cDNA FASTAs and indexes in
+  `~/.cache/sirnaforge/transcriptomes/`; run `sirnaforge cache --info` to see how much, and
+  `sirnaforge cache --clear-transcriptome` to reclaim it. Nothing in this fix requires clearing
+  the cache to take effect — a populated cache is simply no longer consulted on these paths.
+- **miRBase miRNA databases were parsed with Biopython's `"fasta-blast"` reader, which relabels
+  every record with the _first_ record's header, so `--mirna-db mirbase` (and
+  `mirbase_high_conf` / `mirbase_hairpin`) produced a corrupt seed-screening database.** The
+  reader keeps each record's own sequence but clones the first header onto all of them, and
+  `_filter_species_sequences` decides species membership from `record.description` — so the whole
+  filter collapsed into one decision about the first header in `mature.fa`. Two outcomes, both
+  silent: if the first header happened to match the requested species, every miRNA from all ~270
+  species was kept under that one duplicated header — and because the consumer
+  (`FastaUtils.parse_fasta_to_dict`) keys its dictionary on the full header, the "48k sequence"
+  database collapsed to essentially **one** entry, so seed screening compared guides against a
+  single miRNA; if it did not match (the usual case, since `mature.fa` is ordered by species and
+  `hsa-`/`mmu-`/`rno-` are not first), filtering returned nothing, `get_database` returned `None`,
+  and miRNA seed screening was skipped entirely with only a log line. Nothing raised either way.
+  **Scope:** the shipped default is `--mirna-db mirgenedb`, whose per-species files are written
+  straight from the download without going through a FASTA parser, so default runs were _not_
+  affected; the corruption required an explicit miRBase source, or `mirna_manager --combine`,
+  which relabelled every combined record regardless of source. The parser is now plain `"fasta"`
+  (also the only one of the three available at the declared `biopython>=1.84` floor — the
+  `"fasta-blast"` name did not exist before 1.85 and raised `ValueError: Unknown format`).
+  **Any miRBase database cached by an affected build is wrong on disk and is now discarded
+  automatically** by the reference cache's producer-version check, so the first run after
+  upgrading re-downloads it; to force it sooner, run `sirnaforge cache --clear-mirna`.
+  Alongside this: combined databases are reused only when a stamp written at build time still
+  vouches for them — the exact input bytes they were combined from, plus the output file's own
+  size and digest, re-read from disk and subject to the cache TTL. The mtime comparison it
+  replaces ("combined is newer than every source") had no TTL and no checksum of any kind, so it
+  could neither notice wrong contents nor notice a file truncated after it was written; a
+  species with no miRBase code now raises instead of silently returning every species; and
+  HTML-wrapped payloads have their pre-record preamble stripped, so block-style `<pre>` wrappers
+  no longer leave leading blank lines that Biopython 1.86 warns about and a future release will
+  reject.
 - **On-target self-hit exclusion only matched a candidate's exact source transcript (or, in a
   first pass, other isoforms present in the input FASTA), so uncapping `max_hits` turned the
   off-target filter into a near-total kill switch: 3,259 of 3,288 candidates failed
@@ -45,6 +175,136 @@ substantially, for the same reason.
   helper entirely with Nextflow's native `resourceLimits` process directive. Also cleaned up
   remaining `nextflow lint` warnings (deprecated `Channel.xxx` factory usage, implicit `it`
   closure params, unused closure/workflow parameters) across `main.nf` and the local subworkflows.
+- **`--design-mode mirna` had no effect on the ranking of any run that reached off-target
+  screening.** `MiRNADesigner` folds the ago-start, position-1 pairing and 3' supplementary
+  bonuses into `composite_score` only, never into the composite term set. Moving scoring after
+  screening meant the composite was rebuilt from that term set and the bonuses were dropped, so
+  every screened miRNA run was ranked by the plain siRNA composite. The bonus and its normalising
+  maximum are now recorded on the candidate and reapplied through one shared helper. Rows that
+  never passed through `MiRNADesigner` — injected dirty controls, which are copies of _rejected_
+  candidates — fall back to the mode's own maximum bonus rather than to zero, so they are divided
+  by the same `1 + max_mirna_bonus` as everything else instead of sitting ~25% high in the same
+  CSV. `docs/scoring.md` now states the exact relation between the `score_*` contribution columns
+  and `composite_score` in miRNA mode; they do not sum to it, and not only by the bonus.
+- **A screen that partly or wholly failed was scored as a clean, complete screen — and could
+  outrank one.** A candidate with no results entry took the no-hits branch and received
+  `off_target_sub_score(0) = 1.0`, maximal specificity, with `off_target_screened = True`. Three
+  separate shapes of this: a species whose alignment stage produced no files (a BWA-MEM2 index
+  OOM), a candidate that never reached the aligner at all, and — the common case — a run where
+  _aggregation itself_ failed, where the aggregate's own `missing_species` list is empty because
+  nothing wrote one. The guard now keys on positive evidence, the per-species alignment files the
+  aggregator actually read, so its absence cannot read as success; miRNA-only runs, which align
+  against no transcriptome at all, are covered by the same rule. Candidates in that state keep
+  their design-time score, report `off_target_screened = False`, and are counted in
+  `offtarget_summary.filtering_stats.candidates_not_scored_after_screening`. Hits that _were_ found are still
+  classified, still reported, and still applied as filters — real evidence can only fail a
+  candidate, never wrongly pass one — so `off_target_screened = False` now means "this screen was
+  incomplete, the counts are a lower bound", not "the counts are zero". Where only some candidates
+  could be scored after screening, the rest are sorted below every scored one and held out of
+  `top_candidates` (a third exclusion beyond passing and non-repeat-flagged, so `top_candidates`
+  can be shorter than `min(top_n, n_passing)`) rather than competing on an optimistic, differently
+  scaled number; the run logs an ERROR and a console line naming the count.
+- **Conservation was scored against the CLI species list rather than the species actually handed
+  to the aligner, and a failed alignment inflated it.** `--genome-indices`, `--genome-fastas` and
+  `--transcriptome-indices` all reach the same alignment channel in `main.nf`, but only
+  `--genome-species` fed the conservation denominator, so an ortholog hit in one of the extra
+  species could make the numerator exceed the denominator; `conservation_sub_score` raised and the
+  `except` around the whole scoring block abandoned scoring silently, leaving the candidate with a
+  design-time score while its neighbours carried post-screen ones. The denominator is now the set
+  of non-query species handed to the aligner and the numerator is intersected with it. A species
+  whose alignment produced nothing **stays** in that denominator: removing it emptied the term for
+  single-ortholog-species runs, `compute_composite` redistributed its 0.10 weight to the surviving
+  terms, and a partial screen scored 57.9 where the complete screen scored 51.1. Conservation is
+  measured across the species that were screened: one that was screened and produced nothing can
+  only lower the term, never raise it. A failure to score after screening is loud rather
+  than silent: ERROR level, a counter, and a console line.
+  **Re-run to pick this up** — rankings and `top_candidates` membership change, so
+  `candidates_all.csv`/`candidates_pass.csv` from an earlier build must be regenerated. Runs that
+  supply species through `--transcriptome-indices` also get a new Nextflow work-dir cache key (the
+  key includes the resolved species list), so the first run after upgrading re-screens instead of
+  resuming; nothing needs to be cleared by hand.
+- **The query species was read out of a list position, which turned the guard above on against
+  every default run.** `--species` is an unordered set of genomes to screen _against_, and its own
+  default starts with chicken (`chicken,pig,rat,mouse,human,rhesus,macaque`), but the workflow took
+  element 0 of it as the organism of the _target_ transcripts. So a plain `sirnaforge workflow TP53`
+  called itself a chicken run, found no chicken alignment among the four human/mouse/rat/macaque
+  transcriptomes it had just screened successfully, and kept design-time scores for every candidate
+  (`scored_after_screening = False`, `off_target_screened = False` on a complete screen) while still
+  reporting `run_status = "completed"`; repeat detection was skipped in the same runs for want of a
+  chicken cDNA. The query species now comes from where the target transcripts came from — the
+  gene-query database, via `GeneSearcher.query_species` (Ensembl, RefSeq and GENCODE are all
+  human-only) — and a new `--query-species` (`query_species=` on `run_sirna_workflow`,
+  `run_offtarget_only_workflow` and `WorkflowConfig`) states it outright for an input FASTA from
+  another organism.
+- **Cached references written by a buggy earlier version are now discarded and regenerated
+  automatically, instead of being served forever.** Cache validation checked only that a file
+  existed, was non-empty, was inside its TTL, and still matched the MD5 recorded when that same
+  file was written — a self-consistent check that can detect disk corruption but can never detect
+  _wrong content_ a buggy writer put there deliberately. Each cached artifact now also records the
+  version of the code that produced it (`CacheMetadata.version`, plus a `<file>.sirnaforge-cache.json`
+  sidecar for derived artifacts), and that version is compared on load; a mismatch is a cache miss.
+  **You do not need to clear anything by hand.** On the first run after upgrading, cached miRNA
+  databases (both the per-species FASTAs and `combined_*.fa`) are discarded and re-downloaded from
+  miRBase/MirGeneDB — a few MB — and each discard is logged at WARNING with the reason. Invalidation
+  is scoped per artifact class, so **cached transcriptomes, genomes and annotations are _not_
+  re-downloaded**: they are raw upstream bytes that no producer of ours reshapes, and forcing a
+  multi-GB re-fetch for an unrelated schema change would be worse than the bug. If you would rather
+  reclaim the space yourself, `sirnaforge cache --clear` still does that.
+- **A BWA-MEM2 index can no longer outlive the reference it was built from.** Index reuse tested
+  only that the index files were present, and bwa-mem2 reads the index alone and never re-reads the
+  FASTA, so an index left behind by a previous Ensembl release silently reported hits with that
+  release's transcript IDs and coordinates. Indices are now stamped with the checksum of the FASTA
+  they were built from and rebuilt when it changes. An existing index that our own metadata shows
+  was built _after_ the currently cached reference is adopted as-is rather than rebuilt, so
+  upgrading does not cost you an hour of `bwa-mem2 index` on a human transcriptome.
+- **A cached artifact that was truncated or corrupted _after_ being stamped is now detected and
+  regenerated.** The stamp recorded the producer version and the inputs, so a `combined_*.fa` cut
+  short by a full disk (or an index member left half-written by an interrupted copy) kept a
+  "current" stamp and was served for its whole TTL. Stamps now also fingerprint the artifact's own
+  bytes — every file's exact size, plus an MD5 that is full below 64 MB and a head/tail sample above
+  it, so verifying a multi-GB index costs ~30 ms per file instead of a full read.
+- **The transcriptome cache could hand off-target screening a reference other than the one it
+  reported: a filtered FASTA claimed the unfiltered source URI, and a BWA-MEM2 index outlived the
+  FASTA it was built from.** A single `--transcriptome-filter protein_coding` run recorded its
+  filtered output under the bare source URL, so every later _unfiltered_ request resolved to the
+  protein-coding-only subset while logging the full source name, and filters compounded (filtering
+  an already-filtered file). Filtered artifacts now carry their own filter-qualified cache identity
+  (`<url>#filters=<spec>`) and a derived entry can never answer for the base URI, in this process or
+  after a reload. They also record the checksum of the base bytes they were cut from: the Ensembl
+  FTP URL is release-agnostic, and a filtered entry has no download of its own to time out, so a new
+  release used to be filtered once and then served forever. Separately, any cached FASTA that gets
+  rewritten — remote re-download, TTL refresh, re-filter, a file replaced inside the cache
+  directory, or an edited local FASTA (which, with content dedupe disabled, was previously never
+  re-copied at all) — now invalidates the index built from the previous bytes. This one is silent by
+  construction: `bwa-mem2 mem` aligns against the index alone and never reads the FASTA, so hits
+  came back with the _previous_ release's transcript IDs and coordinates, logged as "Using cached
+  BWA-MEM2 index". Index cleanup now also removes the `.0123` file bwa-mem2 writes, which was
+  leaking as a multi-GB orphan. Stale entries written by earlier versions are discarded
+  automatically on first use; index files an earlier version orphaned under a differently-derived
+  prefix are not, so run `sirnaforge cache --clear-transcriptome` to reclaim that space. If a stale
+  index cannot be deleted (read-only or shared cache directory), it is recorded as unusable and
+  screening proceeds with no cached index rather than reusing it; that record is persisted, so a
+  later run refuses it too, and clears itself once the leftover files are gone.
+- **The Parquet variant cache (`~/.cache/sirnaforge/variants/variants.parquet`) returned different
+  variant data for identical invocations, and every cache already on disk kept doing so.** Four
+  defects around one write path: re-putting a key appended onto an index label the key-removal mask
+  had preserved, silently destroying an unrelated entry; `cleanup_stale_entries` persisted a
+  datetime64 `cached_at`, after which every `put` raised and the cache was permanently write-dead
+  with only one warning to show for it; `population_afs` was never stored at all, so a warm run
+  returned a record with no population allele frequencies — the field `--variant-mode avoid`
+  filters on; and the cache key omitted `variant_mode`, which matters because `resolve_variant`
+  serves a hit **without** re-running the filters, so an `avoid` run and a `target` run at the same
+  `--min-af` shared entries and inherited each other's admission decisions even though the two
+  modes filter on different frequencies (max population AF vs global AF). Separately,
+  `datetime.now().isoformat()` omits `.%f` when microsecond is exactly 0, and pandas 2.x raises on
+  the resulting mixed-layout column, which quietly turned `cleanup_stale_entries()` and
+  `get_stats()` into no-ops. Fixed: `put` rebuilds the frame against a canonical schema (and now
+  carries through any column a newer sirnaforge added rather than dropping it), the cache key
+  covers `variant_mode`, and `get`/`cleanup_stale_entries()`/`get_stats()` share one TTL rule so
+  they agree about a row whose timestamp is unreadable. **Existing caches need no manual clearing:
+  entries written by an affected version are discarded automatically** — the key change orphans
+  them, and any row that has no stored population allele frequencies is treated as a miss and
+  re-fetched (logged as `Discarding pre-0.6.0 cache entry ...`).
 
 ### Added
 
@@ -77,6 +337,49 @@ substantially, for the same reason.
 
 ### Changed
 
+- **BREAKING: workflow output filenames are now gene-agnostic.** The siRNA candidate artifacts
+  `<gene>_all.csv` / `<gene>_pass.csv` / `<gene>_pass.fasta` are now
+  `candidates_all.csv` / `candidates_pass.csv` / `candidates_pass.fasta`, and the ZFN artifacts
+  `zfn_offtarget_sites.csv` / `zfn_candidate_summary.json` are now `offtarget_sites.csv` /
+  `candidate_summary.json`. Scripts no longer have to interpolate the gene symbol to find their
+  own outputs, and the two ZFN execution paths agree: the Nextflow modules
+  (`zfn_offtarget_search.nf`, `zfn_aggregate_results.nf`) and the `--output-sites-csv` /
+  `--output-summary-json` / `--shard-csv-glob` defaults on the internal ZFN commands were still
+  emitting the `zfn_`-prefixed names, so aggregated shard output did not match what
+  `sirnaforge workflow --design-mode zfn` wrote. **Migration:** replace `${gene}_pass.csv` with
+  `candidates_pass.csv` in downstream scripts. The `zfn_candidate_summary.v1` _schema_ identifier
+  inside `candidate_summary.json` is unchanged — only filenames moved.
+- **The ZFN arm ships EXPERIMENTAL, and now says so everywhere.** `sirnaforge zfn`,
+  `sirnaforge workflow --design-mode zfn` and the `ZFNDesigner().evaluate_pair()` Python API all
+  emit a notice naming the deferred defects and linking
+  [#82](https://github.com/Austin-s-h/sirnaforge/issues/82); the notice is _rendered_ exactly once
+  per run, so the layered entry points (CLI → workflow → designer) no longer stack copies of it and
+  the rich panel no longer repeats the log line it sits under. Library callers still get it as a
+  `WARNING` log record; with sirnaforge's own logging that surfaces on **stdout** (`get_logger`
+  always installs a stdout handler, so logging's last-resort stderr handler never applies). Every
+  ZFN documentation surface carries the same warning, including the pages that previously did
+  not: `docs/ccr5_zfn_benchmark.md` (which
+  defines the `(+)`/`(−)` half-site convention the orientation defect turns on),
+  `README.md`, the "ZFN Manual Validation" section of `docs/developer/testing_guide.md`, the
+  `sirnaforge.zfn` API reference, and `notebooks/zfn_backend_runtime_comparison.ipynb`. **Nothing
+  here fixes a ZFN defect** — #82 tracks the fixes. What changes for a user is that the status is
+  now unmissable, and that four specific things are stated rather than implied:
+  - **The published CCR5 half-site pair does not match its own on-target site.** Under the default
+    `require_opposite_strands=True`, `--zfn-right-half-site` must be the reverse complement of the
+    published `(−)` text, so every ZFN example in the docs and notebooks now passes
+    `CTTTTGCAGTTT` rather than `AAACTGCAAAAG`, which returned 0 sites. If you have a saved ZFN
+    command, apply the same substitution.
+  - **`worst_site_score` and `best_offtarget_score` are inverted** in `candidate_summary.json`:
+    `worst_site_score` is the _minimum_ site score and `best_offtarget_score` the _maximum_,
+    whereas among off-targets the highest-scoring site is the most dangerous. The values are
+    unchanged; only the names mislead. Read them accordingly until #82 lands.
+  - **The default `pyahocorasick` backend raises `ValueError` above 3 mismatches** on a 12 bp
+    half-site (a 4-mismatch budget expands to 5,498,165 candidate patterns against a 1,000,000
+    limit). `docs/cli_reference.md` previously recommended that default with no such caveat; use
+    `--zfn-search-backend exhaustive_python` for those budgets.
+  - **The recorded hg38 and Nextflow-bridge ZFN validation runs are not correctness evidence,**
+    because they used the non-matching pair. `docs/developer/testing_guide.md` no longer routes
+    reviewers to those runbooks as validation.
 - **`composite_score` is now computed _after_ off-target screening, from a seven-term weight
   set (`asymmetry`, `gc_content`, `accessibility`, `empirical`, `off_target`, `isoform_coverage`,
   `conservation`); prior scores are NOT COMPARABLE, and ranking order changes for essentially
@@ -101,7 +404,12 @@ substantially, for the same reason.
   the same target will drop substantially. The mismatch-stratified
   `transcriptome_hits_{0,1,2}mm` counters are likewise redefined to count genuine off-targets
   only, and the `max_transcriptome_hits_*` thresholds in `OffTargetFilterCriteria` are read
-  against those.
+  against those. The stratum a hit lands in is its **guide-level** mismatch count (`nm`, see the
+  SAM-frame entry under Fixed), which is not the same as the aligner's `NM` tag for a clipped or
+  gapped alignment: a `15M6S`/`NM:i:0` partial hit counts as 6, so it lands in no stratum rather
+  than in `0mm`. Such hits are still counted in full by `transcriptome_hits_total` and
+  `off_target_count`, which `max_off_target_count` (default 3) gates — the strata are nm≤2
+  subsets, not the whole picture.
 - **Ortholog recognition previously worked only when the screened species was human.** The
   transcript→gene index was built behind an `if transcriptome_species == "human"` gate into one
   shared dict, so a mouse/rat/macaque hit could never be recognised as an ortholog of the query
@@ -116,8 +424,9 @@ substantially, for the same reason.
   unchanged by the dedup. `top_n` no longer gates which candidates are screened — it keeps its
   reporting meaning only (how many candidates land in `top_candidates`). Candidates are
   re-ranked by the post-screen composite score once screening completes, and `top_candidates`
-  is rebuilt from the viable (passing, non-repeat-flagged) subset rather than staying frozen at
-  its design-time order.
+  is rebuilt from the viable subset rather than staying frozen at its design-time order — viable
+  meaning passing, non-repeat-flagged, and (where a screen only partly succeeded) scored after
+  screening; see the partial-screen entry above for that third exclusion.
 - The design-time self-repetitiveness proxy (repeated 7-mers _within_ the guide) is retained as
   an unweighted diagnostic, `component_scores["design_off_target_proxy"]`; it no longer feeds
   `composite_score` under any name. For the standalone `sirnaforge design` path (no screening),
