@@ -1,14 +1,18 @@
 """Shared pytest fixtures for all test modules."""
 
 import os
+import shutil
 import socket
 import ssl
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
 from sirnaforge.core.off_target import build_bwa_index
+
+_NEXTFLOW_PROBE_TIMEOUT = 30.0
 
 # Set by the Makefile's `docker run` invocations. Preferred over sniffing the
 # filesystem because only Docker (/.dockerenv) and Podman (/run/.containerenv)
@@ -28,6 +32,34 @@ def _running_in_container() -> bool:
     if os.environ.get(_CONTAINER_ENV_FLAG, "").strip().lower() in {"1", "true", "yes"}:
         return True
     return any(marker.exists() for marker in _CONTAINER_MARKER_FILES)
+
+
+@lru_cache(maxsize=1)
+def _nextflow_runnable() -> bool:
+    """Whether Nextflow can actually execute, not merely whether the launcher exists.
+
+    ``shutil.which`` is not enough: the launcher is a small script that fetches the
+    framework JAR into NXF_HOME on first use, so on an image without that JAR baked
+    in -- or on a network that cannot reach nextflow.io -- ``which`` succeeds while
+    every real invocation exits non-zero. Mirrors the product's own check in
+    ``NextflowRunner.validate_installation`` so tests skip exactly when the pipeline
+    would report ``nextflow_unavailable``.
+    """
+    launcher = shutil.which("nextflow")
+    if launcher is None:
+        return False
+    try:
+        return (
+            subprocess.run(  # noqa: S603 - fixed argv, resolved executable
+                [launcher, "-version"],
+                capture_output=True,
+                timeout=_NEXTFLOW_PROBE_TIMEOUT,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 @lru_cache(maxsize=1)
@@ -153,16 +185,24 @@ def nextflow_test_work_dir(tmp_path):
 def pytest_runtest_setup(item):
     """Enforce the requirement markers so unmet requirements skip, not fail.
 
-    `runs_in_container` and `requires_network` describe an environment a test
-    cannot supply for itself. Without this gate the tier targets stay green only
-    because they filter the markers out (`make test-ci`, `make test-release-host`),
-    while `make test` runs them anywhere and reports environment gaps as
-    assertion failures.
+    `runs_in_container`, `requires_nextflow` and `requires_network` describe an
+    environment a test cannot supply for itself. Without this gate the tier targets
+    stay green only because they filter the markers out (`make test-ci`,
+    `make test-release-host`), while `make test` runs them anywhere and reports
+    environment gaps as assertion failures.
+
+    Each probe asks whether the dependency actually *works*, not whether it is
+    nominally present -- a resolvable hostname or an executable on PATH both lie.
     """
     marker_names = {mark.name for mark in item.iter_markers()}
 
     if "runs_in_container" in marker_names and not _running_in_container():
         pytest.skip("runs_in_container test: only valid inside the sirnaforge image - use 'make docker-test'")
+
+    if "requires_nextflow" in marker_names and not _nextflow_runnable():
+        pytest.skip(
+            "requires_nextflow test: `nextflow -version` does not succeed here (launcher present is not enough)"
+        )
 
     if "requires_network" in marker_names and not _network_available():
         pytest.skip(

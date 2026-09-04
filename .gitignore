@@ -120,3 +120,6 @@ notebooks/zfn_experiment_runs/
 
 # Local scratch notes for in-flight work
 .dev/
+
+# Claude Code agent worktrees (transient, own git dirs)
+.claude/worktrees/

@@ -345,12 +345,10 @@ def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
 @pytest.mark.slow
 def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
     """Exercise the Nextflow miRNA batch path through the workflow CLI."""
-    if shutil.which("nextflow") is None:
-        pytest.skip("Nextflow not available - run this test in Docker container")
-
     output_dir = _get_persistent_output_dir(tmp_path, "nextflow_mirna_batch")
     if output_dir.exists():
         shutil.rmtree(output_dir)

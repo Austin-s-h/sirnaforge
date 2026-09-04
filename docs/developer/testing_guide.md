@@ -39,14 +39,21 @@ make docker-shell       # Interactive debugging
 
 ### Environment Requirement Markers
 
-Two markers describe an environment a test cannot create for itself, and `tests/conftest.py`
-skips rather than fails when it is absent:
+Three markers describe an environment a test cannot create for itself, and `tests/conftest.py`
+skips rather than fails when it is absent. The shared principle: each probe asks whether the
+dependency _works_, not whether it is nominally present — a resolvable hostname and an
+executable on `PATH` both lie.
 
 - **`runs_in_container`** — skipped unless the interpreter is genuinely inside a container
   (Docker's `/.dockerenv` or Podman's `/run/.containerenv`). These tests need the image's
   bioinformatics tooling (`bwa-mem2`, `RNAfold`, Nextflow), so run them with `make docker-test`.
   On the host they are expected to skip; `make test-ci` and `make test-release-host` filter
   them out entirely.
+- **`requires_nextflow`** — skipped unless `nextflow -version` actually exits 0. The launcher on
+  `PATH` is only a shim that fetches the framework JAR into `NXF_HOME` on first use, so
+  `shutil.which("nextflow")` returns a path even on an image where no real invocation can
+  succeed. This probe mirrors `NextflowRunner.validate_installation`, so a test skips exactly
+  when the pipeline itself would report `nextflow_unavailable`.
 - **`requires_network`** — skipped unless a _verified_ TLS handshake with `rest.ensembl.org`
   succeeds. The probe handshakes through Python's own trust store rather than merely opening
   a TCP socket, because interception proxies accept the connection and then fail verification
