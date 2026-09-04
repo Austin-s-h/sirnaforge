@@ -5,9 +5,11 @@ Tests cover downloading, caching, and combining miRNA databases from various sou
 
 import contextlib
 import tempfile
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from Bio import SeqIO
 
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 
@@ -226,6 +228,81 @@ class TestMiRNADatabaseManager:
                 # Should contain miRNA sequences in FASTA format
                 assert content.count(">") > 0  # Has at least one sequence
                 assert "hsa-" in content or "human" in content.lower()  # Contains human sequences
+
+
+class TestFilterSpeciesSequences:
+    """Species filtering must key off each record's own header, not the first record's."""
+
+    # miRBase mature.fa style: three species, deliberately distinct sequences so a
+    # mislabelled record cannot be mistaken for the right one.
+    MULTI_SPECIES_FASTA = (
+        ">hsa-let-7a-5p MIMAT0000062 Homo sapiens let-7a-5p\n"
+        "UGAGGUAGUAGGUUGUAUAGUU\n"
+        ">mmu-miR-1a-3p MIMAT0000123 Mus musculus miR-1a-3p\n"
+        "UGGAAUGUAAAGAAGUAUGUAU\n"
+        ">rno-miR-21-5p MIMAT0000790 Rattus norvegicus miR-21-5p\n"
+        "UAGCUUAUCAGACUGAUGUUGA\n"
+    )
+
+    @staticmethod
+    def _records(fasta_content):
+        """Parse FASTA text into {record id: sequence}."""
+        return {record.id: str(record.seq) for record in SeqIO.parse(StringIO(fasta_content), "fasta")}
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("species", "expected_id", "expected_seq"),
+        [
+            ("human", "hsa-let-7a-5p", "UGAGGUAGUAGGUUGUAUAGUU"),
+            ("mouse", "mmu-miR-1a-3p", "UGGAAUGUAAAGAAGUAUGUAU"),
+            ("rat", "rno-miR-21-5p", "UAGCUUAUCAGACUGAUGUUGA"),
+        ],
+    )
+    def test_filters_to_requested_species_only(self, manager_with_temp_cache, species, expected_id, expected_seq):
+        """Each species must yield exactly its own record, whatever the first header is."""
+        filtered = manager_with_temp_cache._filter_species_sequences(self.MULTI_SPECIES_FASTA, species)
+
+        assert self._records(filtered) == {expected_id: expected_seq}
+
+    @pytest.mark.unit
+    def test_unknown_species_returns_content_unchanged(self, manager_with_temp_cache):
+        """An unmapped species is a pass-through, not an empty database."""
+        filtered = manager_with_temp_cache._filter_species_sequences(self.MULTI_SPECIES_FASTA, "axolotl")
+
+        assert filtered == self.MULTI_SPECIES_FASTA
+
+    @pytest.mark.unit
+    def test_html_wrapped_fasta_is_normalized(self, manager_with_temp_cache):
+        """Upstream endpoints sometimes wrap FASTA lines in markup."""
+        wrapped = "".join(f"<pre>{line}</pre>\n" for line in self.MULTI_SPECIES_FASTA.strip().split("\n"))
+
+        filtered = manager_with_temp_cache._filter_species_sequences(wrapped, "mouse")
+
+        assert self._records(filtered) == {"mmu-miR-1a-3p": "UGGAAUGUAAAGAAGUAUGUAU"}
+
+    @pytest.mark.unit
+    def test_combined_database_preserves_record_identity(self, manager_with_temp_cache, monkeypatch):
+        """Combining sources must not relabel every record with the first record's id."""
+        first = manager_with_temp_cache.cache_dir / "first.fa"
+        second = manager_with_temp_cache.cache_dir / "second.fa"
+        first.write_text(">hsa-let-7a-5p one\nUGAGGUAGUAGGUUGUAUAGUU\n>hsa-miR-16-5p two\nUAGCAGCACGUAAAUAUUGGCG\n")
+        second.write_text(">hsa-miR-21-5p three\nUAGCUUAUCAGACUGAUGUUGA\n")
+
+        source_files = {"mirbase": first, "mirgenedb": second}
+        monkeypatch.setattr(
+            MiRNADatabaseManager,
+            "get_database",
+            lambda _self, source_name, _species, force_refresh=False: source_files[source_name],  # noqa: ARG005
+        )
+
+        combined = manager_with_temp_cache.get_combined_database(["mirbase", "mirgenedb"], "human")
+
+        assert combined is not None
+        assert self._records(combined.read_text()) == {
+            "hsa-let-7a-5p": "UGAGGUAGUAGGUUGUAUAGUU",
+            "hsa-miR-16-5p": "UAGCAGCACGUAAAUAUUGGCG",
+            "hsa-miR-21-5p": "UAGCUUAUCAGACUGAUGUUGA",
+        }
 
 
 class TestMiRNAManagerErrorHandling:

@@ -28,7 +28,10 @@ from .species_registry import (
 )
 
 logger = logging.getLogger(__name__)
-FASTA_PARSE_FORMAT = "fasta-blast"
+# Plain "fasta" only. Biopython's "fasta-blast" reader assigns every record the *first*
+# record's id/description, which silently collapses miRBase's ~270 species prefixes into
+# one, and it does not exist at all below Biopython 1.85.
+FASTA_PARSE_FORMAT = "fasta"
 
 
 @dataclass
