@@ -1,9 +1,13 @@
 """Unit tests for Parquet-based variant cache."""
 
+import logging
 from pathlib import Path
 
+import pandas as pd
+import pytest
+
 from sirnaforge.data.variant_cache import VariantParquetCache
-from sirnaforge.models.variant import ClinVarSignificance, VariantRecord, VariantSource
+from sirnaforge.models.variant import ClinVarSignificance, VariantMode, VariantRecord, VariantSource
 
 
 class TestVariantParquetCache:
@@ -206,3 +210,102 @@ class TestVariantParquetCache:
         stats = cache.get_stats()
         assert stats["total_entries"] == 1
         assert stats["stale_entries"] == 1
+
+
+@pytest.mark.unit
+class TestVariantParquetCacheIntegrity:
+    """Regression tests for cache writes corrupting or dropping unrelated rows."""
+
+    @staticmethod
+    def _variant(pos: int, **kwargs) -> VariantRecord:
+        return VariantRecord(chr="chr1", pos=pos, ref="A", alt="T", **kwargs)
+
+    def test_overwrite_keeps_other_entries(self, tmp_path: Path):
+        """Re-putting a key must not evict entries stored after it."""
+        cache = VariantParquetCache(tmp_path)
+
+        for i in range(3):
+            cache.put(f"key_{i}", self._variant(100 + i, id=f"rs{i}"))
+
+        # Overwrites the middle entry; with label-preserving indexing the append
+        # landed on label 2 and silently destroyed key_2.
+        cache.put("key_1", self._variant(201, id="rs1_updated"))
+
+        assert cache.get("key_0") is not None
+        updated = cache.get("key_1")
+        assert updated is not None
+        assert updated.id == "rs1_updated"
+        assert cache.get("key_2") is not None, "unrelated entry evicted by overwrite"
+        assert cache.get_stats()["total_entries"] == 3
+
+    def test_put_still_works_after_cleanup(self, tmp_path: Path):
+        """cleanup_stale_entries must not leave the cache unwritable."""
+        cache = VariantParquetCache(tmp_path)
+        cache.put("first", self._variant(100, id="rs1"))
+
+        assert cache.cleanup_stale_entries() == 0
+
+        cache.put("second", self._variant(101, id="rs2"))
+
+        assert cache.get("second") is not None, "cache went write-dead after cleanup"
+        assert cache.get("first") is not None
+        assert cache.get_stats()["total_entries"] == 2
+
+    def test_put_recovers_cache_with_datetime_cached_at(self, tmp_path: Path):
+        """A cache file left with datetime64 cached_at by an older build stays writable."""
+        cache = VariantParquetCache(tmp_path)
+        cache.put("first", self._variant(100, id="rs1"))
+
+        corrupted = pd.read_parquet(cache.cache_file, engine="pyarrow")
+        corrupted["cached_at"] = pd.to_datetime(corrupted["cached_at"])
+        corrupted.to_parquet(cache.cache_file, index=False, engine="pyarrow", compression="snappy")
+
+        cache.put("second", self._variant(101, id="rs2"))
+
+        assert cache.get("second") is not None
+        assert cache.get("first") is not None
+
+    def test_population_afs_survive_round_trip(self, tmp_path: Path):
+        """Population-specific AFs must not be dropped by the cache round trip."""
+        cache = VariantParquetCache(tmp_path)
+        variant = self._variant(100, id="rs1", af=0.005, population_afs={"AFR": 0.15, "EUR": 0.02})
+
+        cache.put("key", variant)
+        retrieved = cache.get("key")
+
+        assert retrieved is not None
+        assert retrieved.population_afs == {"AFR": 0.15, "EUR": 0.02}
+        # Drives avoid-mode filtering, so a dropped dict changes which variants pass.
+        assert retrieved.get_effective_af_for_mode(VariantMode.AVOID) == 0.15
+
+    def test_reads_legacy_cache_without_population_afs(self, tmp_path: Path):
+        """A cache file written before the population_afs column stays readable."""
+        cache = VariantParquetCache(tmp_path)
+        cache.put("key", self._variant(100, id="rs1", af=0.005))
+
+        legacy = pd.read_parquet(cache.cache_file, engine="pyarrow").drop(columns=["population_afs"])
+        legacy.to_parquet(cache.cache_file, index=False, engine="pyarrow", compression="snappy")
+
+        retrieved = cache.get("key")
+        assert retrieved is not None
+        assert retrieved.population_afs == {}
+
+        # And the missing column must not be dropped from newly written rows.
+        cache.put("key2", self._variant(101, id="rs2", population_afs={"AFR": 0.2}))
+        retrieved2 = cache.get("key2")
+        assert retrieved2 is not None
+        assert retrieved2.population_afs == {"AFR": 0.2}
+
+    def test_write_failure_warns_once(self, tmp_path: Path, caplog):
+        """A cache that cannot be written warns on the first failure, not on every one."""
+        cache = VariantParquetCache(tmp_path)
+        cache.cache_file.unlink()
+        cache.cache_file.mkdir()  # makes read_parquet/to_parquet fail
+
+        with caplog.at_level(logging.DEBUG, logger="sirnaforge.data.variant_cache"):
+            cache.put("key_1", self._variant(100))
+            cache.put("key_2", self._variant(101))
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "will not be updated" in warnings[0].message

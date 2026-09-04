@@ -4,6 +4,10 @@ Tests that variants without allele frequency data are included in 'all' results
 but excluded from 'passed' results when AF filtering is applied.
 """
 
+from pathlib import Path
+
+import pytest
+
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import (
     ClinVarSignificance,
@@ -263,3 +267,34 @@ class TestVariantAFFiltering:
         )
 
         assert resolver._passes_filters(non_clinvar_variant) is True
+
+
+@pytest.mark.unit
+class TestCachedVariantAFFiltering:
+    """AF filtering must give the same answer on a warm cache as on a cold one."""
+
+    def test_avoid_mode_verdict_survives_cache_round_trip(self, tmp_path: Path):
+        """A cached variant must keep the population AFs that avoid mode filters on."""
+        resolver = VariantResolver(min_af=0.01, variant_mode="avoid", cache_dir=tmp_path)
+
+        variant = VariantRecord(
+            id="rs28934576",
+            chr="chr17",
+            pos=7673802,
+            ref="C",
+            alt="A",
+            assembly="GRCh38",
+            sources=[VariantSource.ENSEMBL],
+            af=0.005,  # 0.5% global AF - below threshold
+            population_afs={"AFR": 0.15, "EUR": 0.02, "EAS": 0.08},  # Max is 15%
+        )
+
+        # Cold cache: passes on max population AF.
+        assert resolver._passes_filters(variant) is True
+
+        resolver._put_to_cache("cache_key", variant)
+        cached = resolver._get_from_cache("cache_key")
+
+        assert cached is not None
+        assert cached.population_afs == variant.population_afs
+        assert resolver._passes_filters(cached) is True
