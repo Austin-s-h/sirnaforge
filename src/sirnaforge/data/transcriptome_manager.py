@@ -35,6 +35,9 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     SOURCE_LABEL = "transcriptome"
 
+    # File suffixes written by bwa-mem2 index for a given prefix.
+    INDEX_SUFFIXES = (".amb", ".ann", ".bwt.2bit.64", ".pac")
+
     # Common transcriptome sources, generated from the shared Ensembl assembly table
     # (sirnaforge.data.ensembl_references) so cDNA and genome references stay in lockstep
     # and adding a species is a single table entry. Keys/URLs are unchanged from the
@@ -69,6 +72,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         self.source_label = source_label or self.SOURCE_LABEL
         self.local_content_index: dict[str, str] = {}
         self._rebuild_local_content_index()
+        self._drop_derived_uri_mappings()
 
     def _rebuild_local_content_index(self) -> None:
         """Rebuild local content-hash index from loaded metadata."""
@@ -78,6 +82,19 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             content_hash = extra.get("local_content_hash")
             if isinstance(content_hash, str) and content_hash:
                 self.local_content_index[content_hash] = cache_key
+
+    def _drop_derived_uri_mappings(self) -> None:
+        """Repair legacy metadata where a filtered FASTA claimed the base source URI.
+
+        Filtered artifacts are derived, not downloaded, so they must never own the
+        remote URI: an unfiltered request resolving through that mapping would screen
+        off-targets against a filtered reference. Older metadata recorded them under
+        the base URL, so drop those mappings and let the base entry own the URI again.
+        """
+        for uri, cache_key in list(self.uri_index.items()):
+            meta = self.metadata.get(cache_key)
+            if meta is not None and (meta.extra or {}).get("filters"):
+                del self.uri_index[uri]
 
     def describe_source_status(self, source_name: str) -> dict[str, Any]:
         """Return cache metadata for a configured source."""
@@ -245,6 +262,40 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         except Exception as e:
             logger.debug(f"Could not create index marker for {index_prefix}: {e}")
 
+    def _remove_index_files(self, index_prefix: Path) -> None:
+        """Delete the marker and all bwa-mem2 files sharing an index prefix."""
+        index_prefix.unlink(missing_ok=True)
+        for ext in self.INDEX_SUFFIXES:
+            (index_prefix.parent / f"{index_prefix.name}{ext}").unlink(missing_ok=True)
+
+    def _reconcile_index_for_new_content(
+        self, previous: CacheMetadata | None, current: CacheMetadata, index_prefix: Path
+    ) -> None:
+        """Carry over or destroy the BWA index after cached content is rewritten.
+
+        Index files are named from the cache key, which hashes a release-agnostic URL
+        (ENSEMBL_FTP_BASE points at `current_fasta`), so a refreshed reference lands on
+        the same prefix. bwa-mem2 aligns against the index alone and never reads the
+        FASTA, so an index left over from the previous content would silently report
+        hits with the previous release's transcript IDs and coordinates. Identical bytes
+        are the only case where the existing index remains trustworthy.
+        """
+        if previous is not None and previous.checksum == current.checksum:
+            # `_record_cache_entry` replaces metadata wholesale; keep index bookkeeping.
+            merged = {**(previous.extra or {}), **(current.extra or {})}
+            current.extra = merged or None
+            return
+
+        stale_prefixes = {index_prefix}
+        previous_index = self._get_index_path(previous) if previous is not None else None
+        if previous_index is not None:
+            stale_prefixes.add(previous_index)
+
+        for prefix in stale_prefixes:
+            if self._is_index_complete(prefix):
+                logger.info("🗑️  Discarding BWA-MEM2 index built from replaced content: %s", prefix)
+            self._remove_index_files(prefix)
+
     def get_transcriptome(  # noqa: PLR0911
         self, source_name: str, force_refresh: bool = False, build_index: bool = True
     ) -> dict[str, Path] | None:
@@ -282,11 +333,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         # Download transcriptome
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
+        previous = self.metadata.get(cache_key)
         if not self._download_to_path(source, cache_file):
             return None
 
         # Update metadata
-        self._record_cache_entry(cache_key, source, cache_file)
+        current = self._record_cache_entry(cache_key, source, cache_file)
+        self._reconcile_index_for_new_content(previous, current, index_prefix)
         logger.info(f"✅ Cached {source.name}: {cache_file} ({cache_file.stat().st_size:,} bytes)")
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -348,11 +401,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
         # Download
+        previous = self.metadata.get(cache_key)
         if not self._download_to_path(source, cache_file):
             return None
 
         # Save metadata
-        self._record_cache_entry(cache_key, source, cache_file)
+        current = self._record_cache_entry(cache_key, source, cache_file)
+        self._reconcile_index_for_new_content(previous, current, index_prefix)
         logger.info(f"✅ Cached custom transcriptome: {cache_file} ({cache_file.stat().st_size:,} bytes)")
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
@@ -470,18 +525,23 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             filtered_fasta.unlink(missing_ok=True)
             return None
 
-        # Cache metadata
-        self._record_cache_entry(
+        # Cache metadata. The filtered artifact must not be recorded under the bare
+        # source URL: that URL indexes the *unfiltered* download, and a later
+        # get_transcriptome() would resolve to this filtered FASTA and screen
+        # off-targets against a subset of the transcriptome.
+        previous = self.metadata.get(filtered_cache_key)
+        current = self._record_cache_entry(
             filtered_cache_key,
             TranscriptomeSource(
                 name=f"{source.name}_filtered",
-                url=source.url,
+                url=f"{source.url}#filters={filter_spec}",
                 species=source.species,
                 description=f"{source.description} [filtered: {filter_spec}]",
             ),
             filtered_fasta,
             extra={"filters": filters, "kept_count": kept},
         )
+        self._reconcile_index_for_new_content(previous, current, filtered_index)
 
         return self._prepare_result_with_index(filtered_fasta, filtered_index, filtered_cache_key, build_index)
 
@@ -539,7 +599,4 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         if index_path is None:
             return
 
-        # Remove marker file for the index prefix (if present)
-        index_path.unlink(missing_ok=True)
-        for ext in [".amb", ".ann", ".bwt.2bit.64", ".pac"]:
-            index_path.with_suffix(ext).unlink(missing_ok=True)
+        self._remove_index_files(index_path)
