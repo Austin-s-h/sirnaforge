@@ -121,7 +121,7 @@ class ValidationUtils:
             result.add_error(f"Scoring weights sum to {total_weight:.3f}, should be 1.0")
 
         # Check parameter ranges
-        if params.top_n > 1000:
+        if params.top_n is not None and params.top_n > 1000:
             result.add_warning("Large top_n value may impact performance")
 
         result.add_metadata("total_weight", total_weight)

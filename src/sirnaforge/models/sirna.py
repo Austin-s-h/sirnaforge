@@ -109,10 +109,13 @@ class OffTargetFilterCriteria(BaseModel):
     """
 
     # Genuine off-target threshold (on-target, ortholog and repeat-mediated hits excluded)
+    # 15 is calibrated against the MSH3 AZ reference design: it is the lowest cap at which the gate
+    # enriches for expert-chosen guides rather than depleting them. At 3 the gate was depleted
+    # (p = 0.89) and at 10 it carried no information (p = 0.51). See the 2026-09-04 run4 sweep.
     max_off_target_count: int | None = Field(
-        default=3,
+        default=15,
         ge=0,
-        description="Maximum genuine off-target sites (goal: ≤3). Excludes on-target, ortholog and repeat hits.",
+        description="Maximum genuine off-target sites (default 15). Excludes on-target, ortholog and repeat hits.",
     )
 
     # Transcriptome off-target thresholds
@@ -132,7 +135,7 @@ class OffTargetFilterCriteria(BaseModel):
     # Read against transcriptome_hits_seed_0mm. This is the only *targeted* gate on a partial
     # (clipped or gapped) hit whose seed paired perfectly: such a hit has a guide-level nm > 2, so
     # it lands in no mismatch stratum and max_transcriptome_hits_{0,1,2}mm never see it. The only
-    # other thing that counts it is the blunt max_off_target_count ceiling (default 3).
+    # other thing that counts it is the blunt max_off_target_count ceiling (default 15).
     # Unlike the three mismatch thresholds this one counts ALL screened species, matching the
     # reported transcriptome_hits_seed_0mm column exactly. Defaults to None (off) because a safe
     # ceiling has not been calibrated against truth data; set it to opt in.
@@ -261,18 +264,27 @@ class DesignParameters(BaseModel):
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
-    top_n: int = Field(
-        default=500,
+    # None means report every ranked candidate. Kept as an optional int for backwards compatibility
+    # with callers that pass an explicit ceiling; every consumer slices with ``[: top_n]``, and
+    # ``list[:None]`` is a no-op, so None needs no special-casing downstream.
+    top_n: int | None = Field(
+        default=None,
         ge=1,
         description=(
-            "Number of top-ranked candidates reported in top_candidates. Screening is applied to "
-            "every distinct candidate sequence regardless of this value, so it no longer gates "
-            "off-target analysis, and it does not change how many candidates are enumerated."
+            "Number of top-ranked candidates reported in top_candidates (None = no limit, the "
+            "default). Screening is applied to every distinct candidate sequence regardless of this "
+            "value, so it does not gate off-target analysis or change how many candidates are "
+            "enumerated -- it only truncates what is reported."
         ),
     )
 
     # Filtering criteria
     filters: FilterCriteria = Field(default_factory=FilterCriteria, description="Quality control filters")
+    # Read by SiRNAWorkflow when gating on off-target screening results. Without this field the
+    # getattr in _check_offtarget_filters could never resolve, so the criteria were unreachable.
+    offtarget_filters: OffTargetFilterCriteria = Field(
+        default_factory=OffTargetFilterCriteria, description="Off-target rejection thresholds"
+    )
 
     # Scoring weights
     scoring: ScoringWeights = Field(default_factory=ScoringWeights, description="Component score weights")
@@ -403,7 +415,7 @@ class SiRNACandidate(BaseModel):
     # the clip lands on guide positions 16-21 and leaves the seed intact) carries nm=6: it is
     # counted here and in transcriptome_hits_total / off_target_count, but falls in NO mismatch
     # stratum, so max_transcriptome_hits_{0,1,2}mm cannot gate it. Only
-    # max_transcriptome_seed_perfect (default None) and max_off_target_count (default 3) do.
+    # max_transcriptome_seed_perfect (default None) and max_off_target_count (default 15) do.
     # Unlike the _0mm/_1mm/_2mm counters this one is not split by species.
     transcriptome_hits_seed_0mm: int = Field(
         default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species"

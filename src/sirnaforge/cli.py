@@ -832,12 +832,16 @@ def workflow(  # noqa: PLR0912
         "--zfn-annotation",
         help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
     ),
-    top_n_candidates: int = typer.Option(
-        100,
+    top_n_candidates: int | None = typer.Option(
+        None,
         "--top-n",
         "-n",
         min=1,
-        help="Number of top siRNA candidates to select (also used for off-target analysis)",
+        help=(
+            "Cap how many top-ranked candidates are reported (default: no cap, report all). "
+            "Screening and enumeration always cover every candidate, so this only truncates the "
+            "reported set -- leave it unset to keep the full design space."
+        ),
     ),
     species: str = typer.Option(
         DEFAULT_SPECIES_ARGUMENT,
@@ -1025,6 +1029,16 @@ def workflow(  # noqa: PLR0912
             "censoring per-species hit counts."
         ),
     ),
+    max_off_targets: int | None = typer.Option(
+        None,
+        "--max-off-targets",
+        min=0,
+        help=(
+            "Reject a candidate above this many genuine off-target sites (default: 3). Counts only "
+            "hits left after on-target, ortholog and repeat classification. Unlike --max-hits this "
+            "changes the PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
+        ),
+    ),
     json_summary: bool = typer.Option(
         True,
         "--json-summary/--no-json-summary",
@@ -1191,7 +1205,7 @@ def workflow(  # noqa: PLR0912
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
+            f"Reported Candidates: [yellow]{top_n_candidates if top_n_candidates is not None else 'all (uncapped)'}[/yellow]\n"
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
@@ -1250,6 +1264,7 @@ def workflow(  # noqa: PLR0912
                     check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
                     max_hits=max_hits,
+                    max_off_targets=max_off_targets,
                 )
             )
 
@@ -1845,13 +1860,14 @@ def design(  # noqa: PLR0912
         max=23,
         help="siRNA length in nucleotides",
     ),
-    top_n: int = typer.Option(
-        100,
+    top_n: int | None = typer.Option(
+        None,
         "--top-n",
         "-n",
         min=1,
         help=(
-            "Number of top-ranked candidates to select for reporting/off-target (all candidates are still generated)"
+            "Cap how many top-ranked candidates are reported (default: no cap, report all). "
+            "All candidates are generated and screened regardless."
         ),
     ),
     gc_min: float = typer.Option(
@@ -1969,7 +1985,7 @@ def design(  # noqa: PLR0912
             f"Output: [cyan]{output}[/cyan]\n"
             f"Length: [yellow]{length}[/yellow] nt\n"
             f"GC range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top candidates: [yellow]{top_n}[/yellow]\n"
+            f"Reported candidates: [yellow]{top_n if top_n is not None else 'all (uncapped)'}[/yellow]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Configuration",
@@ -2147,7 +2163,9 @@ def config() -> None:
     # Basic parameters
     console.print("[cyan]Basic Parameters:[/cyan]")
     console.print(f"  siRNA length: {default_params.sirna_length} nt")
-    console.print(f"  Top candidates: {default_params.top_n}")
+    console.print(
+        f"  Reported candidates: {default_params.top_n if default_params.top_n is not None else 'all (uncapped)'}"
+    )
 
     # Filtering criteria
     console.print("\n[cyan]Filtering Criteria:[/cyan]")

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`max_off_target_count` is now reachable and defaults to 15, up from 3.** `DesignParameters` had
+  no `offtarget_filters` field, so the `getattr` that read it in `_check_offtarget_filters` could
+  never resolve and the ceiling was hard-wired at 3 — unreachable from the CLI, the environment or
+  the Python API. The field now exists and is exposed as `--max-off-targets`. 15 is calibrated
+  against the 94-design MSH3 reference set: it is the lowest ceiling at which the gate enriches for
+  expert-chosen guides instead of depleting them (at 3 the gate was depleted, at 10 it carried no
+  information). Single-target calibration — revisit if a second reference set disagrees.
+- **`top_n` now defaults to uncapped (`None`), so no run silently truncates its own shortlist.**
+  Previous defaults disagreed across entry points — the model said 500, both CLI commands said 100
+  and `run_sirna_workflow()` said 20 — so the effective cap depended on how you invoked the tool.
+  The parameter still accepts an explicit ceiling and `ge=1` is still enforced. This only ever
+  affected `top_candidates` (and so `candidates_pass.csv`/`.fasta`); `candidates_all.csv`,
+  enumeration and screening were never truncated by it.
+
 ## [0.6.0] - 2026-09-03
 
 Correctness release for the off-target arm, from the audit in
@@ -89,6 +107,7 @@ substantially, for the same reason.
   `sirnaforge` always passes `-resume`, so a re-run against an unchanged input FASTA will replay
   the cached, wrongly-parsed `*_analysis.tsv` from the previous run. Delete the Nextflow work
   directory (`./nextflow_work` by default) to pick this fix up.
+
 - **`--input-fasta` and `--skip-off-targets` no longer download and index multi-gigabyte
   transcriptome references.** 0.5.2's exhaustive-search work silently flipped
   `run_sirna_workflow(allow_transcriptome_with_input_fasta=...)` from `False` to `True` and set

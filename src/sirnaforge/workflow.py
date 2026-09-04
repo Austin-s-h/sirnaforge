@@ -3187,7 +3187,7 @@ async def run_sirna_workflow(
     input_fasta: str | None = None,
     database: str = "ensembl",
     design_mode: str = "sirna",
-    top_n_candidates: int = 20,
+    top_n_candidates: int | None = None,
     genome_species: list[str] | None = None,
     query_species: str | None = None,
     genome_indices_override: str | None = None,
@@ -3219,6 +3219,7 @@ async def run_sirna_workflow(
     keep_nextflow_work: bool = False,
     nextflow_docker_image: str | None = None,
     max_hits: int | None = None,
+    max_off_targets: int | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -3228,7 +3229,8 @@ async def run_sirna_workflow(
         input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
         design_mode: Design mode (sirna, mirna, or zfn)
-        top_n_candidates: Number of top candidates to generate
+        top_n_candidates: Cap on how many top-ranked candidates are reported (None = no cap, the
+            default). Enumeration and screening always cover every candidate.
         genome_species: Species genomes for off-target analysis
         query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
             gene-query database serves (human), which is also the species of the default
@@ -3266,6 +3268,9 @@ async def run_sirna_workflow(
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
         max_hits: Override the pipeline's per-candidate off-target hit cap (None keeps the pipeline's
             exhaustive default; set a lower value, e.g. 10000, to speed up large gene-family searches)
+        max_off_targets: Override the genuine off-target ceiling that gates PASS vs
+            EXCESS_OFF_TARGETS (None keeps OffTargetFilterCriteria's default of 15). Unlike
+            max_hits this changes the verdict, not how many hits are recorded.
 
     Returns:
         Dictionary with complete workflow results
@@ -3283,11 +3288,16 @@ async def run_sirna_workflow(
     )
 
     # Configure workflow with modification parameters
+    offtarget_filters = OffTargetFilterCriteria()
+    if max_off_targets is not None:
+        offtarget_filters = offtarget_filters.model_copy(update={"max_off_target_count": max_off_targets})
+
     design_params = DesignParameters(
         design_mode=mode_enum,
         top_n=top_n_candidates,
         sirna_length=sirna_length,
         filters=filter_criteria,
+        offtarget_filters=offtarget_filters,
         check_off_targets=check_off_targets,
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,

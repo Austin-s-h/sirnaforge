@@ -50,7 +50,7 @@ class SiRNACandidate(BaseModel):
                                 # query-species alignment produced nothing), so the counts below
                                 # are a lower bound, not a total — hits found in the species that
                                 # did align are still reported, and still applied as filters
-    off_target_count: int      # Genuine off-target sites only (goal: ≤3); on-target,
+    off_target_count: int      # Genuine off-target sites only (gated at 15); on-target,
                                 # ortholog and repeat-mediated hits are excluded
     transcriptome_hits_0mm: int   # Perfect match GENUINE off-target hits
     transcriptome_hits_1mm: int   # 1-mismatch GENUINE off-target hits
@@ -109,7 +109,7 @@ class DesignParameters(BaseModel):
 
     # Sequence parameters
     sirna_length: int = 21     # Duplex length (19-23 nt)
-    top_n: int = 50            # Number of candidates to return
+    top_n: int | None = None   # Candidates to report (None = all, the default)
 
     # Quality control
     filters: FilterCriteria    # Threshold parameters
@@ -169,7 +169,7 @@ class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
     # Genuine off-target count (on-target, ortholog and repeat hits excluded)
-    max_off_target_count: int = 3
+    max_off_target_count: int = 15
 
     # Transcriptome GENUINE off-targets (mismatch tolerance)
     max_transcriptome_hits_0mm: int = 1    # Perfect matches
@@ -191,7 +191,7 @@ class OffTargetFilterCriteria(BaseModel):
 > it carries `nm = 6`, so it is counted in `transcriptome_hits_seed_0mm`,
 > `transcriptome_hits_total` and `off_target_count`, but in **none** of `_0mm`/`_1mm`/`_2mm`. Two
 > such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. With stock defaults
-> the only thing gating them is `max_off_target_count` (3), so one or two of them pass. Set
+> the only thing gating them is `max_off_target_count` (15), so a run of them can pass. Set
 > `max_transcriptome_seed_perfect` to gate them directly — it is enforced (verdict
 > `TRANSCRIPTOME_SEED_PERFECT`) but ships as `None` because no ceiling has been calibrated against
 > truth data. Unlike the three mismatch thresholds it is **not** species-split: it is compared
@@ -829,7 +829,7 @@ class ChemicalModification(BaseModel):
 `mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
 `melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
 in issue #80: they were declared but never enforced by `SiRNADesigner`, and re-deriving correct
-windows against truth data is deliberately out of scope. `max_off_target_count` (default `3`,
+windows against truth data is deliberately out of scope. `max_off_target_count` (default `15`,
 range `0+`, justification: specificity) moved to `OffTargetFilterCriteria`, where it is enforced
 post-screen against the genuine off-target count (see 1.4 and 3.3).
 

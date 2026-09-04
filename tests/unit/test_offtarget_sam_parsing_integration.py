@@ -162,8 +162,8 @@ def test_seed_perfect_partial_hit_is_counted_but_lands_in_no_mismatch_stratum(tm
 
     This is the contract ``docs/models_and_scoring.md`` §1.4 and the CHANGELOG now describe. It is
     not a bug to fix here -- picking a default ceiling is a product decision -- but it must not
-    change silently, because on stock defaults ``max_off_target_count`` (3) is the only thing
-    standing between two of these hits and a PASS.
+    change silently, because on stock defaults ``max_off_target_count`` (15) is the only thing
+    standing between a run of these hits and a PASS.
     """
     candidate, _ = _strata_and_verdict(tmp_path, _sam(rnames=("ENST_A", "ENST_B"), **_SEED_PERFECT_PARTIAL))
 

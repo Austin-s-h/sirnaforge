@@ -106,10 +106,19 @@ Need more control? Customize with parameters:
 sirnaforge workflow BRCA1 \
   --genome-species "human,rat,rhesus" \
   --gc-min 40 --gc-max 60 \
-  --top-n 50 \
+  --max-off-targets 20 \
   --design-mode mirna \
   --output-dir results
 ```
+
+**Selection defaults are deliberately permissive:**
+
+- `--top-n` is **uncapped** — every ranked candidate is reported. Pass a value only to truncate the
+  reported set; enumeration and screening always cover every candidate either way.
+- `--max-off-targets` defaults to **15** genuine off-target sites (on-target, ortholog and
+  repeat-mediated hits are excluded first). This is the PASS/`EXCESS_OFF_TARGETS` gate. It is *not*
+  `--max-hits`, which caps how many hits are *recorded* per candidate per species and will censor
+  your counts if you set it.
 
 ### ZFN mutation constraints (composable)
 
