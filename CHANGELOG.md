@@ -5,24 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- **`max_off_target_count` is now reachable and defaults to 15, up from 3.** `DesignParameters` had
-  no `offtarget_filters` field, so the `getattr` that read it in `_check_offtarget_filters` could
-  never resolve and the ceiling was hard-wired at 3 — unreachable from the CLI, the environment or
-  the Python API. The field now exists and is exposed as `--max-off-targets`. 15 is calibrated
-  against the 94-design MSH3 reference set: it is the lowest ceiling at which the gate enriches for
-  expert-chosen guides instead of depleting them (at 3 the gate was depleted, at 10 it carried no
-  information). Single-target calibration — revisit if a second reference set disagrees.
-- **`top_n` now defaults to uncapped (`None`), so no run silently truncates its own shortlist.**
-  Previous defaults disagreed across entry points — the model said 500, both CLI commands said 100
-  and `run_sirna_workflow()` said 20 — so the effective cap depended on how you invoked the tool.
-  The parameter still accepts an explicit ceiling and `ge=1` is still enforced. This only ever
-  affected `top_candidates` (and so `candidates_pass.csv`/`.fasta`); `candidates_all.csv`,
-  enumeration and screening were never truncated by it.
-
 ## [0.6.0] - 2026-09-03
 
 Correctness release for the off-target arm, from the audit in
@@ -33,6 +15,30 @@ screened rather than only the top-ranked subset. Scores from this release are no
 0.5.x, and ranking order changes for essentially every candidate — this is the intended outcome
 of the redefinition, not a regression. Off-target counts for the same target will drop
 substantially, for the same reason.
+
+### Breaking changes
+
+**Most notable:** composite scores and off-target counts are not comparable to 0.5.x at all — the
+score is redefined and screening is now exhaustive. On top of that two selection defaults changed,
+both in the permissive direction: the genuine off-target ceiling is **15, up from 3**, and `top_n`
+is now **uncapped**. A 0.5.x command re-run unchanged will return more candidates, not fewer.
+
+- **`max_off_target_count` defaults to 15, up from 3, and is reachable for the first time.**
+  `DesignParameters` had no `offtarget_filters` field and is `extra="forbid"`, so the `getattr`
+  that read it in `_check_offtarget_filters` could never resolve — the ceiling was hard-wired at 3
+  with no route in from the CLI, the environment or the Python API. The field now exists and is
+  exposed as `--max-off-targets`. 15 is calibrated against the 94-design MSH3 reference set: it is
+  the lowest ceiling at which the gate enriches for expert-chosen guides rather than depleting them
+  (at 3 the gate was depleted, at 10 it carried no information). Single-target calibration —
+  revisit if a second reference set disagrees. Anything relying on the old ceiling must now pass
+  `--max-off-targets 3` explicitly.
+- **`top_n` defaults to `None`, meaning report every ranked candidate.** The previous defaults
+  disagreed across entry points — the model said 500, both CLI commands said 100 and
+  `run_sirna_workflow()` said 20 — so the effective cap depended on how the tool was invoked. An
+  explicit ceiling still works and `ge=1` is still enforced. This only ever affected
+  `top_candidates`, and so `candidates_pass.csv`/`.fasta`; `candidates_all.csv`, enumeration and
+  screening were never truncated by it. `top_n_requested` in `workflow_summary.json` is now `null`
+  rather than an integer when no cap is set.
 
 ### Fixed
 
@@ -95,7 +101,7 @@ substantially, for the same reason.
   guide-level `nm` is 6, so it is counted in `transcriptome_hits_seed_0mm`,
   `transcriptome_hits_total` and `off_target_count` but in none of `_0mm`/`_1mm`/`_2mm`. Two such
   hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`, and on stock defaults only
-  `max_off_target_count` (3) stands between them and a PASS. `max_transcriptome_seed_perfect` is
+  `max_off_target_count` (15) stands between them and a PASS. `max_transcriptome_seed_perfect` is
   therefore now **enforced** in `_check_offtarget_filters` (new verdict
   `TRANSCRIPTOME_SEED_PERFECT`, new `failed_transcriptome_seed_perfect` stat). It still defaults to
   `None`, so behaviour is unchanged unless a user sets it — picking a calibrated default is a
@@ -427,7 +433,7 @@ substantially, for the same reason.
   SAM-frame entry under Fixed), which is not the same as the aligner's `NM` tag for a clipped or
   gapped alignment: a `15M6S`/`NM:i:0` partial hit counts as 6, so it lands in no stratum rather
   than in `0mm`. Such hits are still counted in full by `transcriptome_hits_total` and
-  `off_target_count`, which `max_off_target_count` (default 3) gates — the strata are nm≤2
+  `off_target_count`, which `max_off_target_count` (default 15) gates — the strata are nm≤2
   subsets, not the whole picture.
 - **Ortholog recognition previously worked only when the screened species was human.** The
   transcript→gene index was built behind an `if transcriptome_species == "human"` gate into one
