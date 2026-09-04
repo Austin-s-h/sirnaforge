@@ -205,6 +205,33 @@ substantially, for the same reason.
   human-only) — and a new `--query-species` (`query_species=` on `run_sirna_workflow`,
   `run_offtarget_only_workflow` and `WorkflowConfig`) states it outright for an input FASTA from
   another organism.
+- **Cached references written by a buggy earlier version are now discarded and regenerated
+  automatically, instead of being served forever.** Cache validation checked only that a file
+  existed, was non-empty, was inside its TTL, and still matched the MD5 recorded when that same
+  file was written — a self-consistent check that can detect disk corruption but can never detect
+  _wrong content_ a buggy writer put there deliberately. Each cached artifact now also records the
+  version of the code that produced it (`CacheMetadata.version`, plus a `<file>.sirnaforge-cache.json`
+  sidecar for derived artifacts), and that version is compared on load; a mismatch is a cache miss.
+  **You do not need to clear anything by hand.** On the first run after upgrading, cached miRNA
+  databases (both the per-species FASTAs and `combined_*.fa`) are discarded and re-downloaded from
+  miRBase/MirGeneDB — a few MB — and each discard is logged at WARNING with the reason. Invalidation
+  is scoped per artifact class, so **cached transcriptomes, genomes and annotations are _not_
+  re-downloaded**: they are raw upstream bytes that no producer of ours reshapes, and forcing a
+  multi-GB re-fetch for an unrelated schema change would be worse than the bug. If you would rather
+  reclaim the space yourself, `sirnaforge cache --clear` still does that.
+- **A BWA-MEM2 index can no longer outlive the reference it was built from.** Index reuse tested
+  only that the index files were present, and bwa-mem2 reads the index alone and never re-reads the
+  FASTA, so an index left behind by a previous Ensembl release silently reported hits with that
+  release's transcript IDs and coordinates. Indices are now stamped with the checksum of the FASTA
+  they were built from and rebuilt when it changes. An existing index that our own metadata shows
+  was built _after_ the currently cached reference is adopted as-is rather than rebuilt, so
+  upgrading does not cost you an hour of `bwa-mem2 index` on a human transcriptome.
+- **A cached artifact that was truncated or corrupted _after_ being stamped is now detected and
+  regenerated.** The stamp recorded the producer version and the inputs, so a `combined_*.fa` cut
+  short by a full disk (or an index member left half-written by an interrupted copy) kept a
+  "current" stamp and was served for its whole TTL. Stamps now also fingerprint the artifact's own
+  bytes — every file's exact size, plus an MD5 that is full below 64 MB and a head/tail sample above
+  it, so verifying a multi-GB index costs ~30 ms per file instead of a full read.
 
 ### Added
 
