@@ -17,6 +17,7 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.utils.logging_utils import get_logger
 
+from .experimental import emit_zfn_experimental_warning
 from .interfaces import ZFNOffTargetSearcher
 from .search import ExhaustiveZFNOffTargetSearcher
 
@@ -36,6 +37,11 @@ class ZFNDesigner:
         annotation: GenomicAnnotationConfig | None = None,
     ) -> ZFNDesignResult:
         """Run end-to-end pair evaluation and return typed results."""
+        # This is the documented Python API entry point, so it has to carry the
+        # experimental notice itself -- a caller who never touches the CLI or
+        # SiRNAWorkflow would otherwise get ZFN artifacts with no indication of status.
+        emit_zfn_experimental_warning()
+
         start = time.perf_counter()
         sites = self.searcher.search(params=params, annotation=annotation)
         candidate = self._build_candidate(params, sites)

@@ -16,16 +16,16 @@ process ZFN_AGGREGATE_RESULTS {
     path shard_site_csvs
 
     output:
-    path "zfn_offtarget_sites.csv", emit: sites
-    path "zfn_candidate_summary.json", emit: summary
+    path "offtarget_sites.csv", emit: sites
+    path "candidate_summary.json", emit: summary
     path "versions.yml", emit: versions
 
     script:
     """
     sirnaforge _internal zfn-aggregate-shards \
-      --shard-csv-glob 'zfn_offtarget_sites_*.csv' \
-      --output-sites-csv zfn_offtarget_sites.csv \
-      --output-summary-json zfn_candidate_summary.json
+      --shard-csv-glob 'offtarget_sites_*.csv' \
+      --output-sites-csv offtarget_sites.csv \
+      --output-summary-json candidate_summary.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
@@ -35,8 +35,8 @@ process ZFN_AGGREGATE_RESULTS {
 
     stub:
     """
-    echo "site_id,chrom,start_1based,end_1based,strand,orientation,spacer_len,sequence,left_mismatches,right_mismatches,total_mismatches,score,region,nearest_gene,left_aligned,right_aligned" > zfn_offtarget_sites.csv
-    echo '{"candidates": [], "summary": {"off_target_sites": 0, "shards": 0}}' > zfn_candidate_summary.json
+    echo "site_id,chrom,start_1based,end_1based,strand,orientation,spacer_len,sequence,left_mismatches,right_mismatches,total_mismatches,score,region,nearest_gene,left_aligned,right_aligned" > offtarget_sites.csv
+    echo '{"candidates": [], "summary": {"off_target_sites": 0, "shards": 0}}' > candidate_summary.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

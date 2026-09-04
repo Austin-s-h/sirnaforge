@@ -123,17 +123,20 @@ siRNAforge evaluates multiple thermodynamic parameters to predict siRNA efficacy
   - Moderate values: Optimal for effective strand separation and target binding
 
 #### **Duplex Stability** (`duplex_stability_dg`)
-- **Optimal Range**: -15 to -25 kcal/mol
+- **Measured Range**: -32 to -43 kcal/mol for a fully paired 21mer (median -39)
 - **Definition**: Total free energy change (ΔG) for siRNA duplex formation
 - **Balance Required**:
   - Too stable (very negative ΔG): Difficult RISC loading and strand separation
   - Too unstable (less negative ΔG): Poor duplex formation and activity
-- **Normalized Score**: `duplex_stability_score` converts ΔG to 0-1 scale
+- **Normalized Score**: `duplex_stability_score` converts ΔG **per nucleotide** to a 0-1
+  scale, so 19-23 nt designs stay comparable. Use it rather than raw ΔG when ranking.
+- **Note**: values from 0.5.1 and earlier (roughly -5 to -25) were produced by folding the
+  guide against itself and are not comparable
 
 #### **End Stability Differences**
 - **5' End ΔG** (`dg_5p`): Free energy at guide strand 5' end
 - **3' End ΔG** (`dg_3p`): Free energy at guide strand 3' end
-- **End Difference** (`delta_dg_end`): Stability difference (ΔG₃' - ΔG₅')
+- **End Difference** (`delta_dg_end`): Stability difference (ΔG₅' - ΔG₃')
 
 **Optimal Characteristics**:
 - **Positive `delta_dg_end`**: 5' end less stable than 3' end (preferred)
@@ -171,7 +174,7 @@ gc_content: 40-55%
 asymmetry_score: 0.7-1.0
 paired_fraction: 0.5-0.7
 mfe: -4 to -7 kcal/mol
-duplex_stability_dg: -18 to -22 kcal/mol
+duplex_stability_dg: -40 to -43 kcal/mol  # 21mer
 delta_dg_end: +2 to +5 kcal/mol
 melting_temp_c: 65-75°C
 off_target_count: 0-3
@@ -183,7 +186,7 @@ gc_content: 35-60%
 asymmetry_score: 0.6-0.7
 paired_fraction: 0.4-0.8
 mfe: -2 to -8 kcal/mol
-duplex_stability_dg: -15 to -25 kcal/mol
+duplex_stability_dg: -32 to -43 kcal/mol  # 21mer
 delta_dg_end: +1 to +6 kcal/mol
 melting_temp_c: 60-78°C
 off_target_count: 0-5

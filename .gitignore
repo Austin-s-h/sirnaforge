@@ -108,3 +108,18 @@ docker_results/
 
 # Notebook experiment outputs
 notebooks/zfn_experiment_runs/
+
+# Local scratch / target gene data (never commit proprietary or target-specific inputs)
+/.sirnaforge_cache/
+/*.fa
+/*.fasta
+/*.vcf
+/*.vcf.gz
+/*.vcf.gz.tbi
+/nextflow_pipeline/
+
+# Local scratch notes for in-flight work
+.dev/
+
+# Claude Code agent worktrees (transient, own git dirs)
+.claude/worktrees/

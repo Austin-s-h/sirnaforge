@@ -106,6 +106,9 @@ class WorkflowInputSpec:
     transcriptome_argument: str | None = None
     default_transcriptomes: Sequence[str] = field(default_factory=lambda: DEFAULT_TRANSCRIPTOME_SOURCES)
     design_only: bool = False
+    # Stays False by default: resolving the defaults for a caller who supplied their own FASTA
+    # downloads and indexes multi-gigabyte cDNA references they never requested. Callers that
+    # want that must opt in, and naming a reference via transcriptome_argument always wins.
     allow_transcriptome_for_input_fasta: bool = False
 
 
@@ -127,7 +130,9 @@ class ReferencePolicyResolver:
             return ReferenceSelection(choices=(choice,))
 
         if self.spec.input_fasta and not self.spec.allow_transcriptome_for_input_fasta:
-            return ReferenceSelection.disabled("input FASTA runs default to design-only mode")
+            return ReferenceSelection.disabled(
+                "input FASTA without an explicit transcriptome reference: design-only mode"
+            )
 
         defaults = tuple(ref.strip() for ref in self.spec.default_transcriptomes if ref and ref.strip())
         if defaults:

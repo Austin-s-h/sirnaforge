@@ -20,7 +20,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     seed_end           // val: seed region end
 
     main:
-    ch_versions = Channel.empty()
+    ch_versions = channel.empty()
 
     //
     // MODULE: ALWAYS run miRNA seed match analysis (lightweight, <4GB RAM)
@@ -37,12 +37,12 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // CONDITIONAL: Genome/transcriptome off-target analysis
     // Efficient pattern: One alignment session per genome, all candidates processed sequentially
     //
-    ch_genome_indices = Channel.empty()
+    ch_genome_indices = channel.empty()
 
     // Build BWA indices for FASTA files if provided
     genomes
-        .filter { species, path, type -> type == 'fasta' }
-        .map { species, path, type -> [species, path] }
+        .filter { _species, _path, type -> type == 'fasta' }
+        .map { species, path, _type -> [species, path] }
         .set { ch_genome_fastas }
 
     if (ch_genome_fastas) {
@@ -62,8 +62,8 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Use existing indices
     ch_genome_indices = ch_genome_indices.mix(
         genomes
-            .filter { species, path, type -> type == 'index' }
-            .map { species, index_path, type -> [species, index_path] }
+            .filter { _species, _path, type -> type == 'index' }
+            .map { species, index_path, _type -> [species, index_path] }
     )
 
     //
@@ -106,7 +106,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
 
     // Extract species list for aggregation
     ch_genome_species = ch_genome_indices
-        .map { species, index_path -> species }
+        .map { species, _index_path -> species }
         .unique()
         .toList()
         .map { species_list -> species_list.join(',') }

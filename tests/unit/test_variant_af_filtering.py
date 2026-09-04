@@ -4,9 +4,14 @@ Tests that variants without allele frequency data are included in 'all' results
 but excluded from 'passed' results when AF filtering is applied.
 """
 
+from pathlib import Path
+
+import pytest
+
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import (
     ClinVarSignificance,
+    VariantMode,
     VariantRecord,
     VariantSource,
 )
@@ -263,3 +268,47 @@ class TestVariantAFFiltering:
         )
 
         assert resolver._passes_filters(non_clinvar_variant) is True
+
+
+@pytest.mark.unit
+class TestCachedVariantAFFiltering:
+    """A warm cache must return the same record a cold run returned.
+
+    ``resolve_variant`` serves a cache hit without re-running ``_passes_filters``
+    (only variants that already passed are ever written), so a field lost in the
+    round trip does not change a filter verdict -- it silently changes the record
+    handed back to the caller, which is what makes cold and warm runs disagree.
+    """
+
+    @pytest.mark.asyncio
+    async def test_warm_cache_returns_the_same_record_as_the_cold_run(self, tmp_path: Path, mocker):
+        """Resolve the same query twice: the second, cached answer must be identical."""
+        resolver = VariantResolver(min_af=0.01, variant_mode="avoid", cache_dir=tmp_path)
+
+        variant = VariantRecord(
+            id="rs28934576",
+            chr="chr17",
+            pos=7673802,
+            ref="C",
+            alt="A",
+            assembly="GRCh38",
+            sources=[VariantSource.ENSEMBL],
+            af=0.005,  # 0.5% global AF - below threshold
+            population_afs={"AFR": 0.15, "EUR": 0.02, "EAS": 0.08},  # Max is 15%
+        )
+
+        mocker.patch.object(resolver, "_query_clinvar", return_value=None)
+        ensembl = mocker.patch.object(resolver, "_query_ensembl", return_value=variant)
+        query = resolver.parse_identifier("rs28934576")
+
+        # Cold run: admitted on the max population AF, then cached.
+        cold = await resolver.resolve_variant(query)
+        assert cold == variant
+
+        warm = await resolver.resolve_variant(query)
+
+        assert ensembl.call_count == 1, "second resolve did not come from the cache"
+        assert warm is not None
+        assert warm.population_afs == variant.population_afs
+        assert warm.get_effective_af_for_mode(VariantMode.AVOID) == 0.15
+        assert warm == cold
