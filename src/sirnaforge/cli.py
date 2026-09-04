@@ -836,6 +836,18 @@ def workflow(  # noqa: PLR0912
             "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
         ),
     ),
+    query_species: str | None = typer.Option(
+        None,
+        "--query-species",
+        help=(
+            "Organism the TARGET transcripts belong to, which decides which species' hits are "
+            "on-target and whose alignment must succeed before candidates can be scored after "
+            "screening. --species is an unordered set of genomes to screen AGAINST and never "
+            "sets this. Defaults to the organism the gene-query database serves (human), which "
+            "is also the species of the default transcriptome; set it when designing against an "
+            "input FASTA from another organism."
+        ),
+    ),
     mirna_db: str = typer.Option(
         "mirgenedb",
         "--mirna-db",
@@ -1182,6 +1194,7 @@ def workflow(  # noqa: PLR0912
                     design_mode=design_mode,
                     top_n_candidates=top_n_candidates,
                     genome_species=genome_species_for_workflow,
+                    query_species=query_species,
                     genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
@@ -1315,6 +1328,15 @@ def offtarget(
             "Comma-separated canonical species identifiers for off-target analysis. "
             "Drives transcriptome fetching from Ensembl and miRNA database lookups. "
             "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
+        ),
+    ),
+    query_species: str | None = typer.Option(
+        None,
+        "--query-species",
+        help=(
+            "Organism the supplied guides were designed against, which decides whose alignment "
+            "must succeed before candidates can be scored after screening. --species is the set "
+            "of genomes to screen AGAINST and never sets this. Defaults to human."
         ),
     ),
     mirna_db: str = typer.Option(
@@ -1475,6 +1497,7 @@ def offtarget(
                     input_candidates_fasta=str(input_candidates_fasta),
                     output_dir=str(output_dir),
                     genome_species=genome_species_for_workflow,
+                    query_species=query_species,
                     genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,

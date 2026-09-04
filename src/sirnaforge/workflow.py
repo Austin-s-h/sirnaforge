@@ -128,6 +128,7 @@ class WorkflowConfig:
         nextflow_config: Mapping[str, Any] | None = None,
         genome_indices_override: str | None = None,
         genome_species: list[str] | None = None,
+        query_species: str | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
         transcriptome_fasta: str | None = None,
@@ -173,6 +174,12 @@ class WorkflowConfig:
         normalized_genomes = [normalize_species_name(s) for s in default_mirna_genomes]
         self.mirna_genome_species: list[str] = list(dict.fromkeys(normalized_genomes))
         self.species_explicitly_requested = species_explicitly_provided
+        # Organism of the TARGET transcripts, when the caller states it outright. None means
+        # "derive it from where the transcripts actually came from" -- see SiRNAWorkflow.__init__.
+        # Deliberately NOT defaulted from mirna_genome_species: that list is an unordered set of
+        # genomes to screen against, so no position in it identifies the target.
+        stated_query_species = (query_species or "").strip()
+        self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
         self.mirna_database = mirna_database
         # Preserve explicit miRNA species order (values already normalized by CLI helpers)
         if mirna_species:
@@ -286,11 +293,17 @@ class SiRNAWorkflow:
         self._active_genome_species: list[str] = []
         self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         self._candidate_id_to_representative: dict[str, str] = {}
-        # Single authoritative query species, set once (not re-inferred per call site). The
-        # rest of this file is already human-centric (is_human_species, treated_as_human), so
-        # the first screened species is the query species; an explicit query-species CLI
-        # option is out of scope for this change.
-        self._query_species: str = self.config.mirna_genome_species[0] if self.config.mirna_genome_species else "human"
+        # Single authoritative query species, set once (not re-inferred per call site), and never
+        # read out of the off-target species list. Taking mirna_genome_species[0] declared the
+        # query species from a LIST POSITION in a set whose order carries no meaning: the CLI's own
+        # --species default is "chicken,pig,rat,mouse,human,rhesus,macaque", so every default run
+        # called itself a chicken run, found no chicken alignment in the four human/mouse/rat/
+        # macaque transcriptomes it had just screened perfectly, refused to compute post-screen
+        # scores for every candidate, and skipped repeat detection for want of a chicken cDNA.
+        # The real answer is a property of where the target transcripts came from: the gene-query
+        # database (GeneSearcher.query_species). An input FASTA states no organism, so it takes the
+        # same answer, and WorkflowConfig(query_species=...) states it outright when it differs.
+        self._query_species: str = self.config.query_species or self.gene_searcher.query_species(self.config.database)
         self._species_cdna_fasta: dict[str, Path] = {}
         self._guide_to_transcripts: dict[str, frozenset[str]] = {}
         self._repeat_summary: dict[str, Any] = {"status": "not_run"}
@@ -3130,6 +3143,7 @@ async def run_sirna_workflow(
     design_mode: str = "sirna",
     top_n_candidates: int = 20,
     genome_species: list[str] | None = None,
+    query_species: str | None = None,
     genome_indices_override: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
@@ -3170,6 +3184,9 @@ async def run_sirna_workflow(
         design_mode: Design mode (sirna, mirna, or zfn)
         top_n_candidates: Number of top candidates to generate
         genome_species: Species genomes for off-target analysis
+        query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
+            gene-query database serves (human), which is also the species of the default
+            transcriptome; set it when designing against an input FASTA from another organism.
         genome_indices_override: Comma-separated species:/index_prefix overrides for off-target analysis
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
@@ -3290,6 +3307,7 @@ async def run_sirna_workflow(
         design_params=design_params,
         genome_indices_override=genome_indices_override,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
@@ -3325,6 +3343,7 @@ async def run_offtarget_only_workflow(
     input_candidates_fasta: str,
     output_dir: str,
     genome_species: list[str] | None = None,
+    query_species: str | None = None,
     genome_indices_override: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
@@ -3345,6 +3364,7 @@ async def run_offtarget_only_workflow(
         input_candidates_fasta: Path to FASTA file with 21-nt siRNA guide sequences
         output_dir: Directory for output files
         genome_species: Species genomes for off-target analysis
+        query_species: Organism the input guides were designed against (defaults to human)
         genome_indices_override: Comma-separated species:/index_prefix overrides
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
@@ -3492,6 +3512,7 @@ async def run_offtarget_only_workflow(
         nextflow_config=nextflow_config,
         genome_indices_override=genome_indices_override,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,

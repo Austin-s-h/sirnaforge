@@ -344,11 +344,15 @@ class SiRNACandidate(BaseModel):
     off_target_screened: bool = Field(
         default=False,
         description=(
-            "True once a COMPLETE off-target screen has run for this candidate. Distinguishes "
-            "'screened, no hits' from 'never screened' (which leaves the hit counts below at 0) "
-            "and from a partial screen -- a candidate whose query-species alignment never ran can "
-            "still carry hits from the species that did, so when this is False the counts below "
-            "are a lower bound, never a total."
+            "True once this candidate's screen produced usable evidence: it reached the aligner "
+            "and its query species was aligned. Distinguishes 'screened, no hits' from 'never "
+            "screened' -- both leave the hit counts below at 0. It does NOT promise every "
+            "requested species was aligned: an alignment for some OTHER species can fail while "
+            "this stays True, so the counts below are always a lower bound, never a guaranteed "
+            "total (offtarget_summary.filtering_stats.unscreened_species names the shortfall). "
+            "False means the screen yielded no usable evidence for this candidate at all -- never "
+            "run, never submitted, or its query species never aligned -- in which case the counts "
+            "are unknown rather than zero, and any hits that were found are still reported."
         ),
     )
     off_target_count: int = Field(

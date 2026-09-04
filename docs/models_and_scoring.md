@@ -524,6 +524,13 @@ check cannot run because the hit species' annotation carries no gene symbol for 
 the hit stays `OFF_TARGET` (never guessed at) and the shortfall is counted separately
 (`ortholog_symbol_lookup_misses` in `offtarget_summary`).
 
+The **query species** is the organism the _target_ transcripts belong to. It is read from the
+database the gene query was answered by (Ensembl/RefSeq/GENCODE are all human-only), never from
+`--species`, which is an unordered set of genomes to screen _against_ and whose order carries no
+meaning. Pass `--query-species` when designing against an input FASTA from another organism — it
+also decides which species' alignment must have succeeded before candidates can be scored after
+screening.
+
 ---
 
 ## 4. Threshold Justification

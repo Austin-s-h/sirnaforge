@@ -26,12 +26,20 @@ from pathlib import Path
 
 import pytest
 
+from sirnaforge.cli import DEFAULT_SPECIES_ARGUMENT
+from sirnaforge.config import (
+    DEFAULT_MIRNA_CANONICAL_SPECIES,
+    DEFAULT_MIRNA_SOURCE,
+    DEFAULT_TRANSCRIPTOME_SOURCES,
+)
 from sirnaforge.core.design import (
     MIRNA_BONUS_KEY,
     MIRNA_BONUS_MAX_KEY,
     MiRNADesigner,
     mirna_max_biogenesis_bonus,
 )
+from sirnaforge.data.species_registry import normalize_species_name
+from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
@@ -39,6 +47,7 @@ from sirnaforge.models.sirna import (
     OffTargetFilterCriteria,
     SiRNACandidate,
 )
+from sirnaforge.utils.cli_inputs import resolve_species_inputs
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, DIRTY_CONTROL_SUFFIX
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 
@@ -77,12 +86,14 @@ def _workflow(
     design_params: DesignParameters | None = None,
     genome_species: list[str] | None = None,
     nextflow_config: dict[str, str] | None = None,
+    query_species: str | None = None,
 ) -> SiRNAWorkflow:
     """Build a workflow instance around a query gene, without running it."""
     config = WorkflowConfig(
         output_dir=tmp_path / out_name,
         gene_query="TP53",
         genome_species=genome_species,
+        query_species=query_species,
         nextflow_config=nextflow_config,
         design_params=design_params or DesignParameters(),
     )
@@ -535,3 +546,118 @@ def test_dirty_controls_share_the_mirna_score_scale(tmp_path: Path) -> None:
     assert control.composite_score < real.composite_score, (
         "a control cloned from a rejected candidate must not outscore the real candidate it copied"
     )
+
+
+def _cli_default_genome_species() -> list[str]:
+    """The genome species a bare ``sirnaforge workflow GENE`` actually resolves, in CLI order."""
+    return list(
+        resolve_species_inputs(
+            species=DEFAULT_SPECIES_ARGUMENT, mirna_db=DEFAULT_MIRNA_SOURCE, mirna_species=None
+        ).genome_species
+    )
+
+
+def _cli_default_screened_species() -> list[str]:
+    """Species the default transcriptome set really aligns, read off the default source names."""
+    return [
+        normalize_species_name(TranscriptomeManager.SOURCES[source].species or "")
+        for source in DEFAULT_TRANSCRIPTOME_SOURCES
+    ]
+
+
+@pytest.mark.unit
+def test_cli_default_species_list_scores_a_complete_screen(tmp_path: Path) -> None:
+    """The DEFAULT CLI invocation must score after screening -- that is issue #80's whole point.
+
+    Every other test here hands ``_integrate_offtarget_results`` an explicit species list or
+    ``screened_species=None``, which is exactly why this escaped: the query species was taken from
+    ``mirna_genome_species[0]``, and the CLI's own ``--species`` default happens to start with
+    chicken while the default transcriptome set aligns human/mouse/rat/macaque. So a bare
+    ``sirnaforge workflow TP53`` declared a chicken run, found no chicken alignment in a completely
+    successful four-transcriptome screen, and kept the design-time score for every candidate while
+    stamping ``off_target_screened = False`` on it. Both real default lists are read from the
+    shipped constants so that reshuffling either one cannot quietly reintroduce the mismatch.
+    """
+    screened = _cli_default_screened_species()
+    assert normalize_species_name(DEFAULT_MIRNA_CANONICAL_SPECIES[0]) not in screened, (
+        "the first name in the CLI --species default is not one of the default transcriptome "
+        "species; that mismatch is precisely what this test exists to catch, so the test is "
+        "vacuous if it ever stops holding"
+    )
+
+    workflow = _workflow(tmp_path, "cli_default_out", genome_species=_cli_default_genome_species())
+    assert workflow._query_species in screened, (
+        "the query species must be the organism the target transcripts came from, not whichever "
+        "name happens to sit first in the off-target species list"
+    )
+
+    candidate = _candidate("cand_cli_default", BONUS_GUIDE)
+    MiRNADesigner(DesignParameters())._score_candidates([candidate])
+    design_time_score = candidate.composite_score
+
+    _, stats = workflow._integrate_offtarget_results(
+        [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=screened
+    )
+
+    assert candidate.off_target_screened is True, "a complete screen must not be reported as unscreened"
+    assert candidate.scored_after_screening is True
+    assert candidate.composite_score != design_time_score, "the post-screen terms must reach the composite"
+    assert stats["candidates_not_scored_after_screening"] == 0
+
+
+@pytest.mark.unit
+def test_query_species_is_independent_of_species_list_order(tmp_path: Path) -> None:
+    """``--species`` is an unordered set of genomes to screen AGAINST; no position identifies the target.
+
+    Reversing the CLI default list changes nothing about the run: the same gene was queried from
+    the same database, so the same organism is the target and the same composite must come out.
+    Pre-fix the two orders disagreed about the query species and therefore about whether the run
+    could be scored at all.
+    """
+    screened = _cli_default_screened_species()
+    forward = _cli_default_genome_species()
+
+    def _run(out_name: str, genome_species: list[str]) -> SiRNACandidate:
+        workflow = _workflow(tmp_path, out_name, genome_species=genome_species)
+        candidate = _candidate("cand_order", BONUS_GUIDE)
+        MiRNADesigner(DesignParameters())._score_candidates([candidate])
+        workflow._integrate_offtarget_results(
+            [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=screened
+        )
+        assert workflow._query_species in screened
+        return candidate
+
+    as_listed = _run("order_forward_out", forward)
+    reversed_order = _run("order_reversed_out", list(reversed(forward)))
+
+    assert as_listed.scored_after_screening is True
+    assert reversed_order.scored_after_screening is True
+    assert as_listed.composite_score == pytest.approx(reversed_order.composite_score), (
+        "reordering the species to screen against must not change any candidate's score"
+    )
+
+
+@pytest.mark.unit
+def test_explicit_query_species_decides_whose_alignment_must_have_run(tmp_path: Path) -> None:
+    """The refusal-to-fake-specificity guard keys on the STATED query species, not on a default.
+
+    Designing against a mouse input FASTA makes the mouse alignment the one that has to succeed; a
+    run where only human aligned has no evidence about the target organism and must keep its
+    design-time score. This also pins that the new setting is what drives the guard, so the guard
+    cannot be satisfied by the mere presence of a human alignment.
+    """
+    workflow = _workflow(tmp_path, "explicit_query_out", genome_species=["human", "mouse"], query_species="mouse")
+    assert workflow._query_species == "mouse"
+
+    candidate = _candidate("cand_explicit_query", BONUS_GUIDE)
+    MiRNADesigner(DesignParameters())._score_candidates([candidate])
+    design_time_score = candidate.composite_score
+
+    _, stats = workflow._integrate_offtarget_results(
+        [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=["human"]
+    )
+
+    assert candidate.off_target_screened is False, "the target organism was never aligned"
+    assert candidate.scored_after_screening is False
+    assert candidate.composite_score == design_time_score
+    assert stats["candidates_not_scored_after_screening"] == 1

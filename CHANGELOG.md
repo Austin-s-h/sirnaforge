@@ -92,6 +92,19 @@ substantially, for the same reason.
   supply species through `--transcriptome-indices` also get a new Nextflow work-dir cache key (the
   key includes the resolved species list), so the first run after upgrading re-screens instead of
   resuming; nothing needs to be cleared by hand.
+- **The query species was read out of a list position, which turned the guard above on against
+  every default run.** `--species` is an unordered set of genomes to screen _against_, and its own
+  default starts with chicken (`chicken,pig,rat,mouse,human,rhesus,macaque`), but the workflow took
+  element 0 of it as the organism of the _target_ transcripts. So a plain `sirnaforge workflow TP53`
+  called itself a chicken run, found no chicken alignment among the four human/mouse/rat/macaque
+  transcriptomes it had just screened successfully, and kept design-time scores for every candidate
+  (`scored_after_screening = False`, `off_target_screened = False` on a complete screen) while still
+  reporting `run_status = "completed"`; repeat detection was skipped in the same runs for want of a
+  chicken cDNA. The query species now comes from where the target transcripts came from — the
+  gene-query database, via `GeneSearcher.query_species` (Ensembl, RefSeq and GENCODE are all
+  human-only) — and a new `--query-species` (`query_species=` on `run_sirna_workflow`,
+  `run_offtarget_only_workflow` and `WorkflowConfig`) states it outright for an input FASTA from
+  another organism.
 
 ### Added
 
@@ -163,8 +176,9 @@ substantially, for the same reason.
   unchanged by the dedup. `top_n` no longer gates which candidates are screened — it keeps its
   reporting meaning only (how many candidates land in `top_candidates`). Candidates are
   re-ranked by the post-screen composite score once screening completes, and `top_candidates`
-  is rebuilt from the viable (passing, non-repeat-flagged) subset rather than staying frozen at
-  its design-time order.
+  is rebuilt from the viable subset rather than staying frozen at its design-time order — viable
+  meaning passing, non-repeat-flagged, and (where a screen only partly succeeded) scored after
+  screening; see the partial-screen entry above for that third exclusion.
 - The design-time self-repetitiveness proxy (repeated 7-mers _within_ the guide) is retained as
   an unweighted diagnostic, `component_scores["design_off_target_proxy"]`; it no longer feeds
   `composite_score` under any name. For the standalone `sirnaforge design` path (no screening),
