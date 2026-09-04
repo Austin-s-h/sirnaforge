@@ -115,6 +115,19 @@ DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
 
 
+def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str) -> str:
+    """Describe where off-target results landed, or why there are none.
+
+    Reporting the path unconditionally meant a run whose screening never happened still
+    pointed at a directory that does not exist, with the actual reason many lines earlier
+    in the log.
+    """
+    if offtarget_summary.get("status") == "skipped":
+        reason = offtarget_summary.get("reason") or "not run"
+        return f"   • Off-target results: [yellow]not produced ({reason})[/yellow]"
+    return f"   • Off-target results: [blue]{results_path}[/blue]"
+
+
 def _autotune_zfn_sharding(
     cores_budget: int | None = None,
     search_backend: ZFNSearchBackend = ZFNSearchBackend.PYAHOCORASICK,
@@ -1304,7 +1317,8 @@ def workflow(  # noqa: PLR0912
             console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
             console.print("   • siRNA candidates (ALL): [blue]sirnaforge/candidates_all.csv[/blue]")
             console.print("   • siRNA candidates (PASS): [blue]sirnaforge/candidates_pass.csv[/blue]")
-            console.print("   • Off-target results: [blue]off_target/results/[/blue]")
+            if offtarget_summary:
+                console.print(_offtarget_results_line(offtarget_summary, "off_target/results/"))
             console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
             if json_summary:
                 console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
@@ -1548,7 +1562,7 @@ def offtarget(
         console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
         console.print("   • Input candidates: [blue]input_candidates.fasta[/blue]")
-        console.print("   • Off-target results: [blue]results/[/blue]")
+        console.print(_offtarget_results_line(offtarget_summary, "results/"))
         console.print("   • Console log: [blue]logs/sirnaforge.log[/blue]")
 
         if offtarget_summary.get("method") == "embedded_nextflow":
