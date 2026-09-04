@@ -18,6 +18,34 @@ substantially, for the same reason.
 
 ### Fixed
 
+- **miRBase miRNA databases were parsed with Biopython's `"fasta-blast"` reader, which relabels
+  every record with the _first_ record's header, so `--mirna-db mirbase` (and
+  `mirbase_high_conf` / `mirbase_hairpin`) produced a corrupt seed-screening database.** The
+  reader keeps each record's own sequence but clones the first header onto all of them, and
+  `_filter_species_sequences` decides species membership from `record.description` — so the whole
+  filter collapsed into one decision about the first header in `mature.fa`. Two outcomes, both
+  silent: if the first header happened to match the requested species, every miRNA from all ~270
+  species was kept under that one duplicated header — and because the consumer
+  (`FastaUtils.parse_fasta_to_dict`) keys its dictionary on the full header, the "48k sequence"
+  database collapsed to essentially **one** entry, so seed screening compared guides against a
+  single miRNA; if it did not match (the usual case, since `mature.fa` is ordered by species and
+  `hsa-`/`mmu-`/`rno-` are not first), filtering returned nothing, `get_database` returned `None`,
+  and miRNA seed screening was skipped entirely with only a log line. Nothing raised either way.
+  **Scope:** the shipped default is `--mirna-db mirgenedb`, whose per-species files are written
+  straight from the download without going through a FASTA parser, so default runs were _not_
+  affected; the corruption required an explicit miRBase source, or `mirna_manager --combine`,
+  which relabelled every combined record regardless of source. The parser is now plain `"fasta"`
+  (also the only one of the three available at the declared `biopython>=1.84` floor — the
+  `"fasta-blast"` name did not exist before 1.85 and raised `ValueError: Unknown format`).
+  **Any miRBase database cached by an affected build is wrong on disk and is now discarded
+  automatically** by the reference cache's producer-version check, so the first run after
+  upgrading re-downloads it; to force it sooner, run `sirnaforge cache --clear-mirna`.
+  Alongside this: combined databases are always rebuilt rather than reused on an mtime
+  comparison that carried no TTL and no checksum and so could never notice wrong contents; a
+  species with no miRBase code now raises instead of silently returning every species; and
+  HTML-wrapped payloads have their pre-record preamble stripped, so block-style `<pre>` wrappers
+  no longer leave leading blank lines that Biopython 1.86 warns about and a future release will
+  reject.
 - **On-target self-hit exclusion only matched a candidate's exact source transcript (or, in a
   first pass, other isoforms present in the input FASTA), so uncapping `max_hits` turned the
   off-target filter into a near-total kill switch: 3,259 of 3,288 candidates failed

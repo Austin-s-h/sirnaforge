@@ -380,7 +380,14 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         return CacheMetadata.from_dict(data, source_class=MiRNASource)
 
     def _filter_species_sequences(self, fasta_content: str, species: str) -> str:
-        """Filter FASTA content for specific species using miRBase three-letter codes."""
+        """Filter FASTA content for specific species using miRBase three-letter codes.
+
+        Returns the matching records as FASTA text, or an empty string when the species is
+        absent from the payload (callers treat that as a download failure).
+
+        Raises:
+            ValueError: if no miRBase code is known for `species`.
+        """
         # Species prefix mapping - simplified and clear
         species_codes = {
             "human": "hsa-",
@@ -396,11 +403,24 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
 
         code = species_codes.get(species)
         if not code:
-            logger.warning(f"Unknown species '{species}', returning all sequences")
-            return fasta_content
+            # Falling back to "return every species" would hand ~48k miRNAs from ~270 species
+            # to seed screening under a single-species label, which looks like a successful run.
+            # `get_database` only ever passes species it has already validated against SOURCES,
+            # so reaching this is a programming error and must be loud rather than permissive.
+            raise ValueError(
+                f"No miRBase species code known for '{species}'; supported: {', '.join(sorted(species_codes))}"
+            )
 
         # Some upstream endpoints occasionally return HTML-wrapped FASTA lines.
         normalized_content = re.sub(r"</?[^>\n]+>", "", fasta_content)
+        # Block-style wrappers (a bare `<pre>` line around the whole payload) leave blank lines
+        # ahead of the first record. Biopython 1.86's "fasta" reader treats anything before the
+        # first ">" as a deprecated leading comment (BiopythonDeprecationWarning) and a future
+        # release turns that into a ValueError, so drop the preamble instead of parsing it.
+        lines = normalized_content.splitlines()
+        first_record = next((index for index, line in enumerate(lines) if line.startswith(">")), None)
+        normalized_content = "\n".join(lines[first_record:]) + "\n" if first_record is not None else ""
+
         input_handle = StringIO(normalized_content)
         output_handle = StringIO()
         filtered_count = 0
@@ -540,7 +560,8 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
 
         combined_file = self.cache_dir / output_name
 
-        # Check if we need to regenerate
+        # Source lookups own the caching (TTL + checksum via `_is_cache_valid`); this method only
+        # concatenates and de-duplicates them.
         source_files = []
         for source_name in sources:
             source_file = self.get_database(source_name, species)
@@ -549,15 +570,12 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 return None
             source_files.append(source_file)
 
-        # Check if combined file is newer than all sources
-        if combined_file.exists():
-            combined_mtime = combined_file.stat().st_mtime
-            if all(source_file.stat().st_mtime <= combined_mtime for source_file in source_files):
-                logger.info(f"✅ Using existing combined database: {combined_file}")
-                return combined_file
-
-            # Combine databases
-            logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
+        # Always rebuild. The previous mtime-only reuse check ("combined is newer than every
+        # source") had no TTL and no checksum, so it could never notice that the combined file's
+        # *contents* were wrong — a combined database written by a buggy producer was served
+        # forever, even after the source caches themselves had been re-validated and refreshed.
+        # Re-combining is a local pass over a few thousand records, so the cache bought nothing.
+        logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
 
         seen_sequences = set()
         total_sequences = 0
