@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from sirnaforge.utils.cache_utils import (
+    ARTIFACT_STAMP_SUFFIX,
     ARTIFACT_TRANSCRIPTOME_INDEX,
     discard_artifact_stamp,
     is_artifact_stamp_current,
@@ -218,6 +219,22 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return False
 
     @staticmethod
+    def _index_outputs(index_prefix: Path) -> list[Path]:
+        """The files a BWA-MEM2 index actually consists of, for output fingerprinting.
+
+        The prefix itself is not a file (only a marker `_ensure_index_marker` touches),
+        so the members are discovered by glob rather than from a hard-coded extension
+        list: bwa-mem2 releases differ in which suffixes they emit, and a stamp that
+        only covered the four we happen to name would let the others rot unnoticed.
+        The sidecar stamp is excluded - it cannot fingerprint itself.
+        """
+        return sorted(
+            path
+            for path in index_prefix.parent.glob(f"{index_prefix.name}.*")
+            if path.is_file() and not path.name.endswith(ARTIFACT_STAMP_SUFFIX)
+        )
+
+    @staticmethod
     def _index_inputs(meta: CacheMetadata) -> dict[str, str]:
         """Fingerprint of the content an index must have been built from.
 
@@ -247,7 +264,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # so adopt it and stamp it. Anything we cannot date is discarded.
         built_at = (meta.extra or {}).get("index_built_at")
         if isinstance(built_at, str) and built_at >= meta.downloaded_at:
-            write_artifact_stamp(ARTIFACT_TRANSCRIPTOME_INDEX, index_path, inputs=inputs)
+            write_artifact_stamp(
+                ARTIFACT_TRANSCRIPTOME_INDEX,
+                index_path,
+                inputs=inputs,
+                outputs=self._index_outputs(index_path),
+            )
             logger.info("Adopted pre-existing BWA-MEM2 index %s (built after the cached content)", index_path)
             return True
 
@@ -558,7 +580,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         if self._build_index(fasta, index_prefix):
             self._ensure_index_marker(index_prefix)
             self._set_index_path(meta, index_prefix)
-            write_artifact_stamp(ARTIFACT_TRANSCRIPTOME_INDEX, index_prefix, inputs=self._index_inputs(meta))
+            write_artifact_stamp(
+                ARTIFACT_TRANSCRIPTOME_INDEX,
+                index_prefix,
+                inputs=self._index_inputs(meta),
+                outputs=self._index_outputs(index_prefix),
+            )
             self._save_metadata()
             return {"fasta": fasta, "index": index_prefix}
 

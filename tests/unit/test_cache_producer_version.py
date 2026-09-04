@@ -8,12 +8,14 @@ load, both for files tracked in `cache_metadata.json` and for derived artifacts
 (combined FASTAs, BWA-MEM2 indices) tracked by sidecar stamps.
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from Bio import SeqIO
 
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager, MiRNASource
 from sirnaforge.data.reference_manager import CacheMetadata
@@ -22,12 +24,15 @@ from sirnaforge.utils import cache_utils
 from sirnaforge.utils.cache_utils import (
     ARTIFACT_MIRNA_COMBINED,
     ARTIFACT_TRANSCRIPTOME_INDEX,
-    ARTIFACT_VARIANT_ROWS,
+    DIGEST_MODE_FULL,
+    DIGEST_MODE_SAMPLED,
     LEGACY_PRODUCER_VERSION,
     artifact_stamp_path,
     current_producer_version,
+    fingerprint_outputs,
     is_artifact_stamp_current,
     is_producer_version_current,
+    read_artifact_stamp,
     write_artifact_stamp,
 )
 
@@ -68,11 +73,26 @@ class TestProducerVersionScope:
         """Registering a class is what opts it in; an unknown name must be inert."""
         assert is_producer_version_current("some_future_cache", LEGACY_PRODUCER_VERSION)
 
-    def test_missing_row_version_reads_as_pre_versioning(self) -> None:
-        """The variant parquet column is absent in old files; that must count as stale."""
-        assert not is_producer_version_current(ARTIFACT_VARIANT_ROWS, None)
-        assert not is_producer_version_current(ARTIFACT_VARIANT_ROWS, float("nan"))
-        assert is_producer_version_current(ARTIFACT_VARIANT_ROWS, current_producer_version(ARTIFACT_VARIANT_ROWS))
+    def test_missing_recorded_version_reads_as_pre_versioning(self) -> None:
+        """An absent version (None, or NaN from a column that did not exist) is stale."""
+        assert not is_producer_version_current(ARTIFACT_MIRNA_COMBINED, None)
+        assert not is_producer_version_current(ARTIFACT_MIRNA_COMBINED, float("nan"))
+        assert not is_producer_version_current(ARTIFACT_MIRNA_COMBINED, "")
+        assert is_producer_version_current(ARTIFACT_MIRNA_COMBINED, current_producer_version(ARTIFACT_MIRNA_COMBINED))
+
+    def test_only_classes_that_are_actually_checked_are_registered(self) -> None:
+        """A registered class nobody validates reads as a guarantee we do not give.
+
+        Every entry in the table must be reachable from a call site: either a
+        `ReferenceManager.artifact_class` (its cache subdir) or an artifact-stamp
+        constant. `variants` and `transcriptome_filtered` were registered without one
+        and are gone; re-registering either without wiring it up must fail here.
+        """
+        checked = {"mirna", "transcriptomes", "genomes", "annotations"} | {
+            ARTIFACT_MIRNA_COMBINED,
+            ARTIFACT_TRANSCRIPTOME_INDEX,
+        }
+        assert set(cache_utils.PRODUCER_VERSIONS) == checked
 
 
 class TestReferenceMetadataVersion:
@@ -185,32 +205,40 @@ class TestCombinedDatabaseStamp:
         return manager, files
 
     @staticmethod
-    def _mark(combined: Path) -> None:
-        """Append a marker that only survives if the file is reused, not rebuilt."""
-        with combined.open("a", encoding="utf-8") as handle:
-            handle.write("; reused\n")
+    def _rebuilds(caplog: pytest.LogCaptureFixture) -> int:
+        """How many times the combining step ran.
+
+        The obvious probe - append a marker to the artifact and see whether it
+        survives - cannot be used any more, because appending to a stamped artifact is
+        exactly the post-stamp rewrite the output fingerprint now rejects. It would
+        make every rebuild assertion below pass for the wrong reason, so reuse is
+        measured by whether the producer ran at all.
+        """
+        return caplog.text.count("🔄 Combining")
 
     def test_combined_database_is_reused_when_stamp_matches(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An unchanged combined FASTA is still served from cache."""
+        caplog.set_level(logging.INFO)
         manager, _ = self._manager_with_sources(tmp_path, monkeypatch)
         combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
         assert combined is not None
         assert artifact_stamp_path(combined).exists()
-        self._mark(combined)
+        assert self._rebuilds(caplog) == 1
 
         assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
-        assert "; reused" in combined.read_text(encoding="utf-8")
+        assert self._rebuilds(caplog) == 1, "an untouched artifact must be reused, not rebuilt"
+        assert "Using existing combined database" in caplog.text
 
     def test_combined_database_is_rebuilt_when_a_source_changes_behind_its_mtime(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Rewritten source content with an unchanged mtime fooled the old check."""
+        caplog.set_level(logging.INFO)
         manager, files = self._manager_with_sources(tmp_path, monkeypatch)
         combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
         assert combined is not None
-        self._mark(combined)
 
         source = files["mirgenedb"]
         stat = source.stat()
@@ -219,35 +247,88 @@ class TestCombinedDatabaseStamp:
         assert source.stat().st_mtime_ns <= combined.stat().st_mtime_ns
 
         assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
-        assert "; reused" not in combined.read_text(encoding="utf-8")
+        assert self._rebuilds(caplog) == 2
+        assert "AAAAAAAAAAAAAAAAAAAAAA" in combined.read_text(encoding="utf-8")
 
-    def test_unstamped_combined_database_is_rebuilt(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unstamped_combined_database_is_rebuilt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """A combined FASTA left by an older release cannot vouch for itself."""
+        caplog.set_level(logging.INFO)
         manager, _ = self._manager_with_sources(tmp_path, monkeypatch)
         combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
         assert combined is not None
         artifact_stamp_path(combined).unlink()
-        self._mark(combined)
 
         assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
-        assert "; reused" not in combined.read_text(encoding="utf-8")
+        assert self._rebuilds(caplog) == 2
 
     def test_combined_database_is_rebuilt_when_producer_version_moves(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Bumping the combined-FASTA producer regenerates the artifact."""
+        caplog.set_level(logging.INFO)
         manager, _ = self._manager_with_sources(tmp_path, monkeypatch)
         combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
         assert combined is not None
-        self._mark(combined)
 
         monkeypatch.setitem(cache_utils.PRODUCER_VERSIONS, ARTIFACT_MIRNA_COMBINED, "99.0")
 
         assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
-        assert "; reused" not in combined.read_text(encoding="utf-8")
+        assert self._rebuilds(caplog) == 2
 
-    def test_expired_combined_database_is_rebuilt(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_truncated_combined_database_is_regenerated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A file truncated *after* stamping was served behind a "current" stamp.
+
+        This is the failure input-only fingerprints cannot see: the producer version,
+        the source digests and the TTL are all still correct, because none of them
+        describe the artifact's own bytes.
+        """
+        manager, _ = self._manager_with_sources(tmp_path, monkeypatch)
+        combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
+        assert combined is not None
+        assert len(list(SeqIO.parse(combined, "fasta"))) == 2
+
+        text = combined.read_text(encoding="utf-8")
+        stat = combined.stat()
+        combined.write_text(text[: text.index("\n>") + 1], encoding="utf-8")
+        os.utime(combined, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert len(list(SeqIO.parse(combined, "fasta"))) == 1
+
+        with caplog.at_level(logging.WARNING):
+            assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
+
+        assert len(list(SeqIO.parse(combined, "fasta"))) == 2, "a truncated artifact must be rebuilt, not served"
+        assert "truncated or rewritten" in caplog.text
+
+    def test_combined_database_corrupted_without_changing_its_length_is_regenerated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Same byte count, same mtime: only a digest of the output can catch this."""
+        manager, _ = self._manager_with_sources(tmp_path, monkeypatch)
+        combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
+        assert combined is not None
+        original = combined.read_text(encoding="utf-8")
+
+        stat = combined.stat()
+        combined.write_text(original.replace("UGGAAUGUAAAGAAGUAUGUAU", "NNNNNNNNNNNNNNNNNNNNNN"), encoding="utf-8")
+        os.utime(combined, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert combined.stat().st_size == stat.st_size
+        assert combined.stat().st_mtime_ns == stat.st_mtime_ns
+
+        with caplog.at_level(logging.WARNING):
+            assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
+
+        assert combined.read_text(encoding="utf-8") == original
+        assert "corrupted after it was stamped" in caplog.text
+
+    def test_expired_combined_database_is_rebuilt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """The old mtime comparison had no TTL at all."""
+        caplog.set_level(logging.INFO)
         manager, _ = self._manager_with_sources(tmp_path, monkeypatch)
         combined = manager.get_combined_database(["mirgenedb", "mirbase"], "human")
         assert combined is not None
@@ -256,28 +337,38 @@ class TestCombinedDatabaseStamp:
             datetime.now().isoformat()[:10], (datetime.now() - timedelta(days=365)).isoformat()[:10]
         )
         stamp.write_text(aged, encoding="utf-8")
-        self._mark(combined)
 
         assert manager.get_combined_database(["mirgenedb", "mirbase"], "human") == combined
-        assert "; reused" not in combined.read_text(encoding="utf-8")
+        assert self._rebuilds(caplog) == 2
 
 
 class TestTranscriptomeIndexStamp:
     """A BWA-MEM2 index must not outlive the content it was built from."""
 
-    @staticmethod
-    def _manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TranscriptomeManager, list[Path]]:
+    # What bwa-mem2 writes beside the prefix; the real `_is_index_complete` requires
+    # all four to exist and be non-empty.
+    MEMBER_EXTENSIONS = (".amb", ".ann", ".bwt.2bit.64", ".pac")
+
+    @classmethod
+    def _manager(cls, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TranscriptomeManager, list[Path]]:
+        """Manager whose index build writes real member files.
+
+        The stand-in has to produce files, not just a flag: an index is a multi-file
+        artifact, and the point of the output fingerprint is that each member's bytes
+        are checked. `_is_index_complete` is left unpatched so completeness and
+        integrity are exercised as the two separate checks they are.
+        """
         manager = TranscriptomeManager(cache_dir=tmp_path, auto_build_indices=True, local_content_dedupe=False)
         builds: list[Path] = []
-        complete: set[Path] = set()
 
-        def fake_build(fasta: Path, prefix: Path) -> bool:  # noqa: ARG001
+        def fake_build(fasta: Path, prefix: Path) -> bool:
             builds.append(prefix)
-            complete.add(prefix)
+            payload = f"bwa-mem2 index of {fasta.read_text(encoding='utf-8')}"
+            for ext in cls.MEMBER_EXTENSIONS:
+                (prefix.parent / f"{prefix.name}{ext}").write_text(payload, encoding="utf-8")
             return True
 
         monkeypatch.setattr(manager, "_build_index", fake_build)
-        monkeypatch.setattr(manager, "_is_index_complete", lambda prefix: prefix in complete)
         return manager, builds
 
     @staticmethod
@@ -360,6 +451,146 @@ class TestTranscriptomeIndexStamp:
         manager._prepare_result_with_index(cached, prefix, "refkey", True)
 
         assert len(builds) == 2
+
+    def test_index_is_rebuilt_when_a_member_file_is_truncated_after_stamping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A half-written index member must be caught, not aligned against.
+
+        `_is_index_complete` only asks whether the members exist and are non-empty, so
+        an interrupted copy or a full disk leaves an index it happily accepts while the
+        input fingerprint still matches.
+        """
+        manager, builds = self._manager(tmp_path, monkeypatch)
+        cached = manager.cache_dir / "ref.fa"
+        cached.write_text(">t1\nACGT\n", encoding="utf-8")
+        self._record(manager, cached)
+        prefix = manager.cache_dir / "refkey_index"
+        manager._prepare_result_with_index(cached, prefix, "refkey", True)
+        assert len(builds) == 1
+
+        member = prefix.parent / f"{prefix.name}.bwt.2bit.64"
+        intact = member.read_text(encoding="utf-8")
+        stat = member.stat()
+        member.write_text(intact[: len(intact) // 2], encoding="utf-8")
+        os.utime(member, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert manager._is_index_complete(prefix), "the completeness helper cannot see this"
+
+        with caplog.at_level(logging.WARNING):
+            manager._prepare_result_with_index(cached, prefix, "refkey", True)
+
+        assert len(builds) == 2, "a truncated index member must force a rebuild"
+        assert "truncated or rewritten" in caplog.text
+        assert member.read_text(encoding="utf-8") == intact
+
+    def test_stamp_alone_rejects_an_incomplete_index(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Every member is recorded, so the stamp no longer needs to be taken on trust.
+
+        `_is_index_complete` would also catch a missing member; the point here is that
+        the stamp is asked directly and answers "no" on its own, which is what lets
+        `is_artifact_stamp_current` be documented as a sufficient reuse gate.
+        """
+        manager, _ = self._manager(tmp_path, monkeypatch)
+        cached = manager.cache_dir / "ref.fa"
+        cached.write_text(">t1\nACGT\n", encoding="utf-8")
+        meta = self._record(manager, cached)
+        prefix = manager.cache_dir / "refkey_index"
+        manager._prepare_result_with_index(cached, prefix, "refkey", True)
+        assert manager._index_is_trustworthy(meta, prefix)
+
+        stamp = read_artifact_stamp(prefix)
+        assert stamp is not None
+        assert set(stamp["outputs"]) == {f"{prefix.name}{ext}" for ext in self.MEMBER_EXTENSIONS}
+
+        (prefix.parent / f"{prefix.name}.pac").unlink()
+        assert not manager._index_is_trustworthy(meta, prefix)
+
+
+class TestArtifactOutputFingerprint:
+    """A stamp must fingerprint the artifact's own bytes, not only its inputs."""
+
+    def test_stamp_records_size_and_digest_of_the_artifact(self, tmp_path: Path) -> None:
+        """Writing a stamp records the output's own size and digest, unasked."""
+        artifact = tmp_path / "derived.fa"
+        artifact.write_text(">x\nACGT\n", encoding="utf-8")
+        write_artifact_stamp(ARTIFACT_MIRNA_COMBINED, artifact)
+
+        stamp = read_artifact_stamp(artifact)
+        assert stamp is not None
+        recorded = stamp["outputs"]["derived.fa"]
+        assert recorded["size"] == artifact.stat().st_size
+        assert recorded["digest_mode"] == DIGEST_MODE_FULL
+        assert recorded["digest"]
+
+    def test_truncation_is_rejected_by_size_without_reading_the_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Size is the cheap pre-check; a mismatch must not pay for a digest at all."""
+        artifact = tmp_path / "derived.fa"
+        artifact.write_text(">x\nACGTACGT\n", encoding="utf-8")
+        write_artifact_stamp(ARTIFACT_MIRNA_COMBINED, artifact)
+        artifact.write_text(">x\n", encoding="utf-8")
+
+        def explode(*_args: object, **_kwargs: object) -> str:
+            raise AssertionError("size mismatch must short-circuit before any digest")
+
+        monkeypatch.setattr(cache_utils, "_digest_output", explode)
+        assert not is_artifact_stamp_current(ARTIFACT_MIRNA_COMBINED, artifact)
+
+    def test_stamp_with_no_output_fingerprint_is_not_reusable(self, tmp_path: Path) -> None:
+        """An artifact whose bytes were never fingerprinted cannot be vouched for."""
+        artifact = tmp_path / "derived.fa"
+        artifact.write_text(">x\nACGT\n", encoding="utf-8")
+        write_artifact_stamp(ARTIFACT_MIRNA_COMBINED, artifact)
+
+        stamp_path = artifact_stamp_path(artifact)
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+        del stamp["outputs"]
+        stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
+
+        assert not is_artifact_stamp_current(ARTIFACT_MIRNA_COMBINED, artifact)
+
+    def test_large_outputs_are_sampled_instead_of_read_whole(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A multi-GB index must not be hashed end-to-end on every cache hit.
+
+        With the budget scaled down to bytes, this pins the documented trade-off: size
+        plus a head/tail window, so truncation and head/tail damage are caught and a
+        same-length rewrite of the middle is knowingly not.
+        """
+        monkeypatch.setattr(cache_utils, "STAMP_FULL_DIGEST_MAX_BYTES", 16)
+        monkeypatch.setattr(cache_utils, "STAMP_SAMPLE_BYTES", 4)
+        artifact = tmp_path / "big.idx"
+        artifact.write_bytes(b"HEAD" + b"m" * 32 + b"TAIL")
+        write_artifact_stamp(ARTIFACT_TRANSCRIPTOME_INDEX, artifact)
+
+        stamp = read_artifact_stamp(artifact)
+        assert stamp is not None
+        assert stamp["outputs"]["big.idx"]["digest_mode"] == DIGEST_MODE_SAMPLED
+        assert is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, artifact)
+
+        # Caught: truncation (size) and damage inside the sampled windows.
+        artifact.write_bytes(b"HEAD" + b"m" * 32)
+        assert not is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, artifact)
+        artifact.write_bytes(b"head" + b"m" * 32 + b"TAIL")
+        assert not is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, artifact)
+
+        # Known gap, stated in the module docs: an equal-length rewrite between the
+        # windows is invisible without a full read we refuse to pay for.
+        artifact.write_bytes(b"HEAD" + b"X" * 32 + b"TAIL")
+        assert is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, artifact)
+
+    def test_fingerprint_skips_outputs_it_cannot_read(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Bookkeeping must never abort a build; an unreadable output is just absent."""
+        present = tmp_path / "present.fa"
+        present.write_text(">x\nAC\n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            fingerprints = fingerprint_outputs([present, tmp_path / "gone.fa"])
+
+        assert set(fingerprints) == {"present.fa"}
+        assert "Could not fingerprint cache output" in caplog.text
 
 
 class TestArtifactStampPrimitives:

@@ -66,6 +66,12 @@ substantially, for the same reason.
   they were built from and rebuilt when it changes. An existing index that our own metadata shows
   was built _after_ the currently cached reference is adopted as-is rather than rebuilt, so
   upgrading does not cost you an hour of `bwa-mem2 index` on a human transcriptome.
+- **A cached artifact that was truncated or corrupted _after_ being stamped is now detected and
+  regenerated.** The stamp recorded the producer version and the inputs, so a `combined_*.fa` cut
+  short by a full disk (or an index member left half-written by an interrupted copy) kept a
+  "current" stamp and was served for its whole TTL. Stamps now also fingerprint the artifact's own
+  bytes — every file's exact size, plus an MD5 that is full below 64 MB and a head/tail sample above
+  it, so verifying a multi-GB index costs ~30 ms per file instead of a full read.
 
 ### Added
 

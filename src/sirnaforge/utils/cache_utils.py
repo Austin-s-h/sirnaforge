@@ -112,19 +112,20 @@ migration step.
 """
 
 PRODUCER_VERSION_FIELD = "producer_version"
-"""Field/column name for row-oriented caches (e.g. variants.parquet).
+"""Key under which an artifact stamp records the version that produced it.
 
-File-backed caches record the producer version in `CacheMetadata.version`;
-row-backed caches have no such document and should carry this column instead so
-both kinds validate through `is_producer_version_current`.
+Manager-backed caches keep the same value in `CacheMetadata.version`; sidecar
+stamps have no such document, so they carry this field. Naming it once keeps the
+writer (`write_artifact_stamp`) and the reader (`is_artifact_stamp_current`) from
+drifting apart. Only artifact classes that are actually validated somewhere are
+registered below - a constant nobody checks would read as a guarantee we do not
+give.
 """
 
 # Derived-artifact classes have no cache subdirectory to name them, so they get
 # constants; manager-backed classes are named by their cache subdir.
 ARTIFACT_MIRNA_COMBINED = "mirna_combined"
-ARTIFACT_TRANSCRIPTOME_FILTERED = "transcriptome_filtered"
 ARTIFACT_TRANSCRIPTOME_INDEX = "transcriptome_index"
-ARTIFACT_VARIANT_ROWS = "variants"
 
 PRODUCER_VERSIONS: dict[str, str] = {
     # Per-species filtered miRNA FASTAs. Bumped because the pre-2.0 writer parsed
@@ -142,18 +143,10 @@ PRODUCER_VERSIONS: dict[str, str] = {
     # Genome/annotation downloads are raw upstream bytes for the same reason.
     "genomes": LEGACY_PRODUCER_VERSION,
     "annotations": LEGACY_PRODUCER_VERSION,
-    # Filtered transcriptome FASTAs are derived, but the filter output itself has
-    # not changed; legacy entries are repaired by metadata bookkeeping rather
-    # than by re-filtering.
-    ARTIFACT_TRANSCRIPTOME_FILTERED: LEGACY_PRODUCER_VERSION,
     # BWA-MEM2 indices. These are bound to the checksum of the FASTA they were
     # built from via an artifact stamp, so a version bump here is only needed if
     # the way we *build* indices changes; rebuilding costs CPU, not bandwidth.
     ARTIFACT_TRANSCRIPTOME_INDEX: LEGACY_PRODUCER_VERSION,
-    # Rows in variants.parquet. Bumped because rows written by the pre-2.0 writer
-    # could lose population allele frequencies and could be overwritten by an
-    # unrelated key, so their contents cannot be trusted.
-    ARTIFACT_VARIANT_ROWS: "2.0",
 }
 
 
@@ -204,15 +197,131 @@ def log_discarded_artifact(artifact_class: str, artifact: Path | str, reason: st
 #
 # Derived artifacts (a combined FASTA, a BWA-MEM2 index) have no entry in a
 # manager's metadata document, so they carry a sidecar JSON stamp instead. The
-# stamp records the producer version *and* a fingerprint of the inputs, which is
-# what makes a derived artifact unable to outlive the content it was built from.
+# stamp records three independent things, because each answers a question the
+# others cannot:
+#
+#   producer version - "was this written by code we have since fixed?"
+#   input fingerprint - "was this built from the content we hold now?"
+#   output fingerprint - "are the artifact's own bytes still the bytes we wrote?"
+#
+# The output fingerprint is what stops a stamp vouching for an artifact that was
+# truncated or corrupted *after* stamping (an interrupted copy, a full disk, a
+# half-written rebuild): input-only fingerprints match happily in that case, and a
+# stamped-but-broken artifact is then served for its whole TTL.
 
 ARTIFACT_STAMP_SUFFIX = ".sirnaforge-cache.json"
+
+_DIGEST_CHUNK_BYTES = 1024 * 1024
+
+STAMP_FULL_DIGEST_MAX_BYTES = 64 * 1024 * 1024
+"""Largest output we are willing to read end-to-end on every cache hit.
+
+A combined miRNA FASTA is a few MB, so it is digested whole for a few
+milliseconds. A BWA-MEM2 index or a transcriptome is gigabytes: reading it in full
+on every hit would cost more than the cache saves, so those fall back to
+`DIGEST_MODE_SAMPLED`.
+"""
+
+STAMP_SAMPLE_BYTES = 4 * 1024 * 1024
+"""Head/tail window digested for outputs above the full-digest budget."""
+
+DIGEST_MODE_FULL = "full"
+DIGEST_MODE_SAMPLED = "sampled"
 
 
 def artifact_stamp_path(artifact: Path) -> Path:
     """Return the sidecar stamp path for a derived artifact or index prefix."""
     return artifact.with_name(artifact.name + ARTIFACT_STAMP_SUFFIX)
+
+
+def _digest_mode_for(size: int, full_digest_max_bytes: int) -> str:
+    """Pick the digest strength that `size` bytes can afford on every cache hit."""
+    return DIGEST_MODE_FULL if size <= full_digest_max_bytes else DIGEST_MODE_SAMPLED
+
+
+def _digest_output(path: Path, size: int, mode: str) -> str:
+    """Digest `path` using `mode`, which the stamp records so reads can repeat it."""
+    hasher = hashlib.md5()
+    with path.open("rb") as handle:
+        if mode == DIGEST_MODE_FULL:
+            for chunk in iter(lambda: handle.read(_DIGEST_CHUNK_BYTES), b""):
+                hasher.update(chunk)
+            return hasher.hexdigest()
+
+        # Sampled: bind the digest to the length as well as the head and tail bytes,
+        # so a same-length swap of head for tail cannot collide.
+        hasher.update(str(size).encode("ascii"))
+        hasher.update(handle.read(STAMP_SAMPLE_BYTES))
+        handle.seek(max(size - STAMP_SAMPLE_BYTES, 0))
+        hasher.update(handle.read(STAMP_SAMPLE_BYTES))
+    return hasher.hexdigest()
+
+
+def fingerprint_outputs(
+    outputs: Sequence[Path], *, full_digest_max_bytes: int | None = None
+) -> dict[str, dict[str, Any]]:
+    """Fingerprint the bytes an artifact is actually made of.
+
+    Keyed by basename so the fingerprint survives a re-homed cache directory, and
+    so a multi-file artifact (a BWA index prefix has four members) records one
+    entry per member and therefore proves its own completeness on read.
+
+    Every member records its exact size; the digest is full below
+    `STAMP_FULL_DIGEST_MAX_BYTES` and sampled above it. Size alone already catches
+    every truncation, which is the failure mode that actually happens.
+    """
+    budget = STAMP_FULL_DIGEST_MAX_BYTES if full_digest_max_bytes is None else full_digest_max_bytes
+    fingerprints: dict[str, dict[str, Any]] = {}
+    for path in outputs:
+        resolved = Path(path)
+        try:
+            size = resolved.stat().st_size
+            mode = _digest_mode_for(size, budget)
+            digest = _digest_output(resolved, size, mode)
+        except OSError as exc:
+            # Never abort a build over bookkeeping; an output we could not read is
+            # simply left out, and a stamp with no outputs is not reusable.
+            logger.warning("Could not fingerprint cache output %s: %s", resolved, exc)
+            continue
+        fingerprints[resolved.name] = {"size": size, "digest": digest, "digest_mode": mode}
+    return fingerprints
+
+
+def _stale_member_reason(member: Path, name: str, recorded: Any) -> str | None:
+    """Why one recorded member no longer matches what is on disk, or None if it does.
+
+    Ordered cheapest first: presence, then size (one `stat`, and the check that
+    catches every truncation), then the digest in the mode the stamp recorded.
+    """
+    if not isinstance(recorded, Mapping):
+        return f"its stamp holds an unreadable fingerprint for '{name}'"
+    if not member.exists():
+        return f"'{name}' is missing"
+
+    size = member.stat().st_size
+    if size != recorded.get("size"):
+        return f"'{name}' is {size} bytes on disk, not the {recorded.get('size')} recorded (truncated or rewritten)"
+
+    mode = recorded.get("digest_mode")
+    if mode not in (DIGEST_MODE_FULL, DIGEST_MODE_SAMPLED):
+        return f"its stamp records an unknown digest mode {mode!r} for '{name}'"
+    if _digest_output(member, size, str(mode)) != recorded.get("digest"):
+        return f"'{name}' no longer matches its recorded {mode} digest (corrupted after it was stamped)"
+
+    return None
+
+
+def _stale_output_reason(artifact: Path, outputs: Mapping[str, Any]) -> str | None:
+    """Why an artifact's bytes no longer match its stamp, or None when they do."""
+    if not outputs:
+        return "its stamp records no fingerprint of the artifact's own bytes"
+
+    for name, recorded in outputs.items():
+        reason = _stale_member_reason(artifact.parent / str(name), str(name), recorded)
+        if reason is not None:
+            return reason
+
+    return None
 
 
 def fingerprint_inputs(inputs: Sequence[Path]) -> dict[str, str]:
@@ -238,9 +347,15 @@ def write_artifact_stamp(
     artifact: Path,
     *,
     inputs: Mapping[str, str] | None = None,
+    outputs: Sequence[Path] | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Record the producer version and input fingerprint for a derived artifact."""
+    """Record the producer version, input fingerprint and output bytes of an artifact.
+
+    `outputs` lists the files the artifact consists of, and defaults to the artifact
+    itself. Multi-file artifacts must pass their members explicitly: a BWA index
+    prefix is not a file, and the four files behind it are what has to be verified.
+    """
     stamp = {
         "artifact_class": artifact_class,
         PRODUCER_VERSION_FIELD: current_producer_version(artifact_class),
@@ -248,6 +363,7 @@ def write_artifact_stamp(
         # absolute path would just invalidate the stamp whenever the cache moves.
         "artifact": artifact.name,
         "inputs": dict(inputs or {}),
+        "outputs": fingerprint_outputs([artifact] if outputs is None else outputs),
         "stamped_at": datetime.now().isoformat(),
         "extra": dict(extra or {}),
     }
@@ -286,9 +402,10 @@ def is_artifact_stamp_current(  # noqa: PLR0911
 ) -> bool:
     """Whether a derived artifact may be reused.
 
-    Callers must separately confirm the artifact itself is present and complete
-    (a BWA index is several files); this answers only "was it produced by the
-    current code from exactly these inputs, recently enough".
+    Answers "was it produced by the current code, from exactly these inputs, recently
+    enough - and are its own bytes still the bytes we stamped". The last clause is
+    what makes a stamp unable to vouch for an artifact that was truncated or
+    corrupted after it was written, so callers may reuse on a True answer alone.
     """
     stamp = read_artifact_stamp(artifact)
     if stamp is None:
@@ -315,6 +432,14 @@ def is_artifact_stamp_current(  # noqa: PLR0911
 
     if inputs is not None and dict(stamp.get("inputs") or {}) != dict(inputs):
         log_discarded_artifact(artifact_class, artifact, "the inputs it was built from have changed")
+        return False
+
+    # Everything above describes how the artifact was made; only this checks that
+    # what is on disk now is still what was made. Without it a truncated artifact
+    # keeps a "current" stamp and is served until the TTL expires.
+    stale_output = _stale_output_reason(artifact, stamp.get("outputs") or {})
+    if stale_output is not None:
+        log_discarded_artifact(artifact_class, artifact, stale_output)
         return False
 
     if max_age_days is not None:
