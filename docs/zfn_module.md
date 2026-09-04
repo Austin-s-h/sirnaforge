@@ -7,10 +7,10 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
 ### Completed
 
 - ✅ ZFN support is available through the dedicated `sirnaforge zfn ...` command.
-- ✅ Typed models and JSON-serializable workflow artifacts are implemented (`sirnaforge.models.zfn` and `zfn_candidate_summary.json` output).
+- ✅ Typed models and JSON-serializable workflow artifacts are implemented (`sirnaforge.models.zfn` and `candidate_summary.json` output).
 - ✅ Output/reporting follows existing workflow conventions, including:
-  - `sirnaforge/zfn_candidate_summary.json`
-  - `sirnaforge/zfn_offtarget_sites.csv`
+  - `sirnaforge/candidate_summary.json`
+  - `sirnaforge/offtarget_sites.csv`
   - `logs/workflow_summary.json`
 - ✅ Workflow provenance is captured in `workflow_summary.json`.
 - ✅ Nextflow-backed ZFN execution path is present (including internal shard commands).
@@ -54,11 +54,11 @@ sirnaforge zfn \
 
 Outputs are written under:
 
-- `zfn_output/sirnaforge/zfn_candidate_summary.json`
-- `zfn_output/sirnaforge/zfn_offtarget_sites.csv`
+- `zfn_output/sirnaforge/candidate_summary.json`
+- `zfn_output/sirnaforge/offtarget_sites.csv`
 - `zfn_output/logs/workflow_summary.json`
 
-`zfn_candidate_summary.json` uses a stable envelope with:
+`candidate_summary.json` uses a stable envelope with:
 
 - `schema_version` (currently `zfn_candidate_summary.v1`)
 - `search_contract` (canonical half-sites, spacer list, mismatch budgets, dimer mode, algorithm)

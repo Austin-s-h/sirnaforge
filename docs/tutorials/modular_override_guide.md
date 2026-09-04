@@ -127,7 +127,7 @@ Skip all off-target analysis:
 sirnaforge design transcripts.fasta --top-n 50
 ```
 
-**Result:** Generates `_all.csv` and `_pass.csv` with thermodynamic scores only.
+**Result:** Generates `candidates_all.csv` and `candidates_pass.csv` with thermodynamic scores only.
 
 ### Genomic DNA Off-Target (Resource-Intensive)
 

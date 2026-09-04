@@ -2499,8 +2499,8 @@ def internal_zfn_search_shard(
     dimer_mode: DimerMode = typer.Option(..., "--dimer-mode"),
     spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
     annotation_file: Path | None = typer.Option(None, "--annotation-file"),
-    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
-    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+    output_sites_csv: Path = typer.Option(Path("offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("candidate_summary.json"), "--output-summary-json"),
 ) -> None:
     """Run one shard-scoped ZFN search and emit shard artifacts."""
     run_zfn_shard_search(
@@ -2527,9 +2527,9 @@ def internal_zfn_search_shard(
 
 @internal_command("zfn-aggregate-shards")
 def internal_zfn_aggregate_shards(
-    shard_csv_glob: str = typer.Option("zfn_offtarget_sites_*.csv", "--shard-csv-glob"),
-    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
-    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+    shard_csv_glob: str = typer.Option("offtarget_sites_*.csv", "--shard-csv-glob"),
+    output_sites_csv: Path = typer.Option(Path("offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("candidate_summary.json"), "--output-summary-json"),
 ) -> None:
     """Aggregate shard-level ZFN outputs into final ranked outputs."""
     aggregate_zfn_shard_results(

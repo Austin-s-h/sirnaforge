@@ -17,8 +17,8 @@ sirnaforge workflow TP53 --output-dir results/
 ```
 results/
 ├── sirnaforge/
-│   ├── TP53_pass.csv          # ✓ Use these for experiments
-│   └── TP53_all.csv           # All candidates with scores
+│   ├── candidates_pass.csv          # ✓ Use these for experiments
+│   └── candidates_all.csv           # All candidates with scores
 ├── transcripts/
 │   ├── TP53_transcripts.fasta # Retrieved sequences
 │   └── TP53_canonical.fasta   # Canonical isoform
@@ -80,8 +80,8 @@ sirnaforge zfn \
 
 Expected artifacts:
 
-- `zfn_output/sirnaforge/zfn_candidate_summary.json`
-- `zfn_output/sirnaforge/zfn_offtarget_sites.csv`
+- `zfn_output/sirnaforge/candidate_summary.json`
+- `zfn_output/sirnaforge/offtarget_sites.csv`
 - `zfn_output/logs/workflow_summary.json`
 
 Advanced runtime controls:

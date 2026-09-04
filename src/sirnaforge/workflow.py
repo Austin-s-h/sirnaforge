@@ -1155,8 +1155,8 @@ class SiRNAWorkflow:
 
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         console.print("   - ORF validation report: orf_reports/")
-        console.print("   - siRNA candidate CSVs: sirnaforge/ (<gene>_all.csv, <gene>_pass.csv)")
-        console.print("   - siRNA candidate FASTA: sirnaforge/ (<gene>_pass.fasta)")
+        console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
+        console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
 
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
         """Write passing candidates to FASTA format with simple headers.

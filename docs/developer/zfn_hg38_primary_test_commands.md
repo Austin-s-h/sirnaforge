@@ -78,8 +78,8 @@ uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE \
 
 Each run writes these files under its output directory:
 
-- `sirnaforge/zfn_candidate_summary.json`
-- `sirnaforge/zfn_offtarget_sites.csv`
+- `sirnaforge/candidate_summary.json`
+- `sirnaforge/offtarget_sites.csv`
 - `logs/workflow_summary.json`
 - `logs/sirnaforge.log`
 
@@ -105,7 +105,7 @@ runs = [
     'CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE',
 ]
 for run in runs:
-    csv_path = base / run / 'sirnaforge' / 'zfn_offtarget_sites.csv'
+    csv_path = base / run / 'sirnaforge' / 'offtarget_sites.csv'
     with csv_path.open(newline='', encoding='utf-8') as fh:
         rows = list(csv.DictReader(fh))
     print(f'{run}: {len(rows)} rows')

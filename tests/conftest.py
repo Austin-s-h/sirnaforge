@@ -1,10 +1,63 @@
 """Shared pytest fixtures for all test modules."""
 
+import os
+import socket
+import ssl
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
 from sirnaforge.core.off_target import build_bwa_index
+
+# Set by the Makefile's `docker run` invocations. Preferred over sniffing the
+# filesystem because only Docker (/.dockerenv) and Podman (/run/.containerenv)
+# leave a marker file -- containerd, CRI-O and Kubernetes leave none, and a
+# missed detection would skip the entire container tier while still exiting 0.
+_CONTAINER_ENV_FLAG = "SIRNAFORGE_IN_CONTAINER"
+_CONTAINER_MARKER_FILES = (Path("/.dockerenv"), Path("/run/.containerenv"))
+
+# Every `requires_network` test in this suite ultimately talks to Ensembl REST.
+_NETWORK_PROBE_HOST = "rest.ensembl.org"
+_NETWORK_PROBE_PORT = 443
+_NETWORK_PROBE_TIMEOUT = 5.0
+
+
+def _running_in_container() -> bool:
+    """Whether this interpreter is running inside the sirnaforge container image."""
+    if os.environ.get(_CONTAINER_ENV_FLAG, "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return any(marker.exists() for marker in _CONTAINER_MARKER_FILES)
+
+
+@lru_cache(maxsize=1)
+def _network_available() -> bool:
+    """Whether a *verified* TLS handshake with Ensembl REST is possible.
+
+    Deliberately performs the handshake with ``ssl.create_default_context()`` --
+    the same trust store aiohttp uses -- rather than a bare TCP connect. A plain
+    socket connect succeeds behind a TLS-intercepting corporate proxy even though
+    every subsequent HTTPS request fails certificate verification, so a TCP-only
+    probe would report "online" and let the tests fail confusingly.
+
+    Only transport reachability is probed; no sirnaforge code path is exercised,
+    so a genuine client regression still fails the test rather than skipping it.
+
+    Context construction is inside the ``try`` on purpose: it reads SSL_CERT_FILE,
+    so a stale value (the proxy-CA workaround in docs/developer/testing_guide.md
+    points at /tmp, which gets reaped) must skip rather than error in setup.
+    """
+    try:
+        context = ssl.create_default_context()
+        with (
+            socket.create_connection(
+                (_NETWORK_PROBE_HOST, _NETWORK_PROBE_PORT), timeout=_NETWORK_PROBE_TIMEOUT
+            ) as raw_sock,
+            context.wrap_socket(raw_sock, server_hostname=_NETWORK_PROBE_HOST),
+        ):
+            return True
+    except OSError:  # covers socket.timeout, gaierror and ssl.SSLError
+        return False
 
 
 @pytest.fixture
@@ -95,6 +148,28 @@ def nextflow_test_work_dir(tmp_path):
     work_dir = tmp_path / "nextflow_work"
     work_dir.mkdir(exist_ok=True, parents=True)
     return work_dir
+
+
+def pytest_runtest_setup(item):
+    """Enforce the requirement markers so unmet requirements skip, not fail.
+
+    `runs_in_container` and `requires_network` describe an environment a test
+    cannot supply for itself. Without this gate the tier targets stay green only
+    because they filter the markers out (`make test-ci`, `make test-release-host`),
+    while `make test` runs them anywhere and reports environment gaps as
+    assertion failures.
+    """
+    marker_names = {mark.name for mark in item.iter_markers()}
+
+    if "runs_in_container" in marker_names and not _running_in_container():
+        pytest.skip("runs_in_container test: only valid inside the sirnaforge image - use 'make docker-test'")
+
+    if "requires_network" in marker_names and not _network_available():
+        pytest.skip(
+            f"requires_network test: no verified TLS route to {_NETWORK_PROBE_HOST} "
+            "(offline, or a TLS-intercepting proxy whose root CA is missing from Python's "
+            "trust store - see docs/developer/testing_guide.md)"
+        )
 
 
 @pytest.hookimpl(tryfirst=True)

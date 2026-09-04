@@ -50,17 +50,17 @@ This confirms default behavior: sharding remains enabled generically, but chunki
 ### 2) Shard-level search
 
 - Generated shard-scoped outputs for all 6 multi-contig manifest rows:
-  - `zfn_offtarget_sites_<shard_id>.csv`
-  - `zfn_candidate_summary_<shard_id>.json`
+  - `offtarget_sites_<shard_id>.csv`
+  - `candidate_summary_<shard_id>.json`
 
 ### 3) Aggregation
 
 Running aggregate on all shard CSVs produced:
 
-- `zfn_candidate_summary.json` summary:
+- `candidate_summary.json` summary:
   - `off_target_sites: 2`
   - `shards: 6`
-- `zfn_offtarget_sites.csv` rows: **2** (one retained site per contig)
+- `offtarget_sites.csv` rows: **2** (one retained site per contig)
 
 This confirms global deduplication and deterministic merge behavior over overlapping shards.
 
