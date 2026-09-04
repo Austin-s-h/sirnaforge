@@ -39,7 +39,9 @@ substantially, for the same reason.
   `allow_transcriptome_with_input_fasta=True`. `--skip-off-targets` / `check_off_targets=False`
   now resolves no reference at all, and consequently **also skips repeat-element detection**
   (it scans against the same query-species cDNA reference), reported as
-  `repeat_summary.reason = "user_disabled"` in `logs/workflow_summary.json`. Runs made with the
+  `repeat_summary.reason = "user_disabled"` in `logs/workflow_summary.json`. A skipped run also
+  leaves `off_target/` empty — no `input_candidates.fasta` is staged — so the getting-started and
+  workflows output inventories now separate every-run files from screening-only ones. Runs made with the
   flipped default may have left unused Ensembl cDNA FASTAs and indexes in
   `~/.cache/sirnaforge/transcriptomes/`; run `sirnaforge cache --info` to see how much, and
   `sirnaforge cache --clear-transcriptome` to reclaim it. Nothing in this fix requires clearing
