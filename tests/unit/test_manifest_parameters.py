@@ -72,7 +72,7 @@ def test_manifest_weights_track_a_custom_weight_set(tmp_path):
     custom = ScoringWeights(
         asymmetry=0.10,
         gc_content=0.10,
-        accessibility=0.10,
+        target_accessibility=0.10,
         empirical=0.10,
         off_target=0.40,
         isoform_coverage=0.10,

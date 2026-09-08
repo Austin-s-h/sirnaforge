@@ -54,8 +54,11 @@ from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 # Design-time composites put HIGH_BASE_GUIDE above BONUS_GUIDE, and the miRNA biogenesis bonuses
 # (A/U at guide position 1, pos1 pairing, 3' supplementary) reverse that. The pair therefore
 # distinguishes a miRNA-aware ranking from a plain siRNA one.
+# HIGH_BASE_GUIDE was reselected for issue #95: the previous one led on the dropped guide-structure
+# term, so once `accessibility` left the composite the plain-siRNA control inverted and the pair
+# proved nothing. This one leads on GC content instead, by a margin the bonuses can still reverse.
 BONUS_GUIDE = "TACCTCCGGGTAGCGTTGGCA"
-HIGH_BASE_GUIDE = "CCCCCGATTACCGGCCGCCTT"
+HIGH_BASE_GUIDE = "CCCACATATAGACCCGAACAT"
 
 NO_HITS = {"status": "completed", "results": {}}
 
@@ -532,7 +535,7 @@ def test_dirty_controls_share_the_mirna_score_scale(tmp_path: Path) -> None:
         for value in (
             control.score_asymmetry,
             control.score_gc_content,
-            control.score_accessibility,
+            control.score_target_accessibility,
             control.score_empirical,
             control.score_off_target,
             control.score_isoform_coverage,
