@@ -70,12 +70,40 @@ class SiRNACandidateSchema(DataFrameModel):
     gc_content: Series[float] = Field(ge=0.0, le=100.0, description="GC content % (optimal: 35-60%)")
     asymmetry_score: Series[float] = Field(ge=0.0, le=1.0, description="Thermodynamic asymmetry score (optimal: ≥0.65)")
     paired_fraction: Series[float] = Field(
-        ge=0.0, le=1.0, description="Fraction of paired bases in secondary structure (optimal: 0.4-0.8)"
+        ge=0.0,
+        le=1.0,
+        description="Fraction of guide bases paired in its own MFE structure (gates EXCESS_PAIRING, not scored)",
+    )
+
+    # Target-site accessibility from RNAplfold on the transcript. Windows are anchored on the
+    # site's 3' end, the end the guide seed pairs. Null when no transcript context was available.
+    target_accessibility_p: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="P(target-site 8 nt pairing guide positions 1-8 are unpaired); the scored term input",
+        nullable=True,
+        coerce=True,
+    )
+    target_accessibility_p_17mer: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="P(3'-most 17 nt of the target site are unpaired); reported only",
+        nullable=True,
+        coerce=True,
+    )
+    target_accessibility_p_site: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="P(the entire target site is unpaired); reported only",
+        nullable=True,
+        coerce=True,
     )
 
     # Thermodynamic details (nullable if backend not available)
-    structure: Series[Any] = Field(description="RNA secondary structure in dot-bracket notation", nullable=True)
-    mfe: Series[float] = Field(description="Minimum free energy in kcal/mol (optimal: -2 to -8)", nullable=True)
+    structure: Series[Any] = Field(description="Guide secondary structure in dot-bracket notation", nullable=True)
+    mfe: Series[float] = Field(
+        description="Guide minimum free energy in kcal/mol (0.0 = open chain, the physical floor)", nullable=True
+    )
     duplex_stability_dg: Series[float] = Field(
         description="siRNA duplex ΔG in kcal/mol (fully paired 21mer: -32 to -43)", nullable=True
     )
@@ -206,10 +234,10 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
-    score_accessibility: Series[float] = Field(
+    score_target_accessibility: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of accessibility term to composite score",
+        description="Contribution of target-site accessibility term to composite score",
         nullable=True,
         coerce=True,
     )

@@ -42,12 +42,26 @@ DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
 COMPOSITE_TERM_NAMES = (
     "asymmetry",
     "gc_content",
-    "accessibility",
+    "target_accessibility",
     "empirical",
     "off_target",
     "isoform_coverage",
     "conservation",
 )
+
+# RNAplfold parameters for target-site accessibility. W=150/L=100 sits near the plateau of the
+# benchmark correlation (rho +0.249 at W=40 rising to +0.269 at W=240, n=2,779 siRNAs with measured
+# knockdown) without paying W=240's cost. Configurable rather than constant because they move a
+# site's accessibility percentile substantially.
+DEFAULT_PLFOLD_WINDOW = 150
+DEFAULT_PLFOLD_MAX_BP_SPAN = 100
+
+# Log-probability floor for normalising P(seed-end 8-mer unpaired) into a [0, 1] feature.
+# Derived from the benchmark distribution of log10 P at W=150/L=100 (p1 = -4.93, p50 = -1.72,
+# p99 = -0.18), so -5.0 captures ~99% of observed sites. Deliberately a fixed floor, not a
+# per-transcript one: self-calibrating normalisation would make scores incomparable between
+# targets and between runs.
+DEFAULT_ACCESSIBILITY_LOG_FLOOR = -5.0
 
 
 class FilterCriteria(BaseModel):
@@ -169,8 +183,14 @@ class ScoringWeights(BaseModel):
     gc_content: float = Field(
         default=0.10, ge=0, le=1, description="GC content optimization weight (stability balance)"
     )
-    accessibility: float = Field(
-        default=0.13, ge=0, le=1, description="Target accessibility weight (secondary structure)"
+    target_accessibility: float = Field(
+        default=0.13,
+        ge=0,
+        le=1,
+        description=(
+            "Target-site accessibility weight: log-scaled P(the 8 nt of the mRNA target site "
+            "pairing guide positions 1-8 are unpaired), from RNAplfold on the transcript"
+        ),
     )
     empirical: float = Field(
         default=0.15, ge=0, le=1, description="Empirical design rules weight (established patterns)"
@@ -194,6 +214,49 @@ class ScoringWeights(BaseModel):
         total = sum(getattr(self, term) for term in COMPOSITE_TERM_NAMES)
         if not (0.95 <= total <= 1.05):
             raise ValueError(f"Scoring weights must sum to 1.0, got {total:.3f}")
+        return self
+
+
+class TargetAccessibilityConfig(BaseModel):
+    """RNAplfold settings for the target-site accessibility scoring term.
+
+    All three fields change the numeric scale of `target_accessibility`, so a run that
+    alters them is not comparable with a default run. They are recorded in the run
+    manifest via DesignParameters.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_size: int = Field(
+        default=DEFAULT_PLFOLD_WINDOW,
+        ge=20,
+        le=1000,
+        description=(
+            "RNAplfold averaging window W in nucleotides (default 150). Larger is mildly better "
+            "on the benchmark (rho +0.249 at W=40 to +0.269 at W=240) and W=150-240 is the plateau."
+        ),
+    )
+    max_bp_span: int = Field(
+        default=DEFAULT_PLFOLD_MAX_BP_SPAN,
+        ge=10,
+        le=1000,
+        description="RNAplfold maximum base-pair span L in nucleotides (default 100); must not exceed window_size",
+    )
+    log_floor: float = Field(
+        default=DEFAULT_ACCESSIBILITY_LOG_FLOOR,
+        lt=0,
+        description=(
+            "log10 probability treated as zero accessibility when normalising the term into [0, 1] "
+            "(default -5.0, which captures ~99% of benchmark sites). A fixed floor on purpose: a "
+            "per-transcript floor would make composite scores incomparable between targets."
+        ),
+    )
+
+    @model_validator_typed(mode="after")
+    def span_within_window(self) -> "TargetAccessibilityConfig":
+        """RNAplfold silently clamps L to W, so reject the combination instead of misreporting it."""
+        if self.max_bp_span > self.window_size:
+            raise ValueError(f"max_bp_span ({self.max_bp_span}) must not exceed window_size ({self.window_size})")
         return self
 
 
@@ -289,6 +352,12 @@ class DesignParameters(BaseModel):
     # Scoring weights
     scoring: ScoringWeights = Field(default_factory=ScoringWeights, description="Component score weights")
 
+    # Target-site accessibility (RNAplfold) settings for the target_accessibility term
+    target_accessibility: TargetAccessibilityConfig = Field(
+        default_factory=TargetAccessibilityConfig,
+        description="RNAplfold window and normalisation settings for the target_accessibility term",
+    )
+
     # Optional analysis parameters
     avoid_snps: bool = Field(default=True, description="Exclude regions with known SNPs")
     check_off_targets: bool = Field(default=True, description="Perform genome-wide off-target analysis")
@@ -354,10 +423,45 @@ class SiRNACandidate(BaseModel):
     )
     duplex_stability: float | None = Field(default=None, description="Duplex formation ΔG in kcal/mol")
 
-    # Secondary structure
-    structure: str | None = Field(default=None, description="RNA secondary structure (dot-bracket notation)")
-    mfe: float | None = Field(default=None, description="Minimum free energy in kcal/mol (optimal: -2 to -8)")
-    paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.6)")
+    # Guide self-structure. Reported, and the EXCESS_PAIRING gate input; not a scoring term.
+    # mfe == 0.0 with an all-dots structure is the open chain -- the physical floor of the MFE,
+    # not a failed fold and not a sentinel.
+    structure: str | None = Field(default=None, description="Guide-strand secondary structure (dot-bracket notation)")
+    mfe: float | None = Field(
+        default=None, description="Guide-strand minimum free energy in kcal/mol (0.0 = open chain, the floor)"
+    )
+    paired_fraction: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description=(
+            "Fraction of guide bases paired in its own MFE structure. Quantised to 2k/length by the "
+            "dot-bracket. Reported and gates EXCESS_PAIRING; no longer a composite scoring term."
+        ),
+    )
+
+    # Target-site accessibility (RNAplfold on the transcript, all windows anchored on the site's
+    # 3' end, which is the end the guide seed pairs). None means it could not be computed -- the
+    # term is then omitted from the composite and the remaining weights renormalised, never
+    # substituted with a default.
+    target_accessibility_p: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="P(the 8 nt of the target site pairing guide positions 1-8 are unpaired). Scored term input.",
+    )
+    target_accessibility_p_17mer: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="P(the 3'-most 17 nt of the target site are unpaired). Reported only, never scored.",
+    )
+    target_accessibility_p_site: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="P(the entire target site is unpaired). Reported only, never scored.",
+    )
 
     # Off-target analysis
     off_target_screened: bool = Field(
@@ -506,8 +610,8 @@ class SiRNACandidate(BaseModel):
     score_gc_content: float | None = Field(
         default=None, ge=0, le=100, description="Contribution of GC content term to composite score"
     )
-    score_accessibility: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of accessibility term to composite score"
+    score_target_accessibility: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of target-site accessibility term to composite score"
     )
     score_empirical: float | None = Field(
         default=None, ge=0, le=100, description="Contribution of empirical term to composite score"
@@ -662,6 +766,10 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "structure": _maybe_attr("structure"),
         "mfe": _maybe_attr("mfe"),
         "paired_fraction": candidate.paired_fraction,
+        # Target-site accessibility: the first is scored, the other two are reported only
+        "target_accessibility_p": _maybe_attr("target_accessibility_p"),
+        "target_accessibility_p_17mer": _maybe_attr("target_accessibility_p_17mer"),
+        "target_accessibility_p_site": _maybe_attr("target_accessibility_p_site"),
         "duplex_stability_dg": candidate.duplex_stability,
         "duplex_stability_score": cs.get("duplex_stability_score"),
         "dg_5p": cs.get("dg_5p"),
@@ -708,7 +816,7 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "composite_score": candidate.composite_score,
         "score_asymmetry": candidate.score_asymmetry,
         "score_gc_content": candidate.score_gc_content,
-        "score_accessibility": candidate.score_accessibility,
+        "score_target_accessibility": candidate.score_target_accessibility,
         "score_empirical": candidate.score_empirical,
         "score_off_target": candidate.score_off_target,
         "score_isoform_coverage": candidate.score_isoform_coverage,
