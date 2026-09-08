@@ -55,7 +55,7 @@ is now **uncapped**. A 0.5.x command re-run unchanged will return more candidate
   `DesignParameters` had no `offtarget_filters` field and is `extra="forbid"`, so the `getattr`
   that read it in `_check_offtarget_filters` could never resolve — the ceiling was hard-wired at 3
   with no route in from the CLI, the environment or the Python API. The field now exists and is
-  exposed as `--max-off-targets`. 15 is calibrated against the 94-design MSH3 reference set: it is
+  exposed as `--max-off-targets`. 15 is calibrated against one internal 94-design reference set: it is
   the lowest ceiling at which the gate enriches for expert-chosen guides rather than depleting them
   (at 3 the gate was depleted, at 10 it carried no information). Single-target calibration —
   revisit if a second reference set disagrees. Anything relying on the old ceiling must now pass

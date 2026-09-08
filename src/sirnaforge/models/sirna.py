@@ -109,9 +109,9 @@ class OffTargetFilterCriteria(BaseModel):
     """
 
     # Genuine off-target threshold (on-target, ortholog and repeat-mediated hits excluded)
-    # 15 is calibrated against the MSH3 AZ reference design: it is the lowest cap at which the gate
-    # enriches for expert-chosen guides rather than depleting them. At 3 the gate was depleted
-    # (p = 0.89) and at 10 it carried no information (p = 0.51). See the 2026-09-04 run4 sweep.
+    # 15 is calibrated against one internal 94-design reference set: it is the lowest cap at which
+    # the gate enriches for expert-chosen guides rather than depleting them. At 3 the gate was
+    # depleted (p = 0.89) and at 10 it carried no information (p = 0.51). Single-target calibration.
     max_off_target_count: int | None = Field(
         default=15,
         ge=0,
