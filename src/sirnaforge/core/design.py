@@ -13,8 +13,13 @@ from Bio.Seq import Seq
 
 from sirnaforge import __version__
 from sirnaforge.core.repeat_detection import RepeatObservation, normalize_guide_sequence
-from sirnaforge.core.scoring import ScoringError, compute_composite
-from sirnaforge.core.thermodynamics import ThermodynamicCalculator
+from sirnaforge.core.scoring import ScoringError, compute_composite, target_accessibility_sub_score
+from sirnaforge.core.thermodynamics import (
+    SEED_ANCHORED_WINDOW_NT,
+    TargetAccessibilityProfile,
+    TargetSiteAccessibility,
+    ThermodynamicCalculator,
+)
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
     EMPIRICAL_SCORE_MIN,
@@ -79,8 +84,9 @@ class SiRNADesigner:
             # Apply filters
             filtered_candidates = self._apply_filters(candidates)
 
-            # Score candidates
-            scored_candidates = self._score_candidates(filtered_candidates)
+            # Score candidates. The transcript is passed through so target_accessibility can be
+            # folded from the real mRNA context rather than left inactive.
+            scored_candidates = self._score_candidates(filtered_candidates, sequence)
 
             # Track which transcripts each guide appears in
             for c in scored_candidates:
@@ -146,8 +152,8 @@ class SiRNADesigner:
         # Apply filters
         filtered_candidates = self._apply_filters(candidates)
 
-        # Score candidates
-        scored_candidates = self._score_candidates(filtered_candidates)
+        # Score candidates, with the transcript in scope for target_accessibility
+        scored_candidates = self._score_candidates(filtered_candidates, sequence)
 
         # Sort by composite score (descending)
         scored_candidates.sort(key=lambda x: x.composite_score, reverse=True)
@@ -270,8 +276,63 @@ class SiRNADesigner:
 
         return filtered
 
-    def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
-        """Score candidates using composite scoring algorithm."""
+    def _build_accessibility_profile(self, transcript_sequence: str | None) -> TargetAccessibilityProfile | None:
+        """Fold the transcript once for target-site accessibility, or return None if impossible.
+
+        One RNAplfold pass per transcript is both correct and cheaper than the per-candidate guide
+        folds it replaced. Returning None (rather than raising or substituting a default) is what
+        makes the term inactive for callers that score candidates without transcript context.
+        """
+        if not transcript_sequence:
+            return None
+
+        config = self.parameters.target_accessibility
+        try:
+            return TargetAccessibilityProfile.fold(
+                transcript_sequence,
+                window_size=config.window_size,
+                max_bp_span=config.max_bp_span,
+                u_max=max(self.parameters.sirna_length, SEED_ANCHORED_WINDOW_NT),
+            )
+        except Exception as exc:
+            # A failed fold must leave the term inactive, never score as accessible.
+            logger.warning(f"RNAplfold failed on the transcript ({exc}); target_accessibility is inactive")
+            return None
+
+    def _store_target_accessibility(
+        self, candidate: SiRNACandidate, profile: TargetAccessibilityProfile | None
+    ) -> float | None:
+        """Record a candidate's target-site opening probabilities and return the scored feature.
+
+        ``candidate.position`` is the 1-based start of the *target site* on the transcript (the
+        passenger strand's coordinates), which is what the profile is indexed by.
+        """
+        site: TargetSiteAccessibility = (
+            profile.site_accessibility(candidate.position - 1, candidate.length)
+            if profile is not None
+            else TargetSiteAccessibility(None, None, None)
+        )
+        candidate.target_accessibility_p = site.seed_end_8mer
+        candidate.target_accessibility_p_17mer = site.seed_anchored_17mer
+        candidate.target_accessibility_p_site = site.whole_site
+
+        return target_accessibility_sub_score(
+            site.seed_end_8mer, log_floor=self.parameters.target_accessibility.log_floor
+        )
+
+    def _score_candidates(
+        self, candidates: list[SiRNACandidate], transcript_sequence: str | None = None
+    ) -> list[SiRNACandidate]:
+        """Score candidates using composite scoring algorithm.
+
+        Args:
+            candidates: Candidates to score in place.
+            transcript_sequence: The transcript the candidates were enumerated from, folded once
+                for the target_accessibility term. Omitting it leaves that term inactive and the
+                remaining weights renormalised -- never scored as if the site were accessible.
+        """
+        profile = self._build_accessibility_profile(transcript_sequence)
+
         for candidate in candidates:
             # Calculate component scores
             # Thermodynamic end stabilities and asymmetry
@@ -288,7 +349,9 @@ class SiRNADesigner:
             dg_score, duplex_dg = self._calculate_duplex_score(candidate)
             candidate.duplex_stability = duplex_dg
             gc_score = self._calculate_gc_score(candidate.gc_content)
-            access_score = self._calculate_accessibility_score(candidate)
+            # Guide self-structure: reported and the EXCESS_PAIRING gate input, not a scoring term.
+            self._calculate_guide_structure(candidate)
+            access_score = self._store_target_accessibility(candidate, profile)
             ot_score = self._calculate_off_target_score(candidate)
             empirical_score = self._calculate_empirical_score(candidate)
             self._apply_score_filters(candidate, asym_score, empirical_score)
@@ -319,55 +382,70 @@ class SiRNADesigner:
                 "delta_dg_end": float(dg5 - dg3) if (not math.isnan(dg5) and not math.isnan(dg3)) else float("nan"),
                 "melting_temp_c": float(tm_c),
                 "gc_content": gc_score,
-                "accessibility": access_score,
+                "guide_paired_fraction": candidate.paired_fraction,  # Diagnostic; gates EXCESS_PAIRING
                 "design_off_target_proxy": ot_score,  # Diagnostic only, not fed into composite
                 "empirical": empirical_score,
             }
+            # Omitted entirely when inactive: post-screen rescoring reads component_scores back as
+            # its design-time feature set, and a stored NaN or 0.0 would be indistinguishable from
+            # a site that is genuinely closed.
+            if access_score is not None:
+                candidate.component_scores["target_accessibility"] = access_score
 
-            # Compute composite score via the shared scorer with design-time terms only.
-            # Build features mapping, omitting any NaN values (ViennaRNA failures).
-            features: dict[str, float] = {}
-            if not math.isnan(asym_score):
-                features["asymmetry"] = asym_score
-            if not math.isnan(gc_score):
-                features["gc_content"] = gc_score
-            if not math.isnan(access_score):
-                features["accessibility"] = access_score
-            if not math.isnan(empirical_score):
-                features["empirical"] = empirical_score
-
-            # Compute composite; if all features are NaN, leave composite_score at 0.0.
-            if features:
-                try:
-                    result = compute_composite(features, self.parameters.scoring)
-                    candidate.composite_score = result.score
-                    candidate.weight_set_version = result.weight_set_version
-                    candidate.scored_after_screening = False
-                    # Write per-term contributions
-                    candidate.score_asymmetry = result.contributions.get("asymmetry")
-                    candidate.score_gc_content = result.contributions.get("gc_content")
-                    candidate.score_accessibility = result.contributions.get("accessibility")
-                    candidate.score_empirical = result.contributions.get("empirical")
-                    # Post-screen terms stay None at design time
-                    candidate.score_off_target = None
-                    candidate.score_isoform_coverage = None
-                    candidate.score_conservation = None
-                except ScoringError as e:
-                    logger.warning(f"Scoring failed for candidate {candidate.id}: {e}. Setting composite_score=0.0.")
-                    candidate.composite_score = 0.0
-                    candidate.weight_set_version = ""
-                    candidate.scored_after_screening = False
-            else:
-                # All features were NaN; leave composite_score at its default (0.0)
-                logger.warning(
-                    f"All component scores are NaN for candidate {candidate.id}. Leaving composite_score=0.0."
-                )
-                candidate.weight_set_version = ""
-                candidate.scored_after_screening = False
-
+            self._apply_design_composite(candidate, asym_score, gc_score, access_score, empirical_score)
             candidate.asymmetry_score = asym_score
 
         return candidates
+
+    def _apply_design_composite(
+        self,
+        candidate: SiRNACandidate,
+        asym_score: float,
+        gc_score: float,
+        access_score: float | None,
+        empirical_score: float,
+    ) -> None:
+        """Write the design-time composite score and its per-term contributions.
+
+        A NaN sub-score (a ViennaRNA failure) and a None accessibility both mean "no evidence", so
+        both are omitted from the feature set and the remaining weights renormalise over what is
+        left. Neither is substituted with a value.
+        """
+        features: dict[str, float] = {}
+        if not math.isnan(asym_score):
+            features["asymmetry"] = asym_score
+        if not math.isnan(gc_score):
+            features["gc_content"] = gc_score
+        if access_score is not None:
+            features["target_accessibility"] = access_score
+        if not math.isnan(empirical_score):
+            features["empirical"] = empirical_score
+
+        candidate.scored_after_screening = False
+        if not features:
+            # Every term was unavailable; leave composite_score at its default (0.0)
+            logger.warning(f"All component scores are NaN for candidate {candidate.id}. Leaving composite_score=0.0.")
+            candidate.weight_set_version = ""
+            return
+
+        try:
+            result = compute_composite(features, self.parameters.scoring)
+        except ScoringError as e:
+            logger.warning(f"Scoring failed for candidate {candidate.id}: {e}. Setting composite_score=0.0.")
+            candidate.composite_score = 0.0
+            candidate.weight_set_version = ""
+            return
+
+        candidate.composite_score = result.score
+        candidate.weight_set_version = result.weight_set_version
+        candidate.score_asymmetry = result.contributions.get("asymmetry")
+        candidate.score_gc_content = result.contributions.get("gc_content")
+        candidate.score_target_accessibility = result.contributions.get("target_accessibility")
+        candidate.score_empirical = result.contributions.get("empirical")
+        # Post-screen terms stay None at design time
+        candidate.score_off_target = None
+        candidate.score_isoform_coverage = None
+        candidate.score_conservation = None
 
     def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, float | None]:
         """Compute duplex stability ΔG and a normalized score in [0,1].
@@ -415,64 +493,34 @@ class SiRNADesigner:
         return False
 
     def _calculate_asymmetry_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate thermodynamic asymmetry score using enhanced method."""
-        try:
-            calc = ThermodynamicCalculator()
-            _, _, asymmetry_score = calc.calculate_asymmetry_score(candidate)
-            return asymmetry_score
-        except ImportError:
-            # Fallback to simplified version
-            guide = candidate.guide_sequence
-
-            # Calculate stability of 5' end (positions 1-7) vs 3' end (positions 15-21)
-            five_prime_end = guide[:7]
-            three_prime_end = guide[14:21] if len(guide) >= 21 else guide[14:]
-
-            # Simplified AT/GC ratio as proxy for stability
-            five_prime_gc = (five_prime_end.count("G") + five_prime_end.count("C")) / len(five_prime_end)
-            three_prime_gc = (three_prime_end.count("G") + three_prime_end.count("C")) / len(three_prime_end)
-
-            # Higher score when 5' end is less stable (lower GC) than 3' end
-            asymmetry = three_prime_gc - five_prime_gc
-
-            # Normalize to 0-1 range
-            return max(0.0, min(1.0, (asymmetry + 1.0) / 2.0))
+        """Calculate thermodynamic asymmetry score via ViennaRNA."""
+        calc = ThermodynamicCalculator()
+        _, _, asymmetry_score = calc.calculate_asymmetry_score(candidate)
+        return asymmetry_score
 
     def _calculate_gc_score(self, gc_content: float) -> float:
         """Calculate GC content score with Gaussian penalty around 40%."""
         # GC_score = exp(-((GC-40)/10)^2)
         return math.exp(-(((gc_content - 40) / 10) ** 2))
 
-    def _calculate_accessibility_score(self, candidate: SiRNACandidate) -> float:
-        """Calculate target accessibility score using ViennaRNA when available."""
-        try:
-            calc = ThermodynamicCalculator()
+    def _calculate_guide_structure(self, candidate: SiRNACandidate) -> None:
+        """Fold the guide against itself and record its own structure.
 
-            # For single candidate analysis, we don't have full target sequence context
-            # So we'll use the guide sequence as a proxy for structure prediction
-            guide = candidate.guide_sequence
-            structure, mfe, paired_fraction = calc.calculate_secondary_structure(guide)
+        This is guide self-structure, not target accessibility: it says nothing about whether the
+        mRNA site is open (that is `target_accessibility`, folded from the transcript). It is kept
+        because it is reported and because it is the EXCESS_PAIRING gate input.
 
-            # Store structure info in candidate
-            candidate.structure = structure
-            candidate.mfe = mfe
-            candidate.paired_fraction = paired_fraction
+        `mfe == 0.0` with an all-dots structure is the open chain, the physical floor of the MFE,
+        and is a correct answer for a short unstructured guide -- not a failed fold.
+        """
+        calc = ThermodynamicCalculator()
+        # Guides are stored as DNA; ViennaRNA needs RNA, as calculate_melting_temperature already does.
+        structure, mfe, paired_fraction = calc.calculate_secondary_structure(_as_rna(candidate.guide_sequence))
 
-            # Accessibility score: 1 - paired_fraction
-            # Flag excessive pairing per filter threshold
-            self._flag_excess_pairing(candidate, paired_fraction)
-            return 1.0 - paired_fraction
-
-        except ImportError:
-            # Fallback to simple heuristic
-            guide = candidate.guide_sequence
-            at_content = (guide.count("A") + guide.count("T") + guide.count("U")) / len(guide)
-
-            # Moderate AT content suggests better accessibility
-            paired_fraction = abs(at_content - 0.5) * 2.0  # heuristic inverse
-            candidate.paired_fraction = paired_fraction
-            self._flag_excess_pairing(candidate, paired_fraction)
-            return 1.0 - paired_fraction
+        candidate.structure = structure
+        candidate.mfe = mfe
+        candidate.paired_fraction = paired_fraction
+        self._flag_excess_pairing(candidate, paired_fraction)
 
     def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
         """Flag a candidate whose guide is too structured to be accessible."""
@@ -640,7 +688,9 @@ class MiRNADesigner(SiRNADesigner):
         # Optionally apply miRNA-specific filter adjustments based on MiRNADesignConfig
         # For now, we rely on the caller to set appropriate filters for miRNA mode
 
-    def _score_candidates(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+    def _score_candidates(
+        self, candidates: list[SiRNACandidate], transcript_sequence: str | None = None
+    ) -> list[SiRNACandidate]:
         """Score candidates using miRNA-biogenesis-aware composite scoring.
 
         Adds miRNA-specific scoring components:
@@ -648,6 +698,10 @@ class MiRNADesigner(SiRNADesigner):
         - Position 1 mismatch/wobble preference
         - 3' supplementary pairing score
         - Enhanced asymmetry requirements
+
+        Args:
+            candidates: Candidates to score in place.
+            transcript_sequence: Forwarded to the base scorer for target_accessibility.
         """
         from sirnaforge.models.sirna import MiRNADesignConfig  # noqa: PLC0415
 
@@ -658,7 +712,7 @@ class MiRNADesigner(SiRNADesigner):
         max_mirna_bonus = mirna_max_biogenesis_bonus(scoring_weights)
 
         # First, run the standard scoring
-        candidates = super()._score_candidates(candidates)
+        candidates = super()._score_candidates(candidates, transcript_sequence)
 
         # Add miRNA-specific scoring enhancements
         for candidate in candidates:

@@ -84,6 +84,7 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
+    TargetAccessibilityConfig,
     build_candidate_row,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
@@ -2859,7 +2860,9 @@ class SiRNAWorkflow:
         cs = candidate.component_scores or {}
 
         # Design-time terms: reuse from component_scores, dropping any NaN
-        for term in ("asymmetry", "gc_content", "accessibility", "empirical"):
+        # target_accessibility is absent from component_scores when the design stage could not
+        # compute it, which is exactly the signal to leave the term inactive here too.
+        for term in ("asymmetry", "gc_content", "target_accessibility", "empirical"):
             value = cs.get(term)
             if value is not None and not math.isnan(value):
                 features[term] = value
@@ -2924,7 +2927,7 @@ class SiRNAWorkflow:
             # Write per-term contributions
             candidate.score_asymmetry = result.contributions.get("asymmetry")
             candidate.score_gc_content = result.contributions.get("gc_content")
-            candidate.score_accessibility = result.contributions.get("accessibility")
+            candidate.score_target_accessibility = result.contributions.get("target_accessibility")
             candidate.score_empirical = result.contributions.get("empirical")
             candidate.score_off_target = result.contributions.get("off_target")
             candidate.score_isoform_coverage = result.contributions.get("isoform_coverage")
@@ -3223,6 +3226,9 @@ async def run_sirna_workflow(
     min_asymmetry_score: float | None = None,
     max_paired_fraction: float | None = None,
     min_empirical_score: float | None = None,
+    plfold_window: int | None = None,
+    plfold_max_bp_span: int | None = None,
+    accessibility_log_floor: float | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -3280,6 +3286,12 @@ async def run_sirna_workflow(
             (None keeps FilterCriteria's default of 0.6).
         min_empirical_score: Override the empirical design-rule floor gating
             LOW_EMPIRICAL_SCORE (None keeps FilterCriteria's default).
+        plfold_window: Override the RNAplfold averaging window W used by the target_accessibility
+            term (None keeps the default of 150).
+        plfold_max_bp_span: Override the RNAplfold maximum base-pair span L (None keeps 100).
+        accessibility_log_floor: Override the log10-probability floor the accessibility term is
+            normalised against (None keeps -5.0). Changing any of these three changes the numeric
+            scale of composite_score, so results are not comparable with a default run.
 
     Returns:
         Dictionary with complete workflow results
@@ -3304,6 +3316,18 @@ async def run_sirna_workflow(
             filter_kwargs[name] = value
     filter_criteria = FilterCriteria(**filter_kwargs)
 
+    # Same pattern for the RNAplfold settings behind target_accessibility: omit an unset value so
+    # the model default applies, and construct rather than model_copy so window/span bounds hold.
+    accessibility_kwargs: dict[str, Any] = {}
+    for name, value in (
+        ("window_size", plfold_window),
+        ("max_bp_span", plfold_max_bp_span),
+        ("log_floor", accessibility_log_floor),
+    ):
+        if value is not None:
+            accessibility_kwargs[name] = value
+    accessibility_config = TargetAccessibilityConfig(**accessibility_kwargs)
+
     # Configure workflow with modification parameters
     offtarget_filters = OffTargetFilterCriteria()
     if max_off_targets is not None:
@@ -3319,6 +3343,7 @@ async def run_sirna_workflow(
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
+        target_accessibility=accessibility_config,
     )
     database_enum = DatabaseType(database.lower())
 

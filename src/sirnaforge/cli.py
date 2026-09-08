@@ -64,6 +64,7 @@ from sirnaforge.models.sirna import (
     DesignParameters,
     FilterCriteria,
     MiRNADesignConfig,
+    TargetAccessibilityConfig,
 )
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.models.zfn import (
@@ -1068,6 +1069,32 @@ def workflow(  # noqa: PLR0912
             "component score, whose attainable range is narrow."
         ),
     ),
+    plfold_window: int | None = typer.Option(
+        None,
+        "--plfold-window",
+        min=20,
+        max=1000,
+        help=(
+            "RNAplfold averaging window W for target-site accessibility (default: 150). Larger is "
+            "mildly better on the benchmark; W=150-240 is the plateau. Changing it changes the "
+            "scale of composite_score."
+        ),
+    ),
+    plfold_max_bp_span: int | None = typer.Option(
+        None,
+        "--plfold-max-bp-span",
+        min=10,
+        max=1000,
+        help="RNAplfold maximum base-pair span L (default: 100). Must not exceed --plfold-window.",
+    ),
+    accessibility_log_floor: float | None = typer.Option(
+        None,
+        "--accessibility-log-floor",
+        help=(
+            "log10 probability treated as zero target-site accessibility (default: -5.0, ~99% of "
+            "observed sites). Fixed, not per-transcript, so scores stay comparable between targets."
+        ),
+    ),
     json_summary: bool = typer.Option(
         True,
         "--json-summary/--no-json-summary",
@@ -1297,6 +1324,9 @@ def workflow(  # noqa: PLR0912
                     min_asymmetry_score=min_asymmetry,
                     max_paired_fraction=max_paired_fraction,
                     min_empirical_score=min_empirical,
+                    plfold_window=plfold_window,
+                    plfold_max_bp_span=plfold_max_bp_span,
+                    accessibility_log_floor=accessibility_log_floor,
                 )
             )
 
@@ -1941,6 +1971,25 @@ def design(  # noqa: PLR0912
         "--min-empirical",
         help="Empirical design-rule floor gating LOW_EMPIRICAL_SCORE",
     ),
+    plfold_window: int | None = typer.Option(
+        None,
+        "--plfold-window",
+        min=20,
+        max=1000,
+        help="RNAplfold averaging window W for target-site accessibility (default: 150)",
+    ),
+    plfold_max_bp_span: int | None = typer.Option(
+        None,
+        "--plfold-max-bp-span",
+        min=10,
+        max=1000,
+        help="RNAplfold maximum base-pair span L (default: 100); must not exceed --plfold-window",
+    ),
+    accessibility_log_floor: float | None = typer.Option(
+        None,
+        "--accessibility-log-floor",
+        help="log10 probability treated as zero target-site accessibility (default: -5.0)",
+    ),
     genome_index: Path | None = typer.Option(
         None,
         "--genome-index",
@@ -2023,6 +2072,17 @@ def design(  # noqa: PLR0912
             filter_kwargs[name] = value
     filters = FilterCriteria(**filter_kwargs)
 
+    # Same construct-not-copy pattern for the RNAplfold settings behind target_accessibility.
+    accessibility_kwargs: dict[str, Any] = {}
+    for name, value in (
+        ("window_size", plfold_window),
+        ("max_bp_span", plfold_max_bp_span),
+        ("log_floor", accessibility_log_floor),
+    ):
+        if value is not None:
+            accessibility_kwargs[name] = value
+    target_accessibility = TargetAccessibilityConfig(**accessibility_kwargs)
+
     parameters = DesignParameters(
         design_mode=mode_enum,
         sirna_length=length,
@@ -2035,6 +2095,7 @@ def design(  # noqa: PLR0912
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
         default_overhang=overhang,
+        target_accessibility=target_accessibility,
     )
 
     console.print(
@@ -2239,7 +2300,7 @@ def config() -> None:
     scoring = default_params.scoring
     console.print(f"  Asymmetry: {scoring.asymmetry}")
     console.print(f"  GC content: {scoring.gc_content}")
-    console.print(f"  Accessibility: {scoring.accessibility}")
+    console.print(f"  Target accessibility: {scoring.target_accessibility}")
     console.print(f"  Off-target: {scoring.off_target}")
     console.print(f"  Empirical: {scoring.empirical}")
 
