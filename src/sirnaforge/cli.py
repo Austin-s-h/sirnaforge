@@ -65,6 +65,7 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     MiRNADesignConfig,
     TargetAccessibilityConfig,
+    ranking_score,
 )
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.models.zfn import (
@@ -1069,6 +1070,17 @@ def workflow(  # noqa: PLR0912
             "component score, whose attainable range is narrow."
         ),
     ),
+    min_isoform_coverage: float | None = typer.Option(
+        None,
+        "--min-isoform-coverage",
+        min=0.0,
+        max=1.0,
+        help=(
+            "Opt into the protein-coding isoform coverage gate (LOW_ISOFORM_COVERAGE). Off by "
+            "default: coverage is reported on every candidate either way, and no floor has been "
+            "calibrated against truth data. Not a scoring term."
+        ),
+    ),
     plfold_window: int | None = typer.Option(
         None,
         "--plfold-window",
@@ -1324,6 +1336,7 @@ def workflow(  # noqa: PLR0912
                     min_asymmetry_score=min_asymmetry,
                     max_paired_fraction=max_paired_fraction,
                     min_empirical_score=min_empirical,
+                    min_isoform_coverage=min_isoform_coverage,
                     plfold_window=plfold_window,
                     plfold_max_bp_span=plfold_max_bp_span,
                     accessibility_log_floor=accessibility_log_floor,
@@ -2179,7 +2192,7 @@ def design(  # noqa: PLR0912
                     f"{candidate.gc_content:.1f}",
                     str(candidate.transcript_hit_count),
                     f"{candidate.transcript_hit_fraction * 100:.1f}%",
-                    f"{candidate.composite_score:.1f}",
+                    f"{ranking_score(candidate):.1f}",
                 )
 
             console.print(candidates_table)
@@ -2295,14 +2308,17 @@ def config() -> None:
     console.print(f"  Max poly runs: {filters.max_poly_runs}")
     console.print(f"  Max paired fraction: {filters.max_paired_fraction}")
 
-    # Scoring weights
-    console.print("\n[cyan]Scoring Weights:[/cyan]")
-    scoring = default_params.scoring
-    console.print(f"  Asymmetry: {scoring.asymmetry}")
-    console.print(f"  GC content: {scoring.gc_content}")
-    console.print(f"  Target accessibility: {scoring.target_accessibility}")
-    console.print(f"  Off-target: {scoring.off_target}")
-    console.print(f"  Empirical: {scoring.empirical}")
+    # Scoring weights: one hand-authored vector per stage/mode, each summing to 1.0 and never
+    # rescaled at runtime.
+    console.print("\n[cyan]Scoring Weight Vectors:[/cyan]")
+    for vector in default_params.scoring.all_vectors():
+        console.print(f"  [bold]{vector.name}[/bold]")
+        for term, weight in vector.as_mapping().items():
+            console.print(f"    {term}: {weight}")
+    console.print(
+        "  [dim]Reported but not scored: empirical (min_empirical_score gate), isoform_coverage "
+        "(optional gate), conservation, paired_fraction (EXCESS_PAIRING gate)[/dim]"
+    )
 
 
 @app_command()

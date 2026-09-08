@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sirnaforge.models.sirna import DesignResult, SiRNACandidate
+from sirnaforge.models.sirna import DesignResult, SiRNACandidate, ranking_score
 
 DIRTY_CONTROL_LABEL = "DIRTY_CONTROL"
 DIRTY_CONTROL_SUFFIX = "__DIRTY_CONTROL"
@@ -46,9 +46,9 @@ def inject_dirty_controls(design_result: DesignResult, count: int = 2) -> list[S
     if not rejected_pool:
         return []
 
-    # Rejected candidates never reach scoring, so every composite_score here is 0.0 and this
-    # sort is a stable tie -- fine for the purpose, which is any already-failed candidate.
-    worst_candidates = sorted(rejected_pool, key=lambda c: getattr(c, "composite_score", 0.0))[:count]
+    # Rejected candidates never reach scoring, so every score here is None and this sort is a
+    # stable tie -- fine for the purpose, which is any already-failed candidate.
+    worst_candidates = sorted(rejected_pool, key=ranking_score)[:count]
     if not worst_candidates:
         return []
     dirty_controls: list[SiRNACandidate] = []

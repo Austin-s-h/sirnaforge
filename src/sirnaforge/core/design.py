@@ -5,7 +5,6 @@ import logging
 import math
 import sys
 import time
-from collections.abc import Mapping
 
 import Bio
 from Bio import SeqIO
@@ -26,6 +25,7 @@ from sirnaforge.models.sirna import (
     DesignParameters,
     DesignResult,
     SiRNACandidate,
+    ranking_score,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
@@ -94,8 +94,8 @@ class SiRNADesigner:
 
             all_candidates.extend(scored_candidates)
 
-        # Sort by composite score (descending)
-        all_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        # Sort by design_score (descending); composite_score does not exist until screening.
+        all_candidates.sort(key=ranking_score, reverse=True)
 
         # Get top candidates only from those passing filters; fallback to all if none pass
         passing = [
@@ -155,8 +155,8 @@ class SiRNADesigner:
         # Score candidates, with the transcript in scope for target_accessibility
         scored_candidates = self._score_candidates(filtered_candidates, sequence)
 
-        # Sort by composite score (descending)
-        scored_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        # Sort by design_score (descending); composite_score does not exist until screening.
+        scored_candidates.sort(key=ranking_score, reverse=True)
 
         # Get top candidates only from those passing filters; fallback to all if none pass
         passing = [
@@ -241,7 +241,6 @@ class SiRNADesigner:
                 gc_content=gc_content,
                 length=sirna_length,
                 asymmetry_score=0.0,  # Will be calculated in scoring
-                composite_score=0.0,  # Will be calculated in scoring
             )
 
             if fail_reason is not None:
@@ -392,24 +391,24 @@ class SiRNADesigner:
             if access_score is not None:
                 candidate.component_scores["target_accessibility"] = access_score
 
-            self._apply_design_composite(candidate, asym_score, gc_score, access_score, empirical_score)
+            self._apply_design_score(candidate, asym_score, gc_score, access_score)
             candidate.asymmetry_score = asym_score
 
         return candidates
 
-    def _apply_design_composite(
+    def _apply_design_score(
         self,
         candidate: SiRNACandidate,
         asym_score: float,
         gc_score: float,
         access_score: float | None,
-        empirical_score: float,
     ) -> None:
-        """Write the design-time composite score and its per-term contributions.
+        """Write ``design_score`` on the ``design_v4`` vector, and its per-term contributions.
 
-        A NaN sub-score (a ViennaRNA failure) and a None accessibility both mean "no evidence", so
-        both are omitted from the feature set and the remaining weights renormalise over what is
-        left. Neither is substituted with a value.
+        ``composite_score`` stays None: it needs ``off_target``, which does not exist until
+        screening has run. A NaN sub-score (a ViennaRNA failure) or a None accessibility means "no
+        evidence", and since weights are never renormalised there is then no design_score to
+        report -- the field stays None rather than being computed over a smaller term set.
         """
         features: dict[str, float] = {}
         if not math.isnan(asym_score):
@@ -418,34 +417,29 @@ class SiRNADesigner:
             features["gc_content"] = gc_score
         if access_score is not None:
             features["target_accessibility"] = access_score
-        if not math.isnan(empirical_score):
-            features["empirical"] = empirical_score
 
         candidate.scored_after_screening = False
-        if not features:
-            # Every term was unavailable; leave composite_score at its default (0.0)
-            logger.warning(f"All component scores are NaN for candidate {candidate.id}. Leaving composite_score=0.0.")
-            candidate.weight_set_version = ""
-            return
-
+        vector = self.parameters.scoring.vector_for(post_screen=False)
         try:
-            result = compute_composite(features, self.parameters.scoring)
+            result = compute_composite(features, vector)
         except ScoringError as e:
-            logger.warning(f"Scoring failed for candidate {candidate.id}: {e}. Setting composite_score=0.0.")
-            candidate.composite_score = 0.0
+            logger.warning(f"Design scoring skipped for candidate {candidate.id}: {e}")
+            candidate.design_score = None
             candidate.weight_set_version = ""
+            candidate.weight_vector = ""
             return
 
-        candidate.composite_score = result.score
+        candidate.design_score = result.score
         candidate.weight_set_version = result.weight_set_version
+        candidate.weight_vector = result.vector_name
         candidate.score_asymmetry = result.contributions.get("asymmetry")
         candidate.score_gc_content = result.contributions.get("gc_content")
         candidate.score_target_accessibility = result.contributions.get("target_accessibility")
-        candidate.score_empirical = result.contributions.get("empirical")
-        # Post-screen terms stay None at design time
+        # Terms outside design_v4 stay None at design time
         candidate.score_off_target = None
-        candidate.score_isoform_coverage = None
-        candidate.score_conservation = None
+        candidate.score_ago_start = None
+        candidate.score_pos1_mismatch = None
+        candidate.score_supp_13_16 = None
 
     def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, float | None]:
         """Compute duplex stability ΔG and a normalized score in [0,1].
@@ -555,9 +549,10 @@ class SiRNADesigner:
     def _calculate_empirical_score(self, candidate: SiRNACandidate) -> float:
         """Calculate empirical score using Reynolds et al. rules (simplified).
 
-        Guides are stored as DNA, so the sequence is read as RNA (T is U) before the
-        position-19 test; otherwise a T there never earned the A/U bonus. The
-        attainable range is EMPIRICAL_SCORE_MIN..EMPIRICAL_SCORE_MAX, not 0..1.
+        Gate only since issue #96: this score is reported and read by `min_empirical_score`, and is
+        not a term in any weight vector. Guides are stored as DNA, so the sequence is read as RNA
+        (T is U) before the position-19 test; otherwise a T there never earned the A/U bonus. The
+        attainable range is EMPIRICAL_SCORE_MIN..EMPIRICAL_SCORE_MAX (0.4-0.6), not 0..1.
         """
         guide = candidate.guide_sequence.upper().replace("T", "U")
         score = 0.5  # Base score
@@ -567,14 +562,15 @@ class SiRNADesigner:
         if len(guide) >= 19 and guide[18] in ("A", "U"):
             score += 0.1
 
-        # Prefer G/C at position 1
-        if guide[0] in ("G", "C"):
-            score += 0.1
-
         # Avoid C at position 19
         if len(guide) >= 19 and guide[18] == "C":
             score -= 0.1
 
+        # No rule here judges guide position 1. There used to be a +0.1 for G/C there, which
+        # contradicted the biogenesis rule rewarding A/U at the same base (see biogenesis_features):
+        # G/C gained +1.6 empirical points and lost 7.9 to the miRNA adjustment, so a 0.15-weight
+        # declared term was overridden ~5x by an undeclared one and `empirical` ended up with a
+        # NEGATIVE variance share. A/U wins; the clause is gone. Do not reinstate it.
         return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
 
     def _apply_score_filters(self, candidate: SiRNACandidate, asymmetry_score: float, empirical_score: float) -> None:
@@ -638,38 +634,66 @@ class SiRNADesigner:
         }
 
 
-# component_scores keys carrying the miRNA biogenesis bonus past the design stage. The bonus is
-# folded into composite_score, not into the composite term set, so post-screen rescoring (which
-# rebuilds the composite from the term set) has to be able to reapply it from the candidate itself.
-MIRNA_BONUS_KEY = "mirna_biogenesis_bonus"
-MIRNA_BONUS_MAX_KEY = "mirna_biogenesis_bonus_max"
+# The three miRNA biogenesis terms of postscreen_mirna_v4. Each is an ordinary declared term with
+# its own weight; there is no bonus to fold in and nothing to divide out. All three are pure
+# functions of the guide and passenger sequences, so they are computable for every candidate --
+# including dirty controls, which never pass through MiRNADesigner.
+MIRNA_TERM_NAMES = ("ago_start", "pos1_mismatch", "supp_13_16")
+
+# Guide positions 13-16 (1-based), the 3' supplementary pairing region.
+SUPP_REGION_SLICE = slice(12, 16)
+SUPP_REGION_MIN_LEN = 16
+
+# Watson-Crick pairs and the G:U wobble, read as RNA.
+_PERFECT_PAIRS = frozenset({("A", "U"), ("U", "A"), ("G", "C"), ("C", "G")})
+_WOBBLE_PAIRS = frozenset({("G", "U"), ("U", "G")})
 
 
-def mirna_max_biogenesis_bonus(scoring_weights: Mapping[str, float] | None = None) -> float:
-    """Maximum attainable miRNA biogenesis bonus: the divisor that puts a miRNA run on one scale.
+def classify_pos1_pairing(guide_base: str, passenger_base: str) -> str:
+    """Classify the pairing state at guide position 1: perfect, wobble or mismatch.
 
-    Exposed as a function so post-screen rescoring can recover the divisor for a candidate that
-    never passed through MiRNADesigner._score_candidates (and therefore carries no
-    MIRNA_BONUS_MAX_KEY), instead of leaving that row on an undivided scale.
+    Bases are stored as DNA, so they are read as RNA before lookup: otherwise A:T is not found in
+    the Watson-Crick set and every A:U pair is called a mismatch.
     """
-    from sirnaforge.models.sirna import MiRNADesignConfig  # noqa: PLC0415
+    pair = (_as_rna(guide_base), _as_rna(passenger_base))
+    if pair in _PERFECT_PAIRS:
+        return "perfect"
+    if pair in _WOBBLE_PAIRS:
+        return "wobble"
+    return "mismatch"
 
-    weights = scoring_weights if scoring_weights is not None else MiRNADesignConfig().scoring_weights
-    # Every bonus below is capped by its weight (supp_bonus scales a [0,1] score).
-    return weights["ago_start_bonus"] + weights["pos1_mismatch_bonus"] + weights["supp_13_16_bonus"]
 
+def supplementary_score(guide: str) -> float:
+    """3' supplementary pairing sub-score from guide positions 13-16, in [0, 1].
 
-def apply_mirna_biogenesis_bonus(base_score: float, mirna_bonus: float, max_mirna_bonus: float) -> float:
-    """Fold the miRNA biogenesis bonus into a 0-100 composite score.
-
-    The bonuses widen the attainable range, so rescale by the maximum attainable total
-    instead of clamping: clamping parked every strong candidate at exactly 100.0 and
-    erased the ranking at the top. Order is preserved, since this is monotone in
-    (base score + bonus).
+    High A/U content there means low pairing stability, which is the desirable direction (less 3'
+    supplementary pairing, better specificity), so the sub-score rises with A/U as every other
+    term rises with the thing it wants.
     """
-    scaled = (base_score + mirna_bonus * 100) / (1.0 + max_mirna_bonus)
-    # Guard the model's 0-100 bound for non-default scoring weights
-    return max(0.0, min(100.0, scaled))
+    if len(guide) < SUPP_REGION_MIN_LEN:
+        return 0.5  # Default for short sequences
+
+    supp_region = _as_rna(guide[SUPP_REGION_SLICE])
+    au_count = supp_region.count("A") + supp_region.count("U")
+    return au_count / len(supp_region) if supp_region else 0.5
+
+
+def biogenesis_features(guide: str, passenger: str) -> dict[str, float]:
+    """The three miRNA biogenesis sub-scores, from sequence alone.
+
+    Computed here rather than read back off the candidate so post-screen scoring cannot be handed a
+    partially-populated row: every term in postscreen_mirna_v4 must be present, and re-deriving them
+    from the sequences means they always are. Each is in [0, 1] like every other term -- they are
+    features now, not bonuses added to a finished score.
+    """
+    pos1_state = classify_pos1_pairing(guide[0] if guide else "", passenger[-1] if passenger else "")
+    return {
+        # Argonaute loading prefers A/U at guide position 1.
+        "ago_start": 1.0 if _as_rna(guide[:1]) in ("A", "U") else 0.0,
+        # A G:U wobble or mismatch at position 1 is preferred over a perfect pair.
+        "pos1_mismatch": 1.0 if pos1_state in ("wobble", "mismatch") else 0.0,
+        "supp_13_16": supplementary_score(guide),
+    }
 
 
 class MiRNADesigner(SiRNADesigner):
@@ -691,115 +715,47 @@ class MiRNADesigner(SiRNADesigner):
     def _score_candidates(
         self, candidates: list[SiRNACandidate], transcript_sequence: str | None = None
     ) -> list[SiRNACandidate]:
-        """Score candidates using miRNA-biogenesis-aware composite scoring.
+        """Record the miRNA biogenesis evidence, then score exactly as siRNA mode does.
 
-        Adds miRNA-specific scoring components:
-        - Argonaute start bonus for A/U at guide position 1
-        - Position 1 mismatch/wobble preference
-        - 3' supplementary pairing score
-        - Enhanced asymmetry requirements
+        The design stage uses one vector (``design_v4``) in both modes, so this method no longer
+        touches any score: the three biogenesis quantities are terms of ``postscreen_mirna_v4`` and
+        only enter once ``off_target`` exists. What it does do is record them -- as reported fields
+        and as ``component_scores`` entries -- so the CSV shows why a miRNA run ranks as it does.
+
+        Before issue #96 this method folded the bonuses into ``composite_score`` and divided the
+        result by ``1 + max_bonus``, which scaled every declared weight by 0.80 in miRNA mode.
 
         Args:
             candidates: Candidates to score in place.
             transcript_sequence: Forwarded to the base scorer for target_accessibility.
         """
-        from sirnaforge.models.sirna import MiRNADesignConfig  # noqa: PLC0415
-
-        mirna_config = MiRNADesignConfig()
-        scoring_weights = mirna_config.scoring_weights
-        # Shared with post-screen rescoring, which needs the same divisor for candidates that never
-        # reached this method (see mirna_max_biogenesis_bonus).
-        max_mirna_bonus = mirna_max_biogenesis_bonus(scoring_weights)
-
-        # First, run the standard scoring
         candidates = super()._score_candidates(candidates, transcript_sequence)
 
-        # Add miRNA-specific scoring enhancements
         for candidate in candidates:
             guide = candidate.guide_sequence
             passenger = candidate.passenger_sequence
 
-            # 1. Argonaute selection: prefer A/U at guide position 1
-            # The reported base keeps the stored (DNA) spelling; the test does not.
-            guide_pos1_base = guide[0] if guide else ""
-            candidate.guide_pos1_base = guide_pos1_base
-            ago_start_bonus = scoring_weights["ago_start_bonus"] if _as_rna(guide_pos1_base) in ("A", "U") else 0.0
-
-            # 2. Position 1 pairing state: prefer G:U wobble or mismatch over perfect pair
-            pos1_pairing_state = self._classify_pos1_pairing(guide_pos1_base, passenger[-1] if passenger else "")
-            candidate.pos1_pairing_state = pos1_pairing_state
-            pos1_mismatch_bonus = (
-                scoring_weights["pos1_mismatch_bonus"] if pos1_pairing_state in ["wobble", "mismatch"] else 0.0
+            # Reported fields keep the stored (DNA) spelling of the base; the tests do not.
+            candidate.guide_pos1_base = guide[0] if guide else ""
+            candidate.pos1_pairing_state = classify_pos1_pairing(
+                candidate.guide_pos1_base, passenger[-1] if passenger else ""
             )
+            candidate.supp_13_16_score = supplementary_score(guide)
+            candidate.seed_class = self._classify_seed_region(guide)
 
-            # 3. 3' supplementary pairing (positions 13-16)
-            supp_score = self._calculate_supplementary_score(guide)
-            candidate.supp_13_16_score = supp_score
-            supp_bonus = scoring_weights["supp_13_16_bonus"] * supp_score
-
-            # 4. Seed class classification (positions 2-8)
-            seed_class = self._classify_seed_region(guide)
-            candidate.seed_class = seed_class
-
-            # 5. Apply miRNA-specific bonuses to composite score
-            mirna_bonus = ago_start_bonus + pos1_mismatch_bonus + supp_bonus
-
-            # Recorded on the candidate so off-target screening, which recomputes the composite
-            # from the term set afterwards, can reapply the same bonus instead of dropping it.
-            candidate.component_scores[MIRNA_BONUS_KEY] = mirna_bonus
-            candidate.component_scores[MIRNA_BONUS_MAX_KEY] = max_mirna_bonus
-
-            candidate.composite_score = apply_mirna_biogenesis_bonus(
-                candidate.composite_score, mirna_bonus, max_mirna_bonus
-            )
+            # Diagnostics on the row; post-screen scoring re-derives them from the sequences so a
+            # candidate that never reached this method is still fully scorable.
+            candidate.component_scores.update(biogenesis_features(guide, passenger))
 
         return candidates
 
     def _classify_pos1_pairing(self, guide_base: str, passenger_base: str) -> str:
-        """Classify pairing state at guide position 1.
-
-        Args:
-            guide_base: Guide strand base at position 1 (5' end)
-            passenger_base: Passenger strand base at position 21 (pairs with guide pos1)
-
-        Returns:
-            Pairing classification: "perfect", "wobble", or "mismatch"
-        """
-        # Watson-Crick pairs
-        perfect_pairs = {("A", "U"), ("U", "A"), ("G", "C"), ("C", "G")}
-        # G:U wobble pair
-        wobble_pairs = {("G", "U"), ("U", "G")}
-
-        # Bases are stored as DNA, so read them as RNA before lookup: otherwise A:T
-        # is not found in perfect_pairs and every A:U pair is called a mismatch.
-        pair = (_as_rna(guide_base), _as_rna(passenger_base))
-        if pair in perfect_pairs:
-            return "perfect"
-        if pair in wobble_pairs:
-            return "wobble"
-        return "mismatch"
+        """Classify pairing state at guide position 1 (delegates to `classify_pos1_pairing`)."""
+        return classify_pos1_pairing(guide_base, passenger_base)
 
     def _calculate_supplementary_score(self, guide: str) -> float:
-        """Calculate 3' supplementary pairing potential (positions 13-16).
-
-        Lower score is better (less 3' pairing = better specificity).
-
-        Args:
-            guide: Guide strand sequence
-
-        Returns:
-            Normalized score [0-1] where 0 = high pairing, 1 = low pairing
-        """
-        if len(guide) < 16:
-            return 0.5  # Default for short sequences
-
-        # Extract positions 13-16 (0-indexed: 12-15)
-        supp_region = _as_rna(guide[12:16])
-
-        # Simple heuristic: count A/U content (lower stability)
-        au_count = supp_region.count("A") + supp_region.count("U")
-        # High A/U = low stability = high score (good for avoiding 3' pairing)
-        return au_count / len(supp_region) if supp_region else 0.5
+        """3' supplementary pairing sub-score (delegates to `supplementary_score`)."""
+        return supplementary_score(guide)
 
     def _classify_seed_region(self, guide: str) -> str:
         """Classify seed match class based on guide positions 2-8.

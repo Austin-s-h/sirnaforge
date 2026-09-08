@@ -40,12 +40,9 @@ from sirnaforge.config import (
     WorkflowInputSpec,
 )
 from sirnaforge.core.design import (
-    MIRNA_BONUS_KEY,
-    MIRNA_BONUS_MAX_KEY,
     MiRNADesigner,
     SiRNADesigner,
-    apply_mirna_biogenesis_bonus,
-    mirna_max_biogenesis_bonus,
+    biogenesis_features,
 )
 from sirnaforge.core.hit_classification import (
     ClassificationContext,
@@ -86,6 +83,7 @@ from sirnaforge.models.sirna import (
     SiRNACandidate,
     TargetAccessibilityConfig,
     build_candidate_row,
+    ranking_score,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.variant import VariantRecord
@@ -878,7 +876,7 @@ class SiRNAWorkflow:
             c.transcript_hit_fraction = (hits / total_seqs) if total_seqs > 0 else 0.0
 
         # Sort, compute top-N (prefer passing candidates)
-        all_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        all_candidates.sort(key=ranking_score, reverse=True)
         passing = [
             c
             for c in all_candidates
@@ -1200,8 +1198,14 @@ class SiRNAWorkflow:
         try:
             sequences: list[tuple[str, str]] = []
             for _, row in pass_df.iterrows():
-                # Create simple header with candidate ID and score
-                header = f"{row['id']} score={row['composite_score']:.1f}"
+                # Header carries whichever score the row actually has: composite_score is null
+                # until screening, and a design-only run has design_score instead.
+                score = row.get("composite_score")
+                if score is None or pd.isna(score):
+                    score = row.get("design_score")
+                header = (
+                    f"{row['id']} score={score:.1f}" if score is not None and not pd.isna(score) else str(row["id"])
+                )
                 sequence = str(row["guide_sequence"])
                 sequences.append((header, sequence))
 
@@ -1300,8 +1304,10 @@ class SiRNAWorkflow:
         add_file("candidates_pass_fasta", pass_fasta, "fasta", {"sequences": self._count_fasta_sequences(pass_fasta)})
         add_file("orf_validation_report", orf_report, "tsv")
 
-        # Scoring metadata with weight set version and active terms
-        weights_dict = self.config.design_params.scoring.model_dump(mode="json")
+        # Scoring metadata: every named vector with its weights, so a row's weight_vector column
+        # resolves to the exact numbers that produced it. Weights are never altered at runtime, so
+        # what is recorded here is what applied.
+        scoring_weights = self.config.design_params.scoring
 
         return {
             "tool": "sirnaforge",
@@ -1313,8 +1319,10 @@ class SiRNAWorkflow:
             "design_parameters": self.config.design_params.model_dump(mode="json"),
             "scoring": {
                 "weight_set_version": SCORING_WEIGHT_SET_VERSION,
-                "weights": weights_dict,
-                "active_terms": list(COMPOSITE_TERMS),
+                "vectors": scoring_weights.as_manifest(),
+                "vector_terms": {vector.name: list(vector.terms) for vector in scoring_weights.all_vectors()},
+                "scored_terms": list(COMPOSITE_TERMS),
+                "reported_not_scored": ["empirical", "isoform_coverage", "conservation", "paired_fraction"],
             },
             "files": files,
         }
@@ -1452,7 +1460,7 @@ class SiRNAWorkflow:
         mixed_scales = 0 < scored_count < len(design_results.candidates)
 
         design_results.candidates.sort(
-            key=lambda c: (bool(c.scored_after_screening) if mixed_scales else False, c.composite_score),
+            key=lambda c: (bool(c.scored_after_screening) if mixed_scales else False, ranking_score(c)),
             reverse=True,
         )
         rankable = [
@@ -2156,6 +2164,7 @@ class SiRNAWorkflow:
                 ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
                 ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
                 ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
+                ("failed_isoform_coverage", "❌ {} failed: protein-coding isoform coverage floor"),
             )
             for key, template in summaries:
                 count = stats.get(key, 0)
@@ -2583,6 +2592,7 @@ class SiRNAWorkflow:
             "failed_mirna_seed": 0,
             "failed_high_risk_mirna": 0,
             "failed_excess_off_targets": 0,
+            "failed_isoform_coverage": 0,
             "human_transcriptome_hits": 0,
             "other_transcriptome_hits": 0,
             "human_mirna_hits": 0,
@@ -2801,6 +2811,11 @@ class SiRNAWorkflow:
             elif not self._score_candidate_post_screen(candidate, hit_counts, conservation_denominator):
                 stats["candidates_not_scored_after_screening"] += 1
 
+            # isoform_coverage is not a scoring term; when a floor is configured it is a gate, and
+            # this is the first point at which the coverage fraction exists.
+            if self._apply_isoform_coverage_gate(candidate):
+                stats["failed_isoform_coverage"] += 1
+
             # Apply filtering criteria
             human_total_hits_for_filters = human_transcriptome_hits + mirna_human_total
             should_fail, fail_status = self._check_offtarget_filters(
@@ -2839,6 +2854,27 @@ class SiRNAWorkflow:
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
 
+    def _apply_isoform_coverage_gate(self, candidate: SiRNACandidate) -> bool:
+        """Fail a candidate below the configured protein-coding isoform coverage floor.
+
+        A gate, not a scoring term: isoform coverage is reported on every candidate and read by no
+        weight. The floor lives on FilterCriteria and defaults to None (off), so default behaviour
+        is unchanged. A candidate whose coverage could not be computed (no protein-coding
+        transcripts, or a path with no guide -> transcript map) is never failed by it -- an
+        annotation gap is not evidence of poor coverage.
+
+        Returns True when this call applied the verdict, so the caller can count it.
+        """
+        floor = self.config.design_params.filters.min_isoform_coverage
+        if floor is None or candidate.isoform_coverage is None:
+            return False
+        if candidate.passes_filters is not True or candidate.isoform_coverage >= floor:
+            return False
+
+        candidate.passes_filters = SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE
+        logger.info(f"Candidate {candidate.id} failed isoform coverage: {candidate.isoform_coverage:.3f} < {floor:.3f}")
+        return True
+
     def _score_candidate_post_screen(
         self, candidate: SiRNACandidate, hit_counts: HitClassCounts, conservation_denominator: frozenset[str]
     ) -> bool:
@@ -2859,13 +2895,23 @@ class SiRNAWorkflow:
         features: dict[str, float] = {}
         cs = candidate.component_scores or {}
 
-        # Design-time terms: reuse from component_scores, dropping any NaN
-        # target_accessibility is absent from component_scores when the design stage could not
-        # compute it, which is exactly the signal to leave the term inactive here too.
-        for term in ("asymmetry", "gc_content", "target_accessibility", "empirical"):
+        # Design-stage terms: reuse from component_scores, dropping any NaN. A term missing here
+        # makes the vector unsatisfiable and compute_composite raises -- weights are never
+        # renormalised, so the candidate keeps no post-screen score rather than a rescaled one.
+        for term in ("asymmetry", "gc_content", "target_accessibility"):
             value = cs.get(term)
             if value is not None and not math.isnan(value):
                 features[term] = value
+
+        # miRNA mode scores three more declared terms. They are re-derived from the sequences
+        # rather than read back off the row, so a candidate that never passed through
+        # MiRNADesigner (a dirty control is a deep copy of a *rejected* candidate) is scored on
+        # the same vector as everything else instead of landing on its own scale.
+        vector = self.config.design_params.scoring.vector_for(
+            post_screen=True, design_mode=self.config.design_params.design_mode
+        )
+        if self.config.design_params.design_mode == DesignMode.MIRNA:
+            features.update(biogenesis_features(candidate.guide_sequence, candidate.passenger_sequence))
 
         # The sub-score helpers raise on a numerator exceeding its denominator. Both numerators are
         # constructed as subsets of their denominators here, so neither is reachable -- but the
@@ -2904,34 +2950,21 @@ class SiRNAWorkflow:
                 features["conservation"] = conservation
                 candidate.conservation_score = conservation
 
-            result = compute_composite(features, self.config.design_params.scoring)
-            # miRNA mode folds the biogenesis bonuses (ago-start, pos1 pairing, 3' supplementary)
-            # into composite_score rather than into the composite term set, so recomputing the
-            # composite here drops them unless they are reapplied -- which made --design-mode mirna
-            # have no effect at all on the final ranking of any screened run.
-            if self.config.design_params.design_mode == DesignMode.MIRNA:
-                # The normalising maximum falls back to the mode's own maximum rather than 0.0:
-                # a candidate that never went through MiRNADesigner._score_candidates carries no
-                # bonus keys (dirty controls are deep copies of rejected candidates, which are
-                # never scored), and dividing everyone else by 1 + max_bonus while leaving those
-                # rows undivided put them ~25% high in the same CSV.
-                candidate.composite_score = apply_mirna_biogenesis_bonus(
-                    result.score,
-                    float(cs.get(MIRNA_BONUS_KEY, 0.0)),
-                    float(cs.get(MIRNA_BONUS_MAX_KEY, mirna_max_biogenesis_bonus())),
-                )
-            else:
-                candidate.composite_score = result.score
+            # One vector, applied exactly as declared. The miRNA biogenesis terms are inside it,
+            # so there is no bonus to fold in afterwards and nothing to divide the result by.
+            result = compute_composite(features, vector)
+            candidate.composite_score = result.score
             candidate.weight_set_version = result.weight_set_version
+            candidate.weight_vector = result.vector_name
             candidate.scored_after_screening = True
             # Write per-term contributions
+            candidate.score_off_target = result.contributions.get("off_target")
+            candidate.score_target_accessibility = result.contributions.get("target_accessibility")
             candidate.score_asymmetry = result.contributions.get("asymmetry")
             candidate.score_gc_content = result.contributions.get("gc_content")
-            candidate.score_target_accessibility = result.contributions.get("target_accessibility")
-            candidate.score_empirical = result.contributions.get("empirical")
-            candidate.score_off_target = result.contributions.get("off_target")
-            candidate.score_isoform_coverage = result.contributions.get("isoform_coverage")
-            candidate.score_conservation = result.contributions.get("conservation")
+            candidate.score_ago_start = result.contributions.get("ago_start")
+            candidate.score_pos1_mismatch = result.contributions.get("pos1_mismatch")
+            candidate.score_supp_13_16 = result.contributions.get("supp_13_16")
             return True
         except (ScoringError, ValueError) as exc:
             # ERROR, not WARNING: the candidate now carries a design-time score that is not
@@ -3226,6 +3259,7 @@ async def run_sirna_workflow(
     min_asymmetry_score: float | None = None,
     max_paired_fraction: float | None = None,
     min_empirical_score: float | None = None,
+    min_isoform_coverage: float | None = None,
     plfold_window: int | None = None,
     plfold_max_bp_span: int | None = None,
     accessibility_log_floor: float | None = None,
@@ -3286,6 +3320,9 @@ async def run_sirna_workflow(
             (None keeps FilterCriteria's default of 0.6).
         min_empirical_score: Override the empirical design-rule floor gating
             LOW_EMPIRICAL_SCORE (None keeps FilterCriteria's default).
+        min_isoform_coverage: Opt into the protein-coding isoform coverage gate
+            (LOW_ISOFORM_COVERAGE). None, the default, means no gate: coverage is reported on
+            every candidate either way, and no floor has been calibrated against truth data.
         plfold_window: Override the RNAplfold averaging window W used by the target_accessibility
             term (None keeps the default of 150).
         plfold_max_bp_span: Override the RNAplfold maximum base-pair span L (None keeps 100).
@@ -3311,6 +3348,7 @@ async def run_sirna_workflow(
         ("min_asymmetry_score", min_asymmetry_score),
         ("max_paired_fraction", max_paired_fraction),
         ("min_empirical_score", min_empirical_score),
+        ("min_isoform_coverage", min_isoform_coverage),
     ):
         if value is not None:
             filter_kwargs[name] = value
@@ -3542,7 +3580,6 @@ async def run_offtarget_only_workflow(
                 off_target_penalty=0.0,
                 transcript_hit_count=0,
                 transcript_hit_fraction=0.0,
-                composite_score=0.0,
                 passes_filters=True,
             )
 
@@ -3574,7 +3611,8 @@ async def run_offtarget_only_workflow(
             off_target_penalty=0.0,  # Will be populated by off-target analysis
             transcript_hit_count=0,  # Will be populated by off-target analysis
             transcript_hit_fraction=0.0,  # Will be populated by off-target analysis
-            composite_score=0.0,  # Not computed for pre-designed guides
+            # design_score and composite_score stay None: a pre-designed guide has neither until
+            # screening scores it, and 0.0 would read as a computed worst-possible candidate.
             passes_filters=True,  # Assume valid since user provided them
         )
         candidates.append(candidate)
