@@ -106,12 +106,31 @@ Need more control? Customize with parameters:
 sirnaforge workflow BRCA1 \
   --genome-species "human,rat,rhesus" \
   --gc-min 40 --gc-max 60 \
-  --top-n 50 \
+  --max-off-targets 20 \
   --design-mode mirna \
   --output-dir results
 ```
 
+**Selection defaults are deliberately permissive:**
+
+- `--top-n` is **uncapped** — every ranked candidate is reported. Pass a value only to truncate the
+  reported set; enumeration and screening always cover every candidate either way.
+- `--max-off-targets` defaults to **15** genuine off-target sites (on-target, ortholog and
+  repeat-mediated hits are excluded first). This is the PASS/`EXCESS_OFF_TARGETS` gate. It is *not*
+  `--max-hits`, which caps how many hits are *recorded* per candidate per species and will censor
+  your counts if you set it.
+
 ### ZFN mutation constraints (composable)
+
+> **⚠️ EXPERIMENTAL — ZFN output is not decision-grade.** The ZFN arm ships experimental in 0.6.0
+> with known unfixed defects, tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82): the right half-site must be passed as
+> the reverse complement of its published `(−)` text or it matches nothing; the FokI seed budget
+> guards the wrong end of that half-site; a site inside a large containing gene can be reported
+> `intergenic`; the exported `worst_site_score` / `best_offtarget_score` fields are inverted; and
+> the default `pyahocorasick` backend raises `ValueError` above 3 mismatches on a 12 bp half-site.
+> Do not use ZFN output for any decision without independent validation. Start from the
+> [ZFN Module Guide](docs/zfn_module.md).
 
 ZFN mode accepts repeatable mutation constraints so you can combine per-subfinger and global budgets.
 

@@ -233,6 +233,53 @@ class TestVariantResolverCache:
         cache_key2 = resolver._get_cache_key(query)
         assert cache_key == cache_key2
 
+    def test_cache_key_separates_variant_modes(self):
+        """Avoid and target mode must not share cache entries at the same min_af.
+
+        A cache hit is returned without re-running ``_passes_filters``, so sharing a
+        key lets an entry admitted under avoid mode (on its max population AF) be
+        served to a target-mode run that filters on the global AF and would have
+        rejected it.
+        """
+        query = VariantQuery(raw_input="rs1234", query_type=VariantQueryType.RSID, rsid="rs1234")
+
+        keys = {
+            mode: VariantResolver(min_af=0.01, variant_mode=mode)._get_cache_key(query)
+            for mode in ("avoid", "target", "both")
+        }
+        keys["unset"] = VariantResolver(min_af=0.01)._get_cache_key(query)
+
+        assert len(set(keys.values())) == len(keys), f"variant_mode not part of the cache key: {keys}"
+
+    @pytest.mark.asyncio
+    async def test_target_mode_does_not_read_avoid_mode_entries(self, tmp_path, mocker):
+        """The cross-mode leak, end to end through resolve_variant."""
+        variant = VariantRecord(
+            id="rs1234",
+            chr="chr1",
+            pos=100,
+            ref="A",
+            alt="T",
+            sources=[VariantSource.ENSEMBL],
+            af=0.005,  # below min_af: only avoid mode admits this variant
+            population_afs={"AFR": 0.15},
+        )
+
+        avoid = VariantResolver(min_af=0.01, variant_mode="avoid", cache_dir=tmp_path)
+        mocker.patch.object(avoid, "_query_clinvar", return_value=None)
+        mocker.patch.object(avoid, "_query_ensembl", return_value=variant)
+        query = avoid.parse_identifier("rs1234")
+        assert await avoid.resolve_variant(query) is not None
+
+        target = VariantResolver(min_af=0.01, variant_mode="target", cache_dir=tmp_path)
+        mocker.patch.object(target, "_query_clinvar", return_value=None)
+        mocker.patch.object(target, "_query_ensembl", return_value=variant)
+        mocker.patch.object(target, "_query_dbsnp", return_value=None)
+
+        # Target mode filters on the global AF of 0.005, so it must reject the
+        # variant rather than inherit avoid mode's verdict from the cache.
+        assert await target.resolve_variant(query) is None
+
     def test_cache_put_and_get(self, tmp_path):
         """Test caching and retrieving variants."""
         resolver = VariantResolver(cache_dir=tmp_path)

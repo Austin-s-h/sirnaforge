@@ -65,6 +65,33 @@ class GeneSearcher:
         """Get the client for a specific database."""
         return self.clients[database]
 
+    def query_species(self, database: DatabaseType | None = None) -> str:
+        """Canonical organism whose transcripts a gene query returns.
+
+        This is the authoritative "query species": the organism the retrieved target transcripts
+        belong to, read off the database that retrieved them rather than guessed from the
+        off-target species list.
+
+        ``database=None`` asks the question ``search_gene_with_fallback`` asks -- any of the
+        clients may serve the query. Every client is single-organism and they all agree today, so
+        the fallback cannot change the answer; if that ever stops being true the disagreement
+        surfaces here (the requested database's answer wins and a warning is logged) instead of
+        silently mislabelling the target.
+
+        Args:
+            database: Database the caller intends to query, or None for the fallback chain.
+
+        Returns:
+            Canonical species name (e.g. ``"human"``).
+        """
+        per_client = {client.query_species for client in self.clients.values()}
+        if len(per_client) > 1:
+            logger.warning(
+                f"Gene-query clients disagree on their organism ({sorted(per_client)}); "
+                f"using the one configured for {database.value if database else 'ensembl'}."
+            )
+        return self.get_client(database or DatabaseType.ENSEMBL).query_species
+
     async def search_gene_with_fallback(self, query: str, include_sequence: bool = True) -> GeneSearchResult:
         """Search for a gene with automatic fallback to other databases.
 

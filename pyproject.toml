@@ -24,12 +24,12 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.10, <3.13"
-version = "0.5.1"
+version = "0.6.0"
 
 dependencies = [
   "biopython>=1.84",
   "pandas>=2.3.0",
-  "numpy>=1.26.0",
+  "numpy>=1.26.0,<2.5",
   "requests>=2.32.0",
   "pysam>=0.23.0",
   "pyahocorasick>=2.1.0",
@@ -173,6 +173,7 @@ ignore = [
   "C901", # too complex
   "B904", # raise from within except clause (handled by design)
   "PLR0913", # too many arguments
+  "PLR0917", # too many positional arguments in established APIs and CLI commands
   "PLR0915", # too many statements
   "PLR2004", # magic value used in comparison
 ]

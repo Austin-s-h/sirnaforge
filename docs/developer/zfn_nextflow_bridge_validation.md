@@ -1,5 +1,17 @@
 # ZFN Nextflow Bridge: Sanity Validation
 
+> ## ⚠️ EXPERIMENTAL — this check is not authoritative
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any decision without independent
+> validation.**
+>
+> Two caveats apply to the run recorded below. First, the fixtures were built around the published
+> CCR5 half-site pair, which does not match its own on-target site under the default strand-pairing
+> rule, so the site counts are not evidence about real genomic behaviour. Second, the Nextflow ZFN
+> arm exercised here is not reachable from either CLI entry point — the workflow always runs the
+> in-process path — and the aggregator emits a narrower CSV schema and a different ranking than the
+> direct route.
+
 Date: 2026-03-01
 
 This note records a focused sanity check of the ZFN Nextflow bridge refactor where Nextflow orchestrates processes and Python (via CLI entrypoints) owns the higher-order logic.
@@ -50,17 +62,17 @@ This confirms default behavior: sharding remains enabled generically, but chunki
 ### 2) Shard-level search
 
 - Generated shard-scoped outputs for all 6 multi-contig manifest rows:
-  - `zfn_offtarget_sites_<shard_id>.csv`
-  - `zfn_candidate_summary_<shard_id>.json`
+  - `offtarget_sites_<shard_id>.csv`
+  - `candidate_summary_<shard_id>.json`
 
 ### 3) Aggregation
 
 Running aggregate on all shard CSVs produced:
 
-- `zfn_candidate_summary.json` summary:
+- `candidate_summary.json` summary:
   - `off_target_sites: 2`
   - `shards: 6`
-- `zfn_offtarget_sites.csv` rows: **2** (one retained site per contig)
+- `offtarget_sites.csv` rows: **2** (one retained site per contig)
 
 This confirms global deduplication and deterministic merge behavior over overlapping shards.
 

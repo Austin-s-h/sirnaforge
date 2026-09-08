@@ -15,6 +15,7 @@ import pytest
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager, MiRNASource
 from sirnaforge.data.reference_manager import CacheMetadata, ReferenceManager
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager, TranscriptomeSource
+from sirnaforge.utils.cache_utils import current_producer_version
 
 # Sample data for testing
 SAMPLE_HUMAN_MIRNA = """>hsa-let-7a-5p MIMAT0000062 Homo sapiens let-7a-5p
@@ -152,6 +153,10 @@ class TestMiRNACaching:
             file_size=test_file.stat().st_size,
             checksum=original_checksum,
             file_path=str(test_file),
+            # Stand in for a freshly written entry: without the current producer
+            # version this would be rejected as written by a known-bad writer,
+            # which is a different test (see tests/unit/test_cache_producer_version.py).
+            version=current_producer_version(mirna_manager.artifact_class),
         )
 
         # Cache should be valid initially

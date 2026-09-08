@@ -286,7 +286,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, headers=headers) as response,
             ):
                 if response.status == 404:
@@ -360,7 +360,7 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session,
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
                 session.get(url, headers=headers) as response,
             ):
                 if response.status == 404:

@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -30,6 +31,7 @@ from pandera.typing import DataFrame
 from rich.console import Console
 from rich.progress import Progress
 
+from sirnaforge import __version__
 from sirnaforge.config import (
     DEFAULT_TRANSCRIPTOME_SOURCES,
     ReferenceChoice,
@@ -37,14 +39,42 @@ from sirnaforge.config import (
     ReferenceSelection,
     WorkflowInputSpec,
 )
-from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
+from sirnaforge.core.design import (
+    MIRNA_BONUS_KEY,
+    MIRNA_BONUS_MAX_KEY,
+    MiRNADesigner,
+    SiRNADesigner,
+    apply_mirna_biogenesis_bonus,
+    mirna_max_biogenesis_bonus,
+)
+from sirnaforge.core.hit_classification import (
+    ClassificationContext,
+    HitClass,
+    HitClassCounts,
+    classify_hit,
+)
 from sirnaforge.core.off_target import OffTargetAnalysisManager
+from sirnaforge.core.repeat_detection import (
+    DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+    RepeatDetector,
+    normalize_guide_sequence,
+)
+from sirnaforge.core.scoring import (
+    COMPOSITE_TERMS,
+    SCORING_WEIGHT_SET_VERSION,
+    ScoringError,
+    compute_composite,
+    conservation_sub_score,
+    isoform_coverage_sub_score,
+    off_target_sub_score,
+)
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
+from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -54,6 +84,7 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
+    build_candidate_row,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.variant import VariantRecord
@@ -67,7 +98,7 @@ from sirnaforge.pipeline import NextflowConfig, NextflowRunner
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
-from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate, get_modification_summary
+from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
@@ -77,6 +108,7 @@ from sirnaforge.workflow_variant import (
     parse_clinvar_filter_string,
     resolve_workflow_variants,
 )
+from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.design import ZFNDesigner
 
 logger = get_logger(__name__)
@@ -97,6 +129,7 @@ class WorkflowConfig:
         nextflow_config: Mapping[str, Any] | None = None,
         genome_indices_override: str | None = None,
         genome_species: list[str] | None = None,
+        query_species: str | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
         transcriptome_fasta: str | None = None,
@@ -132,6 +165,8 @@ class WorkflowConfig:
             override_species = self._extract_species_from_indices(genome_indices_override)
 
         # miRNA genome species: used for miRNA database lookups, not genomic DNA alignment
+        # Track whether species were explicitly requested (vs defaulting)
+        species_explicitly_provided = genome_species is not None or override_species is not None
         default_mirna_genomes = genome_species or ["human", "rat", "rhesus"]
         if override_species:
             default_mirna_genomes = override_species
@@ -139,6 +174,13 @@ class WorkflowConfig:
         # Normalize all species names to canonical form for consistent comparisons
         normalized_genomes = [normalize_species_name(s) for s in default_mirna_genomes]
         self.mirna_genome_species: list[str] = list(dict.fromkeys(normalized_genomes))
+        self.species_explicitly_requested = species_explicitly_provided
+        # Organism of the TARGET transcripts, when the caller states it outright. None means
+        # "derive it from where the transcripts actually came from" -- see SiRNAWorkflow.__init__.
+        # Deliberately NOT defaulted from mirna_genome_species: that list is an unordered set of
+        # genomes to screen against, so no position in it identifies the target.
+        stated_query_species = (query_species or "").strip()
+        self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
         self.mirna_database = mirna_database
         # Preserve explicit miRNA species order (values already normalized by CLI helpers)
         if mirna_species:
@@ -239,6 +281,33 @@ class SiRNAWorkflow:
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
         self._annotation_summary: dict[str, Any] = {}
+        self._gene_transcript_ids: set[str] = set()
+        self._query_gene_ids: set[str] = set()
+        self._query_gene_symbols: set[str] = set()
+        self._protein_coding_transcript_ids: set[str] = set()
+        self._protein_coding_transcript_count: int = 0
+        self._transcript_index = TranscriptGeneIndex()
+        self._species_explicitly_requested: bool = False
+        # Species actually handed to Nextflow, which is a superset of mirna_genome_species when
+        # extra species arrive via --genome-indices/--genome-fastas. Conservation is scored against
+        # this list, so its denominator can never be smaller than the set of species screened.
+        self._active_genome_species: list[str] = []
+        self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
+        self._candidate_id_to_representative: dict[str, str] = {}
+        # Single authoritative query species, set once (not re-inferred per call site), and never
+        # read out of the off-target species list. Taking mirna_genome_species[0] declared the
+        # query species from a LIST POSITION in a set whose order carries no meaning: the CLI's own
+        # --species default is "chicken,pig,rat,mouse,human,rhesus,macaque", so every default run
+        # called itself a chicken run, found no chicken alignment in the four human/mouse/rat/
+        # macaque transcriptomes it had just screened perfectly, refused to compute post-screen
+        # scores for every candidate, and skipped repeat detection for want of a chicken cDNA.
+        # The real answer is a property of where the target transcripts came from: the gene-query
+        # database (GeneSearcher.query_species). An input FASTA states no organism, so it takes the
+        # same answer, and WorkflowConfig(query_species=...) states it outright when it differs.
+        self._query_species: str = self.config.query_species or self.gene_searcher.query_species(self.config.database)
+        self._species_cdna_fasta: dict[str, Path] = {}
+        self._guide_to_transcripts: dict[str, frozenset[str]] = {}
+        self._repeat_summary: dict[str, Any] = {"status": "not_run"}
 
         # Optional: Initialize transcript annotation client (not used by default yet)
         # This can be enabled via environment variable or config flag in the future
@@ -271,6 +340,28 @@ class SiRNAWorkflow:
             transcripts = await self.step1_retrieve_transcripts(progress)
             progress.advance(main_task)
 
+            # All isoforms of the queried gene are "on-target" - a guide hitting a sibling
+            # isoform (shared exon) perfectly is not an off-target, it's the intended gene.
+            self._gene_transcript_ids = {
+                self._normalize_transcript_id(t.transcript_id) for t in transcripts if t.transcript_id
+            }
+            self._query_gene_ids = {self._normalize_transcript_id(t.gene_id) for t in transcripts if t.gene_id}
+            self._query_gene_symbols = {t.gene_name.strip().upper() for t in transcripts if t.gene_name}
+            if not self._query_gene_symbols and self.config.gene_query:
+                self._query_gene_symbols = {self.config.gene_query.strip().upper()}
+
+            # Record protein-coding transcript set for isoform coverage scoring
+            protein_coding_transcripts = {
+                self._normalize_transcript_id(t.transcript_id)
+                for t in transcripts
+                if t.transcript_id and t.transcript_type == "protein_coding"
+            }
+            self._protein_coding_transcript_ids = protein_coding_transcripts
+            self._protein_coding_transcript_count = len(protein_coding_transcripts)
+
+            # Track species request: if config shows explicit request, use it; otherwise default was applied
+            self._species_explicitly_requested = self.config.species_explicitly_requested
+
             # Variant Resolution (optional, after transcript retrieval)
             # Save resolved variants on the workflow instance for later use
             if self.config.variant_config and self.config.variant_config.has_variants:
@@ -287,49 +378,29 @@ class SiRNAWorkflow:
             orf_results = await self.step2_validate_orfs(transcripts, progress)
             progress.advance(main_task)
 
-            # Step 3: siRNAforge
+            # Step 3: siRNA Design
             progress.update(main_task, description="[cyan]Designing siRNAs...")
             design_results = await self.step3_design_sirnas(transcripts, progress)
             progress.advance(main_task)
 
-            # Step 4: Off-target Analysis (must run before reports to update candidate data)
+            # Step 4: Off-target Analysis and Scoring. Repeat detection now runs inside this
+            # step (see step5_offtarget_analysis) so it can reuse the transcriptome reference
+            # already materialized for screening, instead of fetching it a second time.
             progress.update(main_task, description="[cyan]Running off-target analysis...")
             offtarget_results = await self.step5_offtarget_analysis(design_results)
             progress.advance(main_task)
 
             # Step 5: Generate Reports (after off-target analysis completes)
             progress.update(main_task, description="[cyan]Generating reports...")
-            await self.step4_generate_reports(design_results)
+            await self.step6_generate_reports(design_results)
             progress.advance(main_task)
 
         total_time = max(0.0, time.perf_counter() - start_time)
 
         # Compile final results
         # Serialize authoritative design parameters into the workflow summary.
-        dp = self.config.design_params
-        design_parameters: dict[str, Any] = {
-            "top_n": dp.top_n,
-            "sirna_length": dp.sirna_length,
-            "filters": {
-                "gc_min": dp.filters.gc_min,
-                "gc_max": dp.filters.gc_max,
-                "max_poly_runs": dp.filters.max_poly_runs,
-                "max_paired_fraction": dp.filters.max_paired_fraction,
-                "min_asymmetry_score": dp.filters.min_asymmetry_score,
-            },
-            "scoring": {
-                "asymmetry": dp.scoring.asymmetry,
-                "gc_content": dp.scoring.gc_content,
-                "accessibility": dp.scoring.accessibility,
-                "off_target": dp.scoring.off_target,
-                "empirical": dp.scoring.empirical,
-            },
-            "avoid_snps": dp.avoid_snps,
-            "check_off_targets": dp.check_off_targets,
-            "predict_structure": dp.predict_structure,
-            "snp_file": dp.snp_file,
-            "genome_index": dp.genome_index,
-        }
+        # Dumped wholesale so a newly added threshold cannot go unrecorded.
+        design_parameters: dict[str, Any] = self.config.design_params.model_dump(mode="json")
 
         final_results: dict[str, Any] = {
             "workflow_config": {
@@ -347,6 +418,7 @@ class SiRNAWorkflow:
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
             "design_parameters": design_parameters,
+            "repeat_summary": self._repeat_summary,
             "offtarget_summary": offtarget_results,
             "reference_summary": {
                 "transcriptome": self.config.transcriptome_selection.to_metadata(),
@@ -408,6 +480,10 @@ class SiRNAWorkflow:
                 annotation_source = annotation.annotation_path
             elif annotation.annotation_reference:
                 annotation_source = annotation.annotation_reference
+
+        # Covers callers who drive SiRNAWorkflow directly. Under the CLI the entry point
+        # already emitted it, and the once-per-process latch keeps this from repeating.
+        emit_zfn_experimental_warning(console)
 
         console.print("\n🧬 [bold cyan]Starting ZFN Pair Evaluation Workflow[/bold cyan]")
         console.print(f"Left half-site:  [yellow]{zfn_params.left_half_site}[/yellow]")
@@ -743,6 +819,7 @@ class SiRNAWorkflow:
             progress.advance(task)
             assert self.sirnaforgeer is not None, "designer not initialised for siRNA/miRNA mode"
             design_result = self.sirnaforgeer.design_from_file(str(temp_fasta))
+            self._store_guide_to_transcripts(self.sirnaforgeer.last_guide_to_transcripts)
             added_controls = inject_dirty_controls(design_result)
             self._dirty_controls_added = len(added_controls)
             if added_controls:
@@ -785,6 +862,8 @@ class SiRNAWorkflow:
                     batch_transcript_ids = [t.transcript_id for t in batch]
                     logger.exception(f"Design failed for transcript batch {batch_transcript_ids}: {e}")
                     progress.advance(task, len(batch))
+
+        self._store_guide_to_transcripts(guide_to_transcripts)
 
         # Merge candidates
         all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
@@ -838,6 +917,24 @@ class SiRNAWorkflow:
         console.print(f"🎯 Generated {len(combined.candidates)} siRNA candidates (threads={self.config.num_threads})")
         console.print(f"   Top {len(combined.top_candidates)} candidates selected for further analysis")
         return combined
+
+    def _store_guide_to_transcripts(self, guide_to_transcripts: dict[str, set[str]] | None) -> None:
+        """Cache a guide -> source-transcripts mapping for post-screen isoform coverage scoring.
+
+        `design_from_sequence` and the miRNA designer never populate this, so absence here
+        (an empty guide_to_transcripts, or one that is None) leaves the coverage term inactive
+        for those candidates rather than computing it from the wrong numerator (see D4/D8).
+
+        Args:
+            guide_to_transcripts: Raw mapping from guide sequence to source transcript IDs, as
+                produced by SiRNADesigner.design_from_file or the parallel per-transcript path.
+        """
+        if not guide_to_transcripts:
+            return
+        self._guide_to_transcripts = {
+            normalize_guide_sequence(guide): frozenset(self._normalize_transcript_id(tid) for tid in tids)
+            for guide, tids in guide_to_transcripts.items()
+        }
 
     def _batch_transcripts(
         self, transcripts: list[TranscriptInfo], batch_size: int | None = None
@@ -928,8 +1025,59 @@ class SiRNAWorkflow:
 
         console.print(f"✨ Applied {pattern} modification pattern with {overhang} overhangs to all candidates")
 
-    async def step4_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
-        """Step 4: Generate comprehensive reports."""
+    def _run_repeat_detection(self, candidates: list[SiRNACandidate]) -> dict[str, Any]:
+        """Detect repeat elements in candidate guide sequences before scoring.
+
+        Scans all distinct guide sequences against the query species' cDNA reference to flag
+        guides overlapping repeat elements. Costs ~47s for a ~1GB human reference. Runs from
+        within step5_offtarget_analysis (after screening but before scoring) so it can reuse
+        the transcriptome reference already materialized for off-target screening rather than
+        fetching a second, redundant copy just to find the query species' FASTA. Its caller
+        does not reach it at all when the user disabled off-target analysis, because there is
+        then no reference to reuse.
+        """
+        distinct_guides = {normalize_guide_sequence(c.guide_sequence) for c in candidates}
+
+        query_cdna_fasta = self._species_cdna_fasta.get(self._query_species)
+        if not query_cdna_fasta:
+            console.print("⚠️  Query species cDNA reference not available; skipping repeat detection")
+            return {
+                "status": "skipped",
+                "reason": "reference_unavailable",
+                "query_species": self._query_species,
+                "repeat_flagged_count": 0,
+                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+            }
+
+        console.print(
+            f"🔍 Scanning {len(distinct_guides)} distinct guides against {self._query_species} cDNA (~47s)..."
+        )
+        detector = RepeatDetector(threshold_fraction=DEFAULT_REPEAT_TRANSCRIPT_FRACTION)
+        scan_result = detector.scan(distinct_guides, query_cdna_fasta)
+
+        # Stamp repeat verdicts on candidates
+        observations = scan_result.observations
+        for candidate in candidates:
+            SiRNADesigner.stamp_repeat_verdict(candidate, observations)
+
+        repeat_flagged_count = sum(1 for c in candidates if c.repeat_flagged)
+        console.print(
+            f"🔍 Repeat detection: {repeat_flagged_count}/{len(candidates)} candidates flagged "
+            f"(threshold: {scan_result.threshold_fraction:.1%}, reference: {scan_result.reference_transcript_count} transcripts)"
+        )
+
+        return {
+            "status": "completed",
+            "query_species": self._query_species,
+            "distinct_guides_scanned": len(distinct_guides),
+            "reference_transcript_count": scan_result.reference_transcript_count,
+            "threshold_fraction": scan_result.threshold_fraction,
+            "repeat_flagged_count": repeat_flagged_count,
+            "repeat_sequences": list(scan_result.repeat_sequences),
+        }
+
+    async def step6_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
+        """Step 6: Generate comprehensive reports."""
         # No user-facing top-candidates FASTA or text/json summaries are produced anymore.
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
@@ -945,71 +1093,9 @@ class SiRNAWorkflow:
         is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
 
         try:
-            rows: list[dict[str, Any]] = []
-            for candidate in design_results.candidates:
-                cs = getattr(candidate, "component_scores", {}) or {}
-                mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
-
-                pass_state = candidate.passes_filters
-                if isinstance(pass_state, _ModelSiRNACandidate.FilterStatus):
-                    normalized_pass_field: Any = pass_state.value
-                else:
-                    normalized_pass_field = pass_state
-
-                def _maybe_attr(obj: Any, name: str, *, default: Any = None) -> Any:
-                    return getattr(obj, name, default)
-
-                rows.append(
-                    {
-                        "id": candidate.id,
-                        "transcript_id": candidate.transcript_id,
-                        "position": candidate.position,
-                        "guide_sequence": candidate.guide_sequence,
-                        "passenger_sequence": candidate.passenger_sequence,
-                        "gc_content": candidate.gc_content,
-                        "asymmetry_score": candidate.asymmetry_score,
-                        "paired_fraction": candidate.paired_fraction,
-                        "structure": getattr(candidate, "structure", None),
-                        "mfe": getattr(candidate, "mfe", None),
-                        "duplex_stability_dg": candidate.duplex_stability,
-                        "duplex_stability_score": cs.get("duplex_stability_score"),
-                        "dg_5p": cs.get("dg_5p"),
-                        "dg_3p": cs.get("dg_3p"),
-                        "delta_dg_end": cs.get("delta_dg_end"),
-                        "melting_temp_c": cs.get("melting_temp_c"),
-                        "off_target_count": candidate.off_target_count,
-                        "off_target_penalty": candidate.off_target_penalty,
-                        "transcriptome_hits_total": _maybe_attr(candidate, "transcriptome_hits_total", default=0),
-                        "transcriptome_hits_0mm": _maybe_attr(candidate, "transcriptome_hits_0mm", default=0),
-                        "transcriptome_hits_1mm": _maybe_attr(candidate, "transcriptome_hits_1mm", default=0),
-                        "transcriptome_hits_2mm": _maybe_attr(candidate, "transcriptome_hits_2mm", default=0),
-                        "transcriptome_hits_seed_0mm": _maybe_attr(candidate, "transcriptome_hits_seed_0mm", default=0),
-                        "mirna_hits_total": _maybe_attr(candidate, "mirna_hits_total", default=0),
-                        "mirna_hits_0mm_seed": _maybe_attr(candidate, "mirna_hits_0mm_seed", default=0),
-                        "mirna_hits_1mm_seed": _maybe_attr(candidate, "mirna_hits_1mm_seed", default=0),
-                        "mirna_hits_high_risk": _maybe_attr(candidate, "mirna_hits_high_risk", default=0),
-                        "guide_pos1_base": _maybe_attr(candidate, "guide_pos1_base"),
-                        "pos1_pairing_state": _maybe_attr(candidate, "pos1_pairing_state"),
-                        "seed_class": _maybe_attr(candidate, "seed_class"),
-                        "supp_13_16_score": _maybe_attr(candidate, "supp_13_16_score"),
-                        "seed_7mer_hits": _maybe_attr(candidate, "seed_7mer_hits"),
-                        "seed_8mer_hits": _maybe_attr(candidate, "seed_8mer_hits"),
-                        "seed_hits_weighted": _maybe_attr(candidate, "seed_hits_weighted"),
-                        "off_target_seed_risk_class": _maybe_attr(candidate, "off_target_seed_risk_class"),
-                        "transcript_hit_count": candidate.transcript_hit_count,
-                        "transcript_hit_fraction": candidate.transcript_hit_fraction,
-                        "composite_score": candidate.composite_score,
-                        "passes_filters": normalized_pass_field,
-                        "guide_overhang": mod_summary.get("guide_overhang", ""),
-                        "guide_modifications": mod_summary.get("guide_modifications", ""),
-                        "passenger_overhang": mod_summary.get("passenger_overhang", ""),
-                        "passenger_modifications": mod_summary.get("passenger_modifications", ""),
-                        "variant_mode": getattr(candidate, "variant_mode", None),
-                        "allele_specific": getattr(candidate, "allele_specific", False),
-                        "targeted_alleles": json.dumps(getattr(candidate, "targeted_alleles", [])),
-                        "overlapped_variants": json.dumps(getattr(candidate, "overlapped_variants", [])),
-                    }
-                )
+            # Single shared row-builder (models/sirna.py) so this CSV and DesignResult.save_csv
+            # can never drift on which columns they emit (issue #80 F2).
+            rows: list[dict[str, Any]] = [build_candidate_row(candidate) for candidate in design_results.candidates]
 
             if rows:
                 all_df = pd.DataFrame(rows)
@@ -1100,8 +1186,8 @@ class SiRNAWorkflow:
 
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         console.print("   - ORF validation report: orf_reports/")
-        console.print("   - siRNA candidate CSVs: sirnaforge/ (<gene>_all.csv, <gene>_pass.csv)")
-        console.print("   - siRNA candidate FASTA: sirnaforge/ (<gene>_pass.fasta)")
+        console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
+        console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
 
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
         """Write passing candidates to FASTA format with simple headers.
@@ -1213,57 +1299,104 @@ class SiRNAWorkflow:
         add_file("candidates_pass_fasta", pass_fasta, "fasta", {"sequences": self._count_fasta_sequences(pass_fasta)})
         add_file("orf_validation_report", orf_report, "tsv")
 
+        # Scoring metadata with weight set version and active terms
+        weights_dict = self.config.design_params.scoring.model_dump(mode="json")
+
         return {
             "tool": "sirnaforge",
+            "tool_version": __version__,
             "gene_query": self.config.gene_query,
             "run_timestamp": now,
-            "design_parameters": {
-                "top_n": self.config.top_n,
-                "sirna_length": self.config.design_params.sirna_length,
-                "gc_min": self.config.design_params.filters.gc_min,
-                "gc_max": self.config.design_params.filters.gc_max,
+            # Dumped wholesale: hand-listing fields silently dropped thresholds
+            # (min_asymmetry_score, max_poly_runs, ...) from the run record.
+            "design_parameters": self.config.design_params.model_dump(mode="json"),
+            "scoring": {
+                "weight_set_version": SCORING_WEIGHT_SET_VERSION,
+                "weights": weights_dict,
+                "active_terms": list(COMPOSITE_TERMS),
             },
             "files": files,
         }
 
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict[str, Any]:
-        """Step 5: Run off-target analysis using embedded Nextflow pipeline."""
+        """Step 5: Detect repeat elements, then run off-target analysis via the Nextflow pipeline.
+
+        Repeat detection runs here rather than as its own workflow step so it can reuse the
+        transcriptome reference this step already materializes for screening, instead of
+        fetching it a second time just to locate the query species' FASTA. The corollary is
+        that ``check_off_targets=False`` (``--skip-off-targets``) skips repeat detection as
+        well: both are reference-based scans, and the reference is what the flag exists to
+        avoid paying for.
+        """
         candidates_for_offtarget = self._select_candidates_for_offtarget(design_results)
 
         if not candidates_for_offtarget:
             console.print("⚠️  No candidates available for off-target analysis")
+            self._repeat_summary = {
+                "status": "skipped",
+                "reason": "no_candidates",
+                "repeat_flagged_count": 0,
+                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+            }
             return {"status": "skipped", "reason": "no_candidates"}
+
+        # Honour the skip request BEFORE touching any reference: materializing the default
+        # transcriptomes downloads and indexes multi-gigabyte cDNA files, and repeat detection
+        # scans against that same reference (~47s). Doing either first made
+        # --skip-off-targets/check_off_targets=False cost nearly as much as a real screen, and
+        # made "skipped by user request" a lie about work already done.
+        if not getattr(self.config.design_params, "check_off_targets", True):
+            console.print("⚠️  Off-target analysis skipped by user request")
+            console.print("   ↳ repeat-element detection skipped too: it needs the same cDNA reference")
+            self._repeat_summary = {
+                "status": "skipped",
+                "reason": "user_disabled",
+                "repeat_flagged_count": 0,
+                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+            }
+            # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
+            # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
+            self._apply_post_screen_ranking(design_results)
+            return {"status": "skipped", "reason": "user_disabled"}
 
         # Prepare input files
         input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
 
-        # If user disabled off-target checking via design parameters, skip entirely
-        if not getattr(self.config.design_params, "check_off_targets", True):
-            console.print("⚠️  Off-target analysis skipped by user request")
-            return {"status": "skipped", "reason": "user_disabled"}
+        # Materialize transcriptome references once; repeat detection and Nextflow both reuse
+        # this instead of each fetching/indexing their own copy.
+        additional_params: dict[str, Any] = dict(self.config.nextflow_config)
+        has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
+        self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
+        # Exclude repeat-flagged candidates from top_candidates now, so the exclusion holds even
+        # if screening below never runs (Nextflow unavailable/failed).
+        self._apply_post_screen_ranking(design_results)
 
         # Try Nextflow pipeline first. We do NOT run the simplistic sequence-based fallback
         # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
         # so downstream steps/users can see the explicit reason.
         try:
-            return await self._run_nextflow_offtarget_analysis(candidates_for_offtarget, input_fasta)
+            offtarget_result = await self._run_nextflow_offtarget_analysis(
+                candidates_for_offtarget, input_fasta, additional_params, has_transcriptome
+            )
+            self._apply_post_screen_ranking(design_results)
+            return offtarget_result
         except Exception as e:
             console.print(f"⚠️  Nextflow execution failed: {e}")
             logger.exception("Nextflow pipeline execution error")
             return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
 
     def _select_candidates_for_offtarget(self, design_results: DesignResult) -> list[SiRNACandidate]:
-        """Return top-N candidates plus any dirty controls for off-target analysis.
+        """Return ALL candidates plus any dirty controls for off-target analysis.
 
-        Off-target pipelines expect to see at least one "fails on purpose"
-        control so we always tack the :func:`inject_dirty_controls` output onto
-        the regular top-N selection. The controls remain true siRNA designs that
-        merely failed QC, which makes them perfect sentinels for verifying that
-        downstream aligners, Nextflow modules, and reports are actually running.
+        Screening now happens for every distinct candidate (user story 10), not just top_n.
+        Dirty controls remain included as sentinels to verify that downstream aligners,
+        Nextflow modules, and reports are actually running.
         """
-        selected: list[SiRNACandidate] = list(design_results.top_candidates[: self.config.top_n])
+        # Select all candidates (every distinct candidate must be screened)
+        selected: list[SiRNACandidate] = list(design_results.candidates)
 
-        dirty_controls = [c for c in design_results.top_candidates if self._is_dirty_control_candidate(c)]
+        # Ensure dirty controls are included (they should already be in candidates, but double-check)
+        dirty_controls = [c for c in design_results.candidates if self._is_dirty_control_candidate(c)]
         for control in dirty_controls:
             if control not in selected:
                 selected.append(control)
@@ -1286,18 +1419,107 @@ class SiRNAWorkflow:
 
         return status_is_dirty or (DIRTY_CONTROL_LABEL in issues)
 
-    async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
-        """Prepare FASTA input file for off-target analysis.
+    @staticmethod
+    def _passes_filters(candidate: SiRNACandidate) -> bool:
+        """True when a candidate is currently passing, under either passing representation.
 
-        ``candidates`` must already include any dirty controls (handled by
-        :meth:`_select_candidates_for_offtarget`). We simply persist the ID and
-        guide sequence for each entry so the generated
-        ``off_target/input_candidates.fasta`` mirrors whatever the off-target
-        runner receives.
+        Mirrors the two-way test used elsewhere in the repo (see core/design.py
+        design_from_file): passes_filters can be the bare bool True or the PASS enum member.
+        """
+        return candidate.passes_filters is True or candidate.passes_filters == SiRNACandidate.FilterStatus.PASS
+
+    def _apply_post_screen_ranking(self, design_results: DesignResult) -> None:
+        """Re-rank candidates by their post-screen composite score.
+
+        Screening activates the off_target, isoform_coverage and conservation terms, so the
+        design-time order no longer reflects the final ranking. Re-sorts design_results.candidates
+        in place (step6_generate_reports writes CSVs in this order) and rebuilds top_candidates
+        from the viable subset (excluding repeat-flagged and failing candidates).
+
+        Called once right after repeat detection (so the exclusion holds even if screening
+        never runs) and again after successful screening (so post-screen scores take effect).
+        Idempotent: re-sorting/re-filtering an already-ranked list is harmless.
+
+        A design-time score is not on the same scale as a post-screen one (it lacks the
+        off_target, isoform_coverage and conservation terms, and is systematically optimistic
+        because those terms only ever subtract evidence). So when only *some* candidates were
+        scored after screening, the unscored ones are sorted below every scored one and held out
+        of top_candidates rather than competing with an incomparable number.
+        """
+        scored_count = sum(1 for c in design_results.candidates if c.scored_after_screening)
+        # Mixed scales only: a wholly pre-screen (or wholly failed) list is internally consistent.
+        mixed_scales = 0 < scored_count < len(design_results.candidates)
+
+        design_results.candidates.sort(
+            key=lambda c: (bool(c.scored_after_screening) if mixed_scales else False, c.composite_score),
+            reverse=True,
+        )
+        rankable = [
+            c
+            for c in design_results.candidates
+            if not c.repeat_flagged and self._passes_filters(c) and (not mixed_scales or c.scored_after_screening)
+        ]
+        design_results.top_candidates = rankable[: self.config.top_n]
+        repeat_excluded = sum(1 for c in design_results.candidates if c.repeat_flagged)
+        logger.info(f"Re-ranked {len(rankable)} candidates after screening (excluded {repeat_excluded} repeat-flagged)")
+        if mixed_scales:
+            logger.error(
+                f"{len(design_results.candidates) - scored_count} of {len(design_results.candidates)} candidates "
+                "could not be scored after screening; they keep design-time scores and are excluded from "
+                "top_candidates because the two scores are not comparable."
+            )
+
+    async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
+        """Prepare FASTA input file for off-target analysis with deduplication.
+
+        Deduplicates by normalized guide sequence: writes one FASTA record per distinct
+        sequence using a representative candidate ID, and keeps a mapping from
+        representative ID to all candidates sharing that sequence for later fan-out.
         """
         input_fasta = self.config.output_dir / "off_target" / "input_candidates.fasta"
-        sequences = [(f"{c.id}", c.guide_sequence) for c in candidates]
+
+        # Candidate ids must be globally unique: a collision would silently fan one
+        # candidate's screening results onto a different candidate's sequence below.
+        id_counts: dict[str, int] = {}
+        for candidate in candidates:
+            id_counts[candidate.id] = id_counts.get(candidate.id, 0) + 1
+        duplicate_ids = sorted(cid for cid, count in id_counts.items() if count > 1)
+        if duplicate_ids:
+            raise ValueError(
+                f"Duplicate candidate id(s) before off-target screening: {duplicate_ids[:5]}"
+                f"{' (+more)' if len(duplicate_ids) > 5 else ''}. Refusing to screen: results "
+                "cannot be safely attributed to the correct sequence."
+            )
+
+        # Deduplicate by normalized guide sequence
+        sequence_to_candidates: dict[str, list[SiRNACandidate]] = {}
+        for candidate in candidates:
+            norm_guide = normalize_guide_sequence(candidate.guide_sequence)
+            sequence_to_candidates.setdefault(norm_guide, []).append(candidate)
+
+        # Pick one representative per distinct sequence and build FASTA
+        sequences: list[tuple[str, str]] = []
+        representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
+        candidate_id_to_representative: dict[str, str] = {}
+        for _norm_guide, cand_list in sequence_to_candidates.items():
+            # Use the first candidate as the representative
+            representative = cand_list[0]
+            sequences.append((representative.id, representative.guide_sequence))
+            representative_to_candidates[representative.id] = cand_list
+            for cand in cand_list:
+                candidate_id_to_representative[cand.id] = representative.id
+
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
+
+        # Store the mappings for fan-out during integration. Duplicate ids are rejected
+        # above, so this id->id lookup is O(1) and never needs to compare candidates by value.
+        self._representative_to_candidates = representative_to_candidates
+        self._candidate_id_to_representative = candidate_id_to_representative
+
+        console.print(
+            f"📝 Prepared off-target input: {len(candidates)} candidates → "
+            f"{len(sequences)} distinct sequences (deduplication ratio: {len(candidates) / max(1, len(sequences)):.2f}x)"
+        )
         return input_fasta
 
     async def _prepare_transcriptome_database(
@@ -1394,6 +1616,15 @@ class SiRNAWorkflow:
         # Normalize species name to canonical form (e.g., 'hsa' -> 'human', 'mmu' -> 'mouse')
         transcriptome_species = normalize_species_name(raw_species)
 
+        # Build a transcript->gene index for EVERY screened species (not just human) so
+        # orthologs can be recognized across species. This fixes the central defect where
+        # ortholog recognition only ever worked for human.
+        if not self._transcript_index.for_species(transcriptome_species):
+            self._transcript_index.build(transcriptome_species, Path(transcriptome_result["fasta"]))
+
+        # Stash the resolved FASTA so repeat detection can reuse it instead of fetching it again.
+        self._species_cdna_fasta.setdefault(transcriptome_species, Path(transcriptome_result["fasta"]))
+
         # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
         # Nextflow will build the index in Docker if needed
         transcriptome_path = transcriptome_result.get("index") or transcriptome_result["fasta"]
@@ -1414,7 +1645,12 @@ class SiRNAWorkflow:
         """Filter genome species down to those with available indices."""
         requested = [species.strip() for species in self.config.mirna_genome_species if species.strip()]
         available: set[str] = set()
-        for key in ("genome_indices", "genome_fastas"):
+        # transcriptome_indices belongs in this list: main.nf mixes it into the SAME ch_genomes
+        # alignment channel as genome_indices/genome_fastas, so those species really are screened.
+        # Omitting it dropped every transcriptome-only species from the list below — including the
+        # ones _configure_transcriptome_inputs had just appended to mirna_genome_species — and the
+        # conservation denominator then excluded species that had in fact been aligned.
+        for key in ("genome_indices", "genome_fastas", "transcriptome_indices"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
             available.update(self._parse_species_entries(raw_value))
 
@@ -1423,8 +1659,14 @@ class SiRNAWorkflow:
             for species in sorted(available):
                 if species not in filtered:
                     filtered.append(species)
-            return filtered
-        return requested
+        else:
+            filtered = requested
+
+        # Remembered because this list, not config.mirna_genome_species, is what gets screened:
+        # scoring conservation against the shorter config list yielded a denominator smaller than
+        # its numerator, which aborted post-screen scoring for the whole candidate.
+        self._active_genome_species = list(filtered)
+        return filtered
 
     @staticmethod
     def _parse_species_entries(raw_value: Any) -> set[str]:
@@ -1683,10 +1925,22 @@ class SiRNAWorkflow:
         self,
         candidates: list[SiRNACandidate],
         input_fasta: Path,
+        additional_params: dict[str, Any] | None = None,
+        has_transcriptome: bool | None = None,
     ) -> dict[str, Any]:
-        """Run Nextflow-based off-target analysis."""
-        additional_params: dict[str, Any] = dict(self.config.nextflow_config)
-        has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
+        """Run Nextflow-based off-target analysis.
+
+        Args:
+            candidates: Candidates to screen.
+            input_fasta: Deduplicated FASTA input for the Nextflow pipeline.
+            additional_params: Pre-configured Nextflow parameters (transcriptome inputs already
+                materialized), or None to configure them here.
+            has_transcriptome: Paired with additional_params; ignored when that is None.
+        """
+        if additional_params is None:
+            additional_params = dict(self.config.nextflow_config)
+            has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
+        has_transcriptome = bool(has_transcriptome)
         active_species = self._resolve_active_genome_species(additional_params)
         has_transcriptome = has_transcriptome or bool(additional_params.get("transcriptome_indices"))
         self._log_nextflow_targets(active_species, has_transcriptome, additional_params)
@@ -1806,9 +2060,29 @@ class SiRNAWorkflow:
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
 
-        # Integrate off-target results into candidates with filtering
+        # POSITIVE evidence, deliberately not the aggregate's self-reported missing_species: this
+        # method reports "completed" whenever the output directory merely exists, and
+        # _load_offtarget_aggregates returns {} when combined_summary.json is absent — which is
+        # exactly the shape of a run where aggregation itself failed. missing_species is then empty
+        # and the run looks complete. Only a species with a published alignment file has earned the
+        # reading "no hits here means clean".
+        screened_species = self._species_with_alignment_evidence(tx_summary)
+        if not screened_species:
+            run_status = "partial"
+            warning_msg = (
+                "⚠️  No transcriptome alignment evidence for any species (no aggregated summary, or "
+                "miRNA-only mode): off-target counts are unknown, so candidates keep their design-time scores."
+            )
+            console.print(warning_msg)
+            workflow_warnings.append(warning_msg)
+
+        # Integrate off-target results into candidates with filtering. The species that produced
+        # alignments are passed through because a candidate with no hits from an alignment that
+        # never ran must not be scored as if it had come back clean.
         filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
-        updated_candidates, stats = self._integrate_offtarget_results(candidates, parsed, filter_criteria)
+        updated_candidates, stats = self._integrate_offtarget_results(
+            candidates, parsed, filter_criteria, screened_species=screened_species
+        )
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
         # Map parsed results for return structure
@@ -1836,6 +2110,34 @@ class SiRNAWorkflow:
             "warnings": workflow_warnings,
         }
 
+    @staticmethod
+    def _species_with_alignment_evidence(tx_summary: Mapping[str, Any] | None) -> list[str]:
+        """Species with a published transcriptome alignment file, per the aggregated summary.
+
+        Returns the species for which the aggregator actually saw analysis output — the only
+        positive evidence available that an alignment ran. Returns an empty list when there is no
+        such evidence for any species, which covers three different failures that all used to look
+        like a clean complete run:
+
+        - the aggregate is missing entirely (aggregation never ran, so nothing reported anything);
+        - the aggregate exists but names no species (a hand-written or legacy summary);
+        - miRNA-only mode, where sirna_offtarget_analysis.nf derives the species list from
+          ch_genome_indices and falls back to '' — no transcriptome alignment happened at all, so
+          the off-target term has nothing to stand on.
+        """
+        if not tx_summary:
+            return []
+        # species_file_counts is the aggregator's own per-species file tally: >0 means it read
+        # alignment output for that species.
+        file_counts = cast(dict[str, int], tx_summary.get("species_file_counts") or {})
+        if file_counts:
+            return [species for species, count in file_counts.items() if count]
+        # Older summaries carry no per-species counts; species_analyzed minus the species the
+        # aggregator itself flagged as producing no files is the same evidence, coarser.
+        analyzed = [str(species) for species in cast(list[Any], tx_summary.get("species_analyzed") or [])]
+        missing = {str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])}
+        return [species for species in analyzed if species not in missing]
+
     def _log_offtarget_statistics(
         self,
         stats: Mapping[str, Any],
@@ -1850,6 +2152,7 @@ class SiRNAWorkflow:
                 ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
                 ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
                 ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
+                ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
                 ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
                 ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
             )
@@ -1867,6 +2170,11 @@ class SiRNAWorkflow:
             other_mirna = stats.get("other_mirna_hits", 0)
             if human_mirna or other_mirna:
                 console.print(f"   🌱 miRNA hits — human: {human_mirna}, other: {other_mirna}")
+
+        self._log_unscored_after_screening(stats)
+
+        missing_on_target = stats.get("missing_on_target_hit", 0)
+        self._log_missing_on_target(missing_on_target)
 
         if aggregated_views:
             tx_summary = aggregated_views.get("transcriptome")
@@ -1899,6 +2207,25 @@ class SiRNAWorkflow:
         trace_file = Path(output_dir) / "pipeline_info" / "execution_trace.txt"
         if trace_file.exists():
             console.print(f"   📘 Nextflow execution trace: {trace_file}")
+
+    @staticmethod
+    def _log_unscored_after_screening(stats: Mapping[str, Any]) -> None:
+        """Warn when screening ran but some candidates still carry their design-time score."""
+        not_scored = stats.get("candidates_not_scored_after_screening", 0)
+        if not_scored:
+            console.print(
+                f"   ⚠️ {not_scored} of {stats.get('candidates_analyzed', 0)} candidates could not be scored after "
+                "screening and kept their design-time score (see scored_after_screening in the candidate CSV)"
+            )
+
+    @staticmethod
+    def _log_missing_on_target(missing_on_target: int) -> None:
+        """Warn when no candidates confirmed a 0-mismatch hit against their own source transcript."""
+        if missing_on_target:
+            console.print(
+                f"   ⚠️ {missing_on_target} candidate(s) had no confirmed 0-mismatch hit against their own "
+                "source transcript (on-target self-match not found in the transcriptome index)"
+            )
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict[str, Any]:
         """Fallback basic off-target analysis."""
@@ -2046,100 +2373,282 @@ class SiRNAWorkflow:
         transcriptome_0mm: int,
         transcriptome_1mm: int,
         transcriptome_2mm: int,
+        transcriptome_seed_0mm: int,
         mirna_0mm_seed: int,
         mirna_high_risk: int,
         total_hits: int,
+        genuine_off_target_count: int,
         filter_criteria: OffTargetFilterCriteria,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, SiRNACandidate.FilterStatus | None]:
         """Check if candidate fails off-target filters.
 
+        ``transcriptome_seed_0mm`` is the only input that sees a *partial* hit whose seed paired
+        perfectly. ``nm`` is a guide-level distance, so a clipped or gapped hit carries nm > 2 and
+        lands in none of the ``transcriptome_{0,1,2}mm`` strata even when its seed is intact; the
+        seed counter and ``genuine_off_target_count`` are the only signals left. Its threshold
+        (``max_transcriptome_seed_perfect``) defaults to ``None``, so this check is inert until a
+        user opts in. Unlike the three mismatch counts it is not species-split -- it is the
+        reported ``transcriptome_hits_seed_0mm`` column verbatim, so the gate fires on exactly the
+        number the user sees.
+
         Returns:
-            Tuple of (should_fail, fail_reason)
+            Tuple of (should_fail, fail_status enum or None)
         """
-        # Define filter checks with their thresholds and messages
-        checks = [
+        # Define filter checks with their thresholds and enum members
+        checks: list[tuple[int | None, int, SiRNACandidate.FilterStatus]] = [
             (
                 filter_criteria.max_transcriptome_hits_0mm,
                 transcriptome_0mm,
-                f"TRANSCRIPTOME_PERFECT_MATCH ({transcriptome_0mm} hits)",
+                SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH,
             ),
             (
                 filter_criteria.max_transcriptome_hits_1mm,
                 transcriptome_1mm,
-                f"TRANSCRIPTOME_1MM ({transcriptome_1mm} hits)",
+                SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM,
             ),
             (
                 filter_criteria.max_transcriptome_hits_2mm,
                 transcriptome_2mm,
-                f"TRANSCRIPTOME_2MM ({transcriptome_2mm} hits)",
+                SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM,
             ),
-            (filter_criteria.max_mirna_perfect_seed, mirna_0mm_seed, f"MIRNA_PERFECT_SEED ({mirna_0mm_seed} hits)"),
-            (filter_criteria.max_total_offtarget_hits, total_hits, f"TOTAL_OFFTARGETS ({total_hits} hits)"),
+            (
+                filter_criteria.max_transcriptome_seed_perfect,
+                transcriptome_seed_0mm,
+                SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT,
+            ),
+            (
+                filter_criteria.max_mirna_perfect_seed,
+                mirna_0mm_seed,
+                SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED,
+            ),
+            (
+                filter_criteria.max_total_offtarget_hits,
+                total_hits,
+                SiRNACandidate.FilterStatus.TOTAL_OFFTARGETS,
+            ),
+            (
+                filter_criteria.max_off_target_count,
+                genuine_off_target_count,
+                SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
+            ),
         ]
 
         # Check all threshold-based filters
-        for threshold, value, message in checks:
+        for threshold, value, status in checks:
             if threshold is not None and value > threshold:
-                return True, message
+                return True, status
 
         # Check high-risk miRNA (boolean flag)
         if filter_criteria.fail_on_high_risk_mirna and mirna_high_risk > 0:
-            return True, f"HIGH_RISK_MIRNA ({mirna_high_risk} hits)"
+            return True, SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA
 
         return False, None
 
-    def _integrate_offtarget_results(  # noqa: PLR0912
+    @staticmethod
+    def _normalize_transcript_id(transcript_id: str) -> str:
+        """Strip Ensembl-style version suffixes (e.g. ``.9``) for identity comparisons."""
+        return re.sub(r"\.\d+$", "", transcript_id.strip())
+
+    def _integrate_offtarget_results(  # noqa: PLR0912, C901
         self,
         candidates: list[SiRNACandidate],
         offtarget_data: dict[str, Any],
         filter_criteria: OffTargetFilterCriteria | None = None,
-    ) -> tuple[list[SiRNACandidate], dict[str, int]]:
-        """Integrate off-target analysis results into siRNA candidates.
+        screened_species: Sequence[str] | None = None,
+    ) -> tuple[list[SiRNACandidate], dict[str, Any]]:
+        """Integrate off-target analysis results, classify hits, and score candidates.
+
+        Workflow reordering: screening now happens before final scoring. This method:
+        1. Fans out deduplicated screening results to all candidates sharing a sequence
+        2. Classifies each transcriptome hit four ways (on-target, ortholog, repeat, off-target)
+        3. Computes post-screen sub-scores (off-target, isoform coverage, conservation)
+        4. Computes the final composite score with the full term set
+
+        Re-ranking candidates by the new scores is the caller's job (step5_offtarget_analysis),
+        which holds the DesignResult whose candidates/top_candidates need reordering.
 
         Args:
             candidates: List of siRNA candidates to update
             offtarget_data: Off-target results from Nextflow pipeline
             filter_criteria: Optional filtering criteria for off-targets
+            screened_species: Species with positive evidence of a published alignment. A run that
+                produced no alignment for the query species cannot support an off-target term, so
+                its candidates keep their design-time scores instead of being awarded perfect
+                specificity. None means the caller has no per-species evidence to offer (direct
+                callers, the basic analysis fallback) and the requested set is assumed screened.
 
         Returns:
-            Tuple of (updated candidates, statistics dict)
+            Tuple of (updated candidates, statistics dict with hit class decomposition)
         """
         if not offtarget_data or offtarget_data.get("status") != "completed":
-            logger.warning("No completed off-target data available for integration")
+            logger.warning("No completed off-target data available; candidates keep design-time scores")
             return candidates, {}
 
         if filter_criteria is None:
             filter_criteria = OffTargetFilterCriteria()
 
         results = offtarget_data.get("results", {})
-        stats = {
+
+        # Single authoritative query species, set once in __init__ (see comment there).
+        query_species = self._query_species
+
+        # Conservation is keyed on the set handed to the aligner, not on whether species were typed
+        # on the CLI: the term goes inactive exactly when that set is query-species-only.
+        # _active_genome_species, not config.mirna_genome_species, is what Nextflow was handed:
+        # extra species can arrive via --genome-indices/--genome-fastas/--transcriptome-indices and
+        # can return ortholog hits, so scoring them against the shorter config list made the
+        # conservation numerator exceed its denominator.
+        requested_species = frozenset(
+            normalize_species_name(s) for s in (self._active_genome_species or self.config.mirna_genome_species)
+        )
+        # A species whose alignment never ran STAYS in this denominator. Subtracting it (as the
+        # first pass at this fix did) let a degraded run outscore the complete run it degraded
+        # from: with the only non-query species removed the term goes inactive, compute_composite
+        # renormalises its weight onto the surviving terms, and one candidate scored 57.9 on the
+        # broken screen against 51.1 on the good one (see the regression test). The term is scoped to
+        # the species that were screened: one that was screened and produced nothing can only lower
+        # conservation, never raise it. Species with no resolvable index never enter this set at all,
+        # so conservation is a statement about what was compared, not about the CLI species list.
+        conservation_denominator = requested_species - {query_species}
+
+        if screened_species is None:
+            # No per-species evidence offered; assume what was requested was screened, which is
+            # what every caller outside the Nextflow path can honestly claim.
+            screened = requested_species | {query_species}
+        else:
+            screened = frozenset(normalize_species_name(s) for s in screened_species)
+        unscreened = requested_species - screened
+        query_species_unscreened = query_species not in screened
+        if unscreened - {query_species}:
+            logger.warning(
+                f"No alignment evidence for {sorted(unscreened - {query_species})}; those species stay in the "
+                "conservation denominator, so conservation is a lower bound for every candidate in this run."
+            )
+        if query_species_unscreened:
+            logger.error(
+                f"No alignment evidence for query species '{query_species}' (its alignment produced no files, or "
+                "aggregation reported nothing at all); off-target counts are unknown. Refusing to compute "
+                "post-screen scores: candidates keep their design-time scores."
+            )
+            console.print(
+                f"❌ No {query_species} alignment evidence: candidates cannot be scored after screening and are "
+                "reported with design-time scores. Re-run the screen before trusting the ranking."
+            )
+
+        classification_context = ClassificationContext(
+            query_gene_ids=frozenset(self._query_gene_ids),
+            query_gene_symbols=frozenset(self._query_gene_symbols),
+            on_target_transcript_ids=frozenset(self._gene_transcript_ids),
+            query_species=query_species,
+            index=self._transcript_index,
+            repeat_flagged_guides=frozenset(
+                normalize_guide_sequence(c.guide_sequence) for c in candidates if c.repeat_flagged
+            ),
+            requested_species=requested_species,
+        )
+
+        # Fan out deduplicated results: each representative's results apply to all candidates sharing that sequence
+        representative_results: dict[str, dict[str, Any]] = {}
+        for repr_id, entry in results.items():
+            representative_results[repr_id] = entry
+
+        # Pre-seeded with every requested species (zero-filled) so a species that was screened
+        # but produced no hits is distinguishable from one never requested (absent key). Species
+        # seen on a hit but not requested (unexpected) still get a bucket via setdefault below.
+        per_species: dict[str, dict[str, int]] = {
+            species: {
+                "on_target": 0,
+                "ortholog": 0,
+                "repeat": 0,
+                "off_target": 0,
+                "symbol_lookup_missing": 0,
+                "species_index_missing": 0,
+            }
+            for species in requested_species
+        }
+
+        stats: dict[str, Any] = {
             "candidates_analyzed": len(candidates),
             "candidates_with_offtargets": 0,
+            "hit_classes": {"on_target": 0, "ortholog": 0, "repeat": 0, "off_target": 0},
+            "query_gene_transcripts_recognised": len(self._gene_transcript_ids),
+            "ortholog_symbol_lookup_misses": 0,
+            "species_index_misses": 0,
+            "per_species": per_species,
             "failed_perfect_match": 0,
             "failed_transcriptome_1mm": 0,
             "failed_transcriptome_2mm": 0,
+            "failed_transcriptome_seed_perfect": 0,
             "failed_mirna_seed": 0,
             "failed_high_risk_mirna": 0,
+            "failed_excess_off_targets": 0,
             "human_transcriptome_hits": 0,
             "other_transcriptome_hits": 0,
             "human_mirna_hits": 0,
             "other_mirna_hits": 0,
+            # User intent vs the default species list, recorded (not used to gate scoring).
+            "species_explicitly_requested": self._species_explicitly_requested,
+            # Candidates whose final score is NOT a post-screen score, so a degraded run is
+            # countable rather than merely visible in the log.
+            "candidates_not_scored_after_screening": 0,
+            "unscreened_species": sorted(unscreened),
         }
 
         for candidate in candidates:
             candidate_id = candidate.id
-            offtarget_entry = results.get(candidate_id, {})
+
+            # O(1) lookup: candidate id -> its representative's id -> that representative's
+            # results. Falls back to the candidate's own id when it was never deduplicated.
+            repr_id = self._candidate_id_to_representative.get(candidate_id, candidate_id)
+            offtarget_entry = representative_results.get(repr_id)
+
+            # Zero hits means "clean" only for a candidate that actually reached the aligner. The
+            # dedup map holds every submitted candidate and is empty only when screening bypassed
+            # _prepare_offtarget_input, so an id missing from a populated map was never submitted
+            # and its counts are unknown, not zero (issue #78 §3).
+            never_submitted = bool(self._candidate_id_to_representative) and (
+                candidate_id not in self._candidate_id_to_representative
+            )
+            if never_submitted:
+                logger.error(
+                    f"Candidate {candidate_id} was never submitted to off-target screening; "
+                    "its hit counts are unknown and it keeps its design-time score."
+                )
+
+            # Mark as screened even if no hits -- but only when the alignments it would have
+            # appeared in were actually produced. off_target_screened=False therefore means "this
+            # candidate's screen was incomplete": any hit counts written below are a LOWER BOUND,
+            # not a total. They are still written, because hits that were found are real evidence
+            # and are still applied as filters -- a row showing a filter failure with zeroed counts
+            # would be the more confusing contradiction (see the field docs in models/sirna.py).
+            unscreened_candidate = query_species_unscreened or never_submitted
+            candidate.off_target_screened = not unscreened_candidate
 
             if not offtarget_entry or not offtarget_entry.get("hits"):
+                # No hits: compute post-screen score with zero off-targets. When nothing was
+                # aligned, that zero is an absence of evidence, and awarding
+                # off_target_sub_score(0) = 1.0 would float every candidate to the top of the
+                # ranking on a run that failed. Keep the design-time score instead.
+                if unscreened_candidate:
+                    candidate.scored_after_screening = False
+                    stats["candidates_not_scored_after_screening"] += 1
+                    continue
+                if not self._score_candidate_post_screen(candidate, HitClassCounts(), conservation_denominator):
+                    stats["candidates_not_scored_after_screening"] += 1
                 continue
 
             stats["candidates_with_offtargets"] += 1
 
-            # Parse hit details
+            # Classify each transcriptome hit and aggregate miRNA hits (unchanged)
+            hit_counts = HitClassCounts()
+            # transcriptome_totals/_human are stratified SUBSETS of transcriptome_off_target_total
+            # / transcriptome_human_total below (nm>=3 hits count toward the totals but land in
+            # no bucket), so the two families never contradict each other.
             transcriptome_totals = {0: 0, 1: 0, 2: 0}
             transcriptome_human = {0: 0, 1: 0, 2: 0}
+            transcriptome_off_target_total = 0
+            transcriptome_human_total = 0
             transcriptome_seed_0mm = 0
-
             mirna_total = 0
             mirna_human_total = 0
             mirna_0mm_seed_total = 0
@@ -2155,7 +2664,6 @@ class SiRNAWorkflow:
                 species_label = hit.get("species")
                 species_is_human = is_human_species(species_label)
 
-                # Check if this is a miRNA hit (has species/database/mirna_id fields)
                 is_mirna = "mirna_id" in hit or "database" in hit
 
                 if is_mirna:
@@ -2166,7 +2674,6 @@ class SiRNAWorkflow:
                         mirna_0mm_seed_total += 1
                         if species_is_human:
                             mirna_human_0mm_seed += 1
-                        # High risk: perfect seed + low penalty score (likely strong binding)
                         if offtarget_score < 5.0:
                             mirna_high_risk_total += 1
                             if species_is_human:
@@ -2174,8 +2681,62 @@ class SiRNAWorkflow:
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
-                    # Transcriptome hit
+                    # Classify transcriptome hit using the four-way classifier
+                    classification = classify_hit(hit, candidate.guide_sequence, classification_context)
+                    # A blank/missing species label belongs to the query species (see classifier).
+                    hit_species = normalize_species_name(species_label) if species_label else query_species
+                    species_bucket = per_species.setdefault(
+                        hit_species,
+                        {
+                            "on_target": 0,
+                            "ortholog": 0,
+                            "repeat": 0,
+                            "off_target": 0,
+                            "symbol_lookup_missing": 0,
+                            "species_index_missing": 0,
+                        },
+                    )
+
+                    # Aggregate by class
+                    if classification.hit_class == HitClass.ON_TARGET:
+                        hit_counts.on_target += 1
+                        species_bucket["on_target"] += 1
+                    elif classification.hit_class == HitClass.ORTHOLOG:
+                        hit_counts.ortholog += 1
+                        species_bucket["ortholog"] += 1
+                        if classification.matched_symbol:
+                            # Track which species had ortholog hits
+                            hit_counts.ortholog_species = frozenset(hit_counts.ortholog_species | {hit_species})
+                    elif classification.hit_class == HitClass.REPEAT:
+                        hit_counts.repeat += 1
+                        species_bucket["repeat"] += 1
+                    elif classification.hit_class == HitClass.OFF_TARGET:
+                        hit_counts.off_target += 1
+                        species_bucket["off_target"] += 1
+
+                    # Track shortfall counters
+                    if classification.symbol_lookup_missing:
+                        hit_counts.symbol_lookup_missing += 1
+                        species_bucket["symbol_lookup_missing"] += 1
+                    if classification.species_index_missing:
+                        hit_counts.no_species_index += 1
+                        species_bucket["species_index_missing"] += 1
+
+                    # Only genuine off-targets feed the mismatch-stratified counters. Letting
+                    # on-target isoform hits through here would fail every guide on a
+                    # multi-isoform gene against max_transcriptome_hits_0mm, which is the
+                    # near-total kill switch fixed in 0.5.2.
+                    if classification.hit_class is not HitClass.OFF_TARGET:
+                        continue
+
+                    # Every genuine off-target hit counts toward the totals regardless of nm, so
+                    # transcriptome_hits_total agrees with off_target_count even when nm>=3 hits
+                    # occur (the default exhaustive search no longer caps hits at nm<=2).
+                    transcriptome_off_target_total += 1
                     treated_as_human = species_is_human or not species_label
+                    if treated_as_human:
+                        transcriptome_human_total += 1
+
                     if nm == 0:
                         transcriptome_totals[0] += 1
                         if treated_as_human:
@@ -2192,57 +2753,189 @@ class SiRNAWorkflow:
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
 
-            transcriptome_total_hits = sum(transcriptome_totals.values())
-            human_transcriptome_hits = sum(transcriptome_human.values())
+            # Totals count every genuine off-target hit (any nm); the _totals/_human dicts above
+            # are stratified nm<=2 subsets, not addends -- do not replace these with a sum().
+            transcriptome_total_hits = transcriptome_off_target_total
+            human_transcriptome_hits = transcriptome_human_total
 
-            # Update candidate fields
+            # Write per-candidate hit class fields
+            candidate.on_target_hits = hit_counts.on_target
+            candidate.ortholog_hits = hit_counts.ortholog
+            candidate.repeat_hits = hit_counts.repeat
+            candidate.off_target_count = hit_counts.off_target  # Redefined: genuine off-targets only
+            candidate.ortholog_species = ",".join(sorted(hit_counts.ortholog_species))
+
+            # Legacy fields (still needed for reporting and miRNA filters)
             candidate.transcriptome_hits_total = transcriptome_total_hits
             candidate.transcriptome_hits_0mm = transcriptome_totals[0]
             candidate.transcriptome_hits_1mm = transcriptome_totals[1]
             candidate.transcriptome_hits_2mm = transcriptome_totals[2]
             candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
+            candidate.on_target_confirmed = hit_counts.on_target > 0
             candidate.mirna_hits_total = mirna_total
             candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total
             candidate.mirna_hits_1mm_seed = mirna_1mm_seed
             candidate.mirna_hits_high_risk = mirna_high_risk_total
-            candidate.off_target_count = len(offtarget_entry.get("hits", []))
             candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
 
+            # Update global stats
+            stats["hit_classes"]["on_target"] += hit_counts.on_target
+            stats["hit_classes"]["ortholog"] += hit_counts.ortholog
+            stats["hit_classes"]["repeat"] += hit_counts.repeat
+            stats["hit_classes"]["off_target"] += hit_counts.off_target
+            stats["ortholog_symbol_lookup_misses"] += hit_counts.symbol_lookup_missing
+            stats["species_index_misses"] += hit_counts.no_species_index
             stats["human_transcriptome_hits"] += human_transcriptome_hits
             stats["other_transcriptome_hits"] += transcriptome_total_hits - human_transcriptome_hits
             stats["human_mirna_hits"] += mirna_human_total
             stats["other_mirna_hits"] += mirna_total - mirna_human_total
 
+            # Score candidate with post-screen terms. The hits above are real evidence even on a
+            # partial run, but a run missing the query species cannot produce a trustworthy
+            # off-target term, so those candidates keep their design-time score. The filters below
+            # still apply: real hits can only fail a candidate, never wrongly pass one.
+            if unscreened_candidate:
+                candidate.scored_after_screening = False
+                stats["candidates_not_scored_after_screening"] += 1
+            elif not self._score_candidate_post_screen(candidate, hit_counts, conservation_denominator):
+                stats["candidates_not_scored_after_screening"] += 1
+
             # Apply filtering criteria
             human_total_hits_for_filters = human_transcriptome_hits + mirna_human_total
-            should_fail, fail_reason = self._check_offtarget_filters(
+            should_fail, fail_status = self._check_offtarget_filters(
                 transcriptome_human[0],
                 transcriptome_human[1],
                 transcriptome_human[2],
+                transcriptome_seed_0mm,
                 mirna_human_0mm_seed,
                 mirna_high_risk_human,
                 human_total_hits_for_filters,
+                hit_counts.off_target,
                 filter_criteria,
             )
 
-            # Update filter status and stats if failed
-            if should_fail and fail_reason:
-                candidate.passes_filters = fail_reason  # type: ignore
-                logger.info(f"Candidate {candidate_id} failed off-target filter: {fail_reason}")
+            if should_fail and fail_status:
+                candidate.passes_filters = fail_status
+                logger.info(f"Candidate {candidate_id} failed off-target filter: {fail_status.value}")
 
-                # Update appropriate stat counter
-                if "PERFECT_MATCH" in fail_reason:
+                # Update stat counters
+                if fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH:
                     stats["failed_perfect_match"] += 1
-                elif "1MM" in fail_reason:
+                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM:
                     stats["failed_transcriptome_1mm"] += 1
-                elif "2MM" in fail_reason:
+                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM:
                     stats["failed_transcriptome_2mm"] += 1
-                elif "MIRNA_PERFECT_SEED" in fail_reason:
+                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT:
+                    stats["failed_transcriptome_seed_perfect"] += 1
+                elif fail_status == SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED:
                     stats["failed_mirna_seed"] += 1
-                elif "HIGH_RISK_MIRNA" in fail_reason:
+                elif fail_status == SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA:
                     stats["failed_high_risk_mirna"] += 1
+                elif fail_status == SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS:
+                    stats["failed_excess_off_targets"] += 1
 
+        # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
+        # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    def _score_candidate_post_screen(
+        self, candidate: SiRNACandidate, hit_counts: HitClassCounts, conservation_denominator: frozenset[str]
+    ) -> bool:
+        """Compute post-screen composite score with the full term set.
+
+        Args:
+            candidate: Candidate to score
+            hit_counts: Aggregated hit class counts
+            conservation_denominator: Non-query species handed to the aligner. A species whose
+                alignment failed stays in here, so a degraded run cannot outscore a complete one.
+
+        Returns:
+            True when the candidate now carries a post-screen score; False when scoring failed
+            and the design-time score was kept (the caller counts these so a degraded run is
+            visible, and ranking demotes them).
+        """
+        # Build features from design-time component scores (reuse existing sub-scores)
+        features: dict[str, float] = {}
+        cs = candidate.component_scores or {}
+
+        # Design-time terms: reuse from component_scores, dropping any NaN
+        for term in ("asymmetry", "gc_content", "accessibility", "empirical"):
+            value = cs.get(term)
+            if value is not None and not math.isnan(value):
+                features[term] = value
+
+        # The sub-score helpers raise on a numerator exceeding its denominator. Both numerators are
+        # constructed as subsets of their denominators here, so neither is reachable -- but the
+        # guarantee rests on invariants several call sites away, and the cost of one being broken
+        # later must not be an aborted run after screening has already been paid for. It must be
+        # loud instead: see the ERROR log below and the caller's degraded-run counter.
+        try:
+            features["off_target"] = off_target_sub_score(hit_counts.off_target)
+
+            # Numerator is how many of the query gene's protein-coding transcripts contain THIS
+            # guide (from step3's guide->source-transcripts map), not the single transcript the
+            # candidate happened to be enumerated from. Absent for design_from_sequence/miRNA
+            # paths, in which case the term stays inactive rather than computing a wrong number.
+            guide_transcripts = self._guide_to_transcripts.get(normalize_guide_sequence(candidate.guide_sequence))
+            if guide_transcripts is not None:
+                isoform_cov = isoform_coverage_sub_score(
+                    len(self._protein_coding_transcript_ids & guide_transcripts),
+                    self._protein_coding_transcript_count,
+                )
+                if isoform_cov is not None:
+                    features["isoform_coverage"] = isoform_cov
+                    candidate.isoform_coverage = isoform_cov
+
+            # Numerator is intersected with the denominator on purpose: an ortholog hit in a species
+            # this run never asked the aligner for (a stale cached result, a hand-edited hit table)
+            # is not part of this ratio, and counting it would make the fraction exceed 1.
+            conserved_species = hit_counts.ortholog_species & conservation_denominator
+            unexpected_species = hit_counts.ortholog_species - conservation_denominator
+            if unexpected_species:
+                logger.warning(
+                    f"Ortholog hits for {candidate.id} in unrequested species {sorted(unexpected_species)}; "
+                    "excluded from the conservation term."
+                )
+            conservation = conservation_sub_score(len(conserved_species), len(conservation_denominator))
+            if conservation is not None:
+                features["conservation"] = conservation
+                candidate.conservation_score = conservation
+
+            result = compute_composite(features, self.config.design_params.scoring)
+            # miRNA mode folds the biogenesis bonuses (ago-start, pos1 pairing, 3' supplementary)
+            # into composite_score rather than into the composite term set, so recomputing the
+            # composite here drops them unless they are reapplied -- which made --design-mode mirna
+            # have no effect at all on the final ranking of any screened run.
+            if self.config.design_params.design_mode == DesignMode.MIRNA:
+                # The normalising maximum falls back to the mode's own maximum rather than 0.0:
+                # a candidate that never went through MiRNADesigner._score_candidates carries no
+                # bonus keys (dirty controls are deep copies of rejected candidates, which are
+                # never scored), and dividing everyone else by 1 + max_bonus while leaving those
+                # rows undivided put them ~25% high in the same CSV.
+                candidate.composite_score = apply_mirna_biogenesis_bonus(
+                    result.score,
+                    float(cs.get(MIRNA_BONUS_KEY, 0.0)),
+                    float(cs.get(MIRNA_BONUS_MAX_KEY, mirna_max_biogenesis_bonus())),
+                )
+            else:
+                candidate.composite_score = result.score
+            candidate.weight_set_version = result.weight_set_version
+            candidate.scored_after_screening = True
+            # Write per-term contributions
+            candidate.score_asymmetry = result.contributions.get("asymmetry")
+            candidate.score_gc_content = result.contributions.get("gc_content")
+            candidate.score_accessibility = result.contributions.get("accessibility")
+            candidate.score_empirical = result.contributions.get("empirical")
+            candidate.score_off_target = result.contributions.get("off_target")
+            candidate.score_isoform_coverage = result.contributions.get("isoform_coverage")
+            candidate.score_conservation = result.contributions.get("conservation")
+            return True
+        except (ScoringError, ValueError) as exc:
+            # ERROR, not WARNING: the candidate now carries a design-time score that is not
+            # comparable with its neighbours' post-screen scores, so the run is degraded.
+            logger.error(f"Post-screen scoring failed for {candidate.id}: {exc}. Keeping design-time score.")
+            candidate.scored_after_screening = False
+            return False
 
     def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
         """Generate ORF validation report in tab-delimited format with schema validation.
@@ -2390,10 +3083,13 @@ class SiRNAWorkflow:
         total = design_results.total_candidates
         passed = design_results.filtered_candidates
         failed = max(0, total - passed)
+        repeat_excluded = sum(1 for c in design_results.candidates if c.repeat_flagged)
         base.update(
             {
                 "pass_count": passed,
                 "fail_count": failed,
+                "repeat_excluded_count": repeat_excluded,
+                "repeat_threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
                 "top_n_requested": self.config.top_n,
                 "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,
@@ -2491,8 +3187,9 @@ async def run_sirna_workflow(
     input_fasta: str | None = None,
     database: str = "ensembl",
     design_mode: str = "sirna",
-    top_n_candidates: int = 20,
+    top_n_candidates: int | None = None,
     genome_species: list[str] | None = None,
+    query_species: str | None = None,
     genome_indices_override: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
@@ -2521,6 +3218,8 @@ async def run_sirna_workflow(
     default_transcriptome_sources: Sequence[str] = DEFAULT_TRANSCRIPTOME_SOURCES,
     keep_nextflow_work: bool = False,
     nextflow_docker_image: str | None = None,
+    max_hits: int | None = None,
+    max_off_targets: int | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -2530,8 +3229,12 @@ async def run_sirna_workflow(
         input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
         design_mode: Design mode (sirna, mirna, or zfn)
-        top_n_candidates: Number of top candidates to generate
+        top_n_candidates: Cap on how many top-ranked candidates are reported (None = no cap, the
+            default). Enumeration and screening always cover every candidate.
         genome_species: Species genomes for off-target analysis
+        query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
+            gene-query database serves (human), which is also the species of the default
+            transcriptome; set it when designing against an input FASTA from another organism.
         genome_indices_override: Comma-separated species:/index_prefix overrides for off-target analysis
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
@@ -2555,10 +3258,19 @@ async def run_sirna_workflow(
         log_file: Path to centralized log file
         write_json_summary: Write logs/workflow_summary.json
         num_threads: Optional override for design parallelism
-        allow_transcriptome_with_input_fasta: Force transcriptome analysis even when using input FASTA
+        allow_transcriptome_with_input_fasta: Opt in to resolving ``default_transcriptome_sources``
+            when ``input_fasta`` is supplied (default: False). Left False, an input-FASTA run is
+            design-only unless ``transcriptome_fasta`` names a reference explicitly: supplying your
+            own sequences should never trigger a multi-gigabyte reference download you did not ask
+            for. Set True to screen an input-FASTA run against the bundled defaults.
         default_transcriptome_sources: Ordered list of transcriptome identifiers evaluated by default
         keep_nextflow_work: Keep Nextflow work directory symlink in output
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
+        max_hits: Override the pipeline's per-candidate off-target hit cap (None keeps the pipeline's
+            exhaustive default; set a lower value, e.g. 10000, to speed up large gene-family searches)
+        max_off_targets: Override the genuine off-target ceiling that gates PASS vs
+            EXCESS_OFF_TARGETS (None keeps OffTargetFilterCriteria's default of 15). Unlike
+            max_hits this changes the verdict, not how many hits are recorded.
 
     Returns:
         Dictionary with complete workflow results
@@ -2576,11 +3288,16 @@ async def run_sirna_workflow(
     )
 
     # Configure workflow with modification parameters
+    offtarget_filters = OffTargetFilterCriteria()
+    if max_off_targets is not None:
+        offtarget_filters = offtarget_filters.model_copy(update={"max_off_target_count": max_off_targets})
+
     design_params = DesignParameters(
         design_mode=mode_enum,
         top_n=top_n_candidates,
         sirna_length=sirna_length,
         filters=filter_criteria,
+        offtarget_filters=offtarget_filters,
         check_off_targets=check_off_targets,
         apply_modifications=modification_pattern.lower() != "none",
         modification_pattern=modification_pattern,
@@ -2603,7 +3320,10 @@ async def run_sirna_workflow(
             input_fasta=input_fasta,
             transcriptome_argument=transcriptome_fasta,
             default_transcriptomes=default_transcriptome_sources,
-            design_only=False,
+            # check_off_targets=False means "do not screen", so there is nothing to resolve a
+            # reference for. Hardcoding design_only=False here made the flag download and index
+            # multi-gigabyte references before announcing that screening was skipped.
+            design_only=not check_off_targets,
             allow_transcriptome_for_input_fasta=allow_transcriptome_with_input_fasta,
         )
         resolver = ReferencePolicyResolver(input_spec)
@@ -2630,6 +3350,8 @@ async def run_sirna_workflow(
     nextflow_config_overrides: dict[str, Any] = {}
     if nextflow_docker_image:
         nextflow_config_overrides["docker_image"] = nextflow_docker_image
+    if max_hits is not None:
+        nextflow_config_overrides["max_hits"] = max_hits
 
     # Build ZFN workflow config when in ZFN mode
     zfn_workflow_config: ZFNWorkflowConfig | None = None
@@ -2648,6 +3370,7 @@ async def run_sirna_workflow(
         design_params=design_params,
         genome_indices_override=genome_indices_override,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
@@ -2683,6 +3406,7 @@ async def run_offtarget_only_workflow(
     input_candidates_fasta: str,
     output_dir: str,
     genome_species: list[str] | None = None,
+    query_species: str | None = None,
     genome_indices_override: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
@@ -2703,6 +3427,7 @@ async def run_offtarget_only_workflow(
         input_candidates_fasta: Path to FASTA file with 21-nt siRNA guide sequences
         output_dir: Directory for output files
         genome_species: Species genomes for off-target analysis
+        query_species: Organism the input guides were designed against (defaults to human)
         genome_indices_override: Comma-separated species:/index_prefix overrides
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
@@ -2850,6 +3575,7 @@ async def run_offtarget_only_workflow(
         nextflow_config=nextflow_config,
         genome_indices_override=genome_indices_override,
         genome_species=genome_species or ["human", "rat", "rhesus"],
+        query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,

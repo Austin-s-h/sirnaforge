@@ -23,7 +23,7 @@ workflow ZFN_OFFTARGET_ANALYSIS {
     algorithm           // val: scoring algorithm (homology, conserved_g, zfn_v2)
     dimer_mode          // val: dimer mode (heterodimer_only, include_homodimers)
     spacer_lengths      // val: comma-separated allowed spacer lengths
-    max_mismatches      // val: max mismatches per half-site
+    _max_mismatches     // val: max mismatches per half-site (unused; per-shard value comes from ZFN_MAKE_SHARDS output)
     annotation_file     // path: optional GTF/GFF annotation file (or NO_ANNOTATION sentinel)
     sharding_enabled    // val: enable chromosome/chunk sharding
     shard_chunk_mb      // val: chunk size in MB
@@ -31,7 +31,7 @@ workflow ZFN_OFFTARGET_ANALYSIS {
     shard_chromosomes   // val: comma-separated chromosomes (optional)
 
     main:
-    ch_versions = Channel.empty()
+    ch_versions = channel.empty()
 
     ZFN_MAKE_SHARDS(
         genome_fasta,

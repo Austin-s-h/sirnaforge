@@ -1,5 +1,16 @@
 # ZFN Hg38 Primary Validation Commands
 
+> ## ⚠️ EXPERIMENTAL — these commands do not validate correctness
+>
+> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any decision without independent
+> validation.**
+>
+> The commands below pass the published CCR5 right half-site (`AAACTGCAAAAG`) as written. Both
+> published half-sites occur on the hg38 plus strand, so under the default
+> `require_opposite_strands=True` the pair cannot match its own on-target site and the recorded
+> results are not a correctness signal. To reproduce a run that finds the CCR5 site today, pass the
+> reverse complement (`CTTTTGCAGTTT`) as `--zfn-right-half-site`.
+
 These commands are the manual validation reference for real hg38 primary ZFN runs. They are the heavyweight reruns behind the backend conclusions summarized in [zfn_backend_tuning.md](zfn_backend_tuning.md).
 
 They use:
@@ -10,8 +21,6 @@ They use:
 - the `workflow --design-mode zfn` entrypoint
 
 ## Annotation URL
-
-
 
 ## Recommended output root
 
@@ -78,8 +87,8 @@ uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE \
 
 Each run writes these files under its output directory:
 
-- `sirnaforge/zfn_candidate_summary.json`
-- `sirnaforge/zfn_offtarget_sites.csv`
+- `sirnaforge/candidate_summary.json`
+- `sirnaforge/offtarget_sites.csv`
 - `logs/workflow_summary.json`
 - `logs/sirnaforge.log`
 
@@ -105,7 +114,7 @@ runs = [
     'CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE',
 ]
 for run in runs:
-    csv_path = base / run / 'sirnaforge' / 'zfn_offtarget_sites.csv'
+    csv_path = base / run / 'sirnaforge' / 'offtarget_sites.csv'
     with csv_path.open(newline='', encoding='utf-8') as fh:
         rows = list(csv.DictReader(fh))
     print(f'{run}: {len(rows)} rows')

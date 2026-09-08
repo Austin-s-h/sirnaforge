@@ -1,5 +1,6 @@
 """Pydantic models for siRNA design data structures."""
 
+import json
 from enum import Enum
 from typing import Any
 
@@ -11,7 +12,7 @@ from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import get_modification_summary
-from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed
+from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed, model_validator_typed
 
 logger = get_logger(__name__)
 
@@ -24,6 +25,29 @@ logger = get_logger(__name__)
 MIN_GUIDE_LEN = 19
 RECOMMENDED_MAX_GUIDE_LEN = 23
 ENGINE_MAX_GUIDE_LEN = 40
+
+# Default RISC-loading asymmetry gate, shared with
+# ThermodynamicCalculator.is_thermodynamically_favorable so the two cannot drift.
+DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
+
+# Attainable range of SiRNADesigner._calculate_empirical_score. The simplified
+# Reynolds rule adjusts a 0.5 base score by +/-0.1 per criterion, so it can never
+# reach 1.0; min_empirical_score is bounded by these so an unsatisfiable
+# threshold fails at construction instead of rejecting every candidate.
+EMPIRICAL_SCORE_MIN = 0.4
+EMPIRICAL_SCORE_MAX = 0.7
+DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
+
+# Canonical composite-score term names, shared by ScoringWeights and the scorer.
+COMPOSITE_TERM_NAMES = (
+    "asymmetry",
+    "gc_content",
+    "accessibility",
+    "empirical",
+    "off_target",
+    "isoform_coverage",
+    "conservation",
+)
 
 
 class FilterCriteria(BaseModel):
@@ -47,45 +71,27 @@ class FilterCriteria(BaseModel):
 
     # Thermodynamic asymmetry filters
     min_asymmetry_score: float = Field(
-        default=0.65,
+        default=DEFAULT_MIN_ASYMMETRY_SCORE,
         ge=0.3,
         le=1,
         description=(
             "Minimum thermodynamic asymmetry score for guide strand selection into RISC. "
+            "Applied to SiRNACandidate.asymmetry_score. "
             "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading."
         ),
     )
 
-    # Minimum Free Energy filters (optimal: -2 to -8 kcal/mol)
-    mfe_min: float | None = Field(
-        default=-8.0, description="Minimum MFE threshold in kcal/mol (more negative = too stable)"
+    # Empirical (simplified Reynolds) design-rule filter
+    min_empirical_score: float = Field(
+        default=DEFAULT_MIN_EMPIRICAL_SCORE,
+        ge=EMPIRICAL_SCORE_MIN,
+        le=EMPIRICAL_SCORE_MAX,
+        description=(
+            "Minimum empirical design-rule score. Applied to the 'empirical' component score, "
+            f"whose attainable range is {EMPIRICAL_SCORE_MIN}-{EMPIRICAL_SCORE_MAX}; the default rejects only "
+            "candidates penalised at guide position 19 with no G/C at position 1."
+        ),
     )
-    mfe_max: float | None = Field(
-        default=-2.0, description="Maximum MFE threshold in kcal/mol (less negative = too unstable)"
-    )
-
-    # Duplex stability filters (optimal: -15 to -25 kcal/mol)
-    duplex_stability_min: float | None = Field(
-        default=-25.0, description="Minimum duplex ΔG threshold in kcal/mol (more negative = too stable)"
-    )
-    duplex_stability_max: float | None = Field(
-        default=-15.0, description="Maximum duplex ΔG threshold in kcal/mol (less negative = too unstable)"
-    )
-
-    # Melting temperature filters (optimal: 60-78°C for human cells)
-    melting_temp_min: float | None = Field(default=60.0, description="Minimum melting temperature in °C")
-    melting_temp_max: float | None = Field(default=78.0, description="Maximum melting temperature in °C")
-
-    # End asymmetry filters (optimal: +2 to +6 kcal/mol)
-    delta_dg_end_min: float | None = Field(
-        default=2.0, description="Minimum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
-    )
-    delta_dg_end_max: float | None = Field(
-        default=6.0, description="Maximum end asymmetry ΔΔG (dg_3p - dg_5p) in kcal/mol"
-    )
-
-    # Off-target filters
-    max_off_target_count: int | None = Field(default=3, ge=0, description="Maximum allowed off-target sites (goal: ≤3)")
 
     @field_validator_typed("gc_max")
     @classmethod
@@ -102,18 +108,37 @@ class OffTargetFilterCriteria(BaseModel):
     Controls which siRNA candidates fail due to excessive off-target potential.
     """
 
+    # Genuine off-target threshold (on-target, ortholog and repeat-mediated hits excluded)
+    # 15 is calibrated against the MSH3 AZ reference design: it is the lowest cap at which the gate
+    # enriches for expert-chosen guides rather than depleting them. At 3 the gate was depleted
+    # (p = 0.89) and at 10 it carried no information (p = 0.51). See the 2026-09-04 run4 sweep.
+    max_off_target_count: int | None = Field(
+        default=15,
+        ge=0,
+        description="Maximum genuine off-target sites (default 15). Excludes on-target, ortholog and repeat hits.",
+    )
+
     # Transcriptome off-target thresholds
+    # The three transcriptome thresholds below count GENUINE off-target hits only: on-target,
+    # ortholog and repeat-mediated hits are classified out before they reach these counters.
     max_transcriptome_hits_0mm: int | None = Field(
         default=1,
         ge=0,
-        description="Maximum perfect match transcriptome hits. 1 hit may indicate ontarget effect.",
+        description="Maximum perfect-match genuine off-target transcriptome hits (excludes on-target isoforms)",
     )
     max_transcriptome_hits_1mm: int | None = Field(
-        default=10, ge=0, description="Maximum 1-mismatch transcriptome hits (typical: 5-10, None = no limit)"
+        default=10, ge=0, description="Maximum 1-mismatch genuine off-target hits (typical: 5-10, None = no limit)"
     )
     max_transcriptome_hits_2mm: int | None = Field(
-        default=50, ge=0, description="Maximum 2-mismatch transcriptome hits (typical: 20-50, None = no limit)"
+        default=50, ge=0, description="Maximum 2-mismatch genuine off-target hits (typical: 20-50, None = no limit)"
     )
+    # Read against transcriptome_hits_seed_0mm. This is the only *targeted* gate on a partial
+    # (clipped or gapped) hit whose seed paired perfectly: such a hit has a guide-level nm > 2, so
+    # it lands in no mismatch stratum and max_transcriptome_hits_{0,1,2}mm never see it. The only
+    # other thing that counts it is the blunt max_off_target_count ceiling (default 15).
+    # Unlike the three mismatch thresholds this one counts ALL screened species, matching the
+    # reported transcriptome_hits_seed_0mm column exactly. Defaults to None (off) because a safe
+    # ceiling has not been calibrated against truth data; set it to opt in.
     max_transcriptome_seed_perfect: int | None = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
     )
@@ -139,27 +164,37 @@ class ScoringWeights(BaseModel):
     """Relative weights for composite siRNA scoring components."""
 
     asymmetry: float = Field(
-        default=0.15, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+        default=0.12, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
     )
     gc_content: float = Field(
-        default=0.15, ge=0, le=1, description="GC content optimization weight (stability balance)"
+        default=0.10, ge=0, le=1, description="GC content optimization weight (stability balance)"
     )
     accessibility: float = Field(
-        default=0.20, ge=0, le=1, description="Target accessibility weight (secondary structure)"
+        default=0.13, ge=0, le=1, description="Target accessibility weight (secondary structure)"
     )
-    off_target: float = Field(default=0.30, ge=0, le=1, description="Off-target avoidance weight (specificity)")
     empirical: float = Field(
-        default=0.20, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+        default=0.15, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+    )
+    off_target: float = Field(
+        default=0.25,
+        ge=0,
+        le=1,
+        description="Post-screen genuine off-target specificity weight (on-target, ortholog and repeat excluded)",
+    )
+    isoform_coverage: float = Field(
+        default=0.15, ge=0, le=1, description="Protein-coding isoform coverage weight (targeting completeness)"
+    )
+    conservation: float = Field(
+        default=0.10, ge=0, le=1, description="Cross-species ortholog conservation weight (specificity check)"
     )
 
-    @field_validator_typed("empirical")
-    @classmethod
-    def weights_sum_to_one(cls, v: float, info: ValidationInfo) -> float:
+    @model_validator_typed(mode="after")
+    def weights_sum_to_one(self) -> "ScoringWeights":
         """Validate that scoring weights sum to approximately 1.0."""
-        total = sum(info.data.values()) + v
-        if not (0.95 <= total <= 1.05):  # Allow small floating point errors
-            raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
-        return v
+        total = sum(getattr(self, term) for term in COMPOSITE_TERM_NAMES)
+        if not (0.95 <= total <= 1.05):
+            raise ValueError(f"Scoring weights must sum to 1.0, got {total:.3f}")
+        return self
 
 
 class DesignMode(str, Enum):
@@ -229,17 +264,27 @@ class DesignParameters(BaseModel):
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
-    top_n: int = Field(
-        default=500,
+    # None means report every ranked candidate. Kept as an optional int for backwards compatibility
+    # with callers that pass an explicit ceiling; every consumer slices with ``[: top_n]``, and
+    # ``list[:None]`` is a no-op, so None needs no special-casing downstream.
+    top_n: int | None = Field(
+        default=None,
         ge=1,
         description=(
-            "Number of top-ranked candidates to select for off-target analysis "
-            "(does not change how many candidates are enumerated)"
+            "Number of top-ranked candidates reported in top_candidates (None = no limit, the "
+            "default). Screening is applied to every distinct candidate sequence regardless of this "
+            "value, so it does not gate off-target analysis or change how many candidates are "
+            "enumerated -- it only truncates what is reported."
         ),
     )
 
     # Filtering criteria
     filters: FilterCriteria = Field(default_factory=FilterCriteria, description="Quality control filters")
+    # Read by SiRNAWorkflow when gating on off-target screening results. Without this field the
+    # getattr in _check_offtarget_filters could never resolve, so the criteria were unreachable.
+    offtarget_filters: OffTargetFilterCriteria = Field(
+        default_factory=OffTargetFilterCriteria, description="Off-target rejection thresholds"
+    )
 
     # Scoring weights
     scoring: ScoringWeights = Field(default_factory=ScoringWeights, description="Component score weights")
@@ -315,16 +360,87 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float = Field(default=0.0, ge=0, le=1, description="Fraction of paired bases (optimal: 0.4-0.6)")
 
     # Off-target analysis
-    off_target_count: int = Field(default=0, ge=0, description="Number of potential off-target sites (goal: ≤3)")
-    off_target_penalty: float = Field(default=0.0, ge=0, description="Off-target penalty score (lower is better)")
+    off_target_screened: bool = Field(
+        default=False,
+        description=(
+            "True once this candidate's screen produced usable evidence: it reached the aligner "
+            "and its query species was aligned. Distinguishes 'screened, no hits' from 'never "
+            "screened' -- both leave the hit counts below at 0. It does NOT promise every "
+            "requested species was aligned: an alignment for some OTHER species can fail while "
+            "this stays True, so the counts below are always a lower bound, never a guaranteed "
+            "total (offtarget_summary.filtering_stats.unscreened_species names the shortfall). "
+            "False means the screen yielded no usable evidence for this candidate at all -- never "
+            "run, never submitted, or its query species never aligned -- in which case the counts "
+            "are unknown rather than zero, and any hits that were found are still reported."
+        ),
+    )
+    off_target_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of genuine off-target sites (on-target, ortholog and repeat hits excluded, goal: ≤3)",
+    )
+    # Reporting only -- nothing scores or filters on this field, and its direction depends on
+    # which stage wrote it last, so do not compare values across candidates screened differently:
+    #   * design time (SiRNADesigner._calculate_off_target_score) writes an internal-repeat 7-mer
+    #     penalty, where HIGHER is worse;
+    #   * after screening, _integrate_offtarget_results overwrites it with the MAXIMUM
+    #     ``offtarget_score`` over the candidate's hits, where higher is SAFER -- 0.0 is reserved
+    #     for a full-length exact match (the highest-risk hit there is). Taking the max therefore
+    #     reports the candidate's *least* worrying hit, and since ``nm`` became a guide-level
+    #     distance the values got wider (a clipped minus-strand partial hit reports ~76-98 where
+    #     it used to report 0.0).
+    off_target_penalty: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Reporting only, direction depends on provenance: design-time internal-repeat penalty "
+            "(higher = worse), overwritten post-screen by max offtarget_score (higher = safer, "
+            "0.0 = perfect match). Use off_target_count / the hit strata to judge risk."
+        ),
+    )
 
-    # Detailed transcriptome off-target metrics
-    transcriptome_hits_total: int = Field(default=0, ge=0, description="Total transcriptome off-target hits")
-    transcriptome_hits_0mm: int = Field(default=0, ge=0, description="Perfect match transcriptome hits (0 mismatches)")
-    transcriptome_hits_1mm: int = Field(default=0, ge=0, description="Transcriptome hits with 1 mismatch")
-    transcriptome_hits_2mm: int = Field(default=0, ge=0, description="Transcriptome hits with 2 mismatches")
+    # Detailed transcriptome off-target metrics. _total counts every genuine off-target hit at
+    # any mismatch count (so it always agrees with off_target_count); _0mm/_1mm/_2mm are
+    # stratified nm<=2 SUBSETS of _total, not addends -- nm>=3 hits land in _total only.
+    transcriptome_hits_total: int = Field(
+        default=0, ge=0, description="Total genuine off-target transcriptome hits (any mismatch count)"
+    )
+    transcriptome_hits_0mm: int = Field(
+        default=0, ge=0, description="Perfect-match subset of transcriptome_hits_total (0 mismatches)"
+    )
+    transcriptome_hits_1mm: int = Field(default=0, ge=0, description="1-mismatch subset of transcriptome_hits_total")
+    transcriptome_hits_2mm: int = Field(default=0, ge=0, description="2-mismatch subset of transcriptome_hits_total")
+    # The only counter that sees a PARTIAL hit whose seed paired perfectly. Because nm is a
+    # guide-level distance, a clipped or gapped hit (e.g. 6S15M/NM:i:0 on the minus strand, where
+    # the clip lands on guide positions 16-21 and leaves the seed intact) carries nm=6: it is
+    # counted here and in transcriptome_hits_total / off_target_count, but falls in NO mismatch
+    # stratum, so max_transcriptome_hits_{0,1,2}mm cannot gate it. Only
+    # max_transcriptome_seed_perfect (default None) and max_off_target_count (default 15) do.
+    # Unlike the _0mm/_1mm/_2mm counters this one is not split by species.
     transcriptome_hits_seed_0mm: int = Field(
-        default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8)"
+        default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species"
+    )
+    on_target_confirmed: bool = Field(
+        default=False,
+        description="Whether any hit was recognised as the query gene (see on_target_hits for the count)",
+    )
+
+    # Hit classification metrics (four-way classifier: on-target, ortholog, repeat, off-target)
+    on_target_hits: int = Field(
+        default=0, ge=0, description="Hits classified as on-target (query gene in query species)"
+    )
+    ortholog_hits: int = Field(default=0, ge=0, description="Hits classified as ortholog (same gene, other species)")
+    repeat_hits: int = Field(default=0, ge=0, description="Hits classified as repeat element")
+    ortholog_species: str = Field(
+        default="", description="Comma-separated canonical species with at least one ortholog hit"
+    )
+
+    # Repeat detection (design-time k-mer frequency check)
+    repeat_flagged: bool = Field(
+        default=False, description="True if guide exceeds repeat transcript-fraction threshold at design time"
+    )
+    repeat_transcript_fraction: float = Field(
+        default=0.0, ge=0, le=1, description="Fraction of reference transcripts containing this guide"
     )
 
     # miRNA off-target metrics
@@ -367,9 +483,51 @@ class SiRNACandidate(BaseModel):
         default=1.0, ge=0, le=1, description="Fraction of input transcripts targeted by this guide (1.0 = all)"
     )
 
+    # Post-screen sub-scores (isoform coverage and conservation)
+    isoform_coverage: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Protein-coding isoform coverage sub-score (hit/total, inactive if no protein-coding isoforms)",
+    )
+    conservation_score: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Cross-species conservation sub-score (ortholog species hit / requested, inactive in single-species)",
+    )
+
     # Composite scoring
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
     composite_score: float = Field(ge=0, le=100, description="Overall siRNA quality score (higher is better)")
+    score_asymmetry: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of asymmetry term to composite score"
+    )
+    score_gc_content: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of GC content term to composite score"
+    )
+    score_accessibility: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of accessibility term to composite score"
+    )
+    score_empirical: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of empirical term to composite score"
+    )
+    score_off_target: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of off-target term to composite score"
+    )
+    score_isoform_coverage: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of isoform coverage term to composite score"
+    )
+    score_conservation: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of conservation term to composite score"
+    )
+    scored_after_screening: bool = Field(
+        default=False,
+        description="True if composite score includes post-screen terms (off-target, isoform, conservation)",
+    )
+    weight_set_version: str = Field(
+        default="", description="Scoring weight set version that produced composite_score (empty = not yet scored)"
+    )
 
     # Quality flags
     class FilterStatus(str, Enum):
@@ -381,7 +539,17 @@ class SiRNACandidate(BaseModel):
         POLY_RUNS = "POLY_RUNS"
         EXCESS_PAIRING = "EXCESS_PAIRING"
         LOW_ASYMMETRY = "LOW_ASYMMETRY"
+        LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"
         DIRTY_CONTROL = "DIRTY_CONTROL"
+        REPEAT_ELEMENT = "REPEAT_ELEMENT"
+        EXCESS_OFF_TARGETS = "EXCESS_OFF_TARGETS"
+        TRANSCRIPTOME_PERFECT_MATCH = "TRANSCRIPTOME_PERFECT_MATCH"
+        TRANSCRIPTOME_1MM = "TRANSCRIPTOME_1MM"
+        TRANSCRIPTOME_2MM = "TRANSCRIPTOME_2MM"
+        TRANSCRIPTOME_SEED_PERFECT = "TRANSCRIPTOME_SEED_PERFECT"
+        MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
+        HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
+        TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
 
     # Either True (passed) or one of the FilterStatus reasons (failed)
     passes_filters: bool | FilterStatus = Field(
@@ -466,6 +634,101 @@ class SiRNACandidate(BaseModel):
         return f">{self.id}\n{self.guide_sequence}\n"
 
 
+def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
+    """Map one SiRNACandidate to its canonical output-row dict.
+
+    The single source of truth for candidate CSV columns, shared by DesignResult.save_csv (the
+    `sirnaforge design` path) and SiRNAWorkflow.step6_generate_reports (the `sirnaforge workflow`
+    path) so the two writers cannot drift on which columns they emit. Optional attributes use a
+    tolerant getattr since the workflow path feeds candidates from several producers.
+    """
+    cs = candidate.component_scores or {}
+    mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
+    pass_state = candidate.passes_filters
+    passes_filters = pass_state.value if hasattr(pass_state, "value") else pass_state
+
+    def _maybe_attr(name: str, default: Any = None) -> Any:
+        return getattr(candidate, name, default)
+
+    return {
+        "id": candidate.id,
+        "transcript_id": candidate.transcript_id,
+        "position": candidate.position,
+        "guide_sequence": candidate.guide_sequence,
+        "passenger_sequence": candidate.passenger_sequence,
+        "gc_content": candidate.gc_content,
+        "asymmetry_score": candidate.asymmetry_score,
+        # Thermodynamics and structure
+        "structure": _maybe_attr("structure"),
+        "mfe": _maybe_attr("mfe"),
+        "paired_fraction": candidate.paired_fraction,
+        "duplex_stability_dg": candidate.duplex_stability,
+        "duplex_stability_score": cs.get("duplex_stability_score"),
+        "dg_5p": cs.get("dg_5p"),
+        "dg_3p": cs.get("dg_3p"),
+        "delta_dg_end": cs.get("delta_dg_end"),
+        "melting_temp_c": cs.get("melting_temp_c"),
+        "off_target_screened": candidate.off_target_screened,
+        "off_target_count": candidate.off_target_count,
+        "off_target_penalty": candidate.off_target_penalty,
+        # Hit classification metrics (issue #80)
+        "on_target_hits": candidate.on_target_hits,
+        "ortholog_hits": candidate.ortholog_hits,
+        "repeat_hits": candidate.repeat_hits,
+        "ortholog_species": candidate.ortholog_species,
+        "repeat_flagged": candidate.repeat_flagged,
+        "repeat_transcript_fraction": candidate.repeat_transcript_fraction,
+        # Legacy transcriptome/miRNA hit metrics
+        "transcriptome_hits_total": _maybe_attr("transcriptome_hits_total", 0),
+        "transcriptome_hits_0mm": _maybe_attr("transcriptome_hits_0mm", 0),
+        "transcriptome_hits_1mm": _maybe_attr("transcriptome_hits_1mm", 0),
+        "transcriptome_hits_2mm": _maybe_attr("transcriptome_hits_2mm", 0),
+        "transcriptome_hits_seed_0mm": _maybe_attr("transcriptome_hits_seed_0mm", 0),
+        "on_target_confirmed": _maybe_attr("on_target_confirmed", False),
+        "mirna_hits_total": _maybe_attr("mirna_hits_total", 0),
+        "mirna_hits_0mm_seed": _maybe_attr("mirna_hits_0mm_seed", 0),
+        "mirna_hits_1mm_seed": _maybe_attr("mirna_hits_1mm_seed", 0),
+        "mirna_hits_high_risk": _maybe_attr("mirna_hits_high_risk", 0),
+        # miRNA-specific columns (nullable)
+        "guide_pos1_base": _maybe_attr("guide_pos1_base"),
+        "pos1_pairing_state": _maybe_attr("pos1_pairing_state"),
+        "seed_class": _maybe_attr("seed_class"),
+        "supp_13_16_score": _maybe_attr("supp_13_16_score"),
+        "seed_7mer_hits": _maybe_attr("seed_7mer_hits"),
+        "seed_8mer_hits": _maybe_attr("seed_8mer_hits"),
+        "seed_hits_weighted": _maybe_attr("seed_hits_weighted"),
+        "off_target_seed_risk_class": _maybe_attr("off_target_seed_risk_class"),
+        # Transcript hit metrics
+        "transcript_hit_count": candidate.transcript_hit_count,
+        "transcript_hit_fraction": candidate.transcript_hit_fraction,
+        # Post-screen sub-scores
+        "isoform_coverage": candidate.isoform_coverage,
+        "conservation_score": candidate.conservation_score,
+        # Composite scoring
+        "composite_score": candidate.composite_score,
+        "score_asymmetry": candidate.score_asymmetry,
+        "score_gc_content": candidate.score_gc_content,
+        "score_accessibility": candidate.score_accessibility,
+        "score_empirical": candidate.score_empirical,
+        "score_off_target": candidate.score_off_target,
+        "score_isoform_coverage": candidate.score_isoform_coverage,
+        "score_conservation": candidate.score_conservation,
+        "scored_after_screening": candidate.scored_after_screening,
+        "weight_set_version": candidate.weight_set_version,
+        "passes_filters": passes_filters,
+        # Chemical modifications
+        "guide_overhang": mod_summary.get("guide_overhang", ""),
+        "guide_modifications": mod_summary.get("guide_modifications", ""),
+        "passenger_overhang": mod_summary.get("passenger_overhang", ""),
+        "passenger_modifications": mod_summary.get("passenger_modifications", ""),
+        # Variant-aware annotations
+        "variant_mode": _maybe_attr("variant_mode"),
+        "allele_specific": _maybe_attr("allele_specific", False),
+        "targeted_alleles": json.dumps(_maybe_attr("targeted_alleles", [])),
+        "overlapped_variants": json.dumps(_maybe_attr("overlapped_variants", [])),
+    }
+
+
 class DesignResult(BaseModel):
     """Complete results from siRNA design workflow with metadata and statistics."""
 
@@ -509,58 +772,7 @@ class DesignResult(BaseModel):
         Raises:
             pandera.errors.SchemaError: If data validation fails
         """
-        df_data = []
-        for candidate in self.candidates:
-            cs = candidate.component_scores or {}
-
-            # Get modification summary if modifications were applied
-            mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
-
-            row = {
-                "id": candidate.id,
-                "transcript_id": candidate.transcript_id,
-                "position": candidate.position,
-                "guide_sequence": candidate.guide_sequence,
-                "passenger_sequence": candidate.passenger_sequence,
-                "gc_content": candidate.gc_content,
-                "asymmetry_score": candidate.asymmetry_score,
-                # Thermodynamics and structure
-                "structure": getattr(candidate, "structure", None),
-                "mfe": getattr(candidate, "mfe", None),
-                "paired_fraction": candidate.paired_fraction,
-                "duplex_stability_dg": candidate.duplex_stability,
-                "duplex_stability_score": cs.get("duplex_stability_score"),
-                "dg_5p": cs.get("dg_5p"),
-                "dg_3p": cs.get("dg_3p"),
-                "delta_dg_end": cs.get("delta_dg_end"),
-                "melting_temp_c": cs.get("melting_temp_c"),
-                "off_target_count": candidate.off_target_count,
-                # miRNA-specific columns (nullable)
-                "guide_pos1_base": candidate.guide_pos1_base,
-                "pos1_pairing_state": candidate.pos1_pairing_state,
-                "seed_class": candidate.seed_class,
-                "supp_13_16_score": candidate.supp_13_16_score,
-                "seed_7mer_hits": candidate.seed_7mer_hits,
-                "seed_8mer_hits": candidate.seed_8mer_hits,
-                "seed_hits_weighted": candidate.seed_hits_weighted,
-                "off_target_seed_risk_class": candidate.off_target_seed_risk_class,
-                # Transcript hit metrics
-                "transcript_hit_count": candidate.transcript_hit_count,
-                "transcript_hit_fraction": candidate.transcript_hit_fraction,
-                "composite_score": candidate.composite_score,
-                "passes_filters": (
-                    candidate.passes_filters.value
-                    if hasattr(candidate.passes_filters, "value")
-                    else candidate.passes_filters
-                ),
-                # Chemical modifications
-                "guide_overhang": mod_summary.get("guide_overhang", ""),
-                "guide_modifications": mod_summary.get("guide_modifications", ""),
-                "passenger_overhang": mod_summary.get("passenger_overhang", ""),
-                "passenger_modifications": mod_summary.get("passenger_modifications", ""),
-            }
-            df_data.append(row)
-
+        df_data = [build_candidate_row(candidate) for candidate in self.candidates]
         df = pd.DataFrame(df_data)
 
         # Convert nullable integer columns to pandas Int64 dtype for proper None handling

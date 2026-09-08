@@ -33,6 +33,14 @@ The workflow command searches for gene transcripts, designs siRNA candidates, sc
 
 #### ZFN Notes
 
+:::{warning}
+**EXPERIMENTAL.** `--design-mode zfn` runs the experimental ZFN arm, which has known unfixed defects
+(half-site orientation handling, FokI seed-region weighting, off-target region classification,
+inverted `worst_site_score`/`best_offtarget_score` exports) tracked in
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Do not use ZFN output for any decision
+without independent validation. See [ZFN Module Guide](zfn_module.md).
+:::
+
 ZFN activity/off-target evaluation now has a dedicated command: `sirnaforge zfn`.
 Use the `workflow` command for transcript-centric siRNA/miRNA runs.
 
@@ -45,6 +53,10 @@ siRNAforge accepts complementary inputs when you need to bypass gene search or c
 * `--offtarget-indices` overrides the genome indices used for Nextflow/BWA-MEM2 with explicit `species:/path/to/index_prefix` entries. When present, these drive the set of species processed by the off-target pipeline.
 
 Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow stage. Remote resources are cached under `~/.cache/sirnaforge/` and reused automatically.
+
+Design-only mode is a deliberate cost guard, not an oversight: resolving the built-in defaults means downloading and indexing four multi-gigabyte Ensembl cDNA references (human, mouse, rat, macaque). Supplying your own sequences never triggers that implicitly. Library callers get the same policy — `run_sirna_workflow(input_fasta=...)` is design-only unless you pass `transcriptome_fasta=...` or opt in with `allow_transcriptome_with_input_fasta=True`.
+
+`--skip-off-targets` disables **all** reference-based screening for the run: no transcriptome reference is resolved, downloaded or indexed, the Nextflow off-target stage does not run, **and repeat-element detection is skipped as well**. Repeat detection scans guides against the query species' cDNA reference, so it cannot run without the very download the flag exists to avoid; `logs/workflow_summary.json` reports it as `repeat_summary.status = "skipped"` with `reason = "user_disabled"`, and candidates keep `repeat_flagged = false`. Drop `--skip-off-targets` (optionally with `--transcriptome-fasta`) whenever you need repeat verdicts.
 
 Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` include a `species` column so you can filter hits directly. Aggregated summaries collapse those values into `human` vs `other` buckets, exposing `hits_per_species`, `human_hits`, and `other_species_hits` in `combined_summary.json` plus the workflow console output. The workflow also records the resolved reference decision in `logs/workflow_summary.json` (`reference_summary.transcriptome`) so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
 
@@ -87,6 +99,21 @@ Design siRNA/miRNA candidates from FASTA sequences.
 
 Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 
+:::{warning}
+**EXPERIMENTAL — results are not decision-grade.** The ZFN arm ships experimental in 0.6.0 with known
+unfixed defects in half-site orientation handling, FokI seed-region weighting and off-target region
+classification, tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Do not use ZFN
+output for any decision without independent validation. The published CCR5 half-site pair does not
+match its own on-target site under the default strand-pairing rule — pass
+`--zfn-right-half-site CTTTTGCAGTTT` rather than the published `AAACTGCAAAAG` — which also
+invalidates the recorded ZFN validation runs. Two further defects change nothing visible in the
+output: the exported `worst_site_score` and `best_offtarget_score` fields are inverted
+(`worst_site_score` is the minimum site score, `best_offtarget_score` the maximum, whereas the
+highest-scoring off-target is the most dangerous one), and a site inside a large containing gene can
+be classified `intergenic`, which undercounts the exonic/promoter tallies the pass/fail filters read.
+See [ZFN Module Guide](zfn_module.md).
+:::
+
 ### Help
 
 ```{program-output} uv run sirnaforge zfn --help
@@ -99,13 +126,32 @@ Evaluate a ZFN pair and run exhaustive genome-wide off-target search.
 * `--zfn-search-backend` selects the half-site scan engine: `pyahocorasick` (default), `exhaustive_python` (baseline), or `fm_index` (experimental).
 * `--zfn-search-space-index` accepts a persisted index-bundle directory for indexed backends. This is currently supported by `fm_index`.
 * `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
-* Outputs are written as `sirnaforge/zfn_candidate_summary.json` and `sirnaforge/zfn_offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
+* Outputs are written as `sirnaforge/candidate_summary.json` and `sirnaforge/offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
 
-Operational guidance from the backend tuning work:
+Operational guidance from the backend tuning work — measured before the half-site convention issue was
+found, so read it as a runtime observation only, not as a validated correctness result:
 
-- prefer `pyahocorasick` for the first run on large references
+- prefer `pyahocorasick` for the first run on large references, **but only for
+  `--zfn-max-mismatches` of 3 or less**
 - use `fm_index` only for repeated persisted-index workflows; treat it as experimental on large references
 - keep `exhaustive_python` as the baseline comparator and fallback implementation
+
+:::{warning}
+**The default `pyahocorasick` backend aborts above 3 mismatches on a 12 bp half-site.** Both
+pattern-enumerating backends (`pyahocorasick`, `fm_index`) expand the query over the full 15-letter
+IUPAC alphabet rather than the four bases a genome contains, and reject the search when the expansion
+exceeds 1,000,000 patterns. A 12 bp half-site at `--zfn-max-mismatches 4` expands to 5,498,165
+patterns and an 18 bp half-site at 3 mismatches to 1,717,605, so both raise:
+
+```text
+ValueError: ZFN L half-site is too complex for the pyahocorasick backend: 5498165 candidate
+patterns exceed the safety limit of 1000000.
+```
+
+`--zfn-max-mismatches 4` is the budget the CCR5 benchmark needs, so pass
+`--zfn-search-backend exhaustive_python` for those runs. Tracked in
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82).
+:::
 
 For reproducible `fm_index` runs, prebuild one search-space bundle once, then reuse it across runs:
 

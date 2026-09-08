@@ -225,7 +225,9 @@ class VariantResolver:
             return None
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True
+            ) as session:
                 # Search ClinVar
                 search_url = f"{base_url}/esearch.fcgi"
                 params: dict[str, str] = {"db": "clinvar", "term": search_term, "retmode": "json", "retmax": "1"}
@@ -317,7 +319,9 @@ class VariantResolver:
         base_url = "https://rest.ensembl.org"
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True
+            ) as session:
                 headers = {"Content-Type": "application/json"}
 
                 # Build API endpoint based on query type
@@ -538,6 +542,13 @@ class VariantResolver:
     def _get_cache_key(self, query: VariantQuery) -> str:
         """Generate cache key for variant query.
 
+        The key must cover every setting that decides whether a variant is stored
+        at all, because ``resolve_variant`` returns a cache hit without re-running
+        ``_passes_filters``. ``variant_mode`` is one of those settings: avoid mode
+        filters on the maximum population AF while target/both mode filters on the
+        global AF, so at the same ``min_af`` the two modes admit different variants
+        and must not share entries.
+
         Args:
             query: Parsed variant query
 
@@ -549,6 +560,7 @@ class VariantResolver:
             "assembly": self.assembly,
             "min_af": self.min_af,
             "clinvar_filters": [f.value for f in self.clinvar_filters],
+            "variant_mode": self.variant_mode.value if self.variant_mode else None,
         }
         return stable_cache_key(cache_data)
 

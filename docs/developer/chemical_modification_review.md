@@ -239,7 +239,7 @@ sirnaforge design input.fasta -o output/
 
 # Annotate top candidates afterward
 sirnaforge sequences annotate \
-  output/sirnaforge/TP53_pass.fasta \
+  output/sirnaforge/candidates_pass.fasta \
   modifications.json \
   -o output/sirnaforge/TP53_pass_annotated.fasta
 ```

@@ -77,20 +77,53 @@ class SiRNACandidateSchema(DataFrameModel):
     structure: Series[Any] = Field(description="RNA secondary structure in dot-bracket notation", nullable=True)
     mfe: Series[float] = Field(description="Minimum free energy in kcal/mol (optimal: -2 to -8)", nullable=True)
     duplex_stability_dg: Series[float] = Field(
-        description="siRNA duplex ΔG in kcal/mol (optimal: -15 to -25)", nullable=True
+        description="siRNA duplex ΔG in kcal/mol (fully paired 21mer: -32 to -43)", nullable=True
     )
     duplex_stability_score: Series[float] = Field(
-        ge=0.0, le=1.0, description="Normalized duplex stability score [0-1]", nullable=True
+        ge=0.0, le=1.0, description="Duplex stability score [0-1], normalized per nucleotide", nullable=True
     )
-    dg_5p: Series[float] = Field(description="5' end ΔG kcal/mol (positions 1-7)", nullable=True)
-    dg_3p: Series[float] = Field(description="3' end ΔG kcal/mol (positions 15-21)", nullable=True)
+    dg_5p: Series[float] = Field(description="Guide 5' end ΔG kcal/mol (terminal 7 bp)", nullable=True)
+    dg_3p: Series[float] = Field(description="Guide 3' end ΔG kcal/mol (terminal 7 bp)", nullable=True)
     delta_dg_end: Series[float] = Field(
-        description="End asymmetry ΔΔG = dg_3p - dg_5p (optimal: +2 to +6)", nullable=True
+        description="End asymmetry ΔΔG = dg_5p - dg_3p (optimal: +2 to +6)", nullable=True
     )
     melting_temp_c: Series[float] = Field(description="Duplex melting temperature °C (optimal: 60-78°C)", nullable=True)
 
     # Off-target analysis results
-    off_target_count: Series[int] = Field(ge=0, description="Number of potential off-target sites (goal: ≤3)")
+    off_target_screened: Series[bool] = Field(
+        description="True if off-target screening ran (0 hits then means clean, not unscreened)",
+        nullable=True,
+        coerce=True,
+    )
+    off_target_count: Series[int] = Field(
+        ge=0, description="Number of genuine off-target sites (on-target, ortholog, repeat excluded, goal: ≤3)"
+    )
+
+    # Hit classification metrics
+    on_target_hits: Series[pd.Int64Dtype] = Field(
+        ge=0, description="Hits classified as on-target (query gene in query species)", nullable=True, coerce=True
+    )
+    ortholog_hits: Series[pd.Int64Dtype] = Field(
+        ge=0, description="Hits classified as ortholog (same gene, other species)", nullable=True, coerce=True
+    )
+    repeat_hits: Series[pd.Int64Dtype] = Field(
+        ge=0, description="Hits classified as repeat element", nullable=True, coerce=True
+    )
+    ortholog_species: Series[str] = Field(
+        description="Comma-separated canonical species with ortholog hits", nullable=True, coerce=True
+    )
+
+    # Repeat detection (design-time k-mer frequency check)
+    repeat_flagged: Series[pd.BooleanDtype] = Field(
+        description="True if guide exceeds repeat transcript-fraction threshold", nullable=True, coerce=True
+    )
+    repeat_transcript_fraction: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="Fraction of reference transcripts containing this guide",
+        nullable=True,
+        coerce=True,
+    )
 
     # miRNA-specific columns (populated when design_mode == "mirna")
     # Using proper types with nullable=True for optional miRNA-mode fields
@@ -139,9 +172,84 @@ class SiRNACandidateSchema(DataFrameModel):
         ge=0.0, le=1.0, description="Fraction of input transcripts hit by this guide (1.0 = all transcripts)"
     )
 
+    # Post-screen sub-scores
+    isoform_coverage: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="Protein-coding isoform coverage sub-score (inactive if no protein-coding isoforms)",
+        nullable=True,
+        coerce=True,
+    )
+    conservation_score: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="Cross-species conservation sub-score (inactive in single-species)",
+        nullable=True,
+        coerce=True,
+    )
+
     # Scoring results
     composite_score: Series[float] = Field(
         ge=0.0, le=100.0, description="Overall siRNA quality score (higher is better)"
+    )
+    score_asymmetry: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of asymmetry term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    score_gc_content: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of GC content term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    score_accessibility: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of accessibility term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    score_empirical: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of empirical term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    score_off_target: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of off-target term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    score_isoform_coverage: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of isoform coverage term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    score_conservation: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of conservation term to composite score",
+        nullable=True,
+        coerce=True,
+    )
+    scored_after_screening: Series[pd.BooleanDtype] = Field(
+        description="True if composite score includes post-screen terms",
+        nullable=True,
+        coerce=True,
+    )
+    weight_set_version: Series[str] = Field(
+        description="Scoring weight set version used for this candidate",
+        nullable=True,
+        coerce=True,
     )
 
     # Quality control: allow legacy booleans or new status strings
@@ -194,21 +302,14 @@ class SiRNACandidateSchema(DataFrameModel):
 
     @dataframe_check_typed
     def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
-        """Ensure passes_filters contains allowed filter status values."""
-        allowed_prefixes = {
-            "PASS",
-            "GC_OUT_OF_RANGE",
-            "POLY_RUNS",
-            "EXCESS_PAIRING",
-            "LOW_ASYMMETRY",
-            "TRANSCRIPTOME_PERFECT_MATCH",
-            "TRANSCRIPTOME_HITS_1MM",
-            "TRANSCRIPTOME_HITS_2MM",
-            "MIRNA_PERFECT_SEED",
-            "MIRNA_SEED_HITS",
-            "MIRNA_HIGH_RISK",
-            "DIRTY_CONTROL",
-        }
+        """Ensure passes_filters contains allowed filter status values.
+
+        Derives the allow-list from SiRNACandidate.FilterStatus enum to prevent drift.
+        """
+        # Import here to avoid circular dependency
+        from sirnaforge.models.sirna import SiRNACandidate  # noqa: PLC0415
+
+        allowed_prefixes = {s.value for s in SiRNACandidate.FilterStatus}
         series = df["passes_filters"]
 
         def _ok(v: Any) -> bool:
@@ -366,7 +467,15 @@ class MiRNAAlignmentSchema(DataFrameModel):
 
     # Scoring
     as_score: Series[pd.Int64Dtype] = Field(nullable=True, description="Alignment score (AS tag)")
-    nm: Series[int] = Field(ge=0, description="Edit distance / total mismatches")
+    # See OffTargetHit.nm: a GUIDE-level distance, so clipped/inserted/bulged guide bases
+    # count as mismatch-equivalents and nm >= the aligner's NM tag on partial or gapped hits.
+    nm: Series[int] = Field(
+        ge=0,
+        description=(
+            "Guide mismatch-equivalent count: aligner edit distance plus guide bases left "
+            "unpaired by clipping or gaps (>= the NM tag)"
+        ),
+    )
     seed_mismatches: Series[int] = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: Series[float] = Field(ge=0.0, description="Off-target penalty score")
 
@@ -429,7 +538,15 @@ class GenomeAlignmentSchema(DataFrameModel):
 
     # Scoring
     as_score: Series[pd.Int64Dtype] = Field(nullable=True, description="Alignment score (AS tag)")
-    nm: Series[int] = Field(ge=0, description="Edit distance / total mismatches")
+    # See OffTargetHit.nm: a GUIDE-level distance, so clipped/inserted/bulged guide bases
+    # count as mismatch-equivalents and nm >= the aligner's NM tag on partial or gapped hits.
+    nm: Series[int] = Field(
+        ge=0,
+        description=(
+            "Guide mismatch-equivalent count: aligner edit distance plus guide bases left "
+            "unpaired by clipping or gaps (>= the NM tag)"
+        ),
+    )
     seed_mismatches: Series[int] = Field(ge=0, description="Mismatches in seed region (positions 2-8)")
     offtarget_score: Series[float] = Field(ge=0.0, description="Off-target penalty score")
 

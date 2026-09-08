@@ -87,6 +87,7 @@ from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
+from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
     make_zfn_shard_manifest,
@@ -112,6 +113,19 @@ REMOTE_RESOURCE_SCHEMES = ("http://", "https://", "ftp://", "file://")
 DEFAULT_ZFN_WINDOW_STRIDE = 1
 DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
+
+
+def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str) -> str:
+    """Describe where off-target results landed, or why there are none.
+
+    Reporting the path unconditionally meant a run whose screening never happened still
+    pointed at a directory that does not exist, with the actual reason many lines earlier
+    in the log.
+    """
+    if offtarget_summary.get("status") == "skipped":
+        reason = offtarget_summary.get("reason") or "not run"
+        return f"   • Off-target results: [yellow]not produced ({reason})[/yellow]"
+    return f"   • Off-target results: [blue]{results_path}[/blue]"
 
 
 def _autotune_zfn_sharding(
@@ -263,7 +277,7 @@ def _resolve_design_mode(
 
     if mode_enum == DesignMode.MIRNA:
         mirna_config = MiRNADesignConfig()
-        if gc_min == 30.0 and gc_max == 52.0:
+        if gc_min == 30.0 and gc_max == 60.0:
             gc_min = mirna_config.gc_min
             gc_max = mirna_config.gc_max
         if overhang == "dTdT":
@@ -695,7 +709,7 @@ def workflow(  # noqa: PLR0912
     design_mode: str = typer.Option(
         "sirna",
         "--design-mode",
-        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn",
+        help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn (EXPERIMENTAL)",
     ),
     zfn_subfinger_mutation: list[str] = typer.Option(
         [],
@@ -818,12 +832,16 @@ def workflow(  # noqa: PLR0912
         "--zfn-annotation",
         help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
     ),
-    top_n_candidates: int = typer.Option(
-        100,
+    top_n_candidates: int | None = typer.Option(
+        None,
         "--top-n",
         "-n",
         min=1,
-        help="Number of top siRNA candidates to select (also used for off-target analysis)",
+        help=(
+            "Cap how many top-ranked candidates are reported (default: no cap, report all). "
+            "Screening and enumeration always cover every candidate, so this only truncates the "
+            "reported set -- leave it unset to keep the full design space."
+        ),
     ),
     species: str = typer.Option(
         DEFAULT_SPECIES_ARGUMENT,
@@ -834,6 +852,18 @@ def workflow(  # noqa: PLR0912
             "transcriptome fetching from Ensembl (default: 4 species). "
             "Override specific layers with --mirna-species or --transcriptome-fasta. "
             "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
+        ),
+    ),
+    query_species: str | None = typer.Option(
+        None,
+        "--query-species",
+        help=(
+            "Organism the TARGET transcripts belong to, which decides which species' hits are "
+            "on-target and whose alignment must succeed before candidates can be scored after "
+            "screening. --species is an unordered set of genomes to screen AGAINST and never "
+            "sets this. Defaults to the organism the gene-query database serves (human), which "
+            "is also the species of the default transcriptome; set it when designing against an "
+            "input FASTA from another organism."
         ),
     ),
     mirna_db: str = typer.Option(
@@ -989,6 +1019,26 @@ def workflow(  # noqa: PLR0912
         envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
         help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
     ),
+    max_hits: int | None = typer.Option(
+        None,
+        "--max-hits",
+        min=1,
+        help=(
+            "Cap off-target hits retained per candidate per species (default: exhaustive, no cap). "
+            "Set a lower value (e.g. 10000) to speed up analysis of large gene families at the cost of "
+            "censoring per-species hit counts."
+        ),
+    ),
+    max_off_targets: int | None = typer.Option(
+        None,
+        "--max-off-targets",
+        min=0,
+        help=(
+            "Reject a candidate above this many genuine off-target sites (default: 3). Counts only "
+            "hits left after on-target, ortholog and repeat classification. Unlike --max-hits this "
+            "changes the PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
+        ),
+    ),
     json_summary: bool = typer.Option(
         True,
         "--json-summary/--no-json-summary",
@@ -1024,6 +1074,9 @@ def workflow(  # noqa: PLR0912
         logger.error("Invalid design mode: %s", exc)
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
+
+    if mode_enum == DesignMode.ZFN:
+        emit_zfn_experimental_warning(console)
 
     merged_zfn_constraints = list(zfn_subfinger_mutation)
     if zfn_max_mismatches_per_subfinger is not None:
@@ -1117,15 +1170,28 @@ def workflow(  # noqa: PLR0912
     if input_fasta:
         input_descriptor = input_fasta if "://" in input_fasta else Path(input_fasta).name
 
-    # Resolve transcriptome policy once so downstream layers receive metadata
+    # Resolve transcriptome policy once so downstream layers receive metadata.
+    # allow_transcriptome_for_input_fasta stays False: --input-fasta means "design against MY
+    # sequences", and auto-resolving DEFAULT_TRANSCRIPTOME_SOURCES there downloads and indexes
+    # four multi-gigabyte cDNA references nobody asked for (it also contradicted the documented
+    # design-only behaviour and timed out the toy container workflow). --transcriptome-fasta is
+    # the explicit opt-in, and it accepts a bundled source name such as ensembl_human_cdna.
     transcriptome_spec = WorkflowInputSpec(
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
         design_only=skip_off_targets,
+        allow_transcriptome_for_input_fasta=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
+    if input_fasta and not transcriptome_fasta and not skip_off_targets:
+        console.print(
+            "ℹ️  --input-fasta without --transcriptome-fasta: transcriptome off-target screening and "
+            "repeat detection are disabled (design-only). Pass --transcriptome-fasta "
+            "ensembl_human_cdna (or a path/URL) to screen against a reference.",
+            style="yellow",
+        )
     genome_species_for_workflow = override_species or species_list
     offtarget_override_label = offtarget_indices or "cached defaults"
     nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
@@ -1139,7 +1205,7 @@ def workflow(  # noqa: PLR0912
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
             f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
             f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top Candidates (used for off-target): [yellow]{top_n_candidates}[/yellow]\n"
+            f"Reported Candidates: [yellow]{top_n_candidates if top_n_candidates is not None else 'all (uncapped)'}[/yellow]\n"
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
@@ -1171,6 +1237,7 @@ def workflow(  # noqa: PLR0912
                     design_mode=design_mode,
                     top_n_candidates=top_n_candidates,
                     genome_species=genome_species_for_workflow,
+                    query_species=query_species,
                     genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
@@ -1196,6 +1263,8 @@ def workflow(  # noqa: PLR0912
                     num_threads=cores,
                     check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
+                    max_hits=max_hits,
+                    max_off_targets=max_off_targets,
                 )
             )
 
@@ -1263,7 +1332,8 @@ def workflow(  # noqa: PLR0912
             console.print(f"   • Transcripts: [blue]transcripts/{gene_query}_transcripts.fasta[/blue]")
             console.print("   • siRNA candidates (ALL): [blue]sirnaforge/candidates_all.csv[/blue]")
             console.print("   • siRNA candidates (PASS): [blue]sirnaforge/candidates_pass.csv[/blue]")
-            console.print("   • Off-target results: [blue]off_target/results/[/blue]")
+            if offtarget_summary:
+                console.print(_offtarget_results_line(offtarget_summary, "off_target/results/"))
             console.print("   • Console stream log: [blue]logs/workflow_stream.log[/blue]")
             if json_summary:
                 console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
@@ -1303,6 +1373,15 @@ def offtarget(
             "Comma-separated canonical species identifiers for off-target analysis. "
             "Drives transcriptome fetching from Ensembl and miRNA database lookups. "
             "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
+        ),
+    ),
+    query_species: str | None = typer.Option(
+        None,
+        "--query-species",
+        help=(
+            "Organism the supplied guides were designed against, which decides whose alignment "
+            "must succeed before candidates can be scored after screening. --species is the set "
+            "of genomes to screen AGAINST and never sets this. Defaults to human."
         ),
     ),
     mirna_db: str = typer.Option(
@@ -1463,6 +1542,7 @@ def offtarget(
                     input_candidates_fasta=str(input_candidates_fasta),
                     output_dir=str(output_dir),
                     genome_species=genome_species_for_workflow,
+                    query_species=query_species,
                     genome_indices_override=offtarget_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
@@ -1497,7 +1577,7 @@ def offtarget(
         console.print(f"\n📁 [bold]Results saved to:[/bold] [cyan]{output_dir}[/cyan]")
         console.print("📂 Key files:")
         console.print("   • Input candidates: [blue]input_candidates.fasta[/blue]")
-        console.print("   • Off-target results: [blue]results/[/blue]")
+        console.print(_offtarget_results_line(offtarget_summary, "results/"))
         console.print("   • Console log: [blue]logs/sirnaforge.log[/blue]")
 
         if offtarget_summary.get("method") == "embedded_nextflow":
@@ -1661,10 +1741,12 @@ def zfn(
         help="Write logs/workflow_summary.json (disable to skip JSON output)",
     ),
 ) -> None:
-    """Evaluate a ZFN pair and run exhaustive genome-wide off-target search."""
+    """Evaluate a ZFN pair and run exhaustive genome-wide off-target search (EXPERIMENTAL)."""
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
     log_destination.parent.mkdir(parents=True, exist_ok=True)
     configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
+
+    emit_zfn_experimental_warning(console)
 
     try:
         zfn_design_params, annotation, zfn_constraints, zfn_default_constraint, zfn_overall_constraints = (
@@ -1778,13 +1860,14 @@ def design(  # noqa: PLR0912
         max=23,
         help="siRNA length in nucleotides",
     ),
-    top_n: int = typer.Option(
-        100,
+    top_n: int | None = typer.Option(
+        None,
         "--top-n",
         "-n",
         min=1,
         help=(
-            "Number of top-ranked candidates to select for reporting/off-target (all candidates are still generated)"
+            "Cap how many top-ranked candidates are reported (default: no cap, report all). "
+            "All candidates are generated and screened regardless."
         ),
     ),
     gc_min: float = typer.Option(
@@ -1902,7 +1985,7 @@ def design(  # noqa: PLR0912
             f"Output: [cyan]{output}[/cyan]\n"
             f"Length: [yellow]{length}[/yellow] nt\n"
             f"GC range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Top candidates: [yellow]{top_n}[/yellow]\n"
+            f"Reported candidates: [yellow]{top_n if top_n is not None else 'all (uncapped)'}[/yellow]\n"
             f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{overhang}[/magenta]",
             title="Configuration",
@@ -2080,7 +2163,9 @@ def config() -> None:
     # Basic parameters
     console.print("[cyan]Basic Parameters:[/cyan]")
     console.print(f"  siRNA length: {default_params.sirna_length} nt")
-    console.print(f"  Top candidates: {default_params.top_n}")
+    console.print(
+        f"  Reported candidates: {default_params.top_n if default_params.top_n is not None else 'all (uncapped)'}"
+    )
 
     # Filtering criteria
     console.print("\n[cyan]Filtering Criteria:[/cyan]")
@@ -2487,8 +2572,8 @@ def internal_zfn_search_shard(
     dimer_mode: DimerMode = typer.Option(..., "--dimer-mode"),
     spacer_lengths: str = typer.Option(..., "--spacer-lengths"),
     annotation_file: Path | None = typer.Option(None, "--annotation-file"),
-    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
-    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+    output_sites_csv: Path = typer.Option(Path("offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("candidate_summary.json"), "--output-summary-json"),
 ) -> None:
     """Run one shard-scoped ZFN search and emit shard artifacts."""
     run_zfn_shard_search(
@@ -2515,9 +2600,9 @@ def internal_zfn_search_shard(
 
 @internal_command("zfn-aggregate-shards")
 def internal_zfn_aggregate_shards(
-    shard_csv_glob: str = typer.Option("zfn_offtarget_sites_*.csv", "--shard-csv-glob"),
-    output_sites_csv: Path = typer.Option(Path("zfn_offtarget_sites.csv"), "--output-sites-csv"),
-    output_summary_json: Path = typer.Option(Path("zfn_candidate_summary.json"), "--output-summary-json"),
+    shard_csv_glob: str = typer.Option("offtarget_sites_*.csv", "--shard-csv-glob"),
+    output_sites_csv: Path = typer.Option(Path("offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("candidate_summary.json"), "--output-summary-json"),
 ) -> None:
     """Aggregate shard-level ZFN outputs into final ranked outputs."""
     aggregate_zfn_shard_results(

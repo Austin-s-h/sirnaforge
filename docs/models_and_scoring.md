@@ -38,7 +38,7 @@ class SiRNACandidate(BaseModel):
 
     # Thermodynamic properties
     asymmetry_score: float     # RISC loading preference (optimal: ≥0.65)
-    duplex_stability: float    # ΔG in kcal/mol (optimal: -15 to -25)
+    duplex_stability: float    # ΔG in kcal/mol (fully paired 21mer: -32 to -43)
 
     # Secondary structure
     structure: str             # Dot-bracket notation
@@ -46,22 +46,52 @@ class SiRNACandidate(BaseModel):
     paired_fraction: float     # Fraction paired bases (optimal: 0.4-0.6)
 
     # Off-target metrics
-    off_target_count: int      # Potential off-target sites (goal: ≤3)
-    transcriptome_hits_0mm: int   # Perfect match hits
-    transcriptome_hits_1mm: int   # 1-mismatch hits
-    transcriptome_hits_2mm: int   # 2-mismatch hits
+    off_target_screened: bool  # False = the screen was INCOMPLETE (never screened, or a run whose
+                                # query-species alignment produced nothing), so the counts below
+                                # are a lower bound, not a total — hits found in the species that
+                                # did align are still reported, and still applied as filters
+    off_target_count: int      # Genuine off-target sites only (gated at 15); on-target,
+                                # ortholog and repeat-mediated hits are excluded
+    transcriptome_hits_0mm: int   # Perfect match GENUINE off-target hits
+    transcriptome_hits_1mm: int   # 1-mismatch GENUINE off-target hits
+    transcriptome_hits_2mm: int   # 2-mismatch GENUINE off-target hits
     mirna_hits_total: int         # Total miRNA seed matches
     mirna_hits_0mm_seed: int      # Perfect seed matches
 
+    # Hit classification (four-way: on-target, ortholog, repeat, off-target)
+    on_target_hits: int        # Hits on the query gene in the query species
+    ortholog_hits: int         # Hits on the query gene's ortholog in another screened species
+    repeat_hits: int           # Hits attributable to a flagged repeat element
+    ortholog_species: str      # Comma-separated canonical species with an ortholog hit
+
+    # Repeat detection (design-time k-mer frequency check)
+    repeat_flagged: bool             # Guide exceeds the repeat transcript-fraction threshold
+    repeat_transcript_fraction: float  # Fraction of reference transcripts containing the guide
+
+    # Post-screen sub-scores (inactive/None until screening has run, or when there is no
+    # evidence to compute them from -- see ScoringWeights below)
+    isoform_coverage: float | None     # Protein-coding isoform coverage sub-score
+    conservation_score: float | None   # Cross-species ortholog conservation sub-score
+
     # Scoring
-    composite_score: float     # Overall quality (0-100 scale)
-    component_scores: dict     # Individual scoring components
+    composite_score: float     # Overall quality (0-100 scale), computed once, after screening
+    component_scores: dict     # Individual scoring components (design-time diagnostics)
+    score_asymmetry: float | None       # Per-term composite contributions
+    score_gc_content: float | None
+    score_accessibility: float | None
+    score_empirical: float | None
+    score_off_target: float | None
+    score_isoform_coverage: float | None
+    score_conservation: float | None
+    scored_after_screening: bool  # True once off_target/isoform_coverage/conservation are active
+    weight_set_version: str       # Weight set that produced composite_score ("" = not yet scored)
     passes_filters: bool|FilterStatus  # Quality control status
 ```
 
 #### Sequence Validation
 
 All sequences undergo validation:
+
 - **Allowed nucleotides**: A, T, C, G, U
 - **Length constraints**: 19-23 nucleotides (siRNA length)
 - **Strand matching**: Guide and passenger must be same length
@@ -79,7 +109,7 @@ class DesignParameters(BaseModel):
 
     # Sequence parameters
     sirna_length: int = 21     # Duplex length (19-23 nt)
-    top_n: int = 50            # Number of candidates to return
+    top_n: int | None = None   # Candidates to report (None = all, the default)
 
     # Quality control
     filters: FilterCriteria    # Threshold parameters
@@ -109,62 +139,89 @@ class FilterCriteria(BaseModel):
     # Secondary structure
     max_paired_fraction: float = 0.6  # Prevent rigid structures
 
-    # Thermodynamic asymmetry
+    # Thermodynamic asymmetry -> gates asymmetry_score
     min_asymmetry_score: float = 0.65  # Guide strand selection
 
-    # MFE thresholds (kcal/mol)
-    mfe_min: float = -8.0      # Too stable (more negative)
-    mfe_max: float = -2.0      # Too unstable (less negative)
-
-    # Duplex stability (kcal/mol)
-    duplex_stability_min: float = -25.0
-    duplex_stability_max: float = -15.0
-
-    # Melting temperature (°C, for mammalian cells)
-    melting_temp_min: float = 60.0
-    melting_temp_max: float = 78.0
-
-    # End asymmetry ΔΔG (kcal/mol)
-    delta_dg_end_min: float = 2.0
-    delta_dg_end_max: float = 6.0
-
-    # Off-target limits
-    max_off_target_count: int = 3
+    # Empirical design rules -> gates the empirical component score (range 0.4-0.7)
+    min_empirical_score: float = 0.5
 ```
+
+Each threshold gates the quantity it is named after: `min_asymmetry_score` is compared
+against `asymmetry_score`, `min_empirical_score` against the empirical component score.
+`min_empirical_score` is bounded by the empirical rule's attainable range (0.4-0.7), so a
+value the rule can never reach is rejected at construction instead of silently failing
+every candidate.
+
+Issue #80 removed eight thermodynamic windows that used to live here (`mfe_min`, `mfe_max`,
+`duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`, `melting_temp_max`,
+`delta_dg_end_min`, `delta_dg_end_max`): they were declared but never enforced by
+`SiRNADesigner` (no CLI flag exposed any of them), and re-deriving correct windows against
+truth data is deliberately out of scope. `max_off_target_count` also used to live here; it
+moved to `OffTargetFilterCriteria` below, since design time cannot know a genuine off-target
+count that only exists after screening.
 
 ### 1.4 OffTargetFilterCriteria
 
-Specialized filtering for off-target analysis results:
+Specialized filtering for off-target analysis results, applied after screening:
 
 ```python
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
-    # Transcriptome off-targets (mismatch tolerance)
-    max_transcriptome_hits_0mm: int = 0    # Perfect matches
-    max_transcriptome_hits_1mm: int = 5    # 1-mismatch hits
-    max_transcriptome_hits_2mm: int = 20   # 2-mismatch hits
+    # Genuine off-target count (on-target, ortholog and repeat hits excluded)
+    max_off_target_count: int = 15
+
+    # Transcriptome GENUINE off-targets (mismatch tolerance)
+    max_transcriptome_hits_0mm: int = 1    # Perfect matches
+    max_transcriptome_hits_1mm: int = 10   # 1-mismatch hits
+    max_transcriptome_hits_2mm: int = 50   # 2-mismatch hits
+    max_transcriptome_seed_perfect: int | None = None  # off by default; see the warning below
 
     # miRNA seed matches (positions 2-8)
-    max_mirna_perfect_seed: int = 3
+    max_mirna_perfect_seed: int = 0
     max_mirna_1mm_seed: int = 10
     fail_on_high_risk_mirna: bool = True
 ```
 
+> **A seed-perfect partial hit falls in no mismatch stratum.** The three
+> `max_transcriptome_hits_{0,1,2}mm` thresholds are read against counters stratified by the
+> **guide-level** `nm` (see 6.1), so a clipped or gapped hit is stratified by how many guide bases
+> failed to pair, not by the aligner's `NM` tag. A minus-strand `6S15M` / `MD:Z:15` / `NM:i:0`
+> record puts the clip on guide positions 16-21 and leaves guide positions 2-8 pairing perfectly:
+> it carries `nm = 6`, so it is counted in `transcriptome_hits_seed_0mm`,
+> `transcriptome_hits_total` and `off_target_count`, but in **none** of `_0mm`/`_1mm`/`_2mm`. Two
+> such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. With stock defaults
+> the only thing gating them is `max_off_target_count` (15), so a run of them can pass. Set
+> `max_transcriptome_seed_perfect` to gate them directly — it is enforced (verdict
+> `TRANSCRIPTOME_SEED_PERFECT`) but ships as `None` because no ceiling has been calibrated against
+> truth data. Unlike the three mismatch thresholds it is **not** species-split: it is compared
+> against the reported `transcriptome_hits_seed_0mm` column across all screened species.
+
 ### 1.5 ScoringWeights
 
-Relative weights for composite scoring:
+Relative weights for composite scoring (seven terms as of issue #80; must sum to 1.0):
 
 ```python
 class ScoringWeights(BaseModel):
     """Component weights for composite scoring (must sum to 1.0)."""
 
-    asymmetry: float = 0.25      # Thermodynamic asymmetry
-    gc_content: float = 0.20     # GC optimization
-    accessibility: float = 0.25  # Target accessibility
-    off_target: float = 0.20     # Specificity
-    empirical: float = 0.10      # Position-specific rules
+    asymmetry: float = 0.12         # Thermodynamic asymmetry
+    gc_content: float = 0.10        # GC optimization
+    accessibility: float = 0.13     # Target accessibility
+    empirical: float = 0.15         # Position-specific rules
+    off_target: float = 0.25        # Post-screen genuine off-target specificity (see 2.6)
+    isoform_coverage: float = 0.15  # Post-screen protein-coding isoform coverage (new)
+    conservation: float = 0.10      # Post-screen cross-species ortholog conservation (new)
 ```
+
+Validation is a `@model_validator(mode="after")` that sums all seven fields by name
+(`COMPOSITE_TERM_NAMES`), not a `field_validator` that only sees fields declared earlier in the
+class -- the previous positional check silently stopped seeing new weights as the term set grew.
+
+`off_target`, `isoform_coverage` and `conservation` cannot be evaluated until off-target
+screening has run, so they are inactive at design time. `compute_composite` (see 2.1) renormalises
+the weights of whichever terms _are_ active, so a design-time-only score and a post-screen score
+are both legitimate 0-100 values from the same weight set, not two incompatible scales.
 
 ---
 
@@ -172,11 +229,15 @@ class ScoringWeights(BaseModel):
 
 ### 2.1 Composite Score Calculation
 
-The composite score integrates multiple evidence-based components:
+The composite score integrates seven evidence-based components, computed once by
+`compute_composite` over whichever terms are _active_ for that candidate:
 
-$$\text{Composite} = \sum_{i} w_i \times S_i \times 100$$
+$$\text{Composite} = \sum_{i \in \text{active}} w_i' \times S_i \times 100, \quad w_i' = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
-Where $w_i$ are configurable weights and $S_i$ are normalized component scores (0-1).
+Where $w_i$ are the configured `ScoringWeights`, $w_i'$ is the weight renormalised over the
+active term set, and $S_i$ are normalized component scores (0-1). A term is active when its
+sub-score could be computed for that candidate (see 1.5); inactive terms are omitted, not
+scored zero, so $\sum_i w_i'$ over the active set is always 1.
 
 ### 2.2 Thermodynamic Asymmetry Score
 
@@ -185,29 +246,41 @@ Where $w_i$ are configurable weights and $S_i$ are normalized component scores (
 RISC preferentially loads the strand with the less thermodynamically stable 5' end. The asymmetry score measures this preference:
 
 **Algorithm**:
-1. Calculate 5' end stability (positions 1-7): $\Delta G_{5'}$
-2. Calculate 3' end stability (positions 15-21): $\Delta G_{3'}$
+
+1. Calculate 5' end stability (guide 5' 7-mer against the passenger 3' end): $\Delta G_{5'}$
+2. Calculate 3' end stability (guide 3' 7-mer against the passenger 5' end): $\Delta G_{3'}$
 3. Compute asymmetry: $\text{raw} = \Delta G_{5'} - \Delta G_{3'}$
 4. Normalize: $\text{score} = \max(0, \min(1, (\text{raw} + 5) / 10))$
 
+The duplex is antiparallel, so each end window pairs with the _opposite_ end of the other
+strand. Both windows use the same width, so the two ΔG values stay comparable.
+
 **Implementation** (ViennaRNA):
+
 ```python
 def calculate_asymmetry_score(candidate) -> tuple[float, float, float]:
     """Returns (dg_5p, dg_3p, asymmetry_score)"""
-    dg_5p = calculate_end_stability(guide[:7], passenger[:7])
-    dg_3p = calculate_end_stability(guide[14:21], passenger[14:21])
+    window = min(END_WINDOW_NT, len(guide), len(passenger))
+    dg_5p = calculate_end_stability(guide[:window], passenger[-window:])
+    dg_3p = calculate_end_stability(guide[-window:], passenger[:window])
     asymmetry_raw = dg_5p - dg_3p
     asymmetry_score = max(0.0, min(1.0, (asymmetry_raw + 5.0) / 10.0))
     return dg_5p, dg_3p, asymmetry_score
 ```
 
+`passenger` is already the guide's complement, so neither strand is reverse-complemented
+before folding — ViennaRNA's `&` cofold notation pairs two 5'->3' strands antiparallel by
+itself. Reverse-complementing the passenger folded the guide against itself, which pinned
+`asymmetry_score` to exactly 0.5 for every 21 nt candidate (fixed in 0.5.2).
+
 **Interpretation**:
-| Score | Interpretation |
-|-------|----------------|
-| 0.8-1.0 | Excellent - strong guide strand bias |
-| 0.65-0.8 | Good - likely correct strand selection |
+
+| Score    | Interpretation                           |
+| -------- | ---------------------------------------- |
+| 0.8-1.0  | Excellent - strong guide strand bias     |
+| 0.65-0.8 | Good - likely correct strand selection   |
 | 0.5-0.65 | Moderate - mixed strand loading possible |
-| <0.5 | Poor - passenger strand may dominate |
+| <0.5     | Poor - passenger strand may dominate     |
 
 ### 2.3 GC Content Score
 
@@ -218,6 +291,7 @@ GC content affects duplex stability and target accessibility. The scoring uses a
 $$\text{GC\_score} = \exp\left(-\left(\frac{\text{GC} - 40}{10}\right)^2\right)$$
 
 **Implementation**:
+
 ```python
 def _calculate_gc_score(gc_content: float) -> float:
     """Gaussian penalty around 40% GC."""
@@ -225,33 +299,42 @@ def _calculate_gc_score(gc_content: float) -> float:
 ```
 
 **Interpretation**:
-| GC Range | Effect |
-|----------|--------|
-| <35% | Unstable duplex, poor RISC loading |
-| 35-40% | Acceptable, monitor stability |
-| **40-55%** | **Optimal range** |
-| 55-60% | Acceptable, may reduce accessibility |
-| >60% | Overly stable, poor target release |
+
+| GC Range   | Effect                               |
+| ---------- | ------------------------------------ |
+| <35%       | Unstable duplex, poor RISC loading   |
+| 35-40%     | Acceptable, monitor stability        |
+| **40-55%** | **Optimal range**                    |
+| 55-60%     | Acceptable, may reduce accessibility |
+| >60%       | Overly stable, poor target release   |
 
 ### 2.4 Duplex Stability Score
 
 **Research basis**: Naito et al. (2009), Ichihara et al. (2017)
 
-Duplex formation ΔG affects RISC loading efficiency. Score normalized from ΔG range [-40, -5] kcal/mol:
+Duplex formation ΔG affects RISC loading efficiency. ΔG scales with duplex length, so it
+is normalised per nucleotide before scoring: -2.1 kcal/mol/nt maps to 1.0, -1.4 to 0.0.
 
-$$\text{score} = \frac{-\Delta G - 5}{40 - 5}$$
+$$\text{score} = \frac{-1.4 - \Delta G / L}{-1.4 - (-2.1)}$$
 
 **Implementation**:
+
 ```python
 def _calculate_duplex_score(candidate) -> tuple[float, float]:
     """Returns (normalized_score, dg_value)"""
     dg = calculate_duplex_stability(guide, passenger)
-    dg_clamped = max(-40.0, min(-5.0, dg))
-    score = (-(dg_clamped) - 5.0) / (40.0 - 5.0)
+    dg_per_nt = dg / len(candidate.guide_sequence)
+    span = DUPLEX_DG_PER_NT_WEAK - DUPLEX_DG_PER_NT_STRONG
+    score = (DUPLEX_DG_PER_NT_WEAK - dg_per_nt) / span
     return max(0.0, min(1.0, score)), dg
 ```
 
-**Optimal range**: -15 to -25 kcal/mol
+**Measured range** (ViennaRNA, 37 °C): a fully paired 21mer duplex is -32 to -43 kcal/mol,
+i.e. -1.55 to -2.06 kcal/mol/nt. The fixed [-40, -5] kcal/mol window used before 0.5.2 was
+calibrated against the pre-fix self-fold ΔG; against real duplex ΔG it put 41% of
+candidates at exactly 1.0, and it rewarded longer designs for their length alone.
+
+`duplex_stability_score` is reported but does not feed `composite_score`.
 
 ### 2.5 Target Accessibility Score
 
@@ -262,6 +345,7 @@ Target site accessibility affects siRNA efficacy. Score based on guide strand se
 $$\text{Accessibility} = 1 - \text{paired\_fraction}$$
 
 **Implementation** (ViennaRNA):
+
 ```python
 def _calculate_accessibility_score(candidate) -> float:
     """Accessibility inversely related to secondary structure."""
@@ -273,14 +357,24 @@ def _calculate_accessibility_score(candidate) -> float:
 
 ### 2.6 Off-Target Score
 
-Specificity prediction based on internal repetitive sequences:
+As of issue #80, the `off_target` term contributing to `composite_score` is the **post-screen
+genuine-off-target specificity** sub-score, computed by
+`sirnaforge.core.scoring.off_target_sub_score` from the redefined `off_target_count` (on-target,
+ortholog and repeat-mediated hits excluded):
 
-$$\text{OT\_score} = \exp\left(-\frac{\text{penalty}}{50}\right)$$
+$$\text{off\_target} = \exp\left(-\frac{\text{genuine\_off\_target\_count}}{10}\right)$$
 
-**Implementation**:
+Zero genuine off-targets scores 1.0; the score decays toward 0 as the count grows. This term is
+inactive until screening has run (see 1.5), so it is absent from a design-time-only score.
+
+**Design-time diagnostic (not part of `composite_score`)**: `SiRNADesigner` still computes a
+self-repetitiveness proxy over internal repeated 7-mers, based on internal repetitive sequences:
+
+$$\text{design\_off\_target\_proxy} = \exp\left(-\frac{\text{penalty}}{50}\right)$$
+
 ```python
 def _calculate_off_target_score(candidate) -> float:
-    """Penalty for repetitive 7-mer sequences."""
+    """Diagnostic only: penalty for repetitive 7-mer sequences within the guide."""
     penalty = 0
     for i in range(len(guide) - 6):
         seed = guide[i:i+7]
@@ -289,7 +383,12 @@ def _calculate_off_target_score(candidate) -> float:
     return math.exp(-penalty / 50)
 ```
 
-**`[REVIEW NEEDED]`**: Current implementation is simplified. Full off-target analysis uses BWA-MEM2 alignment against reference genomes in the Nextflow pipeline.
+This value is stored in `component_scores["design_off_target_proxy"]` and reported for
+diagnostic purposes only; it does not feed `composite_score` under any name. Full off-target
+analysis uses BWA-MEM2 alignment against reference transcriptomes in the Nextflow pipeline,
+followed by the four-way hit classifier (`sirnaforge.core.hit_classification`); that
+decomposition, not the internal-repeat proxy, is what `off_target_count` and the `off_target`
+scoring term are based on.
 
 ### 2.7 Empirical Score (Reynolds Rules)
 
@@ -300,24 +399,31 @@ Position-specific sequence preferences:
 ```python
 def _calculate_empirical_score(candidate) -> float:
     """Simplified Reynolds rules."""
+    guide = candidate.guide_sequence.upper().replace("T", "U")  # guides are stored as DNA
     score = 0.5  # Base score
 
     # Prefer A/U at position 19 (3' end)
-    if guide[18] in ["A", "U"]:
+    if guide[18] in ("A", "U"):
         score += 0.1
 
     # Prefer G/C at position 1
-    if guide[0] in ["G", "C"]:
+    if guide[0] in ("G", "C"):
         score += 0.1
 
     # Avoid C at position 19
     if guide[18] == "C":
         score -= 0.1
 
-    return max(0.0, min(1.0, score))
+    return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
 ```
 
+The attainable range is **0.4-0.7**, not 0-1: three ±0.1 adjustments on a 0.5 base, and the
+A/U and C tests at position 19 are mutually exclusive. `min_empirical_score` is bounded by
+that range. Reading the guide as RNA matters — guides are stored as DNA, so before 0.5.2 a
+T at position 19 never earned the A/U bonus.
+
 **`[REVIEW NEEDED]`**: Additional Reynolds criteria could be implemented:
+
 - Position 10 preferences
 - A/U content in positions 15-19
 - Avoid GGG stretches
@@ -355,12 +461,48 @@ def _enumerate_candidates(sequence, transcript_id):
 
 Additional filters applied during scoring:
 
-| Filter | Condition | Rationale |
-|--------|-----------|-----------|
-| `EXCESS_PAIRING` | paired_fraction > 0.6 | Prevents rigid structures |
-| `LOW_ASYMMETRY` | asymmetry_score < min_asymmetry_score | Ensures guide strand selection |
+| Filter                | Condition                             | Rationale                              |
+| --------------------- | ------------------------------------- | -------------------------------------- |
+| `EXCESS_PAIRING`      | paired_fraction > 0.6                 | Prevents rigid structures              |
+| `LOW_ASYMMETRY`       | asymmetry_score < min_asymmetry_score | Ensures guide strand selection         |
+| `LOW_EMPIRICAL_SCORE` | empirical score < min_empirical_score | Position-specific sequence preferences |
 
-### 3.3 Filter Status Codes
+Only the first failure is recorded. Before 0.5.2, `LOW_ASYMMETRY` was assigned by comparing
+the _empirical_ score against `min_asymmetry_score`: it reported the wrong reason, and
+`asymmetry_score` was never gated at all.
+
+Between design-time filtering and post-screen filtering, issue #80 added one more design-time
+gate, applied to every distinct guide against the query species' cDNA reference:
+
+| Filter           | Condition                                       | Rationale                                 |
+| ---------------- | ----------------------------------------------- | ----------------------------------------- |
+| `REPEAT_ELEMENT` | guide occurs in > 0.1% of reference transcripts | Flags guides overlapping a repeat element |
+
+`REPEAT_ELEMENT` is applied only if the candidate is currently passing (existing failures are not
+overwritten), and it excludes the candidate from ranking.
+
+### 3.3 Post-Screen Off-Target Filters
+
+Applied once transcriptome/miRNA screening has run, against `OffTargetFilterCriteria`
+(see 1.4). These now gate the **redefined, genuine-off-target-only** counts:
+
+| Filter                        | Condition                                                                        | Rationale                                          |
+| ----------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `TRANSCRIPTOME_PERFECT_MATCH` | 0-mismatch genuine off-targets > `max_transcriptome_hits_0mm`                    | Perfect-match specificity                          |
+| `TRANSCRIPTOME_1MM`           | 1-mismatch genuine off-targets > `max_transcriptome_hits_1mm`                    | Near-miss specificity                              |
+| `TRANSCRIPTOME_2MM`           | 2-mismatch genuine off-targets > `max_transcriptome_hits_2mm`                    | Broader specificity                                |
+| `TRANSCRIPTOME_SEED_PERFECT`  | seed-perfect hits > `max_transcriptome_seed_perfect` (`None` = off, all species) | Catches partial hits that no mismatch stratum sees |
+| `MIRNA_PERFECT_SEED`          | perfect miRNA seed hits > `max_mirna_perfect_seed`                               | miRNA-mimicry risk                                 |
+| `HIGH_RISK_MIRNA`             | perfect seed + `offtarget_score` < 5.0                                           | Strong-binding miRNA mimicry                       |
+| `TOTAL_OFFTARGETS`            | combined transcriptome + miRNA hits > `max_total_offtarget_hits`                 | Aggregate specificity                              |
+| `EXCESS_OFF_TARGETS`          | genuine off-target count > `max_off_target_count`                                | Overall genuine-off-target ceiling                 |
+
+Six of these seven verdicts previously existed only as raw strings assembled in `workflow.py`
+(`TRANSCRIPTOME_SEED_PERFECT` is new); they are all now members of `FilterStatus` (see 3.4), and
+the Pandera allow-list for the `passes_filters` column derives from the enum instead of
+maintaining an independent copy that could drift from it.
+
+### 3.4 Filter Status Codes
 
 ```python
 class FilterStatus(str, Enum):
@@ -369,8 +511,43 @@ class FilterStatus(str, Enum):
     POLY_RUNS = "POLY_RUNS"          # Homopolymer runs exceed limit
     EXCESS_PAIRING = "EXCESS_PAIRING"    # Too much secondary structure
     LOW_ASYMMETRY = "LOW_ASYMMETRY"  # Poor thermodynamic asymmetry
+    LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"  # Fails the empirical design rules
     DIRTY_CONTROL = "DIRTY_CONTROL"  # Reserved for controls
+    REPEAT_ELEMENT = "REPEAT_ELEMENT"  # Design-time repeat k-mer verdict
+    EXCESS_OFF_TARGETS = "EXCESS_OFF_TARGETS"  # Post-screen genuine off-target ceiling
+    TRANSCRIPTOME_PERFECT_MATCH = "TRANSCRIPTOME_PERFECT_MATCH"
+    TRANSCRIPTOME_1MM = "TRANSCRIPTOME_1MM"
+    TRANSCRIPTOME_2MM = "TRANSCRIPTOME_2MM"
+    TRANSCRIPTOME_SEED_PERFECT = "TRANSCRIPTOME_SEED_PERFECT"  # opt-in, see 1.4
+    MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
+    HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
+    TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
 ```
+
+### 3.5 Hit Classes (`sirnaforge.core.hit_classification.HitClass`)
+
+Every transcriptome hit is classified into exactly one of four mutually exclusive classes,
+checked in this precedence order (on-target and ortholog deliberately outrank repeat, so a
+repeat-flagged guide's hits on its own gene or orthologs are still counted as such):
+
+| Class        | Meaning                                                                                                                                         |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ON_TARGET`  | Hit is in the query species and matches the query gene (transcript ID, gene ID or symbol)                                                       |
+| `ORTHOLOG`   | Hit is in a different screened species, and that species' gene symbol for the hit transcript matches the query gene's symbol (case-insensitive) |
+| `REPEAT`     | The guide is in the design-time repeat-flagged set                                                                                              |
+| `OFF_TARGET` | Everything else -- this is what `off_target_count` counts                                                                                       |
+
+A hit whose species label is blank/missing is treated as the query species. When an ortholog
+check cannot run because the hit species' annotation carries no gene symbol for that transcript,
+the hit stays `OFF_TARGET` (never guessed at) and the shortfall is counted separately
+(`ortholog_symbol_lookup_misses` in `offtarget_summary`).
+
+The **query species** is the organism the _target_ transcripts belong to. It is read from the
+database the gene query was answered by (Ensembl/RefSeq/GENCODE are all human-only), never from
+`--species`, which is an unordered set of genomes to screen _against_ and whose order carries no
+meaning. Pass `--query-species` when designing against an input FASTA from another organism — it
+also decides which species' alignment must have succeeded before candidates can be scored after
+screening.
 
 ---
 
@@ -379,17 +556,20 @@ class FilterStatus(str, Enum):
 ### 4.1 GC Content: 35-60%
 
 **Literature support**:
+
 - Reynolds et al. (2004): Optimal 30-52% for maximum silencing
 - Ui-Tei et al. (2004): Functional siRNAs have 35-65% GC
 - Jackson et al. (2006): Higher GC correlates with off-targets
 
 **Rationale**: Balance between:
+
 - **Lower bound (35%)**: Minimum duplex stability for RISC loading
 - **Upper bound (60%)**: Maximum to prevent over-stabilization and off-targeting
 
 ### 4.2 Asymmetry Score: ≥0.65
 
 **Literature support**:
+
 - Khvorova et al. (2003): Thermodynamic asymmetry determines strand selection
 - Schwarz et al. (2003): ΔΔG of 2+ kcal/mol ensures correct loading
 
@@ -398,6 +578,7 @@ class FilterStatus(str, Enum):
 ### 4.3 Poly-runs: ≤3 consecutive
 
 **Literature support**:
+
 - Jackson et al. (2003): AAAA runs associated with off-targets
 - Synthesis considerations: Long homopolymers cause synthesis issues
 
@@ -406,6 +587,7 @@ class FilterStatus(str, Enum):
 ### 4.4 MFE: -2 to -8 kcal/mol
 
 **Literature support**:
+
 - Tafer et al. (2008): Moderate structure optimal for target binding
 - Too stable (<-10): Impaired target access
 - Too unstable (>0): Poor duplex integrity
@@ -413,10 +595,12 @@ class FilterStatus(str, Enum):
 ### 4.5 Melting Temperature: 60-78°C
 
 **Literature support**:
+
 - Standard for mammalian cell culture at 37°C
 - Allows duplex stability while permitting RISC-mediated unwinding
 
 **`[REVIEW NEEDED]`**: Temperature thresholds may need adjustment for:
+
 - Plant cells (different optimal ranges)
 - In vivo applications (serum stability requirements)
 
@@ -449,14 +633,17 @@ class MiRNADesignConfig(BaseModel):
 ### 5.2 miRNA-Specific Scoring
 
 **Position 1 analysis**:
+
 - Argonaute preferentially loads strands with A/U at position 1
 - G:U wobble or mismatch at position 1 improves loading
 
 **Seed region (positions 2-8)**:
+
 - Critical for target recognition
 - Clean seed = lower off-target potential
 
 **3' Supplementary pairing (positions 13-16)**:
+
 - Contributes to target specificity
 - Lower stability preferred (more specific)
 
@@ -477,10 +664,52 @@ class OffTargetHit(BaseModel):
     rname: str           # Reference (chromosome/transcript)
     coord: int           # Alignment position
     strand: str          # + or -
-    nm: int              # Edit distance
+    nm: int              # Guide mismatch-equivalents (>= the aligner's NM tag)
     seed_mismatches: int # Mismatches in seed (pos 2-8)
     offtarget_score: float
 ```
+
+`nm` is a **guide-level** distance, not a copy of the aligner's `NM` tag. `NM` counts only
+differences inside the aligned block, so a `bwa mem -T 15` hit reported as `15M6S` with `NM:i:0`
+looks like a perfect match even though 6 of the guide's 21 bases never paired with the target.
+`nm` therefore counts the aligner's edit distance **plus** every guide base left unpaired by soft
+or hard clipping and by insertions, plus the reference bases skipped by a deletion. Consequences
+worth knowing:
+
+- `mismatch_positions` and `seed_mismatches` are in **guide coordinates**. BWA stores minus-strand
+  records reverse-complemented, and `design.py` builds every guide as
+  `reverse_complement(target_seq)`, so minus-strand is the common case; read position `r` of a
+  length-`L` record is guide position `L + 1 - r`. In `mirna_seed` mode the aligner only sees the
+  extracted seed window, so positions are additionally shifted by `seed_start - 1`.
+- `mismatch_positions` lists only positions that exist on the guide. A deletion has no guide
+  position of its own, so it raises `nm` and the score without adding an entry — that is the one
+  case where `len(mismatch_positions) < nm`.
+- `offtarget_score` is a penalty: `0.0` means highest risk, and it is reserved for full-length
+  exact matches. `_filter_and_rank` sorts ascending on it and `max_hits` keeps the head of that
+  list, so a hit with `nm > 0` never scores `0.0`.
+- The mismatch-stratified `transcriptome_hits_{0,1,2}mm` counters are read off `nm`, so a clipped
+  partial hit lands in the stratum matching its guide-level distance rather than in `0mm` — and if
+  that distance exceeds 2 it lands in **no** stratum, which is why a seed-perfect partial hit needs
+  `max_transcriptome_seed_perfect` (see the warning in 1.4) rather than
+  `max_transcriptome_hits_0mm`.
+- **`AnalysisSummary.mean_mismatches`** (the `mean_mismatches` key of every
+  `*_summary.json`) is the mean of this `nm`, so it also changed meaning: it is the mean
+  guide mismatch-equivalent count, **not** the mean aligner edit distance, and it rose for any run
+  containing clipped or gapped hits. Two `15M6S`/`NM:i:0` hits now report `mean_mismatches = 6.0`
+  where they used to report `0.0`. Values are not comparable across the 0.6.0 boundary.
+  `mean_seed_mismatches` and `mean_mapq` are unaffected in definition (though
+  `mean_seed_mismatches` changes numerically, since the frame fix corrected which positions are
+  in the seed).
+- **`SiRNACandidate.off_target_penalty` is reporting only** and its direction depends on which
+  stage wrote it last, so treat it as a diagnostic, not a risk metric. At design time
+  `SiRNADesigner._calculate_off_target_score` writes an internal-repeat 7-mer penalty where higher
+  is worse; after screening `_integrate_offtarget_results` overwrites it with the **maximum**
+  `offtarget_score` over the candidate's hits, where higher is _safer_ and `0.0` is reserved for a
+  full-length exact match. Taking the **max** means the field reports a candidate's _least_
+  worrying hit: a candidate with one full-length perfect off-target reports
+  `off_target_penalty = 0.0`, while a candidate whose only hit is a clipped partial reports 76
+  (`6S15M`) or 98 (`15M6S`). Widening `nm` widened these numbers too. Judge risk from
+  `off_target_count` and the hit strata.
 
 ### 6.2 MiRNAHit
 
@@ -496,12 +725,12 @@ class MiRNAHit(BaseModel):
 
 ### 6.3 Supported miRNA Databases
 
-| Database | Description |
-|----------|-------------|
-| `mirgenedb` | High-confidence, manually curated |
-| `mirbase` | Comprehensive, all mature miRNAs |
-| `mirbase_high_conf` | miRBase high-confidence subset |
-| `targetscan` | miRNA family conservation data |
+| Database            | Description                       |
+| ------------------- | --------------------------------- |
+| `mirgenedb`         | High-confidence, manually curated |
+| `mirbase`           | Comprehensive, all mature miRNAs  |
+| `mirbase_high_conf` | miRBase high-confidence subset    |
+| `targetscan`        | miRNA family conservation data    |
 
 ---
 
@@ -532,12 +761,12 @@ class ChemicalModification(BaseModel):
 
 ### 7.3 Supported Modification Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `standard_2ome` | 2'-O-methyl at alternating positions |
-| `minimal_terminal` | Terminal modifications only |
-| `maximal_stability` | Full backbone modifications |
-| `none` | No modifications |
+| Pattern             | Description                          |
+| ------------------- | ------------------------------------ |
+| `standard_2ome`     | 2'-O-methyl at alternating positions |
+| `minimal_terminal`  | Terminal modifications only          |
+| `maximal_stability` | Full backbone modifications          |
+| `none`              | No modifications                     |
 
 ---
 
@@ -546,16 +775,19 @@ class ChemicalModification(BaseModel):
 **`[DOCUMENTATION NEEDED]`**: The following workflows exist but require detailed documentation:
 
 ### 8.1 Nextflow Pipeline
+
 - Multi-genome off-target analysis
 - BWA-MEM2 alignment parameters
 - Species-specific reference handling
 
 ### 8.2 ORF Validation
+
 - Start/stop codon detection
 - Frame shift analysis
 - Kozak sequence scoring
 
 ### 8.3 Transcript Retrieval
+
 - Ensembl/RefSeq/GENCODE integration
 - Isoform selection criteria
 - Sequence validation
@@ -564,54 +796,59 @@ class ChemicalModification(BaseModel):
 
 ## 9. References
 
-1. **Khvorova A, Reynolds A, Jayasena SD** (2003). Functional siRNAs and miRNAs exhibit strand bias. *Cell* 115(2):209-216.
+1. **Khvorova A, Reynolds A, Jayasena SD** (2003). Functional siRNAs and miRNAs exhibit strand bias. _Cell_ 115(2):209-216.
 
-2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). Asymmetry in the assembly of the RNAi enzyme complex. *Cell* 115(2):199-208.
+2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). Asymmetry in the assembly of the RNAi enzyme complex. _Cell_ 115(2):199-208.
 
-3. **Reynolds A, Leake D, Boese Q, Scaringe S, Marshall WS, Khvorova A** (2004). Rational siRNA design for RNA interference. *Nature Biotechnology* 22(3):326-330.
+3. **Reynolds A, Leake D, Boese Q, Scaringe S, Marshall WS, Khvorova A** (2004). Rational siRNA design for RNA interference. _Nature Biotechnology_ 22(3):326-330.
 
-4. **Ui-Tei K, Naito Y, Takahashi F, Haraguchi T, Ohki-Hamazaki H, Juni A, Ueda R, Saigo K** (2004). Guidelines for the selection of highly effective siRNA sequences for mammalian and chick RNA interference. *Nucleic Acids Research* 32(3):936-948.
+4. **Ui-Tei K, Naito Y, Takahashi F, Haraguchi T, Ohki-Hamazaki H, Juni A, Ueda R, Saigo K** (2004). Guidelines for the selection of highly effective siRNA sequences for mammalian and chick RNA interference. _Nucleic Acids Research_ 32(3):936-948.
 
-5. **Naito Y, Yoshimura J, Morishita S, Ui-Tei K** (2009). siDirect 2.0: updated software for designing functional siRNA with reduced seed-dependent off-target effect. *BMC Bioinformatics* 10:392.
+5. **Naito Y, Yoshimura J, Morishita S, Ui-Tei K** (2009). siDirect 2.0: updated software for designing functional siRNA with reduced seed-dependent off-target effect. _BMC Bioinformatics_ 10:392.
 
-6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2007). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. *Nucleic Acids Research* 35(18):e123.
+6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2007). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. _Nucleic Acids Research_ 35(18):e123.
 
-7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. *Nature Biotechnology* 26(5):578-583.
+7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. _Nature Biotechnology_ 26(5):578-583.
 
-8. **Jackson AL, Bartz SR, Schelter J, Kobayashi SV, Burchard J, Mao M, Li B, Cavet G, Linsley PS** (2003). Expression profiling reveals off-target gene regulation by RNAi. *Nature Biotechnology* 21(6):635-637.
+8. **Jackson AL, Bartz SR, Schelter J, Kobayashi SV, Burchard J, Mao M, Li B, Cavet G, Linsley PS** (2003). Expression profiling reveals off-target gene regulation by RNAi. _Nature Biotechnology_ 21(6):635-637.
 
 ---
 
 ## Appendix A: Default Parameter Summary
 
-| Parameter | Default | Range | Justification |
-|-----------|---------|-------|---------------|
-| `sirna_length` | 21 | 19-23 | Standard duplex length |
-| `gc_min` | 35.0 | 0-100 | Minimum stability |
-| `gc_max` | 60.0 | 0-100 | Maximum stability |
-| `max_poly_runs` | 3 | 1+ | Synthesis/specificity |
-| `max_paired_fraction` | 0.6 | 0-1 | Accessibility |
-| `min_asymmetry_score` | 0.65 | 0.3-1 | Strand selection |
-| `mfe_min` | -8.0 | kcal/mol | Structure stability |
-| `mfe_max` | -2.0 | kcal/mol | Structure stability |
-| `duplex_stability_min` | -25.0 | kcal/mol | Duplex formation |
-| `duplex_stability_max` | -15.0 | kcal/mol | Duplex formation |
-| `melting_temp_min` | 60.0 | °C | Mammalian cells |
-| `melting_temp_max` | 78.0 | °C | Mammalian cells |
-| `max_off_target_count` | 3 | 0+ | Specificity |
+| Parameter             | Default | Range   | Justification          |
+| --------------------- | ------- | ------- | ---------------------- |
+| `sirna_length`        | 21      | 19-23   | Standard duplex length |
+| `gc_min`              | 35.0    | 0-100   | Minimum stability      |
+| `gc_max`              | 60.0    | 0-100   | Maximum stability      |
+| `max_poly_runs`       | 3       | 1+      | Synthesis/specificity  |
+| `max_paired_fraction` | 0.6     | 0-1     | Accessibility          |
+| `min_asymmetry_score` | 0.65    | 0.3-1   | Strand selection       |
+| `min_empirical_score` | 0.5     | 0.4-0.7 | Position preferences   |
+
+`mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
+`melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
+in issue #80: they were declared but never enforced by `SiRNADesigner`, and re-deriving correct
+windows against truth data is deliberately out of scope. `max_off_target_count` (default `15`,
+range `0+`, justification: specificity) moved to `OffTargetFilterCriteria`, where it is enforced
+post-screen against the genuine off-target count (see 1.4 and 3.3).
 
 ## Appendix B: Scoring Weight Defaults
 
-| Component | Weight | Rationale |
-|-----------|--------|-----------|
-| Asymmetry | 0.25 | Most predictive single factor |
-| GC Content | 0.20 | Stability/accessibility balance |
-| Accessibility | 0.25 | Target site availability |
-| Off-target | 0.20 | Specificity importance |
-| Empirical | 0.10 | Position-specific fine-tuning |
+| Component        | Weight | Rationale                                           |
+| ---------------- | ------ | --------------------------------------------------- |
+| Asymmetry        | 0.12   | Most predictive single factor                       |
+| GC Content       | 0.10   | Stability/accessibility balance                     |
+| Accessibility    | 0.13   | Target site availability                            |
+| Empirical        | 0.15   | Position-specific fine-tuning                       |
+| Off-target       | 0.25   | Post-screen genuine off-target specificity          |
+| Isoform coverage | 0.15   | Protein-coding isoform targeting completeness (new) |
+| Conservation     | 0.10   | Cross-species ortholog specificity check (new)      |
+
+Weight-set version `2.0.0`; `1.x` denotes the pre-issue-#80 five-term set and is not comparable.
 
 ---
 
-*Document version: 1.0*
-*Last updated: Auto-generated from source code*
-*Review status: Initial draft - Expert review recommended*
+_Document version: 1.0_
+_Last updated: Auto-generated from source code_
+_Review status: Initial draft - Expert review recommended_

@@ -24,7 +24,6 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.todo",
     "sphinx.ext.ifconfig",
-    "sphinx_autodoc_typehints",
     "myst_parser",
     "sphinx_design",
     "sphinxcontrib.mermaid",
@@ -158,11 +157,6 @@ intersphinx_mapping = {
 
 # Intersphinx timeout (fail gracefully if network unavailable)
 intersphinx_timeout = 10
-
-# Type hints configuration
-typehints_fully_qualified = False
-always_document_param_types = True
-typehints_document_rtype = True
 
 # Program output configuration (for live CLI examples)
 # Commands will be run through uv to use the project environment

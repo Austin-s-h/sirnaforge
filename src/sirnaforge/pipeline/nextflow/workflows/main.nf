@@ -72,17 +72,17 @@ workflow SIRNAFORGE_OFFTARGET {
     //
     // Create input channel - simple file input
     //
-    ch_input = Channel.fromPath(params.input, checkIfExists: true)
+    ch_input = channel.fromPath(params.input, checkIfExists: true)
 
     //
     // Genome configurations: combine FASTAs and indices into single channel
     // Also handle transcriptome indices (preferred parameter name)
     //
-    ch_genomes = Channel.empty()
+    ch_genomes = channel.empty()
 
     if (params.genome_fastas) {
         ch_genomes = ch_genomes.mix(
-            Channel.from(params.genome_fastas.split(','))
+            channel.from(params.genome_fastas.split(','))
                 .map { entry ->
                     def (species, fasta_path) = entry.split(':')
                     [species.trim(), file(fasta_path.trim(), checkIfExists: true), 'fasta']
@@ -92,7 +92,7 @@ workflow SIRNAFORGE_OFFTARGET {
 
     if (params.genome_indices) {
         ch_genomes = ch_genomes.mix(
-            Channel.from(params.genome_indices.split(','))
+            channel.from(params.genome_indices.split(','))
                 .map { entry ->
                     def (species, index_path) = entry.split(':')
                     [species.trim(), index_path.trim(), 'index']
@@ -103,7 +103,7 @@ workflow SIRNAFORGE_OFFTARGET {
     // NEW: Handle transcriptome_indices parameter (preferred for transcriptome-specific analysis)
     if (params.transcriptome_indices) {
         ch_genomes = ch_genomes.mix(
-            Channel.from(params.transcriptome_indices.split(','))
+            channel.from(params.transcriptome_indices.split(','))
                 .map { entry ->
                     def (species, index_path) = entry.split(':')
                     [species.trim(), index_path.trim(), 'index']
@@ -171,11 +171,11 @@ workflow SIRNAFORGE_OFFTARGET {
 
     emit:
     // Outputs depend on design_mode; consumers must check which are populated
-    combined_analyses    = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.combined_analyses : Channel.empty()
-    combined_summary     = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.combined_summary : Channel.empty()
-    final_summary        = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.final_summary : Channel.empty()
-    zfn_sites            = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.sites : Channel.empty()
-    zfn_summary          = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.summary : Channel.empty()
+    combined_analyses    = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.combined_analyses : channel.empty()
+    combined_summary     = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.combined_summary : channel.empty()
+    final_summary        = params.design_mode != 'zfn' ? SIRNA_OFFTARGET_ANALYSIS.out.final_summary : channel.empty()
+    zfn_sites            = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.sites : channel.empty()
+    zfn_summary          = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.summary : channel.empty()
     versions             = params.design_mode == 'zfn' ? ZFN_OFFTARGET_ANALYSIS.out.versions : SIRNA_OFFTARGET_ANALYSIS.out.versions
 }
 

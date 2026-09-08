@@ -191,8 +191,8 @@ def _run_zfn_backend_workflow(
         print(f"Backend {backend_label} STDERR:\n{result.stderr}")
         pytest.fail(f"ZFN workflow backend={backend_label} exited with code {result.returncode}")
 
-    offtarget_csv = output_dir / "sirnaforge" / "zfn_offtarget_sites.csv"
-    assert offtarget_csv.exists(), f"Missing zfn_offtarget_sites.csv for backend={backend_label}"
+    offtarget_csv = output_dir / "sirnaforge" / "offtarget_sites.csv"
+    assert offtarget_csv.exists(), f"Missing offtarget_sites.csv for backend={backend_label}"
     normalized = _normalize_offtarget_csv(offtarget_csv)
     assert not normalized.empty, f"No off-target rows produced for backend={backend_label}"
     return normalized, output_dir
@@ -258,8 +258,8 @@ def test_zfn_workflow_cli_smoke(tmp_path: Path) -> None:
     assert logs_dir.exists(), "Missing logs directory"
 
     # Off-target CSV
-    offtarget_csv = sirnaforge_dir / "zfn_offtarget_sites.csv"
-    assert offtarget_csv.exists(), "Missing zfn_offtarget_sites.csv"
+    offtarget_csv = sirnaforge_dir / "offtarget_sites.csv"
+    assert offtarget_csv.exists(), "Missing offtarget_sites.csv"
 
     with offtarget_csv.open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
@@ -285,8 +285,8 @@ def test_zfn_workflow_cli_smoke(tmp_path: Path) -> None:
     assert len(ot_rows) >= 1, "Expected at least one off-target site"
 
     # Candidate summary JSON
-    candidate_json = sirnaforge_dir / "zfn_candidate_summary.json"
-    assert candidate_json.exists(), "Missing zfn_candidate_summary.json"
+    candidate_json = sirnaforge_dir / "candidate_summary.json"
+    assert candidate_json.exists(), "Missing candidate_summary.json"
     cand_data = json.loads(candidate_json.read_text())
     assert "candidates" in cand_data
     assert len(cand_data["candidates"]) >= 1
@@ -360,7 +360,7 @@ def test_zfn_ccr5_known_site_recovery(tmp_path: Path) -> None:
         pytest.fail(f"CCR5 recovery workflow exited with code {result.returncode}")
 
     # Parse off-target sites
-    offtarget_csv = output_dir / "sirnaforge" / "zfn_offtarget_sites.csv"
+    offtarget_csv = output_dir / "sirnaforge" / "offtarget_sites.csv"
     assert offtarget_csv.exists()
     with offtarget_csv.open(newline="", encoding="utf-8") as fh:
         sites = list(csv.DictReader(fh))
@@ -434,7 +434,7 @@ def test_zfn_all_algorithms_produce_results(tmp_path: Path) -> None:
             pytest.fail(f"ZFN workflow with algorithm={algo} exited with code {result.returncode}")
 
         # Verify each algorithm produced output
-        offtarget_csv = output_dir / "sirnaforge" / "zfn_offtarget_sites.csv"
+        offtarget_csv = output_dir / "sirnaforge" / "offtarget_sites.csv"
         assert offtarget_csv.exists(), f"Missing off-target CSV for algorithm={algo}"
 
         summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())

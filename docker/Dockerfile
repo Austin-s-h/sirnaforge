@@ -98,6 +98,14 @@ WORKDIR /home/sirnauser
 ENV PATH="/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:$PATH"
 ENV JAVA_HOME="/opt/conda/lib/jvm"
 ENV NXF_HOME="/home/sirnauser/.nextflow"
+# The conda `nextflow` package already ships the framework JAR under
+# share/nextflow/dist, but the launcher only looks in $NXF_HOME/framework and
+# otherwise tries to download it from nextflow.io. That download fails on any
+# air-gapped or TLS-intercepting network, so `nextflow -version` exited 1 in a
+# fully provisioned image and every off-target run recorded
+# {"status": "skipped", "reason": "nextflow_unavailable"}. Point the launcher at
+# the JAR that is already here; no network required.
+ENV NXF_DIST="/opt/conda/share/nextflow/dist"
 # Configure uv to use the existing conda environment instead of creating its own venv
 ENV UV_SYSTEM_PYTHON=1
 ENV UV_PYTHON="/opt/conda/bin/python"
@@ -107,7 +115,15 @@ ENV NXF_CONDA_CLI="micromamba"
 
 # Ensure Nextflow home is created and writable by the non-root user so Nextflow
 # does not attempt to create runtime directories under /usr/local/bin.
-RUN mkdir -p /home/sirnauser/.nextflow && chown -R sirnauser:sirnauser /home/sirnauser/.nextflow
+#
+# World-writable on purpose: the documented way to run this image without root-owned
+# outputs on a bind mount is `--user $(id -u):$(id -g)`, which is a UID that exists in
+# no image group. Nextflow writes tmp/, plugins/ and its cache under NXF_HOME on every
+# run, so a mode that only satisfies sirnaforge:sirnaforge fails immediately with
+# `mkdir: cannot create directory '/home/sirnauser/.nextflow/tmp'`.
+RUN mkdir -p /home/sirnauser/.nextflow && \
+    chown -R sirnauser:sirnauser /home/sirnauser/.nextflow && \
+    chmod -R a+rwX /home/sirnauser/.nextflow
 
 # Copy and setup entrypoint script
 COPY --chown=sirnauser:sirnauser docker/entrypoint.sh /usr/local/bin/entrypoint.sh

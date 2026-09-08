@@ -52,6 +52,20 @@ def _get_persistent_output_dir(tmp_path: Path, test_name: str) -> Path:
     return output_dir
 
 
+def _first_records(source: Path, destination: Path, count: int) -> Path:
+    """Copy the first `count` FASTA records of `source` to `destination`."""
+    kept: list[str] = []
+    seen = 0
+    for line in source.read_text().splitlines(keepends=True):
+        if line.startswith(">"):
+            seen += 1
+            if seen > count:
+                break
+        kept.append(line)
+    destination.write_text("".join(kept))
+    return destination
+
+
 def _print_failure_location(output_dir: Path) -> None:
     """Print output directory location on test failure for easy inspection."""
     print(f"\n{'=' * 80}")
@@ -124,8 +138,8 @@ def test_full_workflow_with_gene_search(tmp_path: Path):
     assert (output_dir / "transcripts" / "ACTB_transcripts.fasta").exists(), "Missing retrieved transcripts"
 
     # Verify design outputs
-    assert (output_dir / "sirnaforge" / "ACTB_all.csv").exists()
-    assert (output_dir / "sirnaforge" / "ACTB_pass.csv").exists()
+    assert (output_dir / "sirnaforge" / "candidates_all.csv").exists()
+    assert (output_dir / "sirnaforge" / "candidates_pass.csv").exists()
 
     # Verify ORF reports
     orf_dir = output_dir / "orf_reports"
@@ -234,7 +248,7 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, re
         pytest.fail(f"Index override workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify workflow completed
-    assert (output_dir / "sirnaforge" / "OVERRIDE_TEST_all.csv").exists()
+    assert (output_dir / "sirnaforge" / "candidates_all.csv").exists()
     assert (output_dir / "logs" / "workflow_summary.json").exists()
 
     # Verify summary reflects override
@@ -321,7 +335,7 @@ def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
         pytest.fail(f"miRNA mode workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify outputs
-    all_csv = output_dir / "sirnaforge" / "MIRNA_TEST_all.csv"
+    all_csv = output_dir / "sirnaforge" / "candidates_all.csv"
     assert all_csv.exists(), "Missing candidates CSV"
 
     # Verify miRNA-specific columns present (actual column names from output)
@@ -345,14 +359,10 @@ def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
 @pytest.mark.slow
 def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
     """Exercise the Nextflow miRNA batch path through the workflow CLI."""
-    if not Path("/.dockerenv").exists():
-        pytest.skip("runs_in_container test: only valid inside Docker image")
-    if shutil.which("nextflow") is None:
-        pytest.skip("Nextflow not available - run this test in Docker container")
-
     output_dir = _get_persistent_output_dir(tmp_path, "nextflow_mirna_batch")
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -483,7 +493,7 @@ def test_modification_pattern_application(tmp_path: Path, realistic_transcripts_
         pytest.fail(f"Modification workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify CSV has modification columns
-    all_csv = output_dir / "sirnaforge" / "MOD_TEST_all.csv"
+    all_csv = output_dir / "sirnaforge" / "candidates_all.csv"
     assert all_csv.exists(), "Missing candidates CSV"
 
     csv_content = all_csv.read_text()
@@ -544,7 +554,7 @@ def test_multi_species_offtarget(tmp_path: Path, realistic_transcripts_fasta: Pa
         pytest.fail(f"Multi-species workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify outputs
-    assert (output_dir / "sirnaforge" / "MULTI_SPECIES_all.csv").exists()
+    assert (output_dir / "sirnaforge" / "candidates_all.csv").exists()
 
     # Verify summary mentions multiple species
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
@@ -596,8 +606,8 @@ def test_gc_range_filtering(tmp_path: Path, realistic_transcripts_fasta: Path):
         pytest.fail(f"GC filtering workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify both all and pass CSVs exist
-    all_csv = output_dir / "sirnaforge" / "GC_TEST_all.csv"
-    pass_csv = output_dir / "sirnaforge" / "GC_TEST_pass.csv"
+    all_csv = output_dir / "sirnaforge" / "candidates_all.csv"
+    pass_csv = output_dir / "sirnaforge" / "candidates_pass.csv"
 
     assert all_csv.exists()
     assert pass_csv.exists()
@@ -634,13 +644,20 @@ def test_minimal_toy_workflow(tmp_path: Path):
     if not toy_fasta.exists():
         pytest.skip("Toy transcripts not available")
 
+    # toy_transcriptome_db.fasta is an off-target REFERENCE fixture: 367 records, 2.05 Mbp. Handing
+    # all of it to --input-fasta designs guides across the whole thing -- 173,026 candidates,
+    # measured at 428s wall / 321s user of single-threaded scoring with zero downloads and zero
+    # screening. That is neither a "fast sanity test" nor inside the timeout below. A short slice
+    # exercises the same pipeline flow in seconds.
+    design_input = _first_records(toy_fasta, tmp_path / "toy_design_input.fasta", 5)
+
     result = subprocess.run(
         [
             "sirnaforge",
             "workflow",
             "TOY",
             "--input-fasta",
-            str(toy_fasta),
+            str(design_input),
             "--output-dir",
             str(output_dir),
             "--species",
@@ -657,5 +674,5 @@ def test_minimal_toy_workflow(tmp_path: Path):
         pytest.fail(f"Toy workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify basic outputs
-    assert (output_dir / "sirnaforge" / "TOY_all.csv").exists()
+    assert (output_dir / "sirnaforge" / "candidates_all.csv").exists()
     assert (output_dir / "logs" / "workflow_summary.json").exists()

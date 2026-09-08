@@ -511,8 +511,8 @@ Add modifications to workflow outputs:
 ```python
 # After workflow completes
 output_dir = Path("results/TP53")
-candidates_csv = output_dir / "sirnaforge" / "TP53_pass.csv"
-candidates_fasta = output_dir / "sirnaforge" / "TP53_pass.fasta"
+candidates_csv = output_dir / "sirnaforge" / "candidates_pass.csv"
+candidates_fasta = output_dir / "sirnaforge" / "candidates_pass.fasta"
 
 # Load candidates from CSV
 df = pd.read_csv(candidates_csv)

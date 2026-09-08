@@ -18,9 +18,17 @@ class TestDesignParameters:
         """Test default parameter values."""
         params = DesignParameters()
         assert params.sirna_length == 21
-        assert params.top_n == 500
+        # None means report every ranked candidate: the design space must not be silently truncated.
+        assert params.top_n is None
         assert params.filters.gc_min == 35.0
         assert params.filters.gc_max == 60.0
+        assert params.offtarget_filters.max_off_target_count == 15
+
+    def test_uncapped_top_n_does_not_truncate_but_an_explicit_cap_still_does(self):
+        """The default must report everything, while an explicit ceiling stays honoured."""
+        ranked = list(range(50))
+        assert ranked[: DesignParameters().top_n] == ranked
+        assert ranked[: DesignParameters(top_n=5).top_n] == ranked[:5]
 
     def test_custom_parameters(self):
         """Test custom parameter values."""

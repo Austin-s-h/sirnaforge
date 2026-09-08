@@ -278,8 +278,8 @@ def _verify_workflow_outputs(output_dir: Path, result: "subprocess.CompletedProc
     """Verify workflow outputs and validate content."""
     # Expected output files
     expected_files = {
-        "all_csv": output_dir / "sirnaforge" / "TP53_all.csv",
-        "pass_csv": output_dir / "sirnaforge" / "TP53_pass.csv",
+        "all_csv": output_dir / "sirnaforge" / "candidates_all.csv",
+        "pass_csv": output_dir / "sirnaforge" / "candidates_pass.csv",
         "transcripts": output_dir / "transcripts" / "TP53_transcripts.fasta",
         "summary": output_dir / "logs" / "workflow_summary.json",
     }
@@ -330,9 +330,6 @@ def test_docker_login_shell_path():
     The test runs inside the container and simulates what users would do with
     docker run ... /bin/bash -lc commands.
     """
-    if not Path("/.dockerenv").exists():
-        pytest.skip("runs_in_container test: only valid inside Docker image")
-
     # Test 1: Non-login shell (baseline - should always work)
     result = subprocess.run(
         ["/bin/bash", "-c", "command -v sirnaforge && command -v nextflow"],

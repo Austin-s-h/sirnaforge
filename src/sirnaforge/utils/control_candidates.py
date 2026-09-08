@@ -46,6 +46,8 @@ def inject_dirty_controls(design_result: DesignResult, count: int = 2) -> list[S
     if not rejected_pool:
         return []
 
+    # Rejected candidates never reach scoring, so every composite_score here is 0.0 and this
+    # sort is a stable tie -- fine for the purpose, which is any already-failed candidate.
     worst_candidates = sorted(rejected_pool, key=lambda c: getattr(c, "composite_score", 0.0))[:count]
     if not worst_candidates:
         return []
