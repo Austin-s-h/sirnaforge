@@ -170,10 +170,10 @@ class TestComputeComposite:
         """design_v4 is a different vector over a different term set, hand-computed too."""
         features = {"target_accessibility": 0.5, "asymmetry": 1.0, "gc_content": 0.0}
 
-        # 0.40 * 0.5 * 100 + 0.35 * 1.0 * 100 + 0.25 * 0.0 * 100 = 20.0 + 35.0 + 0.0
+        # 0.35 * 0.5 * 100 + 0.40 * 1.0 * 100 + 0.25 * 0.0 * 100 = 17.5 + 40.0 + 0.0
         result = compute_composite(features, DesignWeights())
 
-        assert result.score == pytest.approx(55.0, abs=1e-9)
+        assert result.score == pytest.approx(57.5, abs=1e-9)
         assert result.vector_name == "design_v4"
         assert result.terms == ("target_accessibility", "asymmetry", "gc_content")
 
@@ -262,8 +262,8 @@ class TestWeightVectors:
         expert priors, and a run scored under different ones is not comparable.
         """
         assert DesignWeights().as_mapping() == {
-            "target_accessibility": 0.40,
-            "asymmetry": 0.35,
+            "target_accessibility": 0.35,
+            "asymmetry": 0.40,
             "gc_content": 0.25,
         }
         assert PostScreenSiRNAWeights().as_mapping() == {

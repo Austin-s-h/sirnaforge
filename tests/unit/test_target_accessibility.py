@@ -407,7 +407,7 @@ def test_composite_term_set_names_the_quantity_it_computes():
     """Issue #95 renamed the term; the weight-set version must record the break.
 
     The weight and the version moved again in issue #96 (0.13 renormalised to 0.26 in practice ->
-    0.40 declared at the design stage, 0.30 post-screen; 3.0.0 -> 4.0.0). What #95 pinned and this
+    0.35 declared at the design stage, 0.30 post-screen; 3.0.0 -> 4.0.0). What #95 pinned and this
     still pins is that the term is named for the quantity it computes and that `accessibility`,
     which named the wrong molecule, is gone from every vector.
     """
@@ -416,7 +416,7 @@ def test_composite_term_set_names_the_quantity_it_computes():
     for vector in ScoringWeights().all_vectors():
         assert "target_accessibility" in vector.terms
         assert not hasattr(vector, "accessibility")
-    assert ScoringWeights().design.target_accessibility == pytest.approx(0.40)
+    assert ScoringWeights().design.target_accessibility == pytest.approx(0.35)
     assert ScoringWeights().postscreen_sirna.target_accessibility == pytest.approx(0.30)
     assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
 

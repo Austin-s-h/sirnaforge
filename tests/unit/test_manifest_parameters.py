@@ -101,7 +101,7 @@ def test_manifest_weights_track_a_custom_weight_set(tmp_path):
     assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["off_target"] == 0.40
     assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["gc_content"] == 0.10
     # The untouched vectors still record their own declared numbers.
-    assert manifest["scoring"]["vectors"]["design_v4"]["target_accessibility"] == 0.40
+    assert manifest["scoring"]["vectors"]["design_v4"]["target_accessibility"] == 0.35
 
 
 @pytest.mark.unit

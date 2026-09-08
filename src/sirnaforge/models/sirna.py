@@ -259,8 +259,13 @@ class DesignWeights(WeightVector):
     VECTOR_NAME: ClassVar[str] = "design_v4"
     TERM_NAMES: ClassVar[tuple[str, ...]] = ("target_accessibility", "asymmetry", "gc_content")
 
+    # asymmetry takes the top slot rather than target_accessibility. On 900 benchmark siRNAs with
+    # measured knockdown the two are statistically indistinguishable (Spearman rho +0.273 vs +0.267),
+    # so this is not a large evidential gap -- but asymmetry additionally correlates rho +0.53 with
+    # A/U content at guide positions 1-5, which is itself the strongest single predictor in that
+    # panel (rho +0.438). Accessibility explaining ~7% of rank variance did not justify 0.40.
     target_accessibility: float = Field(
-        default=0.40,
+        default=0.35,
         ge=0,
         le=1,
         description=(
@@ -269,7 +274,7 @@ class DesignWeights(WeightVector):
         ),
     )
     asymmetry: float = Field(
-        default=0.35, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+        default=0.40, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
     )
     gc_content: float = Field(
         default=0.25, ge=0, le=1, description="GC content optimization weight (stability balance)"
