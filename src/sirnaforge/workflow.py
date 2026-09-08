@@ -2645,8 +2645,7 @@ class SiRNAWorkflow:
                     candidate.scored_after_screening = False
                     stats["candidates_not_scored_after_screening"] += 1
                     continue
-                if not self._score_candidate_post_screen(candidate, HitClassCounts(), conservation_denominator):
-                    stats["candidates_not_scored_after_screening"] += 1
+                self._score_and_gate(candidate, HitClassCounts(), conservation_denominator, stats)
                 continue
 
             stats["candidates_with_offtargets"] += 1
@@ -2809,13 +2808,8 @@ class SiRNAWorkflow:
             if unscreened_candidate:
                 candidate.scored_after_screening = False
                 stats["candidates_not_scored_after_screening"] += 1
-            elif not self._score_candidate_post_screen(candidate, hit_counts, conservation_denominator):
-                stats["candidates_not_scored_after_screening"] += 1
-
-            # isoform_coverage is not a scoring term; when a floor is configured it is a gate, and
-            # this is the first point at which the coverage fraction exists.
-            if self._apply_isoform_coverage_gate(candidate):
-                stats["failed_isoform_coverage"] += 1
+            else:
+                self._score_and_gate(candidate, hit_counts, conservation_denominator, stats)
 
             # Apply filtering criteria
             human_total_hits_for_filters = human_transcriptome_hits + mirna_human_total
@@ -2854,6 +2848,27 @@ class SiRNAWorkflow:
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    def _score_and_gate(
+        self,
+        candidate: SiRNACandidate,
+        hit_counts: HitClassCounts,
+        conservation_denominator: frozenset[str],
+        stats: dict[str, Any],
+    ) -> None:
+        """Score one screened candidate, then apply the gates that need post-screen evidence.
+
+        Both the no-hits and the with-hits branches above go through here, so the isoform-coverage
+        gate cannot be wired into only one of them -- which it was, leaving the clean-screen case
+        (the common one) ungated.
+        """
+        if not self._score_candidate_post_screen(candidate, hit_counts, conservation_denominator):
+            stats["candidates_not_scored_after_screening"] += 1
+
+        # isoform_coverage is not a scoring term; when a floor is configured it is a gate, and this
+        # is the first point at which the coverage fraction exists.
+        if self._apply_isoform_coverage_gate(candidate):
+            stats["failed_isoform_coverage"] += 1
 
     def _apply_isoform_coverage_gate(self, candidate: SiRNACandidate) -> bool:
         """Fail a candidate below the configured protein-coding isoform coverage floor.

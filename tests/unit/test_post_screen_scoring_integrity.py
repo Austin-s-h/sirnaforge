@@ -37,12 +37,14 @@ from sirnaforge.core.design import (
     MiRNADesigner,
     biogenesis_features,
 )
+from sirnaforge.core.repeat_detection import normalize_guide_sequence
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
     DesignResult,
+    FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
 )
@@ -582,6 +584,43 @@ def test_dirty_controls_are_scored_on_the_same_mirna_vector(tmp_path: Path) -> N
     assert control.composite_score == pytest.approx(real.composite_score), (
         "the control is the same sequence, so re-deriving the biogenesis terms must give the same score"
     )
+
+
+@pytest.mark.unit
+def test_isoform_coverage_gate_fires_only_when_a_floor_is_configured(tmp_path: Path) -> None:
+    """Issue #96: isoform coverage stopped being a scoring term and became an optional gate.
+
+    Reported on every candidate either way. With no floor (the default) a low-coverage guide still
+    passes -- no ceiling has been calibrated against truth data, so the gate ships off. With a floor
+    it fails LOW_ISOFORM_COVERAGE, and the run counts it. Screening supplies the numerator, which is
+    why this is post-screen and not a design filter.
+    """
+
+    def _run(min_isoform_coverage: float | None, out_name: str) -> tuple[SiRNACandidate, dict]:
+        params = DesignParameters(filters=FilterCriteria(min_isoform_coverage=min_isoform_coverage))
+        workflow = _workflow(tmp_path, out_name, params)
+        candidate = _candidate(f"cand_{out_name}", BONUS_GUIDE)
+        _score(MiRNADesigner(params), [candidate])
+        # The gate, like every off-target gate, only applies to a candidate still passing.
+        candidate.passes_filters = True
+        # One of the query gene's three protein-coding transcripts carries this guide: 1/3 = 0.33.
+        workflow._protein_coding_transcript_ids = {"ENST1", "ENST2", "ENST3"}
+        workflow._protein_coding_transcript_count = 3
+        workflow._guide_to_transcripts = {normalize_guide_sequence(candidate.guide_sequence): {"ENST1"}}
+        _, stats = workflow._integrate_offtarget_results([candidate], NO_HITS, OffTargetFilterCriteria())
+        return candidate, stats
+
+    off, off_stats = _run(None, "isoform_gate_off")
+    assert off.isoform_coverage == pytest.approx(1 / 3), "coverage is reported whether or not it gates"
+    assert off.passes_filters is True, "the gate is off by default"
+    assert off_stats["failed_isoform_coverage"] == 0
+
+    on, on_stats = _run(0.5, "isoform_gate_on")
+    assert on.isoform_coverage == pytest.approx(1 / 3)
+    assert on.passes_filters == SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE
+    assert on_stats["failed_isoform_coverage"] == 1
+    # Coverage is not a scoring term, so failing the gate does not change the score itself.
+    assert on.composite_score == pytest.approx(off.composite_score)
 
 
 def _cli_default_genome_species() -> list[str]:
