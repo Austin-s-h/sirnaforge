@@ -555,7 +555,7 @@ class ZFNDesignResult(BaseModel):
                     "right_aligned": site.right_aligned,
                 }
             )
-        df = pd.DataFrame(rows)
+        df: pd.DataFrame = pd.DataFrame(rows)
         df.to_csv(filepath, index=False)
         return df
 

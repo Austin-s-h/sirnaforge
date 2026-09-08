@@ -173,6 +173,7 @@ ignore = [
   "C901", # too complex
   "B904", # raise from within except clause (handled by design)
   "PLR0913", # too many arguments
+  "PLR0917", # too many positional arguments in established APIs and CLI commands
   "PLR0915", # too many statements
   "PLR2004", # magic value used in comparison
 ]

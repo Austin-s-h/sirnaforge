@@ -372,7 +372,7 @@ class TestVariantParquetCacheIntegrity:
         assert "future_col" in written.columns, "unknown column dropped by put"
         assert written.loc[written["cache_key"] == "key", "future_col"].iloc[0] == "from a newer version"
         # The new row has no value for a column this version knows nothing about.
-        assert written.loc[written["cache_key"] == "key2", "future_col"].iloc[0] is None
+        assert pd.isna(written.loc[written["cache_key"] == "key2", "future_col"].iloc[0])
 
     def test_ttl_readers_tolerate_mixed_iso_timestamps(self, tmp_path: Path):
         """Mixed ISO layouts in cached_at must not disable the TTL readers.

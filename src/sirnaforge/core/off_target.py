@@ -412,7 +412,8 @@ def _build_mirna_alignment_frame(
         )
         for hit in hits
     ]
-    return pd.DataFrame(rows, columns=schema_columns)
+    df: pd.DataFrame = pd.DataFrame(rows, columns=schema_columns)
+    return df
 
 
 def _normalize_bwa_mirna_seed_hits(

@@ -123,3 +123,6 @@ notebooks/zfn_experiment_runs/
 
 # Claude Code agent worktrees (transient, own git dirs)
 .claude/worktrees/
+.nextflow/
+.sirnaforge-cache/
+.sirnaforge_cache/

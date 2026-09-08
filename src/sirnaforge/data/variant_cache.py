@@ -163,7 +163,7 @@ class VariantParquetCache:
             VariantRecord if found and not stale, None otherwise
         """
         try:
-            df = pd.read_parquet(self.cache_file, engine="pyarrow")
+            df = pd.read_parquet(self.cache_file, engine="pyarrow", to_pandas_kwargs={})
 
             if df.empty:
                 return None
@@ -217,7 +217,7 @@ class VariantParquetCache:
         """
         try:
             # Read existing cache
-            df = pd.read_parquet(self.cache_file, engine="pyarrow")
+            df = pd.read_parquet(self.cache_file, engine="pyarrow", to_pandas_kwargs={})
 
             # Remove existing entry with same key if present
             kept = df[df["cache_key"] != cache_key]
@@ -291,7 +291,7 @@ class VariantParquetCache:
             Number of entries removed
         """
         try:
-            df = pd.read_parquet(self.cache_file, engine="pyarrow")
+            df = pd.read_parquet(self.cache_file, engine="pyarrow", to_pandas_kwargs={})
 
             if df.empty:
                 return 0
@@ -324,7 +324,7 @@ class VariantParquetCache:
             Dictionary with cache statistics
         """
         try:
-            df = pd.read_parquet(self.cache_file, engine="pyarrow")
+            df = pd.read_parquet(self.cache_file, engine="pyarrow", to_pandas_kwargs={})
 
             if df.empty:
                 return {"total_entries": 0, "stale_entries": 0}
