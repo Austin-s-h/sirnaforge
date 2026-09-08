@@ -73,12 +73,18 @@ class SiRNACandidate(BaseModel):
     isoform_coverage: float | None     # Protein-coding isoform coverage sub-score
     conservation_score: float | None   # Cross-species ortholog conservation sub-score
 
+    # Target-site accessibility (RNAplfold on the transcript). None when it could not be
+    # computed, in which case the term is inactive -- never substituted with a default.
+    target_accessibility_p: float | None        # P(seed-end 8-mer unpaired); the scored input
+    target_accessibility_p_17mer: float | None  # Reported only, never scored
+    target_accessibility_p_site: float | None   # Reported only, never scored
+
     # Scoring
     composite_score: float     # Overall quality (0-100 scale), computed once, after screening
     component_scores: dict     # Individual scoring components (design-time diagnostics)
     score_asymmetry: float | None       # Per-term composite contributions
     score_gc_content: float | None
-    score_accessibility: float | None
+    score_target_accessibility: float | None
     score_empirical: float | None
     score_off_target: float | None
     score_isoform_coverage: float | None
@@ -205,10 +211,10 @@ Relative weights for composite scoring (seven terms as of issue #80; must sum to
 class ScoringWeights(BaseModel):
     """Component weights for composite scoring (must sum to 1.0)."""
 
-    asymmetry: float = 0.12         # Thermodynamic asymmetry
-    gc_content: float = 0.10        # GC optimization
-    accessibility: float = 0.13     # Target accessibility
-    empirical: float = 0.15         # Position-specific rules
+    asymmetry: float = 0.12             # Thermodynamic asymmetry
+    gc_content: float = 0.10            # GC optimization
+    target_accessibility: float = 0.13  # RNAplfold target-site opening (see 2.5)
+    empirical: float = 0.15             # Position-specific rules
     off_target: float = 0.25        # Post-screen genuine off-target specificity (see 2.6)
     isoform_coverage: float = 0.15  # Post-screen protein-coding isoform coverage (new)
     conservation: float = 0.10      # Post-screen cross-species ortholog conservation (new)
@@ -338,22 +344,82 @@ candidates at exactly 1.0, and it rewarded longer designs for their length alone
 
 ### 2.5 Target Accessibility Score
 
-**Research basis**: Tafer et al. (2008)
+**What it measures**: the equilibrium probability that the stretch of mRNA the guide seed has to
+pair is already unpaired, computed with RNAplfold on the transcript.
 
-Target site accessibility affects siRNA efficacy. Score based on guide strand secondary structure:
+Before issue #95 this term folded the **guide against itself** and reported the result as target
+accessibility. Those are different physical quantities: against a real RNAplfold target-site
+opening probability the old term explained r² = 0.01-0.04. Guide self-structure survives as
+`paired_fraction` -- reported, and the `EXCESS_PAIRING` gate input -- but is no longer scored, and
+the "optimal 0.4-0.6" note that used to appear beside it has been deleted (nothing scored it, and
+the code it claimed to describe paid maximum at 0.0).
 
-$$\text{Accessibility} = 1 - \text{paired\_fraction}$$
+#### Geometry, which is the whole point
 
-**Implementation** (ViennaRNA):
+Guide and target are antiparallel. For a target site $T[1..L]$ 5'→3' and a guide $G[1..L]$ 5'→3',
+$G[i]$ pairs $T[L+1-i]$. The guide seed $G[2..8]$ therefore pairs the **3' end of the target
+site**, so the region RISC must open first is the 3'-most nucleotides.
+
+Anchoring the window on the other end is a measured near-null. Against 2,779 siRNAs with measured
+knockdown (Huesken et al. 2005 plus 385 further sequences), at W=150/L=100:
+
+| Statistic                            | Spearman ρ vs measured inhibition | Dynamic range |
+| ------------------------------------ | --------------------------------- | ------------- |
+| **8-mer at the seed (3') end** ✅    | **+0.267**                        | 6.4 decades   |
+| 17-mer, seed-anchored (reported only)| +0.244                            | 10.4 decades  |
+| whole 21-nt site (reported only)     | +0.237                            | 13.2 decades  |
+| mean P(base unpaired) over the site  | +0.167                            | none (linear) |
+| 8-mer at the non-seed (5') end       | +0.067                            | 6.5 decades   |
+
+The four-fold gap between the two 8-mers -- same length, same transcript, same fold, differing only
+in which end of the site they cover -- is the strongest evidence the term reflects mechanism rather
+than a composition artefact. It is also the regression guard: `tests/unit/test_target_accessibility.py`
+asserts the control stays near null, which catches the site being indexed backwards.
+
+**Honest limit**: ρ ≈ +0.27 is about 7% of rank variance. This is a genuine but weak term,
+consistent with its 0.13 weight and not an argument for weighting it higher.
+
+#### Statistic and normalisation
+
+$$P = \Pr\left(\text{the 3'-most 8 nt of the target site are unpaired}\right)$$
+
+$$\text{feature} = \frac{\mathrm{clamp}\left(\log_{10} P,\; \text{LOG\_FLOOR},\; 0\right) - \text{LOG\_FLOOR}}{-\text{LOG\_FLOOR}}$$
+
+`LOG_FLOOR` defaults to −5.0, which captures ~99% of observed sites (benchmark distribution of
+$\log_{10} P$: p1 = −4.93, p50 = −1.72, p99 = −0.18). It is a **fixed** floor, not a per-transcript
+one: a self-calibrating scale would make `composite_score` incomparable between targets and between
+runs.
+
+**Implementation** (ViennaRNA `RNA.pfl_fold_up`, one fold per transcript, not per candidate):
 
 ```python
-def _calculate_accessibility_score(candidate) -> float:
-    """Accessibility inversely related to secondary structure."""
-    structure, mfe, paired_fraction = calculate_secondary_structure(guide)
-    return 1.0 - paired_fraction
+profile = TargetAccessibilityProfile.fold(transcript, window_size=150, max_bp_span=100, u_max=21)
+site = profile.site_accessibility(start_0based, site_length)   # 3'-anchored windows
+feature = target_accessibility_sub_score(site.seed_end_8mer)   # None -> term inactive
 ```
 
-**Optimal**: paired_fraction 0.4-0.6 (moderate structure)
+A global `fold_compound.pf()` is deliberately not used: it is O(n³) on a multi-kb transcript, and
+the windowed form is the quantity local-opening models are defined on. Folding once per transcript
+is cheaper than the per-candidate guide folds it replaced.
+
+#### Missing values
+
+When there is no transcript context, or a site sits too close to the transcript 5' end for the
+window to fit, `target_accessibility_p` is `None`, the term is omitted from the active set and the
+remaining weights renormalise over what is left. A missing input must never score as a good one.
+
+#### Configuration
+
+| Field                                     | Default | Meaning                                        |
+| ----------------------------------------- | ------- | ---------------------------------------------- |
+| `target_accessibility.window_size` (W)    | 150     | RNAplfold averaging window                     |
+| `target_accessibility.max_bp_span` (L)    | 100     | RNAplfold maximum base-pair span               |
+| `target_accessibility.log_floor`          | −5.0    | log₁₀ P treated as zero accessibility          |
+
+W and L are configuration rather than constants because they move a site's accessibility percentile
+substantially. ρ rises only mildly with W (+0.249 at W=40 to +0.269 at W=240), and W=150-240 is the
+plateau; 150 sits on it without W=240's cost. All three are recorded in the run manifest, and
+changing any of them changes the numeric scale of `composite_score`.
 
 ### 2.6 Off-Target Score
 
@@ -808,9 +874,11 @@ class ChemicalModification(BaseModel):
 
 6. **Ichihara M, Murakumo Y, Masuda A, Matsuura T, Asai N, Jijiwa M, Ishida M, Shinmi J, Yatsuya H, Qiao S, Takahashi M, Ohno K** (2007). Thermodynamic instability of siRNA duplex is a prerequisite for dependable prediction of siRNA activities. _Nucleic Acids Research_ 35(18):e123.
 
-7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. _Nature Biotechnology_ 26(5):578-583.
+7. **Tafer H, Ameres SL, Obernosterer G, Gebeshuber CA, Schroeder R, Martinez J, Hofacker IL** (2008). The impact of target site accessibility on the design of effective siRNAs. _Nature Biotechnology_ 26(5):578-583. — Cited for the concept of scoring mRNA local opening, not as the source of the exact statistic used here. Before issue #95 this reference was attached to a term that folded the guide, which the paper does not describe.
 
-8. **Jackson AL, Bartz SR, Schelter J, Kobayashi SV, Burchard J, Mao M, Li B, Cavet G, Linsley PS** (2003). Expression profiling reveals off-target gene regulation by RNAi. _Nature Biotechnology_ 21(6):635-637.
+8. **Huesken D, Lange J, Mickanin C, Weiler J, Asselbergs F, Warner J, Meloon B, Engel S, Rosenberg A, Cohen D, Labow M, Reinhardt M, Natt F, Hall J** (2005). Design of a genome-wide siRNA library using an artificial neural network. _Nature Biotechnology_ 23(8):995-1001. — The measured-knockdown benchmark the accessibility statistic was selected against (via a third-party redistribution; the values were not verified against the primary paper, which is not open access).
+
+9. **Jackson AL, Bartz SR, Schelter J, Kobayashi SV, Burchard J, Mao M, Li B, Cavet G, Linsley PS** (2003). Expression profiling reveals off-target gene regulation by RNAi. _Nature Biotechnology_ 21(6):635-637.
 
 ---
 
@@ -826,6 +894,14 @@ class ChemicalModification(BaseModel):
 | `min_asymmetry_score` | 0.65    | 0.3-1   | Strand selection       |
 | `min_empirical_score` | 0.5     | 0.4-0.7 | Position preferences   |
 
+Target-site accessibility settings (see 2.5), on `DesignParameters.target_accessibility`:
+
+| Parameter     | Default | Range     | Justification                                       |
+| ------------- | ------- | --------- | --------------------------------------------------- |
+| `window_size` | 150     | 20-1000   | RNAplfold W; on the benchmark ρ plateau at 150-240   |
+| `max_bp_span` | 100     | 10-1000   | RNAplfold L; must not exceed `window_size`          |
+| `log_floor`   | −5.0    | < 0       | Captures ~99% of observed sites; fixed, not per-run  |
+
 `mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
 `melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
 in issue #80: they were declared but never enforced by `SiRNADesigner`, and re-deriving correct
@@ -837,15 +913,17 @@ post-screen against the genuine off-target count (see 1.4 and 3.3).
 
 | Component        | Weight | Rationale                                           |
 | ---------------- | ------ | --------------------------------------------------- |
-| Asymmetry        | 0.12   | Most predictive single factor                       |
-| GC Content       | 0.10   | Stability/accessibility balance                     |
-| Accessibility    | 0.13   | Target site availability                            |
-| Empirical        | 0.15   | Position-specific fine-tuning                       |
-| Off-target       | 0.25   | Post-screen genuine off-target specificity          |
-| Isoform coverage | 0.15   | Protein-coding isoform targeting completeness (new) |
-| Conservation     | 0.10   | Cross-species ortholog specificity check (new)      |
+| Asymmetry            | 0.12   | Most predictive single factor                       |
+| GC Content           | 0.10   | Stability/accessibility balance                     |
+| Target accessibility | 0.13   | RNAplfold local opening at the seed-paired end      |
+| Empirical            | 0.15   | Position-specific fine-tuning                       |
+| Off-target           | 0.25   | Post-screen genuine off-target specificity          |
+| Isoform coverage     | 0.15   | Protein-coding isoform targeting completeness       |
+| Conservation         | 0.10   | Cross-species ortholog specificity check            |
 
-Weight-set version `2.0.0`; `1.x` denotes the pre-issue-#80 five-term set and is not comparable.
+Weight-set version `3.0.0`. `2.x` scored guide self-structure in the 0.13 slot and called it target
+accessibility, so its `composite_score` is not comparable with `3.x`; `1.x` denotes the
+pre-issue-#80 five-term set and is comparable with neither.
 
 ---
 

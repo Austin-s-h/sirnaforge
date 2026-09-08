@@ -394,7 +394,7 @@ class ScoringWeights(BaseModel):
     """Relative weights for composite scoring (seven terms, must sum to 1.0)"""
     asymmetry: float = 0.12
     gc_content: float = 0.10
-    accessibility: float = 0.13
+    target_accessibility: float = 0.13
     empirical: float = 0.15
     off_target: float = 0.25         # post-screen genuine off-target specificity
     isoform_coverage: float = 0.15   # post-screen, new in issue #80

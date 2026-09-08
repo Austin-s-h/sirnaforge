@@ -10,8 +10,9 @@ siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. 
 | `asymmetry_score`     | ≥0.65                           | Guide strand selection preference       |
 | `gc_content`          | 40-55%                          | Stability vs. accessibility balance     |
 | `melting_temp_c`      | 60-78°C                         | Duplex stability (nearest-neighbour Tm) |
-| `mfe`                 | -4 to -7 kcal/mol               | Secondary structure stability           |
+| `mfe`                 | -4 to -7 kcal/mol               | Guide self-structure (0.0 = open chain) |
 | `duplex_stability_dg` | -32 to -43 kcal/mol for a 21mer | Guide:passenger duplex ΔG               |
+| `target_accessibility_p` | higher is better, log-scaled | P(mRNA site's seed-paired 8-mer open)   |
 
 ## Composite Score
 
@@ -20,7 +21,11 @@ once per candidate by `sirnaforge.core.scoring.compute_composite`:
 
 - **Thermodynamic asymmetry** (weight 0.12) - Guide strand preferentially enters RISC
 - **GC content** (weight 0.10) - Balance between stability and accessibility
-- **Target accessibility** (weight 0.13) - mRNA region accessibility
+- **Target accessibility** (weight 0.13) - Post-fold: log-scaled RNAplfold probability that the
+  8 nt of the mRNA target site pairing guide positions 1-8 are unpaired. The guide seed pairs the
+  target site's **3' end**, so that is the end scored; the 5'-end 8-mer is a measured near-null
+  (ρ +0.07 vs +0.27 against knockdown). See `docs/models_and_scoring.md` §2.5. Inactive, with the
+  remaining weights renormalised, when there is no transcript context to fold
 - **Empirical rules** (weight 0.15) - Position-specific sequence features
 - **Off-target specificity** (weight 0.25) - Post-screen: decays with the _genuine_ off-target
   count (on-target, ortholog and repeat-mediated hits excluded), `exp(-count / 10)`
@@ -34,7 +39,7 @@ once per candidate by `sirnaforge.core.scoring.compute_composite`:
   instead would let a degraded run outscore the complete run it degraded from, because a
   conservation term that goes inactive has its weight redistributed to the surviving terms
 
-These weights (`ScoringWeights`, `weight_set_version = "2.0.0"`) sum to 1.00 and are the
+These weights (`ScoringWeights`, `weight_set_version = "3.0.0"`) sum to 1.00 and are the
 _post-screen_ set. Off-target, isoform coverage and conservation cannot be evaluated until
 transcriptome/miRNA screening has run, so **the score is computed once, after screening, not at
 design time.** A candidate produced by the standalone `sirnaforge design` path (no screening)
@@ -50,6 +55,8 @@ A term is _active_ for a candidate only when its sub-score could actually be com
   annotation gap, not a candidate defect).
 - `conservation` stays inactive when no species beyond the query species was handed to the aligner —
   a single-species run has no evidence to compute it from.
+- `target_accessibility` stays inactive when no transcript was available to fold, or when the site
+  sits too close to the transcript 5' end for the scoring window to fit.
 
 `compute_composite` renormalises the _remaining_ weights to sum to 1 before combining them, so a
 missing term is dropped rather than scored zero. This is why a single-species run is **neither
@@ -58,9 +65,10 @@ rewarded nor penalised** for lacking a conservation term: the weight that would 
 table as an implicit zero.
 
 `scored_after_screening` (bool) tells you which regime produced a given row's score, and
-`weight_set_version` records which weight set. Scores from `weight_set_version` `1.x` (the
-pre-issue-#80 five-term set) are **not comparable** to `2.x` scores — always compare candidates
-within one run, one weight-set version.
+`weight_set_version` records which weight set. Scores are **not comparable across major versions** —
+`1.x` is the pre-issue-#80 five-term set, and `2.x` scored guide self-structure in the slot `3.x`
+gives to real target-site accessibility (issue #95). Always compare candidates within one run, one
+weight-set version.
 
 ### What `top_candidates` excludes
 
@@ -81,7 +89,7 @@ are filtered on `passes_filters` alone, but both are written in the re-ranked or
 
 ### Per-term contribution columns
 
-Each candidate carries `score_asymmetry`, `score_gc_content`, `score_accessibility`,
+Each candidate carries `score_asymmetry`, `score_gc_content`, `score_target_accessibility`,
 `score_empirical`, `score_off_target`, `score_isoform_coverage` and `score_conservation`: the
 renormalised-weight × sub-score × 100 contribution of each active term. They are `None`/empty for
 any term that was inactive for that candidate, so you can see exactly which terms carried a given
