@@ -243,8 +243,16 @@ class AnalysisSummary(BaseSummary):
 class MiRNASummary(BaseSummary):
     """Summary statistics for miRNA seed match analysis.
 
-    Note: total_hits represents validated, high-quality seed region matches.
-    hits_per_species represents raw alignment counts (may include low-quality matches).
+    The counts come in matched pairs, and the two levels must not be mixed: ``total_hits`` and
+    ``filtered_hits_per_species`` are seed-region hits, while ``total_raw_alignments`` and
+    ``hits_per_species`` are every alignment the scan produced. Each total is the sum of its
+    own per-species mapping. Every species in ``species_analyzed`` appears in both mappings,
+    reading 0 when it contributed nothing -- an absent key would be indistinguishable from a
+    species that was screened and came back clean.
+
+    Beware that ``AggregatedMiRNASummary.hits_per_species`` carries the same name at the
+    filtered level, because aggregation reads the filtered analysis files: it reconciles with
+    ``filtered_hits_per_species`` here, not with ``hits_per_species``.
     """
 
     mirna_database: MiRNADatabase | str = Field(description="miRNA database used (mirgenedb, mirbase, etc.)")
@@ -252,6 +260,10 @@ class MiRNASummary(BaseSummary):
     hits_per_species: dict[str, int] = Field(
         default_factory=dict,
         description="Raw alignment counts by species (includes low-quality matches)",
+    )
+    filtered_hits_per_species: dict[str, int] = Field(
+        default_factory=dict,
+        description="Seed-region hit counts by species (the per-species breakdown of total_hits)",
     )
     total_raw_alignments: int = Field(
         default=0,

@@ -2023,6 +2023,12 @@ def run_mirna_seed_analysis(
         total_filtered = 0
         total_raw = 0
 
+    # A species that produced nothing -- no database, a failed validation, or a clean screen --
+    # reads 0 rather than going missing, so both mappings cover every species analyzed.
+    for species in mirna_species:
+        species_raw_stats.setdefault(species, 0)
+        species_filtered_stats.setdefault(species, 0)
+
     # Create validated summary using Pydantic model
     summary = MiRNASummary(
         candidate_id=candidate_id,
@@ -2031,6 +2037,7 @@ def run_mirna_seed_analysis(
         total_sequences=len(sequences),
         total_hits=total_filtered,  # Filtered hits count
         hits_per_species=species_raw_stats,  # Raw hits per species
+        filtered_hits_per_species=species_filtered_stats,  # Seed-region hits per species
         total_raw_alignments=total_raw,  # Total raw alignments
     )
 
