@@ -2,8 +2,8 @@
 
 This module provides the canonical composite scorer for siRNA candidates, computing
 a single 0-100 quality score from weighted sub-scores (asymmetry, GC content,
-accessibility, empirical rules, off-target specificity, isoform coverage, and
-ortholog conservation).
+target-site accessibility, empirical rules, off-target specificity, isoform coverage,
+and ortholog conservation).
 
 The scorer renormalizes weights over the active term set, so a run that lacks
 evidence for some terms (e.g., no conservation term in a single-species run, or no
@@ -18,16 +18,26 @@ Version history:
     - 2.0.0: seven-term set with post-screen off-target redefined, isoform_coverage
       and conservation added. Weights retuned. Bump this version whenever a DEFAULT
       weight in ScoringWeights changes.
+    - 3.0.0: issue #95. `accessibility` (which folded the guide against itself and
+      reported it as target accessibility) is replaced by `target_accessibility`, a
+      real RNAplfold local-opening probability on the transcript. Same 0.13 weight,
+      different quantity, so 2.x scores are not comparable. Guide self-structure
+      survives as `paired_fraction` -- reported, and the EXCESS_PAIRING gate input --
+      but is no longer a scoring term.
 """
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from math import exp
+from math import exp, log10
 
-from sirnaforge.models.sirna import COMPOSITE_TERM_NAMES, ScoringWeights
+from sirnaforge.models.sirna import (
+    COMPOSITE_TERM_NAMES,
+    DEFAULT_ACCESSIBILITY_LOG_FLOOR,
+    ScoringWeights,
+)
 
 # Scoring weight set version. Bump when DEFAULT weights change.
-SCORING_WEIGHT_SET_VERSION = "2.0.0"
+SCORING_WEIGHT_SET_VERSION = "3.0.0"
 
 # Canonical composite-score term names (imported from models for consistency).
 COMPOSITE_TERMS = COMPOSITE_TERM_NAMES
@@ -81,6 +91,48 @@ def off_target_sub_score(genuine_off_target_count: int) -> float:
         raise ValueError(f"genuine_off_target_count must be non-negative, got {genuine_off_target_count}")
     score = exp(-genuine_off_target_count / OFF_TARGET_DECAY)
     return max(0.0, min(1.0, score))  # Clamp to [0, 1] for numerical safety.
+
+
+def target_accessibility_sub_score(
+    p_unpaired: float | None, log_floor: float = DEFAULT_ACCESSIBILITY_LOG_FLOOR
+) -> float | None:
+    """Normalise a target-site opening probability into a [0, 1] sub-score.
+
+    The probability spans ~6.4 decades across real target sites, so it is log-scaled before
+    being mapped linearly onto [0, 1] against a fixed floor:
+
+        feature = (clamp(log10 P, log_floor, 0) - log_floor) / -log_floor
+
+    The floor is fixed rather than per-transcript on purpose: a self-calibrating scale would make
+    composite scores incomparable between targets and between runs.
+
+    Args:
+        p_unpaired: P(the scored window of the target site is unpaired), or None when it could
+            not be computed (no transcript context, or the site is too close to the 5' end).
+        log_floor: log10 probability treated as zero accessibility. Must be negative.
+
+    Returns:
+        Sub-score in [0, 1], or None when p_unpaired is None (term inactive). A probability at
+        or below the floor -- including exactly 0, which underflow can produce -- returns 0.0:
+        that is a computed "inaccessible", not a missing value.
+
+    Raises:
+        ValueError: If log_floor is not negative, or p_unpaired is outside [0, 1].
+    """
+    if log_floor >= 0.0:
+        raise ValueError(f"log_floor must be negative, got {log_floor}")
+
+    if p_unpaired is None:
+        return None  # Term inactive.
+
+    if not (0.0 <= p_unpaired <= 1.0):
+        raise ValueError(f"p_unpaired must be a probability in [0, 1], got {p_unpaired}")
+
+    if p_unpaired <= 0.0:
+        return 0.0  # log10(0) is -inf, which clamps to the floor anyway.
+
+    clamped = max(log_floor, min(0.0, log10(p_unpaired)))
+    return (clamped - log_floor) / -log_floor
 
 
 def isoform_coverage_sub_score(protein_coding_hit: int, protein_coding_total: int) -> float | None:

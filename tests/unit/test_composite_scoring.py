@@ -135,14 +135,14 @@ class TestComputeComposite:
         this test will fail.
         """
         # Use default weights from ScoringWeights:
-        # asymmetry=0.12, gc_content=0.10, accessibility=0.13, empirical=0.15,
+        # asymmetry=0.12, gc_content=0.10, target_accessibility=0.13, empirical=0.15,
         # off_target=0.25, isoform_coverage=0.15, conservation=0.10
         # Sum = 1.00
 
         features = {
             "asymmetry": 0.8,
             "gc_content": 0.9,
-            "accessibility": 0.7,
+            "target_accessibility": 0.7,
             "empirical": 0.6,
             "off_target": 1.0,
             "isoform_coverage": 0.5,
@@ -153,7 +153,7 @@ class TestComputeComposite:
         # Hand-computed score: sum(weight * feature * 100) for all terms.
         # asymmetry:        0.12 * 0.8 * 100 = 9.6
         # gc_content:       0.10 * 0.9 * 100 = 9.0
-        # accessibility:    0.13 * 0.7 * 100 = 9.1
+        # target_accessibility: 0.13 * 0.7 * 100 = 9.1
         # empirical:        0.15 * 0.6 * 100 = 9.0
         # off_target:       0.25 * 1.0 * 100 = 25.0
         # isoform_coverage: 0.15 * 0.5 * 100 = 7.5
@@ -173,7 +173,7 @@ class TestComputeComposite:
         features = {
             "asymmetry": 0.8,
             "gc_content": 0.9,
-            "accessibility": 0.7,
+            "target_accessibility": 0.7,
             "empirical": 0.6,
             "off_target": 1.0,
             "isoform_coverage": 0.5,
@@ -191,7 +191,7 @@ class TestComputeComposite:
         features = {
             "asymmetry": 0.8,
             "gc_content": 0.9,
-            "accessibility": 0.7,
+            "target_accessibility": 0.7,
             "empirical": 0.6,
             "off_target": 1.0,
         }
@@ -223,7 +223,7 @@ class TestComputeComposite:
         features_partial = {
             "asymmetry": 1.0,
             "gc_content": 1.0,
-            "accessibility": 1.0,
+            "target_accessibility": 1.0,
             "empirical": 1.0,
             "off_target": 1.0,
             # isoform_coverage and conservation absent
@@ -240,7 +240,7 @@ class TestComputeComposite:
         features_half_partial = {
             "asymmetry": 0.5,
             "gc_content": 0.5,
-            "accessibility": 0.5,
+            "target_accessibility": 0.5,
             "empirical": 0.5,
             "off_target": 0.5,
         }
@@ -261,7 +261,7 @@ class TestComputeComposite:
         weights = ScoringWeights(
             asymmetry=0.0,
             gc_content=0.0,
-            accessibility=0.0,
+            target_accessibility=0.0,
             empirical=0.0,
             off_target=1.0,  # Only this is nonzero, so the full vector sums to 1.0.
             isoform_coverage=0.0,
@@ -300,7 +300,7 @@ class TestComputeComposite:
         features = {
             "asymmetry": 0.8,
             "gc_content": 0.9,
-            "accessibility": 0.7,
+            "target_accessibility": 0.7,
             "empirical": 0.6,
             "off_target": 1.0,
         }
@@ -351,7 +351,7 @@ class TestScoringWeightsValidator:
         weights = ScoringWeights()
         assert weights.asymmetry == 0.12
         assert weights.gc_content == 0.10
-        assert weights.accessibility == 0.13
+        assert weights.target_accessibility == 0.13
         assert weights.empirical == 0.15
         assert weights.off_target == 0.25
         assert weights.isoform_coverage == 0.15
@@ -367,7 +367,7 @@ class TestScoringWeightsValidator:
             ScoringWeights(
                 asymmetry=0.9,
                 gc_content=0.0,
-                accessibility=0.0,
+                target_accessibility=0.0,
                 empirical=0.0,
                 off_target=0.0,
                 isoform_coverage=0.0,
@@ -379,7 +379,7 @@ class TestScoringWeightsValidator:
         weights = ScoringWeights(
             asymmetry=0.2,
             gc_content=0.2,
-            accessibility=0.2,
+            target_accessibility=0.2,
             empirical=0.2,
             off_target=0.1,
             isoform_coverage=0.05,
@@ -392,17 +392,20 @@ class TestScoringWeightsValidator:
 class TestVersionConstant:
     """Tests for the SCORING_WEIGHT_SET_VERSION constant."""
 
-    def test_version_is_2_0_0(self) -> None:
-        """SCORING_WEIGHT_SET_VERSION should be "2.0.0".
+    def test_version_is_3_0_0(self) -> None:
+        """SCORING_WEIGHT_SET_VERSION should be "3.0.0".
 
-        If you change the default weights in ScoringWeights, you MUST bump this
-        version. This test exists to catch silent retuning without version bumps.
+        If you change the default weights in ScoringWeights, or which quantity a term computes,
+        you MUST bump this version. 3.0.0 marks issue #95: `accessibility` (guide self-structure
+        misreported as target accessibility) became `target_accessibility`, a real RNAplfold
+        opening probability on the transcript. Same 0.13 weight, different quantity, so 2.x scores
+        are not comparable.
         """
-        assert SCORING_WEIGHT_SET_VERSION == "2.0.0"
+        assert SCORING_WEIGHT_SET_VERSION == "3.0.0"
 
     def test_composite_score_records_version(self) -> None:
         """CompositeScore should record the weight set version."""
         features = {"asymmetry": 0.8, "gc_content": 0.9}
         weights = ScoringWeights()
         result = compute_composite(features, weights)
-        assert result.weight_set_version == "2.0.0"
+        assert result.weight_set_version == "3.0.0"

@@ -1,10 +1,17 @@
 """Thermodynamic calculations for siRNA design using ViennaRNA."""
 
+from dataclasses import dataclass
+
 import RNA
 from Bio.Seq import Seq
 from Bio.SeqUtils import MeltingTemp
 
-from sirnaforge.models.sirna import DEFAULT_MIN_ASYMMETRY_SCORE, SiRNACandidate
+from sirnaforge.models.sirna import (
+    DEFAULT_MIN_ASYMMETRY_SCORE,
+    DEFAULT_PLFOLD_MAX_BP_SPAN,
+    DEFAULT_PLFOLD_WINDOW,
+    SiRNACandidate,
+)
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -13,10 +20,105 @@ logger = get_logger(__name__)
 # Applied symmetrically to both ends so the two ΔG values are comparable.
 END_WINDOW_NT = 7
 
+# Target-site opening windows, all anchored on the site's 3' end.
+#
+# Guide and target are antiparallel: for a target site T[1..L] 5'->3' and a guide G[1..L] 5'->3',
+# G[i] pairs T[L+1-i]. The guide seed G[2..8] therefore pairs the *3' end* of the target site, so
+# the region RISC has to open first is the 3'-most nucleotides -- not the 5'-most. Taking the
+# 8-mer at the other end measures accessibility opposite the guide's 3' end and is a measured
+# near-null against knockdown (Spearman rho +0.07 vs +0.27; see issue #95).
+SEED_END_WINDOW_NT = 8
+SEED_ANCHORED_WINDOW_NT = 17
+
 # Conditions for the nearest-neighbour melting temperature: roughly physiological
 # ionic strength and a typical transfection-scale duplex concentration.
 TM_SODIUM_MM = 100.0
 TM_STRAND_CONC_NM = 100.0
+
+
+@dataclass(frozen=True)
+class TargetSiteAccessibility:
+    """Local opening probabilities for one siRNA target site on its mRNA.
+
+    Every window is anchored on the site's 3' end, which is the end the guide seed pairs
+    (see SEED_END_WINDOW_NT). A value is None when the site is too close to the transcript
+    5' end for the window to fit; it is never substituted with a default, because a missing
+    input must not score as a good one.
+
+    Attributes:
+        seed_end_8mer: P(the 3'-most 8 nt of the site are unpaired). The scored statistic.
+        seed_anchored_17mer: P(the 3'-most 17 nt are unpaired). Reported, not scored.
+        whole_site: P(the entire site is unpaired). Reported, not scored.
+    """
+
+    seed_end_8mer: float | None
+    seed_anchored_17mer: float | None
+    whole_site: float | None
+
+
+class TargetAccessibilityProfile:
+    """RNAplfold unpaired-probability profile for one transcript, folded once.
+
+    Wraps the matrix returned by ``RNA.pfl_fold_up``, which is 1-based in both axes:
+    ``unpaired[i][u]`` is the equilibrium probability that the length-``u`` stretch
+    **ending at** 1-based position ``i`` is entirely unpaired. (Confirmed against the
+    library rather than its docstring: ``unpaired[1][u]`` is 0 for every u > 1 while
+    ``unpaired[N][u]`` is populated for every u, which only holds for the "ending at"
+    convention.)
+
+    RNAplfold is used rather than a global partition function because the latter is
+    O(n^3) and a transcript is multiple kb; the windowed form is also the quantity
+    local-opening models are defined on.
+    """
+
+    def __init__(self, unpaired: list[list[float]], length: int, u_max: int) -> None:
+        """Wrap an already-computed pfl_fold_up matrix; prefer :meth:`fold` to build one."""
+        self._unpaired = unpaired
+        self._length = length
+        self._u_max = u_max
+
+    @classmethod
+    def fold(
+        cls,
+        sequence: str,
+        window_size: int = DEFAULT_PLFOLD_WINDOW,
+        max_bp_span: int = DEFAULT_PLFOLD_MAX_BP_SPAN,
+        u_max: int = SEED_ANCHORED_WINDOW_NT,
+    ) -> "TargetAccessibilityProfile":
+        """Fold one transcript and cache its opening probabilities.
+
+        Args:
+            sequence: Full transcript sequence; read as RNA, so T and U are equivalent.
+            window_size: RNAplfold averaging window (W).
+            max_bp_span: RNAplfold maximum base-pair span (L).
+            u_max: Longest unpaired stretch to tabulate. Must cover every window queried.
+        """
+        rna = sequence.upper().replace("T", "U")
+        unpaired = RNA.pfl_fold_up(rna, u_max, window_size, max_bp_span)
+        return cls(unpaired, len(rna), u_max)
+
+    def site_accessibility(self, start_pos: int, site_length: int) -> TargetSiteAccessibility:
+        """Look up the three 3'-anchored windows for a site.
+
+        Args:
+            start_pos: Start of the target site (0-based) in the folded transcript.
+            site_length: Length of the target site in nucleotides.
+        """
+        site_end = start_pos + site_length  # 1-based position of the site's 3'-most base
+        if start_pos < 0 or site_end > self._length:
+            return TargetSiteAccessibility(None, None, None)
+
+        return TargetSiteAccessibility(
+            seed_end_8mer=self._opening(site_end, SEED_END_WINDOW_NT),
+            seed_anchored_17mer=self._opening(site_end, SEED_ANCHORED_WINDOW_NT),
+            whole_site=self._opening(site_end, site_length),
+        )
+
+    def _opening(self, end_pos: int, window: int) -> float | None:
+        """P(the length-``window`` stretch ending at 1-based ``end_pos`` is unpaired)."""
+        if window > self._u_max or end_pos < window or end_pos > self._length:
+            return None
+        return float(self._unpaired[end_pos][window])
 
 
 class ThermodynamicCalculator:
@@ -75,38 +177,36 @@ class ThermodynamicCalculator:
         return dg_5p, dg_3p, asymmetry_score
 
     def calculate_target_accessibility(
-        self, target_sequence: str, start_pos: int, sirna_length: int
-    ) -> tuple[float, float]:
-        """Calculate target site accessibility using ViennaRNA.
+        self,
+        target_sequence: str,
+        start_pos: int,
+        sirna_length: int,
+        window_size: int = DEFAULT_PLFOLD_WINDOW,
+        max_bp_span: int = DEFAULT_PLFOLD_MAX_BP_SPAN,
+    ) -> "TargetSiteAccessibility":
+        """Compute local opening probabilities for one target site on the mRNA.
+
+        Convenience single-site entry point. Callers scoring many sites on the same
+        transcript should build a :class:`TargetAccessibilityProfile` once instead:
+        this folds the whole transcript per call.
 
         Args:
-            target_sequence: Full target mRNA sequence
-            start_pos: Start position of siRNA target site (0-based)
-            sirna_length: Length of siRNA
+            target_sequence: Full target mRNA sequence.
+            start_pos: Start of the siRNA target site (0-based).
+            sirna_length: Length of the target site in nucleotides.
+            window_size: RNAplfold averaging window (W).
+            max_bp_span: RNAplfold maximum base-pair span (L).
 
         Returns:
-            Tuple of (average_unpaired_probability, mfe)
+            TargetSiteAccessibility for the site.
         """
-        # Create fold compound for target sequence
-        fc = RNA.fold_compound(target_sequence, self.model_details)
-
-        # Calculate MFE structure
-        mfe_structure, mfe = fc.mfe()
-
-        # Calculate partition function and base pair probabilities
-        fc.pf()
-
-        # Get unpaired probabilities for target site
-        unpaired_probs = []
-
-        for i in range(start_pos, min(start_pos + sirna_length, len(target_sequence))):
-            # Get probability that position i is unpaired
-            prob = fc.pr_unpaired(i + 1)  # ViennaRNA uses 1-based indexing
-            unpaired_probs.append(prob)
-
-        avg_unpaired = sum(unpaired_probs) / len(unpaired_probs) if unpaired_probs else 0.0
-
-        return avg_unpaired, mfe
+        profile = TargetAccessibilityProfile.fold(
+            target_sequence,
+            window_size=window_size,
+            max_bp_span=max_bp_span,
+            u_max=max(sirna_length, SEED_ANCHORED_WINDOW_NT),
+        )
+        return profile.site_accessibility(start_pos, sirna_length)
 
     def _calculate_end_stability(self, guide_end: str, passenger_end: str) -> float:
         """Calculate stability of duplex end using ViennaRNA.

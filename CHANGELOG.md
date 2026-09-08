@@ -7,7 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (`weight_set_version` 2.0.0 → 3.0.0): the accessibility term now folds the mRNA, not
+  the guide.** The `accessibility` composite term folded the **guide strand against itself** and
+  reported the result as target-site accessibility, which it is not: the code's own comment admitted
+  it used "the guide sequence as a proxy" because it had no transcript context. Against a real
+  RNAplfold target-site opening probability the old term explained r² = 0.01–0.04, it was quantised
+  to just 8 attainable values on a 23-mer with 35.6% of candidates pinned at its ceiling, and the
+  0.4–0.6 "optimal paired fraction" the docs and model described contradicted the code, which was
+  monotonic and paid maximum at 0.0.
+
+  It is replaced by `target_accessibility`, taking the same 0.13 weight: the log-scaled probability
+  that the 8 nt of the mRNA target site pairing **guide positions 1–8** are unpaired, from
+  `RNA.pfl_fold_up` on the transcript, folded once per transcript rather than once per candidate
+  (cheaper than the guide folds it replaces). Guide and target are antiparallel, so the guide seed
+  pairs the target site's **3' end** — that is the end scored. Against 2,779 siRNAs with measured
+  knockdown the seed-end window reaches Spearman ρ +0.267, against +0.067 for the same-length window
+  at the other end of the same site: anchoring it wrongly is a near-null, and a tracked test asserts
+  the control stays near null so a geometry inversion cannot pass silently. ρ ≈ +0.27 is ~7% of rank
+  variance — a genuine but weak term, consistent with 0.13 and not an argument for more.
+
+  Schema and API changes, all covered by the version bump:
+
+  - `ScoringWeights.accessibility` → `ScoringWeights.target_accessibility`; `COMPOSITE_TERM_NAMES`
+    renamed to match.
+  - `SiRNACandidate.score_accessibility` → `score_target_accessibility`; same rename in the
+    candidates CSV and `SiRNACandidateSchema`.
+  - New candidate/CSV columns `target_accessibility_p` (the scored input),
+    `target_accessibility_p_17mer` and `target_accessibility_p_site` (reported, never scored).
+  - Guide self-structure is **retained but no longer scored**: `structure`, `mfe` and
+    `paired_fraction` are still reported and `paired_fraction` is still the `EXCESS_PAIRING` gate
+    input. The contradictory "(optimal: 0.4-0.6)" was deleted from its description.
+  - `2.x` composite scores are not comparable with `3.x`. Note the term does not drive selection: an
+    ablation preserving the other weights left top-10 and top-20 bit-identical (ρ = 0.962). The
+    reason for the change is correctness and attribution, not better candidates.
+
+- **The Tafer et al. (2008) citation now describes what the code does.** `docs/models_and_scoring.md`
+  credited that paper (which scores mRNA local opening) for a term that folded the guide. It is now
+  cited for the concept only, with the statistic's own selection documented against the measured
+  benchmark it was chosen on.
+
+### Added
+
+- **`target_accessibility` RNAplfold settings are configuration, not constants.**
+  `DesignParameters.target_accessibility` carries `window_size` (W, default 150), `max_bp_span`
+  (L, default 100) and `log_floor` (default −5.0, capturing ~99% of observed sites). Exposed as
+  `--plfold-window`, `--plfold-max-bp-span` and `--accessibility-log-floor` on both `sirnaforge
+  workflow` and `sirnaforge design`, and as keyword arguments on `run_sirna_workflow`, each
+  defaulting to `None` so an unset value keeps the model default. They are configurable because they
+  move a site's accessibility percentile substantially; they are recorded in the run manifest, and
+  changing any of them changes the numeric scale of `composite_score`. `log_floor` is deliberately
+  fixed rather than per-transcript: a self-calibrating scale would make scores incomparable between
+  targets. `max_bp_span > window_size` is rejected at construction, because RNAplfold would silently
+  clamp it and the manifest would then misreport the run.
+
+- **A tracked regression fixture for the accessibility term.** `tests/unit/data/` carries a
+  deterministic 180-siRNA subset of the measured-knockdown benchmark of Huesken et al. 2005
+  (PMID 16025102; 8 transcripts, 17 KB) plus TP53-201, regenerable with
+  `scripts/build_accessibility_test_fixture.py`. Full citations, the redistribution route, the NCBI
+  accession list and the caveat that the primary paper is not open access (so the values are
+  unverified against it) are recorded in `tests/unit/data/README.md`. `scripts/validate_target_accessibility.py` runs the same three
+  checks against the full benchmark from a path argument. See also
+  `tests/unit/test_target_accessibility.py`, which covers the geometry control, the buried/open
+  sign test, the missing-value policy and the normalisation bounds — none of which had any test
+  coverage before.
+
+- **`filtered_hits_per_species` on the miRNA seed summary.** The per-species seed-region counts
+  were computed and then thrown away, so `*_mirna_summary.json` reported `total_hits: 0` next to
+  `hits_per_species: {hsa: 4}` — two different levels under adjacent keys, with no way to
+  reconcile the filtered total against a species. The filtered breakdown is now published
+  alongside the raw one, each total is the sum of its own mapping, and every species in
+  `species_analyzed` appears in both mappings reading 0 rather than going missing. Note that
+  `AggregatedMiRNASummary.hits_per_species` reuses the name at the filtered level (aggregation
+  reads the filtered analysis files), so it reconciles with `filtered_hits_per_species`.
+- `EnsemblClient.get_sequences()` for fetching many sequences in one call; `get_sequence()` and
+  the annotation client's internals accept an optional `aiohttp` session to share a connection.
+
 ### Fixed
+
+- **The accessibility calculation no longer skips the T→U normalisation, and two unreachable
+  fallbacks are gone.** The guide fold was handed the stored DNA spelling while its sibling
+  `calculate_melting_temperature` already normalised (affected 50 of 29,605 rows on a reference run,
+  none of them passing). The `except ImportError` fallbacks in `_calculate_accessibility_score` and
+  `_calculate_asymmetry_score` were unreachable — `import RNA` is unguarded at module scope — and
+  their existence is what made a correct calculation look like a failed one. Note for the record:
+  `mfe == 0.00` with an all-dots structure is ViennaRNA's open chain, the physical floor of the MFE,
+  **not** a sentinel or a failed fold; `calculate_target_accessibility`, which had zero callers and
+  raised `AttributeError` on the pinned ViennaRNA 2.7.2, has been repurposed rather than fixed.
+
+- **`min_asymmetry_score`, `max_paired_fraction` and `min_empirical_score` are reachable for the
+  first time.** Both entry points built `FilterCriteria` from `gc_min`/`gc_max` only — plus
+  `max_poly_runs` in `sirnaforge design` — so all three thresholds took their model defaults
+  unconditionally and setting them from the CLI, the environment or the Python API was a silent
+  no-op. This is the same defect class as `max_off_target_count` before it was exposed. They are now
+  `--min-asymmetry`, `--max-paired-fraction` and `--min-empirical` on both commands, and keyword
+  arguments on `run_sirna_workflow`, each defaulting to `None` so an unset value keeps the model
+  default rather than pinning it. Thresholds are passed through the `FilterCriteria` constructor
+  rather than `model_copy`, so the declared bounds still apply and an out-of-range value raises
+  instead of taking effect: `min_asymmetry_score` remains bounded to 0.3–1.0, so the asymmetry gate
+  can be loosened but not switched off. Behaviour is unchanged for any run that does not set them.
+  Two notes on the newly reachable knobs: the 0.65 asymmetry default has never been calibrated
+  against measured potency, and `max_paired_fraction` is quantised by the dot-bracket to 2k/L, so on
+  a 21–23mer only a few values are attainable and nearby thresholds are byte-identical.
 
 - **Gene queries fetch transcript sequences in one request per 50 ids, not one per transcript.**
   A 40-transcript gene meant 40 serial `GET /sequence/id` calls, each on a fresh connection:
@@ -20,18 +122,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a genuine 404 is still reported as one. `sirnaforge workflow TP53 --skip-off-targets` went
   from 619s to 109s locally with all 34 transcripts retrieved on every run.
 
-### Added
-
-- **`filtered_hits_per_species` on the miRNA seed summary.** The per-species seed-region counts
-  were computed and then thrown away, so `*_mirna_summary.json` reported `total_hits: 0` next to
-  `hits_per_species: {hsa: 4}` — two different levels under adjacent keys, with no way to
-  reconcile the filtered total against a species. The filtered breakdown is now published
-  alongside the raw one, each total is the sum of its own mapping, and every species in
-  `species_analyzed` appears in both mappings reading 0 rather than going missing. Note that
-  `AggregatedMiRNASummary.hits_per_species` reuses the name at the filtered level (aggregation
-  reads the filtered analysis files), so it reconciles with `filtered_hits_per_species`.
-- `EnsemblClient.get_sequences()` for fetching many sequences in one call; `get_sequence()` and
-  the annotation client's internals accept an optional `aiohttp` session to share a connection.
 
 ## [0.6.0] - 2026-09-03
 
@@ -55,7 +145,7 @@ is now **uncapped**. A 0.5.x command re-run unchanged will return more candidate
   `DesignParameters` had no `offtarget_filters` field and is `extra="forbid"`, so the `getattr`
   that read it in `_check_offtarget_filters` could never resolve — the ceiling was hard-wired at 3
   with no route in from the CLI, the environment or the Python API. The field now exists and is
-  exposed as `--max-off-targets`. 15 is calibrated against the 94-design MSH3 reference set: it is
+  exposed as `--max-off-targets`. 15 is calibrated against one internal 94-design reference set: it is
   the lowest ceiling at which the gate enriches for expert-chosen guides rather than depleting them
   (at 3 the gate was depleted, at 10 it carried no information). Single-target calibration —
   revisit if a second reference set disagrees. Anything relying on the old ceiling must now pass

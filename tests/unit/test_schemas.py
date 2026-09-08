@@ -80,13 +80,17 @@ class TestSiRNACandidateSchema:
             "conservation_score",
             "score_asymmetry",
             "score_gc_content",
-            "score_accessibility",
+            "score_target_accessibility",
             "score_empirical",
             "score_off_target",
             "score_isoform_coverage",
             "score_conservation",
             "scored_after_screening",
             "weight_set_version",
+            # Target-site accessibility (issue #95)
+            "target_accessibility_p",
+            "target_accessibility_p_17mer",
+            "target_accessibility_p_site",
         }
 
         expected_cols = len(test_data.keys()) + len(extra_columns)
