@@ -5,9 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - Unreleased
 
-### Changed
+Scoring correctness release. The `accessibility` composite term folded the guide strand against
+itself while being documented and cited as target-site accessibility; it is replaced by a real
+RNAplfold local-opening probability on the transcript, chosen against 2,779 siRNAs with measured
+knockdown. Composite scores are **not comparable to 0.6.x**. Three filter thresholds that had no
+route in from any entry point are also now reachable.
+
+Not yet addressed, and being reworked separately: composite weights are renormalised over whichever
+terms happen to be populated, so every weight doubles at the design stage, and the miRNA biogenesis
+adjustment divides every base score by 1.25 rather than adding to it.
+
+### Breaking changes
 
 - **BREAKING (`weight_set_version` 2.0.0 → 3.0.0): the accessibility term now folds the mRNA, not
   the guide.** The `accessibility` composite term folded the **guide strand against itself** and
@@ -39,9 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Guide self-structure is **retained but no longer scored**: `structure`, `mfe` and
     `paired_fraction` are still reported and `paired_fraction` is still the `EXCESS_PAIRING` gate
     input. The contradictory "(optimal: 0.4-0.6)" was deleted from its description.
-  - `2.x` composite scores are not comparable with `3.x`. Note the term does not drive selection: an
-    ablation preserving the other weights left top-10 and top-20 bit-identical (ρ = 0.962). The
-    reason for the change is correctness and attribution, not better candidates.
+  - `2.x` composite scores are not comparable with `3.x`. Measured on a 1,036-candidate TP53 design
+    run, the replacement retains 33 of the top 50 (34% churn) at overall rank ρ = 0.847. That is
+    more movement than an ablation of the *old* term predicted (top-20 bit-identical, ρ = 0.962),
+    and the difference is the point: the term's influence is essentially unchanged (feature sd 0.210
+    → 0.222) but it went from 8 attainable values with 35.6% of candidates tied at the ceiling to
+    2,453 values with none tied, so it now breaks ties it previously could not. The reason for the
+    change is correctness and attribution, not better candidates.
+
+### Changed
 
 - **The Tafer et al. (2008) citation now describes what the code does.** `docs/models_and_scoring.md`
   credited that paper (which scores mRNA local opening) for a term that folded the guide. It is now
