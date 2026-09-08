@@ -2,7 +2,7 @@
 
 import json
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 from pandera.typing import DataFrame
@@ -34,20 +34,30 @@ DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
 # Reynolds rule adjusts a 0.5 base score by +/-0.1 per criterion, so it can never
 # reach 1.0; min_empirical_score is bounded by these so an unsatisfiable
 # threshold fails at construction instead of rejecting every candidate.
+# The max is 0.6, not 0.7: issue #96 deleted the G/C-at-guide-position-1 clause
+# (it contradicted the A/U-at-position-1 biogenesis rule), leaving {0.4, 0.5, 0.6}.
 EMPIRICAL_SCORE_MIN = 0.4
-EMPIRICAL_SCORE_MAX = 0.7
+EMPIRICAL_SCORE_MAX = 0.6
 DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
 
-# Canonical composite-score term names, shared by ScoringWeights and the scorer.
+# Every scored term name, in reporting order. This is a *union* over the named weight vectors
+# below, used for column ordering and for iterating contributions -- it is NOT a weight vector
+# and nothing validates against it. Each vector validates against its own TERM_NAMES, because
+# the three vectors score different terms (3, 4 and 7 of them) and a single global tuple made a
+# missing term look like a licence to renormalise.
 COMPOSITE_TERM_NAMES = (
+    "off_target",
+    "target_accessibility",
     "asymmetry",
     "gc_content",
-    "target_accessibility",
-    "empirical",
-    "off_target",
-    "isoform_coverage",
-    "conservation",
+    "ago_start",
+    "pos1_mismatch",
+    "supp_13_16",
 )
+
+# Hand-authored weight vectors must already sum to 1.0. The tolerance covers float
+# representation of two-decimal literals only -- it is not room to be approximately normalised.
+WEIGHT_SUM_TOLERANCE = 1e-9
 
 # RNAplfold parameters for target-site accessibility. W=150/L=100 sits near the plateau of the
 # benchmark correlation (rho +0.249 at W=40 rising to +0.269 at W=240, n=2,779 siRNAs with measured
@@ -95,7 +105,8 @@ class FilterCriteria(BaseModel):
         ),
     )
 
-    # Empirical (simplified Reynolds) design-rule filter
+    # Empirical (simplified Reynolds) design-rule filter. Since issue #96 the empirical score is
+    # gate-only: it is computed and reported, and this threshold is the only thing that reads it.
     min_empirical_score: float = Field(
         default=DEFAULT_MIN_EMPIRICAL_SCORE,
         ge=EMPIRICAL_SCORE_MIN,
@@ -103,7 +114,22 @@ class FilterCriteria(BaseModel):
         description=(
             "Minimum empirical design-rule score. Applied to the 'empirical' component score, "
             f"whose attainable range is {EMPIRICAL_SCORE_MIN}-{EMPIRICAL_SCORE_MAX}; the default rejects only "
-            "candidates penalised at guide position 19 with no G/C at position 1."
+            "candidates carrying C at guide position 19. Gate only -- 'empirical' is not a scored term."
+        ),
+    )
+
+    # Protein-coding isoform coverage gate. Defaults to None (off) so default behaviour is
+    # unchanged: coverage is computed and reported on every candidate either way, and no ceiling
+    # has been calibrated against truth data. Only readable post-screening, since the numerator
+    # comes from the guide -> source-transcript map built during screening.
+    min_isoform_coverage: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Minimum protein-coding isoform coverage fraction gating LOW_ISOFORM_COVERAGE "
+            "(None = no gate, the default). Applied post-screening to SiRNACandidate.isoform_coverage; "
+            "a candidate whose coverage could not be computed is never failed by it."
         ),
     )
 
@@ -174,17 +200,67 @@ class OffTargetFilterCriteria(BaseModel):
     )
 
 
-class ScoringWeights(BaseModel):
-    """Relative weights for composite siRNA scoring components."""
+class WeightVector(BaseModel):
+    """A named, hand-authored weight vector over one explicit term set.
 
-    asymmetry: float = Field(
-        default=0.12, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
-    )
-    gc_content: float = Field(
-        default=0.10, ge=0, le=1, description="GC content optimization weight (stability balance)"
-    )
+    Nothing in siRNAforge scales, renormalises or divides these numbers at runtime. A vector that
+    does not already sum to 1.0, or that carries no name, is a construction-time error -- which is
+    what makes the weight recorded in the manifest the weight that actually applied.
+
+    Subclasses declare ``VECTOR_NAME`` and ``TERM_NAMES``; the validator below reads both, so a
+    subclass cannot forget either and still be usable.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    VECTOR_NAME: ClassVar[str] = ""
+    TERM_NAMES: ClassVar[tuple[str, ...]] = ()
+
+    @model_validator_typed(mode="after")
+    def named_and_normalised(self) -> "WeightVector":
+        """Reject an unnamed, empty or mis-summed vector at construction."""
+        cls = type(self)
+        if not cls.VECTOR_NAME:
+            raise ValueError(f"{cls.__name__} declares no VECTOR_NAME; every weight vector must be named")
+        if not cls.TERM_NAMES:
+            raise ValueError(f"{cls.__name__} declares no TERM_NAMES; a vector must name the terms it scores")
+        total = sum(getattr(self, term) for term in cls.TERM_NAMES)
+        if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
+            raise ValueError(
+                f"Weight vector '{cls.VECTOR_NAME}' must sum to exactly 1.0, got {total:.6f}. "
+                "Weights are never renormalised at runtime, so a vector that does not sum to 1.0 "
+                "would silently rescale every score it produced."
+            )
+        return self
+
+    @property
+    def name(self) -> str:
+        """Vector name recorded on every row and in the run manifest."""
+        return type(self).VECTOR_NAME
+
+    @property
+    def terms(self) -> tuple[str, ...]:
+        """Exactly the terms this vector scores; the scorer requires all of them."""
+        return type(self).TERM_NAMES
+
+    def as_mapping(self) -> dict[str, float]:
+        """Term name -> weight, in declaration order."""
+        return {term: float(getattr(self, term)) for term in type(self).TERM_NAMES}
+
+
+class DesignWeights(WeightVector):
+    """``design_v4``: the design-stage vector, over the three terms computable before screening.
+
+    ``design_score`` is NOT comparable with ``composite_score``: it is a different vector over a
+    different term set, and it is systematically optimistic because the term it lacks
+    (``off_target``) can only ever subtract evidence.
+    """
+
+    VECTOR_NAME: ClassVar[str] = "design_v4"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = ("target_accessibility", "asymmetry", "gc_content")
+
     target_accessibility: float = Field(
-        default=0.13,
+        default=0.40,
         ge=0,
         le=1,
         description=(
@@ -192,29 +268,123 @@ class ScoringWeights(BaseModel):
             "pairing guide positions 1-8 are unpaired), from RNAplfold on the transcript"
         ),
     )
-    empirical: float = Field(
-        default=0.15, ge=0, le=1, description="Empirical design rules weight (established patterns)"
+    asymmetry: float = Field(
+        default=0.35, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
     )
+    gc_content: float = Field(
+        default=0.25, ge=0, le=1, description="GC content optimization weight (stability balance)"
+    )
+
+
+class PostScreenSiRNAWeights(WeightVector):
+    """``postscreen_sirna_v4``: ``design_v4``'s terms plus ``off_target``, one extra term.
+
+    ``off_target`` holds its nominal 0.25 while the scored budget shrank from six terms to four, so
+    its share of the scored budget falls from 0.25/0.60 to 0.25/1.00. That is a deliberate reduction
+    in how much specificity drives ranking, taken because the term measured 2.24x its nominal share
+    of composite variance on the reference run.
+    """
+
+    VECTOR_NAME: ClassVar[str] = "postscreen_sirna_v4"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = ("off_target", "target_accessibility", "asymmetry", "gc_content")
+
     off_target: float = Field(
         default=0.25,
         ge=0,
         le=1,
         description="Post-screen genuine off-target specificity weight (on-target, ortholog and repeat excluded)",
     )
-    isoform_coverage: float = Field(
-        default=0.15, ge=0, le=1, description="Protein-coding isoform coverage weight (targeting completeness)"
+    target_accessibility: float = Field(
+        default=0.30, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
     )
-    conservation: float = Field(
-        default=0.10, ge=0, le=1, description="Cross-species ortholog conservation weight (specificity check)"
+    asymmetry: float = Field(
+        default=0.25, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+    )
+    gc_content: float = Field(
+        default=0.20, ge=0, le=1, description="GC content optimization weight (stability balance)"
     )
 
-    @model_validator_typed(mode="after")
-    def weights_sum_to_one(self) -> "ScoringWeights":
-        """Validate that scoring weights sum to approximately 1.0."""
-        total = sum(getattr(self, term) for term in COMPOSITE_TERM_NAMES)
-        if not (0.95 <= total <= 1.05):
-            raise ValueError(f"Scoring weights must sum to 1.0, got {total:.3f}")
-        return self
+
+class PostScreenMiRNAWeights(WeightVector):
+    """``postscreen_mirna_v4``: the miRNA-biogenesis-aware post-screen vector, 7 declared terms.
+
+    Hand-authored, not derived from ``postscreen_sirna_v4``: deriving it by scaling would be the
+    1.25 divisor in a new costume. The three biogenesis terms replaced an undeclared bonus that was
+    folded into the score and then divided out of it, so ``--design-mode mirna`` used to move every
+    weight by a factor absent from the manifest.
+    """
+
+    VECTOR_NAME: ClassVar[str] = "postscreen_mirna_v4"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = (
+        "off_target",
+        "target_accessibility",
+        "asymmetry",
+        "gc_content",
+        "ago_start",
+        "pos1_mismatch",
+        "supp_13_16",
+    )
+
+    off_target: float = Field(default=0.20, ge=0, le=1, description="Post-screen genuine off-target specificity weight")
+    target_accessibility: float = Field(
+        default=0.22, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
+    )
+    asymmetry: float = Field(default=0.18, ge=0, le=1, description="Thermodynamic asymmetry weight")
+    gc_content: float = Field(default=0.15, ge=0, le=1, description="GC content optimization weight")
+    ago_start: float = Field(
+        default=0.10, ge=0, le=1, description="Argonaute loading preference weight (A/U at guide position 1)"
+    )
+    pos1_mismatch: float = Field(
+        default=0.05, ge=0, le=1, description="Position-1 pairing weight (G:U wobble or mismatch preferred)"
+    )
+    supp_13_16: float = Field(
+        default=0.10, ge=0, le=1, description="3' supplementary pairing weight (guide positions 13-16)"
+    )
+
+
+class ScoringWeights(BaseModel):
+    """The named weight vectors this run may score with, one per (stage, design mode).
+
+    A vector is chosen, never combined: ``vector_for`` returns exactly one, its name is stamped on
+    the candidate and written to the manifest, and the scorer requires every term it declares. There
+    is deliberately no flat weight attribute here -- a single flat vector is what let the scorer
+    renormalise over "whichever terms happened to be populated".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    design: DesignWeights = Field(
+        default_factory=DesignWeights, description="Design-stage vector (design_v4), scores design_score"
+    )
+    postscreen_sirna: PostScreenSiRNAWeights = Field(
+        default_factory=PostScreenSiRNAWeights,
+        description="Post-screen siRNA vector (postscreen_sirna_v4), scores composite_score",
+    )
+    postscreen_mirna: PostScreenMiRNAWeights = Field(
+        default_factory=PostScreenMiRNAWeights,
+        description="Post-screen miRNA-biogenesis-aware vector (postscreen_mirna_v4), scores composite_score",
+    )
+
+    def vector_for(self, *, post_screen: bool, design_mode: "DesignMode | None" = None) -> WeightVector:
+        """Return the one vector that applies, by stage and design mode.
+
+        The design stage uses a single vector in every mode: the miRNA biogenesis terms need
+        screening-independent inputs but are only meaningful against the post-screen term set, and
+        giving miRNA mode its own design vector would make two design_scores incomparable.
+        """
+        if not post_screen:
+            return self.design
+        if design_mode == DesignMode.MIRNA:
+            return self.postscreen_mirna
+        return self.postscreen_sirna
+
+    def all_vectors(self) -> tuple[WeightVector, ...]:
+        """Every declared vector, for manifest recording and whole-config validation."""
+        return (self.design, self.postscreen_sirna, self.postscreen_mirna)
+
+    def as_manifest(self) -> dict[str, dict[str, float]]:
+        """Vector name -> its weights, so a row's ``weight_vector`` resolves to the numbers used."""
+        return {vector.name: vector.as_mapping() for vector in self.all_vectors()}
 
 
 class TargetAccessibilityConfig(BaseModel):
@@ -295,17 +465,10 @@ class MiRNADesignConfig(BaseModel):
         default="MIRNA_SEED_7_8", description="Off-target analysis preset (seed-based matching)"
     )
 
-    # Scoring weights for miRNA-specific features
-    scoring_weights: dict[str, float] = Field(
-        default_factory=lambda: {
-            "ago_start_bonus": 0.1,  # Bonus for A/U at guide position 1
-            "pos1_mismatch_bonus": 0.05,  # Bonus for G:U wobble or mismatch at position 1
-            "seed_clean_bonus": 0.15,  # Bonus for clean seed region (positions 2-8)
-            "supp_13_16_bonus": 0.1,  # Bonus for 3' supplementary pairing potential
-            "five_p_end_destabilization_bonus": 0.1,  # Bonus for destabilized 5' guide end
-        },
-        description="Scoring weight modifiers for miRNA-specific features",
-    )
+    # The miRNA-specific scoring weights live in PostScreenMiRNAWeights, not here. This config
+    # carries thresholds and format defaults only. `seed_clean_bonus` and
+    # `five_p_end_destabilization_bonus` used to be declared here and read nowhere in src/ --
+    # 0.25 of declared bonus weight that did nothing -- and were deleted in issue #96.
 
     # Pri-miRNA hairpin validation (enabled only when hairpin context is provided)
     enable_pri_hairpin_validation: bool = Field(
@@ -587,50 +750,86 @@ class SiRNACandidate(BaseModel):
         default=1.0, ge=0, le=1, description="Fraction of input transcripts targeted by this guide (1.0 = all)"
     )
 
-    # Post-screen sub-scores (isoform coverage and conservation)
+    # Reported, non-scoring evidence. Both left the composite in issue #96 -- they are still
+    # computed on every candidate and still written to every row, but no weight reads them.
+    # isoform_coverage additionally feeds the optional FilterCriteria.min_isoform_coverage gate.
     isoform_coverage: float | None = Field(
         default=None,
         ge=0,
         le=1,
-        description="Protein-coding isoform coverage sub-score (hit/total, inactive if no protein-coding isoforms)",
+        description=(
+            "Protein-coding isoform coverage (hit/total, None if no protein-coding isoforms). "
+            "Reported and the optional LOW_ISOFORM_COVERAGE gate input; not a scoring term."
+        ),
     )
     conservation_score: float | None = Field(
         default=None,
         ge=0,
         le=1,
-        description="Cross-species conservation sub-score (ortholog species hit / requested, inactive in single-species)",
+        description=(
+            "Cross-species conservation fraction (ortholog species hit / requested, None in "
+            "single-species runs). Reported only; not a scoring term."
+        ),
     )
 
-    # Composite scoring
+    # Composite scoring. Two scores on two declared vectors, deliberately not one field:
+    #   design_score    -- design_v4, 3 terms, available before screening
+    #   composite_score -- postscreen_{sirna,mirna}_v4, available only after screening
+    # They are NOT comparable: different term sets, and design_score is systematically optimistic
+    # because the term it lacks (off_target) can only subtract evidence.
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
-    composite_score: float = Field(ge=0, le=100, description="Overall siRNA quality score (higher is better)")
-    score_asymmetry: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of asymmetry term to composite score"
+    design_score: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Design-stage score on the design_v4 vector (target_accessibility, asymmetry, "
+            "gc_content). None when a term could not be computed. Not comparable with composite_score."
+        ),
     )
-    score_gc_content: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of GC content term to composite score"
-    )
-    score_target_accessibility: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of target-site accessibility term to composite score"
-    )
-    score_empirical: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of empirical term to composite score"
+    composite_score: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Post-screen siRNA quality score, higher is better. None until off-target screening has "
+            "produced usable evidence for this candidate -- it is not computable before that."
+        ),
     )
     score_off_target: float | None = Field(
         default=None, ge=0, le=100, description="Contribution of off-target term to composite score"
     )
-    score_isoform_coverage: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of isoform coverage term to composite score"
+    score_target_accessibility: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of target-site accessibility term to the score"
     )
-    score_conservation: float | None = Field(
-        default=None, ge=0, le=100, description="Contribution of conservation term to composite score"
+    score_asymmetry: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of asymmetry term to the score"
+    )
+    score_gc_content: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of GC content term to the score"
+    )
+    score_ago_start: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of the Argonaute-start term (miRNA mode only)"
+    )
+    score_pos1_mismatch: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of the position-1 pairing term (miRNA mode only)"
+    )
+    score_supp_13_16: float | None = Field(
+        default=None, ge=0, le=100, description="Contribution of the 3' supplementary pairing term (miRNA mode only)"
     )
     scored_after_screening: bool = Field(
         default=False,
-        description="True if composite score includes post-screen terms (off-target, isoform, conservation)",
+        description="True if composite_score was computed post-screening (the only stage that computes it)",
     )
     weight_set_version: str = Field(
-        default="", description="Scoring weight set version that produced composite_score (empty = not yet scored)"
+        default="", description="Scoring weight set version that produced the score (empty = not yet scored)"
+    )
+    weight_vector: str = Field(
+        default="",
+        description=(
+            "Name of the hand-authored weight vector that produced the score (design_v4, "
+            "postscreen_sirna_v4 or postscreen_mirna_v4), so a row traces to the exact weights used"
+        ),
     )
 
     # Quality flags
@@ -644,6 +843,7 @@ class SiRNACandidate(BaseModel):
         EXCESS_PAIRING = "EXCESS_PAIRING"
         LOW_ASYMMETRY = "LOW_ASYMMETRY"
         LOW_EMPIRICAL_SCORE = "LOW_EMPIRICAL_SCORE"
+        LOW_ISOFORM_COVERAGE = "LOW_ISOFORM_COVERAGE"
         DIRTY_CONTROL = "DIRTY_CONTROL"
         REPEAT_ELEMENT = "REPEAT_ELEMENT"
         EXCESS_OFF_TARGETS = "EXCESS_OFF_TARGETS"
@@ -738,6 +938,20 @@ class SiRNACandidate(BaseModel):
         return f">{self.id}\n{self.guide_sequence}\n"
 
 
+def ranking_score(candidate: SiRNACandidate) -> float:
+    """The number a candidate is currently ranked by.
+
+    ``composite_score`` when screening produced it, otherwise the design-stage ``design_score``.
+    The two are not comparable, so callers that may hold a mixture must keep them apart (see
+    SiRNAWorkflow._apply_post_screen_ranking); this helper only answers "which number does this
+    candidate have". An unscored candidate sorts last at 0.0 rather than raising: rejected
+    candidates and pre-designed guides legitimately have neither.
+    """
+    if candidate.composite_score is not None:
+        return candidate.composite_score
+    return candidate.design_score if candidate.design_score is not None else 0.0
+
+
 def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
     """Map one SiRNACandidate to its canonical output-row dict.
 
@@ -812,17 +1026,21 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # Post-screen sub-scores
         "isoform_coverage": candidate.isoform_coverage,
         "conservation_score": candidate.conservation_score,
-        # Composite scoring
+        # Scoring. design_score and composite_score are different vectors over different term
+        # sets, so both are emitted and neither is filled in from the other.
+        "design_score": candidate.design_score,
         "composite_score": candidate.composite_score,
+        "score_off_target": candidate.score_off_target,
+        "score_target_accessibility": candidate.score_target_accessibility,
         "score_asymmetry": candidate.score_asymmetry,
         "score_gc_content": candidate.score_gc_content,
-        "score_target_accessibility": candidate.score_target_accessibility,
-        "score_empirical": candidate.score_empirical,
-        "score_off_target": candidate.score_off_target,
-        "score_isoform_coverage": candidate.score_isoform_coverage,
-        "score_conservation": candidate.score_conservation,
+        "score_ago_start": _maybe_attr("score_ago_start"),
+        "score_pos1_mismatch": _maybe_attr("score_pos1_mismatch"),
+        "score_supp_13_16": _maybe_attr("score_supp_13_16"),
+        "empirical_score": cs.get("empirical"),
         "scored_after_screening": candidate.scored_after_screening,
         "weight_set_version": candidate.weight_set_version,
+        "weight_vector": _maybe_attr("weight_vector", ""),
         "passes_filters": passes_filters,
         # Chemical modifications
         "guide_overhang": mod_summary.get("guide_overhang", ""),
@@ -915,6 +1133,6 @@ class DesignResult(BaseModel):
             "filtered_candidates": self.filtered_candidates,
             "top_candidates": len(self.top_candidates),
             "processing_time": f"{self.processing_time:.2f}s",
-            "best_score": max([c.composite_score for c in self.top_candidates]) if self.top_candidates else 0,
+            "best_score": max([ranking_score(c) for c in self.top_candidates]) if self.top_candidates else 0,
             "tool_versions": self.tool_versions,
         }

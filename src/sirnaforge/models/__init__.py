@@ -24,11 +24,15 @@ from .sirna import (
     DesignMode,
     DesignParameters,
     DesignResult,
+    DesignWeights,
     FilterCriteria,
     MiRNADesignConfig,
+    PostScreenMiRNAWeights,
+    PostScreenSiRNAWeights,
     ScoringWeights,
     SequenceType,
     SiRNACandidate,
+    WeightVector,
 )
 from .transcript_annotation import Interval, TranscriptAnnotation, TranscriptAnnotationBundle
 from .variant import (
@@ -61,11 +65,15 @@ __all__ = [
     "DesignMode",
     "DesignParameters",
     "DesignResult",
+    "DesignWeights",
     "FilterCriteria",
     "MiRNADesignConfig",
+    "PostScreenMiRNAWeights",
+    "PostScreenSiRNAWeights",
     "ScoringWeights",
     "SequenceType",
     "SiRNACandidate",
+    "WeightVector",
     # Chemical modification models
     "ChemicalModification",
     "ConfirmationStatus",
