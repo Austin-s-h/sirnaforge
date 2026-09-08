@@ -23,7 +23,6 @@ from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
     FilterCriteria,
-    MiRNADesignConfig,
     SiRNACandidate,
 )
 from sirnaforge.workflow import run_sirna_workflow
@@ -216,42 +215,48 @@ def test_new_filter_label_survives_csv_schema_validation(realistic_transcripts_f
 
 
 @pytest.mark.unit
-def test_mirna_composite_score_does_not_pile_up_at_the_ceiling(realistic_transcripts_fasta):
-    """MiRNA bonuses must rescale the score, not clamp it at 100.
+def test_design_scores_do_not_pile_up_at_the_ceiling(realistic_transcripts_fasta):
+    """The design score must discriminate at the top, not park candidates at 100.
 
-    Clamping parked the best candidates at exactly 100.0 -- nine of them on this
-    transcript -- so the top of the ranking carried no ordering information.
+    An earlier miRNA implementation clamped the bonus-inflated score, parking the best candidates
+    at exactly 100.0 -- nine of them on this transcript -- so the top of the ranking carried no
+    ordering information. design_v4 sums to 1.0 and takes features in [0, 1], so 100 is reachable
+    only by a candidate perfect on all three terms; nothing is clamped into it.
     """
     record = next(SeqIO.parse(realistic_transcripts_fasta, "fasta"))
     designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
 
     result = designer.design_from_sequence(str(record.seq).upper(), record.id)
-    scores = [c.composite_score for c in result.candidates]
+    scores = [c.design_score for c in result.candidates if c.design_score is not None]
 
+    assert scores, "no candidate received a design score"
     assert all(0.0 <= score <= 100.0 for score in scores)
     assert sum(1 for score in scores if score == 100.0) == 0, "candidates are still clamped at the ceiling"
 
 
 @pytest.mark.unit
-def test_mirna_composite_score_is_the_normalised_sirna_score(realistic_transcripts_fasta):
-    """The miRNA score is (base + bonus) rescaled by the maximum attainable bonus."""
+def test_mirna_mode_does_not_alter_the_design_score(realistic_transcripts_fasta):
+    """Issue #96: the design stage scores one vector, so miRNA mode and siRNA mode agree exactly.
+
+    Before the fix miRNA mode folded the biogenesis bonuses into the design-stage composite and
+    divided the result by 1.25, so every declared weight was silently scaled by 0.80 and a
+    candidate earning no bonus kept only 80% of its score. The biogenesis terms are now declared
+    members of postscreen_mirna_v4 and enter only once off_target exists.
+    """
     record = next(SeqIO.parse(realistic_transcripts_fasta, "fasta"))
     sequence = str(record.seq).upper()
-    weights = MiRNADesignConfig().scoring_weights
-    max_bonus = weights["ago_start_bonus"] + weights["pos1_mismatch_bonus"] + weights["supp_13_16_bonus"]
 
     base = SiRNADesigner(DesignParameters()).design_from_sequence(sequence, record.id)
     mirna = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA)).design_from_sequence(sequence, record.id)
-    base_scores = {c.id: c.composite_score for c in base.candidates}
+    base_scores = {c.id: c.design_score for c in base.candidates}
 
-    for candidate in mirna.candidates[:50]:
-        bonus = weights["supp_13_16_bonus"] * candidate.supp_13_16_score
-        if candidate.guide_pos1_base in ("A", "U", "T"):
-            bonus += weights["ago_start_bonus"]
-        if candidate.pos1_pairing_state in ("wobble", "mismatch"):
-            bonus += weights["pos1_mismatch_bonus"]
-        expected = (base_scores[candidate.id] + bonus * 100) / (1.0 + max_bonus)
-        assert candidate.composite_score == pytest.approx(expected)
+    assert len(mirna.candidates) == len(base.candidates)
+    for candidate in mirna.candidates:
+        assert candidate.design_score == pytest.approx(base_scores[candidate.id])
+        assert candidate.weight_vector == "design_v4"
+        # The biogenesis evidence is still recorded -- it is just not scored yet.
+        assert candidate.supp_13_16_score is not None
+        assert candidate.component_scores["ago_start"] in (0.0, 1.0)
 
 
 @pytest.mark.unit

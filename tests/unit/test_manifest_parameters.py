@@ -12,7 +12,12 @@ from pydantic import ValidationError
 
 from sirnaforge import __version__
 from sirnaforge.core.scoring import COMPOSITE_TERMS, SCORING_WEIGHT_SET_VERSION
-from sirnaforge.models.sirna import DesignParameters, FilterCriteria, ScoringWeights
+from sirnaforge.models.sirna import (
+    DesignParameters,
+    FilterCriteria,
+    PostScreenSiRNAWeights,
+    ScoringWeights,
+)
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 
 
@@ -45,7 +50,7 @@ def test_manifest_records_mode_weights_and_version(tmp_path):
     """The manifest also carries the scoring weights, design mode and tool version."""
     manifest = _manifest(tmp_path)
 
-    assert manifest["design_parameters"]["scoring"]["off_target"] == 0.25
+    assert manifest["design_parameters"]["scoring"]["postscreen_sirna"]["off_target"] == 0.25
     assert manifest["design_parameters"]["design_mode"] == "sirna"
     assert manifest["tool_version"] == __version__
     assert json.dumps(manifest), "manifest must stay JSON-serialisable"
@@ -61,22 +66,28 @@ def test_manifest_records_the_weight_set_version(tmp_path):
     scoring = _manifest(tmp_path)["scoring"]
 
     assert scoring["weight_set_version"] == SCORING_WEIGHT_SET_VERSION
-    assert scoring["active_terms"] == list(COMPOSITE_TERMS)
-    # The recorded weights must be the ones actually applied, not a restatement of the defaults.
-    assert scoring["weights"] == DesignParameters().scoring.model_dump(mode="json")
+    assert scoring["scored_terms"] == list(COMPOSITE_TERMS)
+    # Issue #96: each vector is recorded under its own NAME, because that name is stamped on every
+    # candidate row -- a score without its vector cannot be traced to the weights that made it.
+    assert set(scoring["vectors"]) == {"design_v4", "postscreen_sirna_v4", "postscreen_mirna_v4"}
+    assert scoring["vectors"] == DesignParameters().scoring.as_manifest()
+    assert scoring["vector_terms"]["design_v4"] == ["target_accessibility", "asymmetry", "gc_content"]
+    # Terms that are computed and reported but score nothing must be named as such, or their
+    # absence from the weights reads as an omission.
+    assert "empirical" in scoring["reported_not_scored"]
+    assert "conservation" in scoring["reported_not_scored"]
 
 
 @pytest.mark.unit
 def test_manifest_weights_track_a_custom_weight_set(tmp_path):
     """A run with reweighted scoring must record its own weights, not the defaults."""
     custom = ScoringWeights(
-        asymmetry=0.10,
-        gc_content=0.10,
-        target_accessibility=0.10,
-        empirical=0.10,
-        off_target=0.40,
-        isoform_coverage=0.10,
-        conservation=0.10,
+        postscreen_sirna=PostScreenSiRNAWeights(
+            off_target=0.40,
+            target_accessibility=0.30,
+            asymmetry=0.20,
+            gc_content=0.10,
+        )
     )
     params = DesignParameters(scoring=custom)
     config = WorkflowConfig(output_dir=tmp_path / "custom", gene_query="tp53", design_params=params)
@@ -87,8 +98,10 @@ def test_manifest_weights_track_a_custom_weight_set(tmp_path):
         orf_report=tmp_path / "orf.tsv",
     )
 
-    assert manifest["scoring"]["weights"]["off_target"] == 0.40
-    assert manifest["scoring"]["weights"]["asymmetry"] == 0.10
+    assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["off_target"] == 0.40
+    assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["gc_content"] == 0.10
+    # The untouched vectors still record their own declared numbers.
+    assert manifest["scoring"]["vectors"]["design_v4"]["target_accessibility"] == 0.40
 
 
 @pytest.mark.unit
@@ -98,5 +111,5 @@ def test_manifest_cannot_record_an_unnormalisable_weight_set(tmp_path):
     Catching it here rather than in the scorer is the point -- a misweighted run must never get
     far enough to produce a plausible-looking score and a manifest describing it.
     """
-    with pytest.raises(ValidationError, match="sum to 1.0"):
-        ScoringWeights(off_target=0.9)
+    with pytest.raises(ValidationError, match="sum to exactly 1.0"):
+        ScoringWeights(postscreen_sirna=PostScreenSiRNAWeights(off_target=0.9))

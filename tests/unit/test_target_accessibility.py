@@ -33,6 +33,7 @@ from Bio.Seq import Seq
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.core.scoring import (
     SCORING_WEIGHT_SET_VERSION,
+    ScoringError,
     compute_composite,
     target_accessibility_sub_score,
 )
@@ -286,27 +287,26 @@ def test_missing_accessibility_is_none_not_a_default():
 
 
 @pytest.mark.unit
-def test_missing_accessibility_never_yields_the_maximum_score():
-    """The whole point of the None policy: a missing input must not score like a perfect one.
+def test_missing_accessibility_never_yields_a_score_at_all():
+    """The None policy, as issue #96 leaves it: a missing input yields no score, not a rescaled one.
 
-    Weights are renormalised over the terms that are present, so the composite of a candidate
-    without accessibility evidence must equal the three-term renormalised score -- not the
-    four-term score with the term pinned at 1.0.
+    Under #95 the term was dropped and the remaining weights renormalised. Issue #96 deleted every
+    runtime weight operation, so there is nothing left to renormalise onto: a candidate without
+    accessibility evidence has no design_score. That is stricter than the old behaviour and keeps
+    the guarantee this test was written for -- a missing input must never score like a good one.
     """
-    weights = ScoringWeights()
-    present = {"asymmetry": 0.8, "gc_content": 0.6, "empirical": 0.5}
+    vector = ScoringWeights().design
+    present = {"asymmetry": 0.8, "gc_content": 0.6}
 
-    without = compute_composite(dict(present), weights)
-    with_best = compute_composite({**present, "target_accessibility": 1.0}, weights)
-    with_worst = compute_composite({**present, "target_accessibility": 0.0}, weights)
+    with pytest.raises(ScoringError, match="target_accessibility"):
+        compute_composite(dict(present), vector)
 
-    assert "target_accessibility" not in without.active_terms
-    assert without.score < with_best.score, "omitting the term must not match a perfect one"
-    assert without.score > with_worst.score, "omitting it must not be punished like a closed site"
+    with_best = compute_composite({**present, "target_accessibility": 1.0}, vector)
+    with_worst = compute_composite({**present, "target_accessibility": 0.0}, vector)
+    assert with_worst.score < with_best.score
 
-    # Renormalisation, not zero-filling: the three remaining weights must sum back to 1, so a
-    # perfect three-term candidate still scores 100 rather than 100 minus the missing weight.
-    perfect = compute_composite(dict.fromkeys(present, 1.0), weights)
+    # The vector sums to 1.0, so a perfect candidate scores 100 by construction, not by rescaling.
+    perfect = compute_composite(dict.fromkeys(vector.terms, 1.0), vector)
     assert perfect.score == pytest.approx(100.0)
 
 
@@ -322,7 +322,6 @@ def test_scoring_without_transcript_context_leaves_the_term_inactive():
         gc_content=45.0,
         length=20,
         asymmetry_score=0.0,
-        composite_score=0.0,
     )
     SiRNADesigner(DesignParameters())._score_candidates([candidate])
 
@@ -331,6 +330,9 @@ def test_scoring_without_transcript_context_leaves_the_term_inactive():
     assert candidate.target_accessibility_p_site is None
     assert candidate.score_target_accessibility is None
     assert "target_accessibility" not in candidate.component_scores
+    # design_v4 declares the term, so with no evidence for it there is no design_score either.
+    assert candidate.design_score is None
+    assert candidate.composite_score is None
     # Guide self-structure is still recorded: it is the EXCESS_PAIRING gate input.
     assert candidate.structure is not None
     assert candidate.mfe is not None
@@ -402,12 +404,21 @@ def test_sub_score_rejects_impossible_inputs():
 
 @pytest.mark.unit
 def test_composite_term_set_names_the_quantity_it_computes():
-    """Issue #95 renamed the term; the weight-set version must record the break."""
+    """Issue #95 renamed the term; the weight-set version must record the break.
+
+    The weight and the version moved again in issue #96 (0.13 renormalised to 0.26 in practice ->
+    0.40 declared at the design stage, 0.30 post-screen; 3.0.0 -> 4.0.0). What #95 pinned and this
+    still pins is that the term is named for the quantity it computes and that `accessibility`,
+    which named the wrong molecule, is gone from every vector.
+    """
     assert "target_accessibility" in COMPOSITE_TERM_NAMES
     assert "accessibility" not in COMPOSITE_TERM_NAMES
-    assert ScoringWeights().target_accessibility == pytest.approx(0.13)
-    assert not hasattr(ScoringWeights(), "accessibility")
-    assert SCORING_WEIGHT_SET_VERSION == "3.0.0"
+    for vector in ScoringWeights().all_vectors():
+        assert "target_accessibility" in vector.terms
+        assert not hasattr(vector, "accessibility")
+    assert ScoringWeights().design.target_accessibility == pytest.approx(0.40)
+    assert ScoringWeights().postscreen_sirna.target_accessibility == pytest.approx(0.30)
+    assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
 
     candidate_fields = set(SiRNACandidate.model_fields)
     assert "score_target_accessibility" in candidate_fields
