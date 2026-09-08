@@ -2513,9 +2513,10 @@ class SiRNAWorkflow:
         )
         # A species whose alignment never ran STAYS in this denominator. Subtracting it (as the
         # first pass at this fix did) let a degraded run outscore the complete run it degraded
-        # from: with the only non-query species removed the term goes inactive, compute_composite
-        # renormalises its weight onto the surviving terms, and one candidate scored 57.9 on the
-        # broken screen against 51.1 on the good one (see the regression test). The term is scoped to
+        # from, back when the scorer would redistribute the weight of an unavailable term onto the
+        # surviving ones (one candidate scored 57.9 on the broken screen against 51.1 on the good
+        # one). Conservation no longer scores anything, but the denominator still decides the
+        # reported fraction, so the same reasoning applies. The term is scoped to
         # the species that were screened: one that was screened and produced nothing can only lower
         # conservation, never raise it. Species with no resolvable index never enter this set at all,
         # so conservation is a statement about what was compared, not about the CLI species list.

@@ -327,8 +327,9 @@ class SiRNADesigner:
         Args:
             candidates: Candidates to score in place.
             transcript_sequence: The transcript the candidates were enumerated from, folded once
-                for the target_accessibility term. Omitting it leaves that term inactive and the
-                remaining weights renormalised -- never scored as if the site were accessible.
+                for the target_accessibility term. Omitting it leaves the term uncomputable, and
+                since no weight is ever redistributed, the candidate then has no design_score at
+                all -- it is never scored as if the site were accessible.
         """
         profile = self._build_accessibility_profile(transcript_sequence)
 

@@ -199,7 +199,7 @@ def conservation_sub_score(ortholog_species_hit: int, requested_non_query_specie
 
     It is still computed on every candidate and written to `SiRNACandidate.conservation_score`; no
     weight reads it. It left the composite because it is None on single-species runs, and its
-    returning None was the other half of what forced renormalisation.
+    returning None used to be the other half of what forced the deleted renormalisation.
 
     Returns hit / requested when requested > 0, or None when requested == 0 (a run that screened
     only the query species has no ortholog evidence, which is not the same as no conservation).
@@ -238,10 +238,10 @@ def compute_composite(features: Mapping[str, float], vector: WeightVector) -> Co
     logging side effects. The vector's weights are used **exactly as declared** -- this function
     contains no arithmetic on them beyond multiplying each by its feature.
 
-    Every term the vector declares must be present in `features`. That is the whole point: the
-    previous behaviour of scoring whatever happened to be available renormalised the weights over
-    it, so the same nominal 0.13 was worth 0.13 or 0.26 depending on the run stage. A caller that
-    cannot compute a term has no score to report, and must record that instead of a rescaled one.
+    Every term the vector declares must be present in `features`. That is the whole point: scoring
+    whatever happened to be available used to renormalise the weights over it -- now deleted -- so
+    the same nominal 0.13 was worth 0.13 or 0.26 depending on the run stage. A caller that cannot
+    compute a term has no score to report, and must record that instead of a rescaled one.
 
     Args:
         features: Mapping from term name to sub-score in [0, 1]. Must cover every term in

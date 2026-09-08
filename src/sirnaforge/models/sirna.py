@@ -43,8 +43,8 @@ DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
 # Every scored term name, in reporting order. This is a *union* over the named weight vectors
 # below, used for column ordering and for iterating contributions -- it is NOT a weight vector
 # and nothing validates against it. Each vector validates against its own TERM_NAMES, because
-# the three vectors score different terms (3, 4 and 7 of them) and a single global tuple made a
-# missing term look like a licence to renormalise.
+# the three vectors score different terms (3, 4 and 7 of them) and a single global tuple used to
+# make a missing term look like a licence to renormalise -- which is no longer permitted anywhere.
 COMPOSITE_TERM_NAMES = (
     "off_target",
     "target_accessibility",
@@ -604,9 +604,9 @@ class SiRNACandidate(BaseModel):
     )
 
     # Target-site accessibility (RNAplfold on the transcript, all windows anchored on the site's
-    # 3' end, which is the end the guide seed pairs). None means it could not be computed -- the
-    # term is then omitted from the composite and the remaining weights renormalised, never
-    # substituted with a default.
+    # 3' end, which is the end the guide seed pairs). None means it could not be computed, and
+    # since no weight is ever redistributed the candidate then carries no score at all -- the
+    # value is never substituted with a default.
     target_accessibility_p: float | None = Field(
         default=None,
         ge=0,
