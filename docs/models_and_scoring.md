@@ -203,47 +203,80 @@ class OffTargetFilterCriteria(BaseModel):
 > truth data. Unlike the three mismatch thresholds it is **not** species-split: it is compared
 > against the reported `transcriptome_hits_seed_0mm` column across all screened species.
 
-### 1.5 ScoringWeights
+### 1.5 ScoringWeights and the named weight vectors
 
-Relative weights for composite scoring (seven terms as of issue #80; must sum to 1.0):
+`ScoringWeights` is a **container of three hand-authored vectors**, not a flat weight list. Each
+vector subclasses `WeightVector`, declares its own `VECTOR_NAME` and `TERM_NAMES`, and refuses to
+construct unless it is named and already sums to 1.0 (tolerance 1e-9 — enough for float
+representation of two-decimal literals, not enough to be approximately normalised):
 
 ```python
-class ScoringWeights(BaseModel):
-    """Component weights for composite scoring (must sum to 1.0)."""
+class DesignWeights(WeightVector):            # design_v4 -> SiRNACandidate.design_score
+    target_accessibility: float = 0.40
+    asymmetry: float = 0.35
+    gc_content: float = 0.25
 
-    asymmetry: float = 0.12             # Thermodynamic asymmetry
-    gc_content: float = 0.10            # GC optimization
-    target_accessibility: float = 0.13  # RNAplfold target-site opening (see 2.5)
-    empirical: float = 0.15             # Position-specific rules
-    off_target: float = 0.25        # Post-screen genuine off-target specificity (see 2.6)
-    isoform_coverage: float = 0.15  # Post-screen protein-coding isoform coverage (new)
-    conservation: float = 0.10      # Post-screen cross-species ortholog conservation (new)
+class PostScreenSiRNAWeights(WeightVector):   # postscreen_sirna_v4 -> composite_score
+    off_target: float = 0.25
+    target_accessibility: float = 0.30
+    asymmetry: float = 0.25
+    gc_content: float = 0.20
+
+class PostScreenMiRNAWeights(WeightVector):   # postscreen_mirna_v4 -> composite_score
+    off_target: float = 0.20
+    target_accessibility: float = 0.22
+    asymmetry: float = 0.18
+    gc_content: float = 0.15
+    ago_start: float = 0.10       # A/U at guide position 1
+    pos1_mismatch: float = 0.05   # G:U wobble or mismatch at position 1
+    supp_13_16: float = 0.10      # low 3' supplementary pairing, guide positions 13-16
 ```
 
-Validation is a `@model_validator(mode="after")` that sums all seven fields by name
-(`COMPOSITE_TERM_NAMES`), not a `field_validator` that only sees fields declared earlier in the
-class -- the previous positional check silently stopped seeing new weights as the term set grew.
+Validation is a `@model_validator(mode="after")` reading the subclass's own `TERM_NAMES`.
+`COMPOSITE_TERM_NAMES` is now only the ordered **union** of scored terms, used for column ordering;
+nothing validates against it. It could not stay the validation input: the three vectors score 3, 4
+and 7 different terms, and one global tuple made a missing term look like a licence to renormalise.
 
-`off_target`, `isoform_coverage` and `conservation` cannot be evaluated until off-target
-screening has run, so they are inactive at design time. `compute_composite` (see 2.1) renormalises
-the weights of whichever terms _are_ active, so a design-time-only score and a post-screen score
-are both legitimate 0-100 values from the same weight set, not two incompatible scales.
+`ScoringWeights.vector_for(post_screen=..., design_mode=...)` returns exactly one vector; there is no
+API for combining them and no runtime arithmetic on their values. `off_target` cannot be evaluated
+until off-target screening has run, so the design stage scores `design_v4` into `design_score` and
+`composite_score` stays `None`. The two fields are **different vectors over different term sets and
+are not comparable**; `ranking_score(candidate)` is the single place that decides which number a
+candidate currently has.
+
+`empirical`, `isoform_coverage` and `conservation` appear in no vector. They are still computed and
+reported (§2.7); removing them from scoring is what makes "no renormalisation" reachable, since the
+latter two are legitimately `None` on some run shapes while every remaining term is universally
+computable. `MiRNADesignConfig.scoring_weights` is gone with them: the miRNA weights live in
+`postscreen_mirna_v4`, and the two entries that were declared there and read nowhere in `src/`
+(`seed_clean_bonus`, `five_p_end_destabilization_bonus` — 0.25 of declared weight doing nothing) were
+deleted.
 
 ---
 
 ## 2. Scoring Algorithms
 
-### 2.1 Composite Score Calculation
+### 2.1 Score Calculation
 
-The composite score integrates seven evidence-based components, computed once by
-`compute_composite` over whichever terms are _active_ for that candidate:
+A score is a plain weighted sum over **exactly** the terms its vector declares:
 
-$$\text{Composite} = \sum_{i \in \text{active}} w_i' \times S_i \times 100, \quad w_i' = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
+$$\text{Score} = \sum_{i \in \text{vector}} w_i \times S_i \times 100$$
 
-Where $w_i$ are the configured `ScoringWeights`, $w_i'$ is the weight renormalised over the
-active term set, and $S_i$ are normalized component scores (0-1). A term is active when its
-sub-score could be computed for that candidate (see 1.5); inactive terms are omitted, not
-scored zero, so $\sum_i w_i'$ over the active set is always 1.
+Where $w_i$ are the vector's declared weights, unchanged, and $S_i$ are normalized component scores
+(0-1). Because $\sum_i w_i = 1$ by construction, the score spans [0, 100] with no clamping and no
+rescaling, and the per-term contributions sum to it exactly.
+
+`compute_composite(features, vector)` **raises** `ScoringError` if `features` is missing any of
+`vector.terms`. That is the design: a caller that cannot compute a term has no score to report on
+that vector, and must record the absence rather than a number derived from a smaller term set. Extra
+keys in `features` are ignored, since `component_scores` also carries diagnostics.
+
+> Before issue #96 this function divided the active weight vector by its own sum. Only four terms
+> were computable before screening, so those four shared a 0.50 budget and every design-stage weight
+> doubled: `target_accessibility`'s nominal 0.13 applied as 0.26. Two candidates scored under
+> different active sets were not comparable, and nothing on the row recorded which vector had
+> applied. `CompositeScore` now carries `vector_name`, and so does every candidate row
+> (`weight_vector`) and the manifest (`scoring.vectors`).
 
 ### 2.2 Thermodynamic Asymmetry Score
 
@@ -405,8 +438,12 @@ is cheaper than the per-candidate guide folds it replaced.
 #### Missing values
 
 When there is no transcript context, or a site sits too close to the transcript 5' end for the
-window to fit, `target_accessibility_p` is `None`, the term is omitted from the active set and the
-remaining weights renormalise over what is left. A missing input must never score as a good one.
+window to fit, `target_accessibility_p` is `None`. Since no weight is ever redistributed, the
+candidate then has **no score at all** on any vector declaring the term — `design_score` and
+`composite_score` stay `None` and the run logs it. A missing input must never score as a good one,
+and it must not be quietly rescaled into looking like a complete one either. In practice the 5'-end
+case is per-candidate and numerically negligible: 0 of 2,492 TP53 sites, because the scored 8-mer
+needs only `site_end >= 8`.
 
 #### Configuration
 
@@ -456,11 +493,13 @@ followed by the four-way hit classifier (`sirnaforge.core.hit_classification`); 
 decomposition, not the internal-repeat proxy, is what `off_target_count` and the `off_target`
 scoring term are based on.
 
-### 2.7 Empirical Score (Reynolds Rules)
+### 2.7 Empirical Score (Reynolds Rules) — gate only, not a scoring term
 
 **Research basis**: Reynolds et al. (2004)
 
-Position-specific sequence preferences:
+Position-specific sequence preferences. Since issue #96 this appears in **no** weight vector: it is
+computed on every candidate, written to `component_scores["empirical"]` and the `empirical_score`
+column, and read only by the `min_empirical_score` gate.
 
 ```python
 def _calculate_empirical_score(candidate) -> float:
@@ -472,10 +511,6 @@ def _calculate_empirical_score(candidate) -> float:
     if guide[18] in ("A", "U"):
         score += 0.1
 
-    # Prefer G/C at position 1
-    if guide[0] in ("G", "C"):
-        score += 0.1
-
     # Avoid C at position 19
     if guide[18] == "C":
         score -= 0.1
@@ -483,10 +518,27 @@ def _calculate_empirical_score(candidate) -> float:
     return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
 ```
 
-The attainable range is **0.4-0.7**, not 0-1: three ±0.1 adjustments on a 0.5 base, and the
-A/U and C tests at position 19 are mutually exclusive. `min_empirical_score` is bounded by
-that range. Reading the guide as RNA matters — guides are stored as DNA, so before 0.5.2 a
-T at position 19 never earned the A/U bonus.
+The attainable range is **0.4-0.6**, not 0-1: two mutually exclusive ±0.1 adjustments on a 0.5 base.
+`min_empirical_score` is bounded by that range, so `EMPIRICAL_SCORE_MAX` had to move 0.7 → 0.6 with
+the clause below. Reading the guide as RNA matters — guides are stored as DNA, so before 0.5.2 a T at
+position 19 never earned the A/U bonus.
+
+#### The deleted G/C-at-position-1 clause
+
+There used to be a third rule, `+0.1 if guide[0] in ("G", "C")`. It contradicted the biogenesis rule
+rewarding **A/U** at the same base. Measured over 29,605 candidates:
+
+| pos-1 base | n | empirical | biogenesis adj. | composite |
+| --- | --- | --- | --- | --- |
+| A | 8,917 | 8.02 | **+2.83** | **52.93** |
+| T | 9,558 | 8.06 | **+2.60** | **53.24** |
+| C | 5,854 | **9.62** | −5.30 | 45.21 |
+| G | 5,276 | **9.69** | −5.00 | 44.56 |
+
+G/C gained +1.6 on the empirical term and lost 7.9 on the biogenesis adjustment — net ~8 composite
+points worse. A declared 0.15-weight term was overridden ~5× by an undeclared one, `empirical`
+correlated r = −0.48 with the adjustment, and its variance share came out **negative**. A/U wins; the
+clause is gone, and a test asserts the empirical score is now invariant to guide position 1.
 
 **`[REVIEW NEEDED]`**: Additional Reynolds criteria could be implemented:
 
@@ -687,16 +739,27 @@ class MiRNADesignConfig(BaseModel):
     gc_max: float = 52.0       # Stricter upper bound
     asymmetry_min: float = 0.65
 
-    # Argonaute loading preferences
-    scoring_weights: dict = {
-        "ago_start_bonus": 0.1,      # A/U at position 1
-        "pos1_mismatch_bonus": 0.05, # G:U wobble preferred
-        "seed_clean_bonus": 0.15,    # Clean seed region
-        "supp_13_16_bonus": 0.1,     # 3' supplementary pairing
-    }
+    # Thresholds and format defaults only -- the miRNA scoring weights live in
+    # PostScreenMiRNAWeights (postscreen_mirna_v4), see 1.5.
 ```
 
 ### 5.2 miRNA-Specific Scoring
+
+The three biogenesis quantities are **ordinary declared terms** of `postscreen_mirna_v4`
+(`ago_start` 0.10, `pos1_mismatch` 0.05, `supp_13_16` 0.10), each a feature in [0, 1] like every
+other term. `biogenesis_features(guide, passenger)` derives all three from sequence alone, so they
+are available for any candidate — including rows that never passed through `MiRNADesigner`, such as
+the dirty controls cloned from rejected candidates.
+
+The design stage scores `design_v4` in **both** modes, so a design-stage miRNA score is bit-identical
+to the siRNA one; the biogenesis terms enter only once `off_target` exists.
+
+> Before issue #96 the three were bonuses folded into `composite_score` and the result divided by
+> `1 + max_bonus = 1.25`, which scaled every declared weight by 0.80 in miRNA mode. `off_target`'s
+> nominal 0.25 applied as 0.20, a candidate earning no bonus kept only 80% of its score, and the
+> adjustment appeared in neither `ScoringWeights` nor the manifest. Both post-screen vectors now sum
+> to 1.0, so the two modes are on one scale: a candidate whose biogenesis sub-scores match its other
+> sub-scores scores identically in either mode, at every level.
 
 **Position 1 analysis**:
 
@@ -911,19 +974,57 @@ post-screen against the genuine off-target count (see 1.4 and 3.3).
 
 ## Appendix B: Scoring Weight Defaults
 
-| Component        | Weight | Rationale                                           |
-| ---------------- | ------ | --------------------------------------------------- |
-| Asymmetry            | 0.12   | Most predictive single factor                       |
-| GC Content           | 0.10   | Stability/accessibility balance                     |
-| Target accessibility | 0.13   | RNAplfold local opening at the seed-paired end      |
-| Empirical            | 0.15   | Position-specific fine-tuning                       |
-| Off-target           | 0.25   | Post-screen genuine off-target specificity          |
-| Isoform coverage     | 0.15   | Protein-coding isoform targeting completeness       |
-| Conservation         | 0.10   | Cross-species ortholog specificity check            |
+Weight-set version `4.0.0`. Three hand-authored vectors, each summing to exactly 1.0, never rescaled
+at runtime. These are **declared expert priors**: only `target_accessibility` and `off_target` have
+benchmark evidence behind them.
 
-Weight-set version `3.0.0`. `2.x` scored guide self-structure in the 0.13 slot and called it target
-accessibility, so its `composite_score` is not comparable with `3.x`; `1.x` denotes the
-pre-issue-#80 five-term set and is comparable with neither.
+**`design_v4`** → `design_score` (design stage, both modes)
+
+| Term | Weight | Rationale |
+| ---- | ------ | --------- |
+| Target accessibility | 0.40 | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage |
+| Asymmetry            | 0.35 | Most predictive single sequence factor |
+| GC content           | 0.25 | Stability/accessibility balance |
+
+⚠️ These three numbers are round numbers **awaiting sign-off** — they are the one part of the weight
+set not chosen by the repo owner.
+
+**`postscreen_sirna_v4`** → `composite_score` (post-screen, siRNA mode). `design_v4`'s terms plus one.
+
+| Term | Weight | Rationale |
+| ---- | ------ | --------- |
+| Off-target           | 0.25 | Post-screen genuine off-target specificity; measured 2.24× its nominal share of composite variance |
+| Target accessibility | 0.30 | as above |
+| Asymmetry            | 0.25 | as above |
+| GC content           | 0.20 | as above |
+
+> Holding `off_target` at 0.25 while the scored budget shrank from six terms to four **reduces** its
+> relative influence, from 0.25/0.60 of the old scored budget to 0.25/1.00. Given it measured at 56%
+> of composite variance that is probably the right direction, but it arrives as a side effect of the
+> restructuring rather than as an explicit choice, and should be defensible deliberately.
+
+**`postscreen_mirna_v4`** → `composite_score` (post-screen, `--design-mode mirna`)
+
+| Term | Weight | Rationale |
+| ---- | ------ | --------- |
+| Off-target           | 0.20 | kept above `asymmetry`, which exact proportional scaling would have tied |
+| Target accessibility | 0.22 | |
+| Asymmetry            | 0.18 | |
+| GC content           | 0.15 | |
+| `ago_start`          | 0.10 | A/U at guide position 1 (Argonaute loading) |
+| `pos1_mismatch`      | 0.05 | G:U wobble or mismatch at position 1 |
+| `supp_13_16`         | 0.10 | low 3' supplementary pairing potential |
+
+Hand-authored near, but deliberately not equal to, 0.75× the siRNA values: deriving it by formula
+would be the 1.25 divisor in a new costume.
+
+**Computed and reported, in no vector:** `empirical` (the `min_empirical_score` gate),
+`isoform_coverage` (the optional `min_isoform_coverage` gate, default off), `conservation` (reporting
+only) and `paired_fraction` (the `max_paired_fraction` gate).
+
+Version comparability: `4.x` removed both hidden normalisations and restructured the term sets, so no
+`3.x` score is comparable with it. `3.x` replaced guide self-structure with real target-site
+accessibility in the 0.13 slot (issue #95), and `1.x` denotes the pre-issue-#80 five-term set.
 
 ---
 
