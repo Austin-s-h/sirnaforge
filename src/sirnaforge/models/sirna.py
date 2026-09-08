@@ -329,6 +329,12 @@ class PostScreenMiRNAWeights(WeightVector):
     1.25 divisor in a new costume. The three biogenesis terms replaced an undeclared bonus that was
     folded into the score and then divided out of it, so ``--design-mode mirna`` used to move every
     weight by a factor absent from the manifest.
+
+    The four shared terms are close to a proportional scaling of ``postscreen_sirna_v4`` (which would
+    give 0.1875 / 0.225 / 0.1875 / 0.15) rounded to 2 dp, with the resulting off_target/asymmetry tie
+    broken in favour of ``off_target`` so specificity keeps its rank over asymmetry. Declared expert
+    priors, reviewed and accepted; a run scored under different numbers is not comparable, so bump
+    SCORING_WEIGHT_SET_VERSION if they change.
     """
 
     VECTOR_NAME: ClassVar[str] = "postscreen_mirna_v4"
