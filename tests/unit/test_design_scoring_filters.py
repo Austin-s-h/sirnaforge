@@ -13,6 +13,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from pydantic import ValidationError
 
+import sirnaforge.cli as cli_module
 from sirnaforge.core.design import DUPLEX_DG_PER_NT_STRONG, DUPLEX_DG_PER_NT_WEAK, MiRNADesigner, SiRNADesigner
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import (
@@ -25,6 +26,7 @@ from sirnaforge.models.sirna import (
     MiRNADesignConfig,
     SiRNACandidate,
 )
+from sirnaforge.workflow import run_sirna_workflow
 
 VIENNA_AVAILABLE = importlib.util.find_spec("RNA") is not None
 
@@ -306,3 +308,42 @@ def test_delta_dg_end_sign_convention(realistic_transcripts_fasta):
     for candidate in result.candidates[:25]:
         scores = candidate.component_scores
         assert scores["delta_dg_end"] == pytest.approx(scores["dg_5p"] - scores["dg_3p"])
+
+
+@pytest.mark.unit
+def test_threshold_filters_are_reachable_from_the_entry_points():
+    """min_asymmetry_score, max_paired_fraction and min_empirical_score must plumb through.
+
+    All three previously took their model defaults unconditionally: both entry points built
+    FilterCriteria from gc_min/gc_max (plus max_poly_runs in the CLI) and never passed the
+    thermodynamic or empirical thresholds, so setting them anywhere was a silent no-op -- the
+    same defect class as max_off_target_count before it was exposed.
+    """
+    workflow_params = inspect.signature(run_sirna_workflow).parameters
+    for name in ("min_asymmetry_score", "max_paired_fraction", "min_empirical_score"):
+        assert name in workflow_params, f"run_sirna_workflow cannot receive {name}"
+        assert workflow_params[name].default is None, f"{name} must default to None, not a pinned value"
+
+    cli_source = inspect.getsource(cli_module)
+    for flag in ("--min-asymmetry", "--max-paired-fraction", "--min-empirical"):
+        assert flag in cli_source, f"{flag} is not exposed on the CLI"
+
+
+@pytest.mark.unit
+def test_threshold_overrides_take_effect_and_stay_validated():
+    """An override must reach the model, and an out-of-range value must raise, not apply silently."""
+    defaults = FilterCriteria(gc_min=30.0, gc_max=52.0)
+    assert defaults.min_asymmetry_score == DEFAULT_MIN_ASYMMETRY_SCORE
+
+    overridden = FilterCriteria(
+        gc_min=30.0,
+        gc_max=52.0,
+        min_asymmetry_score=0.50,
+        max_paired_fraction=0.75,
+    )
+    assert overridden.min_asymmetry_score == pytest.approx(0.50)
+    assert overridden.max_paired_fraction == pytest.approx(0.75)
+
+    # Constructed, not model_copy'd, so the declared bounds still hold.
+    with pytest.raises(ValidationError):
+        FilterCriteria(gc_min=30.0, gc_max=52.0, min_asymmetry_score=0.0)

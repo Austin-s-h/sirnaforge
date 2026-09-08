@@ -3220,6 +3220,9 @@ async def run_sirna_workflow(
     nextflow_docker_image: str | None = None,
     max_hits: int | None = None,
     max_off_targets: int | None = None,
+    min_asymmetry_score: float | None = None,
+    max_paired_fraction: float | None = None,
+    min_empirical_score: float | None = None,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -3271,6 +3274,12 @@ async def run_sirna_workflow(
         max_off_targets: Override the genuine off-target ceiling that gates PASS vs
             EXCESS_OFF_TARGETS (None keeps OffTargetFilterCriteria's default of 15). Unlike
             max_hits this changes the verdict, not how many hits are recorded.
+        min_asymmetry_score: Override the thermodynamic asymmetry floor gating LOW_ASYMMETRY
+            (None keeps FilterCriteria's default of 0.65).
+        max_paired_fraction: Override the guide self-structure ceiling gating EXCESS_PAIRING
+            (None keeps FilterCriteria's default of 0.6).
+        min_empirical_score: Override the empirical design-rule floor gating
+            LOW_EMPIRICAL_SCORE (None keeps FilterCriteria's default).
 
     Returns:
         Dictionary with complete workflow results
@@ -3281,11 +3290,19 @@ async def run_sirna_workflow(
     except ValueError:
         mode_enum = DesignMode.SIRNA
 
-    # Configure filter criteria
-    filter_criteria = FilterCriteria(
-        gc_min=gc_min,
-        gc_max=gc_max,
-    )
+    # Configure filter criteria. An unset threshold is omitted so the model default applies; passing
+    # them through the constructor (not model_copy) keeps Pydantic's range validation, so an
+    # out-of-range floor raises instead of silently taking effect. These three had no route in at all
+    # before: FilterCriteria was built with gc_min/gc_max only.
+    filter_kwargs: dict[str, Any] = {"gc_min": gc_min, "gc_max": gc_max}
+    for name, value in (
+        ("min_asymmetry_score", min_asymmetry_score),
+        ("max_paired_fraction", max_paired_fraction),
+        ("min_empirical_score", min_empirical_score),
+    ):
+        if value is not None:
+            filter_kwargs[name] = value
+    filter_criteria = FilterCriteria(**filter_kwargs)
 
     # Configure workflow with modification parameters
     offtarget_filters = OffTargetFilterCriteria()

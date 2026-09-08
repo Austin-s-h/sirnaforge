@@ -1039,6 +1039,35 @@ def workflow(  # noqa: PLR0912
             "changes the PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
         ),
     ),
+    min_asymmetry: float | None = typer.Option(
+        None,
+        "--min-asymmetry",
+        min=0.3,
+        max=1.0,
+        help=(
+            "Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: 0.65). The default has not "
+            "been calibrated against measured potency; lower it to widen the candidate pool."
+        ),
+    ),
+    max_paired_fraction: float | None = typer.Option(
+        None,
+        "--max-paired-fraction",
+        min=0.0,
+        max=1.0,
+        help=(
+            "Guide self-structure ceiling gating EXCESS_PAIRING (default: 0.6). Quantised to 2k/L by "
+            "the dot-bracket, so on a 21-23mer only a few values are attainable and nearby "
+            "thresholds behave identically."
+        ),
+    ),
+    min_empirical: float | None = typer.Option(
+        None,
+        "--min-empirical",
+        help=(
+            "Empirical design-rule floor gating LOW_EMPIRICAL_SCORE. Applied to the empirical "
+            "component score, whose attainable range is narrow."
+        ),
+    ),
     json_summary: bool = typer.Option(
         True,
         "--json-summary/--no-json-summary",
@@ -1265,6 +1294,9 @@ def workflow(  # noqa: PLR0912
                     nextflow_docker_image=nextflow_docker_image,
                     max_hits=max_hits,
                     max_off_targets=max_off_targets,
+                    min_asymmetry_score=min_asymmetry,
+                    max_paired_fraction=max_paired_fraction,
+                    min_empirical_score=min_empirical,
                 )
             )
 
@@ -1890,6 +1922,25 @@ def design(  # noqa: PLR0912
         min=1,
         help="Maximum consecutive identical nucleotides",
     ),
+    min_asymmetry: float | None = typer.Option(
+        None,
+        "--min-asymmetry",
+        min=0.3,
+        max=1.0,
+        help="Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: 0.65)",
+    ),
+    max_paired_fraction: float | None = typer.Option(
+        None,
+        "--max-paired-fraction",
+        min=0.0,
+        max=1.0,
+        help="Guide self-structure ceiling gating EXCESS_PAIRING (default: 0.6)",
+    ),
+    min_empirical: float | None = typer.Option(
+        None,
+        "--min-empirical",
+        help="Empirical design-rule floor gating LOW_EMPIRICAL_SCORE",
+    ),
     genome_index: Path | None = typer.Option(
         None,
         "--genome-index",
@@ -1956,12 +2007,21 @@ def design(  # noqa: PLR0912
         )
         raise typer.Exit(1)
 
-    # Create parameters
-    filters = FilterCriteria(
-        gc_min=gc_min,
-        gc_max=gc_max,
-        max_poly_runs=max_poly_runs,
-    )
+    # Create parameters. Unset thresholds are omitted so the model default applies; passing them
+    # through the constructor keeps Pydantic's range validation.
+    filter_kwargs: dict[str, Any] = {
+        "gc_min": gc_min,
+        "gc_max": gc_max,
+        "max_poly_runs": max_poly_runs,
+    }
+    for name, value in (
+        ("min_asymmetry_score", min_asymmetry),
+        ("max_paired_fraction", max_paired_fraction),
+        ("min_empirical_score", min_empirical),
+    ):
+        if value is not None:
+            filter_kwargs[name] = value
+    filters = FilterCriteria(**filter_kwargs)
 
     parameters = DesignParameters(
         design_mode=mode_enum,

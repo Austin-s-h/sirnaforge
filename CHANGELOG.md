@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`min_asymmetry_score`, `max_paired_fraction` and `min_empirical_score` are reachable for the
+  first time.** Both entry points built `FilterCriteria` from `gc_min`/`gc_max` only — plus
+  `max_poly_runs` in `sirnaforge design` — so all three thresholds took their model defaults
+  unconditionally and setting them from the CLI, the environment or the Python API was a silent
+  no-op. This is the same defect class as `max_off_target_count` before it was exposed. They are now
+  `--min-asymmetry`, `--max-paired-fraction` and `--min-empirical` on both commands, and keyword
+  arguments on `run_sirna_workflow`, each defaulting to `None` so an unset value keeps the model
+  default rather than pinning it. Thresholds are passed through the `FilterCriteria` constructor
+  rather than `model_copy`, so the declared bounds still apply and an out-of-range value raises
+  instead of taking effect: `min_asymmetry_score` remains bounded to 0.3–1.0, so the asymmetry gate
+  can be loosened but not switched off. Behaviour is unchanged for any run that does not set them.
+  Two notes on the newly reachable knobs: the 0.65 asymmetry default has never been calibrated
+  against measured potency, and `max_paired_fraction` is quantised by the dot-bracket to 2k/L, so on
+  a 21–23mer only a few values are attainable and nearby thresholds are byte-identical.
+
 - **Gene queries fetch transcript sequences in one request per 50 ids, not one per transcript.**
   A 40-transcript gene meant 40 serial `GET /sequence/id` calls, each on a fresh connection:
   ~350s of network time, of which 8 requests came back `503` and were silently dropped as
