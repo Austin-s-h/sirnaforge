@@ -152,8 +152,11 @@ def test_deterministic_mirna_parity_fixture_locks_exhaustive_semantic_contract(
 
     assert summary["total_hits"] == len(TOY_PARITY_SEMANTIC_IDENTITIES)
     assert summary["total_raw_alignments"] == len(TOY_PARITY_RAW_SEMANTIC_IDENTITIES)
-    # hits_per_species reports RAW alignment counts (documented on MiRNASummary).
+    # hits_per_species reports RAW alignment counts (documented on MiRNASummary); the seed-region
+    # breakdown that reconciles with total_hits is filtered_hits_per_species.
     assert summary["hits_per_species"] == {"human": len(TOY_PARITY_RAW_SEMANTIC_IDENTITIES)}
+    assert summary["filtered_hits_per_species"] == {"human": len(TOY_PARITY_SEMANTIC_IDENTITIES)}
+    assert sum(summary["filtered_hits_per_species"].values()) == summary["total_hits"]
 
 
 @pytest.mark.parametrize("backend", [MiRNASeedBackend.EXHAUSTIVE_PYTHON, MiRNASeedBackend.PYAHOCORASICK])

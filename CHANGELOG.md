@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Gene queries fetch transcript sequences in one request per 50 ids, not one per transcript.**
+  A 40-transcript gene meant 40 serial `GET /sequence/id` calls, each on a fresh connection:
+  ~350s of network time, of which 8 requests came back `503` and were silently dropped as
+  "Could not retrieve sequence". The retrieved isoform set was therefore nondeterministic — 29 to
+  34 of TP53's 40 transcripts, differing run to run, so two runs of the same command designed
+  against different isoform sets. Sequence retrieval now uses `POST /sequence/id` and annotation
+  enrichment `POST /lookup/id`, both chunked at Ensembl's 50-id limit, on one reused connection,
+  retrying 429/5xx and honouring `Retry-After`. Ids a batch omits are still retried individually,
+  so a genuine 404 is still reported as one. `sirnaforge workflow TP53 --skip-off-targets` went
+  from 619s to 109s locally with all 34 transcripts retrieved on every run.
+
+### Added
+
+- **`filtered_hits_per_species` on the miRNA seed summary.** The per-species seed-region counts
+  were computed and then thrown away, so `*_mirna_summary.json` reported `total_hits: 0` next to
+  `hits_per_species: {hsa: 4}` — two different levels under adjacent keys, with no way to
+  reconcile the filtered total against a species. The filtered breakdown is now published
+  alongside the raw one, each total is the sum of its own mapping, and every species in
+  `species_analyzed` appears in both mappings reading 0 rather than going missing. Note that
+  `AggregatedMiRNASummary.hits_per_species` reuses the name at the filtered level (aggregation
+  reads the filtered analysis files), so it reconciles with `filtered_hits_per_species`.
+- `EnsemblClient.get_sequences()` for fetching many sequences in one call; `get_sequence()` and
+  the annotation client's internals accept an optional `aiohttp` session to share a connection.
+
 ## [0.6.0] - 2026-09-03
 
 Correctness release for the off-target arm, from the audit in

@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import re
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict
@@ -45,6 +47,91 @@ class GeneNotFoundError(DatabaseError):
         """Initialize gene not found error."""
         super().__init__(f"Gene '{query}' not found", database)
         self.query = query
+
+
+#: Ensembl REST accepts at most 50 identifiers per POST body on its id endpoints.
+ENSEMBL_POST_CHUNK_SIZE = 50
+#: 429 is Ensembl's per-IP rate limit and the 5xx family is a saturated or wedged backend.
+#: All of them are transient -- a plain sequence fetch draws 503s under load -- so retry them.
+ENSEMBL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+ENSEMBL_MAX_ATTEMPTS = 3
+
+
+@asynccontextmanager
+async def ensembl_session(session: aiohttp.ClientSession | None, timeout: int) -> AsyncIterator[aiohttp.ClientSession]:
+    """Yield ``session`` when the caller owns one, else open one for this operation.
+
+    Retrieving a gene means several requests to one host, so they share a connection
+    instead of paying a TLS handshake each.
+    """
+    if session is not None:
+        yield session
+        return
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(timeout), trust_env=True) as owned:
+        yield owned
+
+
+def _ensembl_retry_delay(response: aiohttp.ClientResponse, attempt: int, cap: int) -> float:
+    """Seconds to wait before retrying, honouring Retry-After when Ensembl sends it."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return min(float(retry_after), float(cap))
+        except ValueError:
+            pass
+    return float(2**attempt)
+
+
+async def ensembl_request_json(
+    session: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: dict[str, Any] | None = None,
+    retry_cap: int = 30,
+) -> Any:
+    """Issue a JSON request to Ensembl, retrying its transient statuses.
+
+    Args:
+        session: Session to issue the request on
+        method: HTTP method ("GET" or "POST")
+        url: Fully-formed request URL
+        headers: Request headers
+        json_body: JSON body for POST requests
+        retry_cap: Upper bound in seconds on a Retry-After the server asks for
+
+    Returns:
+        Parsed JSON payload, or None when Ensembl answers 404.
+
+    Raises:
+        DatabaseAccessError: For network errors, and for 429/5xx that outlive the retries
+    """
+    last_status: int | None = None
+
+    for attempt in range(ENSEMBL_MAX_ATTEMPTS):
+        try:
+            async with session.request(method, url, headers=headers, json=json_body) as response:
+                if response.status == 200:
+                    return await response.json()
+                if response.status == 404:
+                    return None
+
+                last_status = response.status
+                if response.status in ENSEMBL_RETRY_STATUSES and attempt < ENSEMBL_MAX_ATTEMPTS - 1:
+                    delay = _ensembl_retry_delay(response, attempt, retry_cap)
+                    logger.debug(f"Ensembl returned HTTP {response.status} for {url}; retrying in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+
+                raise DatabaseAccessError(f"HTTP {response.status}", "Ensembl")
+        except aiohttp.ClientConnectorError as e:
+            raise DatabaseAccessError(f"Connection failed: {e}", "Ensembl") from e
+        except asyncio.TimeoutError as e:
+            raise DatabaseAccessError(f"Request timeout: {e}", "Ensembl") from e
+
+    raise DatabaseAccessError(f"HTTP {last_status} after {ENSEMBL_MAX_ATTEMPTS} attempts", "Ensembl")
 
 
 class DatabaseType(str, Enum):
@@ -285,8 +372,70 @@ class EnsemblClient(AbstractDatabaseClient):
 
         return gene_info, transcripts
 
+    async def get_sequences(
+        self,
+        identifiers: list[str],
+        sequence_type: SequenceType = SequenceType.CDNA,
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict[str, str]:
+        """Get sequences for many identifiers, one POST per chunk of identifiers.
+
+        ``POST /sequence/id`` serves exactly what the per-id GET serves, but in one round
+        trip: all 40 TP53 transcripts come back in ~13s, where fetching them one at a time
+        takes ~350s and loses several to transient 503s.
+
+        Args:
+            identifiers: Identifiers to fetch
+            sequence_type: Type of sequence to retrieve
+            session: Session to reuse; one is opened for this call when omitted
+
+        Returns:
+            Mapping of identifier to sequence. Identifiers Ensembl does not know are absent
+            from the mapping rather than raising -- the POST endpoint simply omits them.
+
+        Raises:
+            DatabaseAccessError: For network/server access issues
+        """
+        if not identifiers:
+            return {}
+
+        seq_type = self._sequence_type_param(sequence_type)
+        url = f"{self.base_url}/sequence/id?species={self.species}&type={seq_type}"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        sequences: dict[str, str] = {}
+
+        async with ensembl_session(session, self.timeout) as active:
+            for start in range(0, len(identifiers), ENSEMBL_POST_CHUNK_SIZE):
+                chunk = identifiers[start : start + ENSEMBL_POST_CHUNK_SIZE]
+                payload = await ensembl_request_json(
+                    active, "POST", url, headers=headers, json_body={"ids": chunk}, retry_cap=self.timeout
+                )
+
+                for record in payload if isinstance(payload, list) else []:
+                    identifier = record.get("query") or record.get("id")
+                    sequence = record.get("seq")
+                    if identifier and sequence:
+                        sequences[identifier] = str(sequence).replace("\n", "").upper()
+
+        return sequences
+
+    @staticmethod
+    def _sequence_type_param(sequence_type: SequenceType) -> str:
+        """Map a sequence type onto Ensembl's ``type`` query parameter."""
+        type_mapping = {
+            SequenceType.CDNA: "cdna",
+            SequenceType.CDS: "cds",
+            SequenceType.PROTEIN: "protein",
+            SequenceType.GENOMIC: "genomic",
+        }
+        return type_mapping.get(sequence_type, "cdna")
+
     async def get_sequence(
-        self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA, headers: dict | None = None
+        self,
+        identifier: str,
+        sequence_type: SequenceType = SequenceType.CDNA,
+        headers: dict | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> str:
         """Get sequence from Ensembl REST API.
 
@@ -294,6 +443,7 @@ class EnsemblClient(AbstractDatabaseClient):
             identifier: Gene ID, transcript ID, etc.
             sequence_type: Type of sequence to retrieve
             headers: Optional HTTP headers
+            session: Session to reuse; one is opened for this call when omitted
 
         Returns:
             Sequence string
@@ -302,15 +452,7 @@ class EnsemblClient(AbstractDatabaseClient):
             DatabaseAccessError: For network/server access issues
             GeneNotFoundError: When identifier is not found in database
         """
-        # Map sequence type to Ensembl API parameter
-        type_mapping = {
-            SequenceType.CDNA: "cdna",
-            SequenceType.CDS: "cds",
-            SequenceType.PROTEIN: "protein",
-            SequenceType.GENOMIC: "genomic",
-        }
-
-        seq_type = type_mapping.get(sequence_type, "cdna")
+        seq_type = self._sequence_type_param(sequence_type)
         url = f"{self.base_url}/sequence/id/{identifier}?species={self.species}&type={seq_type}"
 
         if headers is None:
@@ -318,8 +460,8 @@ class EnsemblClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, headers=headers) as response,
+                ensembl_session(session, self.timeout) as active,
+                active.get(url, headers=headers) as response,
             ):
                 if response.status == 200:
                     sequence_text: str = str(await response.text())
@@ -388,27 +530,17 @@ class EnsemblClient(AbstractDatabaseClient):
 
         last_error = None
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session:
+        async with ensembl_session(None, self.timeout) as session:
             for url in lookup_urls:
                 try:
-                    async with session.get(url, headers=headers) as response:
-                        if response.status == 200:
-                            return cast(dict, await response.json())
-                        if response.status == 404:
-                            # Continue to next URL, gene might be found there
-                            continue
-                        if response.status in (403, 502, 503, 504):
-                            # Access denied or server error - raise immediately
-                            raise DatabaseAccessError(
-                                f"HTTP {response.status}: Access denied or server unavailable", "Ensembl"
-                            )
-                except aiohttp.ClientConnectorError as e:
-                    last_error = DatabaseAccessError(f"Connection failed: {e}", "Ensembl")
-                except asyncio.TimeoutError as e:
-                    last_error = DatabaseAccessError(f"Request timeout: {e}", "Ensembl")
-                except DatabaseAccessError:
-                    # Re-raise access errors immediately
-                    raise
+                    # None means 404 here: continue to the next URL, the gene may be found there.
+                    payload = await ensembl_request_json(session, "GET", url, headers=headers, retry_cap=self.timeout)
+                    if payload is not None:
+                        return cast(dict, payload)
+                except DatabaseAccessError as e:
+                    # Keep the error but let the remaining endpoint try; a transient failure on
+                    # one lookup form should not hide a working answer from the other.
+                    last_error = e
                 except Exception as e:
                     logger.debug(f"Failed lookup at {url}: {e}")
                     last_error = DatabaseAccessError(f"Unexpected error: {e}", "Ensembl")
@@ -430,19 +562,17 @@ class EnsemblClient(AbstractDatabaseClient):
 
             transcript_data = data.get("Transcript", [])
 
+            sequences: dict[str, str] = {}
+            if include_sequence:
+                transcript_ids = [t["id"] for t in transcript_data if t.get("id")]
+                sequences = await self._get_sequences_with_fallback(transcript_ids)
+
             for transcript in transcript_data:
                 transcript_id = transcript.get("id")
                 if not transcript_id:
                     continue
 
-                sequence = None
-                if include_sequence:
-                    try:
-                        sequence = await self.get_sequence(transcript_id)
-                    except (DatabaseAccessError, GeneNotFoundError):
-                        # If we can't get the sequence, log and continue without it
-                        logger.warning(f"Could not retrieve sequence for transcript {transcript_id}")
-                        sequence = None
+                sequence = sequences.get(transcript_id)
 
                 transcripts.append(
                     TranscriptInfo(
@@ -466,6 +596,31 @@ class EnsemblClient(AbstractDatabaseClient):
             raise DatabaseAccessError(f"Failed to get transcripts: {e}", "Ensembl") from e
 
         return transcripts
+
+    async def _get_sequences_with_fallback(self, identifiers: list[str]) -> dict[str, str]:
+        """Batch-fetch sequences, then retry per id for whatever the batch did not return.
+
+        The batch is the fast path; the per-id retry covers ids the POST endpoint omits and
+        the case where the batch request itself fails. An id that fails both ways is dropped
+        with a warning, as before -- the transcript is still reported, without a sequence.
+        """
+        if not identifiers:
+            return {}
+
+        async with ensembl_session(None, self.timeout) as session:
+            try:
+                sequences = await self.get_sequences(identifiers, session=session)
+            except DatabaseAccessError as e:
+                logger.warning(f"Batch sequence request failed ({e}); falling back to per-transcript requests")
+                sequences = {}
+
+            for identifier in [i for i in identifiers if i not in sequences]:
+                try:
+                    sequences[identifier] = await self.get_sequence(identifier, session=session)
+                except (DatabaseAccessError, GeneNotFoundError):
+                    logger.warning(f"Could not retrieve sequence for transcript {identifier}")
+
+        return sequences
 
 
 class RefSeqClient(AbstractDatabaseClient):

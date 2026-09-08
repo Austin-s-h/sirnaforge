@@ -362,14 +362,20 @@ def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
 @pytest.mark.requires_nextflow
 @pytest.mark.slow
 def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
-    """Exercise the Nextflow miRNA batch path through the workflow CLI."""
+    """Exercise the Nextflow miRNA batch path through the workflow CLI.
+
+    The input transcripts are the reverse complement of guides that carry let-7's seed at
+    guide positions 2-8, because this path *designs* the guides it screens: seed matches
+    engineered against the sense sequence (as in ``toy_candidates.fasta``) land in the wrong
+    frame and produce no filtered hits.
+    """
     output_dir = _get_persistent_output_dir(tmp_path, "nextflow_mirna_batch")
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     test_data_dir = Path(__file__).resolve().parents[1] / "unit" / "data"
-    input_fasta = test_data_dir / "toy_candidates.fasta"
+    input_fasta = test_data_dir / "toy_mirna_batch_transcripts.fasta"
     mirna_fixture = test_data_dir / "toy_mirna_db.fasta"
 
     if not input_fasta.exists() or not mirna_fixture.exists():
@@ -429,7 +435,12 @@ def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
     assert batch_summary["total_sequences"] == 3
     assert batch_summary["species_analyzed"] == ["hsa"]
     assert batch_summary["total_hits"] == len(batch_lines) - 1
-    assert batch_summary["hits_per_species"]["hsa"] == batch_summary["total_hits"]
+    # hits_per_species counts RAW alignments (documented on MiRNASummary); total_hits counts the
+    # subset whose seed landed on the miRNA's own seed region, broken out per species by
+    # filtered_hits_per_species.
+    assert batch_summary["hits_per_species"]["hsa"] == batch_summary["total_raw_alignments"]
+    assert batch_summary["filtered_hits_per_species"]["hsa"] == batch_summary["total_hits"]
+    assert batch_summary["total_raw_alignments"] >= batch_summary["total_hits"]
 
     combined_summary = json.loads(combined_summary_path.read_text())
     assert combined_summary["analysis_files_processed"] == 1
@@ -445,7 +456,9 @@ def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
     assert workflow_summary["design_summary"]["total_candidates"] == 3
 
     offtarget_summary = workflow_summary["offtarget_summary"]
-    assert offtarget_summary["status"] == "completed"
+    # miRNA-only: no transcriptome was screened, so the run reports "partial" rather than
+    # claiming clean transcriptome counts it never measured.
+    assert offtarget_summary["status"] == "partial"
     assert offtarget_summary["method"] == "embedded_nextflow"
     assert offtarget_summary["aggregated"]["mirna"] == combined_summary
     assert offtarget_summary["filtering_stats"]["human_mirna_hits"] == combined_summary["human_hits"]
