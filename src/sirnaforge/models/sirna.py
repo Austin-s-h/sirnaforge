@@ -38,7 +38,17 @@ DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
 # (it contradicted the A/U-at-position-1 biogenesis rule), leaving {0.4, 0.5, 0.6}.
 EMPIRICAL_SCORE_MIN = 0.4
 EMPIRICAL_SCORE_MAX = 0.6
-DEFAULT_MIN_EMPIRICAL_SCORE = 0.5
+# Default 0.4 == EMPIRICAL_SCORE_MIN, i.e. the gate is inert by default.
+# It was 0.5, which after the position-1 clause was deleted rejected every candidate carrying C at
+# guide position 19 -- a 12.9% cut of the passing pool on a reference TP53 run (264 -> 230). Measured
+# against 2,816 siRNAs with knockdown data that rule is BACKWARDS: C at guide position 19 associates
+# with MORE knockdown (mean inhibition 0.735 vs 0.668, p = 2.4e-13), and the A/U preference the
+# rubric rewards there associates with LESS (0.650 vs 0.719, p = 3.7e-17).
+# The cause is a strand error. Reynolds' criteria are numbered on the SENSE strand, so they land on
+# the guide 5' end, not the guide 3' end: A/U count at guide positions 1-5 tracks efficacy at
+# rho +0.378 (monotonic, 0.455 -> 0.849), while at positions 17-21 it is null (rho -0.017, p = 0.37).
+# Raise this only once the rubric is scored at the end of the guide that carries the signal.
+DEFAULT_MIN_EMPIRICAL_SCORE = 0.4
 
 # Every scored term name, in reporting order. This is a *union* over the named weight vectors
 # below, used for column ordering and for iterating contributions -- it is NOT a weight vector
@@ -113,8 +123,10 @@ class FilterCriteria(BaseModel):
         le=EMPIRICAL_SCORE_MAX,
         description=(
             "Minimum empirical design-rule score. Applied to the 'empirical' component score, "
-            f"whose attainable range is {EMPIRICAL_SCORE_MIN}-{EMPIRICAL_SCORE_MAX}; the default rejects only "
-            "candidates carrying C at guide position 19. Gate only -- 'empirical' is not a scored term."
+            f"whose attainable range is {EMPIRICAL_SCORE_MIN}-{EMPIRICAL_SCORE_MAX}. Defaults to "
+            f"{EMPIRICAL_SCORE_MIN}, which rejects nothing: the rubric's positional rules are applied to "
+            "the guide 3' end, where measured knockdown data shows no signal, so gating on them is not "
+            "justified. Gate only -- 'empirical' is not a scored term."
         ),
     )
 

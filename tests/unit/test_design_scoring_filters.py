@@ -178,8 +178,13 @@ def test_low_asymmetry_label_tracks_the_asymmetry_score(realistic_transcripts_fa
 
 @pytest.mark.unit
 def test_low_empirical_label_tracks_the_empirical_score(realistic_transcripts_fasta):
-    """The empirical rule gets its own status, gated on its own threshold."""
-    result = _design_gaphd(realistic_transcripts_fasta)
+    """The empirical rule gets its own status, gated on its own threshold.
+
+    The threshold is set explicitly because the shipped default is EMPIRICAL_SCORE_MIN, i.e. the
+    gate is inert: the rubric's positional rules sit at the guide 3' end, where measured knockdown
+    shows no signal. This exercises the gate mechanism, not the default.
+    """
+    result = _design_gaphd(realistic_transcripts_fasta, filters=FilterCriteria(min_empirical_score=0.5))
     threshold = result.parameters.filters.min_empirical_score
     labelled = [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_EMPIRICAL_SCORE]
 
@@ -205,8 +210,11 @@ def test_pass_is_no_longer_decided_by_two_nucleotides(realistic_transcripts_fast
 
 @pytest.mark.unit
 def test_new_filter_label_survives_csv_schema_validation(realistic_transcripts_fasta, tmp_path):
-    """LOW_EMPIRICAL_SCORE must be registered with the candidate CSV schema."""
-    result = _design_gaphd(realistic_transcripts_fasta)
+    """LOW_EMPIRICAL_SCORE must be registered with the candidate CSV schema.
+
+    Threshold set explicitly: the shipped default leaves this gate inert.
+    """
+    result = _design_gaphd(realistic_transcripts_fasta, filters=FilterCriteria(min_empirical_score=0.5))
     output = tmp_path / "candidates.csv"
 
     validated = result.save_csv(str(output))
