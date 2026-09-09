@@ -79,6 +79,21 @@ where the two defects removed here were first written down as outstanding.)
   omission.
 - `WeightVector`, `DesignWeights`, `PostScreenSiRNAWeights` and `PostScreenMiRNAWeights` are exported
   from `sirnaforge.models`.
+- **`hit_class`, `matched_symbol` and `symbol_lookup_missing` columns on
+  `aggregated/combined_offtargets.tsv`.** The four-way classification was computed per alignment and
+  thrown away, so an on-target isoform alignment and a genuine liability were indistinguishable in the
+  hit table, and `rname` (a versioned Ensembl accession) was the only gene identity a reviewer had.
+  `hit_class` is exactly one of `on_target`/`ortholog`/`repeat`/`off_target`; an unresolved symbol is
+  the literal string `unknown`, never an empty cell. The per-candidate class counters are now derived
+  from these persisted rows, so the row-level and candidate-level views are one computation and cannot
+  disagree. No gate, threshold or score changes.
+- **`models/policy.py` and `models/evidence.py`** — shared data contracts for the 0.7.1 work that
+  follows: `RunMode`, `FilterAction`, `FilterEvaluation` (`pass`/`fail`/`unknown`, distinct from the
+  action), `ScreeningChannel`, `TargetIntent` (separate target-species and off-target-screening-species
+  sets), `EvidenceRequirements`, `ScreeningPlan` and `ScreeningEvidence` (statuses
+  `complete`/`failed`/`not_requested`/`censored`, with lower-bound and cap/truncation flags so an
+  unknown count is never published as a zero). Types only: nothing here resolves, defaults or applies
+  a policy, and neither module imports `workflow`.
 
 ### Fixed
 
