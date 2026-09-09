@@ -60,7 +60,7 @@ where the two defects removed here were first written down as outstanding.)
 - **BREAKING (`EMPIRICAL_SCORE_MAX` 0.7 → 0.6): the G/C-at-guide-position-1 clause is deleted.** It
   contradicted the biogenesis rule rewarding A/U at the same base. Measured over 29,605 candidates,
   G/C gained +1.6 empirical points there and lost 7.9 to the biogenesis adjustment — a declared
-  0.15-weight term overridden ~5× by an undeclared one, which is why `empirical` had a *negative*
+  0.15-weight term overridden ~5× by an undeclared one, which is why `empirical` had a _negative_
   variance share. A/U wins. The rubric now attains only `{0.4, 0.5, 0.6}`, so the `le=` bound on
   `min_empirical_score` had to move with it; the 0.5 default still validates.
 - **BREAKING: `MiRNADesignConfig.scoring_weights` is removed, and with it `seed_clean_bonus` (0.15)
@@ -87,7 +87,7 @@ where the two defects removed here were first written down as outstanding.)
   **every** table the run read — the aggregated table and, when the aggregate is header-only and the
   fallback reads them, each `genome/*_analysis.tsv`. A header-only table carries the columns too, so
   the schema does not depend on the run having found a hit. `matched_symbol` is the symbol that
-  *established* the class, not a per-hit gene name: it is the literal string `unknown` (never an
+  _established_ the class, not a per-hit gene name: it is the literal string `unknown` (never an
   empty cell) on `off_target` and `repeat` rows. `hit_symbol` **is** the per-row gene name, resolved
   from the transcript index against `rname` independently of class, with `hit_symbol_missing` flagging
   the rows it could not resolve — on a real reference 14.6% of transcripts carry no symbol, so
@@ -96,11 +96,13 @@ where the two defects removed here were first written down as outstanding.)
   unannotated and is re-annotated in full before the table is republished
   (`test_a_row_annotated_in_part_is_repaired_rather_than_republished_with_blank_cells`). The
   per-candidate class counters are derived from these persisted rows, and the published row count is
-  reconciled against the hits that fed those counters, so the row-level and candidate-level views
-  cannot disagree **silently**: any shortfall is reported as a run warning. It is a reconciliation
-  warning, not an impossibility — the `combined_offtargets.json` aggregate has rows that feed
-  candidates and no TSV to be republished into, and that path fires it. No gate, threshold or score
-  changes: see `undetermined` below for why.
+  reconciled against the hits that fed those counters, so **no counted hit can go unpublished
+  silently**: any shortfall is reported as a run warning. Two limits, stated because they are easy to
+  over-read. It is a reconciliation warning, not an impossibility — the `combined_offtargets.json`
+  aggregate has rows that feed candidates and no TSV to be republished into, and that path fires it.
+  And it compares **row totals**, not per-candidate attribution, so a mis-attribution that nets to
+  zero across the table does not raise it. No gate, threshold or score changes: see `undetermined`
+  below for why.
 - **`hit_class = undetermined`, and `undetermined_hits` on every candidate row.** A hit whose species
   has no transcript index cannot be checked for orthology or for the query gene, so it used to fall
   through to an unqualified `off_target` — a table produced with no index at all was
@@ -110,16 +112,17 @@ where the two defects removed here were first written down as outstanding.)
   reference loosened the screen. `undetermined_hits` reports how much of the count is unqualified.
   `classify_hit` never returns it — deciding that a class could not be decided needs the reference
   inventory, which lives in the annotation layer.
-- **`screen_query_id` on every candidate row.** The aligner is handed one FASTA record per *distinct*
+- **`screen_query_id` on every candidate row.** The aligner is handed one FASTA record per _distinct_
   guide sequence, so a hit row's `qname` is the representative's id. Joining hit rows on `id` silently
   attributed one guide's whole hit set to one of its candidate rows (median 6, max 34 on the frozen
   baseline); joining on `guide_sequence` worked only while the spellings were byte-identical, which a
   U-spelled guide and its T-spelled twin are not. `screen_query_id` is the id the candidate was
-  screened under, and equals `qname` in the hit table. `None` when the candidate never reached the
-  aligner, so a key that joins to nothing does not look like one — the key is assigned only after the
-  run knows the candidate was submitted, pinned by
-  `test_candidate_never_submitted_is_not_scored_as_clean`.
-- **`AggregatedOffTargetSchema`** — a pandera schema for the *published* aggregated table.
+  screened under, and equals `qname` in the hit table. `None` when the candidate was **not submitted
+  to the aligner's input FASTA**, pinned by `test_candidate_never_submitted_is_not_scored_as_clean`.
+  Note the scope: a candidate that _was_ submitted but whose alignment never ran
+  (`nextflow_unavailable`, `nextflow_failed`, a step-5 exception) still carries the key and it joins to
+  nothing — `off_target_screened=False` is the signal in that case, and no test covers it yet.
+- **`AggregatedOffTargetSchema`** — a pandera schema for the _published_ aggregated table.
   `GenomeAlignmentSchema` is `strict=True` over 12 columns and applies to the per-species files, so
   anything reaching for the obvious schema got a strict-mode rejection. **Two shapes are valid and a
   consumer must tolerate both:** the classification columns are added by a post-hoc read-modify-write
@@ -173,6 +176,22 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Fixed
 
+- **`logs/workflow_summary.json` published a fabricated zero for every deduplicated candidate.**
+  `offtarget_summary.results` was keyed by looking up each candidate's own `id` in a map the aligner
+  had written under the _representative's_ id, so every non-representative candidate got
+  `off_target_count: 0` and an empty hit list — while the same run's `candidates_all.csv` reported its
+  real count for the same id. On the frozen 0.7.1 baseline that is 32,463 of 34,863 ids (a figure
+  measured on that run, not re-derived here). The lookup now uses `screen_query_id`, and the published
+  count is the candidate's own `off_target_count` rather than the raw ingest tally — which also
+  included on-target, ortholog, repeat and miRNA rows, so one field name carried two definitions
+  across two artifacts. Pinned by
+  `test_the_returned_results_map_is_looked_up_by_the_screening_id`, the first test in the repo to call
+  `_prepare_offtarget_input` before `_process_nextflow_results` and therefore the first with a
+  genuinely populated dedup map.
+- **`screen_query_id` was assigned to candidates that were never submitted to the aligner**, because
+  the assignment sat above the `never_submitted` computation and could not know. A key that joins to
+  nothing looked like a valid one. The empty-dedup-map bypass, where a candidate's own id genuinely
+  _is_ the qname, is preserved.
 - **The hit table could report "no liabilities" beside candidates carrying dozens of hits each.**
   `_parse_nextflow_results` recorded rows for republishing only on the aggregated read; the fallback
   that globs `genome/*_analysis.tsv` passed no table. So when `aggregate_offtarget_results` wrote a
@@ -255,7 +274,7 @@ miRNA 1.25 divisor — were removed in the following release.
     input. The contradictory "(optimal: 0.4-0.6)" was deleted from its description.
   - `2.x` composite scores are not comparable with `3.x`. Measured on a 1,036-candidate TP53 design
     run, the replacement retains 33 of the top 50 (34% churn) at overall rank ρ = 0.847. That is
-    more movement than an ablation of the *old* term predicted (top-20 bit-identical, ρ = 0.962),
+    more movement than an ablation of the _old_ term predicted (top-20 bit-identical, ρ = 0.962),
     and the difference is the point: the term's influence is essentially unchanged (feature sd 0.210
     → 0.222) but it went from 8 attainable values with 35.6% of candidates tied at the ceiling to
     2,453 values with none tied, so it now breaks ties it previously could not. The reason for the
@@ -274,7 +293,7 @@ miRNA 1.25 divisor — were removed in the following release.
   `DesignParameters.target_accessibility` carries `window_size` (W, default 150), `max_bp_span`
   (L, default 100) and `log_floor` (default −5.0, capturing ~99% of observed sites). Exposed as
   `--plfold-window`, `--plfold-max-bp-span` and `--accessibility-log-floor` on both `sirnaforge
-  workflow` and `sirnaforge design`, and as keyword arguments on `run_sirna_workflow`, each
+workflow` and `sirnaforge design`, and as keyword arguments on `run_sirna_workflow`, each
   defaulting to `None` so an unset value keeps the model default. They are configurable because they
   move a site's accessibility percentile substantially; they are recorded in the run manifest, and
   changing any of them changes the numeric scale of `composite_score`. `log_floor` is deliberately
@@ -341,7 +360,6 @@ miRNA 1.25 divisor — were removed in the following release.
   retrying 429/5xx and honouring `Retry-After`. Ids a batch omits are still retried individually,
   so a genuine 404 is still reported as one. `sirnaforge workflow TP53 --skip-off-targets` went
   from 619s to 109s locally with all 34 transcripts retrieved on every run.
-
 
 ## [0.6.0] - 2026-09-03
 

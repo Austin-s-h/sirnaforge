@@ -2,8 +2,10 @@
 
 Owned by #100; extended in place by #101 (new ``HitClass`` members). #103 consumes only and must not
 edit it. ``hit_classification`` decides a hit's class once; this module writes that verdict onto the row
-and derives the per-candidate counters *from the written row*, so the row-level TSV and the
-candidate-level columns are one computation rather than two that can drift apart.
+and derives the per-candidate counters *from the written row*, so no hit row can reach a candidate
+counter without reaching a published table. That is a row-count guarantee, reported as a run warning
+when it is violated — it is not per-candidate attribution, which can still be wrong in ways that net to
+zero across the table.
 
 Six columns are written. ``hit_class`` is the persisted class; ``matched_symbol`` carries the
 symbol that *established* the class (ortholog match, or a symbol-recognised on-target) and is the

@@ -251,7 +251,7 @@ def test_candidate_never_submitted_is_not_scored_as_clean(tmp_path: Path) -> Non
     # screen_query_id='cand_unsubmitted' alongside off_target_screened=False publishes a key that
     # joins to nothing but looks like one, and build_candidate_row emits it.
     assert submitted.screen_query_id == "cand_submitted", "its own id IS the qname it screened under"
-    assert unsubmitted.screen_query_id is None, "never reached the aligner, so there is no qname"
+    assert unsubmitted.screen_query_id is None, "not submitted to the input FASTA, so there is no qname"
     assert build_candidate_row(unsubmitted)["screen_query_id"] is None
 
 

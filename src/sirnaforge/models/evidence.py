@@ -204,7 +204,8 @@ class ScreeningEvidenceEntry(BaseModel):
             ``guide_set_digest`` is a real defect and is representable so it can be detected.
         submitted_guides: Number of guides submitted, or ``None`` when unobserved.
         processed_guides: Number of guides the channel reported processing, or ``None``.
-        detail: Human-readable reason, required for FAILED and CENSORED to be actionable.
+        detail: Human-readable reason. A FAILED or CENSORED entry is not actionable without one, but
+            that is **not enforced here** — #100 owns adding the validator when it has producers.
     """
 
     channel: ScreeningChannel = Field(description="Liability channel")

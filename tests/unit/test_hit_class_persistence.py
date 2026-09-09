@@ -261,10 +261,13 @@ def test_original_columns_survive_the_rewrite(tmp_path):
 
 @pytest.mark.unit
 def test_candidate_counters_are_derived_from_the_persisted_rows(tmp_path):
-    """The row-level and candidate-level views are one computation, so they cannot disagree.
+    """Every per-candidate hit-class counter is reproduced by tallying that candidate's rows.
 
-    This is the assertion the deliverable exists for: every per-candidate hit-class counter is
-    reproduced by tallying that candidate's rows in the TSV.
+    This is the assertion the deliverable exists for. Note the scope: this fixture always publishes
+    what it feeds, so it pins the derivation, not the reconciliation. Per-candidate mis-attribution
+    that nets to zero across the table is checked by
+    ``test_the_returned_results_map_is_looked_up_by_the_screening_id``, and an unpublished counted hit
+    by ``test_a_hit_that_is_never_published_is_reported_as_a_reconciliation_failure``.
     """
     candidates, tsv_path, _outcome = _run(tmp_path, "out_derived")
     rows = _read_tsv(tsv_path)

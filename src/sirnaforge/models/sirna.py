@@ -744,7 +744,9 @@ class SiRNACandidate(BaseModel):
     screen_query_id: str | None = Field(
         default=None,
         description=(
-            "Query id this candidate was screened under (qname on its hit rows); None when it never reached the aligner"
+            "Query id this candidate was screened under (qname on its hit rows); None when the candidate "
+            "was not submitted to the aligner's input FASTA. A candidate that was submitted but whose "
+            "alignment never ran still carries the key — off_target_screened=False is the signal there."
         ),
     )
 

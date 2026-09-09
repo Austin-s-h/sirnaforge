@@ -4,6 +4,10 @@ This module classifies screening hits into four mutually exclusive categories:
 ON_TARGET, ORTHOLOG, REPEAT, and OFF_TARGET. The classifier is pure (no I/O,
 no alignment) and operates on pre-computed indices and hit metadata.
 
+``HitClass`` carries a fifth member, ``UNDETERMINED``, which this classifier never returns:
+deciding that a class *could not be decided* needs the reference inventory, so it is assigned in
+``core.hit_annotation``. Count five when enumerating the enum, four when reasoning about this module.
+
 Classification precedence:
     1. ON_TARGET - hit is on the query gene in the query species
     2. ORTHOLOG - hit is on an ortholog in a different species (symbol match)

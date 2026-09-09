@@ -2852,8 +2852,9 @@ class SiRNAWorkflow:
 
                     # Persist the verdict on the hit row, then count from the row that was
                     # written. The class, both symbols and both shortfall flags reach the hit
-                    # table and the candidate counters from one place, so the per-hit and
-                    # per-candidate views cannot disagree.
+                    # table and the candidate counters from one place, so a counted hit is always
+                    # a published hit. _reconcile_persisted_hits checks that as a row total; it
+                    # does not check which candidate a row was attributed to.
                     annotate_hit_row(hit, classification, annotator)
                     hit_class = accumulate_hit_class(hit, hit_counts, species_bucket, hit_species)
 
