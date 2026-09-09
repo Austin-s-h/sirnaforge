@@ -368,3 +368,26 @@ def test_writer_appends_the_columns_once_when_they_are_already_present(tmp_path)
     assert written == 1
     header = tsv_path.read_text().splitlines()[0].split("\t")
     assert header == ["qname", *CLASSIFICATION_COLUMNS]
+
+
+@pytest.mark.unit
+def test_zero_hit_table_still_gains_the_classification_columns(tmp_path):
+    """A header-only hit table is published with the same schema as a populated one.
+
+    miRNA-only mode and a run whose every species index is missing both publish an aggregated
+    table with a header and no rows. If the three columns were conditional on there being a hit,
+    a consumer selecting ``hit_class`` would fail on exactly the runs with no liabilities.
+    """
+    workflow = _workflow(tmp_path, "out_zero_hits")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    tsv_path = _write_results_dir(results_dir, [])
+    candidates = [_candidate("cand_clean", CLEAN_GUIDE)]
+
+    asyncio.run(workflow._process_nextflow_results(candidates, results_dir, {"status": "completed"}))
+
+    lines = tsv_path.read_text().splitlines()
+    assert lines[0].split("\t") == [*TSV_COLUMNS, *CLASSIFICATION_COLUMNS]
+    assert len(lines) == 1, "no data rows may be invented for an empty table"
+    assert _read_tsv(tsv_path) == []
+    assert candidates[0].off_target_count == 0
+

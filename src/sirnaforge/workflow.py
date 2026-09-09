@@ -2134,12 +2134,14 @@ class SiRNAWorkflow:
 
         ``combined_offtargets.tsv`` is rewritten in place with three added columns so a reviewer
         can tell an on-target isoform alignment from a liability without re-deriving anything.
+        A header-only table is rewritten too: the published schema must not depend on whether the
+        run produced any hits, or a consumer selecting ``hit_class`` fails on exactly the clean runs.
         """
         table = parsed.get("genome_hit_table") or {}
         tsv_path = table.get("path")
         rows = cast(list[dict[str, Any]], table.get("rows") or [])
         fieldnames = cast(list[str], table.get("fieldnames") or [])
-        if not tsv_path or not rows or not fieldnames:
+        if not tsv_path or not fieldnames:
             return
 
         unannotated = sum(1 for row in rows if not is_annotated(row))
