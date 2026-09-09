@@ -93,12 +93,46 @@ where the two defects removed here were first written down as outstanding.)
   class counters are now derived from these persisted rows, so the row-level and candidate-level views
   are one computation and cannot disagree. No gate, threshold or score changes.
 - **`models/policy.py` and `models/evidence.py`** — shared data contracts for the 0.7.1 work that
-  follows: `RunMode`, `FilterAction`, `FilterEvaluation` (`pass`/`fail`/`unknown`, distinct from the
-  action), `ScreeningChannel`, `TargetIntent` (separate target-species and off-target-screening-species
-  sets), `EvidenceRequirements`, `ScreeningPlan` and `ScreeningEvidence` (statuses
-  `complete`/`failed`/`not_requested`/`censored`, with lower-bound and cap/truncation flags so an
-  unknown count is never published as a zero). Types only: nothing here resolves, defaults or applies
-  a policy, and neither module imports `workflow`.
+  follows: `RunMode`, `FilterAction`, `FilterEvaluation`, `ScreeningChannel`, `TargetIntent`
+  (separate target-species and off-target-screening-species sets), `EvidenceRequirements`,
+  `ScreeningPlan` and `ScreeningEvidence` (statuses `complete`/`failed`/`not_requested`/`censored`,
+  with lower-bound and cap/truncation flags so an unknown count is never published as a zero). Types
+  only: nothing here resolves, defaults or applies a policy, and neither module imports `workflow`.
+- **A filter verdict record, so a gate can be regenerated instead of restated.** `FilterComparator`
+  makes the comparison direction a value — it lived only in a `max_*`/`min_*` field-name prefix and in
+  the body of `_check_offtarget_filters`, so nothing downstream could read it. `FilterScope` makes a
+  threshold's species set, mismatch ceiling and counted hit classes data rather than a choice of
+  counter. `FilterDescriptor` carries `{filter_id, column, comparator, threshold, scope, action}` and
+  `FilterVerdict` pairs one with the value observed and the outcome reached, so a reported verdict
+  cannot be read against a threshold other than the one it was decided under — and a decided verdict
+  must be the one its own descriptor reproduces, so a client that re-applies the descriptor gets the
+  pipeline's answer back by construction rather than by regression test. `FilterEvaluation`
+  gains `not_evaluated`: an off filter has to write a word into a fixed column, because a blank cell
+  reads as a verdict. A verdict claiming `pass` or `fail` without both an observed value and a
+  threshold is a construction-time error.
+- **`TargetSelectivity` (`pan_isoform`/`isoform_selective`) is a required field on `TargetIntent`**,
+  together with the annotation universe, the frozen coverage denominator, the enumeration input set
+  and `OrthologyAssertion` provenance (an explicit mapping is validated orthology; symbol equality is
+  a heuristic and says so). Coverage that silently shrinks to the isoforms surviving design filtering
+  is now representable as a difference between two declared sets rather than being unobservable.
+
+### Changed
+
+- **`EvidenceRequirements` declares requiredness per channel × species pair** rather than as two
+  channel sets and two species sets, and `ScreeningPlanEntry`/`ScreeningEvidenceEntry` no longer carry
+  a `required` flag of their own — three authorities on requiredness became one. `unknown_evidence_action`
+  now takes `UnknownEvidenceAction` (`warn`/`fail`), which cannot spell `off`: "never evaluated" is not
+  an available response to a filter that was evaluated and came back undecided.
+- **`ObservedCounts` reports sites, distinct transcripts and distinct genes separately**, each with its
+  own cap and truncation flags, plus a count of sites with no resolvable gene. One shared flag could not
+  describe both a per-query alignment cap and a gene-level cap. `HitCountMatrix` adds the species ×
+  mismatch-class × hit-class count, carrying the `FilterScope` it is complete over so an absent cell
+  inside that scope is a real zero and nothing outside it is implied.
+- All models in both contract modules are `extra="forbid"`. A misnamed key used to become an unset
+  field, which is indistinguishable from an omitted one — the same mechanism behind `--gc-max 60` being
+  silently rewritten in miRNA mode.
+- `EVIDENCE_SCHEMA_VERSION` is `2`. Nothing produced version 1, but the shape changed after it was
+  written down, and the version exists precisely so that is visible.
 
 ### Fixed
 
