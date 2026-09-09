@@ -44,9 +44,19 @@ from sirnaforge.core.design import (
     SiRNADesigner,
     biogenesis_features,
 )
+from sirnaforge.core.hit_annotation import (
+    CLASSIFICATION_COLUMNS,
+    LIABILITY_CLASSES,
+    HitAnnotator,
+    accumulate_hit_class,
+    annotate_hit_row,
+    count_persisted_classes,
+    is_annotated,
+    liabilities_counted,
+    write_classified_hits,
+)
 from sirnaforge.core.hit_classification import (
     ClassificationContext,
-    HitClass,
     HitClassCounts,
     classify_hit,
 )
@@ -1517,6 +1527,9 @@ class SiRNAWorkflow:
             representative_to_candidates[representative.id] = cand_list
             for cand in cand_list:
                 candidate_id_to_representative[cand.id] = representative.id
+                # The FASTA header the aligner sees, hence qname on every hit row. Written onto the
+                # candidate so the join is an id match rather than a byte comparison of sequences.
+                cand.screen_query_id = representative.id
 
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
 
@@ -2092,21 +2105,25 @@ class SiRNAWorkflow:
         updated_candidates, stats = self._integrate_offtarget_results(
             candidates, parsed, filter_criteria, screened_species=screened_species
         )
+        workflow_warnings.extend(self._persist_hit_classifications(parsed))
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
-        # Map parsed results for return structure
+        # Map parsed results for return structure, keyed by candidate id. The LOOKUP is by
+        # screen_query_id: the aligner saw one record per distinct guide, so a deduplicated
+        # candidate's evidence lives under its representative's id and looking it up by `id`
+        # published a fabricated zero for every non-representative (32,463 of 34,863 ids on the
+        # frozen baseline) while candidates_all.csv carried the real count for the same ids.
         mapped = {}
         for c in updated_candidates:
-            qid = c.id
-            entry = parsed.get("results", {}).get(qid)
-            if entry:
-                mapped[qid] = {
-                    "off_target_count": entry.get("off_target_count", 0),
-                    "off_target_score": entry.get("off_target_score", 0.0),
-                    "hits": entry.get("hits", []),
-                }
-            else:
-                mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
+            entry = parsed.get("results", {}).get(c.screen_query_id or c.id)
+            mapped[c.id] = {
+                # The candidate's own liability count, not the ingest tally: the raw entry counts
+                # on-target, ortholog, repeat and miRNA rows too, so taking it here gave one field
+                # name two different definitions across two artifacts of the same run.
+                "off_target_count": c.off_target_count,
+                "off_target_score": entry.get("off_target_score", 0.0) if entry else 0.0,
+                "hits": entry.get("hits", []) if entry else [],
+            }
 
         return {
             "status": run_status,
@@ -2118,6 +2135,85 @@ class SiRNAWorkflow:
             "aggregated": aggregated_views,
             "warnings": workflow_warnings,
         }
+
+    @staticmethod
+    def _persist_hit_classifications(parsed: Mapping[str, Any]) -> list[str]:
+        """Write the class, the symbols and the two shortfall flags back onto every hit table read.
+
+        Every genome file the parser read is rewritten with the classification columns appended, so
+        a reviewer can tell an on-target isoform alignment from a liability without re-deriving
+        anything. A header-only table is rewritten too: the published schema must not depend on
+        whether the run produced any hits, or a consumer selecting ``hit_class`` fails on exactly
+        the clean runs.
+
+        Returns the reconciliation warnings, which the caller surfaces alongside the run status.
+        Rows are annotated by ``_classify_orphan_hit_rows`` before this runs, so there is no
+        unannotated-row branch here: an unannotated row is a reconciliation failure, reported as
+        one, rather than a silent skip.
+        """
+        tables = cast(list[dict[str, Any]], parsed.get("genome_hit_tables") or [])
+        persisted = 0
+        tally: dict[str, int] = {}
+        for table in tables:
+            tsv_path = table.get("path")
+            rows = cast(list[dict[str, Any]], table.get("rows") or [])
+            fieldnames = cast(list[str], table.get("fieldnames") or [])
+            if not tsv_path or not fieldnames:
+                continue
+            try:
+                written = write_classified_hits(Path(tsv_path), rows, fieldnames)
+            except OSError as exc:
+                logger.warning(f"Could not persist hit classification to {tsv_path}: {exc}")
+                continue
+            persisted += written
+            for name, count in count_persisted_classes(rows).items():
+                tally[name] = tally.get(name, 0) + count
+            logger.info(f"Wrote {'/'.join(CLASSIFICATION_COLUMNS)} onto {tsv_path} for {written} rows")
+
+        if tables:
+            console.print(
+                f"🏷️  Persisted hit classification for {persisted} alignment(s) across "
+                f"{len(tables)} file(s) ({', '.join(f'{name}={count}' for name, count in sorted(tally.items()))})"
+            )
+        return SiRNAWorkflow._reconcile_persisted_hits(parsed, persisted, sum(tally.values()))
+
+    @staticmethod
+    def _reconcile_persisted_hits(parsed: Mapping[str, Any], persisted: int, classified: int) -> list[str]:
+        """Check the published rows against the hits the candidate counters were built from.
+
+        The two are counted from different structures — ``results`` by the row ingest,
+        ``persisted`` by the tables that were written — so a path that feeds candidates hits it
+        never publishes shows up here. That is the failure this check exists for: an aggregated
+        table rejected upstream left the fallback ingesting real per-species rows into candidates
+        while the published table stayed header-only, so the hit table reported no liabilities
+        beside candidates carrying dozens each.
+
+        It also fires for the ``combined_offtargets.json`` aggregate, whose rows feed candidates and
+        have no TSV to be republished into. That is the same defect in another format, not a false
+        alarm; closing it belongs with the producer (#100).
+        """
+        counted = 0
+        for entry in cast(dict[str, dict[str, Any]], parsed.get("results") or {}).values():
+            for hit in cast(list[Mapping[str, Any]], entry.get("hits") or []):
+                if "mirna_id" not in hit and "database" not in hit:
+                    counted += 1
+
+        warnings: list[str] = []
+        if persisted < counted:
+            warnings.append(
+                f"⚠️  Hit table/candidate mismatch: {counted} transcriptome hit(s) reached the candidate counters "
+                f"but only {persisted} row(s) were published. The published hit table under-reports liabilities; "
+                "treat off_target_count, not the table, as the count for this run."
+            )
+        if classified < persisted:
+            warnings.append(
+                f"⚠️  {persisted - classified} published hit row(s) carry no usable classification; "
+                "their hit_class cell is not one of the taxonomy's values."
+            )
+        for warning in warnings:
+            logger.error(warning)
+            console.print(warning)
+        return warnings
 
     @staticmethod
     def _species_with_alignment_evidence(tx_summary: Mapping[str, Any] | None) -> list[str]:
@@ -2301,15 +2397,35 @@ class SiRNAWorkflow:
             entry["off_target_score"] = max(entry["off_target_score"], score)
             entry["hits"].append(row)
 
-        def _ingest_tsv(path: Path) -> bool:
+        # One table per genome file read, each keeping its own ordered row list, so the
+        # classification columns are written back onto exactly the rows that were read from that
+        # file. Every genome row reaching a candidate counter is in one of these tables: the
+        # fallback used to ingest per-species files with no table at all, which published a
+        # header-only hit table beside candidates carrying dozens of hits each.
+        genome_tables: list[dict[str, Any]] = []
+
+        def _ingest_tsv(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
                 return False
             found = False
             with path.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
+                if table is not None and reader.fieldnames:
+                    table["path"] = path
+                    table["fieldnames"] = [name for name in reader.fieldnames if name]
                 for row in reader:
                     _ingest_row(row)
+                    if table is not None:
+                        cast(list[dict[str, Any]], table["rows"]).append(row)
                     found = True
+            return found
+
+        def _ingest_genome_tsv(path: Path) -> bool:
+            """Ingest a genome/transcriptome hit file into its own persistable table."""
+            table: dict[str, Any] = {"path": None, "fieldnames": [], "rows": []}
+            found = _ingest_tsv(path, table)
+            if table["path"] is not None:
+                genome_tables.append(table)
             return found
 
         def _ingest_json(path: Path) -> bool:
@@ -2335,7 +2451,7 @@ class SiRNAWorkflow:
                 found = True
             return found
 
-        genome_hits_found = _ingest_tsv(_aggregate_path("combined_offtargets.tsv"))
+        genome_hits_found = _ingest_genome_tsv(_aggregate_path("combined_offtargets.tsv"))
         if not genome_hits_found:
             genome_hits_found = _ingest_json(_aggregate_path("combined_offtargets.json"))
 
@@ -2364,11 +2480,20 @@ class SiRNAWorkflow:
                 files.extend(mirna_files)
 
             if not files and not genome_hits_found and not mirna_hits_found:
-                # Last resort: scan for any TSV files
-                files = list(output_dir.glob("**/*_offtargets.tsv"))
+                # Last resort: scan for any TSV files. Treated as genome hits, which is what the
+                # *_offtargets.tsv name means, so they are persisted rather than counted and lost.
+                genome_files = list(output_dir.glob("**/*_offtargets.tsv"))
+                files = list(genome_files)
 
+            genome_file_set = {Path(path) for path in genome_files}
             for fpath in files:
-                _ingest_tsv(Path(fpath))
+                path = Path(fpath)
+                # Genome rows carry a class and must reach the published table; miRNA rows have no
+                # class of their own and feed the miRNA counters only.
+                if path in genome_file_set:
+                    _ingest_genome_tsv(path)
+                else:
+                    _ingest_tsv(path)
 
             if not mirna_hits_found:
                 mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
@@ -2376,7 +2501,13 @@ class SiRNAWorkflow:
                     logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
                     mirna_hits_found = True
 
-        return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
+        return {
+            "status": "completed",
+            "method": "nextflow",
+            "output_dir": str(output_dir),
+            "results": results,
+            "genome_hit_tables": genome_tables,
+        }
 
     def _check_offtarget_filters(
         self,
@@ -2557,6 +2688,9 @@ class SiRNAWorkflow:
             ),
             requested_species=requested_species,
         )
+        # Per-row reference lookups, kept separate from the classification context: they answer
+        # "what gene did this land on, and did any reference exist" for every row, whatever its class.
+        annotator = HitAnnotator(index=self._transcript_index, query_species=query_species)
 
         # Fan out deduplicated results: each representative's results apply to all candidates sharing that sequence
         representative_results: dict[str, dict[str, Any]] = {}
@@ -2572,6 +2706,7 @@ class SiRNAWorkflow:
                 "ortholog": 0,
                 "repeat": 0,
                 "off_target": 0,
+                "undetermined": 0,
                 "symbol_lookup_missing": 0,
                 "species_index_missing": 0,
             }
@@ -2581,7 +2716,7 @@ class SiRNAWorkflow:
         stats: dict[str, Any] = {
             "candidates_analyzed": len(candidates),
             "candidates_with_offtargets": 0,
-            "hit_classes": {"on_target": 0, "ortholog": 0, "repeat": 0, "off_target": 0},
+            "hit_classes": {"on_target": 0, "ortholog": 0, "repeat": 0, "off_target": 0, "undetermined": 0},
             "query_gene_transcripts_recognised": len(self._gene_transcript_ids),
             "ortholog_symbol_lookup_misses": 0,
             "species_index_misses": 0,
@@ -2621,6 +2756,12 @@ class SiRNAWorkflow:
             never_submitted = bool(self._candidate_id_to_representative) and (
                 candidate_id not in self._candidate_id_to_representative
             )
+            if candidate.screen_query_id is None and not never_submitted:
+                # A caller that bypassed _prepare_offtarget_input still gets the join key it
+                # screened under -- with an empty dedup map the candidate's own id IS the qname.
+                # Guarded on never_submitted because this assignment used to sit above that
+                # computation and so handed a join key to a candidate the aligner never saw.
+                candidate.screen_query_id = repr_id
             if never_submitted:
                 logger.error(
                     f"Candidate {candidate_id} was never submitted to off-target screening; "
@@ -2703,44 +2844,29 @@ class SiRNAWorkflow:
                             "ortholog": 0,
                             "repeat": 0,
                             "off_target": 0,
+                            "undetermined": 0,
                             "symbol_lookup_missing": 0,
                             "species_index_missing": 0,
                         },
                     )
 
-                    # Aggregate by class
-                    if classification.hit_class == HitClass.ON_TARGET:
-                        hit_counts.on_target += 1
-                        species_bucket["on_target"] += 1
-                    elif classification.hit_class == HitClass.ORTHOLOG:
-                        hit_counts.ortholog += 1
-                        species_bucket["ortholog"] += 1
-                        if classification.matched_symbol:
-                            # Track which species had ortholog hits
-                            hit_counts.ortholog_species = frozenset(hit_counts.ortholog_species | {hit_species})
-                    elif classification.hit_class == HitClass.REPEAT:
-                        hit_counts.repeat += 1
-                        species_bucket["repeat"] += 1
-                    elif classification.hit_class == HitClass.OFF_TARGET:
-                        hit_counts.off_target += 1
-                        species_bucket["off_target"] += 1
+                    # Persist the verdict on the hit row, then count from the row that was
+                    # written. The class, both symbols and both shortfall flags reach the hit
+                    # table and the candidate counters from one place, so a counted hit is always
+                    # a published hit. _reconcile_persisted_hits checks that as a row total; it
+                    # does not check which candidate a row was attributed to.
+                    annotate_hit_row(hit, classification, annotator)
+                    hit_class = accumulate_hit_class(hit, hit_counts, species_bucket, hit_species)
 
-                    # Track shortfall counters
-                    if classification.symbol_lookup_missing:
-                        hit_counts.symbol_lookup_missing += 1
-                        species_bucket["symbol_lookup_missing"] += 1
-                    if classification.species_index_missing:
-                        hit_counts.no_species_index += 1
-                        species_bucket["species_index_missing"] += 1
-
-                    # Only genuine off-targets feed the mismatch-stratified counters. Letting
-                    # on-target isoform hits through here would fail every guide on a
-                    # multi-isoform gene against max_transcriptome_hits_0mm, which is the
-                    # near-total kill switch fixed in 0.5.2.
-                    if classification.hit_class is not HitClass.OFF_TARGET:
+                    # Only liabilities feed the mismatch-stratified counters. Letting on-target
+                    # isoform hits through here would fail every guide on a multi-isoform gene
+                    # against max_transcriptome_hits_0mm, which is the near-total kill switch
+                    # fixed in 0.5.2. UNDETERMINED is in LIABILITY_CLASSES, so a run with no
+                    # transcript index gates exactly as it did before the class existed.
+                    if hit_class not in LIABILITY_CLASSES:
                         continue
 
-                    # Every genuine off-target hit counts toward the totals regardless of nm, so
+                    # Every liability counts toward the totals regardless of nm, so
                     # transcriptome_hits_total agrees with off_target_count even when nm>=3 hits
                     # occur (the default exhaustive search no longer caps hits at nm<=2).
                     transcriptome_off_target_total += 1
@@ -2773,7 +2899,10 @@ class SiRNAWorkflow:
             candidate.on_target_hits = hit_counts.on_target
             candidate.ortholog_hits = hit_counts.ortholog
             candidate.repeat_hits = hit_counts.repeat
-            candidate.off_target_count = hit_counts.off_target  # Redefined: genuine off-targets only
+            # On-target, ortholog and repeat hits excluded; undecidable ones included and reported
+            # separately, so a missing reference cannot loosen the screen (see LIABILITY_CLASSES).
+            candidate.off_target_count = liabilities_counted(hit_counts)
+            candidate.undetermined_hits = hit_counts.undetermined
             candidate.ortholog_species = ",".join(sorted(hit_counts.ortholog_species))
 
             # Legacy fields (still needed for reporting and miRNA filters)
@@ -2794,6 +2923,7 @@ class SiRNAWorkflow:
             stats["hit_classes"]["ortholog"] += hit_counts.ortholog
             stats["hit_classes"]["repeat"] += hit_counts.repeat
             stats["hit_classes"]["off_target"] += hit_counts.off_target
+            stats["hit_classes"]["undetermined"] += hit_counts.undetermined
             stats["ortholog_symbol_lookup_misses"] += hit_counts.symbol_lookup_missing
             stats["species_index_misses"] += hit_counts.no_species_index
             stats["human_transcriptome_hits"] += human_transcriptome_hits
@@ -2821,7 +2951,7 @@ class SiRNAWorkflow:
                 mirna_human_0mm_seed,
                 mirna_high_risk_human,
                 human_total_hits_for_filters,
-                hit_counts.off_target,
+                liabilities_counted(hit_counts),
                 filter_criteria,
             )
 
@@ -2845,9 +2975,42 @@ class SiRNAWorkflow:
                 elif fail_status == SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS:
                     stats["failed_excess_off_targets"] += 1
 
+        stats["hits_classified_without_candidate"] = self._classify_orphan_hit_rows(
+            offtarget_data, classification_context, annotator
+        )
+
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    @staticmethod
+    def _classify_orphan_hit_rows(
+        offtarget_data: Mapping[str, Any],
+        classification_context: ClassificationContext,
+        annotator: HitAnnotator,
+    ) -> int:
+        """Classify hit rows whose qname matched no candidate in this run.
+
+        Normally there are none. A reused or stale results directory produces some, and a table
+        read back from disk can carry a blank ``hit_class`` cell, so both are classified from their
+        own query sequence and counted. Every table the parser read is covered, which is what lets
+        the writer publish unconditionally instead of guarding against blank verdicts.
+        """
+        tables = cast(list[dict[str, Any]], offtarget_data.get("genome_hit_tables") or [])
+        orphans = [
+            row
+            for table in tables
+            for row in cast(list[dict[str, Any]], table.get("rows") or [])
+            if not is_annotated(row)
+        ]
+        for row in orphans:
+            annotate_hit_row(row, classify_hit(row, str(row.get("qseq") or ""), classification_context), annotator)
+        if orphans:
+            logger.warning(
+                f"{len(orphans)} aggregated off-target row(s) belong to no candidate in this run; "
+                "classified from their own query sequence and excluded from candidate counters."
+            )
+        return len(orphans)
 
     def _score_and_gate(
         self,
@@ -2935,7 +3098,7 @@ class SiRNAWorkflow:
         # later must not be an aborted run after screening has already been paid for. It must be
         # loud instead: see the ERROR log below and the caller's degraded-run counter.
         try:
-            features["off_target"] = off_target_sub_score(hit_counts.off_target)
+            features["off_target"] = off_target_sub_score(liabilities_counted(hit_counts))
 
             # Numerator is how many of the query gene's protein-coding transcripts contain THIS
             # guide (from step3's guide->source-transcripts map), not the single transcript the

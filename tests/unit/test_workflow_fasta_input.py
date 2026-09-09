@@ -345,7 +345,13 @@ def test_offtarget_integration_classifies_hits_four_ways(tmp_path):
     assert candidate.off_target_count == 1, "only the unrelated human transcript is a genuine off-target"
     assert candidate.ortholog_species == "mouse"
     assert candidate.on_target_confirmed is True
-    assert stats["hit_classes"] == {"on_target": 3, "ortholog": 1, "repeat": 0, "off_target": 1}
+    assert stats["hit_classes"] == {
+        "on_target": 3,
+        "ortholog": 1,
+        "repeat": 0,
+        "off_target": 1,
+        "undetermined": 0,
+    }
     assert stats["query_gene_transcripts_recognised"] == 1
 
 
@@ -377,8 +383,12 @@ def test_on_target_isoform_hits_do_not_trip_the_perfect_match_filter(tmp_path):
 
 
 @pytest.mark.unit
-def test_unrecognised_species_is_off_target_and_counted_as_a_shortfall(tmp_path):
-    """A species with no index cannot be checked for orthology, so it stays off-target visibly."""
+def test_unindexed_species_is_undetermined_and_counted_as_a_shortfall(tmp_path):
+    """A species with no index cannot be checked for orthology, so its hits are undetermined.
+
+    They still count as liabilities -- a missing reference must not loosen the screen -- but the
+    row says undetermined rather than claiming a verdict the run could not reach.
+    """
     workflow = _on_target_workflow(tmp_path, "out_shortfall")
     candidate = _make_candidate("candidate", "ATGCGATGCGATGCGATGCGC")
     candidate.transcript_id = "ENST00000000001.8"
@@ -392,6 +402,8 @@ def test_unrecognised_species_is_off_target_and_counted_as_a_shortfall(tmp_path)
     _, stats = _integrate(workflow, candidate, hits)
 
     assert candidate.off_target_count == 2
+    assert candidate.undetermined_hits == 1, "the rat hit is a liability whose class could not be decided"
+    assert stats["hit_classes"]["off_target"] == 1, "only the indexed mouse hit is a confirmed off-target"
     assert candidate.ortholog_hits == 0
     assert stats["species_index_misses"] == 1, "the rat hit is reported as unresolvable, not as an ortholog"
     assert stats["ortholog_symbol_lookup_misses"] == 0

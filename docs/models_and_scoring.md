@@ -396,13 +396,13 @@ site**, so the region RISC must open first is the 3'-most nucleotides.
 Anchoring the window on the other end is a measured near-null. Against 2,779 siRNAs with measured
 knockdown (Huesken et al. 2005 plus 385 further sequences), at W=150/L=100:
 
-| Statistic                            | Spearman ρ vs measured inhibition | Dynamic range |
-| ------------------------------------ | --------------------------------- | ------------- |
-| **8-mer at the seed (3') end** ✅    | **+0.267**                        | 6.4 decades   |
-| 17-mer, seed-anchored (reported only)| +0.244                            | 10.4 decades  |
-| whole 21-nt site (reported only)     | +0.237                            | 13.2 decades  |
-| mean P(base unpaired) over the site  | +0.167                            | none (linear) |
-| 8-mer at the non-seed (5') end       | +0.067                            | 6.5 decades   |
+| Statistic                             | Spearman ρ vs measured inhibition | Dynamic range |
+| ------------------------------------- | --------------------------------- | ------------- |
+| **8-mer at the seed (3') end** ✅     | **+0.267**                        | 6.4 decades   |
+| 17-mer, seed-anchored (reported only) | +0.244                            | 10.4 decades  |
+| whole 21-nt site (reported only)      | +0.237                            | 13.2 decades  |
+| mean P(base unpaired) over the site   | +0.167                            | none (linear) |
+| 8-mer at the non-seed (5') end        | +0.067                            | 6.5 decades   |
 
 The four-fold gap between the two 8-mers -- same length, same transcript, same fold, differing only
 in which end of the site they cover -- is the strongest evidence the term reflects mechanism rather
@@ -447,11 +447,11 @@ needs only `site_end >= 8`.
 
 #### Configuration
 
-| Field                                     | Default | Meaning                                        |
-| ----------------------------------------- | ------- | ---------------------------------------------- |
-| `target_accessibility.window_size` (W)    | 150     | RNAplfold averaging window                     |
-| `target_accessibility.max_bp_span` (L)    | 100     | RNAplfold maximum base-pair span               |
-| `target_accessibility.log_floor`          | −5.0    | log₁₀ P treated as zero accessibility          |
+| Field                                  | Default | Meaning                               |
+| -------------------------------------- | ------- | ------------------------------------- |
+| `target_accessibility.window_size` (W) | 150     | RNAplfold averaging window            |
+| `target_accessibility.max_bp_span` (L) | 100     | RNAplfold maximum base-pair span      |
+| `target_accessibility.log_floor`       | −5.0    | log₁₀ P treated as zero accessibility |
 
 W and L are configuration rather than constants because they move a site's accessibility percentile
 substantially. ρ rises only mildly with W (+0.249 at W=40 to +0.269 at W=240), and W=150-240 is the
@@ -528,12 +528,12 @@ position 19 never earned the A/U bonus.
 There used to be a third rule, `+0.1 if guide[0] in ("G", "C")`. It contradicted the biogenesis rule
 rewarding **A/U** at the same base. Measured over 29,605 candidates:
 
-| pos-1 base | n | empirical | biogenesis adj. | composite |
-| --- | --- | --- | --- | --- |
-| A | 8,917 | 8.02 | **+2.83** | **52.93** |
-| T | 9,558 | 8.06 | **+2.60** | **53.24** |
-| C | 5,854 | **9.62** | −5.30 | 45.21 |
-| G | 5,276 | **9.69** | −5.00 | 44.56 |
+| pos-1 base | n     | empirical | biogenesis adj. | composite |
+| ---------- | ----- | --------- | --------------- | --------- |
+| A          | 8,917 | 8.02      | **+2.83**       | **52.93** |
+| T          | 9,558 | 8.06      | **+2.60**       | **53.24** |
+| C          | 5,854 | **9.62**  | −5.30           | 45.21     |
+| G          | 5,276 | **9.69**  | −5.00           | 44.56     |
 
 G/C gained +1.6 on the empirical term and lost 7.9 on the biogenesis adjustment — net ~8 composite
 points worse. A declared 0.15-weight term was overridden ~5× by an undeclared one, `empirical`
@@ -644,16 +644,21 @@ class FilterStatus(str, Enum):
 
 ### 3.5 Hit Classes (`sirnaforge.core.hit_classification.HitClass`)
 
-Every transcriptome hit is classified into exactly one of four mutually exclusive classes,
+Every transcriptome hit is classified into exactly one of five mutually exclusive classes,
 checked in this precedence order (on-target and ortholog deliberately outrank repeat, so a
 repeat-flagged guide's hits on its own gene or orthologs are still counted as such):
 
-| Class        | Meaning                                                                                                                                         |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ON_TARGET`  | Hit is in the query species and matches the query gene (transcript ID, gene ID or symbol)                                                       |
-| `ORTHOLOG`   | Hit is in a different screened species, and that species' gene symbol for the hit transcript matches the query gene's symbol (case-insensitive) |
-| `REPEAT`     | The guide is in the design-time repeat-flagged set                                                                                              |
-| `OFF_TARGET` | Everything else -- this is what `off_target_count` counts                                                                                       |
+| Class          | Meaning                                                                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ON_TARGET`    | Hit is in the query species and matches the query gene (transcript ID, gene ID or symbol)                                                                                  |
+| `ORTHOLOG`     | Hit is in a different screened species, and that species' gene symbol for the hit transcript matches the query gene's symbol (case-insensitive)                            |
+| `REPEAT`       | The guide is in the design-time repeat-flagged set                                                                                                                         |
+| `OFF_TARGET`   | Everything else that could be decided                                                                                                                                      |
+| `UNDETERMINED` | The hit's species has no transcript index, so orthology and the query gene could not be checked at all. Assigned by the annotation layer, never returned by `classify_hit` |
+
+`off_target_count` counts **both** `OFF_TARGET` and `UNDETERMINED` — the liability population — so
+that removing a reference cannot loosen the screen. `undetermined_hits` reports how much of that
+count is unqualified.
 
 A hit whose species label is blank/missing is treated as the query species. When an ortholog
 check cannot run because the hit species' annotation carries no gene symbol for that transcript,
@@ -959,11 +964,11 @@ class ChemicalModification(BaseModel):
 
 Target-site accessibility settings (see 2.5), on `DesignParameters.target_accessibility`:
 
-| Parameter     | Default | Range     | Justification                                       |
-| ------------- | ------- | --------- | --------------------------------------------------- |
-| `window_size` | 150     | 20-1000   | RNAplfold W; on the benchmark ρ plateau at 150-240   |
-| `max_bp_span` | 100     | 10-1000   | RNAplfold L; must not exceed `window_size`          |
-| `log_floor`   | −5.0    | < 0       | Captures ~99% of observed sites; fixed, not per-run  |
+| Parameter     | Default | Range   | Justification                                       |
+| ------------- | ------- | ------- | --------------------------------------------------- |
+| `window_size` | 150     | 20-1000 | RNAplfold W; on the benchmark ρ plateau at 150-240  |
+| `max_bp_span` | 100     | 10-1000 | RNAplfold L; must not exceed `window_size`          |
+| `log_floor`   | −5.0    | < 0     | Captures ~99% of observed sites; fixed, not per-run |
 
 `mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
 `melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
@@ -980,23 +985,23 @@ benchmark evidence behind them.
 
 **`design_v4`** → `design_score` (design stage, both modes)
 
-| Term | Weight | Rationale |
-| ---- | ------ | --------- |
-| Target accessibility | 0.40 | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage |
-| Asymmetry            | 0.35 | Most predictive single sequence factor |
-| GC content           | 0.25 | Stability/accessibility balance |
+| Term                 | Weight | Rationale                                                                                              |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| Target accessibility | 0.40   | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage |
+| Asymmetry            | 0.35   | Most predictive single sequence factor                                                                 |
+| GC content           | 0.25   | Stability/accessibility balance                                                                        |
 
 ⚠️ These three numbers are round numbers **awaiting sign-off** — they are the one part of the weight
 set not chosen by the repo owner.
 
 **`postscreen_sirna_v4`** → `composite_score` (post-screen, siRNA mode). `design_v4`'s terms plus one.
 
-| Term | Weight | Rationale |
-| ---- | ------ | --------- |
-| Off-target           | 0.25 | Post-screen genuine off-target specificity; measured 2.24× its nominal share of composite variance |
-| Target accessibility | 0.30 | as above |
-| Asymmetry            | 0.25 | as above |
-| GC content           | 0.20 | as above |
+| Term                 | Weight | Rationale                                                                                          |
+| -------------------- | ------ | -------------------------------------------------------------------------------------------------- |
+| Off-target           | 0.25   | Post-screen genuine off-target specificity; measured 2.24× its nominal share of composite variance |
+| Target accessibility | 0.30   | as above                                                                                           |
+| Asymmetry            | 0.25   | as above                                                                                           |
+| GC content           | 0.20   | as above                                                                                           |
 
 > Holding `off_target` at 0.25 while the scored budget shrank from six terms to four **reduces** its
 > relative influence, from 0.25/0.60 of the old scored budget to 0.25/1.00. Given it measured at 56%
@@ -1005,15 +1010,15 @@ set not chosen by the repo owner.
 
 **`postscreen_mirna_v4`** → `composite_score` (post-screen, `--design-mode mirna`)
 
-| Term | Weight | Rationale |
-| ---- | ------ | --------- |
-| Off-target           | 0.20 | kept above `asymmetry`, which exact proportional scaling would have tied |
-| Target accessibility | 0.22 | |
-| Asymmetry            | 0.18 | |
-| GC content           | 0.15 | |
-| `ago_start`          | 0.10 | A/U at guide position 1 (Argonaute loading) |
-| `pos1_mismatch`      | 0.05 | G:U wobble or mismatch at position 1 |
-| `supp_13_16`         | 0.10 | low 3' supplementary pairing potential |
+| Term                 | Weight | Rationale                                                                |
+| -------------------- | ------ | ------------------------------------------------------------------------ |
+| Off-target           | 0.20   | kept above `asymmetry`, which exact proportional scaling would have tied |
+| Target accessibility | 0.22   |                                                                          |
+| Asymmetry            | 0.18   |                                                                          |
+| GC content           | 0.15   |                                                                          |
+| `ago_start`          | 0.10   | A/U at guide position 1 (Argonaute loading)                              |
+| `pos1_mismatch`      | 0.05   | G:U wobble or mismatch at position 1                                     |
+| `supp_13_16`         | 0.10   | low 3' supplementary pairing potential                                   |
 
 Hand-authored near, but deliberately not equal to, 0.75× the siRNA values: deriving it by formula
 would be the 1.25 divisor in a new costume.

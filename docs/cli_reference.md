@@ -9,11 +9,13 @@ This reference shows each command with its real `--help` output and working exam
 ### Main Help
 
 ```{program-output} uv run sirnaforge --help
+
 ```
 
 ### Version
 
 ```{program-output} uv run sirnaforge version
+
 ```
 
 ---
@@ -25,6 +27,7 @@ Run complete siRNA design from gene query to scored candidates.
 ### Help
 
 ```{program-output} uv run sirnaforge workflow --help
+
 ```
 
 :::{note}
@@ -48,9 +51,9 @@ Use the `workflow` command for transcript-centric siRNA/miRNA runs.
 
 siRNAforge accepts complementary inputs when you need to bypass gene search or control the reference used for transcriptome off-target analysis:
 
-* `--input-fasta` replaces the transcript retrieval step. Point it at a local FASTA file, HTTP(S) URL, or FTP location. The positional argument (`GENE_QUERY`) still names the outputs, while the workflow designs guides from the supplied sequences. **When you pass `--input-fasta` without `--transcriptome-fasta`, transcriptome off-target analysis is disabled** (design-only mode).
-* `--transcriptome-fasta` selects the dataset used for transcriptome off-target analysis. It accepts local paths, remote URLs, or presets such as `ensembl_human_cdna` and `ensembl_mouse_cdna` (see `sirnaforge cache --info`). **Provide this flag to re-enable transcriptome off-target analysis when running from a custom FASTA.**
-* `--offtarget-indices` overrides the genome indices used for Nextflow/BWA-MEM2 with explicit `species:/path/to/index_prefix` entries. When present, these drive the set of species processed by the off-target pipeline.
+- `--input-fasta` replaces the transcript retrieval step. Point it at a local FASTA file, HTTP(S) URL, or FTP location. The positional argument (`GENE_QUERY`) still names the outputs, while the workflow designs guides from the supplied sequences. **When you pass `--input-fasta` without `--transcriptome-fasta`, transcriptome off-target analysis is disabled** (design-only mode).
+- `--transcriptome-fasta` selects the dataset used for transcriptome off-target analysis. It accepts local paths, remote URLs, or presets such as `ensembl_human_cdna` and `ensembl_mouse_cdna` (see `sirnaforge cache --info`). **Provide this flag to re-enable transcriptome off-target analysis when running from a custom FASTA.**
+- `--offtarget-indices` overrides the genome indices used for Nextflow/BWA-MEM2 with explicit `species:/path/to/index_prefix` entries. When present, these drive the set of species processed by the off-target pipeline.
 
 Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow stage. Remote resources are cached under `~/.cache/sirnaforge/` and reused automatically.
 
@@ -58,7 +61,19 @@ Design-only mode is a deliberate cost guard, not an oversight: resolving the bui
 
 `--skip-off-targets` disables **all** reference-based screening for the run: no transcriptome reference is resolved, downloaded or indexed, the Nextflow off-target stage does not run, **and repeat-element detection is skipped as well**. Repeat detection scans guides against the query species' cDNA reference, so it cannot run without the very download the flag exists to avoid; `logs/workflow_summary.json` reports it as `repeat_summary.status = "skipped"` with `reason = "user_disabled"`, and candidates keep `repeat_flagged = false`. Drop `--skip-off-targets` (optionally with `--transcriptome-fasta`) whenever you need repeat verdicts.
 
-Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` include a `species` column so you can filter hits directly. Aggregated summaries collapse those values into `human` vs `other` buckets, exposing `hits_per_species`, `human_hits`, and `other_species_hits` in `combined_summary.json` plus the workflow console output. The workflow also records the resolved reference decision in `logs/workflow_summary.json` (`reference_summary.transcriptome`) so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
+Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` include a `species` column so you can filter hits directly. Whichever of those tables a run actually read is republished with six classification columns per alignment.
+
+`hit_class` is exactly one of `on_target`, `ortholog`, `repeat`, `off_target` or `undetermined`. `undetermined` means the hit's species has no transcript index at all, so orthology and query-gene membership could not be checked — `species_index_missing` on the same row says so. Undetermined hits are still counted in `off_target_count` and still feed every gate: absent evidence must not loosen a screen, and `undetermined_hits` on the candidate row reports how much of the count is unqualified. A table produced with no index is therefore distinguishable from one where every alignment genuinely is a liability.
+
+Two symbol columns, and they answer different questions. `matched_symbol` is the symbol that _established_ the class — the ortholog symbol on an `ortholog` row, the query symbol on an `on_target` row recognised by symbol — with `symbol_lookup_missing` flagging the rows where that check could not run. It is **not** a per-hit gene name: it is the literal `unknown` on every `off_target`, `repeat` and `undetermined` row, and on an `on_target` row matched by transcript ID, even where the index does resolve a symbol. `hit_symbol` **is** the per-row gene name: the symbol the transcript index resolves for `rname`, independent of class, with `hit_symbol_missing` flagging the rows it could not resolve. Group off-targets by gene on `hit_symbol`, never on `matched_symbol`. Both use the literal `unknown` rather than an empty cell, and `unknown` is common and real — roughly one in seven reference transcripts carries no symbol — so read it as "not annotated", never as "no gene". A stale table read back with any classification cell blank counts as unannotated and is re-annotated in full before it is republished, so no published row carries an empty classification cell (`test_a_row_annotated_in_part_is_repaired_rather_than_republished_with_blank_cells`).
+
+The liability population is `hit_class ∈ {off_target, undetermined}`, and it is the same population the per-candidate `off_target_count` is derived from; the published row count is reconciled against the hits that fed those counters, and any shortfall is reported as a run warning. So no counted hit can go unpublished silently. That reconciliation is a **row total**, not per-candidate attribution — a mis-attribution that nets to zero across the table would not raise a warning.
+
+**Two column shapes exist and a consumer must tolerate both.** The classification columns are written by the Python workflow after Nextflow publishes the file, so `sirnaforge workflow` and `sirnaforge offtarget` produce 18 columns while a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused in another pipeline produces the 12 columns of `GenomeAlignmentSchema`. Validate against `sirnaforge.models.schemas.AggregatedOffTargetSchema`, which accepts either; presence of `hit_class` is the test for which shape you hold. The split is **run-outcome dependent, not only entry-point dependent**: `genome/*_analysis.tsv` gains the columns only on the runs whose aggregate came back header-only and the fallback read the per-species files, so that artifact has both shapes as well and `GenomeAlignmentSchema` (`strict=True`, 12 columns) will reject the 18-column version of it.
+
+Candidate rows carry `screen_query_id`, the id the candidate was screened under. Guides are deduplicated before alignment, so a hit row's `qname` is the _representative's_ id — join row-level evidence on `screen_query_id = qname`, not on `id` (which attributes one guide's entire hit set to a single candidate) and not on `guide_sequence` (which breaks between a U-spelled guide and its T-spelled twin). It is `None` when the candidate was **not submitted to the aligner's input FASTA**. A candidate that was submitted but whose alignment never ran (`nextflow_unavailable`, `nextflow_failed`, or a step-5 exception) still carries the key, and it will join to nothing — `off_target_screened=False` is the signal for that case, not an absent key.
+
+Aggregated summaries collapse those values into `human` vs `other` buckets, exposing `hits_per_species`, `human_hits`, and `other_species_hits` in `combined_summary.json` plus the workflow console output. The workflow also records the resolved reference decision in `logs/workflow_summary.json` (`reference_summary.transcriptome`) so each run documents whether the transcriptome reference was disabled, defaulted, or explicitly provided.
 
 ---
 
@@ -69,6 +84,7 @@ Search gene databases and retrieve transcript sequences.
 ### Help
 
 ```{program-output} uv run sirnaforge search --help
+
 ```
 
 ---
@@ -80,11 +96,13 @@ Design siRNA/miRNA candidates from FASTA sequences.
 ### Help
 
 ```{program-output} uv run sirnaforge design --help
+
 ```
 
 ### Example: Design from Sample Data
 
 ```{program-output} uv run sirnaforge design ../examples/sample_transcripts.fasta -o /tmp/sirna_example.csv --top-n 5
+
 ```
 
 #### Output Preview
@@ -117,16 +135,17 @@ See [ZFN Module Guide](zfn_module.md).
 ### Help
 
 ```{program-output} uv run sirnaforge zfn --help
+
 ```
 
 #### Notes
 
-* `--zfn-left-half-site` and `--zfn-right-half-site` are required.
-* `--zfn-search-space` accepts either a local/remote FASTA or a configured reference key.
-* `--zfn-search-backend` selects the half-site scan engine: `pyahocorasick` (default), `exhaustive_python` (baseline), or `fm_index` (experimental).
-* `--zfn-search-space-index` accepts a persisted index-bundle directory for indexed backends. This is currently supported by `fm_index`.
-* `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
-* Outputs are written as `sirnaforge/candidate_summary.json` and `sirnaforge/offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
+- `--zfn-left-half-site` and `--zfn-right-half-site` are required.
+- `--zfn-search-space` accepts either a local/remote FASTA or a configured reference key.
+- `--zfn-search-backend` selects the half-site scan engine: `pyahocorasick` (default), `exhaustive_python` (baseline), or `fm_index` (experimental).
+- `--zfn-search-space-index` accepts a persisted index-bundle directory for indexed backends. This is currently supported by `fm_index`.
+- `--zfn-algorithm` supports `homology`, `conserved_g`, and `zfn_v2`.
+- Outputs are written as `sirnaforge/candidate_summary.json` and `sirnaforge/offtarget_sites.csv`, with run metadata in `logs/workflow_summary.json`.
 
 Operational guidance from the backend tuning work — measured before the half-site convention issue was
 found, so read it as a runtime observation only, not as a validated correctness result:
@@ -172,11 +191,13 @@ Check FASTA file format and content.
 ### Help
 
 ```{program-output} uv run sirnaforge validate --help
+
 ```
 
 ### Example: Validate Sample Data
 
 ```{program-output} uv run sirnaforge validate ../examples/sample_transcripts.fasta
+
 ```
 
 ---
@@ -186,6 +207,7 @@ Check FASTA file format and content.
 Show default configuration parameters.
 
 ```{program-output} uv run sirnaforge config
+
 ```
 
 ---
@@ -197,6 +219,7 @@ Manage siRNA sequences and chemical modification metadata.
 ### Help
 
 ```{program-output} uv run sirnaforge sequences --help
+
 ```
 
 ---
@@ -208,4 +231,5 @@ Manage miRNA database cache for off-target analysis.
 ### Help
 
 ```{program-output} uv run sirnaforge cache --help
+
 ```

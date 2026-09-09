@@ -4,22 +4,22 @@ siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. 
 
 ## Quick Reference
 
-| Metric                | Optimal Range                   | What It Means                           |
-| --------------------- | ------------------------------- | --------------------------------------- |
-| `composite_score`     | 0-100 scale, higher is better   | Overall quality; **null before screening** |
-| `design_score`        | 0-100 scale, higher is better   | Design-stage quality, not comparable with `composite_score` |
-| `asymmetry_score`     | ≥0.65                           | Guide strand selection preference       |
-| `gc_content`          | 40-55%                          | Stability vs. accessibility balance     |
-| `melting_temp_c`      | 60-78°C                         | Duplex stability (nearest-neighbour Tm) |
-| `mfe`                 | -4 to -7 kcal/mol               | Guide self-structure (0.0 = open chain) |
-| `duplex_stability_dg` | -32 to -43 kcal/mol for a 21mer | Guide:passenger duplex ΔG               |
-| `target_accessibility_p` | higher is better, log-scaled | P(mRNA site's seed-paired 8-mer open)   |
+| Metric                   | Optimal Range                   | What It Means                                               |
+| ------------------------ | ------------------------------- | ----------------------------------------------------------- |
+| `composite_score`        | 0-100 scale, higher is better   | Overall quality; **null before screening**                  |
+| `design_score`           | 0-100 scale, higher is better   | Design-stage quality, not comparable with `composite_score` |
+| `asymmetry_score`        | ≥0.65                           | Guide strand selection preference                           |
+| `gc_content`             | 40-55%                          | Stability vs. accessibility balance                         |
+| `melting_temp_c`         | 60-78°C                         | Duplex stability (nearest-neighbour Tm)                     |
+| `mfe`                    | -4 to -7 kcal/mol               | Guide self-structure (0.0 = open chain)                     |
+| `duplex_stability_dg`    | -32 to -43 kcal/mol for a 21mer | Guide:passenger duplex ΔG                                   |
+| `target_accessibility_p` | higher is better, log-scaled    | P(mRNA site's seed-paired 8-mer open)                       |
 
 ## Two scores, three named weight vectors
 
 Since issue #96 every weight vector is **hand-authored, named, sums to 1.0 and is written to the run
 manifest**, and nothing rescales one at runtime. There is no renormalisation and no divisor. A vector
-is *chosen* by stage and design mode, never combined:
+is _chosen_ by stage and design mode, never combined:
 
 ```
 design_v4                        postscreen_sirna_v4          postscreen_mirna_v4
@@ -39,9 +39,9 @@ interpretable. Every row records the vector that produced it in `weight_vector`,
 `scoring.vectors` block maps that name to the numbers, so any score is traceable to the weights that
 made it.
 
-| Field | Vector | Available |
-| --- | --- | --- |
-| `design_score` | `design_v4` | at design time, from the three terms computable before screening |
+| Field             | Vector                                        | Available                                                                                         |
+| ----------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `design_score`    | `design_v4`                                   | at design time, from the three terms computable before screening                                  |
 | `composite_score` | `postscreen_sirna_v4` / `postscreen_mirna_v4` | only after off-target screening produced usable evidence for that candidate; **null before that** |
 
 **The two are not comparable.** They are different vectors over different term sets, and
@@ -86,17 +86,17 @@ relocated: `conservation` is `None` on single-species runs and `isoform_coverage
 `design_from_sequence`/miRNA paths, so any vector containing them needs either variant vectors or
 arithmetic. Every term that remains is universally computable.
 
-| Quantity | Column | What reads it |
-| --- | --- | --- |
-| Empirical design rules | `empirical_score` | the `min_empirical_score` gate (LOW_EMPIRICAL_SCORE) |
-| Protein-coding isoform coverage | `isoform_coverage` | the optional `--min-isoform-coverage` gate (LOW_ISOFORM_COVERAGE), **off by default** |
-| Cross-species conservation | `conservation_score` | nothing — reported for interpretation |
-| Guide self-structure | `paired_fraction` | the `max_paired_fraction` gate (EXCESS_PAIRING) |
+| Quantity                        | Column               | What reads it                                                                         |
+| ------------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| Empirical design rules          | `empirical_score`    | the `min_empirical_score` gate (LOW_EMPIRICAL_SCORE)                                  |
+| Protein-coding isoform coverage | `isoform_coverage`   | the optional `--min-isoform-coverage` gate (LOW_ISOFORM_COVERAGE), **off by default** |
+| Cross-species conservation      | `conservation_score` | nothing — reported for interpretation                                                 |
+| Guide self-structure            | `paired_fraction`    | the `max_paired_fraction` gate (EXCESS_PAIRING)                                       |
 
 The empirical rubric no longer judges guide position 1. It paid +0.1 for G/C there while the
 biogenesis rule paid `ago_start` for A/U at the same base; measured over 29,605 candidates G/C gained
 +1.6 empirical points and lost 7.9 to the biogenesis adjustment, so a declared 0.15-weight term was
-overridden ~5× by an undeclared one and `empirical` ended up with a *negative* variance share. A/U
+overridden ~5× by an undeclared one and `empirical` ended up with a _negative_ variance share. A/U
 wins. The rubric therefore attains only `{0.4, 0.5, 0.6}`, and `min_empirical_score` is bounded
 accordingly.
 
@@ -219,31 +219,32 @@ sirnaforge workflow GENE --gc-min 30 --gc-max 65
 
 The `candidates_pass.csv` and `candidates_all.csv` files include:
 
-| Column                                             | Description                                                                               |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `sirna_id`                                         | Unique identifier                                                                         |
-| `guide_sequence`                                   | 21nt guide strand (5'→3')                                                                 |
-| `passenger_sequence`                               | Passenger/sense strand                                                                    |
-| `position`                                         | Start position in transcript                                                              |
-| `design_score`                                     | Design-stage score on `design_v4` (3 terms), available without screening                  |
-| `composite_score`                                  | Post-screen score on `postscreen_{sirna,mirna}_v4`; empty before screening                 |
-| `asymmetry_score`                                  | Thermodynamic asymmetry                                                                   |
-| `gc_content`                                       | GC percentage                                                                             |
-| `melting_temp_c`                                   | Melting temperature (°C)                                                                  |
-| `mfe`                                              | Minimum free energy (kcal/mol)                                                            |
-| `duplex_stability_dg`                              | Guide:passenger duplex ΔG (kcal/mol)                                                      |
-| `dg_5p` / `dg_3p`                                  | Terminal 7 bp ΔG at each duplex end                                                       |
-| `delta_dg_end`                                     | `dg_5p - dg_3p`; positive favours guide loading                                           |
-| `off_target_screened`                              | `False` means the screen was incomplete, so the hit counts are a lower bound, not a total |
-| `off_target_count`                                 | Genuine off-target hits only (on-target, ortholog and repeat-mediated hits excluded)      |
-| `on_target_hits` / `ortholog_hits` / `repeat_hits` | The other three classes from the same four-way split                                      |
-| `ortholog_species`                                 | Comma-joined canonical species names with at least one ortholog hit                       |
-| `repeat_flagged` / `repeat_transcript_fraction`    | Design-time k-mer repeat verdict and the frequency it was based on                        |
-| `isoform_coverage` / `conservation_score`          | Reported, unscored (empty when not computable); isoform coverage feeds an optional gate    |
-| `empirical_score`                                  | Reported, unscored; the `min_empirical_score` gate input                                   |
-| `score_*`                                          | Per-term contribution, summing exactly to the score (see above)                            |
-| `scored_after_screening` / `weight_set_version` / `weight_vector` | Which stage, weight set and named vector produced this row's score           |
-| `passes_filters`                                   | `PASS` or the first failed filter                                                         |
+| Column                                                            | Description                                                                                                            |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `sirna_id`                                                        | Unique identifier                                                                                                      |
+| `guide_sequence`                                                  | 21nt guide strand (5'→3')                                                                                              |
+| `passenger_sequence`                                              | Passenger/sense strand                                                                                                 |
+| `position`                                                        | Start position in transcript                                                                                           |
+| `design_score`                                                    | Design-stage score on `design_v4` (3 terms), available without screening                                               |
+| `composite_score`                                                 | Post-screen score on `postscreen_{sirna,mirna}_v4`; empty before screening                                             |
+| `asymmetry_score`                                                 | Thermodynamic asymmetry                                                                                                |
+| `gc_content`                                                      | GC percentage                                                                                                          |
+| `melting_temp_c`                                                  | Melting temperature (°C)                                                                                               |
+| `mfe`                                                             | Minimum free energy (kcal/mol)                                                                                         |
+| `duplex_stability_dg`                                             | Guide:passenger duplex ΔG (kcal/mol)                                                                                   |
+| `dg_5p` / `dg_3p`                                                 | Terminal 7 bp ΔG at each duplex end                                                                                    |
+| `delta_dg_end`                                                    | `dg_5p - dg_3p`; positive favours guide loading                                                                        |
+| `off_target_screened`                                             | `False` means the screen was incomplete, so the hit counts are a lower bound, not a total                              |
+| `off_target_count`                                                | The liability population: `off_target` **plus** `undetermined` (on-target, ortholog and repeat-mediated hits excluded) |
+| `on_target_hits` / `ortholog_hits` / `repeat_hits`                | Three of the other four classes from the same five-way split                                                           |
+| `undetermined_hits`                                               | The part of `off_target_count` whose class could not be decided for want of a transcript index                         |
+| `ortholog_species`                                                | Comma-joined canonical species names with at least one ortholog hit                                                    |
+| `repeat_flagged` / `repeat_transcript_fraction`                   | Design-time k-mer repeat verdict and the frequency it was based on                                                     |
+| `isoform_coverage` / `conservation_score`                         | Reported, unscored (empty when not computable); isoform coverage feeds an optional gate                                |
+| `empirical_score`                                                 | Reported, unscored; the `min_empirical_score` gate input                                                               |
+| `score_*`                                                         | Per-term contribution, summing exactly to the score (see above)                                                        |
+| `scored_after_screening` / `weight_set_version` / `weight_vector` | Which stage, weight set and named vector produced this row's score                                                     |
+| `passes_filters`                                                  | `PASS` or the first failed filter                                                                                      |
 
 ## References
 

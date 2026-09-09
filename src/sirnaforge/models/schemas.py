@@ -10,7 +10,7 @@ Use schemas: MySchema.validate(df) - validation errors provide detailed feedback
 """
 
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Any, Optional, TypeVar, cast
 
 import pandas as pd
 import pandera.pandas as pa
@@ -558,6 +558,12 @@ class GenomeAlignmentSchema(DataFrameModel):
     - Validating pandas DataFrames from transcriptome off-target analysis
     - Bulk operations on genome alignment results
 
+    ``strict=True`` over 12 columns, and ``genome/*_analysis.tsv`` no longer has only one shape: the
+    workflow writes the six classification columns back onto those files on any run whose aggregate
+    came back header-only, so that artifact appears with 12 and with 18 columns and this schema
+    rejects the wider one. Use :class:`AggregatedOffTargetSchema`, which accepts either, unless you
+    specifically mean to require the producer's shape.
+
     **Corresponding Pydantic model:** `models.off_target.OffTargetHit` (for single rows)
     """
 
@@ -616,3 +622,61 @@ class GenomeAlignmentSchema(DataFrameModel):
         if perfect_matches.any():
             return bool((~perfect_matches | (df["offtarget_score"] == 0.0)).all())
         return True
+
+
+HIT_CLASS_VALUES: tuple[str, ...] = ("on_target", "ortholog", "repeat", "off_target", "undetermined")
+BOOLEAN_CELL_VALUES: tuple[str, ...] = ("True", "False")
+
+
+class AggregatedOffTargetSchema(GenomeAlignmentSchema):
+    """Pandera schema for the *published* aggregated off-target table (`combined_offtargets.tsv`).
+
+    **Two shapes are valid and a consumer must tolerate both.** The six classification columns are
+    added by a post-hoc read-modify-write in the Python workflow, not by the Nextflow process that
+    publishes the file, so:
+
+    - via `sirnaforge workflow` / `sirnaforge offtarget`, all 18 columns are present;
+    - via a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused in another
+      pipeline, only the 12 columns of :class:`GenomeAlignmentSchema` are.
+
+    They are therefore declared optional here. The split is **run-outcome dependent, not only
+    entry-point dependent**: `genome/*_analysis.tsv` gains the columns from the same workflow, but
+    only on the runs whose aggregate came back header-only and the fallback read the per-species
+    files, so which shape a given file has is not decided by which entry point produced it.
+
+    Moving the write into the producer is #100's work on `aggregate_results.nf`; until then, presence
+    of `hit_class` is the test for which shape you hold.
+
+    The flag columns are typed as strings over `("True", "False")` deliberately: these tables are
+    read as text, and coercing the string `"False"` to `bool` yields `True`.
+    """
+
+    class Config(SchemaConfig):
+        """Accept either published shape; reject columns from neither."""
+
+        description = "Published aggregated off-target table, with or without the classification columns"
+        title = "Aggregated Off-Target DataFrame"
+        strict = True
+        coerce = True
+
+    hit_class: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=list(HIT_CLASS_VALUES),
+        description="Persisted hit class; 'undetermined' means no reference existed to decide it",
+    )
+    matched_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        str_length={"min_value": 1},
+        description="Symbol that ESTABLISHED the class, or 'unknown'; not a per-hit gene name",
+    )
+    symbol_lookup_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=list(BOOLEAN_CELL_VALUES), description="The hit species' index carries no symbol for this transcript"
+    )
+    hit_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        str_length={"min_value": 1},
+        description="Gene symbol resolved for rname, independent of class, or 'unknown'",
+    )
+    hit_symbol_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=list(BOOLEAN_CELL_VALUES), description="hit_symbol could not be resolved for this row"
+    )
+    species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=list(BOOLEAN_CELL_VALUES), description="No transcript index exists for this row's species at all"
+    )

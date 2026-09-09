@@ -4,6 +4,10 @@ This module classifies screening hits into four mutually exclusive categories:
 ON_TARGET, ORTHOLOG, REPEAT, and OFF_TARGET. The classifier is pure (no I/O,
 no alignment) and operates on pre-computed indices and hit metadata.
 
+``HitClass`` carries a fifth member, ``UNDETERMINED``, which this classifier never returns:
+deciding that a class *could not be decided* needs the reference inventory, so it is assigned in
+``core.hit_annotation``. Count five when enumerating the enum, four when reasoning about this module.
+
 Classification precedence:
     1. ON_TARGET - hit is on the query gene in the query species
     2. ORTHOLOG - hit is on an ortholog in a different species (symbol match)
@@ -13,6 +17,9 @@ Classification precedence:
 On-target and ortholog deliberately outrank repeat: a repeat-flagged guide's
 hits on its own gene or orthologs are still classified as such, preserving the
 decomposition needed for accurate specificity reporting.
+
+``HitClass`` carries a fifth value, UNDETERMINED, that this module never returns: deciding that a
+class could not be decided needs the reference inventory, which lives in the annotation layer.
 """
 
 from __future__ import annotations
@@ -29,12 +36,19 @@ from sirnaforge.data.transcript_index import TranscriptGeneIndex
 
 
 class HitClass(str, Enum):
-    """Mutually exclusive hit classification categories."""
+    """Mutually exclusive hit classification categories.
+
+    ``UNDETERMINED`` is the absent-evidence spelling: it is never returned by :func:`classify_hit`,
+    which cannot see whether a reference existed, and is assigned by the annotation layer
+    (``core/hit_annotation.py``) when the hit species has no transcript index at all. Without it a
+    run with no index published every alignment as an unqualified ``off_target``.
+    """
 
     ON_TARGET = "on_target"
     ORTHOLOG = "ortholog"
     REPEAT = "repeat"
     OFF_TARGET = "off_target"
+    UNDETERMINED = "undetermined"
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,7 @@ class HitClassCounts:
         ortholog: Count of hits classified as ORTHOLOG.
         repeat: Count of hits classified as REPEAT.
         off_target: Count of hits classified as OFF_TARGET.
+        undetermined: Count of hits whose class could not be decided (no index for the species).
         symbol_lookup_missing: Count of hits where ortholog check failed due to missing symbol.
         no_species_index: Count of hits where the species has no index at all.
         ortholog_species: Set of canonical species names with at least one ortholog hit.
@@ -100,6 +115,7 @@ class HitClassCounts:
     ortholog: int = 0
     repeat: int = 0
     off_target: int = 0
+    undetermined: int = 0
     symbol_lookup_missing: int = 0
     no_species_index: int = 0
     ortholog_species: frozenset[str] = field(default_factory=frozenset)
@@ -118,6 +134,7 @@ class HitClassCounts:
             ortholog=self.ortholog + other.ortholog,
             repeat=self.repeat + other.repeat,
             off_target=self.off_target + other.off_target,
+            undetermined=self.undetermined + other.undetermined,
             symbol_lookup_missing=self.symbol_lookup_missing + other.symbol_lookup_missing,
             no_species_index=self.no_species_index + other.no_species_index,
             ortholog_species=frozenset(self.ortholog_species | other.ortholog_species),

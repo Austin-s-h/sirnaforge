@@ -667,7 +667,11 @@ class SiRNACandidate(BaseModel):
     off_target_count: int = Field(
         default=0,
         ge=0,
-        description="Number of genuine off-target sites (on-target, ortholog and repeat hits excluded, goal: ≤3)",
+        description=(
+            "Sites counted as liabilities: on-target, ortholog and repeat hits excluded; hits "
+            "whose class could not be decided INCLUDED (see undetermined_hits), so a missing "
+            "reference cannot loosen the screen. Goal: ≤3"
+        ),
     )
     # Reporting only -- nothing scores or filters on this field, and its direction depends on
     # which stage wrote it last, so do not compare values across candidates screened differently:
@@ -721,8 +725,29 @@ class SiRNACandidate(BaseModel):
     )
     ortholog_hits: int = Field(default=0, ge=0, description="Hits classified as ortholog (same gene, other species)")
     repeat_hits: int = Field(default=0, ge=0, description="Hits classified as repeat element")
+    undetermined_hits: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Hits whose class could not be decided because the hit species has no transcript "
+            "index. Included in off_target_count and reported here so the unqualified share is visible"
+        ),
+    )
     ortholog_species: str = Field(
         default="", description="Comma-separated canonical species with at least one ortholog hit"
+    )
+    # #103's join key. The aligner is handed one FASTA record per DISTINCT guide sequence, so a hit
+    # row's qname is the representative's id, not this candidate's: joining hits on `id` silently
+    # attributes one guide's evidence to one of its median-6 (max-34 on the frozen baseline)
+    # candidates. Joining on the guide sequence instead works only while the spellings are
+    # byte-identical, which U-vs-T guides are not.
+    screen_query_id: str | None = Field(
+        default=None,
+        description=(
+            "Query id this candidate was screened under (qname on its hit rows); None when the candidate "
+            "was not submitted to the aligner's input FASTA. A candidate that was submitted but whose "
+            "alignment never ran still carries the key — off_target_screened=False is the signal there."
+        ),
     )
 
     # Repeat detection (design-time k-mer frequency check)
@@ -993,6 +1018,8 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
 
     return {
         "id": candidate.id,
+        # The join key for row-level off-target evidence: equals qname in the hit table.
+        "screen_query_id": _maybe_attr("screen_query_id"),
         "transcript_id": candidate.transcript_id,
         "position": candidate.position,
         "guide_sequence": candidate.guide_sequence,
@@ -1020,6 +1047,7 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "on_target_hits": candidate.on_target_hits,
         "ortholog_hits": candidate.ortholog_hits,
         "repeat_hits": candidate.repeat_hits,
+        "undetermined_hits": _maybe_attr("undetermined_hits", 0),
         "ortholog_species": candidate.ortholog_species,
         "repeat_flagged": candidate.repeat_flagged,
         "repeat_transcript_fraction": candidate.repeat_transcript_fraction,
