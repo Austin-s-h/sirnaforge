@@ -145,16 +145,26 @@ def hit_class_of(row: Mapping[str, Any]) -> HitClass:
 
 
 def is_annotated(row: Mapping[str, Any]) -> bool:
-    """True when this row carries a class that is actually one of the taxonomy's values.
+    """True when this row carries a usable value in **every** classification column.
 
-    Presence of the key is not enough: a table read back from disk can carry an empty
-    ``hit_class`` cell, and treating that as annotated republished the blank and then raised
-    ``ValueError`` on the next read — after the file had already been overwritten.
+    Authoritative over all of :data:`CLASSIFICATION_COLUMNS`, not over ``hit_class`` alone.
+    Presence of a key is not enough: a table read back from disk can carry an empty cell, and
+    treating that as annotated republished the blank — for ``hit_class`` that raised ``ValueError``
+    on the next read after the file had already been overwritten, and for the other five it
+    published ``hit_symbol=''`` / ``hit_symbol_missing=''`` / ``species_index_missing=''``, which
+    ``AggregatedOffTargetSchema`` rejects on the very table the same run publishes against it. A
+    partially annotated row is re-annotated by the orphan pass, which stays the single repair path.
     """
-    value = row.get(HIT_CLASS_COLUMN)
-    if value is None:
+    if str(row.get(HIT_CLASS_COLUMN) or "") not in {member.value for member in HitClass}:
         return False
-    return str(value) in {member.value for member in HitClass}
+    if not str(row.get(MATCHED_SYMBOL_COLUMN) or "").strip():
+        return False
+    if not str(row.get(HIT_SYMBOL_COLUMN) or "").strip():
+        return False
+    return all(
+        _is_parseable_flag(row.get(column))
+        for column in (SYMBOL_LOOKUP_MISSING_COLUMN, HIT_SYMBOL_MISSING_COLUMN, SPECIES_INDEX_MISSING_COLUMN)
+    )
 
 
 def accumulate_hit_class(
@@ -227,8 +237,19 @@ def write_classified_hits(
     return len(rows)
 
 
+_FLAG_TRUE: frozenset[str] = frozenset({"true", "1", "yes"})
+_FLAG_FALSE: frozenset[str] = frozenset({"false", "0", "no"})
+
+
 def _as_bool(value: Any) -> bool:
     """Interpret a persisted flag, which may be a real bool or the string a TSV round-tripped."""
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in {"true", "1", "yes"}
+    return str(value).strip().lower() in _FLAG_TRUE
+
+
+def _is_parseable_flag(value: Any) -> bool:
+    """Whether a flag cell says something. A blank cell parses as False but means "not written"."""
+    if isinstance(value, bool):
+        return True
+    return str(value or "").strip().lower() in (_FLAG_TRUE | _FLAG_FALSE)

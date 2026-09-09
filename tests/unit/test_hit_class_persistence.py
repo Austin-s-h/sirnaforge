@@ -789,10 +789,109 @@ def test_screen_query_id_matches_the_qname_the_hit_rows_carry(tmp_path):
 
 
 @pytest.mark.unit
-def test_a_candidate_that_never_reached_the_aligner_has_no_join_key():
-    """``None`` rather than its own id: a key that joins to nothing must not look like one."""
+def test_the_join_key_defaults_to_none_and_serializes_as_none():
+    """The field default and its passthrough into the candidate row -- nothing more.
+
+    Named for what it covers: it asserts on a freshly constructed object, so it cannot see whether
+    the workflow leaves the key unset for a candidate the aligner never saw. That behaviour is
+    pinned by ``test_candidate_never_submitted_is_not_scored_as_clean`` in
+    ``test_post_screen_scoring_integrity.py``, which builds the real state.
+    """
     assert _candidate("cand_unsubmitted", CLEAN_GUIDE).screen_query_id is None
     assert build_candidate_row(_candidate("cand_unsubmitted", CLEAN_GUIDE))["screen_query_id"] is None
+
+
+@pytest.mark.unit
+def test_the_returned_results_map_is_looked_up_by_the_screening_id(tmp_path):
+    """``offtarget_summary.results`` must not report a fabricated zero for a deduplicated candidate.
+
+    This map is serialized into ``logs/workflow_summary.json``. Keyed and looked up by ``id``, the
+    non-representative of a deduplicated pair got ``off_target_count: 0`` and no hits while
+    ``candidates_all.csv`` carried its real count for the same id -- 32,463 of 34,863 ids on the
+    frozen baseline. Every other test in this file bypasses ``_prepare_offtarget_input``, so the
+    dedup map is empty and this whole class of defect is invisible to them.
+
+    The count is also pinned against the candidate rather than the ingest tally: the ingest counts
+    every row it read, on-target rows included, so the two hit rows here must publish
+    ``off_target_count: 1``, not 2.
+    """
+    workflow = _workflow(tmp_path, "out_dedup_results_map")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    _write_results_dir(
+        results_dir,
+        [
+            _hit_row("cand_rep", CLEAN_GUIDE, "human", "ENST00000000001.2"),  # own gene: not a liability
+            _hit_row("cand_rep", CLEAN_GUIDE, "human", "ENST00000000009"),  # the one liability
+        ],
+    )
+
+    representative = _candidate("cand_rep", CLEAN_GUIDE)
+    duplicate = _candidate("cand_dup", CLEAN_GUIDE)
+    asyncio.run(workflow._prepare_offtarget_input([representative, duplicate]))
+    assert duplicate.screen_query_id == "cand_rep", "the fixture must genuinely deduplicate"
+
+    outcome = asyncio.run(
+        workflow._process_nextflow_results([representative, duplicate], results_dir, {"status": "completed"})
+    )
+
+    published = outcome["results"]
+    assert set(published) == {"cand_rep", "cand_dup"}, "the map is keyed by candidate id"
+    for candidate in (representative, duplicate):
+        assert candidate.off_target_count == 1, "one liability, fanned out to both candidates"
+        entry = published[candidate.id]
+        assert entry["off_target_count"] == candidate.off_target_count
+        assert [row["rname"] for row in entry["hits"]] == ["ENST00000000001.2", "ENST00000000009"]
+
+
+@pytest.mark.unit
+def test_a_row_annotated_in_part_is_repaired_rather_than_republished_with_blank_cells(tmp_path):
+    """``is_annotated`` is authoritative over every classification column, not over ``hit_class``.
+
+    A stale or partially annotated table -- a valid ``hit_class`` but no symbols -- counted as
+    annotated, so the orphan pass skipped it and the writer republished ``row.get(column, "")`` for
+    the five columns it had not forced re-annotation of. The resulting file failed
+    ``AggregatedOffTargetSchema`` on ``hit_symbol``, ``hit_symbol_missing`` and
+    ``species_index_missing`` -- the schema the same run publishes this table against.
+
+    The row's qname belongs to no candidate in this run, which is what makes the orphan pass the
+    only thing that can repair it: a row whose candidate *is* present is re-annotated by the main
+    integration loop regardless of what ``is_annotated`` says.
+    """
+    workflow = _workflow(tmp_path, "out_partial_annotation")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    aggregated = results_dir / "aggregated"
+    aggregated.mkdir(parents=True, exist_ok=True)
+    tsv_path = aggregated / "combined_offtargets.tsv"
+    header = [*TSV_COLUMNS, *CLASSIFICATION_COLUMNS]
+    with tsv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        # Written by a version that knew only the first three columns: a usable class, blank rest.
+        writer.writerow(
+            {
+                **_hit_row("cand_gone", ORPHAN_GUIDE, "human", "ENST00000000009"),
+                HIT_CLASS_COLUMN: HitClass.OFF_TARGET.value,
+                MATCHED_SYMBOL_COLUMN: UNKNOWN_SYMBOL,
+                SYMBOL_LOOKUP_MISSING_COLUMN: "False",
+            }
+        )
+    _write_summary(aggregated, 1)
+
+    outcome = asyncio.run(
+        workflow._process_nextflow_results(
+            [_candidate("cand_clean", CLEAN_GUIDE)], results_dir, {"status": "completed"}
+        )
+    )
+
+    assert outcome["status"] == "completed"
+    assert outcome["filtering_stats"]["hits_classified_without_candidate"] == 1, "the orphan pass repaired it"
+    republished = _read_tsv(tsv_path)
+    assert republished[0][HIT_SYMBOL_COLUMN] == "OTHER", "the row was re-annotated, not republished"
+    assert republished[0][HIT_SYMBOL_MISSING_COLUMN] == "False"
+    assert republished[0][SPECIES_INDEX_MISSING_COLUMN] == "False"
+    assert all(republished[0][column] for column in CLASSIFICATION_COLUMNS), "never an empty cell"
+    # The published contract's claim: this file validates against the schema the run declares.
+    AggregatedOffTargetSchema.validate(pd.read_csv(tsv_path, sep="\t", dtype=str), lazy=True)
 
 
 # --- the blank-class case, which used to crash after the table was overwritten ------------------

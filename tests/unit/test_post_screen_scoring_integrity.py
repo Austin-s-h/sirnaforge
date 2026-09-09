@@ -47,6 +47,7 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
+    build_candidate_row,
 )
 from sirnaforge.utils.cli_inputs import resolve_species_inputs
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, DIRTY_CONTROL_SUFFIX
@@ -244,6 +245,14 @@ def test_candidate_never_submitted_is_not_scored_as_clean(tmp_path: Path) -> Non
     assert unsubmitted.composite_score == design_time_score
     assert unsubmitted.score_off_target is None
     assert stats["candidates_not_scored_after_screening"] == 1
+
+    # The join key is evidence of having been screened, so it must stay unset here: the assignment
+    # used to sit above the never_submitted computation and could not know. A candidate carrying
+    # screen_query_id='cand_unsubmitted' alongside off_target_screened=False publishes a key that
+    # joins to nothing but looks like one, and build_candidate_row emits it.
+    assert submitted.screen_query_id == "cand_submitted", "its own id IS the qname it screened under"
+    assert unsubmitted.screen_query_id is None, "never reached the aligner, so there is no qname"
+    assert build_candidate_row(unsubmitted)["screen_query_id"] is None
 
 
 @pytest.mark.unit

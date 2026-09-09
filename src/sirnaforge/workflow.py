@@ -2108,19 +2108,22 @@ class SiRNAWorkflow:
         workflow_warnings.extend(self._persist_hit_classifications(parsed))
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
-        # Map parsed results for return structure
+        # Map parsed results for return structure, keyed by candidate id. The LOOKUP is by
+        # screen_query_id: the aligner saw one record per distinct guide, so a deduplicated
+        # candidate's evidence lives under its representative's id and looking it up by `id`
+        # published a fabricated zero for every non-representative (32,463 of 34,863 ids on the
+        # frozen baseline) while candidates_all.csv carried the real count for the same ids.
         mapped = {}
         for c in updated_candidates:
-            qid = c.id
-            entry = parsed.get("results", {}).get(qid)
-            if entry:
-                mapped[qid] = {
-                    "off_target_count": entry.get("off_target_count", 0),
-                    "off_target_score": entry.get("off_target_score", 0.0),
-                    "hits": entry.get("hits", []),
-                }
-            else:
-                mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
+            entry = parsed.get("results", {}).get(c.screen_query_id or c.id)
+            mapped[c.id] = {
+                # The candidate's own liability count, not the ingest tally: the raw entry counts
+                # on-target, ortholog, repeat and miRNA rows too, so taking it here gave one field
+                # name two different definitions across two artifacts of the same run.
+                "off_target_count": c.off_target_count,
+                "off_target_score": entry.get("off_target_score", 0.0) if entry else 0.0,
+                "hits": entry.get("hits", []) if entry else [],
+            }
 
         return {
             "status": run_status,
@@ -2745,9 +2748,6 @@ class SiRNAWorkflow:
             # results. Falls back to the candidate's own id when it was never deduplicated.
             repr_id = self._candidate_id_to_representative.get(candidate_id, candidate_id)
             offtarget_entry = representative_results.get(repr_id)
-            if candidate.screen_query_id is None:
-                # A caller that bypassed _prepare_offtarget_input still gets the join key it screened under.
-                candidate.screen_query_id = repr_id
 
             # Zero hits means "clean" only for a candidate that actually reached the aligner. The
             # dedup map holds every submitted candidate and is empty only when screening bypassed
@@ -2756,6 +2756,12 @@ class SiRNAWorkflow:
             never_submitted = bool(self._candidate_id_to_representative) and (
                 candidate_id not in self._candidate_id_to_representative
             )
+            if candidate.screen_query_id is None and not never_submitted:
+                # A caller that bypassed _prepare_offtarget_input still gets the join key it
+                # screened under -- with an empty dedup map the candidate's own id IS the qname.
+                # Guarded on never_submitted because this assignment used to sit above that
+                # computation and so handed a join key to a candidate the aligner never saw.
+                candidate.screen_query_id = repr_id
             if never_submitted:
                 logger.error(
                     f"Candidate {candidate_id} was never submitted to off-target screening; "
