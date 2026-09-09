@@ -13,6 +13,17 @@ Usage (from the repo root):
         --run-dir work/baseline_0.7.1/run \
         --reference work/baseline_0.7.1/reference/GRCh38_cdna_primary_1tx_per_gene_plus_TP53.fa \
         --output work/baseline_0.7.1/measurements.json
+
+Multi-species runs name one reference per screened species; ``--ortholog-symbol-alias`` adds an
+extra accepted ortholog symbol as its own measured scope (mouse p53 is ``Trp53``, not ``Tp53``,
+so symbol equality alone cannot recognise it):
+
+    uv run python scripts/measure_baseline_0_7_1.py \
+        --run-dir work/baseline_0.7.1/two_species/run \
+        --reference human=work/baseline_0.7.1/reference/GRCh38_cdna_primary_1tx_per_gene_plus_TP53.fa \
+        --reference mouse=~/.cache/sirnaforge/transcriptomes/Mus_musculus.GRCm39.cdna.all.fa \
+        --ortholog-symbol-alias TRP53 \
+        --output work/baseline_0.7.1/two_species/measurements_two_species.json
 """
 
 from __future__ import annotations
@@ -22,9 +33,10 @@ import hashlib
 import json
 import statistics
 from collections import Counter
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -81,8 +93,31 @@ def variance_shares(frame: pd.DataFrame, term_columns: dict[str, str]) -> dict[s
 def read_hits(path: Path) -> pd.DataFrame:
     """Load a per-hit TSV, or an empty frame when it is absent/empty."""
     if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
+        return cast("pd.DataFrame", pd.DataFrame())
     return pd.read_csv(path, sep="\t")
+
+
+HUMAN_SPECIES_ALIASES = frozenset({"human", "hsa", "homo_sapiens", ""})
+
+EMPTY_QUERY_BUCKET: dict[str, int] = {
+    "on_target": 0,
+    "ortholog": 0,
+    "repeat": 0,
+    "off_target": 0,
+    "off_target_nm_le2": 0,
+    "off_target_nm_ge3": 0,
+    # Species-scoped off-target counters. D3 proposes "human hits at nm <= 2", so both halves of
+    # that scope need their own counter as well as the two mixed corners of the 2x2.
+    "off_target_human_any_nm": 0,
+    "off_target_human_nm_le2": 0,
+    "off_target_nonhuman_any_nm": 0,
+    "off_target_nonhuman_nm_le2": 0,
+    "human_0mm": 0,
+    "human_1mm": 0,
+    "human_2mm": 0,
+    "seed_0mm": 0,
+    "human_total": 0,
+}
 
 
 @dataclass
@@ -96,6 +131,49 @@ class Reconstruction:
     species_index_missing: int
     resolved_symbols: int
     total_hits: int
+    # Per-species views, keyed by the species label written into the hit table. Populated for
+    # every run; on a single-species run each carries exactly one key.
+    per_species_class_counts: dict[str, Counter[str]] = field(default_factory=dict)
+    per_species_alignment_nm: dict[str, Counter[int]] = field(default_factory=dict)
+    per_species_offtarget_nm: dict[str, Counter[int]] = field(default_factory=dict)
+    per_species_shortfalls: dict[str, Counter[str]] = field(default_factory=dict)
+    ortholog_symbols: Counter[str] = field(default_factory=Counter)
+
+
+def counter_series(
+    candidates: pd.DataFrame,
+    per_query: Mapping[str, Mapping[str, int]],
+    representative: Mapping[str, str],
+    field_name: str,
+) -> pd.Series:
+    """Per-candidate-row value of one recomputed counter, resolved via the guide representative.
+
+    A candidate row carries no hits of its own: the hit table keys on one representative id per
+    distinct guide, so every row reads its guide's representative. Named rather than inlined as a
+    lambda so the id type is stated once instead of being re-inferred at seven call sites.
+    """
+
+    def value(candidate_id: Any) -> int:
+        key = str(candidate_id)
+        bucket = per_query.get(representative.get(key, key), {})
+        return int(bucket.get(field_name, 0))
+
+    return candidates["id"].map(value)
+
+
+def _accumulate_offtarget(bucket: dict[str, int], *, nm: int, seed_mismatches: int, treated_as_human: bool) -> None:
+    """Add one genuine off-target hit to a per-candidate bucket, in every scope it belongs to."""
+    bucket["off_target_nm_le2" if nm <= 2 else "off_target_nm_ge3"] += 1
+    prefix = "off_target_human" if treated_as_human else "off_target_nonhuman"
+    bucket[f"{prefix}_any_nm"] += 1
+    if nm <= 2:
+        bucket[f"{prefix}_nm_le2"] += 1
+    if treated_as_human:
+        bucket["human_total"] += 1
+        if nm in (0, 1, 2):
+            bucket[f"human_{nm}mm"] += 1
+    if seed_mismatches == 0:
+        bucket["seed_0mm"] += 1
 
 
 def reconstruct(
@@ -104,9 +182,14 @@ def reconstruct(
     qname_to_guide: dict[str, str],
     label: str,
 ) -> Reconstruction:
-    """Re-classify every hit and accumulate per-query counters."""
+    """Re-classify every hit and accumulate per-query and per-species counters."""
     per_query: dict[str, dict[str, int]] = {}
     class_counts: Counter[str] = Counter()
+    per_species_class: dict[str, Counter[str]] = {}
+    per_species_align_nm: dict[str, Counter[int]] = {}
+    per_species_off_nm: dict[str, Counter[int]] = {}
+    per_species_shortfall: dict[str, Counter[str]] = {}
+    ortholog_symbols: Counter[str] = Counter()
     symbol_missing = 0
     index_missing = 0
     resolved = 0
@@ -114,7 +197,7 @@ def reconstruct(
     for row in hits.to_dict("records"):
         qname = str(row["qname"])
         guide = qname_to_guide.get(qname, str(row.get("qseq", "")))
-        verdict = classify_hit(row, guide, context)
+        verdict = classify_hit(cast("Mapping[str, Any]", row), guide, context)
         class_counts[verdict.hit_class.value] += 1
         if verdict.matched_symbol:
             resolved += 1
@@ -123,40 +206,29 @@ def reconstruct(
         if verdict.species_index_missing:
             index_missing += 1
 
-        bucket = per_query.setdefault(
-            qname,
-            {
-                "on_target": 0,
-                "ortholog": 0,
-                "repeat": 0,
-                "off_target": 0,
-                "off_target_nm_le2": 0,
-                "off_target_nm_ge3": 0,
-                "human_0mm": 0,
-                "human_1mm": 0,
-                "human_2mm": 0,
-                "seed_0mm": 0,
-                "human_total": 0,
-            },
-        )
+        nm = int(row["nm"])
+        seed_mm = int(row["seed_mismatches"])
+        species = str(row.get("species") or "")
+        species_key = species or "(blank)"
+        treated_as_human = species.lower() in HUMAN_SPECIES_ALIASES
+
+        per_species_class.setdefault(species_key, Counter())[verdict.hit_class.value] += 1
+        per_species_align_nm.setdefault(species_key, Counter())[nm] += 1
+        shortfalls = per_species_shortfall.setdefault(species_key, Counter())
+        if verdict.symbol_lookup_missing:
+            shortfalls["symbol_lookup_missing"] += 1
+        if verdict.species_index_missing:
+            shortfalls["species_index_missing"] += 1
+        if verdict.hit_class is HitClass.ORTHOLOG and verdict.matched_symbol:
+            ortholog_symbols[f"{species_key}:{verdict.matched_symbol}"] += 1
+
+        bucket = per_query.setdefault(qname, dict(EMPTY_QUERY_BUCKET))
         bucket[verdict.hit_class.value] += 1
         if verdict.hit_class is not HitClass.OFF_TARGET:
             continue
 
-        nm = int(row["nm"])
-        seed_mm = int(row["seed_mismatches"])
-        species = str(row.get("species") or "")
-        treated_as_human = species.lower() in {"human", "hsa", "homo_sapiens", ""}
-        if nm <= 2:
-            bucket["off_target_nm_le2"] += 1
-        else:
-            bucket["off_target_nm_ge3"] += 1
-        if treated_as_human:
-            bucket["human_total"] += 1
-            if nm in (0, 1, 2):
-                bucket[f"human_{nm}mm"] += 1
-        if seed_mm == 0:
-            bucket["seed_0mm"] += 1
+        per_species_off_nm.setdefault(species_key, Counter())[nm] += 1
+        _accumulate_offtarget(bucket, nm=nm, seed_mismatches=seed_mm, treated_as_human=treated_as_human)
 
     return Reconstruction(
         label=label,
@@ -166,7 +238,92 @@ def reconstruct(
         species_index_missing=index_missing,
         resolved_symbols=resolved,
         total_hits=int(len(hits)),
+        per_species_class_counts=per_species_class,
+        per_species_alignment_nm=per_species_align_nm,
+        per_species_offtarget_nm=per_species_off_nm,
+        per_species_shortfalls=per_species_shortfall,
+        ortholog_symbols=ortholog_symbols,
     )
+
+
+def species_split(recon: Reconstruction) -> dict[str, Any]:
+    """Render one Reconstruction's per-species views, with the nm >= 3 share per species.
+
+    The nm >= 3 share is the number the internal all-species run reported as 95.5% and the
+    human-only canonical run measured at 6.53%; splitting it by species is what tells those
+    two apart.
+    """
+    out: dict[str, Any] = {}
+    for species in sorted(recon.per_species_class_counts):
+        classes = recon.per_species_class_counts[species]
+        align_nm = recon.per_species_alignment_nm.get(species, Counter())
+        off_nm = recon.per_species_offtarget_nm.get(species, Counter())
+        align_total = sum(align_nm.values())
+        off_total = sum(off_nm.values())
+        off_ge3 = sum(count for nm, count in off_nm.items() if nm >= 3)
+        align_ge3 = sum(count for nm, count in align_nm.items() if nm >= 3)
+        out[species] = {
+            "alignments": align_total,
+            "alignment_nm_distribution": {str(nm): align_nm[nm] for nm in sorted(align_nm)},
+            "alignments_nm_ge3": align_ge3,
+            "alignments_nm_ge3_fraction": (align_ge3 / align_total) if align_total else None,
+            "hit_classes": dict(classes),
+            "counted_off_target": off_total,
+            "counted_off_target_nm_distribution": {str(nm): off_nm[nm] for nm in sorted(off_nm)},
+            "counted_off_target_nm_ge3": off_ge3,
+            "counted_off_target_nm_ge3_fraction": (off_ge3 / off_total) if off_total else None,
+            "shortfalls": dict(recon.per_species_shortfalls.get(species, Counter())),
+        }
+    totals_off = sum(v["counted_off_target"] for v in out.values())
+    totals_ge3 = sum(v["counted_off_target_nm_ge3"] for v in out.values())
+    return {
+        "per_species": out,
+        "all_species_counted_off_target": totals_off,
+        "all_species_counted_off_target_nm_ge3": totals_ge3,
+        "all_species_counted_off_target_nm_ge3_fraction": (totals_ge3 / totals_off) if totals_off else None,
+        "ortholog_matched_symbols": dict(recon.ortholog_symbols.most_common(20)),
+    }
+
+
+def excess_offtarget_scopes(
+    candidates: pd.DataFrame,
+    recon: Reconstruction,
+    representative: dict[str, str],
+    cap: int | None,
+    guides: pd.Series,
+) -> dict[str, Any]:
+    """The four-way EXCESS_OFF_TARGETS table D3 turns on, at one cap.
+
+    Scopes: (a) all species / any nm — today's default; (b) human only / any nm;
+    (c) all species / nm <= 2; (d) human only / nm <= 2 — D3's proposal.
+
+    Reported at row level and at distinct-guide level, because candidate rows are ~14.5x
+    redundant per guide on this run and the row count therefore overstates how many
+    molecules a scope actually rejects.
+    """
+    scopes = {
+        "a_all_species_any_nm": "off_target",
+        "b_human_only_any_nm": "off_target_human_any_nm",
+        "c_all_species_nm_le2": "off_target_nm_le2",
+        "d_human_only_nm_le2": "off_target_human_nm_le2",
+    }
+    table: dict[str, Any] = {
+        "cap": cap,
+        "rows": int(len(candidates)),
+        "distinct_guides": int(guides.nunique()),
+    }
+    for scope, field_name in scopes.items():
+        values = counter_series(candidates, recon.per_query, representative, field_name)
+        failing = pd.Series(False, index=candidates.index) if cap is None else values > cap
+        table[scope] = {
+            "counter": field_name,
+            "failures": None if cap is None else int(failing.sum()),
+            "failures_distinct_guides": None if cap is None else int(guides[failing.to_numpy()].nunique()),
+            "max": int(values.max()) if len(values) else 0,
+            "median": float(values.median()) if len(values) else None,
+            "mean": float(values.mean()) if len(values) else None,
+        }
+    return table
 
 
 def gate_independent_failures(
@@ -251,22 +408,22 @@ def gate_independent_failures(
         "repeat_flagged",
     )
 
-    def counter(field: str) -> pd.Series:
-        return candidates["id"].map(lambda cid: recon.per_query.get(representative.get(cid, cid), {}).get(field, 0))
+    def counter(field_name: str) -> pd.Series:
+        return counter_series(candidates, recon.per_query, representative, field_name)
 
-    def mirna_counter(field: str) -> pd.Series:
-        return candidates["id"].map(lambda cid: mirna_by_query.get(representative.get(cid, cid), {}).get(field, 0))
+    def mirna_counter(field_name: str) -> pd.Series:
+        return counter_series(candidates, mirna_by_query, representative, field_name)
 
-    for name, field, threshold in (
+    for name, gate_field, threshold in (
         ("TRANSCRIPTOME_PERFECT_MATCH", "human_0mm", offtarget_filters.max_transcriptome_hits_0mm),
         ("TRANSCRIPTOME_1MM", "human_1mm", offtarget_filters.max_transcriptome_hits_1mm),
         ("TRANSCRIPTOME_2MM", "human_2mm", offtarget_filters.max_transcriptome_hits_2mm),
         ("TRANSCRIPTOME_SEED_PERFECT", "seed_0mm", offtarget_filters.max_transcriptome_seed_perfect),
         ("EXCESS_OFF_TARGETS", "off_target", offtarget_filters.max_off_target_count),
     ):
-        values = counter(field)
+        values = counter(gate_field)
         mask = pd.Series(False, index=candidates.index) if threshold is None else values > threshold
-        record(name, mask, threshold, f"recomputed {field}")
+        record(name, mask, threshold, f"recomputed {gate_field}")
 
     perfect_seed = mirna_counter("seed_0mm")
     threshold = offtarget_filters.max_mirna_perfect_seed
@@ -311,6 +468,55 @@ def gate_independent_failures(
     return results
 
 
+def cross_run_delta(hits: pd.DataFrame, other_run_dir: Path) -> dict[str, Any]:
+    """Diff this run's hit table against another frozen run's, on both candidate id and guide.
+
+    Two runs of identical inputs are expected to agree hit-for-hit, but the ``qname`` written
+    into the hit table is one arbitrarily chosen candidate id per DISTINCT guide, and that
+    choice is not stable across runs. So the id-keyed diff and the guide-keyed diff answer
+    different questions, and only the guide-keyed one is a reproducibility statement.
+    """
+    other_path = other_run_dir / "off_target" / "results" / "aggregated" / "combined_offtargets.tsv"
+    other = read_hits(other_path)
+    site_key = ["species", "rname", "coord", "strand", "cigar", "nm", "seed_mismatches"]
+    out: dict[str, Any] = {
+        "other_run_dir": str(other_run_dir),
+        "other_alignments": int(len(other)),
+        "this_alignments": int(len(hits)),
+    }
+    if hits.empty or other.empty:
+        return out
+    # Restrict to species screened by BOTH runs: a species only one run screened is a scope
+    # difference, not a disagreement, and mixing the two makes the delta uninterpretable.
+    shared_species = sorted(set(hits["species"].astype(str)) & set(other["species"].astype(str)))
+    out["species_compared"] = shared_species
+    out["species_only_this_run"] = sorted(set(hits["species"].astype(str)) - set(other["species"].astype(str)))
+    out["species_only_other_run"] = sorted(set(other["species"].astype(str)) - set(hits["species"].astype(str)))
+    hits = hits[hits["species"].astype(str).isin(shared_species)]
+    other = other[other["species"].astype(str).isin(shared_species)]
+    out["this_alignments_in_shared_species"] = int(len(hits))
+    out["other_alignments_in_shared_species"] = int(len(other))
+    for label, key in (("guide_keyed", ["qseq", *site_key]), ("candidate_id_keyed", ["qname", *site_key])):
+        left = set(hits[key].astype(str).agg("|".join, axis=1))
+        right = set(other[key].astype(str).agg("|".join, axis=1))
+        out[label] = {
+            "join_key": key,
+            "shared": len(left & right),
+            "only_this_run": len(left - right),
+            "only_other_run": len(right - left),
+        }
+    this_map = dict(zip(hits["qseq"].astype(str), hits["qname"].astype(str), strict=True))
+    other_map = dict(zip(other["qseq"].astype(str), other["qname"].astype(str), strict=True))
+    shared_guides = set(this_map) & set(other_map)
+    changed = {g for g in shared_guides if this_map[g] != other_map[g]}
+    out["representative_qname_stability"] = {
+        "shared_guides": len(shared_guides),
+        "guides_whose_representative_qname_changed": len(changed),
+        "fraction_changed": (len(changed) / len(shared_guides)) if shared_guides else None,
+    }
+    return out
+
+
 def mirna_counters(hits: pd.DataFrame) -> dict[str, dict[str, int]]:
     """Per-query miRNA counters, matching what _integrate_offtarget_results accumulates."""
     out: dict[str, dict[str, int]] = {}
@@ -321,7 +527,7 @@ def mirna_counters(hits: pd.DataFrame) -> dict[str, dict[str, int]]:
         bucket = out.setdefault(qname, {"total": 0, "human_total": 0, "seed_0mm": 0, "seed_1mm": 0, "high_risk": 0})
         bucket["total"] += 1
         species = str(row.get("species") or "").lower()
-        is_human = species in {"human", "hsa", "homo_sapiens", ""}
+        is_human = species in HUMAN_SPECIES_ALIASES
         if is_human:
             bucket["human_total"] += 1
         seed_mm = int(row["seed_mismatches"])
@@ -338,13 +544,52 @@ def main() -> None:  # noqa: PLR0912
     """Recompute the baseline measurements and write measurements.json."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--reference", type=Path, required=True, help="Screened reference FASTA")
+    parser.add_argument(
+        "--reference",
+        action="append",
+        required=True,
+        metavar="[SPECIES=]FASTA",
+        help=(
+            "Screened reference FASTA. Repeat once per screened species as 'species=path'; a bare "
+            "path is read as 'human=path' so single-species invocations are unchanged."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gc-min", type=float, default=30.0, help="as-run gc_min (workflow CLI default)")
     parser.add_argument("--gc-max", type=float, default=60.0, help="as-run gc_max (workflow CLI default)")
     parser.add_argument("--query-gene-id", default="ENSG00000141510")
     parser.add_argument("--query-gene-symbol", default="TP53")
+    parser.add_argument(
+        "--ortholog-symbol-alias",
+        action="append",
+        default=[],
+        metavar="SYMBOL",
+        help=(
+            "Extra gene symbol accepted as the query gene's ortholog name, e.g. TRP53 for mouse "
+            "p53. Measured as an ADDITIONAL scope; the default scopes never use it."
+        ),
+    )
+    parser.add_argument(
+        "--compare-run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Another frozen run to diff this one's hit table against, on both candidate `id` and "
+            "guide sequence. Phase 4 needs the delta set; the two join keys do not agree."
+        ),
+    )
     args = parser.parse_args()
+
+    references: dict[str, Path] = {}
+    for entry in args.reference:
+        text = str(entry)
+        species_name, _, path_text = text.partition("=")
+        if not path_text:
+            species_name, path_text = "human", text
+        references[species_name.strip().lower()] = Path(path_text)
+    # The query species' reference stays addressable under the historical attribute name, so the
+    # single-species code paths below are untouched.
+    query_reference = references.get("human") or next(iter(references.values()))
 
     run_dir: Path = args.run_dir
     candidates_csv = run_dir / "sirnaforge" / "candidates_all.csv"
@@ -438,7 +683,7 @@ def main() -> None:  # noqa: PLR0912
     as_run = reconstruct(offtargets, empty_context, qname_to_guide, "as_run_no_index")
 
     enriched_index = TranscriptGeneIndex()
-    species_index = enriched_index.build("human", args.reference)
+    species_index = enriched_index.build("human", query_reference)
     enriched_context = ClassificationContext(
         query_gene_ids=frozenset({args.query_gene_id.upper()}),
         query_gene_symbols=query_gene_symbols,
@@ -454,7 +699,7 @@ def main() -> None:  # noqa: PLR0912
     # only the transcriptome-materialisation path provides). Scan offline against the same
     # reference the aligner used, so the REPEAT class is measured rather than assumed absent.
     repeat_scan = RepeatDetector(threshold_fraction=DEFAULT_REPEAT_TRANSCRIPT_FRACTION).scan(
-        set(guides), args.reference
+        set(guides), query_reference
     )
     repeat_guides = repeat_scan.repeat_sequences
     repeat_context = ClassificationContext(
@@ -506,27 +751,131 @@ def main() -> None:  # noqa: PLR0912
     }
 
     # verify the reconstruction against what the run itself wrote
-    recon_off = candidates["id"].map(
-        lambda cid: as_run.per_query.get(representative.get(cid, cid), {}).get("off_target", 0)
-    )
+    recon_off = counter_series(candidates, as_run.per_query, representative, "off_target")
     measurements["hit_classes"]["reconstruction_check"] = {
         "rows_compared": int(len(candidates)),
         "rows_matching_off_target_count": int((recon_off == candidates["off_target_count"].astype(int)).sum()),
     }
+
+    # ---------------- F. species dimension (plan decision D3) ----------------
+    # Every counter split by the species label the aligner wrote, plus the four-way
+    # EXCESS_OFF_TARGETS table under three classification scopes: as run (no index for any
+    # species), with an index for every screened species, and with the ortholog symbol alias.
+    cap_default = OffTargetFilterCriteria().max_off_target_count
+
+    multi_index = TranscriptGeneIndex()
+    reference_identity: dict[str, Any] = {}
+    for species_name, fasta in sorted(references.items()):
+        built = multi_index.build(species_name, fasta)
+        reference_identity[species_name] = {
+            "fasta": str(fasta),
+            "exists": fasta.exists(),
+            "transcripts_indexed": built.transcript_count,
+            "transcripts_without_symbol": built.missing_symbol_count,
+            "query_symbol_transcripts": sorted(built.transcripts_for_symbol(args.query_gene_symbol)),
+            "alias_symbol_transcripts": {
+                alias.upper(): sorted(built.transcripts_for_symbol(alias)) for alias in args.ortholog_symbol_alias
+            },
+        }
+
+    multi_context = ClassificationContext(
+        query_gene_ids=frozenset({args.query_gene_id.upper()}),
+        query_gene_symbols=query_gene_symbols,
+        on_target_transcript_ids=on_target_transcript_ids,
+        query_species="human",
+        index=multi_index,
+        repeat_flagged_guides=frozenset(),
+        requested_species=frozenset(references),
+    )
+    multi = reconstruct(offtargets, multi_context, qname_to_guide, "all_species_indexed")
+
+    alias_symbols = frozenset(query_gene_symbols | {alias.upper() for alias in args.ortholog_symbol_alias})
+    alias_context = ClassificationContext(
+        query_gene_ids=frozenset({args.query_gene_id.upper()}),
+        query_gene_symbols=alias_symbols,
+        on_target_transcript_ids=on_target_transcript_ids,
+        query_species="human",
+        index=multi_index,
+        repeat_flagged_guides=frozenset(),
+        requested_species=frozenset(references),
+    )
+    alias = reconstruct(offtargets, alias_context, qname_to_guide, "all_species_indexed_with_alias")
+
+    scope_labels = {
+        "as_run_no_transcript_index": as_run,
+        "all_species_indexed": multi,
+        "all_species_indexed_with_alias": alias,
+    }
+    measurements["species_dimension"] = {
+        "references": reference_identity,
+        "query_gene_symbols_default": sorted(query_gene_symbols),
+        "query_gene_symbols_with_alias": sorted(alias_symbols),
+        "species_labels_in_hit_table": sorted(
+            {str(s or "(blank)") for s in (offtargets["species"] if not offtargets.empty else [])}
+        ),
+        "split": {label: species_split(recon) for label, recon in scope_labels.items()},
+        "excess_off_targets_four_scopes": {
+            label: excess_offtarget_scopes(candidates, recon, representative, cap_default, guides)
+            for label, recon in scope_labels.items()
+        },
+        # Row-level vs hit-level species share. A guide's hits are attributed to every candidate
+        # row carrying that guide, so the row-weighted split is not the hit-level split.
+        "species_share_of_off_target_count": {
+            "hit_level": {
+                species: view["counted_off_target"] for species, view in species_split(as_run)["per_species"].items()
+            },
+            "row_weighted": {
+                "note": "sum over candidate rows of that row's per-species counted off-targets",
+                **{
+                    species: int(counter_series(candidates, as_run.per_query, representative, field_name).sum())
+                    for species, field_name in (
+                        ("human", "off_target_human_any_nm"),
+                        ("non_human", "off_target_nonhuman_any_nm"),
+                    )
+                },
+            },
+        },
+    }
+
+    # conservation_score, computable for the first time now that a non-query species was screened.
+    if "conservation_score" in candidates.columns:
+        cons = pd.to_numeric(candidates["conservation_score"], errors="coerce")
+        measurements["species_dimension"]["conservation_score"] = {
+            "rows": int(len(cons)),
+            "null_rows": int(cons.isna().sum()),
+            "non_null_rows": int(cons.notna().sum()),
+            "distinct_values": {str(k): int(v) for k, v in sorted(cons.dropna().value_counts().items())},
+            "min": float(cons.min()) if cons.notna().any() else None,
+            "max": float(cons.max()) if cons.notna().any() else None,
+            "mean": float(cons.mean()) if cons.notna().any() else None,
+        }
+    if "ortholog_hits" in candidates.columns:
+        orth = pd.to_numeric(candidates["ortholog_hits"], errors="coerce")
+        measurements["species_dimension"]["ortholog_hits_as_written_by_the_run"] = {
+            "rows": int(len(orth)),
+            "nonzero_rows": int((orth > 0).sum()),
+            "max": int(orth.max()) if orth.notna().any() else None,
+        }
+    if "ortholog_species" in candidates.columns:
+        measurements["species_dimension"]["ortholog_species_as_written_by_the_run"] = {
+            str(k): int(v) for k, v in candidates["ortholog_species"].fillna("(empty)").value_counts().items()
+        }
 
     # ---------------- B. off-target scope deltas ----------------
     nm_series = offtargets["nm"].astype(int) if not offtargets.empty else pd.Series(dtype=int)
     counted = [
         row
         for row in (offtargets.to_dict("records") if not offtargets.empty else [])
-        if classify_hit(row, qname_to_guide.get(str(row["qname"]), str(row.get("qseq", ""))), empty_context).hit_class
+        if classify_hit(
+            cast("Mapping[str, Any]", row),
+            qname_to_guide.get(str(row["qname"]), str(row.get("qseq", ""))),
+            empty_context,
+        ).hit_class
         is HitClass.OFF_TARGET
     ]
     counted_nm = pd.Series([int(r["nm"]) for r in counted], dtype=int) if counted else pd.Series(dtype=int)
     off_counts = candidates["off_target_count"].astype(int)
-    nm_le2 = candidates["id"].map(
-        lambda cid: as_run.per_query.get(representative.get(cid, cid), {}).get("off_target_nm_le2", 0)
-    )
+    nm_le2 = counter_series(candidates, as_run.per_query, representative, "off_target_nm_le2")
     cap = OffTargetFilterCriteria().max_off_target_count
 
     measurements["offtarget_scope"] = {
@@ -642,6 +991,27 @@ def main() -> None:  # noqa: PLR0912
             )
             if key in full
         }
+        # Issue #100: does any published artifact distinguish a species that was requested and
+        # completed from one requested and unavailable? Collect every field that could carry it.
+        offtarget_summary = full.get("offtarget_summary") or {}
+        filtering_stats = offtarget_summary.get("filtering_stats") or {}
+        measurements.setdefault("run_summaries", {})["species_requiredness_evidence"] = {
+            "workflow_config_genome_species": (full.get("workflow_config") or {}).get("genome_species"),
+            "workflow_config_species_explicitly_requested": (full.get("workflow_config") or {}).get(
+                "species_explicitly_requested"
+            ),
+            "offtarget_status": offtarget_summary.get("status"),
+            "offtarget_warnings": offtarget_summary.get("warnings"),
+            "filtering_stats_requested_species": filtering_stats.get("requested_species"),
+            "filtering_stats_screened_species": filtering_stats.get("screened_species"),
+            "filtering_stats_unscreened_species": filtering_stats.get("unscreened_species"),
+            "filtering_stats_species_index_misses": filtering_stats.get("species_index_misses"),
+            "filtering_stats_hit_classes": filtering_stats.get("hit_classes"),
+            "filtering_stats_per_species": filtering_stats.get("per_species"),
+        }
+
+    if args.compare_run_dir is not None:
+        measurements["cross_run_hit_table_delta"] = cross_run_delta(offtargets, args.compare_run_dir)
 
     measurements["filter_status_values"] = [member.value for member in SiRNACandidate.FilterStatus]
 
@@ -677,6 +1047,8 @@ def main() -> None:  # noqa: PLR0912
     print(json.dumps(measurements["variance_share"], indent=2, default=str))
     print(json.dumps(measurements["gates"]["ranked"], indent=2, default=str))
     print(json.dumps(measurements["hit_classes"], indent=2, default=str))
+    print(json.dumps(measurements["species_dimension"], indent=2, default=str))
+    print(json.dumps(measurements.get("run_summaries", {}).get("species_requiredness_evidence", {}), indent=2))
 
 
 if __name__ == "__main__":
