@@ -44,6 +44,14 @@ from sirnaforge.core.design import (
     SiRNADesigner,
     biogenesis_features,
 )
+from sirnaforge.core.hit_annotation import (
+    CLASSIFICATION_COLUMNS,
+    accumulate_hit_class,
+    annotate_hit_row,
+    count_persisted_classes,
+    is_annotated,
+    write_classified_hits,
+)
 from sirnaforge.core.hit_classification import (
     ClassificationContext,
     HitClass,
@@ -2092,6 +2100,7 @@ class SiRNAWorkflow:
         updated_candidates, stats = self._integrate_offtarget_results(
             candidates, parsed, filter_criteria, screened_species=screened_species
         )
+        self._persist_hit_classifications(parsed)
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
         # Map parsed results for return structure
@@ -2118,6 +2127,42 @@ class SiRNAWorkflow:
             "aggregated": aggregated_views,
             "warnings": workflow_warnings,
         }
+
+    @staticmethod
+    def _persist_hit_classifications(parsed: Mapping[str, Any]) -> None:
+        """Write the four-way class, matched symbol and lookup shortfall back onto the hit table.
+
+        ``combined_offtargets.tsv`` is rewritten in place with three added columns so a reviewer
+        can tell an on-target isoform alignment from a liability without re-deriving anything.
+        """
+        table = parsed.get("genome_hit_table") or {}
+        tsv_path = table.get("path")
+        rows = cast(list[dict[str, Any]], table.get("rows") or [])
+        fieldnames = cast(list[str], table.get("fieldnames") or [])
+        if not tsv_path or not rows or not fieldnames:
+            return
+
+        unannotated = sum(1 for row in rows if not is_annotated(row))
+        if unannotated:
+            # Publishing a blank class would be worse than publishing none: it reads as a verdict.
+            logger.warning(
+                f"{unannotated}/{len(rows)} aggregated off-target row(s) carry no classification; "
+                f"leaving {tsv_path} unchanged rather than writing an empty class column."
+            )
+            return
+
+        try:
+            written = write_classified_hits(Path(tsv_path), rows, fieldnames)
+        except OSError as exc:
+            logger.warning(f"Could not persist hit classification to {tsv_path}: {exc}")
+            return
+
+        tally = count_persisted_classes(rows)
+        console.print(
+            f"🏷️  Persisted hit classification for {written} alignment(s) "
+            f"({', '.join(f'{name}={count}' for name, count in tally.items())})"
+        )
+        logger.info(f"Wrote {'/'.join(CLASSIFICATION_COLUMNS)} onto {tsv_path} for {written} rows")
 
     @staticmethod
     def _species_with_alignment_evidence(tx_summary: Mapping[str, Any] | None) -> list[str]:
@@ -2301,14 +2346,23 @@ class SiRNAWorkflow:
             entry["off_target_score"] = max(entry["off_target_score"], score)
             entry["hits"].append(row)
 
-        def _ingest_tsv(path: Path) -> bool:
+        # The genome table is kept as its own ordered row list so the classification columns can be
+        # written back onto exactly the rows that were read, with no join key to get wrong.
+        genome_table: dict[str, Any] = {"path": None, "fieldnames": [], "rows": []}
+
+        def _ingest_tsv(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
                 return False
             found = False
             with path.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
+                if table is not None and reader.fieldnames:
+                    table["path"] = path
+                    table["fieldnames"] = [name for name in reader.fieldnames if name]
                 for row in reader:
                     _ingest_row(row)
+                    if table is not None:
+                        cast(list[dict[str, Any]], table["rows"]).append(row)
                     found = True
             return found
 
@@ -2335,7 +2389,7 @@ class SiRNAWorkflow:
                 found = True
             return found
 
-        genome_hits_found = _ingest_tsv(_aggregate_path("combined_offtargets.tsv"))
+        genome_hits_found = _ingest_tsv(_aggregate_path("combined_offtargets.tsv"), genome_table)
         if not genome_hits_found:
             genome_hits_found = _ingest_json(_aggregate_path("combined_offtargets.json"))
 
@@ -2376,7 +2430,13 @@ class SiRNAWorkflow:
                     logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
                     mirna_hits_found = True
 
-        return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
+        return {
+            "status": "completed",
+            "method": "nextflow",
+            "output_dir": str(output_dir),
+            "results": results,
+            "genome_hit_table": genome_table,
+        }
 
     def _check_offtarget_filters(
         self,
@@ -2708,28 +2768,15 @@ class SiRNAWorkflow:
                         },
                     )
 
-                    # Aggregate by class
-                    if classification.hit_class == HitClass.ON_TARGET:
-                        hit_counts.on_target += 1
-                        species_bucket["on_target"] += 1
-                    elif classification.hit_class == HitClass.ORTHOLOG:
-                        hit_counts.ortholog += 1
-                        species_bucket["ortholog"] += 1
-                        if classification.matched_symbol:
-                            # Track which species had ortholog hits
-                            hit_counts.ortholog_species = frozenset(hit_counts.ortholog_species | {hit_species})
-                    elif classification.hit_class == HitClass.REPEAT:
-                        hit_counts.repeat += 1
-                        species_bucket["repeat"] += 1
-                    elif classification.hit_class == HitClass.OFF_TARGET:
-                        hit_counts.off_target += 1
-                        species_bucket["off_target"] += 1
-
-                    # Track shortfall counters
-                    if classification.symbol_lookup_missing:
-                        hit_counts.symbol_lookup_missing += 1
-                        species_bucket["symbol_lookup_missing"] += 1
+                    # Persist the verdict on the hit row, then count from the row that was
+                    # written. The class, matched symbol and symbol-lookup shortfall reach
+                    # combined_offtargets.tsv and the candidate counters from one place, so the
+                    # per-hit and per-candidate views cannot disagree.
+                    annotate_hit_row(hit, classification)
+                    hit_class = accumulate_hit_class(hit, hit_counts, species_bucket, hit_species)
                     if classification.species_index_missing:
+                        # Not a hit property and not persisted per row: a whole species had no
+                        # index, which is a reference gap rather than a thin annotation.
                         hit_counts.no_species_index += 1
                         species_bucket["species_index_missing"] += 1
 
@@ -2737,7 +2784,7 @@ class SiRNAWorkflow:
                     # on-target isoform hits through here would fail every guide on a
                     # multi-isoform gene against max_transcriptome_hits_0mm, which is the
                     # near-total kill switch fixed in 0.5.2.
-                    if classification.hit_class is not HitClass.OFF_TARGET:
+                    if hit_class is not HitClass.OFF_TARGET:
                         continue
 
                     # Every genuine off-target hit counts toward the totals regardless of nm, so
@@ -2845,9 +2892,35 @@ class SiRNAWorkflow:
                 elif fail_status == SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS:
                     stats["failed_excess_off_targets"] += 1
 
+        stats["hits_classified_without_candidate"] = self._classify_orphan_hit_rows(
+            offtarget_data, classification_context
+        )
+
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    @staticmethod
+    def _classify_orphan_hit_rows(
+        offtarget_data: Mapping[str, Any], classification_context: ClassificationContext
+    ) -> int:
+        """Classify aggregated rows whose qname matched no candidate in this run.
+
+        Normally there are none. A reused or stale results directory produces some, and leaving
+        them unannotated would publish a hit table with blank classes, so they are classified from
+        their own query sequence and counted.
+        """
+        table = offtarget_data.get("genome_hit_table") or {}
+        rows = cast(list[dict[str, Any]], table.get("rows") or [])
+        orphans = [row for row in rows if not is_annotated(row)]
+        for row in orphans:
+            annotate_hit_row(row, classify_hit(row, str(row.get("qseq") or ""), classification_context))
+        if orphans:
+            logger.warning(
+                f"{len(orphans)} aggregated off-target row(s) belong to no candidate in this run; "
+                "classified from their own query sequence and excluded from candidate counters."
+            )
+        return len(orphans)
 
     def _score_and_gate(
         self,
