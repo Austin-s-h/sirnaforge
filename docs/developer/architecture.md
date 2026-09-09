@@ -346,14 +346,17 @@ has on the order of 10^9 k-mer windows.
 ##### `scoring.py` - Composite Scorer
 
 ```python
-def compute_composite(features, weights, active_terms=None) -> CompositeScore:
-    """Pure function. Renormalises weights over the active term set."""
+def compute_composite(features, vector: WeightVector) -> CompositeScore:
+    """Pure function. Applies one named vector's weights exactly as declared -- no arithmetic."""
 ```
 
-The single place `composite_score` is computed, for both the design-time-only path (three
-post-screen terms inactive) and the post-screen path (all seven terms active). `workflow.py` and
-`core/design.py` both call into this one function rather than each computing their own weighted
-sum.
+The single place any score is computed, for both the design stage (`design_v4` -> `design_score`) and
+the post-screen stage (`postscreen_{sirna,mirna}_v4` -> `composite_score`). `workflow.py` and
+`core/design.py` both call into this one function rather than each computing their own weighted sum.
+
+It requires **every** term the vector declares and raises otherwise. There is no renormalisation and
+no `active_terms` argument: that argument was the hook through which four computable terms shared a
+0.50 budget and every design-stage weight doubled (issue #96).
 
 ### 4. Model Layer (`models/`)
 
@@ -608,7 +611,7 @@ graph TD
     G --> H[Screen every distinct sequence: BWA-MEM2 + Nextflow]
     H --> I[Classify each hit: on-target / ortholog / repeat / off-target]
     I --> J[Aggregate hit counts per candidate, fan out to shared sequences]
-    J --> K[Score once: compute_composite over the active term set]
+    J --> K[Score once: compute_composite against the named post-screen vector]
     K --> L[Rank]
     L --> M[Output Generation]
 ```

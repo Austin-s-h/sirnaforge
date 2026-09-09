@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Scoring transparency release. The composite score applied **two hidden normalisations**, so no
+declared weight was the weight that actually applied: the scorer divided the weight vector by its own
+sum over whichever terms happened to be populated (doubling every design-stage weight), and miRNA mode
+divided every score by `1 + max_mirna_bonus = 1.25` (scaling every declared weight by 0.80). Both are
+deleted rather than relocated. Every weight vector is now hand-authored, named, sums to 1.0, and is
+written to the run manifest, and every scored row records which vector produced it. Scores are **not
+comparable to 0.7.x**. (0.7.0 below is itself still unreleased; these changes stack on it, and it is
+where the two defects removed here were first written down as outstanding.)
+
+### Breaking changes
+
+- **BREAKING (`weight_set_version` 3.0.0 → 4.0.0): one flat weight vector becomes three named ones.**
+  `ScoringWeights` is now a container of `design_v4` (`target_accessibility` 0.40, `asymmetry` 0.35,
+  `gc_content` 0.25), `postscreen_sirna_v4` (`off_target` 0.25, `target_accessibility` 0.30,
+  `asymmetry` 0.25, `gc_content` 0.20) and `postscreen_mirna_v4` (the same four scaled to 0.75 plus
+  `ago_start` 0.10, `pos1_mismatch` 0.05, `supp_13_16` 0.10). Each validates against its own term set
+  and refuses to construct unless it is named and already sums to 1.0 — the previous validator
+  accepted 0.95–1.05, i.e. up to 5% of undeclared rescaling per run. `ScoringWeights.asymmetry` and
+  friends no longer exist; use `weights.design.asymmetry`, `weights.postscreen_sirna.asymmetry`, or
+  `weights.vector_for(post_screen=..., design_mode=...)`.
+- **BREAKING: `compute_composite(features, weights, active_terms=None)` becomes
+  `compute_composite(features, vector)`.** It requires every term the vector declares and raises
+  `ScoringError` otherwise. Weights are never renormalised, so a caller that cannot compute a term has
+  no score to report and must record that instead. `CompositeScore.active_terms` → `terms`, and
+  `CompositeScore` gains `vector_name`.
+- **BREAKING: `composite_score` is null before screening; `design_score` is the design-stage score.**
+  `off_target` does not exist until off-target screening has run, so the design stage scores a
+  different vector into a different field. The two are **not comparable** — different term sets, and
+  `design_score` is systematically optimistic because the term it lacks can only subtract evidence.
+  `ranking_score(candidate)` is the single place that decides which number a candidate has. Both CSV
+  paths gain a `design_score` column and `composite_score` is now nullable.
+- **BREAKING: `empirical`, `conservation` and `isoform_coverage` leave the composite.** All three are
+  still computed and reported on every candidate — `empirical_score`, `conservation_score` and
+  `isoform_coverage` columns. `empirical` is gate-only (`min_empirical_score`), `conservation` is
+  reporting only, and `isoform_coverage` gains an **optional** gate. Removing them is what makes "no
+  renormalisation" reachable rather than merely relocated: `conservation` is None on single-species
+  runs and `isoform_coverage` is None on the `design_from_sequence`/miRNA paths, so any vector
+  containing them needs either variant vectors or arithmetic. With them out, every scoring term is
+  universally computable. The `score_empirical`, `score_isoform_coverage` and `score_conservation`
+  contribution columns are removed; `score_ago_start`, `score_pos1_mismatch`, `score_supp_13_16`,
+  `weight_vector` and `design_score` are added.
+- **BREAKING: the miRNA biogenesis divisor is gone and the three live bonuses are declared terms.**
+  `apply_mirna_biogenesis_bonus` and `mirna_max_biogenesis_bonus` are deleted, along with
+  `MIRNA_BONUS_MAX_KEY` and `MiRNADesignConfig.scoring_weights`. Contributions now sum to
+  `composite_score` exactly in **both** modes. Because both post-screen vectors sum to 1.0, the two
+  modes are on one scale: a candidate whose biogenesis sub-scores match its other sub-scores scores
+  identically in either mode, at every level. A candidate earning nothing on the three biogenesis
+  terms retains 0.75 of the equivalent siRNA score — three weights readable in the manifest and
+  attributable term by term on the row, where the old 0.80 was an undeclared factor on the whole
+  vector including `off_target`.
+- **BREAKING (`EMPIRICAL_SCORE_MAX` 0.7 → 0.6): the G/C-at-guide-position-1 clause is deleted.** It
+  contradicted the biogenesis rule rewarding A/U at the same base. Measured over 29,605 candidates,
+  G/C gained +1.6 empirical points there and lost 7.9 to the biogenesis adjustment — a declared
+  0.15-weight term overridden ~5× by an undeclared one, which is why `empirical` had a *negative*
+  variance share. A/U wins. The rubric now attains only `{0.4, 0.5, 0.6}`, so the `le=` bound on
+  `min_empirical_score` had to move with it; the 0.5 default still validates.
+- **BREAKING: `MiRNADesignConfig.scoring_weights` is removed, and with it `seed_clean_bonus` (0.15)
+  and `five_p_end_destabilization_bonus` (0.10)** — 0.25 of declared bonus weight that was read
+  nowhere in `src/`.
+
+### Added
+
+- **`--min-isoform-coverage`** on `sirnaforge workflow` (and `run_sirna_workflow`): an optional
+  protein-coding isoform coverage floor gating `LOW_ISOFORM_COVERAGE`. Defaults to `None` (off), so
+  default behaviour is unchanged and coverage is reported either way. Threaded through the
+  `FilterCriteria` constructor, not `model_copy`, so its bounds still apply.
+- **`weight_vector` on every scored row, and `scoring.vectors` / `scoring.vector_terms` in the run
+  manifest**, so any score traces to the exact weights that produced it. The manifest also names the
+  quantities that are reported but not scored, so their absence from the weights is not read as an
+  omission.
+- `WeightVector`, `DesignWeights`, `PostScreenSiRNAWeights` and `PostScreenMiRNAWeights` are exported
+  from `sirnaforge.models`.
+
+### Fixed
+
+- The `scoring.py` module docstring documented renormalisation as a deliberate feature. It is
+  rewritten, and a test now refuses any live source line that describes renormalisation as current
+  behaviour — along with an AST-level guard against division by a weight-shaped expression, because
+  renormalisation has no behavioural fingerprint (every score still lands in [0, 100] and still ranks
+  plausibly).
+
+### Known limitations
+
+- The weights are **declared expert priors, not fitted values.** Only `target_accessibility` and
+  `off_target` have benchmark evidence behind them. `design_v4`'s three numbers in particular are
+  round numbers awaiting sign-off.
+- Holding `off_target` at 0.25 while the scored budget shrank from six terms to four **reduces** its
+  relative influence, from 0.25/0.60 of the old scored budget to 0.25/1.00. Given it measured 2.24×
+  its nominal share of composite variance that is probably the right direction, but it arrives as a
+  side effect of the restructuring rather than as an explicit choice.
+- A candidate whose `target_accessibility` cannot be computed now has **no score at all** rather than
+  a rescaled one. In real runs the transcript is always in scope and the residual 5'-end case is
+  numerically negligible (0 of 2,492 TP53 sites), but calling `_score_candidates` without transcript
+  context — as unit tests may — now yields `design_score = None`.
+
 ## [0.7.0] - Unreleased
 
 Scoring correctness release. The `accessibility` composite term folded the guide strand against
@@ -13,9 +110,8 @@ RNAplfold local-opening probability on the transcript, chosen against 2,779 siRN
 knockdown. Composite scores are **not comparable to 0.6.x**. Three filter thresholds that had no
 route in from any entry point are also now reachable.
 
-Not yet addressed, and being reworked separately: composite weights are renormalised over whichever
-terms happen to be populated, so every weight doubles at the design stage, and the miRNA biogenesis
-adjustment divides every base score by 1.25 rather than adding to it.
+Both hidden normalisations noted here as "not yet addressed" — the active-set renormalisation and the
+miRNA 1.25 divisor — were removed in the following release.
 
 ### Breaking changes
 

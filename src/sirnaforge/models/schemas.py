@@ -200,51 +200,42 @@ class SiRNACandidateSchema(DataFrameModel):
         ge=0.0, le=1.0, description="Fraction of input transcripts hit by this guide (1.0 = all transcripts)"
     )
 
-    # Post-screen sub-scores
+    # Reported, non-scoring evidence (both left the composite in issue #96)
     isoform_coverage: Series[float] = Field(
         ge=0.0,
         le=1.0,
-        description="Protein-coding isoform coverage sub-score (inactive if no protein-coding isoforms)",
+        description="Protein-coding isoform coverage, reported and the optional gate input (null if none)",
         nullable=True,
         coerce=True,
     )
     conservation_score: Series[float] = Field(
         ge=0.0,
         le=1.0,
-        description="Cross-species conservation sub-score (inactive in single-species)",
+        description="Cross-species conservation fraction, reported only (null in single-species runs)",
+        nullable=True,
+        coerce=True,
+    )
+    empirical_score: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="Empirical design-rule score, reported and the min_empirical_score gate input",
         nullable=True,
         coerce=True,
     )
 
-    # Scoring results
+    # Scoring results. design_score and composite_score are different vectors over different term
+    # sets and are not comparable; both are nullable because each exists only at its own stage.
+    design_score: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Design-stage score on design_v4 (null if a term could not be computed)",
+        nullable=True,
+        coerce=True,
+    )
     composite_score: Series[float] = Field(
-        ge=0.0, le=100.0, description="Overall siRNA quality score (higher is better)"
-    )
-    score_asymmetry: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of asymmetry term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_gc_content: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of GC content term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_target_accessibility: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of target-site accessibility term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_empirical: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of empirical term to composite score",
+        description="Post-screen score on postscreen_{sirna,mirna}_v4 (null before screening)",
         nullable=True,
         coerce=True,
     )
@@ -255,27 +246,60 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
-    score_isoform_coverage: Series[float] = Field(
+    score_target_accessibility: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of isoform coverage term to composite score",
+        description="Contribution of target-site accessibility term to the score",
         nullable=True,
         coerce=True,
     )
-    score_conservation: Series[float] = Field(
+    score_asymmetry: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of conservation term to composite score",
+        description="Contribution of asymmetry term to the score",
+        nullable=True,
+        coerce=True,
+    )
+    score_gc_content: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of GC content term to the score",
+        nullable=True,
+        coerce=True,
+    )
+    score_ago_start: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the Argonaute-start term (miRNA mode only)",
+        nullable=True,
+        coerce=True,
+    )
+    score_pos1_mismatch: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the position-1 pairing term (miRNA mode only)",
+        nullable=True,
+        coerce=True,
+    )
+    score_supp_13_16: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the 3' supplementary pairing term (miRNA mode only)",
         nullable=True,
         coerce=True,
     )
     scored_after_screening: Series[pd.BooleanDtype] = Field(
-        description="True if composite score includes post-screen terms",
+        description="True if composite_score was computed post-screening",
         nullable=True,
         coerce=True,
     )
     weight_set_version: Series[str] = Field(
         description="Scoring weight set version used for this candidate",
+        nullable=True,
+        coerce=True,
+    )
+    weight_vector: Series[str] = Field(
+        description="Name of the weight vector that produced the score (design_v4, postscreen_*_v4)",
         nullable=True,
         coerce=True,
     )

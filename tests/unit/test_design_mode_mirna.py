@@ -6,7 +6,13 @@ from pathlib import Path
 import pandas as pd
 
 from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
-from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignParameters,
+    FilterCriteria,
+    MiRNADesignConfig,
+    PostScreenMiRNAWeights,
+)
 
 
 class TestMiRNADesignConfig:
@@ -29,11 +35,18 @@ class TestMiRNADesignConfig:
         # Check off-target preset
         assert config.off_target_preset == "MIRNA_SEED_7_8"
 
-        # Check scoring weights are present
-        assert "ago_start_bonus" in config.scoring_weights
-        assert "pos1_mismatch_bonus" in config.scoring_weights
-        assert "seed_clean_bonus" in config.scoring_weights
-        assert "supp_13_16_bonus" in config.scoring_weights
+        # Issue #96 moved the miRNA scoring weights out of this config and into the named
+        # postscreen_mirna_v4 vector, and deleted the two that were declared but never read.
+        assert not hasattr(config, "scoring_weights")
+        assert PostScreenMiRNAWeights().as_mapping().keys() == {
+            "off_target",
+            "target_accessibility",
+            "asymmetry",
+            "gc_content",
+            "ago_start",
+            "pos1_mismatch",
+            "supp_13_16",
+        }
 
 
 class TestDesignModeEnum:

@@ -58,15 +58,14 @@ def _full_candidate(
         repeat_transcript_fraction=0.0005,
         isoform_coverage=0.66,
         conservation_score=0.5,
+        design_score=71.0,
         score_asymmetry=8.4,
         score_gc_content=5.7,
         score_target_accessibility=9.1,
-        score_empirical=12.0,
         score_off_target=20.0,
-        score_isoform_coverage=9.9,
-        score_conservation=5.0,
         scored_after_screening=True,
-        weight_set_version="2.0.0",
+        weight_set_version="4.0.0",
+        weight_vector="postscreen_sirna_v4",
     )
 
 
@@ -134,12 +133,19 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
         "score_asymmetry",
         "score_gc_content",
         "score_target_accessibility",
-        "score_empirical",
         "score_off_target",
-        "score_isoform_coverage",
-        "score_conservation",
         "scored_after_screening",
         "weight_set_version",
+        # Issue #96 replaced the contributions of the three terms that left the composite
+        # (empirical, isoform_coverage, conservation) with the miRNA terms that joined it, and
+        # split the one score column into the two vectors that actually exist.
+        "score_ago_start",
+        "score_pos1_mismatch",
+        "score_supp_13_16",
+        "empirical_score",
+        "design_score",
+        "composite_score",
+        "weight_vector",
     }
     missing = new_issue80_columns - workflow_columns
     assert not missing, f"workflow CSV is missing issue #80 columns: {sorted(missing)}"

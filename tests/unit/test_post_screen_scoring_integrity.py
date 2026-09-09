@@ -33,17 +33,18 @@ from sirnaforge.config import (
     DEFAULT_TRANSCRIPTOME_SOURCES,
 )
 from sirnaforge.core.design import (
-    MIRNA_BONUS_KEY,
-    MIRNA_BONUS_MAX_KEY,
+    MIRNA_TERM_NAMES,
     MiRNADesigner,
-    mirna_max_biogenesis_bonus,
+    biogenesis_features,
 )
+from sirnaforge.core.repeat_detection import normalize_guide_sequence
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
     DesignResult,
+    FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
 )
@@ -76,11 +77,26 @@ def _candidate(candidate_id: str, guide: str) -> SiRNACandidate:
         gc_content=gc,
         length=len(guide),
         asymmetry_score=0.7,
-        composite_score=0.0,
         mfe=-4.2,
         duplex_stability=-39.0,
         structure="." * len(guide),
     )
+
+
+def _score(designer: MiRNADesigner, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+    """Score candidates with real transcript context, one synthetic transcript per candidate.
+
+    Since issue #96 nothing renormalises, so every term a vector declares must be computable:
+    a candidate with no transcript to fold has no design_score and no post-screen score either.
+    Real runs always supply the transcript (both design entry points pass it); these unit tests
+    have to as well. The flanks are poly-A, which cannot pair with anything, so the site's
+    accessibility is dominated by the site itself.
+    """
+    for candidate in candidates:
+        transcript = "A" * 30 + candidate.passenger_sequence + "A" * 200
+        candidate.position = 31
+        designer._score_candidates([candidate], transcript)
+    return candidates
 
 
 def _workflow(
@@ -122,42 +138,51 @@ def _build_species_indices(workflow: SiRNAWorkflow, tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_mirna_bonus_survives_off_target_screening(tmp_path: Path) -> None:
-    """F8: post-screen scoring must not discard the miRNA-specific score components.
+def test_mirna_biogenesis_terms_reach_the_post_screen_composite(tmp_path: Path) -> None:
+    """F8: --design-mode mirna must change the post-screen ranking.
 
-    MiRNADesigner writes the ago-start / pos1 / supplementary bonuses into composite_score only,
-    never into component_scores' term set. Pre-fix, _score_candidate_post_screen rebuilt the
-    composite from that term set and overwrote composite_score, so every screened miRNA run was
-    ranked by the plain siRNA composite and --design-mode mirna had no effect on the output.
+    Pre-fix, MiRNADesigner wrote the ago-start / pos1 / supplementary bonuses into composite_score
+    only, never into the term set, so _score_candidate_post_screen rebuilt the composite from that
+    term set and dropped them: every screened miRNA run was ranked by the plain siRNA composite.
+    Since issue #96 the three are declared terms of postscreen_mirna_v4, which is what makes them
+    survive by construction rather than by being reapplied afterwards.
     """
     mirna_params = DesignParameters(design_mode=DesignMode.MIRNA)
-    designer = MiRNADesigner(mirna_params)
 
-    def _scored_pair() -> tuple[SiRNACandidate, SiRNACandidate]:
+    def _scored_pair(params: DesignParameters) -> tuple[SiRNACandidate, SiRNACandidate]:
         bonus, high_base = _candidate("cand_bonus", BONUS_GUIDE), _candidate("cand_high_base", HIGH_BASE_GUIDE)
-        designer._score_candidates([bonus, high_base])
+        _score(MiRNADesigner(params), [bonus, high_base])
         return bonus, high_base
 
-    bonus, high_base = _scored_pair()
-    assert bonus.component_scores[MIRNA_BONUS_KEY] > high_base.component_scores[MIRNA_BONUS_KEY]
-    assert bonus.composite_score > high_base.composite_score, "miRNA design ranks the bonus guide first"
+    bonus, high_base = _scored_pair(mirna_params)
+    bonus_features = biogenesis_features(bonus.guide_sequence, bonus.passenger_sequence)
+    high_base_features = biogenesis_features(high_base.guide_sequence, high_base.passenger_sequence)
+    assert sum(bonus_features.values()) > sum(high_base_features.values()), (
+        "this pair only proves something if one guide really has the better biogenesis evidence"
+    )
 
     mirna_workflow = _workflow(tmp_path, "mirna_out", mirna_params)
     mirna_workflow._integrate_offtarget_results([bonus, high_base], NO_HITS, OffTargetFilterCriteria())
 
     # Control: the same candidates, screened identically, but in plain siRNA mode.
-    sirna_bonus, sirna_high_base = _scored_pair()
+    sirna_bonus, sirna_high_base = _scored_pair(DesignParameters())
     sirna_workflow = _workflow(tmp_path, "sirna_out", DesignParameters())
     sirna_workflow._integrate_offtarget_results([sirna_bonus, sirna_high_base], NO_HITS, OffTargetFilterCriteria())
 
     assert bonus.scored_after_screening is True
     assert high_base.scored_after_screening is True
+    assert bonus.weight_vector == "postscreen_mirna_v4"
+    assert sirna_bonus.weight_vector == "postscreen_sirna_v4"
     assert sirna_high_base.composite_score > sirna_bonus.composite_score, (
-        "without the miRNA bonuses the higher base score wins; otherwise this pair proves nothing"
+        "without the biogenesis terms the higher base score wins; otherwise this pair proves nothing"
     )
     assert bonus.composite_score > high_base.composite_score, (
-        "miRNA mode must keep ranking the bonus guide first after screening"
+        "miRNA mode must rank the better-biogenesis guide first after screening"
     )
+    # Each biogenesis term contributes its own declared weight, visible on the row.
+    for term in MIRNA_TERM_NAMES:
+        assert getattr(bonus, f"score_{term}") is not None
+        assert getattr(sirna_bonus, f"score_{term}") is None, "siRNA mode has no such term"
 
 
 @pytest.mark.unit
@@ -171,8 +196,8 @@ def test_partial_run_missing_query_species_does_not_score_perfect_specificity(tm
     """
     workflow = _workflow(tmp_path, "partial_out", genome_species=["human", "mouse"])
     candidate = _candidate("cand_partial", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
 
     results_dir = workflow.config.output_dir / "off_target" / "results"
     aggregated_dir = results_dir / "aggregated"
@@ -187,7 +212,8 @@ def test_partial_run_missing_query_species_does_not_score_perfect_specificity(tm
     assert outcome["status"] == "partial"
     assert candidate.off_target_screened is False, "no alignment ran, so the counts are unknown"
     assert candidate.scored_after_screening is False
-    assert candidate.composite_score == design_time_score, "the design-time score must be kept, not overwritten"
+    assert candidate.design_score == design_time_score, "the design-stage score must be kept, not overwritten"
+    assert candidate.composite_score is None, "no post-screen score may be claimed"
     assert candidate.score_off_target is None, "no off-target term may be claimed"
     assert outcome["filtering_stats"]["candidates_not_scored_after_screening"] == 1
 
@@ -203,7 +229,7 @@ def test_candidate_never_submitted_is_not_scored_as_clean(tmp_path: Path) -> Non
     workflow = _workflow(tmp_path, "unsubmitted_out")
     submitted = _candidate("cand_submitted", BONUS_GUIDE)
     unsubmitted = _candidate("cand_unsubmitted", HIGH_BASE_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([submitted, unsubmitted])
+    _score(MiRNADesigner(DesignParameters()), [submitted, unsubmitted])
     design_time_score = unsubmitted.composite_score
 
     # Only one of the two ever reaches the aligner.
@@ -239,8 +265,8 @@ def test_conservation_denominator_counts_species_screened_only_via_indices(tmp_p
         nextflow_config={"genome_fastas": "human:human.fa,mouse:mouse.fa,rat:rat.fa"},
     )
     candidate = _candidate("cand_conservation", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
     _build_species_indices(workflow, tmp_path)
 
     assert workflow._resolve_active_genome_species({}) == ["human", "mouse", "rat"], (
@@ -257,7 +283,8 @@ def test_conservation_denominator_counts_species_screened_only_via_indices(tmp_p
     assert candidate.ortholog_hits == 1
     assert candidate.scored_after_screening is True, "scoring must not be abandoned"
     assert candidate.conservation_score == pytest.approx(0.5), "one ortholog out of the two screened non-query species"
-    assert candidate.composite_score != design_time_score
+    assert candidate.composite_score is not None, "the post-screen vector must have been applied"
+    assert candidate.design_score == design_time_score, "design_score is a separate field, not overwritten"
     assert stats["candidates_not_scored_after_screening"] == 0
 
 
@@ -278,7 +305,7 @@ def test_ortholog_hits_outside_the_requested_species_do_not_break_conservation(t
         nextflow_config={"genome_fastas": "human:human.fa,mouse:mouse.fa,rat:rat.fa"},
     )
     candidate = _candidate("cand_unrequested", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
+    _score(MiRNADesigner(DesignParameters()), [candidate])
     _build_species_indices(workflow, tmp_path)
     # dog was never handed to the aligner, but a dog hit is in the table anyway.
     dog_reference = tmp_path / "dog_cdna.fasta"
@@ -321,7 +348,7 @@ def test_partial_screen_does_not_outscore_the_equivalent_complete_screen(tmp_pat
     def _run(out_name: str, screened: list[str]) -> SiRNACandidate:
         workflow = _workflow(tmp_path, out_name, genome_species=["human", "mouse"])
         candidate = _candidate(f"cand_{out_name}", BONUS_GUIDE)
-        MiRNADesigner(DesignParameters())._score_candidates([candidate])
+        _score(MiRNADesigner(DesignParameters()), [candidate])
         workflow._integrate_offtarget_results(
             [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=screened
         )
@@ -353,7 +380,7 @@ def test_transcriptome_index_species_stay_in_the_conservation_denominator(tmp_pa
     """
     workflow = _workflow(tmp_path, "tx_indices_out", genome_species=["human", "mouse"])
     candidate = _candidate("cand_tx_indices", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
+    _score(MiRNADesigner(DesignParameters()), [candidate])
     _build_species_indices(workflow, tmp_path)
 
     params = {"genome_indices": "human:human.idx", "transcriptome_indices": "mouse:mouse.idx"}
@@ -367,7 +394,10 @@ def test_transcriptome_index_species_stay_in_the_conservation_denominator(tmp_pa
     )
 
     assert candidate.conservation_score == pytest.approx(1.0), "mouse was screened, so it is in the denominator"
-    assert candidate.score_conservation is not None, "the conservation term must be active"
+    # Issue #96: conservation is reported, never scored, so there is no contribution to check --
+    # what must hold is that the fraction is computed and written on every screened candidate.
+    assert candidate.scored_after_screening is True
+    assert not hasattr(candidate, "score_conservation")
 
 
 @pytest.mark.unit
@@ -383,7 +413,7 @@ def test_unscored_candidates_do_not_outrank_post_screen_scores(tmp_path: Path) -
 
     scored = _candidate("cand_scored", BONUS_GUIDE)
     unscored = _candidate("cand_unscored", HIGH_BASE_GUIDE)
-    MiRNADesigner(params)._score_candidates([scored, unscored])
+    _score(MiRNADesigner(params), [scored, unscored])
     for candidate in (scored, unscored):
         candidate.passes_filters = True
     # An out-of-range sub-score is the one thing compute_composite refuses outright, so this
@@ -428,8 +458,8 @@ def test_missing_aggregate_is_not_treated_as_a_clean_screen(tmp_path: Path) -> N
     """
     workflow = _workflow(tmp_path, "no_aggregate_out", genome_species=["human", "mouse"])
     candidate = _candidate("cand_no_aggregate", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
 
     # The directory exists (Nextflow made it) but nothing was ever aggregated into it.
     results_dir = workflow.config.output_dir / "off_target" / "results"
@@ -440,7 +470,8 @@ def test_missing_aggregate_is_not_treated_as_a_clean_screen(tmp_path: Path) -> N
     assert candidate.score_off_target is None, "no off-target term may be claimed with nothing aligned"
     assert candidate.off_target_screened is False
     assert candidate.scored_after_screening is False
-    assert candidate.composite_score == design_time_score
+    assert candidate.design_score == design_time_score
+    assert candidate.composite_score is None
     assert outcome["status"] == "partial", "no alignment evidence is not a completed run"
     assert outcome["filtering_stats"]["candidates_not_scored_after_screening"] == 1
     assert any("no aggregated summary" in warning for warning in outcome["warnings"])
@@ -456,8 +487,8 @@ def test_mirna_only_mode_does_not_claim_transcriptome_specificity(tmp_path: Path
     """
     workflow = _workflow(tmp_path, "mirna_only_out", genome_species=["human", "mouse"])
     candidate = _candidate("cand_mirna_only", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
 
     results_dir = workflow.config.output_dir / "off_target" / "results"
     aggregated_dir = results_dir / "aggregated"
@@ -471,7 +502,8 @@ def test_mirna_only_mode_does_not_claim_transcriptome_specificity(tmp_path: Path
     assert candidate.score_off_target is None, "a miRNA-only run has no transcriptome evidence"
     assert candidate.off_target_screened is False
     assert candidate.scored_after_screening is False
-    assert candidate.composite_score == design_time_score
+    assert candidate.design_score == design_time_score
+    assert candidate.composite_score is None
     assert outcome["status"] == "partial"
 
 
@@ -486,8 +518,8 @@ def test_partial_screen_reports_its_hits_as_a_lower_bound(tmp_path: Path) -> Non
     """
     workflow = _workflow(tmp_path, "lower_bound_out", genome_species=["human", "mouse"])
     candidate = _candidate("cand_lower_bound", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
     _build_species_indices(workflow, tmp_path)
 
     # Mouse aligned and found an ortholog; the human alignment never ran.
@@ -503,29 +535,32 @@ def test_partial_screen_reports_its_hits_as_a_lower_bound(tmp_path: Path) -> Non
     assert candidate.ortholog_hits == 1, "evidence that was found is still reported"
     assert candidate.ortholog_species == "mouse"
     assert candidate.scored_after_screening is False
-    assert candidate.composite_score == design_time_score
+    assert candidate.design_score == design_time_score
+    assert candidate.composite_score is None
 
 
 @pytest.mark.unit
-def test_dirty_controls_share_the_mirna_score_scale(tmp_path: Path) -> None:
-    """Every row of a miRNA run must be divided by the same maximum-bonus normaliser.
+def test_dirty_controls_are_scored_on_the_same_mirna_vector(tmp_path: Path) -> None:
+    """Every row of a miRNA run must be scored by the same vector, with nothing applied after.
 
     Dirty controls are deep copies of *rejected* candidates, which never reach
-    MiRNADesigner._score_candidates and so carry no recorded bonus maximum. Defaulting that
-    maximum to 0.0 left those rows undivided while every real candidate was divided by 1.25,
-    putting the controls ~25% high in the same candidates_all.csv.
+    MiRNADesigner._score_candidates and so carry no recorded biogenesis values. When the bonus was
+    folded in and then divided out, defaulting the normaliser to 0.0 left those rows undivided
+    while every real candidate was divided by 1.25, putting the controls ~25% high in the same
+    candidates_all.csv. The three terms are now re-derived from the sequences, so a row that never
+    passed through the miRNA designer is scored on exactly the same vector as the rest.
     """
     params = DesignParameters(design_mode=DesignMode.MIRNA)
     workflow = _workflow(tmp_path, "controls_out", params)
 
     real = _candidate("cand_real", BONUS_GUIDE)
-    MiRNADesigner(params)._score_candidates([real])
-    assert real.component_scores[MIRNA_BONUS_KEY] > 0.0, "this guide must earn a bonus or the test proves nothing"
+    _score(MiRNADesigner(params), [real])
+    assert real.component_scores["ago_start"] > 0.0, "this guide must earn biogenesis credit or the test proves nothing"
 
     control = real.model_copy(deep=True)
     control.id = f"{real.id}{DIRTY_CONTROL_SUFFIX}_1"
     control.quality_issues = [DIRTY_CONTROL_LABEL]
-    for key in (MIRNA_BONUS_KEY, MIRNA_BONUS_MAX_KEY):
+    for key in MIRNA_TERM_NAMES:
         control.component_scores.pop(key)
 
     workflow._integrate_offtarget_results([real, control], NO_HITS, OffTargetFilterCriteria())
@@ -533,22 +568,59 @@ def test_dirty_controls_share_the_mirna_score_scale(tmp_path: Path) -> None:
     contributions = sum(
         value
         for value in (
+            control.score_off_target,
+            control.score_target_accessibility,
             control.score_asymmetry,
             control.score_gc_content,
-            control.score_target_accessibility,
-            control.score_empirical,
-            control.score_off_target,
-            control.score_isoform_coverage,
-            control.score_conservation,
+            control.score_ago_start,
+            control.score_pos1_mismatch,
+            control.score_supp_13_16,
         )
         if value is not None
     )
-    assert control.composite_score == pytest.approx(contributions / (1.0 + mirna_max_biogenesis_bonus())), (
-        "a control with no recorded bonus is still divided by the mode's maximum bonus"
+    assert control.weight_vector == "postscreen_mirna_v4"
+    # No divisor, no bonus added afterwards: the score IS the sum of its declared contributions.
+    assert control.composite_score == pytest.approx(contributions)
+    assert control.composite_score == pytest.approx(real.composite_score), (
+        "the control is the same sequence, so re-deriving the biogenesis terms must give the same score"
     )
-    assert control.composite_score < real.composite_score, (
-        "a control cloned from a rejected candidate must not outscore the real candidate it copied"
-    )
+
+
+@pytest.mark.unit
+def test_isoform_coverage_gate_fires_only_when_a_floor_is_configured(tmp_path: Path) -> None:
+    """Issue #96: isoform coverage stopped being a scoring term and became an optional gate.
+
+    Reported on every candidate either way. With no floor (the default) a low-coverage guide still
+    passes -- no ceiling has been calibrated against truth data, so the gate ships off. With a floor
+    it fails LOW_ISOFORM_COVERAGE, and the run counts it. Screening supplies the numerator, which is
+    why this is post-screen and not a design filter.
+    """
+
+    def _run(min_isoform_coverage: float | None, out_name: str) -> tuple[SiRNACandidate, dict]:
+        params = DesignParameters(filters=FilterCriteria(min_isoform_coverage=min_isoform_coverage))
+        workflow = _workflow(tmp_path, out_name, params)
+        candidate = _candidate(f"cand_{out_name}", BONUS_GUIDE)
+        _score(MiRNADesigner(params), [candidate])
+        # The gate, like every off-target gate, only applies to a candidate still passing.
+        candidate.passes_filters = True
+        # One of the query gene's three protein-coding transcripts carries this guide: 1/3 = 0.33.
+        workflow._protein_coding_transcript_ids = {"ENST1", "ENST2", "ENST3"}
+        workflow._protein_coding_transcript_count = 3
+        workflow._guide_to_transcripts = {normalize_guide_sequence(candidate.guide_sequence): {"ENST1"}}
+        _, stats = workflow._integrate_offtarget_results([candidate], NO_HITS, OffTargetFilterCriteria())
+        return candidate, stats
+
+    off, off_stats = _run(None, "isoform_gate_off")
+    assert off.isoform_coverage == pytest.approx(1 / 3), "coverage is reported whether or not it gates"
+    assert off.passes_filters is True, "the gate is off by default"
+    assert off_stats["failed_isoform_coverage"] == 0
+
+    on, on_stats = _run(0.5, "isoform_gate_on")
+    assert on.isoform_coverage == pytest.approx(1 / 3)
+    assert on.passes_filters == SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE
+    assert on_stats["failed_isoform_coverage"] == 1
+    # Coverage is not a scoring term, so failing the gate does not change the score itself.
+    assert on.composite_score == pytest.approx(off.composite_score)
 
 
 def _cli_default_genome_species() -> list[str]:
@@ -595,8 +667,8 @@ def test_cli_default_species_list_scores_a_complete_screen(tmp_path: Path) -> No
     )
 
     candidate = _candidate("cand_cli_default", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
 
     _, stats = workflow._integrate_offtarget_results(
         [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=screened
@@ -604,7 +676,8 @@ def test_cli_default_species_list_scores_a_complete_screen(tmp_path: Path) -> No
 
     assert candidate.off_target_screened is True, "a complete screen must not be reported as unscreened"
     assert candidate.scored_after_screening is True
-    assert candidate.composite_score != design_time_score, "the post-screen terms must reach the composite"
+    assert candidate.composite_score is not None, "the post-screen terms must reach the composite"
+    assert candidate.design_score == design_time_score, "design_score is a separate field, not overwritten"
     assert stats["candidates_not_scored_after_screening"] == 0
 
 
@@ -623,7 +696,7 @@ def test_query_species_is_independent_of_species_list_order(tmp_path: Path) -> N
     def _run(out_name: str, genome_species: list[str]) -> SiRNACandidate:
         workflow = _workflow(tmp_path, out_name, genome_species=genome_species)
         candidate = _candidate("cand_order", BONUS_GUIDE)
-        MiRNADesigner(DesignParameters())._score_candidates([candidate])
+        _score(MiRNADesigner(DesignParameters()), [candidate])
         workflow._integrate_offtarget_results(
             [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=screened
         )
@@ -653,8 +726,8 @@ def test_explicit_query_species_decides_whose_alignment_must_have_run(tmp_path: 
     assert workflow._query_species == "mouse"
 
     candidate = _candidate("cand_explicit_query", BONUS_GUIDE)
-    MiRNADesigner(DesignParameters())._score_candidates([candidate])
-    design_time_score = candidate.composite_score
+    _score(MiRNADesigner(DesignParameters()), [candidate])
+    design_time_score = candidate.design_score
 
     _, stats = workflow._integrate_offtarget_results(
         [candidate], NO_HITS, OffTargetFilterCriteria(), screened_species=["human"]
@@ -662,5 +735,6 @@ def test_explicit_query_species_decides_whose_alignment_must_have_run(tmp_path: 
 
     assert candidate.off_target_screened is False, "the target organism was never aligned"
     assert candidate.scored_after_screening is False
-    assert candidate.composite_score == design_time_score
+    assert candidate.design_score == design_time_score
+    assert candidate.composite_score is None
     assert stats["candidates_not_scored_after_screening"] == 1

@@ -1,45 +1,64 @@
-"""Composite siRNA scoring with renormalized sub-score contributions.
+"""Composite siRNA scoring against hand-authored, named weight vectors.
 
-This module provides the canonical composite scorer for siRNA candidates, computing
-a single 0-100 quality score from weighted sub-scores (asymmetry, GC content,
-target-site accessibility, empirical rules, off-target specificity, isoform coverage,
-and ortholog conservation).
+This module provides the canonical scorer. It applies **no arithmetic to weights at runtime**:
+there is no renormalisation, no rescaling and no division anywhere below. A caller hands in one
+`WeightVector` -- already named, already summing to 1.0, validated at construction -- together with
+a feature for **every** term that vector declares. A missing term is an error, not an invitation to
+redistribute its weight, because redistributing it silently doubled every remaining weight and made
+two candidates scored under different term sets incomparable while nothing on the row recorded which
+weights had applied.
 
-The scorer renormalizes weights over the active term set, so a run that lacks
-evidence for some terms (e.g., no conservation term in a single-species run, or no
-isoform_coverage when the gene has no protein-coding transcripts) is neither
-rewarded nor penalised for the missing terms. This design lets the same scorer
-produce a legitimate single-scale composite for both design-only and post-screen
-contexts without special-casing.
+Which vector applies is decided by stage and design mode, never combined (`ScoringWeights.vector_for`):
+
+    design_v4             design stage, both modes -> SiRNACandidate.design_score
+    postscreen_sirna_v4   post-screen, siRNA mode  -> SiRNACandidate.composite_score
+    postscreen_mirna_v4   post-screen, miRNA mode  -> SiRNACandidate.composite_score
+
+`design_score` and `composite_score` are different vectors over different term sets and are not
+comparable with each other. Every vector sums to 1.0, so every score spans the same [0, 100] and its
+name is written to both the candidate row and the run manifest.
+
+Terms that are computed but deliberately **not** scored: `empirical` (gate only, via
+`min_empirical_score`), `isoform_coverage` (reported, plus the optional `min_isoform_coverage` gate)
+and `conservation` (reported only). Their sub-score helpers still live here because they still have
+to be computed and validated -- they simply no longer appear in any vector. Removing them is what
+makes "no renormalisation" reachable rather than merely relocated: both are legitimately None on some
+run shapes, and every term that remains is universally computable.
 
 Version history:
     - 1.x: pre-issue-#80 five-term set (asymmetry, gc_content, accessibility,
       empirical, off_target proxy). Not comparable to 2.x.
     - 2.0.0: seven-term set with post-screen off-target redefined, isoform_coverage
-      and conservation added. Weights retuned. Bump this version whenever a DEFAULT
-      weight in ScoringWeights changes.
+      and conservation added. Weights retuned.
     - 3.0.0: issue #95. `accessibility` (which folded the guide against itself and
       reported it as target accessibility) is replaced by `target_accessibility`, a
       real RNAplfold local-opening probability on the transcript. Same 0.13 weight,
       different quantity, so 2.x scores are not comparable. Guide self-structure
       survives as `paired_fraction` -- reported, and the EXCESS_PAIRING gate input --
       but is no longer a scoring term.
+    - 4.0.0: issue #96. Both hidden normalisations removed: the active-set
+      renormalisation here, and the `1 + max_mirna_bonus` divisor that scaled every
+      miRNA score by 0.80. One flat weight vector becomes three named ones; `empirical`,
+      `conservation` and `isoform_coverage` leave the composite; the three live miRNA
+      biogenesis bonuses become declared terms. No 3.x score is comparable with a 4.x one.
+      Bump this version whenever any DEFAULT weight or any vector's term set changes.
 """
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import exp, log10
 
 from sirnaforge.models.sirna import (
     COMPOSITE_TERM_NAMES,
     DEFAULT_ACCESSIBILITY_LOG_FLOOR,
-    ScoringWeights,
+    WeightVector,
 )
 
-# Scoring weight set version. Bump when DEFAULT weights change.
-SCORING_WEIGHT_SET_VERSION = "3.0.0"
+# Scoring weight set version. Bump when DEFAULT weights or any vector's term set change.
+SCORING_WEIGHT_SET_VERSION = "4.0.0"
 
-# Canonical composite-score term names (imported from models for consistency).
+# Every scored term name in reporting order -- the union over the three vectors, not a vector
+# itself. Nothing validates against it; each vector validates against its own TERM_NAMES.
 COMPOSITE_TERMS = COMPOSITE_TERM_NAMES
 
 # Off-target sub-score decay constant.
@@ -54,20 +73,22 @@ class ScoringError(ValueError):
 
 @dataclass(frozen=True)
 class CompositeScore:
-    """Result of composite scoring with per-term contribution breakdown.
+    """Result of scoring one candidate against one named weight vector.
 
     Attributes:
-        score: Composite score in [0, 100].
+        score: Score in [0, 100].
         weight_set_version: Version string identifying the weight set used.
-        active_terms: Terms that contributed to the score, in declaration order.
-        contributions: Per-term contributions (renormalized_weight * feature * 100),
-            summing to score. Only active terms appear; a missing term was inactive,
-            not zero-valued.
+        vector_name: Name of the weight vector that produced the score, recorded on the
+            candidate row so it resolves to the exact weights in the run manifest.
+        terms: The vector's terms, in declaration order. Every one contributed -- there is no
+            such thing as an inactive term any more.
+        contributions: Per-term contributions (weight * feature * 100), summing to score.
     """
 
     score: float
     weight_set_version: str
-    active_terms: tuple[str, ...]
+    vector_name: str
+    terms: tuple[str, ...]
     contributions: dict[str, float]
 
 
@@ -136,12 +157,16 @@ def target_accessibility_sub_score(
 
 
 def isoform_coverage_sub_score(protein_coding_hit: int, protein_coding_total: int) -> float | None:
-    """Compute the isoform coverage sub-score for protein-coding transcripts.
+    """Compute protein-coding isoform coverage. Reported and gate-only; not a scoring term.
 
-    Returns hit / total when total > 0, or None when total == 0 (the term is
-    inactive — an annotation gap or a gene with no protein-coding transcripts must
-    not be scored as zero; that would penalise the candidate for the annotation's
-    shortcoming).
+    Left the composite in issue #96 (it is None on `design_from_sequence` and miRNA paths, so any
+    vector containing it needed either variant vectors or arithmetic), and is still computed on
+    every candidate: it is written to `SiRNACandidate.isoform_coverage` and read by the optional
+    `FilterCriteria.min_isoform_coverage` gate.
+
+    Returns hit / total when total > 0, or None when total == 0 (an annotation gap or a gene with
+    no protein-coding transcripts must not read as zero coverage; that would penalise the candidate
+    for the annotation's shortcoming, and the gate skips a None).
 
     Args:
         protein_coding_hit: Number of protein-coding transcripts hit.
@@ -170,11 +195,14 @@ def isoform_coverage_sub_score(protein_coding_hit: int, protein_coding_total: in
 
 
 def conservation_sub_score(ortholog_species_hit: int, requested_non_query_species: int) -> float | None:
-    """Compute the cross-species conservation sub-score.
+    """Compute cross-species conservation. Reported only since issue #96; not a scoring term.
 
-    Returns hit / requested when requested > 0, or None when requested == 0 (the
-    term is inactive for a single-species run — a run that screened only the query
-    species must not be penalised for lacking ortholog evidence).
+    It is still computed on every candidate and written to `SiRNACandidate.conservation_score`; no
+    weight reads it. It left the composite because it is None on single-species runs, and its
+    returning None used to be the other half of what forced the deleted renormalisation.
+
+    Returns hit / requested when requested > 0, or None when requested == 0 (a run that screened
+    only the query species has no ortholog evidence, which is not the same as no conservation).
 
     Args:
         ortholog_species_hit: Number of non-query species with at least one ortholog hit.
@@ -203,49 +231,43 @@ def conservation_sub_score(ortholog_species_hit: int, requested_non_query_specie
     return ortholog_species_hit / requested_non_query_species
 
 
-def compute_composite(
-    features: Mapping[str, float],
-    weights: ScoringWeights,
-    active_terms: Collection[str] | None = None,
-) -> CompositeScore:
-    """Compute the composite siRNA quality score from weighted sub-scores.
+def compute_composite(features: Mapping[str, float], vector: WeightVector) -> CompositeScore:
+    """Score one candidate against one named weight vector.
 
-    This is a pure function: same inputs always yield the same output, with no I/O,
-    no global state, and no logging side effects. Weights are renormalized over the
-    active term set so that missing terms (e.g., no conservation term in a
-    single-species run) do not bias the composite.
+    A pure function: same inputs always yield the same output, with no I/O, no global state and no
+    logging side effects. The vector's weights are used **exactly as declared** -- this function
+    contains no arithmetic on them beyond multiplying each by its feature.
+
+    Every term the vector declares must be present in `features`. That is the whole point: scoring
+    whatever happened to be available used to renormalise the weights over it -- now deleted -- so
+    the same nominal 0.13 was worth 0.13 or 0.26 depending on the run stage. A caller that cannot
+    compute a term has no score to report, and must record that instead of a rescaled one.
 
     Args:
-        features: Mapping from term name to sub-score in [0, 1]. Terms not present
-            in this mapping are considered inactive. Sub-scores outside [0, 1]
-            indicate an upstream bug and raise ScoringError.
-        weights: ScoringWeights instance with weights for all known terms. The
-            ScoringWeights validator ensures the full weight vector sums to ~1.0.
-        active_terms: Optional explicit active term set. Defaults to the terms
-            actually present in `features`. Only active terms contribute; their
-            weights are renormalized to sum to 1.
+        features: Mapping from term name to sub-score in [0, 1]. Must cover every term in
+            `vector.terms`; extra keys are ignored (component_scores carries diagnostics too).
+            Sub-scores outside [0, 1] indicate an upstream bug and raise ScoringError.
+        vector: The named, hand-authored weight vector to score against.
 
     Returns:
-        CompositeScore with score in [0, 100], version, active terms, and per-term
+        CompositeScore with score in [0, 100], version, vector name, terms, and per-term
         contributions (each in [0, 100], summing to score).
 
     Raises:
-        ScoringError: If any sub-score is outside [0, 1], the active term set is
-            empty or contains only unknown terms, or the active weight vector is
-            unnormalizable (all weights zero).
+        ScoringError: If the vector declares a term `features` does not supply, or if any
+            sub-score is outside [0, 1].
     """
-    # Default active_terms to the keys actually present in features.
-    if active_terms is None:
-        resolved_active = tuple(term for term in COMPOSITE_TERMS if term in features)
-    else:
-        # Keep only known terms that are present in features, in declaration order.
-        resolved_active = tuple(term for term in COMPOSITE_TERMS if term in active_terms and term in features)
+    terms = vector.terms
 
-    if not resolved_active:
-        raise ScoringError("No active terms: either features is empty or active_terms names no known term in features")
+    missing = [term for term in terms if term not in features]
+    if missing:
+        raise ScoringError(
+            f"Weight vector '{vector.name}' requires {list(terms)} but {missing} were not supplied. "
+            "Weights are never renormalised, so a candidate missing a term has no score on this "
+            "vector; record that rather than a rescaled one."
+        )
 
-    # Validate that all active sub-scores are in [0, 1].
-    for term in resolved_active:
+    for term in terms:
         value = features[term]
         if not (0.0 <= value <= 1.0):
             raise ScoringError(
@@ -253,25 +275,16 @@ def compute_composite(
                 "This indicates an upstream bug in the sub-score computation."
             )
 
-    # Extract and renormalize the active weight vector.
-    active_weights = {term: getattr(weights, term) for term in resolved_active}
-    weight_sum = sum(active_weights.values())
-    if weight_sum <= 0.0:
-        raise ScoringError(
-            f"Active weight sum is {weight_sum:.6f} (non-positive, cannot normalize). Active terms: {resolved_active}"
-        )
-
-    renorm_weights = {term: w / weight_sum for term, w in active_weights.items()}
-
-    # Compute per-term contributions and composite score.
-    contributions = {term: renorm_weights[term] * features[term] * 100.0 for term in resolved_active}
-    # An all-1.0 feature vector sums to 100 only up to float error, and SiRNACandidate declares
-    # composite_score as le=100, so pin the endpoints rather than let rounding fail validation.
+    weights = vector.as_mapping()
+    contributions = {term: weights[term] * features[term] * 100.0 for term in terms}
+    # An all-1.0 feature vector sums to 100 only up to float error, and SiRNACandidate declares its
+    # score fields as le=100, so pin the endpoints rather than let rounding fail validation.
     score = min(100.0, max(0.0, sum(contributions.values())))
 
     return CompositeScore(
         score=score,
         weight_set_version=SCORING_WEIGHT_SET_VERSION,
-        active_terms=resolved_active,
+        vector_name=vector.name,
+        terms=terms,
         contributions=contributions,
     )
