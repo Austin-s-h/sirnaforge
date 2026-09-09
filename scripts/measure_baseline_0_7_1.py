@@ -623,13 +623,25 @@ def main() -> None:  # noqa: PLR0912
         and gates[name]["independent_failures"] > 0
     ]
 
-    for name, path in (
-        ("combined_summary", combined_summary),
-        ("combined_mirna_summary", mirna_summary),
-        ("workflow_summary", workflow_summary),
-    ):
+    for name, path in (("combined_summary", combined_summary), ("combined_mirna_summary", mirna_summary)):
         if path.exists():
             measurements.setdefault("run_summaries", {})[name] = json.loads(path.read_text())
+    if workflow_summary.exists():
+        # Only the header sections: this file embeds every hit row and is tens of MB.
+        full = json.loads(workflow_summary.read_text())
+        measurements.setdefault("run_summaries", {})["workflow_summary"] = {
+            key: full[key]
+            for key in (
+                "workflow_config",
+                "transcript_summary",
+                "transcript_annotation_summary",
+                "orf_summary",
+                "design_summary",
+                "design_parameters",
+                "repeat_summary",
+            )
+            if key in full
+        }
 
     measurements["filter_status_values"] = [member.value for member in SiRNACandidate.FilterStatus]
 
