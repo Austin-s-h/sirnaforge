@@ -82,11 +82,16 @@ where the two defects removed here were first written down as outstanding.)
 - **`hit_class`, `matched_symbol` and `symbol_lookup_missing` columns on
   `aggregated/combined_offtargets.tsv`.** The four-way classification was computed per alignment and
   thrown away, so an on-target isoform alignment and a genuine liability were indistinguishable in the
-  hit table, and `rname` (a versioned Ensembl accession) was the only gene identity a reviewer had.
-  `hit_class` is exactly one of `on_target`/`ortholog`/`repeat`/`off_target`; an unresolved symbol is
-  the literal string `unknown`, never an empty cell. The per-candidate class counters are now derived
-  from these persisted rows, so the row-level and candidate-level views are one computation and cannot
-  disagree. No gate, threshold or score changes.
+  hit table. `hit_class` is exactly one of `on_target`/`ortholog`/`repeat`/`off_target`, on every
+  published table — a header-only table (miRNA-only mode, or every species' index missing) carries the
+  three columns too, so the schema does not depend on the run having found a hit. `matched_symbol` is
+  the symbol that *established* the class, not a per-hit gene name: it is the literal string `unknown`
+  (never an empty cell) on `off_target` and `repeat` rows, and on transcript-ID-matched `on_target`
+  rows, even where the index does resolve a symbol for that transcript. A resolved gene symbol per
+  liability row is **not** delivered here — `rname` remains the only gene identity on those rows, and
+  widening `matched_symbol` belongs to #101, which owns `core/hit_classification.py`. The per-candidate
+  class counters are now derived from these persisted rows, so the row-level and candidate-level views
+  are one computation and cannot disagree. No gate, threshold or score changes.
 - **`models/policy.py` and `models/evidence.py`** — shared data contracts for the 0.7.1 work that
   follows: `RunMode`, `FilterAction`, `FilterEvaluation` (`pass`/`fail`/`unknown`, distinct from the
   action), `ScreeningChannel`, `TargetIntent` (separate target-species and off-target-screening-species

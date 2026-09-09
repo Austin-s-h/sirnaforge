@@ -49,6 +49,11 @@ TSV_COLUMNS = [
 ]
 
 
+def _repo_root() -> Path:
+    """Repository root, for the published-contract assertions."""
+    return Path(__file__).resolve().parents[2]
+
+
 def _candidate(candidate_id: str, guide: str, *, repeat_flagged: bool = False) -> SiRNACandidate:
     """A minimal candidate carrying one guide."""
     candidate = SiRNACandidate(
@@ -250,14 +255,66 @@ def test_on_target_and_ortholog_rows_are_labelled_not_counted_as_off_targets(tmp
 
 @pytest.mark.unit
 def test_missing_symbol_is_the_literal_unknown(tmp_path):
-    """A symbol we do not have is ``unknown``, never a blank cell that renders as "no gene"."""
+    """A symbol we do not have is ``unknown``, never a blank cell that renders as "no gene".
+
+    The row named here is the one the index genuinely cannot resolve, so the assertion cannot be
+    satisfied by a row that merely had no symbol *consulted*.
+    """
     _candidates, tsv_path, _outcome = _run(tmp_path, "out_unknown")
     rows = _read_tsv(tsv_path)
 
     assert all(row[MATCHED_SYMBOL_COLUMN] for row in rows)
-    unresolved = [row for row in rows if row[MATCHED_SYMBOL_COLUMN] == UNKNOWN_SYMBOL]
-    assert unresolved, "at least one synthetic row has no resolvable symbol"
-    assert all(row[MATCHED_SYMBOL_COLUMN] != "" for row in unresolved)
+    unresolvable = next(row for row in rows if row["rname"] == "ENSMUST00000000099")
+    assert unresolvable[MATCHED_SYMBOL_COLUMN] == UNKNOWN_SYMBOL
+    assert unresolvable[SYMBOL_LOOKUP_MISSING_COLUMN] == "True"
+
+
+@pytest.mark.unit
+def test_matched_symbol_is_class_evidence_not_a_per_hit_gene_name(tmp_path):
+    """``matched_symbol`` names the symbol that established the class, and nothing more.
+
+    An ``off_target`` or ``repeat`` row reads ``unknown`` even where the hit species' index does
+    resolve a symbol for that transcript, and ``symbol_lookup_missing`` is ``False`` there, so
+    nothing on the row says the gene name is absent. The published contract must say so rather than
+    promise a resolved gene symbol per row — a consumer that renders ``unknown`` as "unannotated"
+    would mislabel fully annotated genes. Widening the column is #101's call on
+    ``core/hit_classification.py``.
+    """
+    workflow = _workflow(tmp_path, "out_symbol_semantics")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    tsv_path = _write_results_dir(results_dir, _mixed_rows())
+    candidates = [
+        _candidate("cand_clean", CLEAN_GUIDE),
+        _candidate("cand_repeat", REPEAT_GUIDE, repeat_flagged=True),
+    ]
+    asyncio.run(workflow._process_nextflow_results(candidates, results_dir, {"status": "completed"}))
+    rows = _read_tsv(tsv_path)
+
+    human_index = workflow._transcript_index.for_species("human")
+    assert human_index is not None
+    assert human_index.symbol_for("ENST00000000009") == "OTHER"
+
+    resolvable_but_unknown = [
+        row
+        for row in rows
+        if row["species"] == "human"
+        and row[MATCHED_SYMBOL_COLUMN] == UNKNOWN_SYMBOL
+        and human_index.symbol_for(row["rname"]) is not None
+    ]
+    assert resolvable_but_unknown, "fixture must exercise a row whose symbol the index resolves"
+    assert {row[HIT_CLASS_COLUMN] for row in resolvable_but_unknown} == {
+        HitClass.ON_TARGET.value,
+        HitClass.REPEAT.value,
+        HitClass.OFF_TARGET.value,
+    }
+    assert all(row[SYMBOL_LOOKUP_MISSING_COLUMN] == "False" for row in resolvable_but_unknown)
+
+    for relative in ("docs/cli_reference.md", "CHANGELOG.md"):
+        text = (_repo_root() / relative).read_text()
+        assert "matched_symbol` is the resolved gene symbol" not in text, (
+            f"{relative} promises a resolved gene symbol per row, which no off_target row carries"
+        )
+        assert "per-hit gene name" in text, f"{relative} must state that matched_symbol is not one"
 
 
 @pytest.mark.unit
@@ -390,4 +447,3 @@ def test_zero_hit_table_still_gains_the_classification_columns(tmp_path):
     assert len(lines) == 1, "no data rows may be invented for an empty table"
     assert _read_tsv(tsv_path) == []
     assert candidates[0].off_target_count == 0
-

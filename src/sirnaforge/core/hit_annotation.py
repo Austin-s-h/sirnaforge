@@ -5,9 +5,12 @@ row and derives the per-candidate counters *from the written row*, so the row-le
 candidate-level columns are one computation rather than two that can drift apart. It adds no
 classification logic of its own.
 
-The three columns are ``hit_class``, ``matched_symbol`` and ``symbol_lookup_missing``. A symbol
-the index could not resolve is the literal string ``unknown``: an empty cell renders as "no gene"
-and hides how much of a run had no annotation behind it.
+The three columns are ``hit_class``, ``matched_symbol`` and ``symbol_lookup_missing``.
+``matched_symbol`` carries the symbol that *established* the class (ortholog match, or a
+symbol-recognised on-target) and is the literal string ``unknown`` otherwise — including on
+``off_target`` and ``repeat`` rows whose transcript the index can resolve. It is not a per-hit gene
+name. ``unknown`` rather than an empty cell because a blank renders as "no gene" and hides how much
+of a run had no annotation behind it.
 """
 
 from __future__ import annotations
