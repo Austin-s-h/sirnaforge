@@ -237,15 +237,22 @@ docker: docker-build
 # CODE QUALITY
 #==============================================================================
 
+# scripts/ is tracked, load-bearing tooling (baseline measurement, fixture builders) and was
+# outside every gate until 0.7.1, so it is now fully linted and type-checked with no exclusions.
+# tests/ stays out of mypy deliberately: `mypy tests` reports 125 pre-existing errors across 14
+# files, which is its own work package, not this one.
+RUFF_PATHS := src tests scripts
+MYPY_PATHS := src scripts
+
 lint: ## Check code quality
-	uv run ruff check src tests
-	uv run ruff format --check src tests
-	uv run mypy src
+	uv run ruff check $(RUFF_PATHS)
+	uv run ruff format --check $(RUFF_PATHS)
+	uv run mypy $(MYPY_PATHS)
 	@echo "Code quality checks passed!"
 
 format: ## Auto-format code
-	uv run ruff format src tests
-	uv run ruff check --fix src tests
+	uv run ruff format $(RUFF_PATHS)
+	uv run ruff check --fix $(RUFF_PATHS)
 	@echo "Code formatted!"
 
 check: format test-dev ## Quick check: format + fast tests

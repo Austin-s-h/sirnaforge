@@ -38,8 +38,19 @@ Hit rows are keyed on `qname` = the candidate `id` that deduplication submitted 
 * **Gate masking (#100/#103).** `passes_filters` here is `TRANSCRIPTOME_PERFECT_MATCH` on 254 rows,
   `MIRNA_PERFECT_SEED` on 10 and `PASS` on 28 — while several of those rows independently fail
   `LOW_ASYMMETRY` too. The single status column cannot express that.
-* **Post-screen scoring columns.** `composite_score` plus the four `score_*` contributions, which
-  sum to it exactly.
+* **Post-screen scoring columns.** `composite_score` plus the seven `score_*` columns the shared
+  writer emits. The **four** `postscreen_sirna_v4` terms sum to `composite_score` exactly; the three
+  miRNA-mode terms (`score_ago_start`, `score_pos1_mismatch`, `score_supp_13_16`) are null on every
+  row here, which is what makes that decomposition exact.
+
+**These claims are asserted, not merely written down:** `tests/unit/test_baseline_0_7_1_fixture.py`
+pins the column layouts and dtypes, both redundancy identities, the guide-vs-`id` multiplicity, the
+gate-masking population, the `nm` tail and the repeat-column trap below. Thresholds are asserted
+there as the literals **this run used** (`max_off_target_count = 15`, `min_asymmetry_score = 0.65`),
+never as live model defaults, because 0.7.1 moves several of those defaults.
+
+⚠️ **Scale.** 292 rows is **0.8%** of the run's 34,863. This is a correctness fixture. #103's payload
+budget, and anything else that needs magnitude, cannot be exercised from it.
 
 ## Verification limits — read before asserting on these numbers
 
@@ -52,7 +63,9 @@ Hit rows are keyed on `qname` = the candidate `id` that deduplication submitted 
    `repeat_summary: skipped / reference_unavailable` because repeat detection needs the
    transcriptome-materialisation path that this configuration had to disable. Do **not** read a zero
    here as "no repeats": an offline `RepeatDetector` scan of the full run flags 424 of its 2,400
-   guides. These files cannot test the `REPEAT` hit class.
+   guides. These files cannot test the `REPEAT` hit class. No column records whether the scan ran,
+   so "scanned, found none" and "never scanned" are byte-indistinguishable; the test asserting that
+   fails deliberately once a repeat-evidence status column is added.
 4. **Off-target counts are lower bounds.** The screened reference is 8% of the Ensembl human cDNA
    release by bases and holds one transcript per gene, because the full reference cannot be
    bwa-mem2-indexed on the machine that produced this run. Absolute magnitudes are not

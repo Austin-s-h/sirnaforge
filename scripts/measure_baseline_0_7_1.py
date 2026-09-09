@@ -22,6 +22,7 @@ import hashlib
 import json
 import statistics
 from collections import Counter
+from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,9 +81,20 @@ def variance_shares(frame: pd.DataFrame, term_columns: dict[str, str]) -> dict[s
 
 def read_hits(path: Path) -> pd.DataFrame:
     """Load a per-hit TSV, or an empty frame when it is absent/empty."""
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
-    return pd.read_csv(path, sep="\t")
+    missing = not path.exists() or path.stat().st_size == 0
+    frame: pd.DataFrame = pd.DataFrame() if missing else pd.read_csv(path, sep="\t")
+    return frame
+
+
+def row_mapping(row: dict[Hashable, Any]) -> dict[str, Any]:
+    """Re-key a pandas ``to_dict("records")`` row so it satisfies ``Mapping[str, Any]``."""
+    return {str(key): value for key, value in row.items()}
+
+
+def _qname_for(representative: dict[str, str], candidate_id: object) -> str:
+    """Aligner ``qname`` for a candidate id — the representative its guide deduplicated to."""
+    cid = str(candidate_id)
+    return representative.get(cid, cid)
 
 
 @dataclass
@@ -111,7 +123,8 @@ def reconstruct(
     index_missing = 0
     resolved = 0
 
-    for row in hits.to_dict("records"):
+    for record in hits.to_dict("records"):
+        row = row_mapping(record)
         qname = str(row["qname"])
         guide = qname_to_guide.get(qname, str(row.get("qseq", "")))
         verdict = classify_hit(row, guide, context)
@@ -252,10 +265,16 @@ def gate_independent_failures(
     )
 
     def counter(field: str) -> pd.Series:
-        return candidates["id"].map(lambda cid: recon.per_query.get(representative.get(cid, cid), {}).get(field, 0))
+        def lookup(cid: object) -> int:
+            return recon.per_query.get(_qname_for(representative, cid), {}).get(field, 0)
+
+        return candidates["id"].map(lookup)
 
     def mirna_counter(field: str) -> pd.Series:
-        return candidates["id"].map(lambda cid: mirna_by_query.get(representative.get(cid, cid), {}).get(field, 0))
+        def lookup(cid: object) -> int:
+            return mirna_by_query.get(_qname_for(representative, cid), {}).get(field, 0)
+
+        return candidates["id"].map(lookup)
 
     for name, field, threshold in (
         ("TRANSCRIPTOME_PERFECT_MATCH", "human_0mm", offtarget_filters.max_transcriptome_hits_0mm),
@@ -506,9 +525,13 @@ def main() -> None:  # noqa: PLR0912
     }
 
     # verify the reconstruction against what the run itself wrote
-    recon_off = candidates["id"].map(
-        lambda cid: as_run.per_query.get(representative.get(cid, cid), {}).get("off_target", 0)
-    )
+    def as_run_counter(field: str) -> pd.Series:
+        def lookup(cid: object) -> int:
+            return as_run.per_query.get(_qname_for(representative, cid), {}).get(field, 0)
+
+        return candidates["id"].map(lookup)
+
+    recon_off = as_run_counter("off_target")
     measurements["hit_classes"]["reconstruction_check"] = {
         "rows_compared": int(len(candidates)),
         "rows_matching_off_target_count": int((recon_off == candidates["off_target_count"].astype(int)).sum()),
@@ -518,15 +541,13 @@ def main() -> None:  # noqa: PLR0912
     nm_series = offtargets["nm"].astype(int) if not offtargets.empty else pd.Series(dtype=int)
     counted = [
         row
-        for row in (offtargets.to_dict("records") if not offtargets.empty else [])
+        for row in (row_mapping(record) for record in offtargets.to_dict("records"))
         if classify_hit(row, qname_to_guide.get(str(row["qname"]), str(row.get("qseq", ""))), empty_context).hit_class
         is HitClass.OFF_TARGET
     ]
     counted_nm = pd.Series([int(r["nm"]) for r in counted], dtype=int) if counted else pd.Series(dtype=int)
     off_counts = candidates["off_target_count"].astype(int)
-    nm_le2 = candidates["id"].map(
-        lambda cid: as_run.per_query.get(representative.get(cid, cid), {}).get("off_target_nm_le2", 0)
-    )
+    nm_le2 = as_run_counter("off_target_nm_le2")
     cap = OffTargetFilterCriteria().max_off_target_count
 
     measurements["offtarget_scope"] = {

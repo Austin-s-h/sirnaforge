@@ -145,7 +145,8 @@ def evaluate_benchmark(
                     "p_non_seed_end": control,
                 }
             )
-    return pd.DataFrame(rows)
+    scored_rows: pd.DataFrame = pd.DataFrame(rows)
+    return scored_rows
 
 
 def tp53_percentile(tp53_fasta: Path, window_size: int, max_bp_span: int) -> tuple[float, int, int]:
