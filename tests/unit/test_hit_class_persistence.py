@@ -837,3 +837,28 @@ def test_a_blank_hit_class_is_reclassified_rather_than_republished(tmp_path):
         )
     )
     assert tsv_path.read_text() == before
+
+
+@pytest.mark.unit
+def test_an_unclassified_published_row_is_reported_rather_than_silently_skipped(tmp_path):
+    """The replacement for the removed "leave the file unchanged" branch.
+
+    That branch could not be reached from its only caller, because the orphan pass annotates every
+    row of every table first. Reporting the shortfall is reachable, and says which invariant broke
+    instead of leaving a run looking clean.
+    """
+    tsv_path = tmp_path / "combined_offtargets.tsv"
+    row = _hit_row("cand_clean", CLEAN_GUIDE, "human", "ENST00000000009")
+    with tsv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=TSV_COLUMNS, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(row)
+    parsed = {
+        "results": {},
+        "genome_hit_tables": [{"path": tsv_path, "fieldnames": TSV_COLUMNS, "rows": [row]}],
+    }
+
+    warnings = SiRNAWorkflow._persist_hit_classifications(parsed)
+
+    assert len(warnings) == 1
+    assert "1 published hit row(s) carry no usable classification" in warnings[0]

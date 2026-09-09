@@ -2184,6 +2184,10 @@ class SiRNAWorkflow:
         table rejected upstream left the fallback ingesting real per-species rows into candidates
         while the published table stayed header-only, so the hit table reported no liabilities
         beside candidates carrying dozens each.
+
+        It also fires for the ``combined_offtargets.json`` aggregate, whose rows feed candidates and
+        have no TSV to be republished into. That is the same defect in another format, not a false
+        alarm; closing it belongs with the producer (#100).
         """
         counted = 0
         for entry in cast(dict[str, dict[str, Any]], parsed.get("results") or {}).values():
