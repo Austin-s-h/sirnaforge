@@ -91,10 +91,16 @@ where the two defects removed here were first written down as outstanding.)
   empty cell) on `off_target` and `repeat` rows. `hit_symbol` **is** the per-row gene name, resolved
   from the transcript index against `rname` independently of class, with `hit_symbol_missing` flagging
   the rows it could not resolve — on a real reference 14.6% of transcripts carry no symbol, so
-  `unknown` is a common honest state and not "no gene". The per-candidate class counters are derived
-  from these persisted rows, and the published row count is reconciled against the hits that fed those
-  counters, so the row-level and candidate-level views are one computation and cannot disagree. No
-  gate, threshold or score changes: see `undetermined` below for why.
+  `unknown` is a common honest state and not "no gene". The never-empty guarantee holds because a row
+  read back with any classification cell blank — not just a blank `hit_class` — counts as
+  unannotated and is re-annotated in full before the table is republished
+  (`test_a_row_annotated_in_part_is_repaired_rather_than_republished_with_blank_cells`). The
+  per-candidate class counters are derived from these persisted rows, and the published row count is
+  reconciled against the hits that fed those counters, so the row-level and candidate-level views
+  cannot disagree **silently**: any shortfall is reported as a run warning. It is a reconciliation
+  warning, not an impossibility — the `combined_offtargets.json` aggregate has rows that feed
+  candidates and no TSV to be republished into, and that path fires it. No gate, threshold or score
+  changes: see `undetermined` below for why.
 - **`hit_class = undetermined`, and `undetermined_hits` on every candidate row.** A hit whose species
   has no transcript index cannot be checked for orthology or for the query gene, so it used to fall
   through to an unqualified `off_target` — a table produced with no index at all was
@@ -110,15 +116,19 @@ where the two defects removed here were first written down as outstanding.)
   baseline); joining on `guide_sequence` worked only while the spellings were byte-identical, which a
   U-spelled guide and its T-spelled twin are not. `screen_query_id` is the id the candidate was
   screened under, and equals `qname` in the hit table. `None` when the candidate never reached the
-  aligner, so a key that joins to nothing does not look like one.
+  aligner, so a key that joins to nothing does not look like one — the key is assigned only after the
+  run knows the candidate was submitted, pinned by
+  `test_candidate_never_submitted_is_not_scored_as_clean`.
 - **`AggregatedOffTargetSchema`** — a pandera schema for the *published* aggregated table.
   `GenomeAlignmentSchema` is `strict=True` over 12 columns and applies to the per-species files, so
   anything reaching for the obvious schema got a strict-mode rejection. **Two shapes are valid and a
   consumer must tolerate both:** the classification columns are added by a post-hoc read-modify-write
   in Python, so a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused elsewhere
   publishes 12 columns and the workflow publishes 18. Presence of `hit_class` is the test for which
-  shape you hold. Moving the write into the producer belongs to #100, which owns
-  `aggregate_results.nf`.
+  shape you hold. The split is **run-outcome dependent, not only entry-point dependent**: the same
+  workflow writes the columns back onto `genome/*_analysis.tsv` only on the runs whose aggregate came
+  back header-only and the fallback read the per-species files, so that artifact has both shapes too.
+  Moving the write into the producer belongs to #100, which owns `aggregate_results.nf`.
 - **`models/policy.py` and `models/evidence.py`** — shared data contracts for the 0.7.1 work that
   follows: `RunMode`, `FilterAction`, `FilterEvaluation`, `ScreeningChannel`, `TargetIntent`
   (separate target-species and off-target-screening-species sets), `EvidenceRequirements`,
