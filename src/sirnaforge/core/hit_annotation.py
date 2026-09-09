@@ -1,16 +1,22 @@
 """Persist per-hit classification onto the aggregated off-target table.
 
-``hit_classification`` decides a hit's class once. This module writes that verdict onto the hit
-row and derives the per-candidate counters *from the written row*, so the row-level TSV and the
-candidate-level columns are one computation rather than two that can drift apart. It adds no
-classification logic of its own.
+Owned by #100; extended in place by #101 (new ``HitClass`` members). #103 consumes only and must not
+edit it. ``hit_classification`` decides a hit's class once; this module writes that verdict onto the row
+and derives the per-candidate counters *from the written row*, so the row-level TSV and the
+candidate-level columns are one computation rather than two that can drift apart.
 
-The three columns are ``hit_class``, ``matched_symbol`` and ``symbol_lookup_missing``.
-``matched_symbol`` carries the symbol that *established* the class (ortholog match, or a
-symbol-recognised on-target) and is the literal string ``unknown`` otherwise — including on
-``off_target`` and ``repeat`` rows whose transcript the index can resolve. It is not a per-hit gene
-name. ``unknown`` rather than an empty cell because a blank renders as "no gene" and hides how much
-of a run had no annotation behind it.
+Six columns are written. ``hit_class`` is the persisted class; ``matched_symbol`` carries the
+symbol that *established* the class (ortholog match, or a symbol-recognised on-target) and is the
+literal string ``unknown`` otherwise — it is not a per-hit gene name. ``hit_symbol`` is the
+per-row gene name: the symbol the transcript index resolves for ``rname``, independent of class,
+with ``hit_symbol_missing`` flagging the rows it could not resolve. ``unknown`` rather than an
+empty cell because a blank renders as "no gene", and on a real reference 14.6% of transcripts carry
+no symbol at all, so ``unknown`` is a common and honest state.
+
+The one decision this module does make is UNDETERMINED. A hit species with no transcript index
+cannot be checked for orthology or for the query gene, so its alignments used to fall through to an
+unqualified ``off_target``; ``species_index_missing`` is persisted alongside so the reason is on the
+row.
 """
 
 from __future__ import annotations
@@ -18,33 +24,114 @@ from __future__ import annotations
 import csv
 import os
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from sirnaforge.core.hit_classification import HitClass, HitClassCounts, HitClassification
+from sirnaforge.data.species_registry import normalize_species_name
+from sirnaforge.data.transcript_index import TranscriptGeneIndex
 
 HIT_CLASS_COLUMN = "hit_class"
 MATCHED_SYMBOL_COLUMN = "matched_symbol"
 SYMBOL_LOOKUP_MISSING_COLUMN = "symbol_lookup_missing"
+HIT_SYMBOL_COLUMN = "hit_symbol"
+HIT_SYMBOL_MISSING_COLUMN = "hit_symbol_missing"
+SPECIES_INDEX_MISSING_COLUMN = "species_index_missing"
 CLASSIFICATION_COLUMNS: tuple[str, ...] = (
     HIT_CLASS_COLUMN,
     MATCHED_SYMBOL_COLUMN,
     SYMBOL_LOOKUP_MISSING_COLUMN,
+    HIT_SYMBOL_COLUMN,
+    HIT_SYMBOL_MISSING_COLUMN,
+    SPECIES_INDEX_MISSING_COLUMN,
 )
 
 UNKNOWN_SYMBOL = "unknown"
 
+# What the gates count. UNDETERMINED is absent evidence, not innocence: excluding it here would
+# make a run with no transcript index pass candidates that today fail, i.e. a missing reference
+# would loosen the screen. Until a resolved policy says what an unknown costs
+# (EvidenceRequirements.unknown_evidence_action), an undecidable alignment is gated as a liability
+# and reported separately, so the counted total and the qualified total are both visible.
+LIABILITY_CLASSES: frozenset[HitClass] = frozenset({HitClass.OFF_TARGET, HitClass.UNDETERMINED})
 
-def annotate_hit_row(row: MutableMapping[str, Any], classification: HitClassification) -> HitClass:
-    """Write a classification onto its hit row and return the class as persisted.
+
+def liabilities_counted(counts: HitClassCounts) -> int:
+    """Hits gated as liabilities: genuine off-targets plus those whose class could not be decided."""
+    return counts.off_target + counts.undetermined
+
+
+@dataclass(frozen=True)
+class HitAnnotator:
+    """Per-row reference lookups: the gene name for a hit, and whether its species has an index.
+
+    Separate from ``ClassificationContext`` because these are properties of the reference
+    inventory, not of the query gene: the same lookups answer "what gene did this land on" for
+    every row regardless of class.
+
+    Attributes:
+        index: Multi-species transcript→gene index.
+        query_species: Canonical species a blank ``species`` label belongs to.
+    """
+
+    index: TranscriptGeneIndex
+    query_species: str
+
+    def species_of(self, row: Mapping[str, Any]) -> str:
+        """Canonical species of a hit row; a blank label is the query species (see classify_hit)."""
+        label = row.get("species")
+        if label is None or str(label).strip() == "":
+            return self.query_species
+        return normalize_species_name(str(label))
+
+    def has_index_for(self, row: Mapping[str, Any]) -> bool:
+        """Whether any transcript index exists for this row's species."""
+        return self.index.for_species(self.species_of(row)) is not None
+
+    def symbol_for(self, row: Mapping[str, Any]) -> str | None:
+        """Gene symbol the index resolves for this row's ``rname``, or None."""
+        species_index = self.index.for_species(self.species_of(row))
+        if species_index is None:
+            return None
+        rname = str(row.get("rname") or "")
+        return species_index.symbol_for(rname) if rname else None
+
+
+def annotate_hit_row(
+    row: MutableMapping[str, Any],
+    classification: HitClassification,
+    annotator: HitAnnotator,
+) -> HitClass:
+    """Write a classification and its reference lookups onto a hit row, returning the class written.
 
     The return value is read back out of the row rather than taken from ``classification``, so a
-    caller cannot count one class and publish another.
+    caller cannot count one class and publish another. The annotator is required, not optional: a
+    row carrying a class but no gene name would publish two different column sets.
     """
-    row[HIT_CLASS_COLUMN] = classification.hit_class.value
+    species_index_missing = not annotator.has_index_for(row)
+    hit_symbol = annotator.symbol_for(row)
+
+    row[HIT_CLASS_COLUMN] = _persisted_class(classification, species_index_missing).value
     row[MATCHED_SYMBOL_COLUMN] = classification.matched_symbol or UNKNOWN_SYMBOL
     row[SYMBOL_LOOKUP_MISSING_COLUMN] = classification.symbol_lookup_missing
+    row[HIT_SYMBOL_COLUMN] = hit_symbol or UNKNOWN_SYMBOL
+    row[HIT_SYMBOL_MISSING_COLUMN] = hit_symbol is None
+    row[SPECIES_INDEX_MISSING_COLUMN] = species_index_missing
     return hit_class_of(row)
+
+
+def _persisted_class(classification: HitClassification, species_index_missing: bool) -> HitClass:
+    """Downgrade an ``off_target`` fallthrough to UNDETERMINED when no reference could be consulted.
+
+    ON_TARGET, ORTHOLOG and REPEAT were each decided by positive evidence (a transcript ID, a
+    matched symbol, a repeat-flagged guide) and stand whatever the reference inventory looks like.
+    OFF_TARGET is the only verdict reached by exclusion, so it is the only one a missing index
+    invalidates.
+    """
+    if species_index_missing and classification.hit_class is HitClass.OFF_TARGET:
+        return HitClass.UNDETERMINED
+    return classification.hit_class
 
 
 def hit_class_of(row: Mapping[str, Any]) -> HitClass:
@@ -52,14 +139,22 @@ def hit_class_of(row: Mapping[str, Any]) -> HitClass:
 
     Raises:
         KeyError: The row was never annotated.
-        ValueError: The row carries a value outside the four-way taxonomy.
+        ValueError: The row carries a value outside the taxonomy.
     """
     return HitClass(str(row[HIT_CLASS_COLUMN]))
 
 
 def is_annotated(row: Mapping[str, Any]) -> bool:
-    """True when this row already carries a persisted class."""
-    return HIT_CLASS_COLUMN in row
+    """True when this row carries a class that is actually one of the taxonomy's values.
+
+    Presence of the key is not enough: a table read back from disk can carry an empty
+    ``hit_class`` cell, and treating that as annotated republished the blank and then raised
+    ``ValueError`` on the next read — after the file had already been overwritten.
+    """
+    value = row.get(HIT_CLASS_COLUMN)
+    if value is None:
+        return False
+    return str(value) in {member.value for member in HitClass}
 
 
 def accumulate_hit_class(
@@ -83,6 +178,10 @@ def accumulate_hit_class(
         counts.symbol_lookup_missing += 1
         species_bucket["symbol_lookup_missing"] = species_bucket.get("symbol_lookup_missing", 0) + 1
 
+    if _as_bool(row.get(SPECIES_INDEX_MISSING_COLUMN)):
+        counts.no_species_index += 1
+        species_bucket[SPECIES_INDEX_MISSING_COLUMN] = species_bucket.get(SPECIES_INDEX_MISSING_COLUMN, 0) + 1
+
     if hit_class is HitClass.ORTHOLOG and str(row.get(MATCHED_SYMBOL_COLUMN)) != UNKNOWN_SYMBOL:
         counts.ortholog_species = frozenset(counts.ortholog_species | {hit_species})
 
@@ -103,14 +202,14 @@ def write_classified_hits(
     rows: Sequence[Mapping[str, Any]],
     fieldnames: Sequence[str],
 ) -> int:
-    """Rewrite an aggregated off-target TSV with the classification columns appended.
+    """Rewrite an off-target TSV with the classification columns appended.
 
-    Values are written back as the strings they were read as, so only the three new columns
-    change. The replacement is atomic and replaces the directory entry, which matters because
-    Nextflow's publishDir may have left a symlink into the work directory here.
+    Values are written back as the strings they were read as, so only the new columns change. The
+    replacement is atomic and replaces the directory entry, which matters because Nextflow's
+    publishDir may have left a symlink into the work directory here.
 
     Args:
-        tsv_path: The aggregated TSV to rewrite in place.
+        tsv_path: The TSV to rewrite in place.
         rows: The parsed rows, annotated, in file order.
         fieldnames: The file's original header, in order.
 

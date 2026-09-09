@@ -79,19 +79,46 @@ where the two defects removed here were first written down as outstanding.)
   omission.
 - `WeightVector`, `DesignWeights`, `PostScreenSiRNAWeights` and `PostScreenMiRNAWeights` are exported
   from `sirnaforge.models`.
-- **`hit_class`, `matched_symbol` and `symbol_lookup_missing` columns on
-  `aggregated/combined_offtargets.tsv`.** The four-way classification was computed per alignment and
-  thrown away, so an on-target isoform alignment and a genuine liability were indistinguishable in the
-  hit table. `hit_class` is exactly one of `on_target`/`ortholog`/`repeat`/`off_target`, on every
-  published table — a header-only table (miRNA-only mode, or every species' index missing) carries the
-  three columns too, so the schema does not depend on the run having found a hit. `matched_symbol` is
-  the symbol that *established* the class, not a per-hit gene name: it is the literal string `unknown`
-  (never an empty cell) on `off_target` and `repeat` rows, and on transcript-ID-matched `on_target`
-  rows, even where the index does resolve a symbol for that transcript. A resolved gene symbol per
-  liability row is **not** delivered here — `rname` remains the only gene identity on those rows, and
-  widening `matched_symbol` belongs to #101, which owns `core/hit_classification.py`. The per-candidate
-  class counters are now derived from these persisted rows, so the row-level and candidate-level views
-  are one computation and cannot disagree. No gate, threshold or score changes.
+- **Six classification columns on the published off-target hit tables** — `hit_class`,
+  `matched_symbol`, `symbol_lookup_missing`, `hit_symbol`, `hit_symbol_missing`,
+  `species_index_missing`. The classification was computed per alignment and thrown away, so an
+  on-target isoform alignment and a genuine liability were indistinguishable in the hit table.
+  `hit_class` is exactly one of `on_target`/`ortholog`/`repeat`/`off_target`/`undetermined`, on
+  **every** table the run read — the aggregated table and, when the aggregate is header-only and the
+  fallback reads them, each `genome/*_analysis.tsv`. A header-only table carries the columns too, so
+  the schema does not depend on the run having found a hit. `matched_symbol` is the symbol that
+  *established* the class, not a per-hit gene name: it is the literal string `unknown` (never an
+  empty cell) on `off_target` and `repeat` rows. `hit_symbol` **is** the per-row gene name, resolved
+  from the transcript index against `rname` independently of class, with `hit_symbol_missing` flagging
+  the rows it could not resolve — on a real reference 14.6% of transcripts carry no symbol, so
+  `unknown` is a common honest state and not "no gene". The per-candidate class counters are derived
+  from these persisted rows, and the published row count is reconciled against the hits that fed those
+  counters, so the row-level and candidate-level views are one computation and cannot disagree. No
+  gate, threshold or score changes: see `undetermined` below for why.
+- **`hit_class = undetermined`, and `undetermined_hits` on every candidate row.** A hit whose species
+  has no transcript index cannot be checked for orthology or for the query gene, so it used to fall
+  through to an unqualified `off_target` — a table produced with no index at all was
+  byte-indistinguishable from one where every alignment genuinely was a liability. On the frozen
+  0.7.1 baseline 3,319 hits were misclassified this way. `undetermined` is still counted in
+  `off_target_count` and still feeds every gate, deliberately: excluding it would mean deleting a
+  reference loosened the screen. `undetermined_hits` reports how much of the count is unqualified.
+  `classify_hit` never returns it — deciding that a class could not be decided needs the reference
+  inventory, which lives in the annotation layer.
+- **`screen_query_id` on every candidate row.** The aligner is handed one FASTA record per *distinct*
+  guide sequence, so a hit row's `qname` is the representative's id. Joining hit rows on `id` silently
+  attributed one guide's whole hit set to one of its candidate rows (median 6, max 34 on the frozen
+  baseline); joining on `guide_sequence` worked only while the spellings were byte-identical, which a
+  U-spelled guide and its T-spelled twin are not. `screen_query_id` is the id the candidate was
+  screened under, and equals `qname` in the hit table. `None` when the candidate never reached the
+  aligner, so a key that joins to nothing does not look like one.
+- **`AggregatedOffTargetSchema`** — a pandera schema for the *published* aggregated table.
+  `GenomeAlignmentSchema` is `strict=True` over 12 columns and applies to the per-species files, so
+  anything reaching for the obvious schema got a strict-mode rejection. **Two shapes are valid and a
+  consumer must tolerate both:** the classification columns are added by a post-hoc read-modify-write
+  in Python, so a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused elsewhere
+  publishes 12 columns and the workflow publishes 18. Presence of `hit_class` is the test for which
+  shape you hold. Moving the write into the producer belongs to #100, which owns
+  `aggregate_results.nf`.
 - **`models/policy.py` and `models/evidence.py`** — shared data contracts for the 0.7.1 work that
   follows: `RunMode`, `FilterAction`, `FilterEvaluation`, `ScreeningChannel`, `TargetIntent`
   (separate target-species and off-target-screening-species sets), `EvidenceRequirements`,
@@ -136,6 +163,23 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Fixed
 
+- **The hit table could report "no liabilities" beside candidates carrying dozens of hits each.**
+  `_parse_nextflow_results` recorded rows for republishing only on the aggregated read; the fallback
+  that globs `genome/*_analysis.tsv` passed no table. So when `aggregate_offtarget_results` wrote a
+  header-only `combined_offtargets.tsv` (every per-species file rejected by `GenomeAlignmentSchema`),
+  the fallback ingested the real rows into `off_target_count` while the published table was rewritten
+  header-only-with-new-columns — the row-level and candidate-level views disagreed completely on a
+  reachable path that no test covered. Every genome file the parser reads now gets its own persistable
+  table, and the published row count is reconciled against the hits that reached the candidate
+  counters, with a loud run warning on any shortfall.
+- **A blank `hit_class` cell no longer crashes a completed screen.** `is_annotated` tested for the
+  key, not for a usable value, so a table read back with an empty class cell counted as annotated: the
+  blank was republished and the next read raised `ValueError` from `HitClass("")` — after the file had
+  already been overwritten, downgrading the run to `nextflow_failed`. `is_annotated` now requires one
+  of the taxonomy's values, so such a row is reclassified instead. The unreachable
+  "some rows unannotated → leave the file unchanged" branch is removed with it: the orphan pass
+  annotates every row of every table first, and a shortfall is reported by reconciliation rather than
+  by a silent skip.
 - The `scoring.py` module docstring documented renormalisation as a deliberate feature. It is
   rewritten, and a test now refuses any live source line that describes renormalisation as current
   behaviour — along with an AST-level guard against division by a weight-shaped expression, because

@@ -348,6 +348,7 @@ def test_per_species_breakdown_is_populated_for_every_screened_species(tmp_path:
         "ortholog": 0,
         "repeat": 0,
         "off_target": 0,
+        "undetermined": 0,
         "symbol_lookup_missing": 0,
         "species_index_missing": 0,
     }
