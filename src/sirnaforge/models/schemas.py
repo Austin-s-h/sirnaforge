@@ -629,26 +629,23 @@ BOOLEAN_CELL_VALUES: tuple[str, ...] = ("True", "False")
 #: How an ORTHOLOG verdict was evidenced. ``not_applicable`` is every non-ortholog row: a
 #: symbol-heuristic ortholog is not a validated one, so the tiers are published, not assumed (#101).
 ORTHOLOG_EVIDENCE_VALUES: tuple[str, ...] = ("gene_id", "symbol_heuristic", "not_applicable")
+#: What every classification column holds on a row the producer wrote and no classifier has decided.
+#: Mirrors ``core.hit_annotation.UNCLASSIFIED_CELL``; kept here rather than imported to avoid a
+#: models -> core dependency.
+UNCLASSIFIED_CELL_VALUE = "not_classified"
 
 
 class AggregatedOffTargetSchema(GenomeAlignmentSchema):
     """Pandera schema for the *published* aggregated off-target table (`combined_offtargets.tsv`).
 
-    **Two shapes are valid and a consumer must tolerate both.** The seven classification columns are
-    added by a post-hoc read-modify-write in the Python workflow, not by the Nextflow process that
-    publishes the file, so:
+    `aggregate_offtarget_results` -- the producer, whichever entry point invokes it -- writes all
+    seven classification columns, so the published column set no longer depends on how the run was
+    started. On a row nothing has classified yet every one of them holds
+    :data:`UNCLASSIFIED_CELL_VALUE`, which is why each column's vocabulary admits it: the verdicts
+    are filled in place by the Python workflow, not appended as new columns.
 
-    - via `sirnaforge workflow` / `sirnaforge offtarget`, all 19 columns are present;
-    - via a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused in another
-      pipeline, only the 12 columns of :class:`GenomeAlignmentSchema` are.
-
-    They are therefore declared optional here. The split is **run-outcome dependent, not only
-    entry-point dependent**: `genome/*_analysis.tsv` gains the columns from the same workflow, but
-    only on the runs whose aggregate came back header-only and the fallback read the per-species
-    files, so which shape a given file has is not decided by which entry point produced it.
-
-    Moving the write into the producer is #100's work on `aggregate_results.nf`; until then, presence
-    of `hit_class` is the test for which shape you hold.
+    The columns stay **optional** so a table written by an earlier version, and the per-species
+    `genome/*_analysis.tsv` files as the aligner writes them, still validate against this schema.
 
     The flag columns are typed as strings over `("True", "False")` deliberately: these tables are
     read as text, and coercing the string `"False"` to `bool` yields `True`.
@@ -663,7 +660,7 @@ class AggregatedOffTargetSchema(GenomeAlignmentSchema):
         coerce = True
 
     hit_class: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
-        isin=list(HIT_CLASS_VALUES),
+        isin=[*HIT_CLASS_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="Persisted hit class; 'undetermined' means no reference existed to decide it",
     )
     matched_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
@@ -671,19 +668,22 @@ class AggregatedOffTargetSchema(GenomeAlignmentSchema):
         description="Symbol that ESTABLISHED the class, or 'unknown'; not a per-hit gene name",
     )
     symbol_lookup_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
-        isin=list(BOOLEAN_CELL_VALUES), description="The hit species' index carries no symbol for this transcript"
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="The hit species' index carries no symbol for this transcript",
     )
     hit_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
         str_length={"min_value": 1},
         description="Gene symbol resolved for rname, independent of class, or 'unknown'",
     )
     hit_symbol_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
-        isin=list(BOOLEAN_CELL_VALUES), description="hit_symbol could not be resolved for this row"
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="hit_symbol could not be resolved for this row",
     )
     species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
-        isin=list(BOOLEAN_CELL_VALUES), description="No transcript index exists for this row's species at all"
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="No transcript index exists for this row's species at all",
     )
     ortholog_evidence: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
-        isin=list(ORTHOLOG_EVIDENCE_VALUES),
+        isin=[*ORTHOLOG_EVIDENCE_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="Evidence tier behind an ORTHOLOG verdict; 'not_applicable' for every other class",
     )

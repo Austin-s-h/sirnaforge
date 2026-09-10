@@ -775,11 +775,11 @@ def test_the_published_table_validates_against_its_own_schema(tmp_path):
 
 @pytest.mark.unit
 def test_the_twelve_column_producer_shape_also_validates(tmp_path):
-    """A direct ``nextflow run`` or the stub profile publishes 12 columns; a consumer sees both.
+    """A table written before the producer owned the classification columns has only 12.
 
-    The classification columns are written by a post-hoc read-modify-write in Python, so they are
-    absent from any path that does not go through the workflow. Moving the write into
-    ``aggregate_results.nf`` is #100's work; until then both shapes are real.
+    The producer writes all 19 now, so both entry points agree on the shape (#100). The narrow
+    shape stays valid because the per-species ``genome/*_analysis.tsv`` files carry it and so do
+    tables published by earlier versions.
     """
     frame = pd.DataFrame([_hit_row("cand_clean", CLEAN_GUIDE, "human", "ENST00000000009")])
 

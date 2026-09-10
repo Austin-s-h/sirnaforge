@@ -61,9 +61,14 @@ PYEOF
 
     stub:
     """
+    # The stub publishes the real header, including the classification columns, so a stub run and a
+    # real run agree on the column set. It publishes no rows: a stub screened nothing.
+    # Written literally, in bash: a stub run must exercise the wiring with no container, no aligner
+    # and no importable sirnaforge. tests/unit/test_offtarget_aggregation_completeness.py pins this
+    # line against OffTargetHit.tsv_header() + CLASSIFICATION_COLUMNS so it cannot drift.
     touch combined_mirna_analysis.tsv
-    touch combined_transcriptome_analysis.tsv
-    echo '{}' > combined_summary.json
+    printf 'qname\\tqseq\\tspecies\\trname\\tcoord\\tstrand\\tcigar\\tmapq\\tas_score\\tnm\\tseed_mismatches\\tofftarget_score\\thit_class\\tmatched_symbol\\tsymbol_lookup_missing\\thit_symbol\\thit_symbol_missing\\tspecies_index_missing\\tortholog_evidence\\n' > combined_offtargets.tsv
+    echo '{"status": "stub", "species_screened": [], "unscreened_species": [], "total_results": 0}' > combined_summary.json
     echo 'Aggregation completed' > final_summary.txt
     touch analysis_report.html
 

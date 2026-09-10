@@ -59,6 +59,13 @@ CLASSIFICATION_COLUMNS: tuple[str, ...] = (
 
 UNKNOWN_SYMBOL = "unknown"
 
+#: What the producer writes in every classification column before anything has classified the row.
+#: The columns are written by ``aggregate_offtarget_results`` so the published column set does not
+#: depend on which entry point produced the table, and this cell says the verdict has not been
+#: reached yet -- distinct from ``unknown`` (looked up and not found) and never blank, because a
+#: blank cell reads as missing data and ``is_annotated`` cannot tell it from a dropped column.
+UNCLASSIFIED_CELL = "not_classified"
+
 #: ``ortholog_evidence`` for a row that made no orthology claim. Spelled out rather than left blank
 #: because the published table never carries an empty cell (a blank renders as missing data), and
 #: distinct from ``unknown`` because nothing was looked up and failed -- there was nothing to look up.
@@ -118,6 +125,15 @@ class HitAnnotator:
             return None
         rname = str(row.get("rname") or "")
         return species_index.symbol_for(rname) if rname else None
+
+
+def unclassified_cells() -> dict[str, str]:
+    """The classification columns as the producer writes them: present, and explicitly undecided.
+
+    ``is_annotated`` is False for these rows, so the workflow's classifier fills them in place and
+    the column set never changes between the two entry points.
+    """
+    return dict.fromkeys(CLASSIFICATION_COLUMNS, UNCLASSIFIED_CELL)
 
 
 def annotate_hit_row(
@@ -205,27 +221,33 @@ def is_annotated(row: Mapping[str, Any]) -> bool:
 def accumulate_hit_class(
     row: Mapping[str, Any],
     counts: HitClassCounts,
-    species_bucket: MutableMapping[str, int],
+    species_bucket: MutableMapping[str, int] | None,
     hit_species: str,
 ) -> HitClass:
-    """Add one persisted row to the candidate-level and per-species counters.
+    """Add one persisted row to the candidate-level and, optionally, per-species counters.
 
     Every quantity here is derived from the row's own columns, which is what keeps the per-hit
     table and the per-candidate totals from disagreeing. The counter field names are the
     ``HitClass`` values verbatim, so there is no class-to-counter mapping to get wrong.
+
+    ``species_bucket=None`` skips the per-species tally, for a caller counting alignments once
+    each rather than once per candidate that shares them.
     """
     hit_class = hit_class_of(row)
     field = hit_class.value
     setattr(counts, field, getattr(counts, field) + 1)
-    species_bucket[field] = species_bucket.get(field, 0) + 1
+    if species_bucket is not None:
+        species_bucket[field] = species_bucket.get(field, 0) + 1
 
     if _as_bool(row.get(SYMBOL_LOOKUP_MISSING_COLUMN)):
         counts.symbol_lookup_missing += 1
-        species_bucket["symbol_lookup_missing"] = species_bucket.get("symbol_lookup_missing", 0) + 1
+        if species_bucket is not None:
+            species_bucket["symbol_lookup_missing"] = species_bucket.get("symbol_lookup_missing", 0) + 1
 
     if _as_bool(row.get(SPECIES_INDEX_MISSING_COLUMN)):
         counts.no_species_index += 1
-        species_bucket[SPECIES_INDEX_MISSING_COLUMN] = species_bucket.get(SPECIES_INDEX_MISSING_COLUMN, 0) + 1
+        if species_bucket is not None:
+            species_bucket[SPECIES_INDEX_MISSING_COLUMN] = species_bucket.get(SPECIES_INDEX_MISSING_COLUMN, 0) + 1
 
     if hit_class is HitClass.ORTHOLOG and str(row.get(MATCHED_SYMBOL_COLUMN)) != UNKNOWN_SYMBOL:
         counts.ortholog_species = frozenset(counts.ortholog_species | {hit_species})
