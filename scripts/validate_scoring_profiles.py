@@ -7,7 +7,8 @@ third-party panel from a path, and panel evaluation does not belong in the dev l
 regression guards are `tests/unit/test_scoring_profile.py` (registry invariants, deterministic) and
 `tests/unit/test_target_accessibility.py` (geometry, on a vendored subset).
 
-Five things are reported, in the order they were decided:
+Six things are reported, in the order they were decided, and the numbers below are the section
+numbers the program prints:
 
 1. **Sign checks.** A/U(1-5) against efficacy, and the same count over guide positions 17-21 as the
    null control. Published: rho +0.378 and -0.017 (p = 0.37). If the control ever rises to meet the
@@ -19,11 +20,17 @@ Five things are reported, in the order they were decided:
    and the alpha are declared here so neither can move after the number is seen.
 3. **#97 question 5.** `ago_start` reads guide position 1; A/U(1-5) contains position 1. Their
    overlap is quantified so the two are not both paid for one base.
-4. **Term audits.** Attainable range and endpoint association for every registered term the panel
+4. **Per-position diagnostic.** The A/U indicator at each window position separately. Reported so
+   the declared window's shape is on the record; explicitly not used to reselect it.
+5. **Term audits.** Attainable range and endpoint association for every registered term the panel
    can speak to -- the machine-readable half is `TERM_REGISTRY`'s `attainable_range`, which this
    script cross-checks against what the panel actually attains.
-5. **Profile comparison.** Rank agreement between the shipped 4.0.0 post-screen vector and the
+6. **Profile comparison.** Rank agreement between the shipped 4.0.0 post-screen vector and the
    experimental A/U vector, over the panel's real feature values, on the predeclared splits.
+7. **miRNA variance-share re-derivation** (only with `--baseline-mirna-csv`). The frozen baseline was
+   scored under the pre-#102 *seven*-term miRNA vector, so its published per-term variance shares
+   have denominators #102 moved. This recomposes them under the six-term vector that ships, and
+   fails if it cannot reproduce the published pre-#102 column from the same rows.
 
 **Splits.** Development and held-out are predeclared **by transcript accession**, by the parity of
 the low byte of the accession's SHA-256 -- deterministic, independent of efficacy, and fixed before
@@ -189,6 +196,9 @@ def build_features(benchmark_csv: Path) -> pd.DataFrame:
             {
                 "accession": str(row.B),
                 "sources": str(row.sources),
+                # Carried on the panel, not re-read from the CSV: every later report must see the
+                # same rows as the panel, including under --huesken-only.
+                "guide_rna": rna,
                 "split": split_of(str(row.B)),
                 "efficacy": float(row.efficacy),
                 "au_1_5": au,
@@ -286,13 +296,13 @@ def report_question_five(panel: pd.DataFrame) -> None:
     print(fit_clustered(y, {"au_1_5": au, "ago_start": ago}, clusters).table())
     print("    Both coefficients are non-null, which is exactly the double-payment problem: they")
     print("    are nested, so a vector holding both pays twice for guide position 1 -- the base")
-    print("    already driving 27.1% of postscreen_mirna_v4's ranking variance on the baseline.")
+    print("    already driving 24.6% of the shipped postscreen_mirna_v4's ranking variance on the")
+    print("    frozen baseline (report 7; +27.1% under the pre-#102 vector that run was scored with).")
 
 
-def report_per_position(benchmark_csv: Path, panel: pd.DataFrame) -> None:
+def report_per_position(panel: pd.DataFrame) -> None:
     """Per-position A/U association. Diagnostic: it must not be used to reselect the window."""
-    table = pd.read_csv(benchmark_csv)
-    guides = table.siRNA_seq.str.upper().str.replace("T", "U", regex=False)
+    guides = panel.guide_rna.tolist()
     y = panel.efficacy.to_numpy(float)
     print("\n4. Per-position A/U association (diagnostic; D5 fixes the window at 1-5)")
     for position in (1, 2, 3, 4, 5, 19):
@@ -301,6 +311,71 @@ def report_per_position(benchmark_csv: Path, panel: pd.DataFrame) -> None:
         print(f"    position {position:>2}   rho {rho:+.4f} (p {pvalue:.3g})   A/U frequency {indicator.mean():.3f}")
     print("    Position 1 alone outranks the 1-5 count. Recorded, argued in models/scoring_profile.py,")
     print("    and deliberately NOT acted on: a rho-maximising window is the overfitting D5 forbids.")
+
+
+# The seven-term miRNA vector the frozen baseline was scored under, before #102 removed
+# `pos1_mismatch`. Kept only so a baseline row's per-term contribution can be divided back into the
+# feature that produced it; nothing scores with it.
+PRE_102_MIRNA_WEIGHTS = {
+    "off_target": 0.20,
+    "target_accessibility": 0.22,
+    "asymmetry": 0.18,
+    "gc_content": 0.15,
+    "ago_start": 0.10,
+    "pos1_mismatch": 0.05,
+    "supp_13_16": 0.10,
+}
+
+
+def _variance_shares(features: pd.DataFrame, weights: dict[str, float]) -> dict[str, float]:
+    """Each term's share of composite variance under one weight set, as a percentage summing to 100.
+
+    The share is cov(contribution, total) / var(total), the decomposition the frozen baseline's
+    MEASUREMENTS.md uses, so the two are directly comparable.
+    """
+    contributions = pd.DataFrame({term: features[term] * weight * 100.0 for term, weight in weights.items()})
+    total = contributions.sum(axis=1)
+    variance = float(total.var(ddof=1))
+    return {term: float(np.cov(contributions[term], total, ddof=1)[0, 1] / variance * 100.0) for term in weights}
+
+
+def report_mirna_variance_reweighting(candidates_csv: Path) -> bool:
+    """Re-derive the miRNA variance shares under the vector that ships, not the one measured.
+
+    The frozen baseline was scored under the pre-#102 seven-term vector, so every variance share in
+    `work/baseline_0.7.1/MEASUREMENTS.md` has a denominator that #102 moved. This divides each
+    `score_<term>` column back by the weight that produced it -- exact, because a contribution is
+    weight x feature x 100 and no weight in that vector is zero -- and recomposes the shares under
+    the shipped six-term weights. Reproducing the published old-vector column is the check that the
+    reconstruction is faithful; a mismatch there fails the run.
+    """
+    print("\n7. miRNA variance shares re-derived under the shipped vector")
+    table = pd.read_csv(candidates_csv, low_memory=False)
+    scored = table[table.scored_after_screening.astype(str).str.lower() == "true"]
+    features = pd.DataFrame(
+        {term: scored["score_" + term].astype(float) / weight for term, weight in PRE_102_MIRNA_WEIGHTS.items()}
+    )
+    mirna_vector = next(v for v in SHIPPED_PROFILE.vectors if v.name == "postscreen_mirna_v4")
+    shipped_weights = dict(mirna_vector.as_mapping())
+    old = _variance_shares(features, PRE_102_MIRNA_WEIGHTS)
+    new = _variance_shares(features, shipped_weights)
+
+    print(f"    n = {len(scored)} scored rows from {candidates_csv}")
+    print(f"    {'term':<22}{'pre-#102 (7 terms)':>20}{'shipped (6 terms)':>20}{'vs nominal':>12}")
+    for term in PRE_102_MIRNA_WEIGHTS:
+        if term in shipped_weights:
+            ratio = new[term] / (shipped_weights[term] * 100.0)
+            print(f"    {term:<22}{old[term]:>+19.3f}%{new[term]:>+19.3f}%{ratio:>11.2f}x")
+        else:
+            print(f"    {term:<22}{old[term]:>+19.3f}%{'not scored':>20}{'--':>12}")
+
+    # The published figures the registry and CHANGELOG cite, as a self-check on the reconstruction.
+    published = {"ago_start": 27.12, "supp_13_16": 1.06, "off_target": 8.02, "asymmetry": 32.62}
+    faithful = all(abs(old[term] - value) < 0.02 for term, value in published.items())
+    print(f"    {'PASS' if faithful else 'FAIL'}  reconstruction reproduces MEASUREMENTS.md's pre-#102 column")
+    print("    Every figure attributed to the miRNA vector must name which of the two columns it is")
+    print("    from: #102 moved four of the six shared weights, so the denominators are not the same.")
+    return bool(faithful)
 
 
 def report_term_audit(panel: pd.DataFrame) -> bool:
@@ -388,6 +463,13 @@ def main() -> int:
         action="store_true",
         help="Drop the 385 rows whose provenance could not be established (sources != Huesken)",
     )
+    parser.add_argument(
+        "--baseline-mirna-csv",
+        type=Path,
+        default=None,
+        help="candidates_all.csv from the frozen baseline's miRNA-mode run, to re-derive its "
+        "variance shares under the shipped six-term vector (report 7)",
+    )
     parser.add_argument("--out-csv", type=Path, default=None, help="Write the computed feature table here")
     args = parser.parse_args()
 
@@ -413,9 +495,11 @@ def main() -> int:
     checks = [report_sign_checks(panel)]
     report_d5_rule(panel)
     report_question_five(panel)
-    report_per_position(args.benchmark_csv, panel)
+    report_per_position(panel)
     checks.append(report_term_audit(panel))
     report_profile_comparison(panel)
+    if args.baseline_mirna_csv is not None:
+        checks.append(report_mirna_variance_reweighting(args.baseline_mirna_csv))
 
     statuses = {record.evidence_status for record in TERM_REGISTRY.values()}
     print(f"\nevidence statuses in the registry: {sorted(s.value for s in statuses)}")
