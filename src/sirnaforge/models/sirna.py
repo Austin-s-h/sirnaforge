@@ -176,13 +176,24 @@ class OffTargetFilterCriteria(BaseModel):
     max_transcriptome_hits_0mm: int | None = Field(
         default=1,
         ge=0,
-        description="Maximum perfect-match genuine off-target transcriptome hits (excludes on-target isoforms)",
+        description=(
+            "Maximum perfect-match genuine off-target transcriptome hits (excludes on-target "
+            "isoforms). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+        ),
     )
     max_transcriptome_hits_1mm: int | None = Field(
-        default=10, ge=0, description="Maximum 1-mismatch genuine off-target hits (typical: 5-10, None = no limit)"
+        default=10,
+        ge=0,
+        description=(
+            "Maximum 1-mismatch genuine off-target hits (typical: 5-10, None = no limit). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+        ),
     )
     max_transcriptome_hits_2mm: int | None = Field(
-        default=50, ge=0, description="Maximum 2-mismatch genuine off-target hits (typical: 20-50, None = no limit)"
+        default=50,
+        ge=0,
+        description=(
+            "Maximum 2-mismatch genuine off-target hits (typical: 20-50, None = no limit). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+        ),
     )
     # Read against transcriptome_hits_seed_0mm. This is the only *targeted* gate on a partial
     # (clipped or gapped) hit whose seed paired perfectly: such a hit has a guide-level nm > 2, so
@@ -197,18 +208,34 @@ class OffTargetFilterCriteria(BaseModel):
 
     # miRNA off-target thresholds
     max_mirna_perfect_seed: int | None = Field(
-        default=0, ge=0, description="Maximum perfect miRNA seed matches (typical: 3-5, None = no limit)"
+        default=0,
+        ge=0,
+        description=(
+            "Maximum perfect miRNA seed matches (typical: 3-5, None = no limit). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+        ),
     )
     max_mirna_1mm_seed: int | None = Field(
-        default=10, ge=0, description="Maximum 1-mismatch miRNA seed hits (typical: 10-20, None = no limit)"
+        default=10,
+        ge=0,
+        description=(
+            "Maximum 1-mismatch miRNA seed hits (typical: 10-20, None = no limit). NOT ENFORCED in "
+            "0.7.1: no gate reads it, so the run policy resolves this filter to off rather than to passing"
+        ),
     )
     fail_on_high_risk_mirna: bool = Field(
-        default=True, description="Fail if high-risk miRNA hits detected (perfect seed + offtarget_score < 5.0)"
+        default=True,
+        description=(
+            "Fail if high-risk miRNA hits detected (perfect seed + offtarget_score < 5.0). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+        ),
     )
 
     # Combined off-target threshold
     max_total_offtarget_hits: int | None = Field(
-        default=None, ge=0, description="Maximum total off-target hits (transcriptome + miRNA, None = no limit)"
+        default=None,
+        ge=0,
+        description=(
+            "Maximum total off-target hits (transcriptome + miRNA, None = no limit). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+        ),
     )
 
 
@@ -670,7 +697,8 @@ class SiRNACandidate(BaseModel):
         description=(
             "Sites counted as liabilities: on-target, ortholog and repeat hits excluded; hits "
             "whose class could not be decided INCLUDED (see undetermined_hits), so a missing "
-            "reference cannot loosen the screen. Goal: ≤3"
+            "reference cannot loosen the screen. The enforced ceiling is "
+            "OffTargetFilterCriteria.max_off_target_count (default 15)"
         ),
     )
     # Reporting only -- nothing scores or filters on this field, and its direction depends on
