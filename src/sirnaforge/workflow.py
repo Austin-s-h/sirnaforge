@@ -315,6 +315,11 @@ class SiRNAWorkflow:
         # extra species arrive via --genome-indices/--genome-fastas. Conservation is scored against
         # this list, so its denominator can never be smaller than the set of species screened.
         self._active_genome_species: list[str] = []
+        # Species requested for screening that never reached Nextflow, and why. A species with no
+        # resolvable reference used to be filtered out of the species list before the pipeline ran,
+        # so it appeared in no artifact at all: the run reported on the species it managed to screen
+        # and said nothing about the one it dropped.
+        self._species_screening_shortfalls: dict[str, str] = {}
         self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         self._candidate_id_to_representative: dict[str, str] = {}
         # Single authoritative query species, set once (not re-inferred per call site), and never
@@ -1714,6 +1719,18 @@ class SiRNAWorkflow:
 
         if available:
             filtered = [species for species in requested if species in available]
+            # Dropping a requested species here is a completeness fact about the run, not a detail
+            # of list construction: recorded so it reaches the warnings and the published summary.
+            for species in requested:
+                if species not in available:
+                    self._species_screening_shortfalls[species] = (
+                        "requested for screening but no transcriptome index or FASTA was resolved for it, "
+                        "so it was never submitted to the aligner"
+                    )
+                    logger.warning(
+                        f"Species '{species}' was requested for off-target screening but no reference was "
+                        "resolved for it; it will not be screened and its hit counts are unknown."
+                    )
             for species in sorted(available):
                 if species not in filtered:
                     filtered.append(species)
@@ -2112,6 +2129,14 @@ class SiRNAWorkflow:
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
 
+        # Shortfalls decided before Nextflow ran are reported on the same footing as ones the
+        # aggregate found: a species dropped for want of a reference appeared in no artifact at all.
+        for species, reason in sorted(self._species_screening_shortfalls.items()):
+            run_status = "partial"
+            warning_msg = f"⚠️  '{species}' was not screened: {reason}"
+            console.print(warning_msg)
+            workflow_warnings.append(warning_msg)
+
         # POSITIVE evidence, deliberately not the aggregate's self-reported missing_species: this
         # method reports "completed" whenever the output directory merely exists, and
         # _load_offtarget_aggregates returns {} when combined_summary.json is absent — which is
@@ -2144,6 +2169,12 @@ class SiRNAWorkflow:
             ortholog_gene_ids=ortholog_mapping.all_gene_ids,
         )
         stats["orthology"] = ortholog_mapping.summary()
+        # A species dropped before Nextflow is unscreened in exactly the sense this field names, so
+        # it belongs in it; the reasons are published beside it rather than only logged.
+        stats["species_screening_shortfalls"] = dict(self._species_screening_shortfalls)
+        stats["unscreened_species"] = sorted(
+            set(cast(list[str], stats.get("unscreened_species") or [])) | set(self._species_screening_shortfalls)
+        )
         workflow_warnings.extend(self._persist_hit_classifications(parsed))
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 

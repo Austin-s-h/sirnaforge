@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from sirnaforge.config import DEFAULT_MIRNA_CANONICAL_SPECIES
-from sirnaforge.core.off_target import aggregate_mirna_results, aggregate_offtarget_results, build_bwa_index
+from sirnaforge.core.off_target import (
+    aggregate_mirna_results,
+    aggregate_offtarget_results,
+    build_bwa_index,
+    run_bwa_alignment_analysis,
+    validate_index_files,
+)
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -39,6 +45,78 @@ def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") ->
         "index_prefix": str(result_prefix),
         "index_files": list(output_path.glob(f"{species}_index*")),
     }
+
+
+def offtarget_analysis_cli(
+    species: str,
+    index_prefix: str,
+    candidates_file: str,
+    output_dir: str = ".",
+    max_hits: int | None = None,
+    bwa_k: int = 12,
+    bwa_T: int = 15,
+    seed_start: int = 2,
+    seed_end: int = 8,
+) -> dict[str, Any]:
+    """Align one species' reference for OFFTARGET_ANALYSIS, or record that it could not be aligned.
+
+    A named index prefix that does not resolve to a usable BWA-MEM2 index used to reach the aligner,
+    which logged a failure, returned no hits, and published a header-only table -- a completed screen
+    with zero hits, indistinguishable from a clean one. The species is now published as an EMPTY
+    analysis file plus a failed summary, which ``aggregate_offtarget_results`` reports as a per-species
+    rejection rather than as a clean result.
+
+    Args:
+        species: Species identifier this reference belongs to
+        index_prefix: BWA-MEM2 index prefix as resolved for this species
+        candidates_file: FASTA of candidate guides to screen
+        output_dir: Directory to write ``<species>_analysis.tsv`` and ``<species>_summary.json``
+        max_hits: Maximum hits per candidate (``None`` = exhaustive)
+        bwa_k: BWA seed length
+        bwa_T: BWA minimum score threshold
+        seed_start: Seed region start (1-based)
+        seed_end: Seed region end (1-based)
+
+    Returns:
+        Dictionary with the per-species status and the published file paths
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    analysis_file = output_path / f"{species}_analysis.tsv"
+    summary_file = output_path / f"{species}_summary.json"
+
+    if not validate_index_files(index_prefix, "bwa-mem2"):
+        error = (
+            f"No usable BWA-MEM2 index at prefix '{index_prefix}': the index files are missing, empty, "
+            "or the path points at something that is not an index (a FASTA left behind by a failed "
+            "index build looks exactly like this). No alignment was attempted."
+        )
+        logger.error(f"{species}: {error}")
+        # Deliberately empty, not header-only: a header-only table is a screen that found nothing.
+        analysis_file.write_bytes(b"")
+        with summary_file.open("w") as handle:
+            json.dump({"species": species, "status": "failed", "error": error}, handle, indent=2)
+        return {"species": species, "status": "failed", "error": error, "analysis_file": str(analysis_file)}
+
+    run_bwa_alignment_analysis(
+        candidates_file=candidates_file,
+        index_prefix=index_prefix,
+        species=species,
+        output_dir=output_dir,
+        max_hits=max_hits,
+        bwa_k=bwa_k,
+        bwa_T=bwa_T,
+        seed_start=seed_start,
+        seed_end=seed_end,
+    )
+
+    # run_bwa_alignment_analysis names its outputs after the candidates file; the process declares
+    # them per species.
+    stem = Path(candidates_file).stem
+    (output_path / f"{stem}_{species}_analysis.tsv").replace(analysis_file)
+    (output_path / f"{stem}_{species}_summary.json").replace(summary_file)
+
+    return {"species": species, "status": "completed", "analysis_file": str(analysis_file)}
 
 
 def aggregate_results_cli(  # noqa: PLR0912

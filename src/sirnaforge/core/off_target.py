@@ -208,7 +208,9 @@ def _read_species_analysis_file(analysis_file: Path) -> tuple[pd.DataFrame | Non
     if not analysis_file.exists():
         return None, "file does not exist"
     if analysis_file.stat().st_size == 0:
-        return None, "file is empty (0 bytes): the alignment step produced no table"
+        reason = "file is empty (0 bytes): the alignment step produced no table"
+        reported = _reported_analysis_failure(analysis_file)
+        return None, f"{reason}; {reported}" if reported else reason
     try:
         frame = pd.read_csv(analysis_file, sep="\t")
     except Exception as exc:
@@ -219,6 +221,25 @@ def _read_species_analysis_file(analysis_file: Path) -> tuple[pd.DataFrame | Non
         return AggregatedOffTargetSchema.validate(frame, lazy=True), None
     except Exception as exc:
         return None, f"rejected by AggregatedOffTargetSchema: {_first_line(exc)}"
+
+
+def _reported_analysis_failure(analysis_file: Path) -> str | None:
+    """The reason the alignment step recorded for itself, from its sibling ``*_summary.json``.
+
+    ``offtarget_analysis_cli`` writes ``status: failed`` with an ``error`` when the species' index
+    could not be used, so the rejection can say why rather than only that the table is empty.
+    """
+    summary_file = analysis_file.with_name(analysis_file.name.replace("_analysis.tsv", "_summary.json"))
+    if not summary_file.exists():
+        return None
+    try:
+        with summary_file.open() as handle:
+            payload = json.load(handle)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "failed":
+        return None
+    return str(cast(dict[str, Any], payload).get("error") or "the alignment step reported failure")
 
 
 def _first_line(exc: Exception) -> str:

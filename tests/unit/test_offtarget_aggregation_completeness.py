@@ -18,6 +18,7 @@ import pytest
 from sirnaforge.core.off_target import aggregate_offtarget_results
 from sirnaforge.models.off_target import MiRNAHit, OffTargetHit
 from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
+from sirnaforge.pipeline.nextflow_cli import offtarget_analysis_cli
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 
 GUIDE = "ATGCGATGCGATGCGATGCGC"
@@ -218,6 +219,13 @@ def _with_human_index(workflow: SiRNAWorkflow, tmp_path: Path, name: str) -> Non
     workflow._transcript_index.build("human", reference)
 
 
+def _candidates_fasta(tmp_path: Path) -> Path:
+    """A real candidates FASTA, so a missing index is the only thing wrong with the call."""
+    path = tmp_path / "candidates.fasta"
+    path.write_text(f">cand_1\n{GUIDE}\n")
+    return path
+
+
 def _write_aggregate(aggregated: Path, rows: list[dict[str, str]], species_screened: list[str]) -> None:
     """Write the aggregate the workflow reads: the hit table plus its summary."""
     _write_tsv(aggregated / "combined_offtargets.tsv", GENOME_COLUMNS, rows)
@@ -236,6 +244,80 @@ def _write_aggregate(aggregated: Path, rows: list[dict[str, str]], species_scree
             }
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# A missing reference, before Nextflow and inside it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_species_with_no_resolved_reference_is_recorded_not_erased(tmp_path):
+    """A requested species with no index used to be filtered out before Nextflow and vanish."""
+    workflow = _workflow(tmp_path, "dropped_species", species=["human", "mouse"])
+
+    active = workflow._resolve_active_genome_species({"genome_indices": "human:/nonexistent/human_index"})
+
+    assert active == ["human"]
+    assert "mouse" in workflow._species_screening_shortfalls
+    assert "no transcriptome index" in workflow._species_screening_shortfalls["mouse"]
+
+
+@pytest.mark.unit
+def test_a_species_dropped_before_nextflow_reaches_the_run_warnings(tmp_path):
+    """It must be a published fact, not only a log line: partial status, a warning, and in the stats."""
+    workflow = _workflow(tmp_path, "dropped_reported", species=["human", "mouse"])
+    _with_human_index(workflow, tmp_path, "dropped_reported")
+    workflow._resolve_active_genome_species({"genome_indices": "human:/nonexistent/human_index"})
+
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    _write_aggregate(results_dir / "aggregated", [_genome_row("human", "ENST00000000009")], ["human"])
+    outcome = asyncio.run(workflow._process_nextflow_results([_candidate()], results_dir, {"status": "completed"}))
+
+    assert outcome["status"] == "partial"
+    assert any("mouse" in warning for warning in outcome["warnings"]), outcome["warnings"]
+    assert "mouse" in outcome["filtering_stats"]["species_screening_shortfalls"]
+    assert "mouse" in outcome["filtering_stats"]["unscreened_species"]
+
+
+@pytest.mark.unit
+def test_a_named_index_prefix_that_does_not_exist_publishes_a_failure_not_a_clean_screen(tmp_path):
+    """--genome-indices with a bad prefix published a completed screen with zero hits."""
+    staged = tmp_path / "staged" / "mouse"
+    result = offtarget_analysis_cli(
+        species="mouse",
+        index_prefix=str(tmp_path / "not_an_index"),
+        candidates_file=str(_candidates_fasta(tmp_path)),
+        output_dir=str(staged),
+    )
+
+    assert result["status"] == "failed"
+    # Empty, not header-only: a header-only table is a screen that ran and found nothing.
+    assert (staged / "mouse_analysis.tsv").stat().st_size == 0
+    published = json.loads((staged / "mouse_summary.json").read_text())
+    assert published["status"] == "failed"
+    assert "index" in published["error"]
+
+
+@pytest.mark.unit
+def test_a_bad_index_prefix_becomes_an_unscreened_species_with_the_reason_on_it(tmp_path):
+    """The two halves join up: the module records the failure, the aggregator reports it."""
+    staged = tmp_path / "staged"
+    _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
+    offtarget_analysis_cli(
+        species="mouse",
+        index_prefix=str(tmp_path / "not_an_index"),
+        candidates_file=str(_candidates_fasta(tmp_path)),
+        output_dir=str(staged / "mouse"),
+    )
+
+    output_dir = tmp_path / "aggregated"
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human,mouse")
+    summary = json.loads((output_dir / "combined_summary.json").read_text())
+
+    assert summary["unscreened_species"] == ["mouse"]
+    assert summary["status"] == "partial"
+    assert "No usable BWA-MEM2 index" in summary["rejected_species_files"]["mouse"][0]
 
 
 # ---------------------------------------------------------------------------
