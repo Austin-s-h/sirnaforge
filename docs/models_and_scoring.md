@@ -148,13 +148,13 @@ class FilterCriteria(BaseModel):
     # Thermodynamic asymmetry -> gates asymmetry_score
     min_asymmetry_score: float = 0.65  # Guide strand selection
 
-    # Empirical design rules -> gates the empirical component score (range 0.4-0.7)
-    min_empirical_score: float = 0.5
+    # Empirical design rules -> gates the empirical component score (range 0.4-0.6)
+    min_empirical_score: float = 0.4
 ```
 
 Each threshold gates the quantity it is named after: `min_asymmetry_score` is compared
 against `asymmetry_score`, `min_empirical_score` against the empirical component score.
-`min_empirical_score` is bounded by the empirical rule's attainable range (0.4-0.7), so a
+`min_empirical_score` is bounded by the empirical rule's attainable range (0.4-0.6), so a
 value the rule can never reach is rejected at construction instead of silently failing
 every candidate.
 
@@ -174,18 +174,19 @@ Specialized filtering for off-target analysis results, applied after screening:
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
-    # Genuine off-target count (on-target, ortholog and repeat hits excluded)
-    max_off_target_count: int = 15
+    # Genuine off-target count (on-target, ortholog and repeat hits excluded).
+    # None means "no gate", which is what --filter-action <id>=off sets.
+    max_off_target_count: int | None = 15
 
     # Transcriptome GENUINE off-targets (mismatch tolerance)
-    max_transcriptome_hits_0mm: int = 1    # Perfect matches
-    max_transcriptome_hits_1mm: int = 10   # 1-mismatch hits
-    max_transcriptome_hits_2mm: int = 50   # 2-mismatch hits
+    max_transcriptome_hits_0mm: int | None = 1    # Perfect matches
+    max_transcriptome_hits_1mm: int | None = 10   # 1-mismatch hits
+    max_transcriptome_hits_2mm: int | None = 50   # 2-mismatch hits
     max_transcriptome_seed_perfect: int | None = None  # off by default; see the warning below
 
     # miRNA seed matches (positions 2-8)
-    max_mirna_perfect_seed: int = 0
-    max_mirna_1mm_seed: int = 10
+    max_mirna_perfect_seed: int | None = 0
+    max_mirna_1mm_seed: int | None = 10   # read by no gate in 0.7.1; resolves to off
     fail_on_high_risk_mirna: bool = True
 ```
 
@@ -212,8 +213,8 @@ representation of two-decimal literals, not enough to be approximately normalise
 
 ```python
 class DesignWeights(WeightVector):            # design_v4 -> SiRNACandidate.design_score
-    target_accessibility: float = 0.40
-    asymmetry: float = 0.35
+    target_accessibility: float = 0.35
+    asymmetry: float = 0.40
     gc_content: float = 0.25
 
 class PostScreenSiRNAWeights(WeightVector):   # postscreen_sirna_v4 -> composite_score
@@ -1012,8 +1013,8 @@ benchmark evidence behind them.
 
 | Term                 | Weight | Rationale                                                                                              |
 | -------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
-| Target accessibility | 0.40   | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage |
-| Asymmetry            | 0.35   | Most predictive single sequence factor                                                                 |
+| Asymmetry            | 0.40   | Indistinguishable from accessibility on the benchmark (ρ +0.273 vs +0.267), and additionally ρ +0.53 with A/U at guide positions 1-5 |
+| Target accessibility | 0.35   | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage |
 | GC content           | 0.25   | Stability/accessibility balance                                                                        |
 
 ⚠️ These three numbers are round numbers **awaiting sign-off** — they are the one part of the weight

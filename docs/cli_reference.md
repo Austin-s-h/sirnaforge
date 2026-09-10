@@ -59,6 +59,83 @@ Passing both flags is common: the input FASTA feeds the design engine, while the
 
 Design-only mode is a deliberate cost guard, not an oversight: resolving the built-in defaults means downloading and indexing four multi-gigabyte Ensembl cDNA references (human, mouse, rat, macaque). Supplying your own sequences never triggers that implicitly. Library callers get the same policy — `run_sirna_workflow(input_fasta=...)` is design-only unless you pass `transcriptome_fasta=...` or opt in with `allow_transcriptome_with_input_fasta=True`.
 
+#### Run Policy: Run Modes, Filter Actions and Where a Default Comes From
+
+Every threshold, the design mode and the run mode are resolved **once**, by
+`sirnaforge.config.run_policy.resolve_run_policy`, before anything is downloaded and before the
+output directory is created. The CLI, `run_sirna_workflow`, `run_offtarget_only_workflow` and a
+direct `WorkflowConfig` all receive the same `ResolvedRunPolicy`, and `logs/.../manifest.json`
+records it under `run_policy`.
+
+Precedence, applied exactly once and in this order:
+
+1. the built-in versioned profile (`legacy` today, and **experimental**: its numbers are expert
+   priors, and the two that were measured were measured on one target);
+2. the design-mode preset, for `--design-mode mirna`, applied **only where you said nothing**;
+3. `--policy-config FILE` (JSON or TOML: `{"settings": {"gc_max": 65}}`);
+4. an option you gave on the command line.
+
+**An omitted option and an option typed with the default value are different inputs.** The decision
+is made from Click's parameter source, not by comparing your value against a default, which is why
+`--design-mode mirna --gc-max 60` now keeps 60. It used to be silently rewritten to 52, and
+`--overhang dTdT` to `UU`, because a value equal to the siRNA default read as "unset". `--gc-max 65`
+is a supported setting in either mode.
+
+`--run-mode` declares how much screening evidence a run claims to have:
+
+| Run mode | Meaning | Default for |
+| --- | --- | --- |
+| `design_only` | No screening; every post-screen gate is **not evaluated**, which is not the same as passed | `sirnaforge design` |
+| `exploratory` | Screening ran; incomplete evidence is kept and labelled | — |
+| `qualified` | The transcriptome channel in the query species must complete | `sirnaforge workflow`, `sirnaforge offtarget` |
+
+`--skip-off-targets` maps to `--run-mode design_only`, and the manifest records the rule that did it
+rather than presenting the mode as something you chose. The two are one run: both suppress reference
+resolution, so `reference_summary.transcriptome` reads `disabled` either way. Asking for `--run-mode
+qualified` together with `--skip-off-targets` is rejected. `--run-mode exploratory` **is** accepted
+with `--skip-off-targets` (a run that keeps incomplete evidence and screens nothing is a coherent
+thing to ask for), and every post-screen gate is `off` for it, because what decides that is whether
+the run screened — not the mode's name. Run mode is **independent of `--design-mode`**: choosing miRNA
+design says nothing about evidence completeness.
+
+`--filter-action filter_id=off|fail` (repeatable) sets one gate's action. A gate can be off for
+three different reasons — you turned it off, it has no declared threshold, or the run holds no
+evidence of the kind it reads — and all three mean **not evaluated**, never passed. What cannot be
+waived while staying `qualified` is required evidence completeness (`--run-mode exploratory` is how
+you say that out loud).
+
+Three limits, because 0.7.1's gate application does not read a filter action:
+
+- `off` works by **clearing the gate's threshold**, which the existing gate code already reads as "no
+  gate". That is available for the ten gates whose threshold has an absent state (`sirnaforge workflow
+  --help` lists them). The six design-stage gates (`gc_content_min`, `gc_content_max`,
+  `max_poly_runs`, `max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score`) read a plain
+  float with no absent value, so switching them off is **refused** rather than faked with an inert
+  number that would be reported as a threshold you chose. Widen the threshold instead.
+- `warn` is **not selectable in 0.7.1** and is rejected with an error. `FilterAction.WARN` exists in
+  the vocabulary, but no code path demotes a rejection to a label, so resolving it would put
+  `action: warn, evaluated: true` in the manifest beside a candidate the gate rejected — a claim a
+  client re-applying the descriptor could not detect as wrong. Demoting a failure to a label needs
+  per-filter verdicts on the candidate row, which is separate work.
+- **A gate can only be turned off, never on.** `fail` is refused when the gate would be off anyway —
+  it has no threshold to compare, the boolean it reads is `False`, the run holds no screening evidence,
+  or no 0.7.1 code reads it at all (`max_mirna_1mm_seed`). Accepting it would report an enforced limit
+  that does not exist.
+
+Two honesty notes the manifest carries per gate, because the code earns them and prose would not:
+
+- Six of the nine off-target gates read a **human-stratified** counter, not the all-species column of
+  the same name, so their `scope.species` is `["human"]` and `evidence_exported` is `false` — the
+  counter they compare is not in the candidate CSV, so a client cannot re-apply them and get the
+  pipeline's answer. Exporting those counters is separate filter-scope work. The six do **not** all
+  stratify the same way, and each gate's `definition` says which it is: `max_transcriptome_hits_0mm`,
+  `_1mm` and `_2mm` count hits that are human **or unlabelled** (a blank species label is read as the
+  query species); `max_mirna_perfect_seed` and `fail_on_high_risk_mirna` count hits labelled human
+  **only**, so an unlabelled miRNA hit reaches neither gate; and `max_total_offtarget_hits` **sums the
+  two conventions** in one number.
+- `max_mirna_1mm_seed` declares a threshold of 10 and is read by no gate in 0.7.1, so it resolves to
+  `off`.
+
 `--skip-off-targets` disables **all** reference-based screening for the run: no transcriptome reference is resolved, downloaded or indexed, the Nextflow off-target stage does not run, **and repeat-element detection is skipped as well**. Repeat detection scans guides against the query species' cDNA reference, so it cannot run without the very download the flag exists to avoid; `logs/workflow_summary.json` reports it as `repeat_summary.status = "skipped"` with `reason = "user_disabled"`, and candidates keep `repeat_flagged = false`. Drop `--skip-off-targets` (optionally with `--transcriptome-fasta`) whenever you need repeat verdicts.
 
 Rows inside `off_target/results/*/analysis.tsv` and the aggregated `combined_offtargets.tsv` include a `species` column so you can filter hits directly. The aggregator writes seven classification columns onto `combined_offtargets.tsv`, holding the literal `not_classified` until something classifies each row; `sirnaforge workflow` and `sirnaforge offtarget` fill those verdicts in place, and also onto each `genome/*_analysis.tsv` the run read.

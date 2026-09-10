@@ -23,8 +23,8 @@ is _chosen_ by stage and design mode, never combined:
 
 ```
 design_v4                        postscreen_sirna_v4          postscreen_mirna_v4
-  target_accessibility  0.40       off_target           0.25    off_target            0.20
-  asymmetry             0.35       target_accessibility 0.30    target_accessibility  0.24
+  asymmetry             0.40       off_target           0.25    off_target            0.20
+  target_accessibility  0.35       target_accessibility 0.30    target_accessibility  0.24
   gc_content            0.25       asymmetry            0.25    asymmetry             0.20
                         ----       gc_content           0.20    gc_content            0.16
                         1.00                            ----    ago_start             0.10
@@ -39,7 +39,7 @@ issue #102 measured it **exactly constant at 0.0** on all 13,415 scored candidat
 baseline — constant by construction, because the passenger is the exact reverse complement of the
 guide, so guide position 1 always pairs. A term that ranks nothing must not consume weight, so it
 was removed from the vector. It is still computed, and the pairing state stays on the row as
-`guide_pos1_base` and `pos1_pairing_state` — but `score_pos1_mismatch` is a *contribution* column, so
+`guide_pos1_base` and `pos1_pairing_state` — but `score_pos1_mismatch` is a _contribution_ column, so
 with the term in no vector that column is now **always null**.
 
 `postscreen_sirna_v4` is exactly `design_v4`'s terms plus `off_target` — one extra term, cleanly
@@ -62,11 +62,11 @@ _What `top_candidates` excludes_).
 
 The three declared terms:
 
-- **Target accessibility** (0.40 design / 0.30 post-screen) — log-scaled RNAplfold probability that
+- **Target accessibility** (0.35 design / 0.30 post-screen) — log-scaled RNAplfold probability that
   the 8 nt of the mRNA target site pairing guide positions 1-8 are unpaired. The guide seed pairs the
   target site's **3' end**, so that is the end scored; the 5'-end 8-mer is a measured near-null
   (ρ +0.07 vs +0.27 against knockdown). See `docs/models_and_scoring.md` §2.5.
-- **Thermodynamic asymmetry** (0.35 / 0.25) — guide strand preferentially enters RISC.
+- **Thermodynamic asymmetry** (0.40 / 0.25) — guide strand preferentially enters RISC.
 - **GC content** (0.25 / 0.20) — balance between stability and accessibility. `exp(-((GC%-40)/10)^2)`,
   a Gaussian centred on 40% GC — note that 40 is not the midpoint of the default GC filter window
   (35-60), so the score's optimum and the gate's optimum are different numbers.

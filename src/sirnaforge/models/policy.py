@@ -87,6 +87,85 @@ class UnknownEvidenceAction(str, Enum):
     FAIL = "fail"
 
 
+class FilterStage(str, Enum):
+    """When a filter's input exists, which decides whether it can be evaluated at all.
+
+    A design-only run holds no screening evidence, so every post-screen filter in it is
+    ``NOT_EVALUATED`` -- not passed. Keeping the stage as data is what lets the resolver say that
+    without a per-filter conditional.
+
+    Attributes:
+        DESIGN: The input is computed while candidates are enumerated.
+        POST_SCREEN: The input comes from off-target screening.
+    """
+
+    DESIGN = "design"
+    POST_SCREEN = "post_screen"
+
+
+class SettingSource(str, Enum):
+    """Where a resolved setting's value came from, recorded per setting in the manifest.
+
+    Precedence is built-in profile < config file < explicit caller value; ``RUN_MODE_RULE`` and
+    ``DESIGN_MODE_PRESET`` are the two derivations, and both are recorded so a value nobody typed
+    can still be traced to the rule that produced it.
+
+    Attributes:
+        BUILTIN_PROFILE: The versioned built-in profile's baseline.
+        DESIGN_MODE_PRESET: The design mode's preset, applied only where the caller said nothing.
+        CONFIG_FILE: A configuration file.
+        EXPLICIT: The caller stated it (a CLI option or an API keyword argument).
+        RUN_MODE_RULE: Derived from the resolved run mode.
+    """
+
+    BUILTIN_PROFILE = "builtin_profile"
+    DESIGN_MODE_PRESET = "design_mode_preset"
+    CONFIG_FILE = "config_file"
+    EXPLICIT = "explicit"
+    RUN_MODE_RULE = "run_mode_rule"
+
+
+class SettingProvenance(BaseModel):
+    """One setting, its resolved value, and which authority supplied it.
+
+    Attributes:
+        key: Stable setting name (a filter id, or a named policy setting).
+        value: The value that applies, JSON-representable.
+        source: Which authority supplied it.
+        detail: Why, when the source alone does not say.
+    """
+
+    key: str = Field(min_length=1, description="Stable setting name")
+    value: bool | int | float | str | None = Field(description="Resolved value; None means no value applies")
+    source: SettingSource = Field(description="Authority that supplied the value")
+    detail: str | None = Field(default=None, description="Why this source won, when that is not obvious")
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ProfileIdentity(BaseModel):
+    """Which built-in profile a run resolved against, and a hash of its contents.
+
+    The name and version identify the profile; the hash is what makes two runs comparable, because
+    a profile edited in place would otherwise report the same identity as its predecessor.
+
+    Attributes:
+        name: Profile name.
+        version: Profile version.
+        content_hash: ``sha256:`` digest over the profile's canonical serialisation.
+        experimental: Whether the profile's numbers are calibrated. Every 0.7.1 profile is not.
+        description: What the profile is for.
+    """
+
+    name: str = Field(min_length=1, description="Profile name")
+    version: str = Field(min_length=1, description="Profile version")
+    content_hash: str = Field(min_length=1, description="sha256 digest of the profile's canonical serialisation")
+    experimental: bool = Field(description="False only for a profile whose numbers are calibrated")
+    description: str = Field(min_length=1, description="What the profile is for")
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
 class FilterComparator(str, Enum):
     """The passing predicate a filter applies, read as ``observed <comparator> threshold``.
 
@@ -170,6 +249,9 @@ class FilterDescriptor(BaseModel):
         threshold: The value compared against, or ``None`` when none is declared.
         scope: Which alignments the threshold counts.
         action: What the filter does with its own verdict.
+        stage: When the compared input exists. Defaults to :attr:`FilterStage.DESIGN`, which is the
+            0.7.1 behaviour of every gate -- always evaluable -- so the default asserts nothing new;
+            a filter whose input comes from screening must say so, and the resolver always does.
     """
 
     filter_id: str = Field(min_length=1, description="Stable machine identity of the filter")
@@ -178,6 +260,7 @@ class FilterDescriptor(BaseModel):
     threshold: int | float | None = Field(description="Value compared against; None means undeclared")
     scope: FilterScope = Field(description="Alignments the threshold counts; state it even when unrestricted")
     action: FilterAction = Field(description="What the filter does with its verdict")
+    stage: FilterStage = Field(default=FilterStage.DESIGN, description="When the compared input exists")
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from sirnaforge import __version__
+from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.scoring import COMPOSITE_TERMS, SCORING_WEIGHT_SET_VERSION
 from sirnaforge.models.sirna import (
     DesignParameters,
@@ -102,6 +103,82 @@ def test_manifest_weights_track_a_custom_weight_set(tmp_path):
     assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["gc_content"] == 0.10
     # The untouched vectors still record their own declared numbers.
     assert manifest["scoring"]["vectors"]["design_v4"]["target_accessibility"] == 0.35
+
+
+@pytest.mark.unit
+def test_manifest_records_the_resolved_run_policy(tmp_path):
+    """Issue #99: a threshold in the manifest says what applied, not on whose authority.
+
+    The policy block is what makes an override auditable -- 52.0 because the miRNA preset moved it
+    and 52.0 because the user typed it are different runs, and the numbers alone cannot tell them
+    apart.
+    """
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, design_mode="mirna", stated={"gc_max": 58.0})
+    config = WorkflowConfig(output_dir=tmp_path / "policy", gene_query="tp53", resolved_policy=policy)
+    manifest = SiRNAWorkflow(config)._build_fair_manifest(
+        all_csv=tmp_path / "all.csv",
+        pass_csv=tmp_path / "pass.csv",
+        pass_fasta=tmp_path / "pass.fasta",
+        orf_report=tmp_path / "orf.tsv",
+    )["run_policy"]
+
+    assert manifest["run_mode"] == "qualified"
+    assert manifest["design_mode"] == "mirna"
+    # Profile identity and hash, so two runs are comparable only when the baseline was the same.
+    assert manifest["profile"]["name"] == "legacy"
+    assert manifest["profile"]["content_hash"].startswith("sha256:")
+    assert manifest["profile"]["experimental"] is True
+
+    resolved = {record["key"]: record for record in manifest["resolved_settings"]}
+    # Requested and resolved are both present, and each override names its source.
+    assert {record["key"] for record in manifest["requested_settings"]} == {"gc_max"}
+    assert resolved["gc_max"]["value"] == 58.0
+    assert resolved["gc_max"]["source"] == "explicit"
+    assert resolved["default_overhang"]["source"] == "design_mode_preset"
+    assert resolved["max_paired_fraction"]["source"] == "builtin_profile"
+
+    # Actions, thresholds, comparators, scopes and term definitions, per gate.
+    gates = {gate["filter_id"]: gate for gate in manifest["filters"]}
+    assert gates["max_off_target_count"]["threshold"] == 15
+    assert gates["max_off_target_count"]["action"] == "fail"
+    assert gates["max_off_target_count"]["comparator"] == "le"
+    assert gates["max_off_target_count"]["definition"]
+    assert gates["max_transcriptome_hits_0mm"]["scope"]["species"] == ["human"]
+    assert gates["max_mirna_1mm_seed"]["action"] == "off"
+    assert gates["max_mirna_1mm_seed"]["evaluated"] is False
+    assert gates["fail_on_high_risk_mirna"]["transform"]
+    assert json.dumps(manifest), "the policy block must stay JSON-serialisable"
+
+
+@pytest.mark.unit
+def test_manifest_names_the_gates_a_design_only_run_did_not_evaluate(tmp_path):
+    """A post-screen gate in a design-only run is off, and the manifest must not imply it passed."""
+    policy = resolve_run_policy(entry_point=EntryPoint.DESIGN_COMMAND)
+    config = WorkflowConfig(output_dir=tmp_path / "design_only", gene_query="tp53", resolved_policy=policy)
+    manifest = SiRNAWorkflow(config)._build_fair_manifest(
+        all_csv=tmp_path / "all.csv",
+        pass_csv=tmp_path / "pass.csv",
+        pass_fasta=tmp_path / "pass.fasta",
+        orf_report=tmp_path / "orf.tsv",
+    )["run_policy"]
+
+    off_target_gates = [gate for gate in manifest["filters"] if gate["stage"] == "post_screen"]
+    assert off_target_gates
+    assert all(gate["action"] == "off" and gate["evaluated"] is False for gate in off_target_gates)
+    assert manifest["run_mode"] == "design_only"
+
+
+@pytest.mark.unit
+def test_a_manifest_exists_even_for_a_caller_that_never_resolved_a_policy(tmp_path):
+    """Direct WorkflowConfig callers go through the adapter, so no run records an absent policy."""
+    manifest = _manifest(tmp_path, min_asymmetry_score=0.72)["run_policy"]
+
+    assert manifest["run_mode"] == "qualified"
+    assert {record["key"] for record in manifest["resolved_settings"]} >= {"min_asymmetry_score"}
+    assert (
+        next(record for record in manifest["resolved_settings"] if record["key"] == "min_asymmetry_score")["value"]
+        == 0.72
+    )
 
 
 @pytest.mark.unit

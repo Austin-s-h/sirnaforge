@@ -39,6 +39,13 @@ from sirnaforge.config import (
     ReferenceSelection,
     WorkflowInputSpec,
 )
+from sirnaforge.config.run_policy import (
+    EntryPoint,
+    ResolvedRunPolicy,
+    RunPolicyError,
+    describe_parameters,
+    resolve_run_policy,
+)
 from sirnaforge.core.design import (
     MiRNADesigner,
     SiRNADesigner,
@@ -97,10 +104,8 @@ from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
     DesignResult,
-    FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
-    TargetAccessibilityConfig,
     build_candidate_row,
     ranking_score,
 )
@@ -170,8 +175,16 @@ class WorkflowConfig:
         keep_nextflow_work: bool = False,
         variant_config: VariantWorkflowConfig | None = None,
         zfn_config: ZFNWorkflowConfig | None = None,
+        resolved_policy: ResolvedRunPolicy | None = None,
     ):
-        """Initialize workflow configuration."""
+        """Initialize workflow configuration.
+
+        ``resolved_policy`` is the run policy resolved once by ``config/run_policy.py``. A caller
+        that supplies its own ``design_params`` instead gets the same object built by the adapter,
+        so every path -- CLI, Python API, off-target-only, direct WorkflowConfig -- carries a policy
+        and none of them re-derives a threshold. Resolution happens before the output directories
+        below are created, so an invalid configuration costs nothing.
+        """
         self.output_dir = Path(output_dir)
         self.input_source = input_source
         self.zfn_config = zfn_config
@@ -181,7 +194,21 @@ class WorkflowConfig:
         # Preserve the user-supplied gene_query as the logical label even when using an input FASTA
         self.gene_query = gene_query
         self.database = database
-        self.design_params = design_params or DesignParameters()
+        if (
+            resolved_policy is not None
+            and design_params is not None
+            and design_params != resolved_policy.design_parameters
+        ):
+            raise RunPolicyError(
+                "WorkflowConfig received both a resolved policy and different design_params; "
+                "pass one or the other so there is a single resolved configuration"
+            )
+        self.design_params = (
+            resolved_policy.design_parameters if resolved_policy else (design_params or DesignParameters())
+        )
+        self.resolved_policy = resolved_policy or describe_parameters(
+            self.design_params, entry_point=EntryPoint.SCREENING_WORKFLOW, query_species=query_species
+        )
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
         self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
@@ -1359,6 +1386,9 @@ class SiRNAWorkflow:
             # Dumped wholesale: hand-listing fields silently dropped thresholds
             # (min_asymmetry_score, max_poly_runs, ...) from the run record.
             "design_parameters": self.config.design_params.model_dump(mode="json"),
+            # What was requested, what it resolved to, and which authority won for each setting --
+            # a threshold in design_parameters above says what applied but not why.
+            "run_policy": self.config.resolved_policy.as_manifest(),
             "scoring": {
                 "weight_set_version": SCORING_WEIGHT_SET_VERSION,
                 "vectors": scoring_weights.as_manifest(),
@@ -3716,14 +3746,18 @@ async def run_sirna_workflow(
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     ortholog_mapping_file: Path | str | None = None,
-    gc_min: float = 30.0,
-    gc_max: float = 52.0,
-    sirna_length: int = 21,
-    modification_pattern: str = "standard_2ome",
-    overhang: str = "dTdT",
+    resolved_policy: ResolvedRunPolicy | None = None,
+    run_mode: str | None = None,
+    policy_config: Path | str | None = None,
+    filter_actions: Mapping[str, Any] | None = None,
+    gc_min: float | None = None,
+    gc_max: float | None = None,
+    sirna_length: int | None = None,
+    modification_pattern: str | None = None,
+    overhang: str | None = None,
     zfn_design_params: ZFNDesignParameters | None = None,
     zfn_annotation: GenomicAnnotationConfig | None = None,
-    check_off_targets: bool = True,
+    check_off_targets: bool | None = None,
     # Variant targeting parameters
     variant_ids: list[str] | None = None,
     variant_vcf_file: Path | None = None,
@@ -3770,14 +3804,26 @@ async def run_sirna_workflow(
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         ortholog_mapping_file: JSON mapping of query gene -> species -> orthologue gene IDs. Supply
             it to resolve cross-species orthology offline instead of calling Ensembl Compara.
-        gc_min: Minimum GC content percentage
-        gc_max: Maximum GC content percentage
-        sirna_length: siRNA length in nucleotides
-        modification_pattern: Chemical modification pattern
-        overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        resolved_policy: A policy already resolved by ``config.run_policy.resolve_run_policy`` -- how
+            the CLI passes its resolution, so the command line and this function cannot diverge.
+            Supplying it together with any of the threshold arguments below is an error, because two
+            resolutions of the same run could disagree.
+        run_mode: design_only, exploratory or qualified. Defaults to qualified; ``check_off_targets``
+            set False maps to design_only, as the legacy skip flag does.
+        policy_config: JSON/TOML policy file; beats the built-in profile, loses to explicit values.
+        filter_actions: ``filter_id -> off|warn|fail``. A filter set to off is not evaluated.
+        gc_min: Minimum GC content percentage. None means unstated, so the profile applies.
+        gc_max: Maximum GC content percentage. None means unstated, so the profile applies -- which
+            for siRNA mode is 60.0. It used to default to 52.0 here, the miRNA ceiling, so this
+            function's default GC window disagreed with the CLI's.
+        sirna_length: siRNA length in nucleotides (None = profile default)
+        modification_pattern: Chemical modification pattern (None = profile default)
+        overhang: Overhang sequence, dTdT for DNA or UU for RNA (None = profile default, and UU in
+            miRNA design mode)
         zfn_design_params: Optional ZFN design parameters for ZFN mode workflow
         zfn_annotation: Optional genomic annotation config for ZFN off-target classification
-        check_off_targets: Perform off-target analysis stage (default: True)
+        check_off_targets: Perform off-target analysis stage. None means unstated (screening on);
+            False maps the run mode to design_only.
         variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
         variant_vcf_file: Path to VCF file containing variants to target or avoid
         variant_mode: How to handle variants (avoid/target/both) - default is avoid
@@ -3819,56 +3865,55 @@ async def run_sirna_workflow(
     Returns:
         Dictionary with complete workflow results
     """
-    # Parse design mode
-    try:
-        mode_enum = DesignMode(design_mode.lower())
-    except ValueError:
-        mode_enum = DesignMode.SIRNA
-
-    # Configure filter criteria. An unset threshold is omitted so the model default applies; passing
-    # them through the constructor (not model_copy) keeps Pydantic's range validation, so an
-    # out-of-range floor raises instead of silently taking effect. These three had no route in at all
-    # before: FilterCriteria was built with gc_min/gc_max only.
-    filter_kwargs: dict[str, Any] = {"gc_min": gc_min, "gc_max": gc_max}
-    for name, value in (
-        ("min_asymmetry_score", min_asymmetry_score),
-        ("max_paired_fraction", max_paired_fraction),
-        ("min_empirical_score", min_empirical_score),
-        ("min_isoform_coverage", min_isoform_coverage),
-    ):
-        if value is not None:
-            filter_kwargs[name] = value
-    filter_criteria = FilterCriteria(**filter_kwargs)
-
-    # Same pattern for the RNAplfold settings behind target_accessibility: omit an unset value so
-    # the model default applies, and construct rather than model_copy so window/span bounds hold.
-    accessibility_kwargs: dict[str, Any] = {}
-    for name, value in (
-        ("window_size", plfold_window),
-        ("max_bp_span", plfold_max_bp_span),
-        ("log_floor", accessibility_log_floor),
-    ):
-        if value is not None:
-            accessibility_kwargs[name] = value
-    accessibility_config = TargetAccessibilityConfig(**accessibility_kwargs)
-
-    # Configure workflow with modification parameters
-    offtarget_filters = OffTargetFilterCriteria()
-    if max_off_targets is not None:
-        offtarget_filters = offtarget_filters.model_copy(update={"max_off_target_count": max_off_targets})
-
-    design_params = DesignParameters(
-        design_mode=mode_enum,
-        top_n=top_n_candidates,
-        sirna_length=sirna_length,
-        filters=filter_criteria,
-        offtarget_filters=offtarget_filters,
-        check_off_targets=check_off_targets,
-        apply_modifications=modification_pattern.lower() != "none",
-        modification_pattern=modification_pattern,
-        default_overhang=overhang,
-        target_accessibility=accessibility_config,
-    )
+    # Resolve the policy exactly once, before anything creates a directory or fetches a reference.
+    # An unstated argument is None, so the profile applies to it; a stated one wins. This is the
+    # same call the CLI makes -- when the CLI has already made it, its result arrives as
+    # resolved_policy and is used verbatim rather than being rebuilt from values.
+    stated: dict[str, Any] = {
+        key: value
+        for key, value in (
+            ("gc_min", gc_min),
+            ("gc_max", gc_max),
+            ("sirna_length", sirna_length),
+            ("modification_pattern", modification_pattern),
+            ("default_overhang", overhang),
+            ("top_n", top_n_candidates),
+            ("check_off_targets", check_off_targets),
+            ("max_off_target_count", max_off_targets),
+            ("min_asymmetry_score", min_asymmetry_score),
+            ("max_paired_fraction", max_paired_fraction),
+            ("min_empirical_score", min_empirical_score),
+            ("min_isoform_coverage", min_isoform_coverage),
+            ("plfold_window", plfold_window),
+            ("plfold_max_bp_span", plfold_max_bp_span),
+            ("accessibility_log_floor", accessibility_log_floor),
+        )
+        if value is not None
+    }
+    if modification_pattern is not None:
+        stated["apply_modifications"] = modification_pattern.lower() != "none"
+    if resolved_policy is not None:
+        conflicting = sorted(set(stated) - {"apply_modifications"})
+        if conflicting or run_mode or policy_config or filter_actions:
+            raise RunPolicyError(
+                f"resolved_policy was supplied together with {conflicting or 'run_mode/policy_config/filter_actions'}; "
+                "a run must be resolved once, so pass either the policy or the individual settings"
+            )
+        policy = resolved_policy
+    else:
+        policy = resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW,
+            design_mode=design_mode,
+            run_mode=run_mode,
+            config_file=policy_config,
+            stated=stated,
+            filter_actions=filter_actions,
+            query_species=query_species,
+            screen_species=genome_species or (),
+        )
+    mode_enum = policy.design_mode
+    design_params = policy.design_parameters
+    check_off_targets = design_params.check_off_targets
     database_enum = DatabaseType(database.lower())
 
     output_path = Path(output_dir)
@@ -3951,6 +3996,7 @@ async def run_sirna_workflow(
         variant_config=variant_config_obj,
         nextflow_config=nextflow_config_overrides,
         zfn_config=zfn_workflow_config,
+        resolved_policy=policy,
     )
 
     # Run workflow
@@ -3983,6 +4029,10 @@ async def run_offtarget_only_workflow(
     ortholog_mapping_file: Path | str | None = None,
     log_file: str | None = None,
     nextflow_docker_image: str | None = None,
+    resolved_policy: ResolvedRunPolicy | None = None,
+    run_mode: str | None = None,
+    policy_config: Path | str | None = None,
+    filter_actions: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
 
@@ -4006,10 +4056,26 @@ async def run_offtarget_only_workflow(
             instead of Ensembl Compara for cross-species orthology
         log_file: Path to centralized log file
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
+        resolved_policy: A policy already resolved by ``config.run_policy.resolve_run_policy``. This
+            path used to build a bare ``DesignParameters()``, so the off-target thresholds it gated
+            on came from nowhere the caller could see or set.
+        run_mode: design_only, exploratory or qualified (default: qualified).
+        policy_config: JSON/TOML policy file; beats the built-in profile, loses to explicit values.
+        filter_actions: ``filter_id -> off|warn|fail``.
 
     Returns:
         Dictionary with off-target analysis results
     """
+    # Resolved before the output tree is created, exactly as the other two entry points do it.
+    policy = resolved_policy or resolve_run_policy(
+        entry_point=EntryPoint.OFFTARGET_ONLY,
+        run_mode=run_mode,
+        config_file=policy_config,
+        filter_actions=filter_actions,
+        query_species=query_species,
+        screen_species=genome_species or (),
+    )
+
     console.print("\n🎯 [bold cyan]Starting Off-Target Analysis (Pre-Designed siRNAs)[/bold cyan]")
     console.print(f"Input Candidates: [yellow]{input_candidates_fasta}[/yellow]")
     console.print(f"Output Directory: [blue]{output_dir}[/blue]")
@@ -4141,7 +4207,7 @@ async def run_offtarget_only_workflow(
         gene_query="offtarget_only",  # Placeholder name
         input_fasta=None,
         database=DatabaseType.ENSEMBL,  # Not used, but required
-        design_params=DesignParameters(),  # Minimal params
+        resolved_policy=policy,
         nextflow_config=nextflow_config,
         genome_indices_override=genome_indices_override,
         genome_species=genome_species or ["human", "rat", "rhesus"],

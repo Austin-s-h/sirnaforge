@@ -10,14 +10,16 @@ os.environ.setdefault("TERM", "dumb")
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeVar, cast
 
 import typer
 from Bio.SeqIO import parse as seqio_parse
 from Bio.SeqRecord import SeqRecord
+from click.core import ParameterSource
+from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -50,6 +52,16 @@ from sirnaforge.config import (
     WorkflowInputSpec,
     render_reference_selection_label,
 )
+from sirnaforge.config.run_policy import (
+    EntryPoint,
+    ResolvedRunPolicy,
+    RunPolicyError,
+    default_for,
+    format_validation_error,
+    mirna_preset_default_for,
+    resolve_run_policy,
+    switchable_filter_ids,
+)
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import (
@@ -59,12 +71,9 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
+from sirnaforge.models.policy import RunMode
 from sirnaforge.models.sirna import (
     DesignMode,
-    DesignParameters,
-    FilterCriteria,
-    MiRNADesignConfig,
-    TargetAccessibilityConfig,
     ranking_score,
 )
 from sirnaforge.models.variant import VariantMode
@@ -246,48 +255,78 @@ def extract_canonical_transcripts(
     return canonical_file, len(canonical)
 
 
-def _resolve_design_mode(
-    design_mode: str,
-    gc_min: float,
-    gc_max: float,
-    overhang: str,
-    modification_pattern: str,
-) -> tuple[DesignMode, float, float, str, str]:
-    """Normalize design mode and apply miRNA-aware defaults.
+def _option_was_stated(ctx: typer.Context, parameter: str) -> bool:
+    """Whether the user actually supplied one option, read from Click's parameter source.
 
-    The miRNA design mode has a different default GC range, overhang, and
-    modification pattern. To preserve user intent, those defaults are only
-    applied when the corresponding option is still set to its siRNA default.
-
-    Args:
-        design_mode: Raw user input (e.g., ``sirna``, ``mirna``, or ``zfn``).
-        gc_min: Minimum GC percentage.
-        gc_max: Maximum GC percentage.
-        overhang: Overhang string.
-        modification_pattern: Name of the chemical modification pattern.
-
-    Returns:
-        ``(mode_enum, gc_min, gc_max, overhang, modification_pattern)``.
-
-    Raises:
-        ValueError: If ``design_mode`` cannot be parsed.
+    This replaces comparing a value against the siRNA default. A value test cannot tell an omitted
+    ``--gc-max`` from one typed as ``--gc-max 60``, so in miRNA mode an explicit 60 was silently
+    rewritten to 52; the same sentinel governed ``--overhang`` and ``--modifications``. An option
+    set through its environment variable counts as stated, because a user set it.
     """
+    source = ctx.get_parameter_source(parameter)
+    # Compared by name: Typer vendors its own ParameterSource, so an identity test against Click's
+    # enum is a non-overlapping comparison that silently reads every option as unstated.
+    return source is not None and source.name != ParameterSource.DEFAULT.name
+
+
+def _stated_settings(ctx: typer.Context, candidates: Mapping[str, tuple[str, Any]]) -> dict[str, Any]:
+    """Policy settings the user stated, keyed by setting name.
+
+    ``candidates`` maps a policy setting key to ``(cli_parameter_name, value)``. The parameter name
+    is carried explicitly because six options are not named after the setting they set (``--length``
+    sets ``sirna_length``, ``--max-off-targets`` sets ``max_off_target_count``, ...) and looking the
+    wrong name up in Click reports every one of them as unstated.
+    """
+    stated: dict[str, Any] = {}
+    for key, (parameter, value) in candidates.items():
+        if _option_was_stated(ctx, parameter) and value is not None:
+            stated[key] = value
+    return stated
+
+
+def _parse_filter_actions(entries: Iterable[str]) -> dict[str, str]:
+    """Parse repeatable ``--filter-action filter_id=off|fail`` entries.
+
+    The action itself is validated by the resolver, which rejects ``warn`` in 0.7.1.
+    """
+    actions: dict[str, str] = {}
+    for raw in entries:
+        token = raw.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise RunPolicyError(f"--filter-action expects filter_id=action, got {raw!r}")
+        filter_id, action = (part.strip() for part in token.split("=", 1))
+        actions[filter_id] = action
+    return actions
+
+
+def _fail_with_config_error(message: str, *, logger: logging.Logger | None = None) -> NoReturn:
+    """Report a configuration problem as a message and exit 1, never as a traceback.
+
+    Cross-field Pydantic errors (``--plfold-max-bp-span 100 --plfold-window 40``) are raised when
+    the model is constructed rather than when the option is parsed, so Typer's own validation never
+    saw them and they reached the user as an unhandled ValidationError.
+    """
+    if logger is not None:
+        logger.error("Invalid configuration: %s", message)
+    console.print(f"❌ Error: {message}", style="red")
+    raise typer.Exit(1)
+
+
+def _resolve_policy_or_exit(
+    *,
+    entry_point: EntryPoint,
+    logger: logging.Logger | None = None,
+    **kwargs: Any,
+) -> ResolvedRunPolicy:
+    """Resolve the run policy, turning every configuration error into a message and exit 1."""
     try:
-        mode_enum = DesignMode(design_mode.lower())
-    except ValueError as exc:
-        raise ValueError(f"Invalid design mode '{design_mode}'. Choose 'sirna', 'mirna', or 'zfn'") from exc
-
-    if mode_enum == DesignMode.MIRNA:
-        mirna_config = MiRNADesignConfig()
-        if gc_min == 30.0 and gc_max == 60.0:
-            gc_min = mirna_config.gc_min
-            gc_max = mirna_config.gc_max
-        if overhang == "dTdT":
-            overhang = mirna_config.overhang
-        if modification_pattern == "standard_2ome":
-            modification_pattern = mirna_config.modifications
-
-    return mode_enum, gc_min, gc_max, overhang, modification_pattern
+        return resolve_run_policy(entry_point=entry_point, **kwargs)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc), logger=logger)
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc), logger=logger)
 
 
 def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
@@ -690,7 +729,37 @@ def search(  # noqa: PLR0912
 
 @app_command()
 def workflow(  # noqa: PLR0912
+    ctx: typer.Context,
     gene_query: str = typer.Argument(..., help="Gene name or ID to analyze"),
+    run_mode: str | None = typer.Option(
+        None,
+        "--run-mode",
+        help=(
+            "How much screening evidence this run claims: design_only, exploratory or qualified. "
+            "Defaults to qualified for this command; --skip-off-targets maps to design_only. "
+            "Independent of --design-mode."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help=(
+            "JSON or TOML file of policy settings. Beats the built-in profile and loses to options "
+            "given on the command line. Unknown setting names are rejected, not ignored."
+        ),
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated -- which is not the same as passing -- and works for "
+            f"these gates: {', '.join(switchable_filter_ids())}. The six design-stage gates read a "
+            "threshold with no absent state and are refused rather than faked. 'warn' is rejected in "
+            "0.7.1: no code path demotes a rejection to a label, so resolving it would record an "
+            "action the gate does not honour."
+        ),
+    ),
     input_fasta: str | None = typer.Option(
         None,
         "--input-fasta",
@@ -923,43 +992,57 @@ def workflow(  # noqa: PLR0912
             "a species the file omits falls back to the labelled gene-symbol heuristic."
         ),
     ),
-    gc_min: float = typer.Option(
-        30.0,
+    gc_min: float | None = typer.Option(
+        None,
         "--gc-min",
         min=0.0,
         max=100.0,
-        help="Minimum GC content percentage",
+        help=(
+            f"Minimum GC content percentage (default: {default_for('gc_min')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_min')}). Any value in "
+            "0-100 is supported."
+        ),
     ),
-    gc_max: float = typer.Option(
-        60.0,
+    gc_max: float | None = typer.Option(
+        None,
         "--gc-max",
         min=0.0,
         max=100.0,
-        help="Maximum GC content percentage",
+        help=(
+            f"Maximum GC content percentage (default: {default_for('gc_max')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_max')}). Any value in "
+            "0-100 is supported, and stating it keeps it in every design mode."
+        ),
     ),
-    sirna_length: int = typer.Option(
-        21,
+    sirna_length: int | None = typer.Option(
+        None,
         "--length",
         "-l",
         min=19,
         max=23,
-        help="siRNA length in nucleotides",
+        help=f"siRNA length in nucleotides (default: {default_for('sirna_length')})",
     ),
-    modification_pattern: str = typer.Option(
-        "standard_2ome",
+    modification_pattern: str | None = typer.Option(
+        None,
         "--modifications",
         "-m",
-        help="Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)",
+        help=(
+            "Chemical modification pattern: standard_2ome, minimal_terminal, maximal_stability, none "
+            f"(default: {default_for('modification_pattern')})"
+        ),
     ),
-    overhang: str = typer.Option(
-        "dTdT",
+    overhang: str | None = typer.Option(
+        None,
         "--overhang",
-        help="Overhang sequence (dTdT for DNA, UU for RNA)",
+        help=(
+            f"Overhang sequence, dTdT for DNA or UU for RNA (default: {default_for('default_overhang')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('default_overhang')})"
+        ),
     ),
     skip_off_targets: bool = typer.Option(
         False,
         "--skip-off-targets",
-        help="Skip off-target analysis (faster)",
+        help="Skip off-target analysis (faster). Maps to --run-mode design_only.",
     ),
     # Variant targeting parameters
     snp: list[str] = typer.Option(
@@ -1046,9 +1129,10 @@ def workflow(  # noqa: PLR0912
         "--max-off-targets",
         min=0,
         help=(
-            "Reject a candidate above this many genuine off-target sites (default: 3). Counts only "
-            "hits left after on-target, ortholog and repeat classification. Unlike --max-hits this "
-            "changes the PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
+            f"Reject a candidate above this many genuine off-target sites (default: "
+            f"{default_for('max_off_target_count')}). Counts only hits left after on-target, "
+            "ortholog and repeat classification. Unlike --max-hits this changes the "
+            "PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
         ),
     ),
     min_asymmetry: float | None = typer.Option(
@@ -1057,8 +1141,9 @@ def workflow(  # noqa: PLR0912
         min=0.3,
         max=1.0,
         help=(
-            "Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: 0.65). The default has not "
-            "been calibrated against measured potency; lower it to widen the candidate pool."
+            f"Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: "
+            f"{default_for('min_asymmetry_score')}). The default has not been calibrated against "
+            "measured potency; lower it to widen the candidate pool."
         ),
     ),
     max_paired_fraction: float | None = typer.Option(
@@ -1067,9 +1152,9 @@ def workflow(  # noqa: PLR0912
         min=0.0,
         max=1.0,
         help=(
-            "Guide self-structure ceiling gating EXCESS_PAIRING (default: 0.6). Quantised to 2k/L by "
-            "the dot-bracket, so on a 21-23mer only a few values are attainable and nearby "
-            "thresholds behave identically."
+            f"Guide self-structure ceiling gating EXCESS_PAIRING (default: "
+            f"{default_for('max_paired_fraction')}). Quantised to 2k/L by the dot-bracket, so on a "
+            "21-23mer only a few values are attainable and nearby thresholds behave identically."
         ),
     ),
     min_empirical: float | None = typer.Option(
@@ -1097,9 +1182,9 @@ def workflow(  # noqa: PLR0912
         min=20,
         max=1000,
         help=(
-            "RNAplfold averaging window W for target-site accessibility (default: 150). Larger is "
-            "mildly better on the benchmark; W=150-240 is the plateau. Changing it changes the "
-            "scale of composite_score."
+            f"RNAplfold averaging window W for target-site accessibility (default: "
+            f"{default_for('plfold_window')}). Larger is mildly better on the benchmark; W=150-240 "
+            "is the plateau. Changing it changes the scale of composite_score."
         ),
     ),
     plfold_max_bp_span: int | None = typer.Option(
@@ -1107,14 +1192,18 @@ def workflow(  # noqa: PLR0912
         "--plfold-max-bp-span",
         min=10,
         max=1000,
-        help="RNAplfold maximum base-pair span L (default: 100). Must not exceed --plfold-window.",
+        help=(
+            f"RNAplfold maximum base-pair span L (default: {default_for('plfold_max_bp_span')}). "
+            "Must not exceed --plfold-window."
+        ),
     ),
     accessibility_log_floor: float | None = typer.Option(
         None,
         "--accessibility-log-floor",
         help=(
-            "log10 probability treated as zero target-site accessibility (default: -5.0, ~99% of "
-            "observed sites). Fixed, not per-transcript, so scores stay comparable between targets."
+            f"log10 probability treated as zero target-site accessibility (default: "
+            f"{default_for('accessibility_log_floor')}, ~99% of observed sites). Fixed, not "
+            "per-transcript, so scores stay comparable between targets."
         ),
     ),
     json_summary: bool = typer.Option(
@@ -1129,29 +1218,53 @@ def workflow(  # noqa: PLR0912
     reference policies, designs candidates, and then runs off-target analysis on
     the selected top candidates.
     """
+    # Resolve and validate the biological policy BEFORE anything creates a directory or a log file:
+    # an invalid bound or an incompatible mode must cost nothing.
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+    stated = _stated_settings(
+        ctx,
+        {
+            "gc_min": ("gc_min", gc_min),
+            "gc_max": ("gc_max", gc_max),
+            "sirna_length": ("sirna_length", sirna_length),
+            "modification_pattern": ("modification_pattern", modification_pattern),
+            "default_overhang": ("overhang", overhang),
+            "top_n": ("top_n_candidates", top_n_candidates),
+            "max_off_target_count": ("max_off_targets", max_off_targets),
+            "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
+            "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
+            "min_empirical_score": ("min_empirical", min_empirical),
+            "min_isoform_coverage": ("min_isoform_coverage", min_isoform_coverage),
+            "plfold_window": ("plfold_window", plfold_window),
+            "plfold_max_bp_span": ("plfold_max_bp_span", plfold_max_bp_span),
+            "accessibility_log_floor": ("accessibility_log_floor", accessibility_log_floor),
+        },
+    )
+    if "modification_pattern" in stated:
+        stated["apply_modifications"] = str(stated["modification_pattern"]).lower() != "none"
+    policy = _resolve_policy_or_exit(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        # Passed only when the user typed it, so the manifest does not report a mode nobody chose.
+        design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+        run_mode=run_mode,
+        config_file=policy_config,
+        stated=stated,
+        filter_actions=actions,
+        legacy_skip_screening=skip_off_targets or None,
+        query_species=query_species,
+        screen_species=[value.strip() for value in species.split(",") if value.strip()],
+    )
+    mode_enum = policy.design_mode
+    resolved_filters = policy.design_parameters.filters
+
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
     log_destination.parent.mkdir(parents=True, exist_ok=True)
     configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
     effective_log = str(log_destination)
     logger = logging.getLogger(__name__)
-
-    if gc_min >= gc_max:
-        logger.error("Invalid GC range: gc_min=%s, gc_max=%s", gc_min, gc_max)
-        console.print("❌ Error: gc-min must be less than gc-max", style="red")
-        raise typer.Exit(1)
-
-    try:
-        mode_enum, gc_min, gc_max, overhang, modification_pattern = _resolve_design_mode(
-            design_mode,
-            gc_min,
-            gc_max,
-            overhang,
-            modification_pattern,
-        )
-    except ValueError as exc:
-        logger.error("Invalid design mode: %s", exc)
-        console.print(f"❌ Error: {exc}", style="red")
-        raise typer.Exit(1)
 
     if mode_enum == DesignMode.ZFN:
         emit_zfn_experimental_warning(console)
@@ -1254,16 +1367,20 @@ def workflow(  # noqa: PLR0912
     # four multi-gigabyte cDNA references nobody asked for (it also contradicted the documented
     # design-only behaviour and timed out the toy container workflow). --transcriptome-fasta is
     # the explicit opt-in, and it accepts a bundled source name such as ensembl_human_cdna.
+    # Key reference selection on the *resolved* run mode, not on the legacy flag: --run-mode
+    # design_only and --skip-off-targets are the same run, and reading the raw flag here made them
+    # publish two different reference_summary records for it.
+    design_only_run = policy.run_mode is RunMode.DESIGN_ONLY
     transcriptome_spec = WorkflowInputSpec(
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
-        design_only=skip_off_targets,
+        design_only=design_only_run,
         allow_transcriptome_for_input_fasta=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
-    if input_fasta and not transcriptome_fasta and not skip_off_targets:
+    if input_fasta and not transcriptome_fasta and not design_only_run:
         console.print(
             "ℹ️  --input-fasta without --transcriptome-fasta: transcriptome off-target screening and "
             "repeat detection are disabled (design-only). Pass --transcriptome-fasta "
@@ -1278,19 +1395,21 @@ def workflow(  # noqa: PLR0912
         Panel.fit(
             f"🧬 [bold blue]Complete siRNA Workflow[/bold blue]\n"
             f"Design Mode: [cyan]{mode_enum.value}[/cyan]\n"
+            f"Run Mode: [cyan]{policy.run_mode.value}[/cyan] "
+            f"([magenta]{policy.profile.name} {policy.profile.version}, experimental[/magenta])\n"
             f"Gene Query: [cyan]{input_descriptor}[/cyan]\n"
             f"Database: [yellow]{database}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
-            f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
-            f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Reported Candidates: [yellow]{top_n_candidates if top_n_candidates is not None else 'all (uncapped)'}[/yellow]\n"
+            f"siRNA Length: [yellow]{policy.design_parameters.sirna_length}[/yellow] nt\n"
+            f"GC Range: [yellow]{resolved_filters.gc_min:.1f}%-{resolved_filters.gc_max:.1f}%[/yellow]\n"
+            f"Reported Candidates: [yellow]{policy.design_parameters.top_n if policy.design_parameters.top_n is not None else 'all (uncapped)'}[/yellow]\n"
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
             f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]\n"
-            f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
-            f"Overhang: [magenta]{overhang}[/magenta]\n"
+            f"Modifications: [magenta]{policy.design_parameters.modification_pattern}[/magenta]\n"
+            f"Overhang: [magenta]{policy.design_parameters.default_overhang}[/magenta]\n"
             f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
             f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]",
             title="Workflow Configuration",
@@ -1312,8 +1431,9 @@ def workflow(  # noqa: PLR0912
                     input_fasta=input_fasta,
                     output_dir=str(output_dir),
                     database=database,
-                    design_mode=design_mode,
-                    top_n_candidates=top_n_candidates,
+                    # One resolved policy, so the CLI and a direct API call cannot diverge. Every
+                    # threshold, the design mode and the run mode travel inside it.
+                    resolved_policy=policy,
                     genome_species=genome_species_for_workflow,
                     query_species=query_species,
                     genome_indices_override=offtarget_indices,
@@ -1323,11 +1443,6 @@ def workflow(  # noqa: PLR0912
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     ortholog_mapping_file=ortholog_mapping,
-                    gc_min=gc_min,
-                    gc_max=gc_max,
-                    sirna_length=sirna_length,
-                    modification_pattern=modification_pattern,
-                    overhang=overhang,
                     zfn_design_params=zfn_design_params,
                     zfn_annotation=annotation if mode_enum == DesignMode.ZFN else None,
                     # Variant parameters
@@ -1340,17 +1455,8 @@ def workflow(  # noqa: PLR0912
                     log_file=effective_log,
                     write_json_summary=json_summary,
                     num_threads=cores,
-                    check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
                     max_hits=max_hits,
-                    max_off_targets=max_off_targets,
-                    min_asymmetry_score=min_asymmetry,
-                    max_paired_fraction=max_paired_fraction,
-                    min_empirical_score=min_empirical,
-                    min_isoform_coverage=min_isoform_coverage,
-                    plfold_window=plfold_window,
-                    plfold_max_bp_span=plfold_max_bp_span,
-                    accessibility_log_floor=accessibility_log_floor,
                 )
             )
 
@@ -1436,7 +1542,30 @@ def workflow(  # noqa: PLR0912
 
 
 @app_command()
-def offtarget(
+def offtarget(  # noqa: PLR0912
+    run_mode: str | None = typer.Option(
+        None,
+        "--run-mode",
+        help=(
+            "How much screening evidence this run claims: design_only, exploratory or qualified "
+            "(default: qualified). design_only would screen nothing, so it is rejected here."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help="JSON or TOML file of policy settings; loses to options given on the command line.",
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            f"threshold, so it is not evaluated, which is not the same as passing: {', '.join(switchable_filter_ids())}. "
+            "The six design-stage gates have no absent threshold and are refused rather than faked, and "
+            "'warn' is rejected because no 0.7.1 code path demotes a rejection to a label."
+        ),
+    ),
     input_candidates_fasta: Path = typer.Option(
         ...,
         "--input-candidates-fasta",
@@ -1546,6 +1675,24 @@ def offtarget(
         - ``--offtarget-indices`` can override the indices used for alignment
           using ``species:/abs/path/index_prefix`` entries.
     """
+    # Policy first: an invalid threshold must not cost a FASTA read, a download or a directory.
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+    policy = _resolve_policy_or_exit(
+        entry_point=EntryPoint.OFFTARGET_ONLY,
+        run_mode=run_mode,
+        config_file=policy_config,
+        filter_actions=actions,
+        query_species=query_species,
+        screen_species=[value.strip() for value in species.split(",") if value.strip()],
+    )
+    if policy.run_mode is RunMode.DESIGN_ONLY:
+        _fail_with_config_error(
+            "--run-mode design_only would screen nothing; this command exists to screen pre-designed guides"
+        )
+
     # Validate input FASTA contains sequences (any length accepted)
     try:
         sequences = FastaUtils.read_fasta(input_candidates_fasta)
@@ -1608,6 +1755,8 @@ def offtarget(
             f"Input Candidates: [cyan]{input_candidates_fasta.name}[/cyan]\n"
             f"Candidate Count: [yellow]{len(sequences)}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
+            f"Run Mode: [cyan]{policy.run_mode.value}[/cyan] "
+            f"([magenta]{policy.profile.name} {policy.profile.version}, experimental[/magenta])\n"
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
@@ -1646,6 +1795,7 @@ def offtarget(
                     ortholog_mapping_file=ortholog_mapping,
                     log_file=effective_log,
                     nextflow_docker_image=nextflow_docker_image,
+                    resolved_policy=policy,
                 )
             )
 
@@ -1929,6 +2079,7 @@ def zfn(
 
 @app_command()
 def design(  # noqa: PLR0912
+    ctx: typer.Context,
     input_file: Path = typer.Argument(
         ...,
         help="Input FASTA file containing transcript sequences",
@@ -1947,13 +2098,30 @@ def design(  # noqa: PLR0912
         "--design-mode",
         help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware). For ZFN use 'sirnaforge zfn'.",
     ),
-    length: int = typer.Option(
-        21,
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help=(
+            "JSON or TOML file of policy settings. Beats the built-in profile and loses to options "
+            "given on the command line. Unknown setting names are rejected, not ignored."
+        ),
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated, which is not the same as passing. 'warn' is rejected in "
+            "0.7.1: nothing demotes a rejection to a label, so the action would not be honoured."
+        ),
+    ),
+    length: int | None = typer.Option(
+        None,
         "--length",
         "-l",
         min=19,
         max=23,
-        help="siRNA length in nucleotides",
+        help=f"siRNA length in nucleotides (default: {default_for('sirna_length')})",
     ),
     top_n: int | None = typer.Option(
         None,
@@ -1965,63 +2133,79 @@ def design(  # noqa: PLR0912
             "All candidates are generated and screened regardless."
         ),
     ),
-    gc_min: float = typer.Option(
-        30.0,
+    gc_min: float | None = typer.Option(
+        None,
         "--gc-min",
         min=0.0,
         max=100.0,
-        help="Minimum GC content percentage",
+        help=(
+            f"Minimum GC content percentage (default: {default_for('gc_min')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_min')})"
+        ),
     ),
-    gc_max: float = typer.Option(
-        60.0,
+    gc_max: float | None = typer.Option(
+        None,
         "--gc-max",
         min=0.0,
         max=100.0,
-        help="Maximum GC content percentage",
+        help=(
+            f"Maximum GC content percentage (default: {default_for('gc_max')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_max')}). Stating it "
+            "keeps it in every design mode."
+        ),
     ),
-    max_poly_runs: int = typer.Option(
-        3,
+    max_poly_runs: int | None = typer.Option(
+        None,
         "--max-poly-runs",
         min=1,
-        help="Maximum consecutive identical nucleotides",
+        help=f"Maximum consecutive identical nucleotides (default: {default_for('max_poly_runs')})",
     ),
     min_asymmetry: float | None = typer.Option(
         None,
         "--min-asymmetry",
         min=0.3,
         max=1.0,
-        help="Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: 0.65)",
+        help=(f"Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: {default_for('min_asymmetry_score')})"),
     ),
     max_paired_fraction: float | None = typer.Option(
         None,
         "--max-paired-fraction",
         min=0.0,
         max=1.0,
-        help="Guide self-structure ceiling gating EXCESS_PAIRING (default: 0.6)",
+        help=(f"Guide self-structure ceiling gating EXCESS_PAIRING (default: {default_for('max_paired_fraction')})"),
     ),
     min_empirical: float | None = typer.Option(
         None,
         "--min-empirical",
-        help="Empirical design-rule floor gating LOW_EMPIRICAL_SCORE",
+        help=(
+            "Empirical design-rule floor gating LOW_EMPIRICAL_SCORE "
+            f"(default: {default_for('min_empirical_score')}, which rejects nothing)"
+        ),
     ),
     plfold_window: int | None = typer.Option(
         None,
         "--plfold-window",
         min=20,
         max=1000,
-        help="RNAplfold averaging window W for target-site accessibility (default: 150)",
+        help=(f"RNAplfold averaging window W for target-site accessibility (default: {default_for('plfold_window')})"),
     ),
     plfold_max_bp_span: int | None = typer.Option(
         None,
         "--plfold-max-bp-span",
         min=10,
         max=1000,
-        help="RNAplfold maximum base-pair span L (default: 100); must not exceed --plfold-window",
+        help=(
+            f"RNAplfold maximum base-pair span L (default: {default_for('plfold_max_bp_span')}); "
+            "must not exceed --plfold-window"
+        ),
     ),
     accessibility_log_floor: float | None = typer.Option(
         None,
         "--accessibility-log-floor",
-        help="log10 probability treated as zero target-site accessibility (default: -5.0)",
+        help=(
+            "log10 probability treated as zero target-site accessibility "
+            f"(default: {default_for('accessibility_log_floor')})"
+        ),
     ),
     genome_index: Path | None = typer.Option(
         None,
@@ -2043,16 +2227,22 @@ def design(  # noqa: PLR0912
         "--skip-off-targets",
         help="Skip off-target analysis (faster)",
     ),
-    modification_pattern: str = typer.Option(
-        "standard_2ome",
+    modification_pattern: str | None = typer.Option(
+        None,
         "--modifications",
         "-m",
-        help="Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)",
+        help=(
+            "Chemical modification pattern: standard_2ome, minimal_terminal, maximal_stability, none "
+            f"(default: {default_for('modification_pattern')})"
+        ),
     ),
-    overhang: str = typer.Option(
-        "dTdT",
+    overhang: str | None = typer.Option(
+        None,
         "--overhang",
-        help="Overhang sequence (dTdT for DNA, UU for RNA)",
+        help=(
+            f"Overhang sequence, dTdT for DNA or UU for RNA (default: {default_for('default_overhang')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('default_overhang')})"
+        ),
     ),
     verbose: bool = typer.Option(
         False,
@@ -2066,22 +2256,46 @@ def design(  # noqa: PLR0912
     Outputs a TSV/CSV-like table of candidates, optionally including secondary
     structure scoring, off-target checks, and chemical modification annotations.
     """
-    if gc_min >= gc_max:
-        console.print("❌ Error: gc-min must be less than gc-max", style="red")
-        raise typer.Exit(1)
-
     try:
-        mode_enum, gc_min, gc_max, overhang, modification_pattern = _resolve_design_mode(
-            design_mode,
-            gc_min,
-            gc_max,
-            overhang,
-            modification_pattern,
-        )
-    except ValueError as exc:
-        console.print(f"❌ Error: {exc}", style="red")
-        raise typer.Exit(1)
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
 
+    stated: dict[str, Any] = _stated_settings(
+        ctx,
+        {
+            "gc_min": ("gc_min", gc_min),
+            "gc_max": ("gc_max", gc_max),
+            "max_poly_runs": ("max_poly_runs", max_poly_runs),
+            "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
+            "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
+            "min_empirical_score": ("min_empirical", min_empirical),
+            "plfold_window": ("plfold_window", plfold_window),
+            "plfold_max_bp_span": ("plfold_max_bp_span", plfold_max_bp_span),
+            "accessibility_log_floor": ("accessibility_log_floor", accessibility_log_floor),
+            "sirna_length": ("length", length),
+            "top_n": ("top_n", top_n),
+            "modification_pattern": ("modification_pattern", modification_pattern),
+            "default_overhang": ("overhang", overhang),
+        },
+    )
+    if skip_structure:
+        stated["predict_structure"] = False
+    if "modification_pattern" in stated:
+        stated["apply_modifications"] = str(stated["modification_pattern"]).lower() != "none"
+    policy = _resolve_policy_or_exit(
+        entry_point=EntryPoint.DESIGN_COMMAND,
+        design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+        config_file=policy_config,
+        stated=stated,
+        filter_actions=actions,
+        legacy_skip_screening=skip_off_targets or None,
+        passthrough={
+            "genome_index": str(genome_index) if genome_index else None,
+            "snp_file": str(snp_file) if snp_file else None,
+        },
+    )
+    mode_enum = policy.design_mode
     if mode_enum == DesignMode.ZFN:
         console.print(
             "❌ Error: --design-mode zfn is not supported in the 'design' command. Use 'sirnaforge zfn' instead.",
@@ -2089,47 +2303,8 @@ def design(  # noqa: PLR0912
         )
         raise typer.Exit(1)
 
-    # Create parameters. Unset thresholds are omitted so the model default applies; passing them
-    # through the constructor keeps Pydantic's range validation.
-    filter_kwargs: dict[str, Any] = {
-        "gc_min": gc_min,
-        "gc_max": gc_max,
-        "max_poly_runs": max_poly_runs,
-    }
-    for name, value in (
-        ("min_asymmetry_score", min_asymmetry),
-        ("max_paired_fraction", max_paired_fraction),
-        ("min_empirical_score", min_empirical),
-    ):
-        if value is not None:
-            filter_kwargs[name] = value
-    filters = FilterCriteria(**filter_kwargs)
-
-    # Same construct-not-copy pattern for the RNAplfold settings behind target_accessibility.
-    accessibility_kwargs: dict[str, Any] = {}
-    for name, value in (
-        ("window_size", plfold_window),
-        ("max_bp_span", plfold_max_bp_span),
-        ("log_floor", accessibility_log_floor),
-    ):
-        if value is not None:
-            accessibility_kwargs[name] = value
-    target_accessibility = TargetAccessibilityConfig(**accessibility_kwargs)
-
-    parameters = DesignParameters(
-        design_mode=mode_enum,
-        sirna_length=length,
-        top_n=top_n,
-        filters=filters,
-        predict_structure=not skip_structure,
-        check_off_targets=not skip_off_targets,
-        genome_index=str(genome_index) if genome_index else None,
-        snp_file=str(snp_file) if snp_file else None,
-        apply_modifications=modification_pattern.lower() != "none",
-        modification_pattern=modification_pattern,
-        default_overhang=overhang,
-        target_accessibility=target_accessibility,
-    )
+    parameters = policy.design_parameters
+    filters = parameters.filters
 
     console.print(
         Panel.fit(
@@ -2137,11 +2312,13 @@ def design(  # noqa: PLR0912
             f"Design Mode: [cyan]{mode_enum.value}[/cyan]\n"
             f"Input: [cyan]{input_file}[/cyan]\n"
             f"Output: [cyan]{output}[/cyan]\n"
-            f"Length: [yellow]{length}[/yellow] nt\n"
-            f"GC range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Reported candidates: [yellow]{top_n if top_n is not None else 'all (uncapped)'}[/yellow]\n"
-            f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
-            f"Overhang: [magenta]{overhang}[/magenta]",
+            f"Run Mode: [cyan]{policy.run_mode.value}[/cyan] "
+            f"([magenta]{policy.profile.name} {policy.profile.version}, experimental[/magenta])\n"
+            f"Length: [yellow]{parameters.sirna_length}[/yellow] nt\n"
+            f"GC range: [yellow]{filters.gc_min:.1f}%-{filters.gc_max:.1f}%[/yellow]\n"
+            f"Reported candidates: [yellow]{parameters.top_n if parameters.top_n is not None else 'all (uncapped)'}[/yellow]\n"
+            f"Modifications: [magenta]{parameters.modification_pattern}[/magenta]\n"
+            f"Overhang: [magenta]{parameters.default_overhang}[/magenta]",
             title="Configuration",
         )
     )
@@ -2309,10 +2486,18 @@ def version() -> None:
 
 @app_command()
 def config() -> None:
-    """Print the default design parameter values."""
-    default_params = DesignParameters()
+    """Print the parameter values a default run resolves to."""
+    # Resolved rather than constructed: a run takes the profile's numbers, and gc_min is the one
+    # place the profile knowingly differs from the model field default.
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+    default_params = policy.design_parameters
 
-    console.print("[bold blue]Default Design Parameters:[/bold blue]\n")
+    console.print("[bold blue]Resolved Design Parameters:[/bold blue]")
+    console.print(
+        f"  [dim]profile {policy.profile.name} {policy.profile.version} "
+        f"({'experimental' if policy.profile.experimental else 'calibrated'}), "
+        f"run mode {policy.run_mode.value}[/dim]\n"
+    )
 
     # Basic parameters
     console.print("[cyan]Basic Parameters:[/cyan]")
@@ -2327,6 +2512,16 @@ def config() -> None:
     console.print(f"  GC content: {filters.gc_min}% - {filters.gc_max}%")
     console.print(f"  Max poly runs: {filters.max_poly_runs}")
     console.print(f"  Max paired fraction: {filters.max_paired_fraction}")
+
+    # Gates, with the three ways one can be in force or not
+    console.print("\n[cyan]Gates:[/cyan]")
+    for resolved in policy.filters:
+        descriptor = resolved.descriptor
+        threshold = "no threshold" if descriptor.threshold is None else descriptor.threshold
+        console.print(
+            f"  {resolved.filter_id}: {descriptor.comparator.value} {threshold} "
+            f"([yellow]{descriptor.action.value}[/yellow], {descriptor.stage.value})"
+        )
 
     # Scoring weights: one hand-authored vector per stage/mode, each summing to 1.0 and never
     # rescaled at runtime.
