@@ -24,6 +24,9 @@ from sirnaforge.core.hit_annotation import (
     HIT_SYMBOL_COLUMN,
     HIT_SYMBOL_MISSING_COLUMN,
     MATCHED_SYMBOL_COLUMN,
+    ORTHOLOG_EVIDENCE_CELL_VALUES,
+    ORTHOLOG_EVIDENCE_COLUMN,
+    ORTHOLOG_EVIDENCE_NOT_APPLICABLE,
     SPECIES_INDEX_MISSING_COLUMN,
     SYMBOL_LOOKUP_MISSING_COLUMN,
     UNKNOWN_SYMBOL,
@@ -964,3 +967,48 @@ def test_an_unclassified_published_row_is_reported_rather_than_silently_skipped(
 
     assert len(warnings) == 1
     assert "1 published hit row(s) carry no usable classification" in warnings[0]
+
+
+@pytest.mark.unit
+def test_a_blank_ortholog_evidence_cell_is_reannotated_rather_than_republished(tmp_path):
+    """A table written before ``ortholog_evidence`` existed must be repaired, not republished blank.
+
+    ``ortholog_evidence`` joined ``CLASSIFICATION_COLUMNS`` as its seventh member. While
+    ``is_annotated`` still checked only the first six, a stale row with every other cell valid counted
+    as annotated, so the blank was republished -- and ``AggregatedOffTargetSchema``'s ``isin`` on
+    ``ORTHOLOG_EVIDENCE_VALUES`` then rejects the very table the same run publishes.
+    """
+    workflow = _workflow(tmp_path, "out_blank_evidence")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    aggregated = results_dir / "aggregated"
+    aggregated.mkdir(parents=True, exist_ok=True)
+    tsv_path = aggregated / "combined_offtargets.tsv"
+    header = [*TSV_COLUMNS, *CLASSIFICATION_COLUMNS]
+    with tsv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        # Fully annotated by the pre-ortholog_evidence contract: only that one cell is blank.
+        writer.writerow(
+            {
+                **_hit_row("cand_gone", ORPHAN_GUIDE, "human", "ENST00000000009"),
+                HIT_CLASS_COLUMN: HitClass.OFF_TARGET.value,
+                MATCHED_SYMBOL_COLUMN: UNKNOWN_SYMBOL,
+                SYMBOL_LOOKUP_MISSING_COLUMN: "False",
+                HIT_SYMBOL_COLUMN: "OTHER",
+                HIT_SYMBOL_MISSING_COLUMN: "False",
+                SPECIES_INDEX_MISSING_COLUMN: "False",
+                ORTHOLOG_EVIDENCE_COLUMN: "",
+            }
+        )
+    _write_summary(aggregated, 1)
+
+    outcome = asyncio.run(
+        workflow._process_nextflow_results(
+            [_candidate("cand_clean", CLEAN_GUIDE)], results_dir, {"status": "completed"}
+        )
+    )
+
+    assert outcome["status"] == "completed"
+    republished = _read_tsv(tsv_path)
+    assert republished[0][ORTHOLOG_EVIDENCE_COLUMN] == ORTHOLOG_EVIDENCE_NOT_APPLICABLE, "never an empty cell"
+    assert all(row[ORTHOLOG_EVIDENCE_COLUMN] in ORTHOLOG_EVIDENCE_CELL_VALUES for row in republished)

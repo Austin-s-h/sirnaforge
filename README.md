@@ -181,6 +181,8 @@ sirnaforge workflow BRCA1 \
 
 When `--transcriptome-fasta` is omitted the workflow automatically indexes the bundled Ensembl cDNA transcriptomes for human, mouse, rat, and macaque so multi-species off-target analysis runs out of the box.
 
+Hits on the target gene's orthologue in another screened species are classified `ortholog`, not counted as off-target liabilities. Orthologues are resolved against Ensembl Compara on stable gene IDs, because symbols do not travel across nomenclature authorities — human `TP53`'s mouse orthologue is `Trp53`. Each row's `ortholog_evidence` column says which evidence was used (`gene_id`, or the `symbol_heuristic` fallback), so a validated conservation call is never confused with a symbol coincidence. A custom `--transcriptome-fasta` gets the same treatment when its Ensembl cDNA headers identify the species.
+
 Every workflow run now captures the resolved transcriptome decision in `logs/workflow_summary.json` under `reference_summary.transcriptome`, indicating whether the reference was auto-selected, explicitly supplied, or intentionally disabled. This makes it easier to audit production runs and confirm that default references were applied as expected.
 
 📖 **[Usage examples and workflows →](docs/usage_examples.md)**

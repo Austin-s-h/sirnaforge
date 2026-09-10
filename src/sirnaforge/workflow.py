@@ -77,8 +77,10 @@ from sirnaforge.core.scoring import (
 )
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
+from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.data.orthology import OrthologueMapping, resolve_orthologues
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
@@ -1591,7 +1593,24 @@ class SiRNAWorkflow:
             if raw_custom is None:
                 return None
 
-            enriched_custom: dict[str, Any] = {"species": "transcriptome"}
+            # Species comes from the resolved reference, not from the parameter it arrived through
+            # (#99). Labelling a custom path "transcriptome" makes it match no species at all, so
+            # every hit is cross-species with no resolvable orthologue: a mouse-cDNA screen published
+            # 10,217 hits as unqualified off_target with zero orthologs. Fall back to the old literal
+            # only when the headers genuinely do not say, and say so out loud.
+            inferred = infer_species_from_cdna_headers(Path(raw_custom["fasta"]))
+            if inferred is None:
+                logger.warning(
+                    "Could not infer the species of custom transcriptome %s from its headers; labelling it "
+                    "'transcriptome'. Orthology cannot be resolved for it, so cross-species hits will be "
+                    "reported as unqualified off-targets.",
+                    transcriptome_ref,
+                )
+            else:
+                logger.info(
+                    "Inferred species '%s' for custom transcriptome %s from its headers", inferred, transcriptome_ref
+                )
+            enriched_custom: dict[str, Any] = {"species": inferred or "transcriptome"}
             enriched_custom.update(raw_custom)
             return enriched_custom
 
@@ -2102,9 +2121,18 @@ class SiRNAWorkflow:
         # alignments are passed through because a candidate with no hits from an alignment that
         # never ran must not be scored as if it had come back clean.
         filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
+        # Orthologue evidence is resolved here, in the async layer, and handed to the synchronous
+        # classifier as a plain gene-ID set: gene symbols cannot decide orthology (mouse TP53 is
+        # Trp53), and classify_hit is pure by contract. Degrades to the symbol heuristic on failure.
+        ortholog_mapping = await self._resolve_ortholog_mapping(screened_species, parsed)
         updated_candidates, stats = self._integrate_offtarget_results(
-            candidates, parsed, filter_criteria, screened_species=screened_species
+            candidates,
+            parsed,
+            filter_criteria,
+            screened_species=screened_species,
+            ortholog_gene_ids=ortholog_mapping.all_gene_ids,
         )
+        stats["orthology"] = ortholog_mapping.summary()
         workflow_warnings.extend(self._persist_hit_classifications(parsed))
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
@@ -2138,7 +2166,7 @@ class SiRNAWorkflow:
 
     @staticmethod
     def _persist_hit_classifications(parsed: Mapping[str, Any]) -> list[str]:
-        """Write the class, the symbols and the two shortfall flags back onto every hit table read.
+        """Write the class, symbols, shortfall flags and ortholog evidence tier onto every table read.
 
         Every genome file the parser read is rewritten with the classification columns appended, so
         a reviewer can tell an on-target isoform alignment from a liability without re-deriving
@@ -2590,12 +2618,63 @@ class SiRNAWorkflow:
         """Strip Ensembl-style version suffixes (e.g. ``.9``) for identity comparisons."""
         return re.sub(r"\.\d+$", "", transcript_id.strip())
 
+    @staticmethod
+    def _species_present_on_hits(offtarget_data: dict[str, Any]) -> frozenset[str]:
+        """Canonical species that actually appear on a transcriptome hit row.
+
+        A species that was screened but aligned nothing needs no orthologue lookup, because there is
+        no cross-species hit to classify. Keeps a single-species screen (and any unit test) off the
+        network entirely.
+        """
+        seen: set[str] = set()
+        for entry in (offtarget_data.get("results") or {}).values():
+            for hit in (entry or {}).get("hits") or []:
+                if "mirna_id" in hit or "database" in hit:
+                    continue
+                label = hit.get("species")
+                if label and str(label).strip():
+                    seen.add(normalize_species_name(str(label)))
+        return frozenset(seen)
+
+    async def _resolve_ortholog_mapping(
+        self, screened_species: Sequence[str] | None, offtarget_data: dict[str, Any]
+    ) -> OrthologueMapping:
+        """Resolve orthologue gene IDs for non-query species that actually produced hits.
+
+        Skipped entirely for a single-species screen, which is the common case and needs no network
+        call. A failure is not fatal: the mapping comes back with the species in
+        ``unresolved_species`` and its hits fall back to the labelled symbol heuristic.
+        """
+        query_species = self._query_species
+        candidates_for_lookup = (
+            frozenset(normalize_species_name(s) for s in (screened_species or self._active_genome_species or ()))
+            & self._species_present_on_hits(offtarget_data)
+        ) - {query_species}
+        if not candidates_for_lookup or not (self._query_gene_ids or self._query_gene_symbols):
+            return OrthologueMapping.empty()
+
+        mapping = await resolve_orthologues(
+            frozenset(self._query_gene_ids),
+            query_species,
+            candidates_for_lookup,
+            # An input FASTA supplies transcript IDs, not gene IDs, and Compara answers those with an
+            # empty 200. The symbol is the fallback identifier; the answer is still a stable gene ID.
+            query_gene_symbols=frozenset(self._query_gene_symbols),
+        )
+        if mapping.unresolved_species:
+            logger.warning(
+                f"Orthologue mapping unresolved for {sorted(mapping.unresolved_species)}; hits in those species "
+                "fall back to gene-symbol equality, which is a heuristic and is labelled as such in the hit table."
+            )
+        return mapping
+
     def _integrate_offtarget_results(  # noqa: PLR0912, C901
         self,
         candidates: list[SiRNACandidate],
         offtarget_data: dict[str, Any],
         filter_criteria: OffTargetFilterCriteria | None = None,
         screened_species: Sequence[str] | None = None,
+        ortholog_gene_ids: frozenset[str] = frozenset(),
     ) -> tuple[list[SiRNACandidate], dict[str, Any]]:
         """Integrate off-target analysis results, classify hits, and score candidates.
 
@@ -2617,6 +2696,10 @@ class SiRNAWorkflow:
                 its candidates keep their design-time scores instead of being awarded perfect
                 specificity. None means the caller has no per-species evidence to offer (direct
                 callers, the basic analysis fallback) and the requested set is assumed screened.
+            ortholog_gene_ids: Version-stripped gene IDs resolved as orthologues of the query gene,
+                from :func:`sirnaforge.data.orthology.resolve_orthologues`. Empty is the honest
+                default: orthology then falls back to the labelled gene-symbol heuristic, which
+                cannot resolve pairs like human TP53 / mouse Trp53.
 
         Returns:
             Tuple of (updated candidates, statistics dict with hit class decomposition)
@@ -2687,6 +2770,7 @@ class SiRNAWorkflow:
                 normalize_guide_sequence(c.guide_sequence) for c in candidates if c.repeat_flagged
             ),
             requested_species=requested_species,
+            ortholog_gene_ids=ortholog_gene_ids,
         )
         # Per-row reference lookups, kept separate from the classification context: they answer
         # "what gene did this land on, and did any reference exist" for every row, whatever its class.

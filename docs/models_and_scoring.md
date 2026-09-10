@@ -648,22 +648,38 @@ Every transcriptome hit is classified into exactly one of five mutually exclusiv
 checked in this precedence order (on-target and ortholog deliberately outrank repeat, so a
 repeat-flagged guide's hits on its own gene or orthologs are still counted as such):
 
-| Class          | Meaning                                                                                                                                                                    |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ON_TARGET`    | Hit is in the query species and matches the query gene (transcript ID, gene ID or symbol)                                                                                  |
-| `ORTHOLOG`     | Hit is in a different screened species, and that species' gene symbol for the hit transcript matches the query gene's symbol (case-insensitive)                            |
-| `REPEAT`       | The guide is in the design-time repeat-flagged set                                                                                                                         |
-| `OFF_TARGET`   | Everything else that could be decided                                                                                                                                      |
-| `UNDETERMINED` | The hit's species has no transcript index, so orthology and the query gene could not be checked at all. Assigned by the annotation layer, never returned by `classify_hit` |
+| Class          | Meaning                                                                                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ON_TARGET`    | Hit is in the query species and matches the query gene (transcript ID, gene ID or symbol)                                                                                     |
+| `ORTHOLOG`     | Hit is in a different screened species, on an orthologue of the query gene — by gene ID against the Compara mapping, else by symbol equality (`ortholog_evidence` says which) |
+| `REPEAT`       | The guide is in the design-time repeat-flagged set                                                                                                                            |
+| `OFF_TARGET`   | Everything else that could be decided                                                                                                                                         |
+| `UNDETERMINED` | The hit's species has no transcript index, so orthology and the query gene could not be checked at all. Assigned by the annotation layer, never returned by `classify_hit`    |
 
 `off_target_count` counts **both** `OFF_TARGET` and `UNDETERMINED` — the liability population — so
 that removing a reference cannot loosen the screen. `undetermined_hits` reports how much of that
 count is unqualified.
 
-A hit whose species label is blank/missing is treated as the query species. When an ortholog
-check cannot run because the hit species' annotation carries no gene symbol for that transcript,
-the hit stays `OFF_TARGET` (never guessed at) and the shortfall is counted separately
-(`ortholog_symbol_lookup_misses` in `offtarget_summary`).
+A hit whose species label is blank/missing is treated as the query species. The gene-ID tier needs no
+symbol, so it is tried first; only when it finds nothing does a missing gene symbol stop the check, in
+which case the hit stays `OFF_TARGET` (never guessed at) and the shortfall is counted separately
+(`ortholog_symbol_lookup_misses` in `offtarget_summary`, which therefore counts symbol-tier shortfalls
+only).
+
+**Orthology evidence.** The two tiers are not the same claim, so which one fired is published per row
+as `ortholog_evidence` (`gene_id` / `symbol_heuristic`, and `not_applicable` on every non-ortholog
+row). `gene_id` is a lookup in the orthologue gene-ID set `sirnaforge.data.orthology` resolves from
+Ensembl Compara (`ortholog_one2one`/`one2many`/`many2many` only — paralogues are liabilities, not
+conservation) and handed to `ClassificationContext.ortholog_gene_ids`; `classify_hit` stays a pure
+function and performs no lookup itself. `symbol_heuristic` is uppercased symbol equality, kept because
+it is free offline and right for the many genes whose symbol is conserved, but wrong in both
+directions: HGNC and MGI are separate authorities, so human `TP53`'s mouse orthologue is `Trp53`
+(`TRP53` after ingest) and symbol equality cannot reach it, while unrelated same-symbol genes satisfy
+it. Species whose lookup could not be completed are named in
+`offtarget_summary.filtering_stats.orthology.unresolved_species` in `logs/workflow_summary.json` and
+fall back to the heuristic; species with no hits at all are never looked up, so a single-species screen
+makes no network request. `conservation_score` is derived from `ortholog_species`, so it inherits
+whichever tiers those verdicts came from.
 
 The **query species** is the organism the _target_ transcripts belong to. It is read from the
 database the gene query was answered by (Ensembl/RefSeq/GENCODE are all human-only), never from

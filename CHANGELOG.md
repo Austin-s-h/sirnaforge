@@ -79,10 +79,11 @@ where the two defects removed here were first written down as outstanding.)
   omission.
 - `WeightVector`, `DesignWeights`, `PostScreenSiRNAWeights` and `PostScreenMiRNAWeights` are exported
   from `sirnaforge.models`.
-- **Six classification columns on the published off-target hit tables** — `hit_class`,
+- **Seven classification columns on the published off-target hit tables** — `hit_class`,
   `matched_symbol`, `symbol_lookup_missing`, `hit_symbol`, `hit_symbol_missing`,
-  `species_index_missing`. The classification was computed per alignment and thrown away, so an
-  on-target isoform alignment and a genuine liability were indistinguishable in the hit table.
+  `species_index_missing`, `ortholog_evidence`. The classification was computed per alignment and
+  thrown away, so an on-target isoform alignment and a genuine liability were indistinguishable in
+  the hit table.
   `hit_class` is exactly one of `on_target`/`ortholog`/`repeat`/`off_target`/`undetermined`, on
   **every** table the run read — the aggregated table and, when the aggregate is header-only and the
   fallback reads them, each `genome/*_analysis.tsv`. A header-only table carries the columns too, so
@@ -91,7 +92,9 @@ where the two defects removed here were first written down as outstanding.)
   empty cell) on `off_target` and `repeat` rows. `hit_symbol` **is** the per-row gene name, resolved
   from the transcript index against `rname` independently of class, with `hit_symbol_missing` flagging
   the rows it could not resolve — on a real reference 14.6% of transcripts carry no symbol, so
-  `unknown` is a common honest state and not "no gene". The never-empty guarantee holds because a row
+  `unknown` is a common honest state and not "no gene". `ortholog_evidence` says _how_ an `ortholog`
+  verdict was reached (`gene_id`/`symbol_heuristic`) and is the literal `not_applicable` on every
+  other row — see the orthology entry below. The never-empty guarantee holds because a row
   read back with any classification cell blank — not just a blank `hit_class` — counts as
   unannotated and is re-annotated in full before the table is republished
   (`test_a_row_annotated_in_part_is_repaired_rather_than_republished_with_blank_cells`). The
@@ -112,6 +115,30 @@ where the two defects removed here were first written down as outstanding.)
   reference loosened the screen. `undetermined_hits` reports how much of the count is unqualified.
   `classify_hit` never returns it — deciding that a class could not be decided needs the reference
   inventory, which lives in the annotation layer.
+- **Orthology is resolved against Ensembl Compara on stable gene IDs, and the evidence tier is
+  published (`data/orthology.py`, `ortholog_evidence`).** Orthology was decided on uppercased
+  gene-symbol equality alone, which cannot work across nomenclature authorities: HGNC's `TP53` is
+  MGI's `Trp53` (`TRP53` after ingest), so the conserved orthologue never matched. Measured on a
+  human design screened against mouse cDNA (10,217 hit rows): before, 10,217 `off_target` and zero
+  `ortholog` — every conserved `Trp53` hit published as an unqualified off-target liability; after,
+  6,471 `off_target` and 3,746 `ortholog`, all 3,746 carrying `ortholog_evidence=gene_id`, and the
+  passing pool moved 9,086 → 10,592. `resolve_orthologues` runs in the async data layer and hands
+  `ClassificationContext.ortholog_gene_ids` a plain gene-ID set, so `classify_hit` stays pure;
+  `HitClassification.ortholog_evidence` records which tier fired (`gene_id`, else the retained
+  `symbol_heuristic`) and `offtarget_summary.filtering_stats.orthology` in
+  `logs/workflow_summary.json` carries the mapping's provenance — the IDs and symbols queried, and
+  the resolved and unresolved species. Paralogues are excluded — a within-species duplicate is a liability,
+  not conservation. Two robustness points, both observed live against release 116: an input FASTA
+  supplies _transcript_ IDs, which `/homology/id/...` answers with HTTP 200 and `{"data": []}`
+  (indistinguishable from "no orthologue exists"), so `/homology/symbol/...` is tried as a fallback
+  and its answer is still a stable gene ID; and Compara intermittently fails a valid query with
+  either HTTP 200 carrying an `{"error": ...}` body or HTTP 400, neither of which the shared
+  status-based retry covers, so both are retried here. A lookup that still fails is reported in
+  `unresolved_species` and its hits fall back to the labelled heuristic rather than failing the
+  screen. Species with no hits are never looked up, so a single-species screen makes no network call.
+- **`ensembl_species_slug()`** in `data/species_registry.py`, derived from the registry's scientific
+  name rather than stored twice: Ensembl REST addresses species as `mus_musculus` and rejects the
+  common name `mouse`.
 - **`screen_query_id` on every candidate row.** The aligner is handed one FASTA record per _distinct_
   guide sequence, so a hit row's `qname` is the representative's id. Joining hit rows on `id` silently
   attributed one guide's whole hit set to one of its candidate rows (median 6, max 34 on the frozen
@@ -127,7 +154,7 @@ where the two defects removed here were first written down as outstanding.)
   anything reaching for the obvious schema got a strict-mode rejection. **Two shapes are valid and a
   consumer must tolerate both:** the classification columns are added by a post-hoc read-modify-write
   in Python, so a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused elsewhere
-  publishes 12 columns and the workflow publishes 18. Presence of `hit_class` is the test for which
+  publishes 12 columns and the workflow publishes 19. Presence of `hit_class` is the test for which
   shape you hold. The split is **run-outcome dependent, not only entry-point dependent**: the same
   workflow writes the columns back onto `genome/*_analysis.tsv` only on the runs whose aggregate came
   back header-only and the fallback read the per-species files, so that artifact has both shapes too.
@@ -209,6 +236,14 @@ where the two defects removed here were first written down as outstanding.)
   "some rows unannotated → leave the file unchanged" branch is removed with it: the orphan pass
   annotates every row of every table first, and a shortfall is reported by reconciliation rather than
   by a silent skip.
+- **A custom transcriptome was labelled with the literal species `transcriptome`**, which is not a
+  species: it matches no query species and has no registry entry, so every hit was cross-species with
+  no orthologue resolvable and a screen against mouse cDNA published all 10,217 hits as unqualified
+  `off_target`. `infer_species_from_cdna_headers` now reads the species out of the reference's own
+  Ensembl cDNA headers — the `chromosome:<ASSEMBLY>:` token matched against `ENSEMBL_ASSEMBLIES`, so
+  no new table and no new species list — and falls back to the old literal, with a warning saying
+  orthology cannot be resolved, only when the headers genuinely do not say. Partial fix for #99's rule
+  that species always comes from the resolved reference; the parameter-driven paths are untouched.
 - The `scoring.py` module docstring documented renormalisation as a deliberate feature. It is
   rewritten, and a test now refuses any live source line that describes renormalisation as current
   behaviour — along with an AST-level guard against division by a weight-shaped expression, because
@@ -228,6 +263,13 @@ where the two defects removed here were first written down as outstanding.)
   a rescaled one. In real runs the transcript is always in scope and the residual 5'-end case is
   numerically negligible (0 of 2,492 TP53 sites), but calling `_score_candidates` without transcript
   context — as unit tests may — now yields `design_score = None`.
+- The `symbol_heuristic` ortholog tier is **labelled, not removed**: it still asserts orthology from
+  symbol equality alone, which unrelated genes sharing a symbol across species satisfy. Read
+  `ortholog_evidence = gene_id` as the only validated tier. `ortholog_symbol_lookup_misses` likewise
+  still counts only symbol-tier shortfalls, so it is not a count of unresolvable orthology.
+- Species inference from cDNA headers reads Ensembl-formatted headers only, and a reference mixing two
+  assemblies is deliberately left unlabelled rather than assigned one of them — both fall back to the
+  literal `transcriptome`, where orthology is unresolvable.
 
 ## [0.7.0] - Unreleased
 

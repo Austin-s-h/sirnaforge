@@ -263,6 +263,10 @@ class TargetSelectivity(str, Enum):
 class OrthologyEvidenceSource(str, Enum):
     """How a cross-species correspondence was established.
 
+    The published hit table spells the same two tiers as ``gene_id``/``symbol_heuristic``
+    (:class:`sirnaforge.core.hit_classification.OrthologEvidence`, resolved by
+    :mod:`sirnaforge.data.orthology`); nothing converts between the two vocabularies yet.
+
     Attributes:
         EXPLICIT_MAPPING: A declared orthology mapping or database assertion.
         SYMBOL_EQUALITY: Gene symbols matched. A heuristic, and never a claim of validated

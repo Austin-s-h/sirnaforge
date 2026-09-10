@@ -559,8 +559,8 @@ class GenomeAlignmentSchema(DataFrameModel):
     - Bulk operations on genome alignment results
 
     ``strict=True`` over 12 columns, and ``genome/*_analysis.tsv`` no longer has only one shape: the
-    workflow writes the six classification columns back onto those files on any run whose aggregate
-    came back header-only, so that artifact appears with 12 and with 18 columns and this schema
+    workflow writes the seven classification columns back onto those files on any run whose aggregate
+    came back header-only, so that artifact appears with 12 and with 19 columns and this schema
     rejects the wider one. Use :class:`AggregatedOffTargetSchema`, which accepts either, unless you
     specifically mean to require the producer's shape.
 
@@ -626,16 +626,19 @@ class GenomeAlignmentSchema(DataFrameModel):
 
 HIT_CLASS_VALUES: tuple[str, ...] = ("on_target", "ortholog", "repeat", "off_target", "undetermined")
 BOOLEAN_CELL_VALUES: tuple[str, ...] = ("True", "False")
+#: How an ORTHOLOG verdict was evidenced. ``not_applicable`` is every non-ortholog row: a
+#: symbol-heuristic ortholog is not a validated one, so the tiers are published, not assumed (#101).
+ORTHOLOG_EVIDENCE_VALUES: tuple[str, ...] = ("gene_id", "symbol_heuristic", "not_applicable")
 
 
 class AggregatedOffTargetSchema(GenomeAlignmentSchema):
     """Pandera schema for the *published* aggregated off-target table (`combined_offtargets.tsv`).
 
-    **Two shapes are valid and a consumer must tolerate both.** The six classification columns are
+    **Two shapes are valid and a consumer must tolerate both.** The seven classification columns are
     added by a post-hoc read-modify-write in the Python workflow, not by the Nextflow process that
     publishes the file, so:
 
-    - via `sirnaforge workflow` / `sirnaforge offtarget`, all 18 columns are present;
+    - via `sirnaforge workflow` / `sirnaforge offtarget`, all 19 columns are present;
     - via a direct `nextflow run`, the stub profile, or `aggregate_results.nf` reused in another
       pipeline, only the 12 columns of :class:`GenomeAlignmentSchema` are.
 
@@ -679,4 +682,8 @@ class AggregatedOffTargetSchema(GenomeAlignmentSchema):
     )
     species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
         isin=list(BOOLEAN_CELL_VALUES), description="No transcript index exists for this row's species at all"
+    )
+    ortholog_evidence: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=list(ORTHOLOG_EVIDENCE_VALUES),
+        description="Evidence tier behind an ORTHOLOG verdict; 'not_applicable' for every other class",
     )

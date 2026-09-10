@@ -14,6 +14,7 @@ from sirnaforge.core.hit_classification import (
     ClassificationContext,
     HitClass,
     HitClassCounts,
+    OrthologEvidence,
     classify_hit,
 )
 from sirnaforge.core.repeat_detection import normalize_guide_sequence
@@ -31,8 +32,9 @@ def _build_synthetic_index() -> TranscriptGeneIndex:
         - ENST00000269305 (canonical): gene ENSG00000141510, symbol TP53
         - ENST00000445888 (isoform): gene ENSG00000141510, symbol TP53
 
-    Mouse Tp53 (ortholog, uppercased to TP53 on ingest):
-        - ENSMUST00000108658: gene ENSMUSG00000059552, symbol TP53
+    Mouse Trp53 (the orthologue; MGI's symbol, uppercased to TRP53 on ingest — note it does NOT
+    collide with human TP53, which is the whole reason gene-ID orthology mapping exists):
+        - ENSMUST00000108658: gene ENSMUSG00000059552, symbol TRP53
 
     Rat (no TP53 annotation):
         - ENSRNOT00000012345: gene ENSRNOG00000054321, symbol Gapdh
@@ -60,13 +62,16 @@ def _build_synthetic_index() -> TranscriptGeneIndex:
     )
     index._indices["human"] = human_index
 
-    # Mouse index with ortholog symbol (uppercased on ingest, like human)
+    # Mouse index. The symbol is MGI's real one: the mouse orthologue of TP53 is Trp53, which
+    # ingest uppercases to TRP53 -- it is NOT "Tp53" and does NOT become "TP53". This fixture
+    # previously claimed "TP53" here, which made every ortholog test pass against a gene symbol
+    # that does not exist and hid the fact that symbol equality cannot resolve this orthologue.
     mouse_index = SpeciesTranscriptIndex(species="mouse")
     mouse_index.add(
         TranscriptRecord(
             transcript_id="ENSMUST00000108658",
             gene_id="ENSMUSG00000059552",
-            gene_symbol="TP53",  # Same symbol as human after uppercasing
+            gene_symbol="TRP53",
             biotype="protein_coding",
         )
     )
@@ -100,8 +105,14 @@ def _make_context(
     query_gene_symbols: frozenset[str] | None = None,
     on_target_transcript_ids: frozenset[str] | None = None,
     repeat_guides: frozenset[str] | None = None,
+    ortholog_gene_ids: frozenset[str] | None = None,
 ) -> ClassificationContext:
-    """Build a minimal context for TP53 testing."""
+    """Build a minimal context for TP53 testing.
+
+    ``ortholog_gene_ids`` defaults to the resolved mouse orthologue, i.e. what
+    ``data.orthology.resolve_orthologues`` returns for ENSG00000141510 against mouse. Pass
+    ``frozenset()`` to simulate an unresolved mapping and exercise the symbol heuristic.
+    """
     return ClassificationContext(
         query_gene_ids=frozenset(["ENSG00000141510"]) if query_gene_ids is None else query_gene_ids,
         query_gene_symbols=frozenset(["TP53"]) if query_gene_symbols is None else query_gene_symbols,
@@ -112,6 +123,7 @@ def _make_context(
         index=_build_synthetic_index(),
         repeat_flagged_guides=frozenset() if repeat_guides is None else repeat_guides,
         requested_species=frozenset(["human", "mouse", "rat"]),
+        ortholog_gene_ids=frozenset(["ENSMUSG00000059552"]) if ortholog_gene_ids is None else ortholog_gene_ids,
     )
 
 
@@ -190,33 +202,60 @@ def test_on_target_sibling_isoform():
 
 
 @pytest.mark.unit
-def test_ortholog_symbol_match():
-    """ORTHOLOG when hit is in a different species with matching symbol."""
+def test_ortholog_resolved_by_gene_id():
+    """ORTHOLOG via the resolved Compara gene-ID mapping, which is what real orthology needs.
+
+    Mouse TP53 is ``Trp53`` (TRP53 after ingest), so symbol equality against human ``TP53`` cannot
+    reach this verdict. The gene-ID mapping is the only evidence that does.
+    """
     context = _make_context()
     hit = _make_hit(rname="ENSMUST00000108658", species="mouse")
     result = classify_hit(hit, guide_sequence="ACGTACGTACGTACGTACGTA", context=context)
 
     assert result.hit_class == HitClass.ORTHOLOG
-    assert result.matched_symbol == "TP53"
+    assert result.ortholog_evidence == OrthologEvidence.GENE_ID
+    assert result.matched_symbol == "TRP53"
     assert result.symbol_lookup_missing is False
 
 
 @pytest.mark.unit
-def test_ortholog_case_insensitive():
-    """ORTHOLOG when symbol differs ONLY in capitalisation.
+def test_symbol_equality_cannot_resolve_trp53():
+    """Without the gene-ID mapping, the real mouse orthologue is missed — this is the #101 defect.
 
-    This test verifies that symbols are case-normalized during index building.
-    Since transcript_index.py uppercases symbols on ingest, comparing mouse "Tp53"
-    (uppercased to "TP53") against human "TP53" succeeds.
+    Regression guard for the fixture that used to claim mouse TP53 was ``Tp53``: with a truthful
+    ``TRP53`` symbol and no resolved mapping, the orthologue falls through to OFF_TARGET. The
+    verdict is wrong biologically but honest about its evidence, which is why the mapping exists.
     """
-    # The default index already has mouse with "TP53" (uppercased on ingest)
-    context = _make_context()
+    context = _make_context(ortholog_gene_ids=frozenset())
     hit = _make_hit(rname="ENSMUST00000108658", species="mouse")
-    result = classify_hit(hit, guide_sequence="ACGTACGTACGTACGTACGTACGTA", context=context)
+    result = classify_hit(hit, guide_sequence="ACGTACGTACGTACGTACGTA", context=context)
+
+    assert result.hit_class == HitClass.OFF_TARGET
+    assert result.ortholog_evidence is None
+
+
+@pytest.mark.unit
+def test_ortholog_symbol_heuristic_is_labelled():
+    """A conserved symbol still resolves an ortholog, but is labelled as the heuristic it is."""
+    # No gene-ID mapping, and a query symbol that does match the mouse record's TRP53.
+    context = _make_context(ortholog_gene_ids=frozenset(), query_gene_symbols=frozenset(["TRP53"]))
+    hit = _make_hit(rname="ENSMUST00000108658", species="mouse")
+    result = classify_hit(hit, guide_sequence="ACGTACGTACGTACGTACGTA", context=context)
 
     assert result.hit_class == HitClass.ORTHOLOG
-    assert result.matched_symbol == "TP53"
-    assert result.symbol_lookup_missing is False
+    assert result.ortholog_evidence == OrthologEvidence.SYMBOL_HEURISTIC
+    assert result.matched_symbol == "TRP53"
+
+
+@pytest.mark.unit
+def test_gene_id_evidence_wins_over_symbol_heuristic():
+    """When both tiers would fire, the resolved mapping is the reported evidence."""
+    context = _make_context(query_gene_symbols=frozenset(["TRP53"]))
+    hit = _make_hit(rname="ENSMUST00000108658", species="mouse")
+    result = classify_hit(hit, guide_sequence="ACGTACGTACGTACGTACGTA", context=context)
+
+    assert result.hit_class == HitClass.ORTHOLOG
+    assert result.ortholog_evidence == OrthologEvidence.GENE_ID
 
 
 @pytest.mark.unit
@@ -286,7 +325,7 @@ def test_precedence_ortholog_beats_repeat():
     result = classify_hit(hit, guide_sequence=repeat_guide, context=context)
 
     assert result.hit_class == HitClass.ORTHOLOG
-    assert result.matched_symbol == "TP53"
+    assert result.matched_symbol == "TRP53"
     assert result.symbol_lookup_missing is False
 
 

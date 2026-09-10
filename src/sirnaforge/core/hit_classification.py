@@ -2,7 +2,8 @@
 
 This module classifies screening hits into four mutually exclusive categories:
 ON_TARGET, ORTHOLOG, REPEAT, and OFF_TARGET. The classifier is pure (no I/O,
-no alignment) and operates on pre-computed indices and hit metadata.
+no alignment) and operates on pre-computed indices, hit metadata and the orthologue gene-ID set
+resolved upstream by ``data.orthology``.
 
 ``HitClass`` carries a fifth member, ``UNDETERMINED``, which this classifier never returns:
 deciding that a class *could not be decided* needs the reference inventory, so it is assigned in
@@ -10,7 +11,8 @@ deciding that a class *could not be decided* needs the reference inventory, so i
 
 Classification precedence:
     1. ON_TARGET - hit is on the query gene in the query species
-    2. ORTHOLOG - hit is on an ortholog in a different species (symbol match)
+    2. ORTHOLOG - hit is on an ortholog in a different species (resolved gene-ID mapping,
+       else the gene-symbol heuristic; which one is recorded as ``ortholog_evidence``)
     3. REPEAT - guide overlaps a repeat element
     4. OFF_TARGET - everything else
 
@@ -51,6 +53,21 @@ class HitClass(str, Enum):
     UNDETERMINED = "undetermined"
 
 
+class OrthologEvidence(str, Enum):
+    """How an ORTHOLOG verdict was reached, published so the two are never conflated.
+
+    ``GENE_ID`` is a resolved orthologue mapping keyed on stable gene IDs (Ensembl Compara), which
+    is the only evidence that supports a validated-orthology claim. ``SYMBOL_HEURISTIC`` is
+    uppercased gene-symbol equality: cheap, offline, and wrong in both directions -- HGNC and MGI
+    are different nomenclature authorities, so the mouse orthologue of TP53 (``Trp53``) does not
+    match it, while unrelated genes sharing a symbol across species do. Issue #101 requires the
+    distinction be recorded rather than assumed.
+    """
+
+    GENE_ID = "gene_id"
+    SYMBOL_HEURISTIC = "symbol_heuristic"
+
+
 @dataclass(frozen=True)
 class ClassificationContext:
     """Immutable context for hit classification.
@@ -64,6 +81,9 @@ class ClassificationContext:
         repeat_flagged_guides: Normalised guide sequences flagged as repeat-overlapping.
         requested_species: Canonical names of species the user requested to screen.
             (Used downstream for conservation scoring; does not affect classification verdicts.)
+        ortholog_gene_ids: Version-stripped stable gene IDs resolved as orthologues of the query
+            gene. Supplied by the caller; empty is the honest default and means the symbol
+            heuristic is the only evidence available, not that no orthologue exists.
     """
 
     query_gene_ids: frozenset[str]
@@ -73,6 +93,11 @@ class ClassificationContext:
     index: TranscriptGeneIndex
     repeat_flagged_guides: frozenset[str]
     requested_species: frozenset[str]
+    # Version-stripped stable gene IDs resolved as orthologues of the query gene, in any species.
+    # Resolved upstream (see data/orthology.py) and passed in, because this classifier is pure and
+    # must not perform network lookups. Empty means no mapping was available, which demotes
+    # orthology to the symbol heuristic rather than silently claiming no orthologue exists.
+    ortholog_gene_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -88,12 +113,16 @@ class HitClassification:
         species_index_missing: True when the ortholog check could not run because there is
             no index for the hit species at all. A missing reference and a thin annotation
             are different problems, so they are counted separately.
+        ortholog_evidence: Which evidence tier produced an ORTHOLOG verdict, or None for every
+            other class. See :class:`OrthologEvidence` -- a symbol-heuristic ortholog is not a
+            validated one, and the two must not be read as the same claim.
     """
 
     hit_class: HitClass
     matched_symbol: str | None
     symbol_lookup_missing: bool
     species_index_missing: bool = False
+    ortholog_evidence: OrthologEvidence | None = None
 
 
 @dataclass
@@ -106,7 +135,8 @@ class HitClassCounts:
         repeat: Count of hits classified as REPEAT.
         off_target: Count of hits classified as OFF_TARGET.
         undetermined: Count of hits whose class could not be decided (no index for the species).
-        symbol_lookup_missing: Count of hits where ortholog check failed due to missing symbol.
+        symbol_lookup_missing: Count of hits where the ortholog check reached the symbol tier
+            (the gene-ID mapping found nothing) and the index carried no symbol for the transcript.
         no_species_index: Count of hits where the species has no index at all.
         ortholog_species: Set of canonical species names with at least one ortholog hit.
     """
@@ -177,9 +207,12 @@ def classify_hit(
         label means "query species" (preserving the current workflow behavior
         where untagged hits are treated as on-target candidates).
 
-        Gene IDs are species-specific and cannot match across species. Symbol
-        comparison is case-insensitive (mouse 'Tp53' matches human 'TP53') to
-        handle ortholog naming conventions.
+        Gene IDs are species-specific, so a cross-species hit is matched against
+        ``context.ortholog_gene_ids`` -- the mapping resolved upstream from Ensembl
+        Compara -- rather than against ``query_gene_ids`` directly. Symbol equality
+        is the fallback and is case-insensitive, but it cannot reach a differently
+        named orthologue (mouse TP53 is 'Trp53'), so ``ortholog_evidence`` records
+        which tier decided the verdict.
     """
     # Extract and normalize hit metadata
     hit_transcript_raw = str(hit.get("rname", ""))
@@ -213,7 +246,7 @@ def classify_hit(
         symbol_lookup_missing = False
         species_index_missing = False
     else:
-        # 2. ORTHOLOG: different species, symbol matches (case-insensitively)
+        # 2. ORTHOLOG: different species, resolved gene-ID mapping first, then symbol equality
         ortholog, symbol_lookup_missing, species_index_missing = _classify_other_species(
             hit_transcript_id, hit_species, context
         )
@@ -258,14 +291,34 @@ def _classify_other_species(
 ) -> tuple[HitClassification | None, bool, bool]:
     """Return an ORTHOLOG verdict for a non-query-species hit, plus the two shortfall flags.
 
-    Gene IDs are species-specific and cannot match across species, so orthology is decided on
-    the gene symbol alone. A symbol we do not have is never guessed at.
+    Two evidence tiers, tried in order and always reported (see :class:`OrthologEvidence`):
+
+    1. A resolved orthologue mapping on stable gene IDs. Gene IDs are species-specific, so this
+       cannot be a direct comparison against ``query_gene_ids`` -- it is a lookup in the
+       ``ortholog_gene_ids`` set resolved upstream from Ensembl Compara.
+    2. Uppercased gene-symbol equality, as a labelled heuristic. It is kept because it costs
+       nothing offline and is right for the many genes whose symbol is conserved, but it cannot
+       resolve ``TP53``/``Trp53`` and must never be presented as validated orthology.
+
+    A symbol we do not have is never guessed at.
     """
     species_index = context.index.for_species(hit_species)
     if species_index is None:
         return None, False, True
 
+    # Gene-ID evidence first, and it does not need a symbol: a transcript annotated with a gene ID
+    # but no symbol is still resolvable this way, which is why the symbol shortfall is checked after.
+    hit_gene_id = species_index.gene_id_for(hit_transcript_id)
     hit_symbol = species_index.symbol_for(hit_transcript_id)
+    if hit_gene_id and hit_gene_id in context.ortholog_gene_ids:
+        verdict = HitClassification(
+            hit_class=HitClass.ORTHOLOG,
+            matched_symbol=hit_symbol,
+            symbol_lookup_missing=False,
+            ortholog_evidence=OrthologEvidence.GENE_ID,
+        )
+        return verdict, False, False
+
     if hit_symbol is None:
         return None, True, False
 
@@ -274,6 +327,7 @@ def _classify_other_species(
             hit_class=HitClass.ORTHOLOG,
             matched_symbol=hit_symbol,
             symbol_lookup_missing=False,
+            ortholog_evidence=OrthologEvidence.SYMBOL_HEURISTIC,
         )
         return verdict, False, False
     return None, False, False
