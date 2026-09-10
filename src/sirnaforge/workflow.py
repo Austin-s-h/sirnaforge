@@ -2536,13 +2536,13 @@ class SiRNAWorkflow:
                 # class of their own and feed the miRNA counters only.
                 if path in genome_file_set:
                     _ingest_genome_tsv(path)
-                else:
-                    _ingest_tsv(path)
-
-            if not mirna_hits_found:
-                mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
-                if _ingest_tsv(mirna_tsv):
-                    logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
+                elif _ingest_tsv(path):
+                    # Recording the ingest here is what stops it happening twice. The glob above
+                    # already matches mirna/mirna_analysis.tsv, so a trailing "if not
+                    # mirna_hits_found" retry of that exact path re-read the same file and doubled
+                    # every miRNA counter; there is no layout in which the retry reached a file the
+                    # glob did not.
+                    logger.info(f"Parsed miRNA analysis results from {path}")
                     mirna_hits_found = True
 
         return {
