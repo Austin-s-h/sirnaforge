@@ -38,13 +38,15 @@ class TestMiRNADesignConfig:
         # Issue #96 moved the miRNA scoring weights out of this config and into the named
         # postscreen_mirna_v4 vector, and deleted the two that were declared but never read.
         assert not hasattr(config, "scoring_weights")
+        # Issue #102 removed pos1_mismatch from the vector: it is exactly constant at 0.0 for the
+        # exact-reverse-complement passenger every design uses, so it ranked nothing while holding
+        # 0.05. It is still computed; its score_pos1_mismatch contribution column is now always null.
         assert PostScreenMiRNAWeights().as_mapping().keys() == {
             "off_target",
             "target_accessibility",
             "asymmetry",
             "gc_content",
             "ago_start",
-            "pos1_mismatch",
             "supp_13_16",
         }
 

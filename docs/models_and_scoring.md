@@ -223,19 +223,27 @@ class PostScreenSiRNAWeights(WeightVector):   # postscreen_sirna_v4 -> composite
     gc_content: float = 0.20
 
 class PostScreenMiRNAWeights(WeightVector):   # postscreen_mirna_v4 -> composite_score
-    off_target: float = 0.20
-    target_accessibility: float = 0.22
-    asymmetry: float = 0.18
-    gc_content: float = 0.15
+    off_target: float = 0.20      # exactly 0.80 x postscreen_sirna_v4, term by term
+    target_accessibility: float = 0.24
+    asymmetry: float = 0.20
+    gc_content: float = 0.16
     ago_start: float = 0.10       # A/U at guide position 1
-    pos1_mismatch: float = 0.05   # G:U wobble or mismatch at position 1
     supp_13_16: float = 0.10      # low 3' supplementary pairing, guide positions 13-16
 ```
+
+Issue #102 removed a seventh term, `pos1_mismatch` at 0.05: it is **exactly constant at 0.0** for the
+exact-reverse-complement passenger every design uses, so it ranked nothing while consuming weight. Its
+0.05 was not reassigned by judgement — the four shared terms were restored to exactly
+`0.80 x postscreen_sirna_v4`, the proportional-scaling rule the vector already declared, which lands
+on two decimal places without rounding. `pos1_mismatch` is still computed, and the pairing state it
+derives from stays on the row as `guide_pos1_base` and `pos1_pairing_state`, so the removal is
+auditable and reversible if mismatched passengers are ever designed. `score_pos1_mismatch` is a
+*contribution* column, so with the term in no vector it is now **always null**.
 
 Validation is a `@model_validator(mode="after")` reading the subclass's own `TERM_NAMES`.
 `COMPOSITE_TERM_NAMES` is now only the ordered **union** of scored terms, used for column ordering;
 nothing validates against it. It could not stay the validation input: the three vectors score 3, 4
-and 7 different terms, and one global tuple made a missing term look like a licence to renormalise.
+and 6 different terms, and one global tuple made a missing term look like a licence to renormalise.
 
 `ScoringWeights.vector_for(post_screen=..., design_mode=...)` returns exactly one vector; there is no
 API for combining them and no runtime arithmetic on their values. `off_target` cannot be evaluated
@@ -766,9 +774,10 @@ class MiRNADesignConfig(BaseModel):
 
 ### 5.2 miRNA-Specific Scoring
 
-The three biogenesis quantities are **ordinary declared terms** of `postscreen_mirna_v4`
-(`ago_start` 0.10, `pos1_mismatch` 0.05, `supp_13_16` 0.10), each a feature in [0, 1] like every
-other term. `biogenesis_features(guide, passenger)` derives all three from sequence alone, so they
+Two of the three biogenesis quantities are **ordinary declared terms** of `postscreen_mirna_v4`
+(`ago_start` 0.10, `supp_13_16` 0.10), each a feature in [0, 1] like every other term. The third,
+`pos1_mismatch`, is computed and reported and scored by nothing — issue #102 measured it exactly
+constant. `biogenesis_features(guide, passenger)` derives all three from sequence alone, so they
 are available for any candidate — including rows that never passed through `MiRNADesigner`, such as
 the dirty controls cloned from rejected candidates.
 
@@ -1026,18 +1035,22 @@ set not chosen by the repo owner.
 
 **`postscreen_mirna_v4`** → `composite_score` (post-screen, `--design-mode mirna`)
 
-| Term                 | Weight | Rationale                                                                |
-| -------------------- | ------ | ------------------------------------------------------------------------ |
-| Off-target           | 0.20   | kept above `asymmetry`, which exact proportional scaling would have tied |
-| Target accessibility | 0.22   |                                                                          |
-| Asymmetry            | 0.18   |                                                                          |
-| GC content           | 0.15   |                                                                          |
-| `ago_start`          | 0.10   | A/U at guide position 1 (Argonaute loading)                              |
-| `pos1_mismatch`      | 0.05   | G:U wobble or mismatch at position 1                                     |
-| `supp_13_16`         | 0.10   | low 3' supplementary pairing potential                                   |
+| Term                 | Weight | Rationale                                                             |
+| -------------------- | ------ | --------------------------------------------------------------------- |
+| Off-target           | 0.20   | exactly 0.80 × the siRNA vector's 0.25                                |
+| Target accessibility | 0.24   | exactly 0.80 × 0.30                                                   |
+| Asymmetry            | 0.20   | exactly 0.80 × 0.25; ties `off_target`, as the siRNA vector also does  |
+| GC content           | 0.16   | exactly 0.80 × 0.20                                                   |
+| `ago_start`          | 0.10   | A/U at guide position 1 (Argonaute loading)                           |
+| `supp_13_16`         | 0.10   | low 3' supplementary pairing potential; endpoint claimed, not measured |
 
-Hand-authored near, but deliberately not equal to, 0.75× the siRNA values: deriving it by formula
-would be the 1.25 divisor in a new costume.
+The two biogenesis terms hold 0.20 and the four shared terms hold exactly 0.80 × the siRNA values.
+Before issue #102 they were 0.22 / 0.18 / 0.15 with `off_target` at 0.20 — a rounded 0.75× scaling
+with the resulting `off_target`/`asymmetry` tie broken in favour of `off_target`. Removing the
+constant `pos1_mismatch` released 0.05 and made the exact scaling reachable at two decimal places,
+so the rounding and its tie-break are both gone. This is still a **declared** scaling of a
+hand-authored vector, not a fit; the numbers moved because a term left, not because anything was
+tuned.
 
 **Computed and reported, in no vector:** `empirical` (the `min_empirical_score` gate),
 `isoform_coverage` (the optional `min_isoform_coverage` gate, default off), `conservation` (reporting

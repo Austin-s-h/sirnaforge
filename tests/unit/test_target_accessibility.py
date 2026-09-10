@@ -214,6 +214,58 @@ def test_scored_window_is_the_eight_mer_ending_at_the_site_three_prime_end():
     assert site.whole_site <= site.seed_anchored_17mer <= site.seed_end_8mer
 
 
+@pytest.mark.unit
+def test_the_scored_window_is_the_end_the_guide_seed_pairs():
+    """Issue #102's geometry audit, stated as the relation between the guide and the window.
+
+    The target site is the guide's reverse complement, and the two are antiparallel, so guide
+    position i pairs target position L+1-i and the guide seed (positions 2-8) reads the target site's
+    **3'** end. `seed_end_8mer` must therefore be the 8-mer at the site's 3' end -- which is the same
+    8-mer as the reverse complement of the guide's first 8 bases.
+    """
+    sequence = next(iter(_read_fasta(DATA_DIR / "tp53_201.fa").values())).upper()
+    start, length = 500, 21
+    site = sequence[start : start + length]
+    guide = str(Seq(site).reverse_complement())
+
+    # The bases pairing guide positions 1-8, located in the transcript.
+    seed_paired_target = str(Seq(guide[:SEED_END_WINDOW_NT]).reverse_complement())
+    assert site.endswith(seed_paired_target), "the guide seed does not pair the site's 3' end"
+
+    profile = TargetAccessibilityProfile.fold(sequence, u_max=length)
+    scored = profile.site_accessibility(start, length).seed_end_8mer
+    at_seed_paired_bases = profile.site_accessibility(
+        sequence.index(seed_paired_target, start), SEED_END_WINDOW_NT
+    ).seed_end_8mer
+    assert scored == at_seed_paired_bases
+
+
+@pytest.mark.unit
+def test_accessibility_reads_full_transcript_context_not_the_site_alone():
+    """Issue #102's other geometry audit: the site's own bases do not determine its score.
+
+    Opening probability is a property of the whole folded molecule, so changing sequence **outside**
+    the site -- here, inserting a strong hairpin that can sequester it -- must move the site's value.
+    If it did not, the term would be folding the site in isolation, which is the class of defect
+    issue #95 removed when `accessibility` folded the guide against itself.
+    """
+    site = "ATGCATGCATGCATGCATGCA"
+    spacer = "AAAAAAAAAAAAAAAAAAAA"
+    unstructured = spacer + site + spacer
+    # A perfect reverse complement of the site placed downstream: the site can now pair with it.
+    sequestering = spacer + site + spacer + str(Seq(site).reverse_complement()) + spacer
+
+    start = len(spacer)
+    open_value = TargetAccessibilityProfile.fold(unstructured, u_max=len(site)).site_accessibility(start, len(site))
+    paired_value = TargetAccessibilityProfile.fold(sequestering, u_max=len(site)).site_accessibility(start, len(site))
+
+    assert open_value.seed_end_8mer is not None
+    assert paired_value.seed_end_8mer is not None
+    assert paired_value.seed_end_8mer < open_value.seed_end_8mer, (
+        "context outside the target site did not change its opening probability, so the fold is local"
+    )
+
+
 def _hairpin_and_loop_transcript() -> tuple[str, int, int]:
     """A transcript with one target site buried in a GC stem and one in an unpairable A run.
 

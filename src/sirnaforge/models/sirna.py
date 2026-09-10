@@ -55,13 +55,15 @@ DEFAULT_MIN_EMPIRICAL_SCORE = 0.4
 # and nothing validates against it. Each vector validates against its own TERM_NAMES, because
 # the three vectors score different terms (3, 4 and 7 of them) and a single global tuple used to
 # make a missing term look like a licence to renormalise -- which is no longer permitted anywhere.
+# `pos1_mismatch` is absent: issue #102 removed it from the only vector that held it, so no vector
+# scores it and `score_pos1_mismatch` -- a *contribution* column -- is now always null. The pairing
+# state itself is still reported, on `guide_pos1_base` and `pos1_pairing_state`.
 COMPOSITE_TERM_NAMES = (
     "off_target",
     "target_accessibility",
     "asymmetry",
     "gc_content",
     "ago_start",
-    "pos1_mismatch",
     "supp_13_16",
 )
 
@@ -264,8 +266,10 @@ class DesignWeights(WeightVector):
     """``design_v4``: the design-stage vector, over the three terms computable before screening.
 
     ``design_score`` is NOT comparable with ``composite_score``: it is a different vector over a
-    different term set, and it is systematically optimistic because the term it lacks
-    (``off_target``) can only ever subtract evidence.
+    different term set. It is **not** systematically the larger of the two, and issue #102 deleted
+    that claim -- the two vectors weight their shared terms differently, so which is higher depends
+    on the candidate. All features at 0.5 with ``off_target = 1.0`` gives ``design_v4`` 50.0 against
+    ``postscreen_sirna_v4``'s 62.5. Compare neither to the other; compare each within its stage.
     """
 
     VECTOR_NAME: ClassVar[str] = "design_v4"
@@ -274,8 +278,10 @@ class DesignWeights(WeightVector):
     # asymmetry takes the top slot rather than target_accessibility. On 900 benchmark siRNAs with
     # measured knockdown the two are statistically indistinguishable (Spearman rho +0.273 vs +0.267),
     # so this is not a large evidential gap -- but asymmetry additionally correlates rho +0.53 with
-    # A/U content at guide positions 1-5, which is itself the strongest single predictor in that
-    # panel (rho +0.438). Accessibility explaining ~7% of rank variance did not justify 0.40.
+    # A/U content at guide positions 1-5 (rho +0.438 on that 900-siRNA folding subsample; +0.378 on
+    # the full 2,816, where #102 measured guide position 1 alone higher still at +0.415, so A/U(1-5)
+    # is not the strongest single feature). Accessibility explaining ~7% of rank variance did not
+    # justify 0.40.
     target_accessibility: float = Field(
         default=0.35,
         ge=0,
@@ -297,9 +303,16 @@ class PostScreenSiRNAWeights(WeightVector):
     """``postscreen_sirna_v4``: ``design_v4``'s terms plus ``off_target``, one extra term.
 
     ``off_target`` holds its nominal 0.25 while the scored budget shrank from six terms to four, so
-    its share of the scored budget falls from 0.25/0.60 to 0.25/1.00. That is a deliberate reduction
-    in how much specificity drives ranking, taken because the term measured 2.24x its nominal share
-    of composite variance on the reference run.
+    its share of the scored budget rises from 0.25/0.60 to 0.25/1.00.
+
+    Issue #102 corrected the justification that used to sit here. It read "the term measured 2.24x
+    its nominal share of composite variance on the reference run"; that 2.24x is from an internal
+    run under weight set 2.0.0 and has never been re-derived, and the frozen public baseline
+    measures the opposite -- **0.39x nominal, the least influential of the four scored terms** on a
+    human-only screen, its contribution compressed against the 25.0 ceiling. Screening one more
+    species doubles the share to 0.19, so that number describes the screening scope, not the term.
+    Whether 0.25 is the right weight is therefore open, and the honest statement is that it is a
+    declared prior awaiting a full-reference run.
     """
 
     VECTOR_NAME: ClassVar[str] = "postscreen_sirna_v4"
@@ -323,18 +336,33 @@ class PostScreenSiRNAWeights(WeightVector):
 
 
 class PostScreenMiRNAWeights(WeightVector):
-    """``postscreen_mirna_v4``: the miRNA-biogenesis-aware post-screen vector, 7 declared terms.
+    """``postscreen_mirna_v4``: the miRNA-biogenesis-aware post-screen vector, 6 declared terms.
 
     Hand-authored, not derived from ``postscreen_sirna_v4``: deriving it by scaling would be the
-    1.25 divisor in a new costume. The three biogenesis terms replaced an undeclared bonus that was
-    folded into the score and then divided out of it, so ``--design-mode mirna`` used to move every
-    weight by a factor absent from the manifest.
+    1.25 divisor in a new costume. The biogenesis terms replaced an undeclared bonus that was folded
+    into the score and then divided out of it, so ``--design-mode mirna`` used to move every weight
+    by a factor absent from the manifest.
 
-    The four shared terms are close to a proportional scaling of ``postscreen_sirna_v4`` (which would
-    give 0.1875 / 0.225 / 0.1875 / 0.15) rounded to 2 dp, with the resulting off_target/asymmetry tie
-    broken in favour of ``off_target`` so specificity keeps its rank over asymmetry. Declared expert
-    priors, reviewed and accepted; a run scored under different numbers is not comparable, so bump
-    SCORING_WEIGHT_SET_VERSION if they change.
+    Issue #102 removed ``pos1_mismatch``, which held 0.05 here while being **exactly constant at
+    0.0** -- one distinct value over all 13,415 scored candidates of the public baseline, 0.000% of
+    variance. It is constant by construction, not by accident: the passenger is the exact reverse
+    complement of the guide, so guide position 1 always forms a Watson-Crick pair. A term that ranks
+    nothing must not consume weight. ``biogenesis_features`` still computes it and the miRNA design
+    path still writes it to ``component_scores``, and the pairing state stays on the row as
+    ``guide_pos1_base`` and ``pos1_pairing_state``, so a run stays auditable and the term can return
+    if the designer ever builds deliberately mismatched passengers. Its *contribution* column
+    ``score_pos1_mismatch`` is now always null, because no vector scores it; see
+    ``models/scoring_profile.py``.
+
+    The 0.05 it released was **not** reassigned by judgement. The four shared terms are now exactly
+    ``0.80 x postscreen_sirna_v4`` -- 0.20 / 0.24 / 0.20 / 0.16 -- which is the proportional-scaling
+    rule this docstring already declared, now reachable at 2 dp without rounding and therefore
+    without the off_target/asymmetry tie-break the rounding used to force (the source vector ties
+    those two at 0.25 apiece; this one ties them at 0.20). ``ago_start`` and ``supp_13_16`` keep
+    their declared 0.10 each, so the biogenesis budget is 0.20 and the shared budget 0.80.
+
+    Declared expert priors, reviewed and accepted, and **not fitted to any dataset**; a run scored
+    under different numbers is not comparable, so bump SCORING_WEIGHT_SET_VERSION if they change.
     """
 
     VECTOR_NAME: ClassVar[str] = "postscreen_mirna_v4"
@@ -344,21 +372,17 @@ class PostScreenMiRNAWeights(WeightVector):
         "asymmetry",
         "gc_content",
         "ago_start",
-        "pos1_mismatch",
         "supp_13_16",
     )
 
     off_target: float = Field(default=0.20, ge=0, le=1, description="Post-screen genuine off-target specificity weight")
     target_accessibility: float = Field(
-        default=0.22, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
+        default=0.24, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
     )
-    asymmetry: float = Field(default=0.18, ge=0, le=1, description="Thermodynamic asymmetry weight")
-    gc_content: float = Field(default=0.15, ge=0, le=1, description="GC content optimization weight")
+    asymmetry: float = Field(default=0.20, ge=0, le=1, description="Thermodynamic asymmetry weight")
+    gc_content: float = Field(default=0.16, ge=0, le=1, description="GC content optimization weight")
     ago_start: float = Field(
         default=0.10, ge=0, le=1, description="Argonaute loading preference weight (A/U at guide position 1)"
-    )
-    pos1_mismatch: float = Field(
-        default=0.05, ge=0, le=1, description="Position-1 pairing weight (G:U wobble or mismatch preferred)"
     )
     supp_13_16: float = Field(
         default=0.10, ge=0, le=1, description="3' supplementary pairing weight (guide positions 13-16)"
@@ -823,8 +847,10 @@ class SiRNACandidate(BaseModel):
     # Composite scoring. Two scores on two declared vectors, deliberately not one field:
     #   design_score    -- design_v4, 3 terms, available before screening
     #   composite_score -- postscreen_{sirna,mirna}_v4, available only after screening
-    # They are NOT comparable: different term sets, and design_score is systematically optimistic
-    # because the term it lacks (off_target) can only subtract evidence.
+    # They are NOT comparable: different term sets, and the two vectors also weight their *shared*
+    # terms differently, so neither score is systematically the larger. Issue #102 deleted the claim
+    # that design_score is the more optimistic number -- 0.5 features with off_target = 1.0 give
+    # design_v4 50.0 against postscreen_sirna_v4's 62.5.
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
     design_score: float | None = Field(
         default=None,

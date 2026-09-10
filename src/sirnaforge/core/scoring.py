@@ -36,12 +36,21 @@ Version history:
       different quantity, so 2.x scores are not comparable. Guide self-structure
       survives as `paired_fraction` -- reported, and the EXCESS_PAIRING gate input --
       but is no longer a scoring term.
-    - 4.0.0: issue #96. Both hidden normalisations removed: the active-set
-      renormalisation here, and the `1 + max_mirna_bonus` divisor that scaled every
-      miRNA score by 0.80. One flat weight vector becomes three named ones; `empirical`,
-      `conservation` and `isoform_coverage` leave the composite; the three live miRNA
-      biogenesis bonuses become declared terms. No 3.x score is comparable with a 4.x one.
+    - 4.0.0: issues #96 and #102, one comparability break between them. Both hidden
+      normalisations removed: the active-set renormalisation here, and the
+      `1 + max_mirna_bonus` divisor that scaled every miRNA score by 0.80. One flat
+      weight vector becomes three named ones; `empirical`, `conservation` and
+      `isoform_coverage` leave the composite; the miRNA biogenesis bonuses become
+      declared terms. `pos1_mismatch` is **not** among them -- #102's audit measured it
+      exactly constant at 0.0 on all 13,415 scored baseline candidates, so it holds no
+      weight and `postscreen_mirna_v4` has six terms, its shared four at exactly
+      0.80 x `postscreen_sirna_v4`. No 3.x score is comparable with a 4.x one.
       Bump this version whenever any DEFAULT weight or any vector's term set changes.
+
+Every weight and threshold in this release is `experimental`. `models/scoring_profile.py`
+records, per term, what it reads and how far its evidence goes; nothing has been held out and
+independently replicated, so no term is `validated` and these scores rank candidates rather
+than predicting a knockdown level or a safety probability.
 """
 
 from collections.abc import Mapping

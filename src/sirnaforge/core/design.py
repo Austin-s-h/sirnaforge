@@ -391,6 +391,10 @@ class SiRNADesigner:
             # a site that is genuinely closed.
             if access_score is not None:
                 candidate.component_scores["target_accessibility"] = access_score
+            # Reported, not scored (issue #97 / D5). Same omit-when-inactive rule as above.
+            au_score = au_content_5p_score(candidate.guide_sequence)
+            if au_score is not None:
+                candidate.component_scores["au_1_5"] = au_score
 
             self._apply_design_score(candidate, asym_score, gc_score, access_score)
             candidate.asymmetry_score = asym_score
@@ -635,15 +639,23 @@ class SiRNADesigner:
         }
 
 
-# The three miRNA biogenesis terms of postscreen_mirna_v4. Each is an ordinary declared term with
-# its own weight; there is no bonus to fold in and nothing to divide out. All three are pure
-# functions of the guide and passenger sequences, so they are computable for every candidate --
-# including dirty controls, which never pass through MiRNADesigner.
+# The three miRNA biogenesis features `biogenesis_features` produces. All three are pure functions
+# of the guide and passenger sequences, so they are computable for every candidate -- including
+# dirty controls, which never pass through MiRNADesigner. Two of them are scored terms of
+# postscreen_mirna_v4; `pos1_mismatch` is computed and reported only, because issue #102 measured it
+# exactly constant. Read a vector's own TERM_NAMES for what is scored -- this tuple is what is
+# *computed*, and the two are deliberately not the same list.
 MIRNA_TERM_NAMES = ("ago_start", "pos1_mismatch", "supp_13_16")
 
 # Guide positions 13-16 (1-based), the 3' supplementary pairing region.
 SUPP_REGION_SLICE = slice(12, 16)
 SUPP_REGION_MIN_LEN = 16
+
+# Guide positions 1-5 (1-based), the A/U window of issue #97. The window is **pre-declared** at 1-5
+# by decision D5 and must not be widened, narrowed or shifted to raise a correlation: single-dataset
+# tuning has already misfired twice here (the off-target cap of 3, the 0.65 asymmetry floor).
+AU_5P_WINDOW_SLICE = slice(0, 5)
+AU_5P_WINDOW_LEN = 5
 
 # Watson-Crick pairs and the G:U wobble, read as RNA.
 _PERFECT_PAIRS = frozenset({("A", "U"), ("U", "A"), ("G", "C"), ("C", "G")})
@@ -679,6 +691,23 @@ def supplementary_score(guide: str) -> float:
     return au_count / len(supp_region) if supp_region else 0.5
 
 
+def au_content_5p_score(guide: str) -> float | None:
+    """A/U content over guide positions 1-5, as a fraction in [0, 1]. Issue #97, window per D5.
+
+    Reported on every candidate and scored by no default vector in 0.7.1: promoting it needs the
+    post-screen feature assembly to forward it, which is not this module's file. Returns None for a
+    guide shorter than the window rather than a substituted midpoint -- a missing input must not
+    score as a good one.
+
+    Pure sequence, so it is computable wherever a guide exists, including on paths that have no
+    transcript context and no ViennaRNA.
+    """
+    if len(guide) < AU_5P_WINDOW_LEN:
+        return None
+    window = _as_rna(guide[AU_5P_WINDOW_SLICE])
+    return (window.count("A") + window.count("U")) / AU_5P_WINDOW_LEN
+
+
 def biogenesis_features(guide: str, passenger: str) -> dict[str, float]:
     """The three miRNA biogenesis sub-scores, from sequence alone.
 
@@ -701,7 +730,7 @@ class MiRNADesigner(SiRNADesigner):
     """miRNA-biogenesis-aware siRNA designer with specialized scoring.
 
     Extends SiRNADesigner with scoring rules optimized for miRNA-like processing:
-    - Argonaute selection preferences (pos1 A/U, mismatch at pos1)
+    - Argonaute selection preferences (pos1 A/U scored; pos1 pairing state reported only)
     - 3' supplementary pairing analysis (positions 13-16)
     - Conservative thermodynamic thresholds
     - Seed region quality assessment
@@ -719,9 +748,11 @@ class MiRNADesigner(SiRNADesigner):
         """Record the miRNA biogenesis evidence, then score exactly as siRNA mode does.
 
         The design stage uses one vector (``design_v4``) in both modes, so this method no longer
-        touches any score: the three biogenesis quantities are terms of ``postscreen_mirna_v4`` and
-        only enter once ``off_target`` exists. What it does do is record them -- as reported fields
-        and as ``component_scores`` entries -- so the CSV shows why a miRNA run ranks as it does.
+        touches any score: two of the three biogenesis quantities -- ``ago_start`` and
+        ``supp_13_16`` -- are terms of ``postscreen_mirna_v4`` and only enter once ``off_target``
+        exists, and ``pos1_mismatch`` is scored by no vector at all since #102. What this method does
+        do is record all three -- as reported fields and as ``component_scores`` entries -- so the CSV
+        shows why a miRNA run ranks as it does.
 
         Before issue #96 this method folded the bonuses into ``composite_score`` and divided the
         result by ``1 + max_bonus``, which scaled every declared weight by 0.80 in miRNA mode.

@@ -272,15 +272,23 @@ class TestWeightVectors:
             "asymmetry": 0.25,
             "gc_content": 0.20,
         }
+        # Six terms, not seven: issue #102 removed pos1_mismatch, which was exactly constant at
+        # 0.0, and restored the four shared terms to exactly 0.80 x postscreen_sirna_v4 rather than
+        # reassigning its 0.05 by judgement.
         assert PostScreenMiRNAWeights().as_mapping() == {
             "off_target": 0.20,
-            "target_accessibility": 0.22,
-            "asymmetry": 0.18,
-            "gc_content": 0.15,
+            "target_accessibility": 0.24,
+            "asymmetry": 0.20,
+            "gc_content": 0.16,
             "ago_start": 0.10,
-            "pos1_mismatch": 0.05,
             "supp_13_16": 0.10,
         }
+        shared = PostScreenSiRNAWeights().as_mapping()
+        mirna = PostScreenMiRNAWeights().as_mapping()
+        for term, weight in shared.items():
+            assert mirna[term] == pytest.approx(0.80 * weight, abs=1e-9), (
+                f"the miRNA vector's shared term '{term}' is no longer 0.80 x the siRNA vector's"
+            )
 
     def test_every_vector_sums_to_one_over_its_own_terms(self) -> None:
         """Each vector validates against its own term set; there is no global term tuple."""
@@ -292,7 +300,7 @@ class TestWeightVectors:
     def test_the_three_vectors_score_different_term_sets(self) -> None:
         """The reason the single global COMPOSITE_TERM_NAMES tuple could no longer validate."""
         sizes = {vector.name: len(vector.terms) for vector in ScoringWeights().all_vectors()}
-        assert sizes == {"design_v4": 3, "postscreen_sirna_v4": 4, "postscreen_mirna_v4": 7}
+        assert sizes == {"design_v4": 3, "postscreen_sirna_v4": 4, "postscreen_mirna_v4": 6}
 
     def test_a_mis_summed_vector_is_a_construction_error(self) -> None:
         """Not a silent pass, and not renormalised at use: refused outright."""
@@ -360,10 +368,12 @@ class TestVersionConstant:
     def test_version_is_4_0_0(self) -> None:
         """SCORING_WEIGHT_SET_VERSION should be "4.0.0".
 
-        Bump it whenever a default weight or a vector's term set changes. 4.0.0 marks issue #96:
+        Bump it whenever a default weight or a vector's term set changes. 4.0.0 marks issues #96
+        **and** #102, with one comparability break between them because 0.7.1 has not shipped. #96:
         both hidden normalisations removed (the active-set renormalisation and the miRNA 1.25
         divisor), one flat vector replaced by three named ones, and empirical / conservation /
-        isoform_coverage out of the composite. No 3.x score is comparable with a 4.x one.
+        isoform_coverage out of the composite. #102: `pos1_mismatch` out of `postscreen_mirna_v4`,
+        which is why that vector has six terms. No 3.x score is comparable with a 4.x one.
         """
         assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
 

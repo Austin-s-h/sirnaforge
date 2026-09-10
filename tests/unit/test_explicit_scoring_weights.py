@@ -21,7 +21,7 @@ import pytest
 from sirnaforge.core import design as design_module
 from sirnaforge.core import scoring as scoring_module
 from sirnaforge.core.design import SiRNADesigner, biogenesis_features
-from sirnaforge.core.scoring import compute_composite
+from sirnaforge.core.scoring import SCORING_WEIGHT_SET_VERSION, compute_composite
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
     EMPIRICAL_SCORE_MIN,
@@ -58,10 +58,19 @@ def _candidate(guide: str) -> SiRNACandidate:
 def test_mirna_and_sirna_composites_are_on_one_declared_scale() -> None:
     """A candidate as good at biogenesis as at everything else scores the same in both modes.
 
-    This is the identity the 1.25 divisor broke. Both post-screen vectors sum to 1.0, so for a
-    candidate whose sub-scores are all the same value `f`, both modes return exactly `100 * f` --
-    for every `f`, not just at the endpoints. Under the divisor the same candidate returned
-    `(100f + 0.25f * 100) / 1.25`, which only coincidentally agrees at f = 0.
+    Both post-screen vectors sum to 1.0, so for a candidate whose sub-scores are all the same value
+    `f`, both modes return exactly `100 * f` -- for every `f`, not just at the endpoints.
+
+    What this test does NOT prove, corrected by issue #102's audit: it cannot detect the divisor in
+    the *historic* form it actually had. The explanation here used to claim that `(100f + 25f) / 1.25`
+    agrees with `100f` only at f = 0. It agrees at *every* f -- that is the same arithmetic identity,
+    written out -- so with the bonuses sitting outside a vector that already summed to 1.0, a
+    cross-mode equality cannot distinguish a divided vector from an undivided one. (The absolute
+    `sirna.score == 100 * level` leg does catch a divisor applied uniformly inside
+    `compute_composite`, which is not the shape the bug had.) The divisor's removal is proved by
+    `test_no_divisor_is_applied_after_the_miRNA_composite` and by
+    `test_each_contribution_is_exactly_its_declared_weight_times_its_feature`, which compare against
+    the declared weights instead of against the other mode.
     """
     weights = ScoringWeights()
     sirna_vector = weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA)
@@ -91,9 +100,11 @@ def test_no_divisor_is_applied_after_the_miRNA_composite() -> None:
         "asymmetry": 0.8,
         "gc_content": 0.5,
         "ago_start": 1.0,
-        "pos1_mismatch": 0.0,
         "supp_13_16": 0.75,
     }
+    # Exactly the vector's terms and no more -- a leftover "pos1_mismatch" key here would be ignored
+    # by compute_composite while reading as though the term were still scored.
+    assert set(features) == set(vector.terms)
 
     result = compute_composite(features, vector)
     by_hand = sum(vector.as_mapping()[term] * features[term] * 100.0 for term in vector.terms)
@@ -107,29 +118,73 @@ def test_no_divisor_is_applied_after_the_miRNA_composite() -> None:
 def test_a_zero_biogenesis_candidate_loses_only_declared_weight() -> None:
     """What the literal "same score" reading costs, stated as a measured number.
 
-    A candidate scoring 0 on all three biogenesis terms cannot score identically in both modes:
-    the three terms carry 0.25 of postscreen_mirna_v4, so it retains the shared four's 0.75. That
-    is arithmetically similar to the old 0.80 factor and deliberately different in kind -- 0.75 is
-    the sum of three weights written in the manifest, attributable term by term on the row, where
-    0.80 was an undeclared divisor applied to the whole vector including off_target.
+    A candidate scoring 0 on both live biogenesis terms cannot score identically in both modes: the
+    two terms carry 0.20 of postscreen_mirna_v4, so it retains the shared four's 0.80. That is
+    numerically the old 0.80 factor and deliberately different in kind -- 0.80 is the sum of four
+    weights written in the manifest, attributable term by term on the row, where the divisor was an
+    undeclared factor applied to the whole vector including off_target.
+
+    It was 0.75 over three biogenesis terms until issue #102 removed `pos1_mismatch`, which was
+    exactly constant at 0.0 and therefore contributed nothing to any ranking while holding 0.05.
     """
     weights = ScoringWeights()
     sirna_vector = weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA)
     mirna_vector = weights.vector_for(post_screen=True, design_mode=DesignMode.MIRNA)
+    biogenesis_terms = tuple(term for term in mirna_vector.terms if term not in SHARED_TERMS)
+    assert biogenesis_terms == ("ago_start", "supp_13_16")
 
     shared = dict.fromkeys(SHARED_TERMS, 1.0)
     sirna = compute_composite(shared, sirna_vector)
-    mirna = compute_composite({**shared, "ago_start": 0.0, "pos1_mismatch": 0.0, "supp_13_16": 0.0}, mirna_vector)
+    mirna = compute_composite({**shared, **dict.fromkeys(biogenesis_terms, 0.0)}, mirna_vector)
 
     retained = mirna.score / sirna.score
-    assert retained == pytest.approx(0.75, abs=1e-9), f"zero-biogenesis candidates retain {retained:.4f}"
+    assert retained == pytest.approx(0.80, abs=1e-9), f"zero-biogenesis candidates retain {retained:.4f}"
 
-    # The shortfall is exactly the three declared biogenesis weights, not a factor on the vector.
+    # The shortfall is exactly the declared biogenesis weights, not a factor on the vector.
     shortfall = (sirna.score - mirna.score) / 100.0
     assert shortfall == pytest.approx(
-        sum(mirna_vector.as_mapping()[term] for term in ("ago_start", "pos1_mismatch", "supp_13_16")),
+        sum(mirna_vector.as_mapping()[term] for term in biogenesis_terms),
         abs=1e-9,
     )
+
+
+@pytest.mark.unit
+def test_each_contribution_is_exactly_its_declared_weight_times_its_feature() -> None:
+    """Term by term, against the manifest -- the check that actually excludes a divisor.
+
+    Issue #102 added this because the cross-mode equality test it sits beside cannot do the job on
+    its own reasoning: that test compares two normalised vectors on uniform features, so it is blind
+    to anything that scales both. A per-term identity against the declared weight does not survive a
+    divisor, a renormalisation, or a bonus folded in afterwards, on any feature vector.
+
+    Its limit, stated so it is not over-read: it reads the weights from the vector, so it cannot see
+    a wrong-but-normalised weight -- swapping asymmetry and gc_content in postscreen_mirna_v4 leaves
+    this test green. The literal numbers are pinned by
+    `test_composite_scoring.py::TestWeightVectors::test_declared_default_weights`, which is what
+    catches that. This test's job is that no arithmetic happens *after* the weighted sum.
+    """
+    weights = ScoringWeights()
+    features = {
+        "off_target": 0.9,
+        "target_accessibility": 0.31,
+        "asymmetry": 0.62,
+        "gc_content": 0.47,
+        "ago_start": 1.0,
+        "supp_13_16": 0.25,
+    }
+
+    for vector in weights.all_vectors():
+        declared = vector.as_mapping()
+        result = compute_composite(features, vector)
+
+        for term, weight in declared.items():
+            assert result.contributions[term] == pytest.approx(weight * features[term] * 100.0, abs=1e-9), (
+                f"{vector.name}'s '{term}' contribution is not weight x feature x 100"
+            )
+        # No term outside the vector contributes, and the score is the plain sum of what does.
+        assert set(result.contributions) == set(declared)
+        assert result.score == pytest.approx(sum(result.contributions.values()), abs=1e-9)
+        assert result.weight_set_version == SCORING_WEIGHT_SET_VERSION
 
 
 @pytest.mark.unit
@@ -237,6 +292,67 @@ def test_design_score_and_composite_score_are_separate_stages() -> None:
     )
     assert all(value is not None for value in contributions)
     assert candidate.design_score == pytest.approx(sum(contributions))  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_design_score_is_not_systematically_above_the_post_screen_score() -> None:
+    """Issue #102: the claim that design_score is the more optimistic number is false.
+
+    It was documented in `docs/scoring.md` and in `DesignWeights`' own docstring, reasoned from
+    `postscreen_sirna_v4` having one term design_v4 lacks and that term only being able to subtract.
+    The reasoning ignores that the two vectors weight their *shared* terms differently: design_v4
+    gives asymmetry 0.40 and accessibility 0.35, the post-screen vector 0.25 and 0.30. So a
+    candidate with a perfect off-target result scores higher after screening, not lower.
+
+    The exact counterexample from the issue, reproduced against the shipped defaults.
+    """
+    weights = ScoringWeights()
+    design_vector = weights.vector_for(post_screen=False)
+    post_screen_vector = weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA)
+
+    features = {**dict.fromkeys(SHARED_TERMS, 0.5), "off_target": 1.0}
+    design = compute_composite(features, design_vector)
+    post_screen = compute_composite(features, post_screen_vector)
+
+    assert design.score == pytest.approx(50.0, abs=1e-9)
+    assert post_screen.score == pytest.approx(62.5, abs=1e-9)
+    assert post_screen.score > design.score, "the direction claim #102 deleted must stay deleted"
+
+    # The direction is not fixed the other way either: a bad off-target result reverses it. Which is
+    # the point -- the two are not comparable in either direction, only non-comparable.
+    bad = {**dict.fromkeys(SHARED_TERMS, 0.5), "off_target": 0.0}
+    assert compute_composite(bad, post_screen_vector).score < compute_composite(bad, design_vector).score
+
+
+@pytest.mark.unit
+def test_no_scoring_module_claims_design_score_is_the_more_optimistic_number() -> None:
+    """The words go with the behaviour: the refuted claim must not survive where scoring is defined.
+
+    Scoped to the modules that define scoring. A third copy of the sentence lives in
+    `workflow.py::_apply_post_screen_ranking`, where it is doubly stale -- it also still names
+    `isoform_coverage` and `conservation` as post-screen composite terms, which issue #96 removed --
+    but that function belongs to #100's aggregation branch, so it is reported there rather than
+    edited here. Widen this guard to all of `src/` once that copy is gone.
+
+    A comment recording that the claim was deleted has to be able to name it, so a mention is
+    allowed only alongside a marker that *historicises* it. Bare negation is not enough: the
+    sentence this test guards sits next to "design_score is NOT comparable with composite_score",
+    and a nearby-negation rule would let the refuted claim straight back in -- which it did, on the
+    first attempt at this guard.
+    """
+    package = Path(scoring_module.__file__).resolve().parent.parent
+    paths = [Path(scoring_module.__file__), Path(design_module.__file__), *(package / "models").rglob("*.py")]
+    historicising = ("deleted", "removed", "no longer", "used to", "refuted", "#102")
+
+    for path in paths:
+        lines = path.read_text().splitlines()
+        for index, line in enumerate(lines):
+            if "optimistic" not in line.lower():
+                continue
+            window = " ".join(lines[max(0, index - 1) : index + 2]).lower()
+            assert any(marker in window for marker in historicising), (
+                f"{path.name}:{index + 1} claims design_score is the more optimistic number: {line.strip()}"
+            )
 
 
 def _weight_arithmetic_offences(module: object) -> list[str]:
