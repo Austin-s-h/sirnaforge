@@ -368,10 +368,12 @@ class TestVersionConstant:
     def test_version_is_4_0_0(self) -> None:
         """SCORING_WEIGHT_SET_VERSION should be "4.0.0".
 
-        Bump it whenever a default weight or a vector's term set changes. 4.0.0 marks issue #96:
+        Bump it whenever a default weight or a vector's term set changes. 4.0.0 marks issues #96
+        **and** #102, with one comparability break between them because 0.7.1 has not shipped. #96:
         both hidden normalisations removed (the active-set renormalisation and the miRNA 1.25
         divisor), one flat vector replaced by three named ones, and empirical / conservation /
-        isoform_coverage out of the composite. No 3.x score is comparable with a 4.x one.
+        isoform_coverage out of the composite. #102: `pos1_mismatch` out of `postscreen_mirna_v4`,
+        which is why that vector has six terms. No 3.x score is comparable with a 4.x one.
         """
         assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
 

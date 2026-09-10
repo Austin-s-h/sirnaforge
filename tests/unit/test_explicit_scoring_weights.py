@@ -61,11 +61,13 @@ def test_mirna_and_sirna_composites_are_on_one_declared_scale() -> None:
     Both post-screen vectors sum to 1.0, so for a candidate whose sub-scores are all the same value
     `f`, both modes return exactly `100 * f` -- for every `f`, not just at the endpoints.
 
-    What this test does NOT prove, corrected by issue #102's audit: it says nothing about the
-    deleted 1.25 divisor. The explanation here used to claim that `(100f + 25f) / 1.25` agrees with
-    `100f` only at f = 0. It agrees at *every* f -- that is the same arithmetic identity, written
-    out -- so an equality between the two modes cannot distinguish a divided vector from an
-    undivided one. The divisor's removal is proved by
+    What this test does NOT prove, corrected by issue #102's audit: it cannot detect the divisor in
+    the *historic* form it actually had. The explanation here used to claim that `(100f + 25f) / 1.25`
+    agrees with `100f` only at f = 0. It agrees at *every* f -- that is the same arithmetic identity,
+    written out -- so with the bonuses sitting outside a vector that already summed to 1.0, a
+    cross-mode equality cannot distinguish a divided vector from an undivided one. (The absolute
+    `sirna.score == 100 * level` leg does catch a divisor applied uniformly inside
+    `compute_composite`, which is not the shape the bug had.) The divisor's removal is proved by
     `test_no_divisor_is_applied_after_the_miRNA_composite` and by
     `test_each_contribution_is_exactly_its_declared_weight_times_its_feature`, which compare against
     the declared weights instead of against the other mode.
@@ -98,9 +100,11 @@ def test_no_divisor_is_applied_after_the_miRNA_composite() -> None:
         "asymmetry": 0.8,
         "gc_content": 0.5,
         "ago_start": 1.0,
-        "pos1_mismatch": 0.0,
         "supp_13_16": 0.75,
     }
+    # Exactly the vector's terms and no more -- a leftover "pos1_mismatch" key here would be ignored
+    # by compute_composite while reading as though the term were still scored.
+    assert set(features) == set(vector.terms)
 
     result = compute_composite(features, vector)
     by_hand = sum(vector.as_mapping()[term] * features[term] * 100.0 for term in vector.terms)

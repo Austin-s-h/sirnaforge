@@ -133,8 +133,11 @@ labels or in both splits. The split therefore never places two rows from the sam
 same transcript on opposite sides. `--huesken-only` drops the `Other` rows if a measurement should
 cite one paper.
 
-⚠️ **What these splits do and do not buy.** They control transcript-level overfitting: a number
-reported on `held_out` was not available to whoever chose the term or the window. They do **not**
+⚠️ **What these splits do and do not buy.** They control transcript-level overfitting **by this
+branch**: a number reported on `held_out` was not available to the term-set comparison run here. They
+do **not** insulate the choice of term or window — A/U(1-5) and its window were pre-declared from
+published analyses of the *whole* 2,816-guide panel (ρ +0.378 at n = 2,816), which includes all 20
+held-out accessions, so the held-out rows were fully available to whoever chose them. They do **not**
 constitute validation. Both halves are the **same study, the same assay, the same laboratory and the
 same chemistry**, so a held-out transcript says nothing about cross-lab replication — issue #97's
 open question 4, which 0.7.1 does not address. No term is promoted past `experimental` on the

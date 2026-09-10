@@ -18,7 +18,13 @@ from typing import ClassVar
 import pytest
 from pydantic import ValidationError
 
-from sirnaforge.core.design import SiRNADesigner, au_content_5p_score, biogenesis_features
+from sirnaforge.core.design import (
+    MiRNADesigner,
+    SiRNADesigner,
+    au_content_5p_score,
+    biogenesis_features,
+)
+from sirnaforge.core.scoring import compute_composite
 from sirnaforge.models.scoring_profile import (
     EXPERIMENTAL_AU_PROFILE,
     PROFILES,
@@ -30,6 +36,7 @@ from sirnaforge.models.scoring_profile import (
 )
 from sirnaforge.models.sirna import (
     COMPOSITE_TERM_NAMES,
+    DesignMode,
     DesignParameters,
     PostScreenMiRNAWeights,
     ScoringWeights,
@@ -94,6 +101,62 @@ def test_pos1_mismatch_holds_no_weight_and_is_still_reported() -> None:
 
 
 @pytest.mark.unit
+def test_the_pos1_audit_trail_is_the_pairing_state_not_the_contribution_column() -> None:
+    """`score_pos1_mismatch` is a contribution column, so with the term unscored it is always null.
+
+    Pinned because the removal was first documented as "still reported on score_pos1_mismatch",
+    which is false: `compute_composite` builds contributions over the vector's terms only, so a term
+    in no vector produces no contribution. What is actually still on the row -- and what the docs now
+    point at -- is `guide_pos1_base`, `pos1_pairing_state` and `component_scores["pos1_mismatch"]`.
+    """
+    guide = "ATTGACTCCAGTGGTAATCT"
+    passenger = guide.translate(str.maketrans("ATCG", "TAGC"))[::-1]
+    vector = ScoringWeights().vector_for(post_screen=True, design_mode=DesignMode.MIRNA)
+    features = {
+        **dict.fromkeys(vector.terms, 0.5),
+        **biogenesis_features(guide, passenger),
+    }
+    result = compute_composite({term: features[term] for term in vector.terms}, vector)
+    assert "pos1_mismatch" not in result.contributions
+
+    candidate = SiRNACandidate(
+        id="pos1_probe",
+        transcript_id="ENST00000269305",
+        position=31,
+        guide_sequence=guide,
+        passenger_sequence=passenger,
+        gc_content=(guide.count("G") + guide.count("C")) / len(guide) * 100,
+        length=len(guide),
+        asymmetry_score=0.7,
+    )
+    MiRNADesigner(DesignParameters())._score_candidates([candidate], "A" * 30 + passenger + "A" * 60)
+
+    assert candidate.score_pos1_mismatch is None
+    assert candidate.guide_pos1_base == "A"
+    assert candidate.pos1_pairing_state
+    assert candidate.component_scores["pos1_mismatch"] == 0.0
+
+
+@pytest.mark.unit
+def test_a_profile_refuses_to_pay_weight_to_a_deprecated_term() -> None:
+    """The validator's third refusal branch, which `pos1_mismatch` can never reach.
+
+    `pos1_mismatch` is both constant and deprecated and the constant check fires first, so without a
+    probe that is deprecated *without* being constant this branch would be dead code.
+    """
+    with pytest.raises(ValidationError, match="deprecated term 'empirical'"):
+        ScoringProfile(
+            profile_id="deprecated_probe",
+            description="pays weight to a rule measured to point the wrong way",
+            status=EvidenceStatus.EXPERIMENTAL,
+            ships_as_default=False,
+            vectors=(_DeprecatedPayingWeights(),),
+        )
+    assert TERM_REGISTRY["empirical"].evidence_status is EvidenceStatus.DEPRECATED
+    assert not TERM_REGISTRY["empirical"].is_constant
+
+
+@pytest.mark.unit
 def test_an_exact_reverse_complement_passenger_never_earns_pos1_mismatch() -> None:
     """The structural argument, over every possible first base rather than one example."""
     for first in "ACGT":
@@ -150,10 +213,33 @@ def test_nothing_in_the_registry_is_promoted() -> None:
 
 @pytest.mark.unit
 def test_the_shipped_profile_is_the_actual_default_vectors() -> None:
-    """A registry that drifted from the code it documents would be worse than none."""
-    declared = {vector.name: vector.as_mapping() for vector in SHIPPED_PROFILE.vectors}
-    actual = ScoringWeights().as_manifest()
-    assert declared == actual
+    """A registry that drifted from the code it documents would be worse than none.
+
+    The expected numbers are written out as literals on purpose. `SHIPPED_PROFILE.vectors` and
+    `ScoringWeights` both default-construct the same three classes, so comparing the two to each
+    other is an identity that no weight change can break -- the first draft of this test did exactly
+    that and stayed green under a mutated `PostScreenSiRNAWeights`. Both sides are now compared
+    against 4.0.0's shipped numbers instead.
+    """
+    shipped_4_0_0 = {
+        "design_v4": {"target_accessibility": 0.35, "asymmetry": 0.40, "gc_content": 0.25},
+        "postscreen_sirna_v4": {
+            "off_target": 0.25,
+            "target_accessibility": 0.30,
+            "asymmetry": 0.25,
+            "gc_content": 0.20,
+        },
+        "postscreen_mirna_v4": {
+            "off_target": 0.20,
+            "target_accessibility": 0.24,
+            "asymmetry": 0.20,
+            "gc_content": 0.16,
+            "ago_start": 0.10,
+            "supp_13_16": 0.10,
+        },
+    }
+    assert {vector.name: vector.as_mapping() for vector in SHIPPED_PROFILE.vectors} == shipped_4_0_0
+    assert ScoringWeights().as_manifest() == shipped_4_0_0
 
 
 @pytest.mark.unit
@@ -181,8 +267,11 @@ def test_au_1_5_counts_the_declared_window_read_as_rna() -> None:
     assert au_content_5p_score("ATGCGCGCGCGCGCGCGCGCG") == pytest.approx(0.4)
     # Positions beyond 5 are outside the pre-declared window and must not move the score.
     assert au_content_5p_score("GGGGGAAAAAAAAAAAAAAAA") == 0.0
-    # Too short to fill the window: None, not a substituted midpoint.
+    # Too short to fill the window: None, not a substituted midpoint -- and the registry field whose
+    # whole job is to state that must agree, having first said "0.0".
     assert au_content_5p_score("ATGC") is None
+    policy = TERM_REGISTRY["au_1_5"].missing_value_policy
+    assert "None" in policy and "0.0" not in policy
 
 
 @pytest.mark.unit
@@ -248,6 +337,24 @@ class _ConstantPayingWeights(PostScreenMiRNAWeights):
     )
 
     pos1_mismatch: float = 0.05
+    target_accessibility: float = 0.19
+
+
+class _DeprecatedPayingWeights(PostScreenMiRNAWeights):
+    """Pays weight to `empirical`, which is deprecated but not constant."""
+
+    VECTOR_NAME: ClassVar[str] = "probe_deprecated_paying"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = (
+        "off_target",
+        "target_accessibility",
+        "asymmetry",
+        "gc_content",
+        "ago_start",
+        "supp_13_16",
+        "empirical",
+    )
+
+    empirical: float = 0.05
     target_accessibility: float = 0.19
 
 
