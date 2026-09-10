@@ -80,7 +80,13 @@ from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
-from sirnaforge.data.orthology import OrthologueMapping, resolve_orthologues
+from sirnaforge.data.orthology import (
+    OrthologTable,
+    OrthologueMapping,
+    load_ortholog_table,
+    mapping_from_table,
+    resolve_orthologues,
+)
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
@@ -146,6 +152,7 @@ class WorkflowConfig:
         transcriptome_fasta: str | None = None,
         transcriptome_filter: str | None = None,
         transcriptome_selection: ReferenceSelection | None = None,
+        ortholog_mapping_file: Path | str | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
@@ -211,6 +218,10 @@ class WorkflowConfig:
         self.transcriptome_references = [
             choice.value for choice in self.transcriptome_selection.choices if choice.value
         ]
+        # Offline orthologue evidence (#101): when set, cross-species classification reads this file
+        # instead of calling Ensembl Compara, so an air-gapped run -- and every fixture -- is
+        # deterministic and never waits on REST.
+        self.ortholog_mapping_file = Path(ortholog_mapping_file) if ortholog_mapping_file else None
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
@@ -316,6 +327,11 @@ class SiRNAWorkflow:
         # database (GeneSearcher.query_species). An input FASTA states no organism, so it takes the
         # same answer, and WorkflowConfig(query_species=...) states it outright when it differs.
         self._query_species: str = self.config.query_species or self.gene_searcher.query_species(self.config.database)
+        # Parsed here, not at first use: a malformed mapping file must be reported before a screen
+        # runs, not after it. None means "no file supplied, resolve orthologues over REST".
+        self._ortholog_table: OrthologTable | None = (
+            load_ortholog_table(self.config.ortholog_mapping_file) if self.config.ortholog_mapping_file else None
+        )
         self._species_cdna_fasta: dict[str, Path] = {}
         self._guide_to_transcripts: dict[str, frozenset[str]] = {}
         self._repeat_summary: dict[str, Any] = {"status": "not_run"}
@@ -2642,8 +2658,10 @@ class SiRNAWorkflow:
         """Resolve orthologue gene IDs for non-query species that actually produced hits.
 
         Skipped entirely for a single-species screen, which is the common case and needs no network
-        call. A failure is not fatal: the mapping comes back with the species in
-        ``unresolved_species`` and its hits fall back to the labelled symbol heuristic.
+        call. A configured ``ortholog_mapping_file`` replaces the Compara call outright, which is the
+        offline path #101 requires and the only path any test may take. A failure is not fatal: the
+        mapping comes back with the species in ``unresolved_species`` and its hits fall back to the
+        labelled symbol heuristic.
         """
         query_species = self._query_species
         candidates_for_lookup = (
@@ -2652,6 +2670,19 @@ class SiRNAWorkflow:
         ) - {query_species}
         if not candidates_for_lookup or not (self._query_gene_ids or self._query_gene_symbols):
             return OrthologueMapping.empty()
+
+        if self._ortholog_table is not None:
+            logger.info(
+                f"Reading orthologue evidence for {sorted(candidates_for_lookup)} from "
+                f"{self.config.ortholog_mapping_file} instead of Ensembl Compara"
+            )
+            return mapping_from_table(
+                self._ortholog_table,
+                frozenset(self._query_gene_ids),
+                query_species,
+                candidates_for_lookup,
+                query_gene_symbols=frozenset(self._query_gene_symbols),
+            )
 
         mapping = await resolve_orthologues(
             frozenset(self._query_gene_ids),
@@ -3495,6 +3526,7 @@ async def run_sirna_workflow(
     transcriptome_fasta: str | None = None,
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
+    ortholog_mapping_file: Path | str | None = None,
     gc_min: float = 30.0,
     gc_max: float = 52.0,
     sirna_length: int = 21,
@@ -3547,6 +3579,8 @@ async def run_sirna_workflow(
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
         transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
+        ortholog_mapping_file: JSON mapping of query gene -> species -> orthologue gene IDs. Supply
+            it to resolve cross-species orthology offline instead of calling Ensembl Compara.
         gc_min: Minimum GC content percentage
         gc_max: Maximum GC content percentage
         sirna_length: siRNA length in nucleotides
@@ -3719,6 +3753,7 @@ async def run_sirna_workflow(
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
+        ortholog_mapping_file=ortholog_mapping_file,
         log_file=log_file,
         write_json_summary=write_json_summary,
         num_threads=num_threads,
@@ -3756,6 +3791,7 @@ async def run_offtarget_only_workflow(
     transcriptome_fasta: str | None = None,
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
+    ortholog_mapping_file: Path | str | None = None,
     log_file: str | None = None,
     nextflow_docker_image: str | None = None,
 ) -> dict[str, Any]:
@@ -3777,6 +3813,8 @@ async def run_offtarget_only_workflow(
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
         transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
+        ortholog_mapping_file: JSON mapping of query gene -> species -> orthologue gene IDs, used
+            instead of Ensembl Compara for cross-species orthology
         log_file: Path to centralized log file
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
 
@@ -3924,6 +3962,7 @@ async def run_offtarget_only_workflow(
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
+        ortholog_mapping_file=ortholog_mapping_file,
         log_file=log_file,
         write_json_summary=False,  # Skip JSON summary for off-target-only
     )

@@ -10,17 +10,25 @@ The resolver lives here, in the data layer, because ``core.hit_classification.cl
 pure function and must not perform network I/O. The workflow resolves a mapping once and passes the
 resulting gene-ID set into ``ClassificationContext``.
 
-Cost is one Ensembl Compara request per (query gene x target species), which is negligible beside
-the reference download and index build already on that path, and results are memoised for the
-process so repeated candidates never re-request.
+Cost is up to *two* Compara requests per (query gene x target species) -- the gene-ID route, then
+the symbol route when the first resolves nothing -- charged once per resolution, never per hit.
+There is no cache, so a caller that resolves twice pays twice. Two guards keep an unreachable
+Compara off the critical path: :data:`ORTHOLOGY_BUDGET_SECONDS` bounds a whole resolution, and
+:meth:`OrthologueMapping.from_file` resolves from a user-supplied mapping with no network at all
+(issue #101: an offline path is required, not optional).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import socket
+import ssl
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -36,12 +44,55 @@ ENSEMBL_BASE_URL = "https://rest.ensembl.org"
 #: within-species duplicate is an off-target liability, not conservation evidence.
 ORTHOLOGUE_TYPES = frozenset({"ortholog_one2one", "ortholog_one2many", "ortholog_many2many"})
 
+#: Wall-clock ceiling on one whole resolution, across every species and route. A host that DROPs
+#: rather than refuses (the common firewall default) fails only at the per-request timeout, so
+#: without a ceiling a multi-species screen stalls for minutes before degrading to the labelled
+#: heuristic. Species not reached by then are reported unresolved, which is the honest answer.
+ORTHOLOGY_BUDGET_SECONDS = 60.0
+
+#: Provenance labels for :meth:`OrthologueMapping.summary`.
+SOURCE_COMPARA = "ensembl_compara"
+SOURCE_MAPPING_FILE = "ortholog_mapping_file"
+
+#: A user-supplied mapping, keyed on the uppercased version-stripped query gene ID or symbol.
+OrthologTable = dict[str, dict[str, frozenset[str]]]
+
 _VERSION_SUFFIX = re.compile(r"\.\d+$")
+
+#: Transport failures a retry cannot fix: no route, no DNS, or a TLS chain this host will never
+#: trust. ``ensembl_request_json`` wraps them in ``DatabaseAccessError``, so the cause chain is
+#: what gets inspected.
+_UNREACHABLE_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ClientSSLError, ssl.SSLError, socket.gaierror)
 
 
 def _strip_version(identifier: str) -> str:
     """Drop an Ensembl version suffix so IDs compare equal across releases."""
     return _VERSION_SUFFIX.sub("", identifier.strip())
+
+
+def _query_key(identifier: str) -> str:
+    """Normalise a mapping-file query key so gene IDs and symbols both match case-insensitively."""
+    return _strip_version(identifier).upper()
+
+
+def _budget_spent(deadline: float | None) -> bool:
+    """True once a resolution's wall-clock budget is gone."""
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _is_unreachable(error: BaseException | None) -> bool:
+    """True when the failure means "no route from this host", so retrying only adds latency.
+
+    Compara's two documented flaky shapes are HTTP *responses* and keep their retries. A refused
+    connection, a DNS failure or a certificate that will not verify is a property of the
+    environment (air-gapped host, or a TLS-intercepting proxy whose root CA is missing from the
+    trust store), and re-asking after 2s and 4s cannot change it.
+    """
+    while error is not None:
+        if isinstance(error, _UNREACHABLE_ERRORS):
+            return True
+        error = error.__cause__
+    return False
 
 
 @dataclass(frozen=True)
@@ -58,6 +109,8 @@ class OrthologueMapping:
             result is otherwise indistinguishable from a lookup on the wrong identifier -- the first
             mouse run resolved 0 orthologues purely because the "gene IDs" were transcript IDs.
         queried_symbols: The gene symbols used for the fallback route, if any.
+        source: Where the orthologues came from -- Compara, or a user-supplied mapping file. An
+            offline run must not publish provenance that claims a REST call it never made.
     """
 
     gene_ids_by_species: dict[str, frozenset[str]]
@@ -65,6 +118,7 @@ class OrthologueMapping:
     unresolved_species: frozenset[str]
     queried_gene_ids: frozenset[str] = frozenset()
     queried_symbols: frozenset[str] = frozenset()
+    source: str = SOURCE_COMPARA
 
     @property
     def all_gene_ids(self) -> frozenset[str]:
@@ -77,7 +131,7 @@ class OrthologueMapping:
     def summary(self) -> dict[str, Any]:
         """Provenance record for the run summary, so a conservation claim is auditable."""
         return {
-            "source": "ensembl_compara",
+            "source": self.source,
             "orthologue_types": sorted(ORTHOLOGUE_TYPES),
             "gene_ids_by_species": {s: sorted(g) for s, g in sorted(self.gene_ids_by_species.items())},
             "resolved_species": sorted(self.resolved_species),
@@ -91,6 +145,112 @@ class OrthologueMapping:
         """A mapping that resolved nothing, so every ortholog verdict falls back to the heuristic."""
         return cls(gene_ids_by_species={}, resolved_species=frozenset(), unresolved_species=frozenset())
 
+    @classmethod
+    def from_file(
+        cls,
+        path: Path | str,
+        query_gene_ids: frozenset[str] | set[str] | list[str],
+        query_species: str,
+        target_species: frozenset[str] | set[str] | list[str],
+        *,
+        query_gene_symbols: frozenset[str] | set[str] | list[str] = frozenset(),
+    ) -> OrthologueMapping:
+        """Resolve from a user-supplied mapping file instead of Compara. Never touches the network.
+
+        The offline half of issue #101: an air-gapped run, and every deterministic fixture, states
+        its orthologues in a file rather than depending on REST being reachable. Same arguments as
+        :func:`resolve_orthologues` so the two are interchangeable at the call site.
+        """
+        return mapping_from_table(
+            load_ortholog_table(path),
+            query_gene_ids,
+            query_species,
+            target_species,
+            query_gene_symbols=query_gene_symbols,
+        )
+
+
+def load_ortholog_table(path: Path | str) -> OrthologTable:
+    """Parse a mapping file of query gene -> species -> orthologue gene IDs.
+
+    JSON, e.g. ``{"ENSG00000141510": {"mouse": ["ENSMUSG00000059552"], "rat": []}}``. A query key
+    may be a gene ID (version optional) or a gene symbol, because an input-FASTA run often has no
+    stable gene ID to key on. An explicitly empty list is a *claim* -- "checked, no orthologue" --
+    and is kept distinct from a species the file says nothing about.
+
+    Raises:
+        FileNotFoundError: The path does not exist.
+        ValueError: The file is not JSON, or not of that shape. Unlike a failed network lookup,
+            which degrades to the labelled heuristic, a malformed explicit input fails loudly:
+            silently ignoring it would screen with weaker evidence than the user asked for.
+    """
+    mapping_path = Path(path)
+    try:
+        raw = json.loads(mapping_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Ortholog mapping file {mapping_path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"Ortholog mapping file {mapping_path} must be an object of query gene -> species -> IDs")
+
+    table: OrthologTable = {}
+    for query_key, per_species in raw.items():
+        if not isinstance(per_species, dict):
+            raise ValueError(f"Ortholog mapping file {mapping_path}: entry {query_key!r} must map species -> gene IDs")
+        entry = table.setdefault(_query_key(str(query_key)), {})
+        for species, gene_ids in per_species.items():
+            if isinstance(gene_ids, str) or not isinstance(gene_ids, (list, tuple, set, frozenset)):
+                raise ValueError(
+                    f"Ortholog mapping file {mapping_path}: {query_key!r}/{species!r} must be a list of gene IDs"
+                )
+            canonical = normalize_species_name(str(species))
+            resolved = frozenset(_strip_version(str(gene_id)) for gene_id in gene_ids if gene_id)
+            entry[canonical] = entry.get(canonical, frozenset()) | resolved
+    return table
+
+
+def mapping_from_table(
+    table: OrthologTable,
+    query_gene_ids: frozenset[str] | set[str] | list[str],
+    query_species: str,
+    target_species: frozenset[str] | set[str] | list[str],
+    *,
+    query_gene_symbols: frozenset[str] | set[str] | list[str] = frozenset(),
+) -> OrthologueMapping:
+    """Select one query gene's orthologues out of a parsed mapping table.
+
+    A requested species the table says nothing about is ``unresolved``, not resolved-empty: the file
+    made no claim about it, so its hits fall back to the labelled symbol heuristic rather than being
+    reported as "checked, not an orthologue".
+    """
+    canonical_query = normalize_species_name(query_species)
+    wanted = {normalize_species_name(s) for s in target_species} - {canonical_query}
+    genes = {_strip_version(g) for g in query_gene_ids if g}
+    symbols = {s.strip() for s in query_gene_symbols if s and s.strip()}
+    if (not genes and not symbols) or not wanted:
+        return OrthologueMapping.empty()
+
+    stated: dict[str, set[str]] = {}
+    for key in {_query_key(identifier) for identifier in genes | symbols}:
+        for species, gene_ids in table.get(key, {}).items():
+            stated.setdefault(species, set()).update(gene_ids)
+
+    resolved = wanted & set(stated)
+    unresolved = wanted - resolved
+    if unresolved:
+        logger.warning(
+            "Ortholog mapping file states nothing for %s; hits in those species fall back to the "
+            "labelled symbol heuristic",
+            sorted(unresolved),
+        )
+    return OrthologueMapping(
+        gene_ids_by_species={s: frozenset(stated[s]) for s in sorted(resolved) if stated[s]},
+        resolved_species=frozenset(resolved),
+        unresolved_species=frozenset(unresolved),
+        queried_gene_ids=frozenset(genes),
+        queried_symbols=frozenset(symbols),
+        source=SOURCE_MAPPING_FILE,
+    )
+
 
 async def resolve_orthologues(
     query_gene_ids: frozenset[str] | set[str] | list[str],
@@ -100,6 +260,7 @@ async def resolve_orthologues(
     query_gene_symbols: frozenset[str] | set[str] | list[str] = frozenset(),
     base_url: str = ENSEMBL_BASE_URL,
     timeout: int = 30,
+    budget: float | None = ORTHOLOGY_BUDGET_SECONDS,
     session: aiohttp.ClientSession | None = None,
 ) -> OrthologueMapping:
     """Resolve orthologues of the query gene(s) in each target species.
@@ -121,6 +282,9 @@ async def resolve_orthologues(
     because Compara was briefly unavailable would be worse than screening with weaker evidence, as
     long as the weaker evidence is labelled -- which ``OrthologEvidence`` does.
 
+    Reaches the network. Use :meth:`OrthologueMapping.from_file` for an air-gapped run or any
+    deterministic fixture; a unit test must never end up here.
+
     Args:
         query_gene_ids: Stable gene IDs of the query gene (version suffix optional).
         query_species: Species the query gene belongs to.
@@ -128,6 +292,8 @@ async def resolve_orthologues(
         query_gene_symbols: Gene symbols to fall back to when the ID route resolves nothing.
         base_url: Ensembl REST base URL.
         timeout: Per-request timeout in seconds.
+        budget: Wall-clock ceiling on the whole resolution; species not reached in time are
+            reported unresolved. None removes the ceiling.
         session: Session to reuse; one is opened for this call when omitted.
 
     Returns:
@@ -150,6 +316,7 @@ async def resolve_orthologues(
     by_species: dict[str, set[str]] = {}
     resolved: set[str] = set()
     unresolved: set[str] = set()
+    deadline = time.monotonic() + budget if budget else None
 
     async with ensembl_session(session, timeout) as active:
         for species in sorted(wanted):
@@ -158,10 +325,18 @@ async def resolve_orthologues(
                 logger.warning("Orthology lookup skipped for unregistered target species %r", species)
                 unresolved.add(species)
                 continue
+            if _budget_spent(deadline):
+                logger.warning(
+                    "Orthology budget of %.0fs is spent; %r is left unresolved rather than stalling the screen",
+                    budget,
+                    species,
+                )
+                unresolved.add(species)
+                continue
 
             # ID route first; the symbol route only if it resolved nothing.
             found, failed = await _lookup_route(
-                active, "id", sorted(genes), query_slug, target_slug, base_url, timeout, species
+                active, "id", sorted(genes), query_slug, target_slug, base_url, timeout, species, deadline
             )
             if not found and symbols:
                 logger.info(
@@ -172,7 +347,7 @@ async def resolve_orthologues(
                     sorted(symbols),
                 )
                 symbol_found, symbol_failed = await _lookup_route(
-                    active, "symbol", sorted(symbols), query_slug, target_slug, base_url, timeout, species
+                    active, "symbol", sorted(symbols), query_slug, target_slug, base_url, timeout, species, deadline
                 )
                 found |= symbol_found
                 failed = failed or symbol_failed
@@ -203,6 +378,7 @@ async def _lookup_route(
     base_url: str,
     timeout: int,
     species: str,
+    deadline: float | None = None,
 ) -> tuple[set[str], bool]:
     """Query one Compara route for every identifier, returning (orthologue gene IDs, any failure).
 
@@ -213,12 +389,16 @@ async def _lookup_route(
     found: set[str] = set()
     failed = False
     for identifier in identifiers:
+        if _budget_spent(deadline):
+            logger.warning("Orthology budget spent before the %s route reached %s -> %s", route, identifier, species)
+            failed = True
+            continue
         url = (
             f"{base_url}/homology/{route}/{query_slug}/{identifier}"
             f"?target_species={target_slug}&type=orthologues&format=condensed"
         )
         try:
-            payload = await _request_homologies(session, url, timeout)
+            payload = await _request_homologies(session, url, timeout, deadline=deadline)
         except Exception as exc:  # noqa: BLE001 - degrade to the heuristic, never fail the screen
             logger.warning("Orthology %s lookup failed for %s -> %s: %s", route, identifier, species, exc)
             failed = True
@@ -231,7 +411,12 @@ async def _lookup_route(
 
 
 async def _request_homologies(
-    session: aiohttp.ClientSession, url: str, timeout: int, attempts: int = ENSEMBL_MAX_ATTEMPTS
+    session: aiohttp.ClientSession,
+    url: str,
+    timeout: int,
+    attempts: int = ENSEMBL_MAX_ATTEMPTS,
+    *,
+    deadline: float | None = None,
 ) -> Any | None:
     """One homology request, retrying Compara's two transient failure shapes.
 
@@ -248,6 +433,11 @@ async def _request_homologies(
     Measured in-container, unretried resolution succeeded 5 times in 6; both shapes are retried here
     so a flaky lookup does not become a confident wrong answer. Retrying a genuinely malformed
     request costs a bounded ``attempts`` round trips and still ends in the same reported failure.
+
+    Two failures are *not* retried, because the backoff can only make a certain outcome slower: a
+    transport-level "no route from this host" (see :func:`_is_unreachable`), and a spent ``deadline``.
+    On a TLS-intercepting proxy whose root CA is missing, the three attempts and their 2s + 4s sleeps
+    turned an instant certificate rejection into a 6.3s per-route stall.
 
     Returns:
         The decoded payload, or None when every attempt failed.
@@ -270,8 +460,15 @@ async def _request_homologies(
             reason = f"{type(exc).__name__}: {exc}"
 
         logger.warning("Compara lookup attempt %d/%d failed (%s) for %s", attempt, attempts, reason, url)
-        if attempt < attempts:
-            await asyncio.sleep(min(2.0 * attempt, float(timeout)))
+        if attempt >= attempts:
+            break
+        if _is_unreachable(last_error):
+            logger.warning("Compara is unreachable from this host (%s); not retrying %s", reason, url)
+            break
+        if _budget_spent(deadline):
+            logger.warning("Orthology budget spent after attempt %d; not retrying %s", attempt, url)
+            break
+        await asyncio.sleep(min(2.0 * attempt, float(timeout)))
 
     if last_error is not None:
         raise last_error

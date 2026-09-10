@@ -59,6 +59,24 @@ executable on `PATH` both lie.
   a TCP socket, because interception proxies accept the connection and then fail verification
   on every request.
 
+### A `dev` test must never reach the network
+
+An unmarked test that calls out is worse than a slow test: it passes or fails on the environment.
+The two ways it has happened here, both fixed, both cheap to reintroduce:
+
+- **Orthology.** `_process_nextflow_results` resolves cross-species orthologues through Ensembl
+  Compara whenever a screen declares more than one species and a hit row comes from a non-query
+  species. Behind a TLS-intercepting proxy each call cost ~25s — three attempts per route with 2s + 4s
+  backoff — and 20 tests paid it, which was 90% of the `dev` tier. Set
+  `WorkflowConfig(ortholog_mapping_file=...)` to state the orthologues in a file instead
+  (`tests/unit/data/ortholog_mapping_synthetic.json` is the fixture); that is also the supported
+  air-gapped path for a real run.
+- **Nextflow.** Driving `step5_offtarget_analysis` runs a real `nextflow run -profile docker`, whose
+  failure step 5 swallows — so the test still passes, 23s later. Monkeypatch
+  `SiRNAWorkflow._run_nextflow_offtarget_analysis` unless the test is marked `requires_nextflow`.
+
+`make test-dev` should stay under ~30s with no test above ~2s; `-m dev --durations=10` is the check.
+
 ### Running network tests behind a TLS-intercepting proxy
 
 Corporate proxies (Zscaler, Netskope and similar) re-sign HTTPS with a private root that lives

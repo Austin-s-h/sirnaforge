@@ -1,7 +1,8 @@
 # Target-accessibility regression fixture
 
 Provenance, citations and regeneration notes for the files backing
-`tests/unit/test_target_accessibility.py`. Issue #95.
+`tests/unit/test_target_accessibility.py`. Issue #95. The offline orthologue mapping is documented
+at the bottom.
 
 ## Citations
 
@@ -85,3 +86,17 @@ reads the untracked full data from a path.
 The pSUPER/pSuper-Retro anti-p53 target site `GACTCCAGTGGTAATCTAC` (0-based offset 916, unique in
 TP53-201) must not land in the bottom decile of the scored term across the transcript's 19-mer
 windows. It sits at the 93rd percentile.
+
+# Offline orthologue mapping — `ortholog_mapping_synthetic.json`
+
+The offline orthologue mapping for `tests/unit/test_hit_class_persistence.py`, issue #101. Fully
+synthetic and unrelated to any real gene: `ENSG00000000001` → mouse `ENSMUSG00000000002` matches the
+synthetic cDNA headers that test builds its transcript index from. **Rat is deliberately absent**, so
+one run still covers both branches — a species the mapping resolves, and a species it states nothing
+about, whose hits must fall back to the labelled symbol heuristic. Nothing here is generated; edit it
+by hand alongside the fixture headers it mirrors.
+
+It exists because cross-species classification otherwise calls Ensembl Compara: these tests each
+spent ~25s failing that call behind a TLS-intercepting proxy, three attempts with 2s + 4s backoff per
+route. `WorkflowConfig(ortholog_mapping_file=...)` is the offline path #101 requires, and this file is
+the fixture that uses it.

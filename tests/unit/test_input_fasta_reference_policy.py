@@ -250,6 +250,12 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
     drives step 5 with the selection the real CLI hands down for the toy invocation rather
     than a hand-built one -- pre-fix that selection named four Ensembl cDNA sources and step 5
     materialized every one of them.
+
+    The screening launch itself is stubbed. Unstubbed, this unit test spawned a real
+    ``nextflow run -profile docker`` that pulled the published image and exited 1 after ~23s --
+    the whole failure swallowed by step 5's ``except Exception``, so the test passed either way
+    while costing more than the rest of the dev tier put together. Both assertions sit upstream of
+    the launch, and the real subprocess is exercised by the ``requires_nextflow`` tests.
     """
     config = WorkflowConfig(
         output_dir=tmp_path / "toy_out",
@@ -266,6 +272,14 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
         calls.append("materialize")
 
     monkeypatch.setattr(SiRNAWorkflow, "_materialize_transcriptome_reference", _no_materialize)
+
+    screened: list[str] = []
+
+    async def _no_nextflow(self: SiRNAWorkflow, *_args: object, **_kwargs: object) -> dict[str, str]:
+        screened.append("nextflow")
+        return {"status": "completed"}
+
+    monkeypatch.setattr(SiRNAWorkflow, "_run_nextflow_offtarget_analysis", _no_nextflow)
 
     candidate = _candidate("cand_toy")
     design_result = DesignResult(
@@ -285,3 +299,4 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
 
     assert calls == [], f"an input-FASTA run must fetch no transcriptome reference, but ran: {calls}"
     assert workflow._repeat_summary["reason"] == "reference_unavailable"
+    assert screened == ["nextflow"], "step 5 must still reach screening, so the assertions above are not vacuous"
