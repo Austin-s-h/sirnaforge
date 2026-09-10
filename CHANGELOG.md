@@ -216,10 +216,13 @@ where the two defects removed here were first written down as outstanding.)
   declared more than one species and a hit row came from a non-query species; behind a
   TLS-intercepting proxy each certificate rejection took under a second but the three attempts and
   their 2s + 4s backoff turned it into ~6.3s per route and ~25s per screen. A transport-level failure
-  (refused connection, DNS failure, unverifiable certificate) is now not retried at all, and
-  `ORTHOLOGY_BUDGET_SECONDS` (60s) bounds a whole resolution so a firewalled host that drops packets
-  rather than refusing them cannot stall a screen for minutes at the per-request timeout. Species not
+  (refused connection, DNS failure, unverifiable certificate) is now not retried at all. Species not
   reached are reported `unresolved` and fall back to the labelled symbol heuristic, as before.
+  `resolve_orthologues` also accepts a `budget` ceiling for a host that drops packets rather than
+  refusing them, but **the workflow passes `budget=None`, so no real run gains one**: abandoning a
+  slow-but-working Compara would report a resolvable species as `unresolved`, and unresolved
+  conservation still publishes `0.0` rather than null, so a ceiling here would buy speed by
+  fabricating a measurement. Bounding that case belongs with #101's null-conservation fix.
   `make test-dev` goes from **551s to ~12s** for the same 934 tests: the hit-class persistence suite
   now reads its orthologues from `tests/unit/data/ortholog_mapping_synthetic.json`, and the one other
   slow unit test stopped spawning a real `nextflow run -profile docker` whose failure it silently

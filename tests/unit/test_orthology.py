@@ -454,11 +454,13 @@ async def test_the_budget_bounds_a_whole_resolution(monkeypatch: pytest.MonkeyPa
 
     async def slow_timeout(_session: Any, _method: str, url: str, **_kwargs: Any) -> dict[str, Any]:
         seen.append(url)
-        await orthology.asyncio.sleep(0.05)
+        await orthology.asyncio.sleep(0.5)
         raise DatabaseAccessError("Request timeout", "Ensembl")
 
     monkeypatch.setattr(orthology, "ensembl_request_json", slow_timeout)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse", "rat"}, budget=0.01)
+    # 0.2s is generous enough to reach the first request on a loaded box, and asyncio.sleep is a
+    # floor, so one 0.5s request always overruns it. A tighter budget flakes to len(seen) == 0.
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse", "rat"}, budget=0.2)
 
     assert len(seen) == 1, "the second species is abandoned rather than paying the same ladder"
     assert mapping.unresolved_species == frozenset({"mouse", "rat"})

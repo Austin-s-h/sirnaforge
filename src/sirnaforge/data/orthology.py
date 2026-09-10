@@ -13,9 +13,15 @@ resulting gene-ID set into ``ClassificationContext``.
 Cost is up to *two* Compara requests per (query gene x target species) -- the gene-ID route, then
 the symbol route when the first resolves nothing -- charged once per resolution, never per hit.
 There is no cache, so a caller that resolves twice pays twice. Two guards keep an unreachable
-Compara off the critical path: :data:`ORTHOLOGY_BUDGET_SECONDS` bounds a whole resolution, and
+Compara off the critical path: a transport-level failure is never retried, and
 :meth:`OrthologueMapping.from_file` resolves from a user-supplied mapping with no network at all
 (issue #101: an offline path is required, not optional).
+
+:data:`ORTHOLOGY_BUDGET_SECONDS` is a suggested ceiling for a host that *drops* packets rather than
+refusing them, and it is **opt-in** -- the default is no ceiling. Abandoning a slow-but-working
+Compara reports a resolvable species as ``unresolved``, and unresolved conservation still publishes
+``0.0`` rather than null, so a ceiling trades a stall for a fabricated measurement. Bounding that
+case belongs with #101's null-conservation fix.
 """
 
 from __future__ import annotations
@@ -260,7 +266,7 @@ async def resolve_orthologues(
     query_gene_symbols: frozenset[str] | set[str] | list[str] = frozenset(),
     base_url: str = ENSEMBL_BASE_URL,
     timeout: int = 30,
-    budget: float | None = ORTHOLOGY_BUDGET_SECONDS,
+    budget: float | None = None,
     session: aiohttp.ClientSession | None = None,
 ) -> OrthologueMapping:
     """Resolve orthologues of the query gene(s) in each target species.
@@ -292,8 +298,9 @@ async def resolve_orthologues(
         query_gene_symbols: Gene symbols to fall back to when the ID route resolves nothing.
         base_url: Ensembl REST base URL.
         timeout: Per-request timeout in seconds.
-        budget: Wall-clock ceiling on the whole resolution; species not reached in time are
-            reported unresolved. None removes the ceiling.
+        budget: Optional wall-clock ceiling on the whole resolution; species not reached in time are
+            reported unresolved. Defaults to no ceiling, because an abandoned species is
+            indistinguishable from an absent orthologue -- see the module docstring.
         session: Session to reuse; one is opened for this call when omitted.
 
     Returns:

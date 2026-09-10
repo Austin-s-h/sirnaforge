@@ -2691,6 +2691,10 @@ class SiRNAWorkflow:
             # An input FASTA supplies transcript IDs, not gene IDs, and Compara answers those with an
             # empty 200. The symbol is the fallback identifier; the answer is still a stable gene ID.
             query_gene_symbols=frozenset(self._query_gene_symbols),
+            # No wall-clock ceiling on a real run. Abandoning a slow-but-working Compara would report
+            # a resolvable species as unresolved, and unresolved conservation still publishes 0.0
+            # rather than null (#101) -- so a budget here buys speed by fabricating a measurement.
+            budget=None,
         )
         if mapping.unresolved_species:
             logger.warning(
