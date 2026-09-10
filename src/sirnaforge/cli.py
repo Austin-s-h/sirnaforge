@@ -74,7 +74,6 @@ from sirnaforge.data.gene_search import (
 from sirnaforge.models.policy import RunMode
 from sirnaforge.models.sirna import (
     DesignMode,
-    DesignParameters,
     ranking_score,
 )
 from sirnaforge.models.variant import VariantMode
@@ -2474,10 +2473,18 @@ def version() -> None:
 
 @app_command()
 def config() -> None:
-    """Print the default design parameter values."""
-    default_params = DesignParameters()
+    """Print the parameter values a default run resolves to."""
+    # Resolved rather than constructed: a run takes the profile's numbers, and gc_min is the one
+    # place the profile knowingly differs from the model field default.
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+    default_params = policy.design_parameters
 
-    console.print("[bold blue]Default Design Parameters:[/bold blue]\n")
+    console.print("[bold blue]Resolved Design Parameters:[/bold blue]")
+    console.print(
+        f"  [dim]profile {policy.profile.name} {policy.profile.version} "
+        f"({'experimental' if policy.profile.experimental else 'calibrated'}), "
+        f"run mode {policy.run_mode.value}[/dim]\n"
+    )
 
     # Basic parameters
     console.print("[cyan]Basic Parameters:[/cyan]")
@@ -2492,6 +2499,16 @@ def config() -> None:
     console.print(f"  GC content: {filters.gc_min}% - {filters.gc_max}%")
     console.print(f"  Max poly runs: {filters.max_poly_runs}")
     console.print(f"  Max paired fraction: {filters.max_paired_fraction}")
+
+    # Gates, with the three ways one can be in force or not
+    console.print("\n[cyan]Gates:[/cyan]")
+    for resolved in policy.filters:
+        descriptor = resolved.descriptor
+        threshold = "no threshold" if descriptor.threshold is None else descriptor.threshold
+        console.print(
+            f"  {resolved.filter_id}: {descriptor.comparator.value} {threshold} "
+            f"([yellow]{descriptor.action.value}[/yellow], {descriptor.stage.value})"
+        )
 
     # Scoring weights: one hand-authored vector per stage/mode, each summing to 1.0 and never
     # rescaled at runtime.
