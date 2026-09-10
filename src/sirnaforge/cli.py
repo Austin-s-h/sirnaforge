@@ -285,7 +285,10 @@ def _stated_settings(ctx: typer.Context, candidates: Mapping[str, tuple[str, Any
 
 
 def _parse_filter_actions(entries: Iterable[str]) -> dict[str, str]:
-    """Parse repeatable ``--filter-action filter_id=off|warn|fail`` entries."""
+    """Parse repeatable ``--filter-action filter_id=off|fail`` entries.
+
+    The action itself is validated by the resolver, which rejects ``warn`` in 0.7.1.
+    """
     actions: dict[str, str] = {}
     for raw in entries:
         token = raw.strip()
