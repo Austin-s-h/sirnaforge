@@ -245,7 +245,7 @@ class NextflowConfig:
         self,
         input_file: Path,
         output_dir: Path,
-        genome_species: list[str],
+        screen_species: list[str],
         additional_params: dict[str, Any] | None = None,
         include_test_profile: bool = False,
     ) -> list[str]:
@@ -254,7 +254,7 @@ class NextflowConfig:
         Args:
             input_file: Input FASTA file path
             output_dir: Output directory
-            genome_species: List of species for miRNA genome lookups (not genomic DNA)
+            screen_species: Species the screen covers, as resolved from its references
             additional_params: Additional parameters to pass
             include_test_profile: Whether to include 'test' profile for integration testing
 
@@ -270,8 +270,8 @@ class NextflowConfig:
             str(abs_input_file),
             "--outdir",
             str(abs_output_dir),
-            "--genome_species",
-            ",".join(genome_species),
+            "--transcriptome_species",
+            ",".join(screen_species),
             "-profile",
             self.profile,
             "-w",

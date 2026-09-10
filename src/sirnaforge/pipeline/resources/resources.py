@@ -72,7 +72,7 @@ def validate_test_data() -> dict[str, bool]:
         "test_candidates.fasta",
         "test_transcriptome.fasta",
         "test_mirna_seeds.fasta",
-        "genomes.yaml",
+        "references.yaml",
     ]
 
     status = {}
@@ -127,7 +127,7 @@ class ResourceManager:
                 "test_candidates": str(get_test_data_path("test_candidates.fasta")),
                 "test_transcriptome": str(get_test_data_path("test_transcriptome.fasta")),
                 "test_mirna_seeds": str(get_test_data_path("test_mirna_seeds.fasta")),
-                "genomes_config": str(get_test_data_path("genomes.yaml")),
+                "references_config": str(get_test_data_path("references.yaml")),
             }
         except FileNotFoundError as e:
             logger.error(f"Failed to create test config: {e}")

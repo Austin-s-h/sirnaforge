@@ -1687,7 +1687,7 @@ def run_bwa_alignment_analysis(
     # Run BWA-MEM2 analysis
     analyzer = BwaAnalyzer(
         index_prefix=index_prefix,
-        mode="transcriptome",  # Always use transcriptome mode for genome analysis
+        mode="transcriptome",  # siRNA/miRNA screening is always transcriptome (#99)
         seed_length=bwa_k,
         min_score=bwa_T,
         max_hits=max_hits,
@@ -1775,14 +1775,14 @@ def run_bwa_alignment_analysis(
 def aggregate_offtarget_results(  # noqa: PLR0912
     results_dir: str | Path,
     output_dir: str | Path,
-    genome_species: str,
+    transcriptome_species: str,
 ) -> Path:
     """Aggregate transcriptome off-target analysis results using Pandera.
 
     Uses pandas + Pandera for efficient bulk reading and validation instead of
     manual line-by-line parsing with Pydantic models.
 
-    NOTE: This function ONLY aggregates genome/transcriptome hits. miRNA results
+    NOTE: This function ONLY aggregates transcriptome hits. miRNA results
     are aggregated separately by aggregate_mirna_results() to keep output files
     distinct and properly typed.
 
@@ -1795,7 +1795,7 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     Args:
         results_dir: Directory containing individual analysis results
         output_dir: Directory to write aggregated results
-        genome_species: Comma-separated list of genome species analyzed
+        transcriptome_species: Comma-separated list of species screened
 
     Returns:
         Path to output directory containing aggregated results
@@ -1804,9 +1804,9 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
+    species_list = [s.strip() for s in transcriptome_species.split(",") if s.strip()]
 
-    # Collect ONLY genome/transcriptome TSV analysis files
+    # Collect ONLY transcriptome TSV analysis files
     # miRNA files are handled separately by aggregate_mirna_results()
     analysis_files = [f for f in results_path.glob("**/*_analysis.tsv") if "mirna" not in f.name.lower()]
 
@@ -1911,9 +1911,9 @@ def aggregate_offtarget_results(  # noqa: PLR0912
             f.write("Reason: No transcriptome FASTAs or BWA indices were provided.\n")
             f.write("Result: Only lightweight miRNA seed match analysis was run.\n\n")
             f.write("To enable transcriptome off-target analysis:\n")
-            f.write("  • Provide --genome_fastas (transcriptome) 'species:path,species2:path2'\n")
+            f.write("  • Provide --transcriptome_fastas 'species:path,species2:path2'\n")
             f.write("     OR\n")
-            f.write("  • Provide --genome_indices 'species:index,species2:index2'\n\n")
+            f.write("  • Provide --transcriptome_indices 'species:index,species2:index2'\n\n")
             f.write("=" * 50 + "\n\n")
 
         if unscreened_species or rejected_species_files:

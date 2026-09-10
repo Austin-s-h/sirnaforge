@@ -38,14 +38,10 @@ workflow SIRNAFORGE_OFFTARGET {
         input                : ${params.input}
         outdir               : ${params.outdir}
 
-        GENOME ANALYSIS (OPTIONAL - Resource Intensive)
-        genome_fastas        : ${params.genome_fastas ?: 'Not provided'}
-        genome_indices       : ${params.genome_indices ?: 'Not provided'}
-
-        TRANSCRIPTOME ANALYSIS (OPTIONAL - Resource Intensive)
+        TRANSCRIPTOME SCREEN (OPTIONAL - Resource Intensive)
+        transcriptome_fastas : ${params.transcriptome_fastas ?: 'Not provided'}
         transcriptome_indices: ${params.transcriptome_indices ?: 'Not provided'}
         transcriptome_species: ${params.transcriptome_species ?: 'N/A'}
-        genome_species       : ${params.genome_species}
 
         ANALYSIS PARAMETERS
         max_hits             : ${params.max_hits}
@@ -70,19 +66,35 @@ workflow SIRNAFORGE_OFFTARGET {
     }
 
     //
+    // Refuse the parameters the #99 rename removed, by name. Nextflow accepts an unknown --param
+    // silently, so a stale genome_indices would configure no reference at all and the run would
+    // report success having screened nothing.
+    //
+    def renamed_params = [
+        genome_fastas : 'transcriptome_fastas',
+        genome_indices: 'transcriptome_indices',
+        genome_species: 'transcriptome_species',
+    ]
+    renamed_params.each { old_name, new_name ->
+        if (params.containsKey(old_name)) {
+            error "--${old_name} was renamed to --${new_name}: siRNA/miRNA screening references are transcriptomes, and 'genome' now means ZFN genomic DNA."
+        }
+    }
+
+    //
     // Create input channel - simple file input
     //
     ch_input = channel.fromPath(params.input, checkIfExists: true)
 
     //
-    // Genome configurations: combine FASTAs and indices into single channel
-    // Also handle transcriptome indices (preferred parameter name)
+    // Screening references: FASTAs to index here and prefixes already built, in one channel.
+    // Both forms are transcriptomes; the tuple's third element says which work each one needs.
     //
-    ch_genomes = channel.empty()
+    ch_references = channel.empty()
 
-    if (params.genome_fastas) {
-        ch_genomes = ch_genomes.mix(
-            channel.from(params.genome_fastas.split(','))
+    if (params.transcriptome_fastas) {
+        ch_references = ch_references.mix(
+            channel.from(params.transcriptome_fastas.split(','))
                 .map { entry ->
                     def (species, fasta_path) = entry.split(':')
                     [species.trim(), file(fasta_path.trim(), checkIfExists: true), 'fasta']
@@ -90,19 +102,8 @@ workflow SIRNAFORGE_OFFTARGET {
         )
     }
 
-    if (params.genome_indices) {
-        ch_genomes = ch_genomes.mix(
-            channel.from(params.genome_indices.split(','))
-                .map { entry ->
-                    def (species, index_path) = entry.split(':')
-                    [species.trim(), index_path.trim(), 'index']
-                }
-        )
-    }
-
-    // NEW: Handle transcriptome_indices parameter (preferred for transcriptome-specific analysis)
     if (params.transcriptome_indices) {
-        ch_genomes = ch_genomes.mix(
+        ch_references = ch_references.mix(
             channel.from(params.transcriptome_indices.split(','))
                 .map { entry ->
                     def (species, index_path) = entry.split(':')
@@ -111,20 +112,19 @@ workflow SIRNAFORGE_OFFTARGET {
         )
     }
 
-    // Check if ANY off-target analysis is enabled (genome or transcriptome)
-    def has_offtarget_data = params.genome_fastas || params.genome_indices || params.transcriptome_indices
+    // Check if ANY transcriptome off-target analysis is enabled
+    def has_offtarget_data = params.transcriptome_fastas || params.transcriptome_indices
 
-    // If no genomes/transcriptomes specified, skip genome analysis (miRNA-only mode)
+    // With no reference at all, skip alignment (miRNA-only mode)
     if (!has_offtarget_data) {
         log.info ""
         log.info "=" * 80
-        log.info "NOTE: No genome FASTAs, genome indices, or transcriptome indices provided"
-        log.info "Genome/transcriptome off-target analysis: DISABLED"
+        log.info "NOTE: No transcriptome FASTAs or indices provided"
+        log.info "Transcriptome off-target analysis: DISABLED"
         log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
         log.info ""
-        log.info "To enable genome/transcriptome off-target analysis, provide either:"
-        log.info "  --genome_fastas 'species:path,species2:path2' OR"
-        log.info "  --genome_indices 'species:index_prefix,species2:index_prefix2' OR"
+        log.info "To enable transcriptome off-target analysis, provide either:"
+        log.info "  --transcriptome_fastas 'species:path,species2:path2' OR"
         log.info "  --transcriptome_indices 'species:index_prefix,species2:index_prefix2'"
         log.info "=" * 80
         log.info ""
@@ -160,7 +160,7 @@ workflow SIRNAFORGE_OFFTARGET {
         //
         SIRNA_OFFTARGET_ANALYSIS(
             ch_input,
-            ch_genomes,
+            ch_references,
             params.max_hits,
             params.bwa_k,
             params.bwa_T,

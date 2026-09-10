@@ -1,7 +1,7 @@
 process OFFTARGET_ANALYSIS {
     tag "$species"
     label 'process_medium'
-    publishDir "${params.outdir}/genome", mode: params.publish_dir_mode
+    publishDir "${params.outdir}/transcriptome", mode: params.publish_dir_mode
 
     input:
     tuple val(species), val(index_path), path(candidates_fasta)
@@ -21,7 +21,7 @@ process OFFTARGET_ANALYSIS {
 
     script:
     """
-    # Run off-target analysis for ALL candidates against this genome in one session
+    # Run off-target analysis for ALL candidates against this reference in one session
     # This is much more efficient: load index once, process all candidates sequentially.
     # The CLI also owns the "this prefix is not a usable index" case: it publishes an EMPTY
     # analysis file plus a failed summary, which the aggregator reports as a per-species

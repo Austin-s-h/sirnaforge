@@ -6,7 +6,7 @@ process AGGREGATE_RESULTS {
     input:
     val analysis_files
     val summary_files
-    val genome_species
+    val transcriptome_species
 
     output:
     path "combined_*.tsv", emit: combined_analyses, optional: true
@@ -36,7 +36,7 @@ analysis_files = json.loads('''${analysisFilesJson}''')
 summary_files = json.loads('''${summaryFilesJson}''')
 
 result = aggregate_results_cli(
-    genome_species='${genome_species}',
+    transcriptome_species='${transcriptome_species}',
     output_dir='.',
     mirna_db=mirna_db or None,
     mirna_species=mirna_species or None,

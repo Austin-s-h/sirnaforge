@@ -443,7 +443,7 @@ class OffTargetHitsSchema(DataFrameModel):
 
     **Migration Guide:**
     - For miRNA seed analysis → Use `MiRNAAlignmentSchema`
-    - For genome/transcriptome → Use `GenomeAlignmentSchema`
+    - For transcriptome alignments → Use `GenomeAlignmentSchema`
 
     Will be removed in v0.3.0.
     """
@@ -558,7 +558,7 @@ class GenomeAlignmentSchema(DataFrameModel):
     - Validating pandas DataFrames from transcriptome off-target analysis
     - Bulk operations on genome alignment results
 
-    ``strict=True`` over 12 columns, and ``genome/*_analysis.tsv`` no longer has only one shape: the
+    ``strict=True`` over 12 columns, and ``transcriptome/*_analysis.tsv`` no longer has only one shape: the
     workflow writes the seven classification columns back onto those files on any run whose aggregate
     came back header-only, so that artifact appears with 12 and with 19 columns and this schema
     rejects the wider one. Use :class:`AggregatedOffTargetSchema`, which accepts either, unless you
@@ -645,7 +645,7 @@ class AggregatedOffTargetSchema(GenomeAlignmentSchema):
     are filled in place by the Python workflow, not appended as new columns.
 
     The columns stay **optional** so a table written by an earlier version, and the per-species
-    `genome/*_analysis.tsv` files as the aligner writes them, still validate against this schema.
+    `transcriptome/*_analysis.tsv` files as the aligner writes them, still validate against this schema.
 
     The flag columns are typed as strings over `("True", "False")` deliberately: these tables are
     read as text, and coercing the string `"False"` to `bool` yields `True`.
