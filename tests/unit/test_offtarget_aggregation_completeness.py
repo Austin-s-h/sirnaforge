@@ -219,6 +219,9 @@ def test_nothing_screened_is_not_reported_as_zero_aggregated_hits(tmp_path, caps
     aggregated_line = next(line for line in printed.splitlines() if "Aggregated transcriptome hits" in line)
     assert "human: 0" not in aggregated_line, aggregated_line
     assert "unknown" in aggregated_line, aggregated_line
+    # The text report's roll-ups are derived from the same empty counts.
+    report = (results_dir / "aggregated" / "final_summary.txt").read_text()
+    assert "Human hits: unknown (no species was screened)" in report
 
 
 @pytest.mark.unit

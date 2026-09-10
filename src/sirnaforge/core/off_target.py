@@ -1943,8 +1943,15 @@ def aggregate_offtarget_results(  # noqa: PLR0912
         f.write("RESULTS SUMMARY\n")
         f.write("-" * 50 + "\n")
         f.write(f"Transcriptome off-target hits: {len(combined_df)}\n")
-        f.write(f"Human hits: {human_hits}\n")
-        f.write(f"Other species hits: {other_hits}\n")
+        if species_screened:
+            f.write(f"Human hits: {human_hits}\n")
+            f.write(f"Other species hits: {other_hits}\n")
+        else:
+            # These roll-ups are derived from the screened species' counts, so with nothing screened
+            # they are 0 for want of evidence -- the fabricated zero this function stopped writing
+            # per species. Say unknown rather than restate it one level up.
+            f.write("Human hits: unknown (no species was screened)\n")
+            f.write("Other species hits: unknown (no species was screened)\n")
 
         # Show species list or note if empty
         if species_list:
