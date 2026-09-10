@@ -2284,9 +2284,10 @@ class SiRNAWorkflow:
         while the published table stayed header-only, so the hit table reported no liabilities
         beside candidates carrying dozens each.
 
-        It also fires for the ``combined_offtargets.json`` aggregate, whose rows feed candidates and
-        have no TSV to be republished into. That is the same defect in another format, not a false
-        alarm; closing it belongs with the producer (#100).
+        The ``combined_offtargets.json`` aggregate used to trip it for the same reason in another
+        format: its rows fed candidates with no TSV to be republished into. Those rows are now
+        collected into the table the producer would have written, so this check speaks only to real
+        divergence again.
         """
         counted = 0
         for entry in cast(dict[str, dict[str, Any]], parsed.get("results") or {}).values():
@@ -2583,7 +2584,7 @@ class SiRNAWorkflow:
                 genome_tables.append(table)
             return found
 
-        def _ingest_json(path: Path) -> bool:
+        def _ingest_json(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
                 return False
             raw_data: list[Any] | dict[str, Any] | str | int | float | bool | None
@@ -2603,12 +2604,33 @@ class SiRNAWorkflow:
                     data.append(cast(dict[str, Any], entry))
             for item in data:
                 _ingest_row(item)
+                if table is not None:
+                    if not table["fieldnames"]:
+                        table["fieldnames"] = [str(key) for key in item if key]
+                    cast(list[dict[str, Any]], table["rows"]).append(item)
                 found = True
+            return found
+
+        def _ingest_genome_json(path: Path, tsv_path: Path) -> bool:
+            """Ingest the JSON aggregate into a table that will be published as ``tsv_path``.
+
+            The JSON aggregate is the one path whose rows reached the candidate counters with no
+            table to be republished into, so the published hit table under-reported liabilities the
+            candidates had already been charged for. Giving those rows the TSV the producer would
+            have written puts them back under the same guarantee as every other path.
+            """
+            table: dict[str, Any] = {"path": None, "fieldnames": [], "rows": []}
+            found = _ingest_json(path, table)
+            if found and table["fieldnames"]:
+                table["path"] = tsv_path
+                genome_tables.append(table)
             return found
 
         genome_hits_found = _ingest_genome_tsv(_aggregate_path("combined_offtargets.tsv"))
         if not genome_hits_found:
-            genome_hits_found = _ingest_json(_aggregate_path("combined_offtargets.json"))
+            genome_hits_found = _ingest_genome_json(
+                _aggregate_path("combined_offtargets.json"), _aggregate_path("combined_offtargets.tsv")
+            )
 
         mirna_hits_found = _ingest_tsv(_aggregate_path("combined_mirna_hits.tsv"))
         if not mirna_hits_found:

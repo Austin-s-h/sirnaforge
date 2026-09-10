@@ -61,9 +61,20 @@ PYEOF
 
     stub:
     """
+    # The stub publishes the real header, including the classification columns, so a stub run and a
+    # real run agree on the column set. It publishes no rows: a stub screened nothing.
     touch combined_mirna_analysis.tsv
-    touch combined_transcriptome_analysis.tsv
-    echo '{}' > combined_summary.json
+    python3 <<'PYEOF'
+import sys
+sys.path.insert(0, '${workflow.projectDir}/../src')
+from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS
+from sirnaforge.models.off_target import OffTargetHit
+
+header = OffTargetHit.tsv_header().split('\\t') + list(CLASSIFICATION_COLUMNS)
+with open('combined_offtargets.tsv', 'w') as handle:
+    handle.write('\\t'.join(header) + '\\n')
+PYEOF
+    echo '{"status": "stub", "species_screened": [], "unscreened_species": [], "total_results": 0}' > combined_summary.json
     echo 'Aggregation completed' > final_summary.txt
     touch analysis_report.html
 

@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 
 import pandas as pd
 
+from sirnaforge.core.hit_annotation import unclassified_cells
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 from sirnaforge.models.off_target import (
@@ -221,6 +222,24 @@ def _read_species_analysis_file(analysis_file: Path) -> tuple[pd.DataFrame | Non
         return AggregatedOffTargetSchema.validate(frame, lazy=True), None
     except Exception as exc:
         return None, f"rejected by AggregatedOffTargetSchema: {_first_line(exc)}"
+
+
+def _with_classification_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add the classification columns to the published table, explicitly undecided where unfilled.
+
+    The producer writes them so the published column set is the same whichever entry point ran:
+    they used to be appended by a post-hoc read-modify-write in the Python workflow, so a direct
+    ``nextflow run`` published 12 columns and ``sirnaforge workflow`` published 19. A per-species
+    file that a previous workflow run already annotated keeps its verdicts; everything else says
+    ``not_classified`` until a classifier decides it.
+    """
+    for column, placeholder in unclassified_cells().items():
+        if column not in frame.columns:
+            frame[column] = placeholder
+            continue
+        filled = frame[column].astype("object").where(frame[column].notna(), placeholder)
+        frame[column] = filled.replace("", placeholder)
+    return frame
 
 
 def _reported_analysis_failure(analysis_file: Path) -> str | None:
@@ -1784,6 +1803,8 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     else:
         # No usable files - create empty DataFrame with the producer's columns
         combined_df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
+
+    combined_df = _with_classification_columns(combined_df)
 
     # Positive evidence: a species is screened only where a file was read, never where one merely
     # existed. Everything else requested is unscreened, whatever the reason.

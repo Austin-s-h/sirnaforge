@@ -13,9 +13,12 @@ import csv
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from sirnaforge.config.reference_policy import ReferenceChoice
+from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, HIT_CLASS_COLUMN, UNCLASSIFIED_CELL
+from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.core.off_target import aggregate_offtarget_results
 from sirnaforge.data.transcriptome_manager import (
     INDEX_BUILD_ERROR_KEY,
@@ -23,6 +26,7 @@ from sirnaforge.data.transcriptome_manager import (
     TranscriptomeSource,
 )
 from sirnaforge.models.off_target import MiRNAHit, OffTargetHit
+from sirnaforge.models.schemas import AggregatedOffTargetSchema
 from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
 from sirnaforge.pipeline.nextflow_cli import offtarget_analysis_cli
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
@@ -360,6 +364,73 @@ def test_a_bad_index_prefix_becomes_an_unscreened_species_with_the_reason_on_it(
     assert summary["unscreened_species"] == ["mouse"]
     assert summary["status"] == "partial"
     assert "No usable BWA-MEM2 index" in summary["rejected_species_files"]["mouse"][0]
+
+
+# ---------------------------------------------------------------------------
+# The producer owns the published column set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_producer_publishes_the_classification_columns_explicitly_undecided(tmp_path):
+    """A direct ``nextflow run`` published 12 columns and the workflow published 19.
+
+    The producer writes all of them now, so the column set does not depend on the entry point, and
+    a row nothing has classified says so rather than carrying a blank or a fabricated verdict.
+    """
+    staged = tmp_path / "staged"
+    _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
+    output_dir = tmp_path / "aggregated"
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human")
+
+    frame = pd.read_csv(output_dir / "combined_offtargets.tsv", sep="\t", dtype=str)
+    assert list(frame.columns) == GENOME_COLUMNS + list(CLASSIFICATION_COLUMNS)
+    for column in CLASSIFICATION_COLUMNS:
+        assert frame[column].tolist() == [UNCLASSIFIED_CELL]
+    # Whatever the producer publishes must validate against the schema that describes it.
+    AggregatedOffTargetSchema.validate(frame, lazy=True)
+
+
+@pytest.mark.unit
+def test_the_workflow_fills_the_producers_columns_in_place(tmp_path):
+    """The read-modify-write becomes an update: same columns before and after classification."""
+    workflow = _workflow(tmp_path, "producer_columns")
+    _with_human_index(workflow, tmp_path, "producer_columns")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    staged = tmp_path / "staged"
+    _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
+    aggregate_offtarget_results(results_dir=staged, output_dir=results_dir / "aggregated", genome_species="human")
+    published = results_dir / "aggregated" / "combined_offtargets.tsv"
+    columns_before = pd.read_csv(published, sep="\t", dtype=str).columns.tolist()
+
+    asyncio.run(workflow._process_nextflow_results([_candidate()], results_dir, {"status": "completed"}))
+
+    frame = pd.read_csv(published, sep="\t", dtype=str)
+    assert frame.columns.tolist() == columns_before
+    assert frame[HIT_CLASS_COLUMN].tolist() == [HitClass.OFF_TARGET.value]
+    AggregatedOffTargetSchema.validate(frame, lazy=True)
+
+
+@pytest.mark.unit
+def test_json_only_aggregate_rows_are_published_rather_than_only_counted(tmp_path):
+    """The JSON fallback fed the candidate counters with no table to be republished into."""
+    workflow = _workflow(tmp_path, "json_fallback")
+    _with_human_index(workflow, tmp_path, "json_fallback")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    aggregated = results_dir / "aggregated"
+    aggregated.mkdir(parents=True, exist_ok=True)
+    (aggregated / "combined_offtargets.json").write_text(json.dumps([_genome_row("human", "ENST00000000009")]))
+    (aggregated / "combined_summary.json").write_text(
+        json.dumps({"species_screened": ["human"], "unscreened_species": [], "missing_species": []})
+    )
+
+    candidate = _candidate()
+    outcome = asyncio.run(workflow._process_nextflow_results([candidate], results_dir, {"status": "completed"}))
+
+    assert candidate.off_target_count == 1
+    frame = pd.read_csv(aggregated / "combined_offtargets.tsv", sep="\t", dtype=str)
+    assert frame[HIT_CLASS_COLUMN].tolist() == [HitClass.OFF_TARGET.value]
+    assert not [warning for warning in outcome["warnings"] if "Hit table/candidate mismatch" in warning]
 
 
 # ---------------------------------------------------------------------------

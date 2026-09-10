@@ -59,6 +59,13 @@ CLASSIFICATION_COLUMNS: tuple[str, ...] = (
 
 UNKNOWN_SYMBOL = "unknown"
 
+#: What the producer writes in every classification column before anything has classified the row.
+#: The columns are written by ``aggregate_offtarget_results`` so the published column set does not
+#: depend on which entry point produced the table, and this cell says the verdict has not been
+#: reached yet -- distinct from ``unknown`` (looked up and not found) and never blank, because a
+#: blank cell reads as missing data and ``is_annotated`` cannot tell it from a dropped column.
+UNCLASSIFIED_CELL = "not_classified"
+
 #: ``ortholog_evidence`` for a row that made no orthology claim. Spelled out rather than left blank
 #: because the published table never carries an empty cell (a blank renders as missing data), and
 #: distinct from ``unknown`` because nothing was looked up and failed -- there was nothing to look up.
@@ -118,6 +125,15 @@ class HitAnnotator:
             return None
         rname = str(row.get("rname") or "")
         return species_index.symbol_for(rname) if rname else None
+
+
+def unclassified_cells() -> dict[str, str]:
+    """The classification columns as the producer writes them: present, and explicitly undecided.
+
+    ``is_annotated`` is False for these rows, so the workflow's classifier fills them in place and
+    the column set never changes between the two entry points.
+    """
+    return dict.fromkeys(CLASSIFICATION_COLUMNS, UNCLASSIFIED_CELL)
 
 
 def annotate_hit_row(
