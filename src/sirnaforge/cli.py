@@ -749,11 +749,12 @@ def workflow(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
             "threshold, so it is not evaluated -- which is not the same as passing -- and works for "
             f"these gates: {', '.join(switchable_filter_ids())}. The six design-stage gates read a "
-            "threshold with no absent state and are refused rather than faked. 'warn' is recorded in "
-            "the manifest and NOT yet enforced: the gate still rejects the candidate."
+            "threshold with no absent state and are refused rather than faked. 'warn' is rejected in "
+            "0.7.1: no code path demotes a rejection to a label, so resolving it would record an "
+            "action the gate does not honour."
         ),
     ),
     input_fasta: str | None = typer.Option(
@@ -1363,16 +1364,20 @@ def workflow(  # noqa: PLR0912
     # four multi-gigabyte cDNA references nobody asked for (it also contradicted the documented
     # design-only behaviour and timed out the toy container workflow). --transcriptome-fasta is
     # the explicit opt-in, and it accepts a bundled source name such as ensembl_human_cdna.
+    # Key reference selection on the *resolved* run mode, not on the legacy flag: --run-mode
+    # design_only and --skip-off-targets are the same run, and reading the raw flag here made them
+    # publish two different reference_summary records for it.
+    design_only_run = policy.run_mode is RunMode.DESIGN_ONLY
     transcriptome_spec = WorkflowInputSpec(
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
-        design_only=skip_off_targets,
+        design_only=design_only_run,
         allow_transcriptome_for_input_fasta=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
-    if input_fasta and not transcriptome_fasta and not skip_off_targets:
+    if input_fasta and not transcriptome_fasta and not design_only_run:
         console.print(
             "ℹ️  --input-fasta without --transcriptome-fasta: transcriptome off-target screening and "
             "repeat detection are disabled (design-only). Pass --transcriptome-fasta "
@@ -1551,7 +1556,12 @@ def offtarget(  # noqa: PLR0912
     filter_action: list[str] = typer.Option(
         [],
         "--filter-action",
-        help="Set one filter's action: filter_id=off|warn|fail (repeatable).",
+        help=(
+            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            f"threshold, so it is not evaluated, which is not the same as passing: {', '.join(switchable_filter_ids())}. "
+            "The six design-stage gates have no absent threshold and are refused rather than faked, and "
+            "'warn' is rejected because no 0.7.1 code path demotes a rejection to a label."
+        ),
     ),
     input_candidates_fasta: Path = typer.Option(
         ...,
@@ -2097,9 +2107,9 @@ def design(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
-            "threshold, so it is not evaluated, which is not the same as passing. 'warn' is recorded "
-            "and not yet enforced."
+            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated, which is not the same as passing. 'warn' is rejected in "
+            "0.7.1: nothing demotes a rejection to a label, so the action would not be honoured."
         ),
     ),
     length: int | None = typer.Option(

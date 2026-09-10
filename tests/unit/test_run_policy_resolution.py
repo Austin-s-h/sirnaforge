@@ -18,6 +18,8 @@ from sirnaforge.config.run_policy import (
     BUILTIN_PROFILES,
     DEFAULT_PROFILE_NAME,
     LEGACY_DEFAULT_EXCEPTIONS,
+    PASSTHROUGH_FIELDS,
+    SELECTABLE_ACTIONS,
     SETTING_SPECS,
     EntryPoint,
     ResolvedRunPolicy,
@@ -43,9 +45,14 @@ from sirnaforge.models.policy import (
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
+    FilterCriteria,
     MiRNADesignConfig,
+    OffTargetFilterCriteria,
     PostScreenSiRNAWeights,
     ScoringWeights,
+    SiRNACandidate,
+    TargetAccessibilityConfig,
+    build_candidate_row,
 )
 
 FASTA = ">t1\n" + "ATGCGCATGCATCGATCGATCGGCATCGATCGATCGACTAGCATCGACTGACTGCATCAGCATCAGCATCAGCTACGATCAG\n"
@@ -55,6 +62,20 @@ def _fasta(tmp_path: Path) -> Path:
     path = tmp_path / "toy.fa"
     path.write_text(FASTA)
     return path
+
+
+def _toy_candidate() -> SiRNACandidate:
+    """A minimal candidate, only so ``build_candidate_row`` can report its column set."""
+    return SiRNACandidate(
+        id="c1",
+        transcript_id="t1",
+        position=1,
+        guide_sequence="A" * 21,
+        passenger_sequence="T" * 21,
+        gc_content=45.0,
+        length=21,
+        asymmetry_score=0.7,
+    )
 
 
 def _cli_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> ResolvedRunPolicy:
@@ -151,12 +172,45 @@ def test_the_offtarget_only_path_no_longer_gates_on_thresholds_from_nowhere(tmp_
 
 @pytest.mark.unit
 def test_a_directly_built_parameter_object_is_described_without_changing_a_number(tmp_path):
-    """The adapter for direct WorkflowConfig/API callers must not re-default anything."""
-    parameters = DesignParameters()
+    """The adapter for direct WorkflowConfig/API callers must not re-default anything.
+
+    Driven with a *non-default* value on every model, because an all-default input satisfies
+    ``policy.design_parameters == parameters`` even if the adapter dropped half of SETTING_SPECS.
+    """
+    parameters = DesignParameters(
+        sirna_length=23,
+        top_n=7,
+        check_off_targets=False,
+        apply_modifications=True,
+        modification_pattern="none",
+        default_overhang="UU",
+        filters=FilterCriteria(gc_min=31.0, gc_max=61.0, max_poly_runs=4, min_isoform_coverage=0.5),
+        offtarget_filters=OffTargetFilterCriteria(
+            max_off_target_count=None, fail_on_high_risk_mirna=False, max_total_offtarget_hits=9
+        ),
+        target_accessibility=TargetAccessibilityConfig(window_size=120, max_bp_span=90, log_floor=-3.0),
+    )
     policy = describe_parameters(parameters, entry_point=EntryPoint.SCREENING_WORKFLOW)
 
     assert policy.design_parameters == parameters
     assert all(record.source is SettingSource.EXPLICIT for record in policy.resolved if record.key in {"gc_min"})
+
+
+@pytest.mark.unit
+def test_every_model_field_the_adapter_must_carry_is_declared():
+    """A field absent from SETTING_SPECS silently reverts to its own default in the adapter.
+
+    ``describe_parameters`` rebuilds ``stated`` from SETTING_SPECS alone, so an undeclared field
+    would be reported in the manifest as a value the run did not apply. #101 adds filter fields,
+    which is exactly when this fires, so the coverage is pinned rather than assumed.
+    """
+    declared = {spec.field for spec in SETTING_SPECS}
+    structural = {"design_mode", "filters", "offtarget_filters", "target_accessibility"}
+    for model in (DesignParameters, FilterCriteria, OffTargetFilterCriteria, TargetAccessibilityConfig):
+        missing = set(model.model_fields) - declared - set(PASSTHROUGH_FIELDS) - structural
+        assert not missing, (
+            f"{model.__name__} fields carried by neither SETTING_SPECS nor PASSTHROUGH_FIELDS: {missing}"
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -202,6 +256,35 @@ def test_a_config_file_records_both_what_was_requested_and_what_won(tmp_path):
     assert ("gc_max", 55.0, SettingSource.CONFIG_FILE) in requested
     assert ("gc_max", 62.0, SettingSource.EXPLICIT) in requested
     assert policy.value_of("gc_max") == 62.0
+
+
+@pytest.mark.unit
+def test_a_run_mode_and_design_mode_from_a_config_file_are_attributed_to_the_file(tmp_path):
+    """A file-supplied directive is a config-file override, not something the caller typed.
+
+    Both directives were derived from the *arguments* rather than from where they came from, so a
+    file-supplied run mode read as `explicit` and a file-supplied design mode read as
+    `builtin_profile` with the detail "no design mode stated" -- false, and it had already moved
+    gc_min/gc_max/default_overhang through the miRNA preset. Neither appeared in `requested` at all.
+    """
+    config = tmp_path / "policy.json"
+    config.write_text('{"design_mode": "mirna", "run_mode": "exploratory", "settings": {"gc_max": 57.0}}')
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, config_file=config)
+
+    assert policy.run_mode is RunMode.EXPLORATORY
+    assert policy.design_mode is DesignMode.MIRNA
+    assert policy.source_of("run_mode") is SettingSource.CONFIG_FILE
+    assert policy.source_of("design_mode") is SettingSource.CONFIG_FILE
+    design_mode_record = next(record for record in policy.resolved if record.key == "design_mode")
+    assert design_mode_record.detail == "stated in the policy config file"
+
+    requested = {(record.key, record.value, record.source) for record in policy.requested}
+    assert ("run_mode", "exploratory", SettingSource.CONFIG_FILE) in requested
+    assert ("design_mode", "mirna", SettingSource.CONFIG_FILE) in requested
+
+    # A directive the caller passed directly still reads as explicit.
+    typed = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, config_file=config, run_mode="qualified")
+    assert typed.source_of("run_mode") is SettingSource.EXPLICIT
 
 
 # --------------------------------------------------------------------------------------
@@ -282,6 +365,34 @@ def test_the_legacy_skip_flag_maps_visibly_to_design_only(tmp_path, monkeypatch)
     record = next(record for record in policy.resolved if record.key == "run_mode")
     assert record.source is SettingSource.RUN_MODE_RULE
     assert "skip" in (record.detail or "")
+
+
+@pytest.mark.unit
+def test_the_two_ways_to_ask_for_a_design_only_run_publish_the_same_reference_record(tmp_path, monkeypatch):
+    """`--run-mode design_only` and `--skip-off-targets` are one run and must leave one record.
+
+    Reference selection read the raw `skip_off_targets` flag, so `--run-mode design_only` resolved the
+    four default Ensembl cDNA references and published them in `reference_summary.transcriptome` for a
+    run that screened nothing. No download happened -- step 5 short-circuits earlier -- but the run
+    record claimed references the run never touched.
+    """
+    captured: dict[str, Any] = {}
+
+    async def _fake_workflow(**kwargs: Any) -> dict[str, Any]:
+        captured[kwargs["gene_query"]] = kwargs["transcriptome_selection"]
+        return {"transcript_summary": {}, "design_summary": {}, "offtarget_summary": {}}
+
+    monkeypatch.setattr("sirnaforge.cli.run_sirna_workflow", _fake_workflow)
+    for label, extra in (("SKIP", ["--skip-off-targets"]), ("MODE", ["--run-mode", "design_only"])):
+        result = CliRunner().invoke(
+            app, ["workflow", label, "--output-dir", str(tmp_path / label), "--species", "human", *extra]
+        )
+        assert result.exit_code == 0, result.output
+
+    assert captured["SKIP"].to_metadata() == captured["MODE"].to_metadata()
+    for selection in captured.values():
+        assert selection.choices == ()
+        assert selection.to_metadata()["enabled"] is False
 
 
 @pytest.mark.unit
@@ -414,7 +525,8 @@ def test_a_design_stage_gate_cannot_be_switched_off_in_0_7_1_and_says_so():
     }
 
     for filter_id in sorted(unswitchable):
-        with pytest.raises(RunPolicyError, match="no 'no threshold' state"):
+        # The message must name the filter the user typed, not the internal setting key it lands on.
+        with pytest.raises(RunPolicyError, match=f"filter {filter_id!r} cannot be switched off"):
             resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={filter_id: "off"})
 
 
@@ -444,6 +556,44 @@ def test_a_post_screen_gate_is_off_in_a_design_only_run():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("run_mode", "kwargs"),
+    [
+        ("exploratory", {"legacy_skip_screening": True}),
+        ("exploratory", {"stated": {"check_off_targets": False}}),
+        (None, {"stated": {"check_off_targets": False}}),
+    ],
+)
+def test_a_post_screen_gate_is_off_whenever_the_run_screens_nothing(run_mode, kwargs):
+    """The rule is the resolved screening switch, not the ``design_only`` label.
+
+    ``--run-mode exploratory --skip-off-targets`` is accepted and resolves ``check_off_targets=False``,
+    so step 5 short-circuits and no candidate gets an off-target verdict. Keying the post-screen OFF
+    rule on ``DESIGN_ONLY`` alone reported six gates as ``action=fail, evaluated=true`` for that run.
+    """
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, run_mode=run_mode, **kwargs)
+
+    assert policy.design_parameters.check_off_targets is False
+    post_screen = [resolved for resolved in policy.filters if resolved.descriptor.stage is FilterStage.POST_SCREEN]
+    assert post_screen, "the registry must declare post-screen gates"
+    still_enforced = [resolved.filter_id for resolved in post_screen if resolved.is_evaluated]
+    assert not still_enforced, f"gates reported as enforced on a run that screens nothing: {still_enforced}"
+    assert all(resolved.descriptor.action is FilterAction.OFF for resolved in post_screen)
+
+
+@pytest.mark.unit
+def test_a_post_screen_gate_cannot_be_switched_on_when_the_run_screens_nothing():
+    """Nor can an explicit action put it back: there is no evidence for it to read."""
+    with pytest.raises(RunPolicyError, match="holds no screening evidence"):
+        resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW,
+            run_mode="exploratory",
+            legacy_skip_screening=True,
+            filter_actions={"max_off_target_count": "fail"},
+        )
+
+
+@pytest.mark.unit
 def test_an_undeclared_threshold_resolves_to_off_not_to_a_silent_pass():
     """max_transcriptome_seed_perfect and min_isoform_coverage ship as None, so they cannot decide."""
     policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
@@ -462,8 +612,44 @@ def test_an_undeclared_threshold_resolves_to_off_not_to_a_silent_pass():
 @pytest.mark.unit
 def test_a_filter_cannot_be_switched_on_without_a_threshold_to_compare_against():
     """An action of fail with no threshold is a gate that cannot be evaluated, reported as in force."""
-    with pytest.raises(RunPolicyError, match="has no threshold"):
+    with pytest.raises(RunPolicyError, match="declares no threshold"):
         resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"min_isoform_coverage": "fail"})
+
+
+@pytest.mark.unit
+def test_a_gate_no_code_reads_cannot_be_switched_on():
+    """`fail` on a gate nothing applies would report an enforced limit that does not exist.
+
+    `max_mirna_1mm_seed` carries a threshold of 10, so the "no threshold" guard did not catch it and
+    `--filter-action max_mirna_1mm_seed=fail` resolved to action=fail, threshold=10, evaluated=true.
+    """
+    with pytest.raises(RunPolicyError, match="no code in 0.7.1 reads max_mirna_1mm_seed"):
+        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_mirna_1mm_seed": "fail"})
+
+
+@pytest.mark.unit
+def test_a_boolean_gate_that_is_disabled_cannot_be_switched_on_by_its_action():
+    """`fail_on_high_risk_mirna=False` means the gate does not run; an action cannot override that."""
+    with pytest.raises(RunPolicyError, match="fail_on_high_risk_mirna is False"):
+        resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW,
+            stated={"fail_on_high_risk_mirna": False},
+            filter_actions={"fail_on_high_risk_mirna": "fail"},
+        )
+
+
+@pytest.mark.unit
+def test_warn_is_not_selectable_in_0_7_1_because_nothing_applies_it():
+    """A `warn` in the manifest beside a rejected candidate is a claim the gate code does not hold.
+
+    `FilterAction.WARN` stays in the vocabulary, but no 0.7.1 code path demotes a rejection to a
+    label, so resolving it would emit `action: warn, evaluated: true` for a candidate the gate failed.
+    """
+    with pytest.raises(RunPolicyError, match="which 0.7.1 does not apply"):
+        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_off_target_count": "warn"})
+
+    assert FilterAction.WARN not in SELECTABLE_ACTIONS
+    assert set(SELECTABLE_ACTIONS) == {FilterAction.OFF, FilterAction.FAIL}
 
 
 @pytest.mark.unit
@@ -478,7 +664,7 @@ def test_the_gate_that_no_code_reads_resolves_to_off():
 
 @pytest.mark.unit
 def test_the_human_stratified_gates_declare_their_scope_and_their_missing_column():
-    """Four gates read a human-or-unlabelled counter that no candidate column exports (#101's work)."""
+    """Six gates read a human-stratified counter that no candidate column exports (#101's work)."""
     policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
 
     stratified = [resolved for resolved in policy.filters if resolved.descriptor.scope.species == frozenset({"human"})]
@@ -494,7 +680,48 @@ def test_the_human_stratified_gates_declare_their_scope_and_their_missing_column
     # pipeline's answer -- said in the descriptor rather than discovered as a disagreement.
     assert all(resolved.evidence_exported is False for resolved in stratified)
     assert all("HUMAN-STRATIFIED" not in resolved.definition for resolved in stratified)
-    assert all("not every screened species" in resolved.definition for resolved in stratified)
+    assert all("all-species number" in resolved.definition for resolved in stratified)
+
+
+@pytest.mark.unit
+def test_evidence_exported_agrees_with_the_columns_the_candidate_row_actually_carries():
+    """`evidence_exported` is the one flag #103 has to trust, and it lives away from the row builder.
+
+    A column renamed in ``build_candidate_row`` would turn ``evidence_exported=True`` into a false
+    claim that a client can re-apply the gate, with nothing to catch it.
+    """
+    published = set(build_candidate_row(_toy_candidate()))
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+
+    for resolved in policy.filters:
+        exported = resolved.descriptor.column in published
+        assert resolved.evidence_exported == exported, (
+            f"{resolved.filter_id} declares evidence_exported={resolved.evidence_exported} but its "
+            f"column {resolved.descriptor.column!r} is {'in' if exported else 'not in'} the candidate row"
+        )
+
+
+@pytest.mark.unit
+def test_each_human_stratified_gate_names_its_own_stratification_convention():
+    """The six do not stratify the same way, and one shared sentence made three of them false.
+
+    ``_process_nextflow_results`` counts a transcriptome hit as human when its species is human *or*
+    the label is blank, but counts a miRNA hit only when ``is_human_species(label)`` is True -- and
+    ``is_human_species(None)`` is False. ``max_total_offtarget_hits`` sums the two.
+    """
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+
+    for filter_id in ("max_transcriptome_hits_0mm", "max_transcriptome_hits_1mm", "max_transcriptome_hits_2mm"):
+        definition = policy.filter(filter_id).definition
+        assert "human or unlabelled" in definition, filter_id
+
+    for filter_id in ("max_mirna_perfect_seed", "fail_on_high_risk_mirna"):
+        definition = policy.filter(filter_id).definition
+        assert "human or unlabelled" not in definition, f"{filter_id} counts human-labelled hits only"
+        assert "labelled human only" in definition, filter_id
+
+    combined = policy.filter("max_total_offtarget_hits").definition
+    assert "different conventions" in combined
 
 
 @pytest.mark.unit

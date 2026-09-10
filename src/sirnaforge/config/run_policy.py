@@ -167,7 +167,7 @@ def _owner(parameters: DesignParameters, spec: SettingSpec) -> BaseModel:
     return parameters if spec.model == "design" else getattr(parameters, spec.model)
 
 
-def _switch_off_value(spec: SettingSpec) -> Any:
+def _switch_off_value(spec: SettingSpec, filter_id: str) -> Any:
     """The value that removes one setting's threshold, or raise if the field has no such state.
 
     A gate is switched off by clearing the number it compares against, which is a state the model
@@ -181,8 +181,9 @@ def _switch_off_value(spec: SettingSpec) -> Any:
     if field.annotation is bool:
         return False
     raise RunPolicyError(
-        f"{spec.key} has no 'no threshold' state in 0.7.1, so the filter reading it cannot be "
-        "switched off; widen the threshold instead"
+        f"filter {filter_id!r} cannot be switched off in 0.7.1: its threshold {spec.key} is a plain "
+        "float with no absent state, and faking one would report a number you did not choose as your "
+        "threshold. Widen the threshold instead"
     )
 
 
@@ -318,13 +319,30 @@ class _FilterSpec:
 _LIABILITY_CLASSES: tuple[str, ...] = ("off_target", "undetermined")
 
 # Why several off-target gates carry an explicit ``{human}`` scope: the counters they read are
-# built from hits whose species is human *or* unlabelled, so the gate is not the all-species number
-# the equally-named candidate column reports. Exporting the human-stratified counters is #101's
-# filter-scope work; naming the scope here is what makes the discrepancy legible instead of silent.
+# human-stratified, so the gate is not the all-species number the equally-named candidate column
+# reports. Exporting the counters is #101's filter-scope work; naming the scope here is what makes
+# the discrepancy legible instead of silent.
+#
+# The three notes below are deliberately *not* one shared sentence: the two counter loops use
+# different conventions for an unlabelled hit, and saying "human or unlabelled" of the miRNA gates
+# would be false. The transcriptome loop treats a blank species label as the query species
+# (``species_is_human or not species_label``); the miRNA loop tests ``is_human_species(label)``
+# alone, and ``is_human_species(None)`` is False, so an unlabelled miRNA hit is counted by neither
+# miRNA gate.
 _HUMAN_STRATIFIED = ("human",)
-_HUMAN_STRATIFIED_NOTE = (
-    "counts hits whose species is human or unlabelled, not every screened species; the identically "
-    "named candidate column is the all-species number, so the two disagree on a multi-species run"
+_ALL_SPECIES_COLUMN_NOTE = (
+    "the identically named candidate column is the all-species number, so the two disagree on a multi-species run"
+)
+_HUMAN_OR_UNLABELLED_NOTE = (
+    f"counts hits whose species is human or unlabelled, not every screened species; {_ALL_SPECIES_COLUMN_NOTE}"
+)
+_HUMAN_ONLY_NOTE = (
+    "counts hits labelled human only -- an unlabelled hit is counted by neither miRNA gate, unlike "
+    f"the transcriptome gates, which treat a blank label as the query species; {_ALL_SPECIES_COLUMN_NOTE}"
+)
+_MIXED_HUMAN_NOTE = (
+    "sums two counters built on different conventions: human-or-unlabelled transcriptome hits plus "
+    f"human-labelled-only miRNA hits; {_ALL_SPECIES_COLUMN_NOTE}"
 )
 
 FILTER_SPECS: tuple[_FilterSpec, ...] = (
@@ -414,7 +432,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="transcriptome_hits_0mm_human",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
-        definition=f"Perfect-match genuine off-target transcriptome hits: {_HUMAN_STRATIFIED_NOTE}.",
+        definition=f"Perfect-match genuine off-target transcriptome hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_species=_HUMAN_STRATIFIED,
         scope_max_mismatches=0,
@@ -427,7 +445,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="transcriptome_hits_1mm_human",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
-        definition=f"1-mismatch genuine off-target hits: {_HUMAN_STRATIFIED_NOTE}.",
+        definition=f"1-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_species=_HUMAN_STRATIFIED,
         scope_max_mismatches=1,
@@ -440,7 +458,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="transcriptome_hits_2mm_human",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
-        definition=f"2-mismatch genuine off-target hits: {_HUMAN_STRATIFIED_NOTE}.",
+        definition=f"2-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_species=_HUMAN_STRATIFIED,
         scope_max_mismatches=2,
@@ -467,7 +485,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="mirna_hits_0mm_seed_human",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
-        definition=f"Perfect miRNA seed matches: {_HUMAN_STRATIFIED_NOTE}; fails MIRNA_PERFECT_SEED.",
+        definition=f"Perfect miRNA seed matches: {_HUMAN_ONLY_NOTE}; fails MIRNA_PERFECT_SEED.",
         default_action=FilterAction.FAIL,
         scope_species=_HUMAN_STRATIFIED,
         evidence_exported=False,
@@ -491,8 +509,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(
-            f"High-risk miRNA hits (perfect seed and offtarget_score < 5.0): {_HUMAN_STRATIFIED_NOTE}; "
-            "fails HIGH_RISK_MIRNA."
+            f"High-risk miRNA hits (perfect seed and offtarget_score < 5.0): {_HUMAN_ONLY_NOTE}; fails HIGH_RISK_MIRNA."
         ),
         default_action=FilterAction.FAIL,
         scope_species=_HUMAN_STRATIFIED,
@@ -505,7 +522,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="total_offtarget_hits_human",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
-        definition=(f"Transcriptome plus miRNA hits combined: {_HUMAN_STRATIFIED_NOTE}; fails TOTAL_OFFTARGETS."),
+        definition=(f"Transcriptome plus miRNA hits combined: {_MIXED_HUMAN_NOTE}; fails TOTAL_OFFTARGETS."),
         default_action=FilterAction.FAIL,
         evidence_exported=False,
         scope_species=_HUMAN_STRATIFIED,
@@ -536,12 +553,16 @@ class ResolvedRunPolicy(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    def descriptor(self, filter_id: str) -> FilterDescriptor:
-        """The descriptor for one gate, so a consumer never rebuilds a threshold by hand."""
+    def filter(self, filter_id: str) -> ResolvedFilter:
+        """One resolved gate: its descriptor plus the definition, transform and export status."""
         for resolved in self.filters:
             if resolved.filter_id == filter_id:
-                return resolved.descriptor
+                return resolved
         raise KeyError(f"no filter named {filter_id!r}")
+
+    def descriptor(self, filter_id: str) -> FilterDescriptor:
+        """The descriptor for one gate, so a consumer never rebuilds a threshold by hand."""
+        return self.filter(filter_id).descriptor
 
     @property
     def evaluated_filters(self) -> tuple[ResolvedFilter, ...]:
@@ -645,15 +666,29 @@ def _reject_undeclared(values: Mapping[str, Any], origin: str) -> None:
         )
 
 
+#: Actions a caller may select in 0.7.1. ``WARN`` stays in the vocabulary -- it is what makes the
+#: "record it, do not reject" state representable -- but nothing applies it: the gate rejects the
+#: candidate regardless, so resolving it would put ``action: warn`` beside a rejected candidate in
+#: the manifest. Demoting a rejection to a label needs per-filter verdicts on the candidate row.
+SELECTABLE_ACTIONS: tuple[FilterAction, ...] = (FilterAction.OFF, FilterAction.FAIL)
+
+
 def _coerce_action(value: Any, filter_id: str) -> FilterAction:
     """Parse a per-filter action, naming the filter in the error so a typo is findable."""
     try:
-        return FilterAction(str(value).lower())
+        action = FilterAction(str(value).lower())
     except ValueError as exc:
         raise RunPolicyError(
             f"filter {filter_id!r} was given action {value!r}; choose one of "
-            f"{[action.value for action in FilterAction]}"
+            f"{[action.value for action in SELECTABLE_ACTIONS]}"
         ) from exc
+    if action not in SELECTABLE_ACTIONS:
+        raise RunPolicyError(
+            f"filter {filter_id!r} was set to {action.value}, which 0.7.1 does not apply: the gate "
+            f"would still reject the candidate. Choose one of {[a.value for a in SELECTABLE_ACTIONS]}, "
+            "or widen the threshold"
+        )
+    return action
 
 
 def _resolve_actions(
@@ -692,6 +727,7 @@ def _resolve_run_mode(
     *,
     entry_point: EntryPoint,
     requested_run_mode: RunMode | str | None,
+    requested_source: SettingSource | None = None,
     stated: Mapping[str, Any],
     legacy_skip_screening: bool | None,
     require_screening_completeness: bool | None,
@@ -731,7 +767,15 @@ def _resolve_run_mode(
 
     if explicit_mode is not None:
         mode = explicit_mode
-        records.append(SettingProvenance(key="run_mode", value=mode.value, source=SettingSource.EXPLICIT, detail=None))
+        source = requested_source or SettingSource.EXPLICIT
+        records.append(
+            SettingProvenance(
+                key="run_mode",
+                value=mode.value,
+                source=source,
+                detail="stated in the policy config file" if source is SettingSource.CONFIG_FILE else None,
+            )
+        )
     elif legacy_skip_screening is True:
         mode = RunMode.DESIGN_ONLY
         records.append(
@@ -890,27 +934,40 @@ def _resolve_filters(
     has no declared threshold, so it cannot be evaluated; or the run holds no evidence of the kind
     the gate reads. All three produce ``FilterAction.OFF``, which is what makes a disabled filter
     ``NOT_EVALUATED`` rather than passed.
+
+    The third fact is the *resolved screening switch*, not the run-mode label: ``exploratory`` with
+    screening explicitly disabled screens nothing, and keying on ``DESIGN_ONLY`` alone reported six
+    post-screen gates as enforced for a run that never evaluated them.
     """
+    screening_ran = bool(parameters.check_off_targets) and run_mode is not RunMode.DESIGN_ONLY
     resolved: list[ResolvedFilter] = []
     for spec in FILTER_SPECS:
         setting = SETTING_BY_KEY[spec.setting_key]
         threshold = getattr(_owner(parameters, setting), setting.field)
+        action = spec.default_action
+        # Why the gate is off, if it is. An override may only ever turn a gate *off*, never on, so
+        # a reason here is also the reason a non-OFF override has to be refused.
+        off_reason: str | None = None
+        if spec.default_action is FilterAction.OFF:
+            off_reason = f"no code in 0.7.1 reads {spec.setting_key}, so nothing would apply the action"
         if isinstance(threshold, bool):
             # A boolean flag is a ceiling of zero: enabled means "at most zero hits", disabled is off.
-            action = spec.default_action if threshold else FilterAction.OFF
+            if not threshold:
+                off_reason = off_reason or f"{spec.setting_key} is False, so the gate does not run"
             threshold = 0
-        else:
-            action = spec.default_action
-        if threshold is None:
+        elif threshold is None:
+            off_reason = off_reason or f"{spec.setting_key} declares no threshold, so there is nothing to compare"
+        if spec.stage is FilterStage.POST_SCREEN and not screening_ran:
+            off_reason = off_reason or "this run holds no screening evidence, so the gate cannot be evaluated"
+        if off_reason is not None:
             action = FilterAction.OFF
-        if spec.stage is FilterStage.POST_SCREEN and run_mode is RunMode.DESIGN_ONLY:
-            action = FilterAction.OFF
+
         override = actions.get(spec.filter_id)
         if override is not None:
-            if override is not FilterAction.OFF and action is FilterAction.OFF and threshold is None:
+            if override is not FilterAction.OFF and off_reason is not None:
                 raise RunPolicyError(
-                    f"filter {spec.filter_id!r} was set to {override.value} but has no threshold; "
-                    f"set {spec.setting_key} as well, or leave the filter off"
+                    f"filter {spec.filter_id!r} cannot be set to {override.value}: {off_reason}. "
+                    "Reporting it as enforced would put a claim in the manifest this build does not hold"
                 )
             action = override
         resolved.append(
@@ -990,13 +1047,21 @@ def resolve_run_policy(
 
     config_settings: Mapping[str, Any] = {}
     config_actions: Mapping[str, Any] = {}
+    # A directive the file supplied is a config-file override, not something the caller typed. Track
+    # it, or the audit record calls a file-supplied run mode `explicit` and a file-supplied design
+    # mode `builtin_profile` with the detail "no design mode stated" -- a statement the code knows
+    # to be false about the two directives that change a run most.
+    mode_source = SettingSource.EXPLICIT if run_mode is not None else None
+    design_mode_source = SettingSource.EXPLICIT if design_mode is not None else None
     if config_file is not None:
         config_settings, directives = load_policy_config(config_file)
         config_actions = directives.get("filter_actions") or {}
         if run_mode is None and "run_mode" in directives:
             run_mode = directives["run_mode"]
+            mode_source = SettingSource.CONFIG_FILE
         if design_mode is None and "design_mode" in directives:
             resolved_design_mode = parse_design_mode(directives["design_mode"])
+            design_mode_source = SettingSource.CONFIG_FILE
         if "profile" in directives and directives["profile"] != profile.name:
             raise RunPolicyError(
                 f"policy config file selects profile {directives['profile']!r}, which must be passed as "
@@ -1006,6 +1071,7 @@ def resolve_run_policy(
     resolved_run_mode, mode_records, mode_derived = _resolve_run_mode(
         entry_point=entry_point,
         requested_run_mode=run_mode,
+        requested_source=mode_source,
         stated=stated,
         legacy_skip_screening=legacy_skip_screening,
         require_screening_completeness=require_screening_completeness,
@@ -1034,7 +1100,7 @@ def resolve_run_policy(
         if action is not FilterAction.OFF:
             continue
         spec = SETTING_BY_KEY[FILTER_SPEC_BY_ID[filter_id].setting_key]
-        values[spec.key] = _switch_off_value(spec)
+        values[spec.key] = _switch_off_value(spec, filter_id)
         winners[spec.key] = _Layer(SettingSource.EXPLICIT, {}, f"cleared because filter {filter_id} was switched off")
 
     parameters = _build_design_parameters(values, resolved_design_mode, passthrough or {})
@@ -1046,6 +1112,16 @@ def resolve_run_policy(
         SettingProvenance(key=key, value=value, source=SettingSource.CONFIG_FILE, detail=str(config_file))
         for key, value in config_settings.items()
     ]
+    # A run mode or design mode the file supplied is an override the file requested. Leaving both out
+    # of `requested` let a config file change a run without appearing in the audit record at all.
+    requested += [
+        SettingProvenance(key=key, value=value, source=SettingSource.CONFIG_FILE, detail=str(config_file))
+        for key, value, source in (
+            ("run_mode", resolved_run_mode.value, mode_source),
+            ("design_mode", resolved_design_mode.value, design_mode_source),
+        )
+        if source is SettingSource.CONFIG_FILE
+    ]
     requested += [
         SettingProvenance(key=key, value=value, source=SettingSource.EXPLICIT, detail=None)
         for key, value in stated.items()
@@ -1056,12 +1132,17 @@ def resolve_run_policy(
     ]
 
     resolved_records: list[SettingProvenance] = list(mode_records)
+    design_mode_detail = {
+        SettingSource.EXPLICIT: None,
+        SettingSource.CONFIG_FILE: "stated in the policy config file",
+        None: "no design mode stated",
+    }[design_mode_source]
     resolved_records.append(
         SettingProvenance(
             key="design_mode",
             value=resolved_design_mode.value,
-            source=SettingSource.EXPLICIT if design_mode is not None else SettingSource.BUILTIN_PROFILE,
-            detail=None if design_mode is not None else "no design mode stated",
+            source=design_mode_source or SettingSource.BUILTIN_PROFILE,
+            detail=design_mode_detail,
         )
     )
     for spec in SETTING_SPECS:
@@ -1129,7 +1210,7 @@ def describe_parameters(
     stated: dict[str, Any] = {}
     for spec in SETTING_SPECS:
         stated[spec.key] = getattr(_owner(parameters, spec), spec.field)
-    return resolve_run_policy(
+    policy = resolve_run_policy(
         entry_point=entry_point,
         design_mode=parameters.design_mode,
         run_mode=run_mode,
@@ -1142,6 +1223,16 @@ def describe_parameters(
         query_species=query_species,
         screen_species=screen_species,
     )
+    # "Without changing a number" has to be checked, not asserted in prose. Only SETTING_SPECS and
+    # PASSTHROUGH_FIELDS are carried over, so a field added to a model and not declared here would
+    # silently revert to its own default and be reported in the manifest as the value the run used.
+    if policy.design_parameters != parameters:
+        raise RunPolicyError(
+            "describe_parameters would have changed the caller's parameters, which means a "
+            "DesignParameters field is not declared in SETTING_SPECS or PASSTHROUGH_FIELDS; "
+            "declare it rather than letting the manifest report a value the run did not apply"
+        )
+    return policy
 
 
 def default_for(key: str) -> Any:
@@ -1181,7 +1272,7 @@ def switchable_filter_ids() -> tuple[str, ...]:
     switchable: list[str] = []
     for spec in FILTER_SPECS:
         try:
-            _switch_off_value(SETTING_BY_KEY[spec.setting_key])
+            _switch_off_value(SETTING_BY_KEY[spec.setting_key], spec.filter_id)
         except RunPolicyError:
             continue
         switchable.append(spec.filter_id)
