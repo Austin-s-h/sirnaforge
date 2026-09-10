@@ -4,16 +4,27 @@ No network: the Ensembl request function is patched, so these pin response parsi
 paralogue exclusion, and the degrade-not-raise contract. The live endpoint these fixtures imitate is
 ``/homology/id/{species}/{gene}?target_species=...&type=orthologues&format=condensed``, whose
 condensed payload shape was captured from release 116.
+
+The last group covers the offline path and the two guards that keep an unreachable Compara off the
+critical path -- a mapping file (#101 point 4), no retries for a transport failure, and a wall-clock
+budget.
 """
 
+import json
+import ssl
+from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
+from sirnaforge.cli import app
 from sirnaforge.data import orthology
+from sirnaforge.data.base import DatabaseAccessError
 from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
 from sirnaforge.data.orthology import (
     OrthologueMapping,
+    load_ortholog_table,
     resolve_orthologues,
 )
 from sirnaforge.data.species_registry import ensembl_species_slug
@@ -337,3 +348,154 @@ async def test_symbol_route_is_skipped_when_ids_already_resolved(captured_urls: 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
     assert len(captured_urls) == 1
     assert "/homology/symbol/" not in captured_urls[0]
+
+
+def _mapping_file(tmp_path: Path, payload: Any) -> Path:
+    """Write a user-supplied ortholog mapping file."""
+    path = tmp_path / "orthologs.json"
+    path.write_text(json.dumps(payload) if not isinstance(payload, str) else payload)
+    return path
+
+
+@pytest.mark.unit
+def test_mapping_file_resolves_without_the_network(tmp_path: Path):
+    """The offline path #101 requires: orthologues stated in a file, no REST call, honest provenance."""
+    path = _mapping_file(tmp_path, {f"{HUMAN_TP53}.18": {"mouse": [f"{MOUSE_TRP53}.4"]}})
+
+    mapping = OrthologueMapping.from_file(path, {HUMAN_TP53}, "human", {"mouse", "human"})
+
+    assert mapping.all_gene_ids == frozenset({MOUSE_TRP53}), "versions are stripped on both sides"
+    assert mapping.resolved_species == frozenset({"mouse"}), "the query species is never a target"
+    assert mapping.summary()["source"] == "ortholog_mapping_file", "an offline run must not claim a REST call"
+
+
+@pytest.mark.unit
+def test_mapping_file_silence_about_a_species_is_unresolved_not_empty(tmp_path: Path):
+    """A species the file omits was never checked; only an explicit empty list claims absence."""
+    path = _mapping_file(tmp_path, {HUMAN_TP53: {"mouse": [MOUSE_TRP53], "rhesus": []}})
+
+    mapping = OrthologueMapping.from_file(path, {HUMAN_TP53}, "human", {"mouse", "rat", "rhesus"})
+
+    assert mapping.unresolved_species == frozenset({"rat"}), "silence is not evidence of absence"
+    # "rhesus" is canonicalised to "macaque", so a file may spell a species any registered way.
+    assert mapping.resolved_species == frozenset({"mouse", "macaque"}), "an empty list is a checked absence"
+    assert mapping.gene_ids_by_species == {"mouse": frozenset({MOUSE_TRP53})}
+
+
+@pytest.mark.unit
+def test_mapping_file_may_be_keyed_on_a_symbol(tmp_path: Path):
+    """An input-FASTA run has no stable gene ID, so a symbol key must work -- case-insensitively."""
+    path = _mapping_file(tmp_path, {"tp53": {"mouse": [MOUSE_TRP53]}})
+
+    mapping = OrthologueMapping.from_file(path, {"ENST00000413465"}, "human", {"mouse"}, query_gene_symbols={"TP53"})
+
+    assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
+    assert mapping.summary()["queried_symbols"] == ["TP53"], "provenance records what was asked"
+
+
+@pytest.mark.unit
+def test_a_malformed_mapping_file_fails_loudly(tmp_path: Path):
+    """An explicit user input is not a flaky network call: ignoring it would silently weaken evidence."""
+    with pytest.raises(ValueError, match="not valid JSON"):
+        load_ortholog_table(_mapping_file(tmp_path, "{not json"))
+
+    with pytest.raises(ValueError, match="must be a list of gene IDs"):
+        load_ortholog_table(_mapping_file(tmp_path, {HUMAN_TP53: {"mouse": MOUSE_TRP53}}))
+
+    with pytest.raises(ValueError, match="must map species"):
+        load_ortholog_table(_mapping_file(tmp_path, {HUMAN_TP53: [MOUSE_TRP53]}))
+
+    with pytest.raises(FileNotFoundError):
+        load_ortholog_table(tmp_path / "absent.json")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_unreachable_host_is_not_retried(monkeypatch: pytest.MonkeyPatch):
+    """Backoff cannot fix a rejected certificate; it only makes a certain failure slower.
+
+    Behind a TLS-intercepting proxy every attempt died at the handshake in under a second, so the
+    three attempts and their 2s + 4s sleeps were pure latency -- 25s per screen, and the reason
+    every test in test_hit_class_persistence.py used to take that long.
+    """
+    attempts = 0
+    slept: list[float] = []
+
+    async def refused(_session: Any, _method: str, _url: str, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        try:
+            raise ssl.SSLCertVerificationError("unable to get local issuer certificate")
+        except ssl.SSLCertVerificationError as exc:
+            # The shape ensembl_request_json produces: the cause carries the real failure.
+            raise DatabaseAccessError("Connection failed", "Ensembl") from exc
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(orthology, "ensembl_request_json", refused)
+    monkeypatch.setattr(orthology.asyncio, "sleep", record_sleep)
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+
+    assert attempts == 1, "a transport-level failure is not retried"
+    assert slept == [], "and costs no backoff"
+    assert mapping.unresolved_species == frozenset({"mouse"}), "still degrades rather than raising"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_budget_bounds_a_whole_resolution(monkeypatch: pytest.MonkeyPatch):
+    """A host that drops packets fails only at the per-request timeout, so the total needs a ceiling.
+
+    Without one, a three-species screen against a firewalled Compara pays every species' full
+    retry ladder before degrading to the labelled heuristic.
+    """
+    seen: list[str] = []
+
+    async def slow_timeout(_session: Any, _method: str, url: str, **_kwargs: Any) -> dict[str, Any]:
+        seen.append(url)
+        await orthology.asyncio.sleep(0.5)
+        raise DatabaseAccessError("Request timeout", "Ensembl")
+
+    monkeypatch.setattr(orthology, "ensembl_request_json", slow_timeout)
+    # 0.2s is generous enough to reach the first request on a loaded box, and asyncio.sleep is a
+    # floor, so one 0.5s request always overruns it. A tighter budget flakes to len(seen) == 0.
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse", "rat"}, budget=0.2)
+
+    assert len(seen) == 1, "the second species is abandoned rather than paying the same ladder"
+    assert mapping.unresolved_species == frozenset({"mouse", "rat"})
+    assert mapping.resolved_species == frozenset(), "an abandoned species is never reported clean"
+
+
+@pytest.mark.unit
+def test_the_cli_hands_the_mapping_file_down_to_the_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An air-gapped user reaches the offline path from the command line, not just from Python."""
+    captured: dict[str, Any] = {}
+
+    async def fake_workflow(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"transcript_summary": {}, "design_summary": {}}
+
+    monkeypatch.setattr("sirnaforge.cli.run_sirna_workflow", fake_workflow)
+    fasta = tmp_path / "toy.fa"
+    fasta.write_text(">trans1\nATG" + "A" * 300 + "TAA\n")
+    path = _mapping_file(tmp_path, {HUMAN_TP53: {"mouse": [MOUSE_TRP53]}})
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflow",
+            "TP53",
+            "--input-fasta",
+            str(fasta),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--species",
+            "human,mouse",
+            "--ortholog-mapping",
+            str(path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["ortholog_mapping_file"] == path

@@ -40,6 +40,7 @@ from sirnaforge.core.hit_classification import (
     HitClass,
     HitClassCounts,
     HitClassification,
+    OrthologEvidence,
     classify_hit,
 )
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
@@ -65,6 +66,10 @@ TSV_COLUMNS = [
     "seed_mismatches",
     "offtarget_score",
 ]
+
+
+#: Offline orthologue evidence, so no test here touches Ensembl Compara. See tests/unit/data/README.md.
+_ORTHOLOG_MAPPING_FIXTURE = Path(__file__).resolve().parent / "data" / "ortholog_mapping_synthetic.json"
 
 
 def _repo_root() -> Path:
@@ -166,12 +171,20 @@ def _write_fallback_results_dir(results_dir: Path, rows: list[dict[str, str]]) -
 
 
 def _workflow(tmp_path: Path, name: str, *, with_symbol_index: bool = True) -> SiRNAWorkflow:
-    """A TP53 workflow with a synthetic human/mouse index, or with no index at all."""
+    """A TP53 workflow with a synthetic human/mouse index, or with no index at all.
+
+    ``ortholog_mapping_file`` is what keeps these tests off the network. Without it,
+    ``_process_nextflow_results`` resolves mouse and rat orthologues over Ensembl Compara, which
+    behind a TLS-intercepting proxy cost ~25s of retry backoff per call and made this file 90% of
+    the dev tier's runtime. The mapping resolves mouse and says nothing about rat, so both the
+    resolved and the unresolved branch still run here (#101 point 4: the fixture uses the file).
+    """
     config = WorkflowConfig(
         output_dir=tmp_path / name,
         gene_query="TP53",
         genome_species=["human", "mouse", "rat"],
         design_params=DesignParameters(),
+        ortholog_mapping_file=_ORTHOLOG_MAPPING_FIXTURE,
     )
     workflow = SiRNAWorkflow(config)
     workflow._gene_transcript_ids = {"ENST00000000001"}
@@ -311,6 +324,30 @@ def test_on_target_and_ortholog_rows_are_labelled_not_counted_as_off_targets(tmp
 
     repeat_row = next(row for row in rows if row["qname"] == "cand_repeat")
     assert repeat_row[HIT_CLASS_COLUMN] == HitClass.REPEAT.value
+
+
+@pytest.mark.unit
+def test_orthology_evidence_comes_from_the_mapping_file_not_the_network(tmp_path):
+    """The offline path is the one these tests take, and it publishes gene-ID evidence (#101).
+
+    Every test in this file drives ``_process_nextflow_results`` with three species and cross-species
+    hit rows, which used to resolve orthologues over Ensembl Compara -- ~25s of retry backoff each
+    behind a TLS-intercepting proxy, and a different verdict depending on whether the network
+    answered. The mapping file states the mouse orthologue outright, so the mouse row earns GENE_ID
+    evidence instead of the symbol heuristic. Rat is absent from the file, so it stays *unresolved*:
+    a species nothing was claimed about, not a checked absence.
+    """
+    _candidates, tsv_path, outcome = _run(tmp_path, "out_offline_orthology")
+    rows = _read_tsv(tsv_path)
+
+    mouse = next(row for row in rows if row["rname"] == "ENSMUST00000000002")
+    assert mouse[HIT_CLASS_COLUMN] == HitClass.ORTHOLOG.value
+    assert mouse[ORTHOLOG_EVIDENCE_COLUMN] == OrthologEvidence.GENE_ID.value, "the file resolves a gene ID"
+
+    provenance = outcome["filtering_stats"]["orthology"]
+    assert provenance["source"] == "ortholog_mapping_file", "an offline run must not claim a REST call"
+    assert provenance["gene_ids_by_species"] == {"mouse": ["ENSMUSG00000000002"]}
+    assert provenance["unresolved_species"] == ["rat"], "a species the file omits is unchecked, not clean"
 
 
 @pytest.mark.unit

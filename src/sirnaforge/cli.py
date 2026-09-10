@@ -913,6 +913,16 @@ def workflow(  # noqa: PLR0912
             "When provided, overrides cached/default genome references."
         ),
     ),
+    ortholog_mapping: Path | None = typer.Option(
+        None,
+        "--ortholog-mapping",
+        help=(
+            "JSON file of query gene -> species -> orthologue gene IDs, e.g. "
+            '{"ENSG00000141510": {"mouse": ["ENSMUSG00000059552"]}}. '
+            "Use it to classify cross-species hits offline instead of calling Ensembl Compara; "
+            "a species the file omits falls back to the labelled gene-symbol heuristic."
+        ),
+    ),
     gc_min: float = typer.Option(
         30.0,
         "--gc-min",
@@ -1312,6 +1322,7 @@ def workflow(  # noqa: PLR0912
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
+                    ortholog_mapping_file=ortholog_mapping,
                     gc_min=gc_min,
                     gc_max=gc_max,
                     sirna_length=sirna_length,
@@ -1494,6 +1505,14 @@ def offtarget(
             "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39."
         ),
     ),
+    ortholog_mapping: Path | None = typer.Option(
+        None,
+        "--ortholog-mapping",
+        help=(
+            "JSON file of query gene -> species -> orthologue gene IDs, used to classify "
+            "cross-species hits offline instead of calling Ensembl Compara."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -1624,6 +1643,7 @@ def offtarget(
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
+                    ortholog_mapping_file=ortholog_mapping,
                     log_file=effective_log,
                     nextflow_docker_image=nextflow_docker_image,
                 )

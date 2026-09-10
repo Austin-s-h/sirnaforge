@@ -69,6 +69,14 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Added
 
+- **`--ortholog-mapping` on `sirnaforge workflow` and `sirnaforge offtarget`** (also
+  `WorkflowConfig(ortholog_mapping_file=...)`, `run_sirna_workflow`, `run_offtarget_only_workflow`):
+  a JSON mapping of query gene → species → orthologue gene IDs that replaces the Ensembl Compara
+  lookup entirely. This is the offline path issue #101 required and did not have, so an air-gapped
+  run — and every fixture — resolves cross-species orthology deterministically instead of depending
+  on REST. The published provenance says `ortholog_mapping_file` rather than `ensembl_compara`, a
+  species the file omits is reported `unresolved` (unchecked, not a checked absence), and a malformed
+  file fails loudly rather than degrading like a flaky network call.
 - **`--min-isoform-coverage`** on `sirnaforge workflow` (and `run_sirna_workflow`): an optional
   protein-coding isoform coverage floor gating `LOW_ISOFORM_COVERAGE`. Defaults to `None` (off), so
   default behaviour is unchanged and coverage is reported either way. Threaded through the
@@ -203,6 +211,26 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Fixed
 
+- **An unreachable Ensembl Compara cost every screen its full retry ladder, and the unit tests paid
+  it 20 times over.** `_process_nextflow_results` resolved orthologues over REST whenever a screen
+  declared more than one species and a hit row came from a non-query species; behind a
+  TLS-intercepting proxy each certificate rejection took under a second but the three attempts and
+  their 2s + 4s backoff turned it into ~6.3s per route and ~25s per screen. A transport-level failure
+  (refused connection, DNS failure, unverifiable certificate) is now not retried at all. Species not
+  reached are reported `unresolved` and fall back to the labelled symbol heuristic, as before.
+  `resolve_orthologues` also accepts a `budget` ceiling for a host that drops packets rather than
+  refusing them, but **the workflow passes `budget=None`, so no real run gains one**: abandoning a
+  slow-but-working Compara would report a resolvable species as `unresolved`, and unresolved
+  conservation still publishes `0.0` rather than null, so a ceiling here would buy speed by
+  fabricating a measurement. Bounding that case belongs with #101's null-conservation fix.
+  `make test-dev` goes from **551s to ~12s** for the same 934 tests: the hit-class persistence suite
+  now reads its orthologues from `tests/unit/data/ortholog_mapping_synthetic.json`, and the one other
+  slow unit test stopped spawning a real `nextflow run -profile docker` whose failure it silently
+  swallowed. No test was re-tiered and no assertion was relaxed.
+- The module docstring of `data/orthology.py` claimed one request per (query gene × target species)
+  and that "results are memoised for the process". Neither was true: the symbol fallback can double
+  the request count and there is no cache. Corrected rather than implemented — a memo keyed too
+  coarsely would suppress a resolvable species after one unrelated failure.
 - **`logs/workflow_summary.json` published a fabricated zero for every deduplicated candidate.**
   `offtarget_summary.results` was keyed by looking up each candidate's own `id` in a map the aligner
   had written under the _representative's_ id, so every non-representative candidate got
