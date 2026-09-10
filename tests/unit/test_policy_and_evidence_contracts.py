@@ -642,6 +642,62 @@ def test_plan_and_evidence_carry_a_schema_version_and_round_trip():
 
 
 @pytest.mark.unit
+def test_a_truncated_count_must_declare_itself_a_lower_bound():
+    """Discarded members are uncounted members, so truncated without is_lower_bound is a total that isn't."""
+    with pytest.raises(ValidationError):
+        ObservedCount(value=500, cap=500, truncated=True)
+
+    honest = ObservedCount(value=500, cap=500, truncated=True, is_lower_bound=True)
+    assert honest.is_lower_bound and honest.truncated
+
+
+@pytest.mark.unit
+def test_a_count_cannot_exceed_the_cap_it_declares():
+    """A value above its own cap means the declared cap was not the cap in force."""
+    with pytest.raises(ValidationError):
+        ObservedCount(value=501, cap=500)
+
+    assert ObservedCount(value=500, cap=500).value == 500
+
+
+@pytest.mark.unit
+def test_failed_and_censored_evidence_must_say_why():
+    """A rejection with no reason stops reading as a rejection; both statuses exist to be acted on."""
+    common = {
+        "channel": ScreeningChannel.TRANSCRIPTOME,
+        "species": "mouse",
+        "guide_set_digest": DIGEST,
+    }
+    for status in (EvidenceStatus.FAILED, EvidenceStatus.CENSORED):
+        with pytest.raises(ValidationError):
+            ScreeningEvidenceEntry(status=status, **common)  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            ScreeningEvidenceEntry(status=status, detail="   ", **common)  # type: ignore[arg-type]
+
+    assert ScreeningEvidenceEntry(status=EvidenceStatus.FAILED, detail="index build OOM", **common).detail  # type: ignore[arg-type]
+    # COMPLETE and NOT_REQUESTED need no reason: nothing went wrong to explain.
+    assert ScreeningEvidenceEntry(status=EvidenceStatus.COMPLETE, **common).detail is None  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_never_requested_evidence_cannot_carry_an_observed_count():
+    """A zero on a search nobody ran is the fabricated zero the whole counts model exists to prevent."""
+    common = {
+        "channel": ScreeningChannel.TRANSCRIPTOME,
+        "species": "rat",
+        "guide_set_digest": DIGEST,
+        "status": EvidenceStatus.NOT_REQUESTED,
+    }
+    with pytest.raises(ValidationError):
+        ScreeningEvidenceEntry(counts=ObservedCounts(sites=ObservedCount(value=0)), **common)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        ScreeningEvidenceEntry(counts=ObservedCounts(distinct_genes=ObservedCount(value=3)), **common)  # type: ignore[arg-type]
+
+    unrequested = ScreeningEvidenceEntry(**common)  # type: ignore[arg-type]
+    assert unrequested.counts.observed_units == ()
+
+
+@pytest.mark.unit
 def test_an_empty_plan_is_representable():
     """A design-only run plans nothing, and that is not an error to construct."""
     assert ScreeningPlan().entries == ()

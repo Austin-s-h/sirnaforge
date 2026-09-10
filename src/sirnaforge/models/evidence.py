@@ -59,6 +59,25 @@ class ObservedCount(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    @model_validator(mode="after")
+    def truncation_implies_lower_bound(self) -> "ObservedCount":
+        """A discarded member is a member not counted, so a truncated count is a lower bound."""
+        if self.truncated and not self.is_lower_bound:
+            raise ValueError("truncated count must set is_lower_bound: discarded members are uncounted members")
+        return self
+
+    @model_validator(mode="after")
+    def value_within_cap(self) -> "ObservedCount":
+        """A count above its own cap means the cap was not the cap that was in force."""
+        if self.value is not None and self.cap is not None and self.value > self.cap:
+            raise ValueError(f"observed value {self.value} exceeds its declared cap {self.cap}")
+        return self
+
+    @property
+    def is_observed(self) -> bool:
+        """Whether anything observed this quantity."""
+        return self.value is not None
+
 
 class ObservedCounts(BaseModel):
     """What a screening unit observed, at the three aggregation units that are reported separately.
@@ -88,6 +107,17 @@ class ObservedCounts(BaseModel):
     )
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @property
+    def observed_units(self) -> tuple[str, ...]:
+        """Names of the aggregation units something actually observed."""
+        units = (
+            ("sites", self.sites),
+            ("distinct_transcripts", self.distinct_transcripts),
+            ("distinct_genes", self.distinct_genes),
+            ("unresolved_gene_sites", self.unresolved_gene_sites),
+        )
+        return tuple(name for name, count in units if count.is_observed)
 
 
 class HitCountCell(BaseModel):
@@ -204,8 +234,9 @@ class ScreeningEvidenceEntry(BaseModel):
             ``guide_set_digest`` is a real defect and is representable so it can be detected.
         submitted_guides: Number of guides submitted, or ``None`` when unobserved.
         processed_guides: Number of guides the channel reported processing, or ``None``.
-        detail: Human-readable reason. A FAILED or CENSORED entry is not actionable without one, but
-            that is **not enforced here** — #100 owns adding the validator when it has producers.
+        detail: Human-readable reason, required for FAILED and CENSORED: an entry saying only that
+            something went wrong is not actionable, and "no reason given" is how a rejection stops
+            being read as a rejection.
     """
 
     channel: ScreeningChannel = Field(description="Liability channel")
@@ -220,6 +251,20 @@ class ScreeningEvidenceEntry(BaseModel):
     detail: str | None = Field(default=None, description="Reason for a failed, censored or absent result")
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="after")
+    def failure_carries_a_reason(self) -> "ScreeningEvidenceEntry":
+        """A FAILED or CENSORED entry with no detail cannot be acted on or reported."""
+        if self.status in {EvidenceStatus.FAILED, EvidenceStatus.CENSORED} and not (self.detail or "").strip():
+            raise ValueError(f"{self.status.value} evidence requires a detail explaining why")
+        return self
+
+    @model_validator(mode="after")
+    def not_requested_observed_nothing(self) -> "ScreeningEvidenceEntry":
+        """A search that was never asked for cannot have observed a count, not even a zero."""
+        if self.status is EvidenceStatus.NOT_REQUESTED and self.counts.observed_units:
+            raise ValueError(f"not_requested evidence carries observed counts: {', '.join(self.counts.observed_units)}")
+        return self
 
     @property
     def key(self) -> tuple[str, str, str | None, str]:
