@@ -1769,6 +1769,11 @@ class SiRNAWorkflow:
                 if species not in filtered:
                     filtered.append(species)
         else:
+            # No reference resolved for ANYTHING, so no transcriptome screen was configured at all
+            # (miRNA-only, or --skip-off-targets). Recording a per-species shortfall here would
+            # blame each species for a screen nobody asked for; the aggregate reports that case as
+            # "TRANSCRIPTOME ANALYSIS STATUS: NOT PERFORMED" and the run still reports partial via
+            # the "no alignment evidence for any species" guard in _process_nextflow_results.
             filtered = requested
 
         # Remembered because this list, not config.mirna_genome_species, is what gets screened:
@@ -2449,7 +2454,13 @@ class SiRNAWorkflow:
         species_counts = cast(dict[str, int], tx_summary.get("hits_per_species", {}) or {})
         human_hits = tx_summary.get("human_hits", 0)
         other_hits = tx_summary.get("other_species_hits", 0)
-        console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
+        # These roll-ups are derived from the screened species' counts, so on a run that screened
+        # nothing they are 0 for want of evidence. Printing that as the first line of the block was
+        # the same "absent reads as clean" the per-species reporting below exists to prevent.
+        if self._species_with_alignment_evidence(tx_summary):
+            console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
+        else:
+            console.print("   🧾 Aggregated transcriptome hits — none screened, so counts are unknown (not zero)")
         if species_counts:
             formatted = ", ".join(f"{k}: {v}" for k, v in sorted(species_counts.items()))
             console.print(f"      per species: {formatted}")

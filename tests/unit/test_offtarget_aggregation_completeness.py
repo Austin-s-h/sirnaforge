@@ -193,6 +193,32 @@ def test_the_final_summary_text_warns_about_the_rejected_species(tmp_path):
     assert "WARNINGS" in report
     assert "mouse" in report.split("RESULTS SUMMARY")[0]
     assert "Species actually screened: human, rat" in report
+    # And it must not call a rejected file processed, three lines under saying it was rejected.
+    assert "Transcriptome analysis files found: 3 (2 usable)" in report
+
+
+@pytest.mark.unit
+def test_nothing_screened_is_not_reported_as_zero_aggregated_hits(tmp_path, capsys):
+    """The aggregate roll-ups are 0 for want of evidence when no species was screened.
+
+    They were printed as the first line of the transcriptome block, ahead of the warning that
+    nothing had been screened at all.
+    """
+    workflow = _workflow(tmp_path, "nothing_screened", species=["mouse"])
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    staged = results_dir / "staged" / "mouse"
+    staged.mkdir(parents=True)
+    (staged / "mouse_analysis.tsv").touch()
+    aggregate_offtarget_results(
+        results_dir=results_dir / "staged", output_dir=results_dir / "aggregated", genome_species="mouse"
+    )
+
+    asyncio.run(workflow._process_nextflow_results([_candidate()], results_dir, {"status": "completed"}))
+    printed = capsys.readouterr().out
+
+    aggregated_line = next(line for line in printed.splitlines() if "Aggregated transcriptome hits" in line)
+    assert "human: 0" not in aggregated_line, aggregated_line
+    assert "unknown" in aggregated_line, aggregated_line
 
 
 @pytest.mark.unit
@@ -382,6 +408,29 @@ def test_a_failed_index_build_records_the_reason_instead_of_returning_a_bare_fas
 
     assert "index" not in result
     assert "index build failed" in manager.index_build_errors[str(fasta)]
+
+
+@pytest.mark.unit
+def test_a_failed_index_build_quotes_its_real_cause_rather_than_asserting_memory(tmp_path, monkeypatch):
+    """``_build_index`` returns False for a missing bwa-mem2 as readily as for an OOM kill.
+
+    The published reason named memory as "the most common cause" for both, which on a host with no
+    bwa-mem2 -- an arm64 Mac, where it is container-only -- sends the reader after the wrong remedy.
+    """
+    manager = TranscriptomeManager(cache_dir=tmp_path / "cache")
+    fasta = manager.cache_dir / "ref.fa"
+    fasta.write_text(">ENST1\nACGT\n")
+    manager._record_cache_entry("refkey", TranscriptomeSource(name="ref", url=str(fasta), species="mouse"), fasta)
+
+    def _no_aligner(*_args, **_kwargs):
+        raise FileNotFoundError("bwa-mem2 not found on PATH")
+
+    monkeypatch.setattr("sirnaforge.core.off_target.build_bwa_index", _no_aligner)
+    manager._prepare_result_with_index(fasta, tmp_path / "cache" / "ref_index", "refkey", True)
+
+    reason = manager.index_build_errors[str(fasta)]
+    assert "bwa-mem2 not found on PATH" in reason, reason
+    assert "the most common cause is running out of memory" not in reason, reason
 
 
 @pytest.mark.unit

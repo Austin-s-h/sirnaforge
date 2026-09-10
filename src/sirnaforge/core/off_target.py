@@ -290,10 +290,13 @@ def _schema_rejection_reason(exc: Exception) -> str:
     cases = getattr(exc, "failure_cases", None)
     if not isinstance(cases, pd.DataFrame) or cases.empty or not {"column", "check"} <= set(cases.columns):
         return _first_line(exc)
-    grouped = cases.groupby(["column", "check"], dropna=False).size()
+    grouped = cast(
+        list[tuple[tuple[Any, Any], int]],
+        list(cases.groupby(["column", "check"], dropna=False).size().items()),
+    )
     parts = [
         f"{column} failed {check} on {count} row(s)"
-        for (column, check), count in list(grouped.items())[:_MAX_REPORTED_SCHEMA_FAILURES]
+        for (column, check), count in grouped[:_MAX_REPORTED_SCHEMA_FAILURES]
     ]
     remaining = len(grouped) - len(parts)
     if remaining > 0:
@@ -1955,7 +1958,9 @@ def aggregate_offtarget_results(  # noqa: PLR0912
             for species, count in sorted(species_counts.items()):
                 f.write(f"  {species}: {count}\n")
 
-        f.write(f"Transcriptome analysis files processed: {len(analysis_files)}\n\n")
+        # Discovered and usable, separately: reporting only the discovered count said "2 files
+        # processed" a few lines under "Rejected alignment files for mouse".
+        f.write(f"Transcriptome analysis files found: {len(analysis_files)} ({len(dfs)} usable)\n\n")
 
         # Explain what the output files contain
         f.write("OUTPUT FILES\n")

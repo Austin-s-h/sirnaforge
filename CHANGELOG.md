@@ -230,7 +230,9 @@ where the two defects removed here were first written down as outstanding.)
   every cell until something classifies the row, and the workflow fills the verdicts **in place**.
   `AggregatedOffTargetSchema` admits `not_classified` in each of those columns and keeps them optional
   so older tables still validate; the `AGGREGATE_RESULTS` stub publishes the same header (and no rows,
-  and no screened species, because a stub screened nothing).
+  and no screened species, because a stub screened nothing) — written literally in bash, because a
+  `-stub-run` must work with no container, no aligner and no importable `sirnaforge`, and pinned by a
+  unit test against the code that writes the real one.
 - **The four documented-but-unenforced invariants on `ObservedCount` / `ScreeningEvidenceEntry` are
   enforced.** `truncated` implies `is_lower_bound`, a value may not exceed its own declared `cap`,
   `FAILED`/`CENSORED` evidence must carry a `detail`, and a `NOT_REQUESTED` entry may not carry an
@@ -249,7 +251,10 @@ where the two defects removed here were first written down as outstanding.)
   species is unscreened for scoring, conservation and the console, `hits_per_species` no longer
   zero-fills a species nothing aligned, and "no hits detected" is said only about species that were
   screened. Per-species files are validated with `AggregatedOffTargetSchema` rather than the narrow
-  producer schema, so a table an earlier run already annotated is not itself a rejection.
+  producer schema, and a blank classification cell — the shape a table written before
+  `ortholog_evidence` existed carries — is repaired to `not_classified` before validating, so neither
+  a fully nor a partly annotated table is itself a rejection. A rejection reason now names the column
+  and check that failed: summarising Pandera's report by its first line published the literal `{`.
 - **Two more ways a missing species read as clean.** A species requested for screening with no
   resolved index or FASTA was filtered out of the species list before Nextflow ran and appeared in no
   artifact at all; it is now recorded with its reason, warned about, published, and the run reports
@@ -265,7 +270,10 @@ where the two defects removed here were first written down as outstanding.)
   unscreened for an unrelated reason — a secondary species failing the same way degraded to a silent
   no-op screen with no such protection. The manager now records the failure per FASTA, the prepared
   reference carries it, and the workflow refuses such a reference and records the species as an
-  unscreened shortfall. Resolving this into a screening plan stays with #99.
+  unscreened shortfall. The recorded reason **quotes the exception the build raised** rather than
+  naming memory as the cause: the same `except` catches a missing `bwa-mem2` (the common case on a
+  host where it is container-only) as catches an OOM kill. Resolving this into a screening plan stays
+  with #99.
 - **Every miRNA counter was exactly 2x.** `mirna/mirna_analysis.tsv` matches the
   `*_analysis.tsv` glob in `_parse_nextflow_results` and was ingested, but `mirna_hits_found` was
   never set inside that loop, so the trailing named retry of the same path read the identical file
@@ -277,7 +285,9 @@ where the two defects removed here were first written down as outstanding.)
   console printed `off_target=43,536` while `workflow_summary.json` recorded ≈632,000 for what looks
   like the same quantity. `hit_classes` now counts each alignment once, from the same
   `count_persisted_classes` the console line uses, so the stat and the published hit table agree; the
-  candidate-weighted view keeps its own name.
+  candidate-weighted view keeps its own name, `hit_classes_candidate_weighted`.
+  `filtering_stats.per_species` — the same quantity decomposed by species — is counted the same way,
+  so the two decompositions in one JSON object cannot disagree.
 - **The `combined_offtargets.json` fallback fed the candidate counters with rows it never published.**
   Those rows had no TSV to be republished into, so the published hit table under-reported liabilities
   the candidates had already been charged for — and the reconciliation warning fired on every run that

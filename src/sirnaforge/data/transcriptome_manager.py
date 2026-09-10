@@ -102,6 +102,9 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # the result type is shared with the genome and annotation managers; callers copy it onto
         # their own payload (see workflow._prepare_transcriptome_database).
         self.index_build_errors: dict[str, str] = {}
+        #: What the last index build actually raised, so the published reason names the real cause
+        #: rather than asserting one. A missing bwa-mem2 and an OOM kill both return False.
+        self._last_index_build_exception: str | None = None
         self._rebuild_local_content_index()
 
     def _rebuild_local_content_index(self) -> None:
@@ -341,8 +344,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
             logger.info(f"🔨 Building BWA-MEM2 index for {fasta_path.name}...")
             _build_bwa_index(fasta_path, index_prefix)
+            self._last_index_build_exception = None
             return True
         except Exception as e:
+            # Kept so the published completeness reason can quote it: this except catches a missing
+            # bwa-mem2 as well as an OOM kill, and the two need different remedies.
+            self._last_index_build_exception = f"{type(e).__name__}: {e}"
             logger.error(f"❌ Failed to build BWA-MEM2 index: {e}")
             return False
 
@@ -787,10 +794,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # A failed build is a completeness fact about this reference, not a downgrade to the FASTA.
         # Returning the FASTA where an index is expected made bwa-mem2 align nothing, which Nextflow
         # reported as success: a screen that examined no sequence published as a clean one.
+        # The cause is quoted, not guessed: the build fails the same way for a missing bwa-mem2 as
+        # for an OOM kill, and naming only the memory case sends the reader after the wrong remedy.
+        cause = self._last_index_build_exception or "the build reported failure without an exception"
         error = (
-            f"BWA-MEM2 index build failed for {fasta.name} (prefix {index_prefix.name}); the most common "
-            "cause is running out of memory (human transcriptomes can need 32GB+). No index is available "
-            "for this reference, so nothing can be aligned against it."
+            f"BWA-MEM2 index build failed for {fasta.name} (prefix {index_prefix.name}): {cause}. "
+            "No index is available for this reference, so nothing can be aligned against it. If the "
+            "build was killed rather than refused, it is likely memory (human transcriptomes can "
+            "need 32GB+)."
         )
         logger.error(error)
         self._save_metadata()
