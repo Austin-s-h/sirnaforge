@@ -204,6 +204,73 @@ def test_a_run_with_a_rejected_species_reports_partial_and_says_which(tmp_path):
     assert outcome["filtering_stats"]["unscreened_species"] == ["mouse"]
 
 
+def _with_human_index(workflow: SiRNAWorkflow, tmp_path: Path, name: str) -> None:
+    """Give the workflow a human transcript->gene index, so an unrelated hit is a real off-target.
+
+    Without an index every alignment is UNDETERMINED (no reference could be consulted), which is a
+    different class and would not exercise the off_target counters.
+    """
+    reference = tmp_path / f"{name}_human_cdna.fasta"
+    reference.write_text(
+        ">ENST00000000001.2 gene:ENSG00000000001.3 gene_symbol:TP53 transcript_biotype:protein_coding\nACGT\n"
+        ">ENST00000000009 gene:ENSG00000000009 gene_symbol:OTHER transcript_biotype:protein_coding\nACGT\n"
+    )
+    workflow._transcript_index.build("human", reference)
+
+
+def _write_aggregate(aggregated: Path, rows: list[dict[str, str]], species_screened: list[str]) -> None:
+    """Write the aggregate the workflow reads: the hit table plus its summary."""
+    _write_tsv(aggregated / "combined_offtargets.tsv", GENOME_COLUMNS, rows)
+    (aggregated / "combined_summary.json").write_text(
+        json.dumps(
+            {
+                "species_analyzed": species_screened,
+                "species_screened": species_screened,
+                "usable_species_file_counts": dict.fromkeys(species_screened, 1),
+                "rejected_species_files": {},
+                "unscreened_species": [],
+                "missing_species": [],
+                "hits_per_species": {"human": len(rows)},
+                "total_results": len(rows),
+                "status": "completed",
+            }
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# filtering_stats.hit_classes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_hit_classes_counts_alignments_and_the_candidate_weighted_view_says_so(tmp_path):
+    """One alignment shared by two deduplicated candidates is one hit, counted twice by candidate.
+
+    On the frozen baseline the console printed ``off_target=43,536`` while workflow_summary.json
+    recorded ~632,000 under the name ``hit_classes``. Both quantities are wanted; only one may hold
+    that name, and it is the one the published hit table agrees with.
+    """
+    workflow = _workflow(tmp_path, "hit_class_weighting")
+    _with_human_index(workflow, tmp_path, "hit_class_weighting")
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    _write_aggregate(results_dir / "aggregated", [_genome_row("human", "ENST00000000009", qname="cand_a")], ["human"])
+
+    candidates = [_candidate("cand_a"), _candidate("cand_b")]
+    # Both candidates carry the same guide, so the aligner saw it once, under cand_a.
+    workflow._candidate_id_to_representative = {"cand_a": "cand_a", "cand_b": "cand_a"}
+    outcome = asyncio.run(workflow._process_nextflow_results(candidates, results_dir, {"status": "completed"}))
+    stats = outcome["filtering_stats"]
+
+    published_rows = list(
+        csv.DictReader((results_dir / "aggregated" / "combined_offtargets.tsv").open(), delimiter="\t")
+    )
+    assert len(published_rows) == 1
+    assert stats["hit_classes"]["off_target"] == 1, "hit_classes must count alignments, like the table it names"
+    assert stats["hit_classes_candidate_weighted"]["off_target"] == 2
+    assert [candidate.off_target_count for candidate in candidates] == [1, 1]
+
+
 # ---------------------------------------------------------------------------
 # miRNA double-ingest
 # ---------------------------------------------------------------------------

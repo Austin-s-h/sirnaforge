@@ -57,6 +57,7 @@ from sirnaforge.core.hit_annotation import (
 )
 from sirnaforge.core.hit_classification import (
     ClassificationContext,
+    HitClass,
     HitClassCounts,
     classify_hit,
 )
@@ -2888,7 +2889,13 @@ class SiRNAWorkflow:
         stats: dict[str, Any] = {
             "candidates_analyzed": len(candidates),
             "candidates_with_offtargets": 0,
-            "hit_classes": {"on_target": 0, "ortholog": 0, "repeat": 0, "off_target": 0, "undetermined": 0},
+            # Two different quantities, named apart. hit_classes counts ALIGNMENTS, once each, and
+            # is filled in after the loop so it agrees with the published hit table and the console
+            # line. The candidate-weighted variant sums each candidate's counters over the fanned-out
+            # guide, which is what the gates act on: on the frozen baseline the two are 43,536 and
+            # ~632,000, and publishing the second as "hit_classes" made them look like one number.
+            "hit_classes": dict.fromkeys((member.value for member in HitClass), 0),
+            "hit_classes_candidate_weighted": dict.fromkeys((member.value for member in HitClass), 0),
             "query_gene_transcripts_recognised": len(self._gene_transcript_ids),
             "ortholog_symbol_lookup_misses": 0,
             "species_index_misses": 0,
@@ -3091,11 +3098,12 @@ class SiRNAWorkflow:
             candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
 
             # Update global stats
-            stats["hit_classes"]["on_target"] += hit_counts.on_target
-            stats["hit_classes"]["ortholog"] += hit_counts.ortholog
-            stats["hit_classes"]["repeat"] += hit_counts.repeat
-            stats["hit_classes"]["off_target"] += hit_counts.off_target
-            stats["hit_classes"]["undetermined"] += hit_counts.undetermined
+            candidate_weighted = stats["hit_classes_candidate_weighted"]
+            candidate_weighted["on_target"] += hit_counts.on_target
+            candidate_weighted["ortholog"] += hit_counts.ortholog
+            candidate_weighted["repeat"] += hit_counts.repeat
+            candidate_weighted["off_target"] += hit_counts.off_target
+            candidate_weighted["undetermined"] += hit_counts.undetermined
             stats["ortholog_symbol_lookup_misses"] += hit_counts.symbol_lookup_missing
             stats["species_index_misses"] += hit_counts.no_species_index
             stats["human_transcriptome_hits"] += human_transcriptome_hits
@@ -3151,9 +3159,28 @@ class SiRNAWorkflow:
             offtarget_data, classification_context, annotator
         )
 
+        # Counted here, after every row has a class, and over each alignment exactly once: the
+        # per-candidate loop above visits a deduplicated guide's rows once per candidate carrying it.
+        stats["hit_classes"] = count_persisted_classes(self._alignment_rows(results))
+
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    @staticmethod
+    def _alignment_rows(results: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """Every transcriptome alignment row the ingest read, once each.
+
+        Keyed by qname, so a row shared by many candidates through their representative appears
+        here once -- unlike the per-candidate loop, which sees it once per candidate. miRNA rows are
+        excluded: they carry no class.
+        """
+        rows: list[Mapping[str, Any]] = []
+        for entry in cast(dict[str, dict[str, Any]], results).values():
+            for hit in cast(list[Mapping[str, Any]], entry.get("hits") or []):
+                if "mirna_id" not in hit and "database" not in hit:
+                    rows.append(hit)
+        return rows
 
     @staticmethod
     def _classify_orphan_hit_rows(
