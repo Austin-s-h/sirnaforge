@@ -477,6 +477,41 @@ def test_a_named_index_prefix_that_does_not_exist_publishes_a_failure_not_a_clea
 
 
 @pytest.mark.unit
+def test_the_cli_publishes_the_per_species_names_the_bash_mv_used_to(tmp_path, monkeypatch):
+    """The success path replaced two ``mv`` commands in ``offtarget_analysis.nf``.
+
+    ``run_bwa_alignment_analysis`` names its outputs after the candidates FASTA and the process
+    declares them per species, so the rename is the only thing standing between a real screen and a
+    process that publishes nothing. Only the aligner is stubbed: the naming rule on both sides of
+    the rename is the real one, which is what makes this a check on the coupling rather than a
+    restatement of it.
+    """
+    monkeypatch.setattr(
+        "sirnaforge.core.off_target.BwaAnalyzer.analyze_sequences",
+        lambda _self, _sequences: [],
+    )
+    monkeypatch.setattr("sirnaforge.pipeline.nextflow_cli.validate_index_files", lambda *_a, **_k: True)
+    staged = tmp_path / "staged"
+
+    result = offtarget_analysis_cli(
+        species="mouse",
+        index_prefix=str(tmp_path / "index" / "mouse"),
+        candidates_file=str(_candidates_fasta(tmp_path)),
+        output_dir=str(staged),
+    )
+
+    assert result["status"] == "completed"
+    # Header-only, not empty: this screen ran and found nothing, which is a real clean result.
+    assert (staged / "mouse_analysis.tsv").stat().st_size > 0
+    assert json.loads((staged / "mouse_summary.json").read_text())["species"] == "mouse"
+    # The two declared outputs must not be left under the aligner's own names, which is all the
+    # bash `mv` did. (`candidates_mouse_hits.json` is left behind here as it always was: the process
+    # declares no output matching it.)
+    assert not (staged / "candidates_mouse_analysis.tsv").exists()
+    assert not (staged / "candidates_mouse_summary.json").exists()
+
+
+@pytest.mark.unit
 def test_a_bad_index_prefix_becomes_an_unscreened_species_with_the_reason_on_it(tmp_path):
     """The two halves join up: the module records the failure, the aggregator reports it."""
     staged = tmp_path / "staged"
