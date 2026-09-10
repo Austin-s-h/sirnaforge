@@ -38,7 +38,9 @@ biogenesis terms hold the remaining 0.20. It had a seventh term, `pos1_mismatch`
 issue #102 measured it **exactly constant at 0.0** on all 13,415 scored candidates of the public
 baseline — constant by construction, because the passenger is the exact reverse complement of the
 guide, so guide position 1 always pairs. A term that ranks nothing must not consume weight, so it
-was removed from the vector; it is still computed and still reported on `score_pos1_mismatch`.
+was removed from the vector. It is still computed, and the pairing state stays on the row as
+`guide_pos1_base` and `pos1_pairing_state` — but `score_pos1_mismatch` is a *contribution* column, so
+with the term in no vector that column is now **always null**.
 
 `postscreen_sirna_v4` is exactly `design_v4`'s terms plus `off_target` — one extra term, cleanly
 interpretable. Every row records the vector that produced it in `weight_vector`, and the manifest's
@@ -171,9 +173,10 @@ are filtered on `passes_filters` alone, but both are written in the re-ranked or
 ### Per-term contribution columns
 
 Each candidate carries `score_off_target`, `score_target_accessibility`, `score_asymmetry`,
-`score_gc_content` and — in miRNA mode — `score_ago_start`, `score_pos1_mismatch`,
-`score_supp_13_16`: the declared weight × sub-score × 100 contribution of each term. A column is
-empty for a term outside the vector that scored that row.
+`score_gc_content` and — in miRNA mode — `score_ago_start` and `score_supp_13_16`: the declared
+weight × sub-score × 100 contribution of each term. A column is empty for a term outside the vector
+that scored that row. `score_pos1_mismatch` is still emitted for schema stability and is **always
+empty** since #102 removed the term from the miRNA vector.
 
 **They sum to the score, exactly, in both modes.** Nothing is added or divided afterwards. Before
 issue #96, `--design-mode mirna` computed

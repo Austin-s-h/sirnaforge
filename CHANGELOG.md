@@ -355,8 +355,11 @@ where the two defects removed here were first written down as outstanding.)
   heuristic — less 3' supplementary pairing — and nothing measures specificity against truth data.
   What has been measured is an efficacy association (β +0.148, cluster-robust t = 8.06, surviving a
   control for A/U(1-5) at β +0.104), which a plain A/U-tracks-duplex-stability mechanism would also
-  produce, so the number does not support the stated mechanism. On the frozen baseline it delivers
-  0.11× its nominal 0.10 while `ago_start` delivers 2.71× the same nominal.
+  produce, so the number does not support the stated mechanism. On the frozen baseline, recomposed
+  under the six-term vector that ships, it delivers **0.07×** its nominal 0.10 while `ago_start`
+  delivers **2.46×** the same nominal (the run itself was scored under the pre-#102 seven-term vector,
+  where the same rows give 0.11× and 2.71×; `scripts/validate_scoring_profiles.py
+  --baseline-mirna-csv` prints both columns and fails if it cannot reproduce the published one).
 - **The `gc_content` term's optimum and the GC filter's window disagree.** The score is
   `exp(-((GC%−40)/10)²)`, a Gaussian centred on a hard-coded 40% GC, while the default filter window
   is `gc_min` 35 / `gc_max` 60 (midpoint 47.5). A candidate mid-window is scored as mildly
@@ -364,8 +367,8 @@ where the two defects removed here were first written down as outstanding.)
 - **`ago_start` and `au_1_5` must never both be scored.** `ago_start` reads guide position 1;
   `au_1_5` reads positions 1-5, which contains it, so they are nested rather than merely correlated
   (rank correlation +0.476 on the panel, and each still adds to the other in a joint model). Scoring
-  both pays twice for the base that already drives 27.1% of `postscreen_mirna_v4`'s ranking variance
-  on the baseline. The `au_1_5_experimental` profile therefore drops `ago_start`, at a stated cost:
+  both pays twice for the base that already drives 24.6% of the shipped `postscreen_mirna_v4`'s
+  ranking variance on the baseline. The `au_1_5_experimental` profile therefore drops `ago_start`, at a stated cost:
   `ago_start` alone tracks efficacy better than the count that replaces it.
 - A candidate whose `target_accessibility` cannot be computed now has **no score at all** rather than
   a rescaled one. In real runs the transcript is always in scope and the residual 5'-end case is

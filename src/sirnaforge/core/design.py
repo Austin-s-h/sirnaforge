@@ -730,7 +730,7 @@ class MiRNADesigner(SiRNADesigner):
     """miRNA-biogenesis-aware siRNA designer with specialized scoring.
 
     Extends SiRNADesigner with scoring rules optimized for miRNA-like processing:
-    - Argonaute selection preferences (pos1 A/U, mismatch at pos1)
+    - Argonaute selection preferences (pos1 A/U scored; pos1 pairing state reported only)
     - 3' supplementary pairing analysis (positions 13-16)
     - Conservative thermodynamic thresholds
     - Seed region quality assessment
@@ -748,9 +748,11 @@ class MiRNADesigner(SiRNADesigner):
         """Record the miRNA biogenesis evidence, then score exactly as siRNA mode does.
 
         The design stage uses one vector (``design_v4``) in both modes, so this method no longer
-        touches any score: the three biogenesis quantities are terms of ``postscreen_mirna_v4`` and
-        only enter once ``off_target`` exists. What it does do is record them -- as reported fields
-        and as ``component_scores`` entries -- so the CSV shows why a miRNA run ranks as it does.
+        touches any score: two of the three biogenesis quantities -- ``ago_start`` and
+        ``supp_13_16`` -- are terms of ``postscreen_mirna_v4`` and only enter once ``off_target``
+        exists, and ``pos1_mismatch`` is scored by no vector at all since #102. What this method does
+        do is record all three -- as reported fields and as ``component_scores`` entries -- so the CSV
+        shows why a miRNA run ranks as it does.
 
         Before issue #96 this method folded the bonuses into ``composite_score`` and divided the
         result by ``1 + max_bonus``, which scaled every declared weight by 0.80 in miRNA mode.

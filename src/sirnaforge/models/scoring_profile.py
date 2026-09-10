@@ -346,13 +346,16 @@ _RECORDS: tuple[TermRecord, ...] = (
         evidence_source=(
             f"{HUESKEN_PANEL}: Spearman rho +0.415 vs efficacy -- the strongest single feature "
             "measured on this panel, stronger than the A/U(1-5) count it is nested inside. "
-            f"{TP53_BASELINE}: +27.12% of variance at nominal 0.10 (2.71x), on two distinct values."
+            f"{TP53_BASELINE}: +24.63% of variance at nominal 0.10 (2.46x), on two distinct values. "
+            "That share is under the six-term vector that ships; the baseline itself was scored under "
+            "the pre-#102 seven-term vector, where the same rows give +27.12% (2.71x). Both columns "
+            "are printed by scripts/validate_scoring_profiles.py --baseline-mirna-csv."
         ),
         evidence_status=EvidenceStatus.EXPERIMENTAL,
         notes=(
             "Audited for #102: the range is genuinely attainable (A/U at position 1 on 50.8% of panel "
             "guides, 61.0% of baseline candidates), and a binary term over a near-balanced split is "
-            "exactly why 0.10 of weight moves 27% of the ranking. It is scored only in "
+            "exactly why 0.10 of weight moves a quarter of the ranking. It is scored only in "
             "postscreen_mirna_v4; the two siRNA vectors read no base position at all. Overlap with "
             "au_1_5 is total, not partial -- position 1 is inside 1-5 -- so the two must never both "
             "be paid (#97 question 5)."
@@ -377,8 +380,9 @@ _RECORDS: tuple[TermRecord, ...] = (
         evidence_source=(
             f"declared expert prior on 3' supplementary pairing. {HUESKEN_PANEL}: associates with "
             "*efficacy* at rho +0.165, beta +0.148 (cluster-robust t = 8.06, G = 41), and survives "
-            f"controlling for A/U(1-5) (beta +0.104, t = 5.43). {TP53_BASELINE}: +1.06% of variance "
-            "at nominal 0.10, i.e. 0.11x."
+            f"controlling for A/U(1-5) (beta +0.104, t = 5.43). {TP53_BASELINE}: +0.72% of variance "
+            "at nominal 0.10, i.e. 0.07x, under the six-term vector that ships (+1.06% / 0.11x on the "
+            "same rows under the pre-#102 seven-term vector the baseline was scored with)."
         ),
         evidence_status=EvidenceStatus.EXPERIMENTAL,
         notes=(
@@ -386,8 +390,8 @@ _RECORDS: tuple[TermRecord, ...] = (
             "declared endpoint is specificity -- less 3' supplementary pairing -- and *nothing has "
             "ever measured that*. What is measured is an efficacy association, which is also what a "
             "plain A/U-content-tracks-duplex-stability mechanism would produce, so the number does "
-            "not support the stated mechanism even though it is not null. It under-delivers 9x "
-            "against nominal on the baseline while holding the same 0.10 as ago_start."
+            "not support the stated mechanism even though it is not null. It under-delivers roughly "
+            "14x against nominal on the baseline while holding the same 0.10 as ago_start."
         ),
     ),
     TermRecord(
@@ -417,9 +421,12 @@ _RECORDS: tuple[TermRecord, ...] = (
         evidence_status=EvidenceStatus.DEPRECATED,
         notes=(
             "Removed from postscreen_mirna_v4 in the 4.0.0 revision. It is still computed and still "
-            "written to component_scores and the score_pos1_mismatch column, so a run remains "
+            "written to component_scores on the miRNA design path, and the pairing state it derives "
+            "from stays on the row as guide_pos1_base and pos1_pairing_state, so a run remains "
             "auditable and the term can return to a vector if mismatched passengers are ever "
-            "designed. The 0.05 it held was not reassigned by judgement: the four shared terms were "
+            "designed. Its contribution column, score_pos1_mismatch, is now always null: no vector "
+            "scores the term, so no contribution exists to report. "
+            "The 0.05 it held was not reassigned by judgement: the four shared terms were "
             "restored to exactly 0.80 x postscreen_sirna_v4, which is the construction rule that "
             "vector's own docstring already declared."
         ),
@@ -437,7 +444,11 @@ _RECORDS: tuple[TermRecord, ...] = (
         formula="count of A or U among guide positions 1-5 (read as RNA)",
         units="count out of 5",
         transform="count / 5, giving 6 attainable values",
-        missing_value_policy="0.0 window bases are never missing for a supported 19-23 nt guide",
+        missing_value_policy=(
+            "None for a guide shorter than the 5 nt window, and the key is then omitted from "
+            "component_scores rather than set -- a missing input must not score as a good one. Not "
+            "reachable in the supported 19-23 nt design range."
+        ),
         declared_range=(0.0, 1.0),
         attainable_range=(0.0, 1.0),
         evidence_source=(
@@ -577,7 +588,8 @@ class ExperimentalAUPostScreenMiRNAWeights(WeightVector):
     ``ago_start`` reads guide position 1; ``au_1_5`` reads positions 1-5, which *contains* it. On
     the panel their rank correlation is +0.476 and each still adds to the other in a joint model,
     because they are nested rather than merely correlated -- so scoring both pays twice for one
-    base, and pays it in the term that already drives 27.1% of this vector's ranking variance.
+    base, and pays it in the term that already drives 24.6% of the shipped miRNA vector's ranking
+    variance on the frozen baseline.
     One of the two has to go; the superset stays, so the window stays as D5 declared it.
 
     The cost is stated rather than hidden: ``ago_start`` alone tracks efficacy *better* than the

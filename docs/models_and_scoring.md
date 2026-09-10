@@ -235,9 +235,10 @@ Issue #102 removed a seventh term, `pos1_mismatch` at 0.05: it is **exactly cons
 exact-reverse-complement passenger every design uses, so it ranked nothing while consuming weight. Its
 0.05 was not reassigned by judgement — the four shared terms were restored to exactly
 `0.80 x postscreen_sirna_v4`, the proportional-scaling rule the vector already declared, which lands
-on two decimal places without rounding. `pos1_mismatch` is still computed and still reported on
-`score_pos1_mismatch`, so the removal is auditable and reversible if mismatched passengers are ever
-designed.
+on two decimal places without rounding. `pos1_mismatch` is still computed, and the pairing state it
+derives from stays on the row as `guide_pos1_base` and `pos1_pairing_state`, so the removal is
+auditable and reversible if mismatched passengers are ever designed. `score_pos1_mismatch` is a
+*contribution* column, so with the term in no vector it is now **always null**.
 
 Validation is a `@model_validator(mode="after")` reading the subclass's own `TERM_NAMES`.
 `COMPOSITE_TERM_NAMES` is now only the ordered **union** of scored terms, used for column ordering;

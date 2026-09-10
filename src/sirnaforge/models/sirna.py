@@ -55,8 +55,9 @@ DEFAULT_MIN_EMPIRICAL_SCORE = 0.4
 # and nothing validates against it. Each vector validates against its own TERM_NAMES, because
 # the three vectors score different terms (3, 4 and 7 of them) and a single global tuple used to
 # make a missing term look like a licence to renormalise -- which is no longer permitted anywhere.
-# `pos1_mismatch` is absent: issue #102 removed it from the only vector that held it, so it is a
-# reported column (`score_pos1_mismatch`) and not a scored term. See models/scoring_profile.py.
+# `pos1_mismatch` is absent: issue #102 removed it from the only vector that held it, so no vector
+# scores it and `score_pos1_mismatch` -- a *contribution* column -- is now always null. The pairing
+# state itself is still reported, on `guide_pos1_base` and `pos1_pairing_state`.
 COMPOSITE_TERM_NAMES = (
     "off_target",
     "target_accessibility",
@@ -277,8 +278,10 @@ class DesignWeights(WeightVector):
     # asymmetry takes the top slot rather than target_accessibility. On 900 benchmark siRNAs with
     # measured knockdown the two are statistically indistinguishable (Spearman rho +0.273 vs +0.267),
     # so this is not a large evidential gap -- but asymmetry additionally correlates rho +0.53 with
-    # A/U content at guide positions 1-5, which is itself the strongest single predictor in that
-    # panel (rho +0.438). Accessibility explaining ~7% of rank variance did not justify 0.40.
+    # A/U content at guide positions 1-5 (rho +0.438 on that 900-siRNA folding subsample; +0.378 on
+    # the full 2,816, where #102 measured guide position 1 alone higher still at +0.415, so A/U(1-5)
+    # is not the strongest single feature). Accessibility explaining ~7% of rank variance did not
+    # justify 0.40.
     target_accessibility: float = Field(
         default=0.35,
         ge=0,
@@ -344,9 +347,12 @@ class PostScreenMiRNAWeights(WeightVector):
     0.0** -- one distinct value over all 13,415 scored candidates of the public baseline, 0.000% of
     variance. It is constant by construction, not by accident: the passenger is the exact reverse
     complement of the guide, so guide position 1 always forms a Watson-Crick pair. A term that ranks
-    nothing must not consume weight. It is still computed and still reported on
-    ``score_pos1_mismatch``, so a run stays auditable and the term can return if the designer ever
-    builds deliberately mismatched passengers; see ``models/scoring_profile.py``.
+    nothing must not consume weight. ``biogenesis_features`` still computes it and the miRNA design
+    path still writes it to ``component_scores``, and the pairing state stays on the row as
+    ``guide_pos1_base`` and ``pos1_pairing_state``, so a run stays auditable and the term can return
+    if the designer ever builds deliberately mismatched passengers. Its *contribution* column
+    ``score_pos1_mismatch`` is now always null, because no vector scores it; see
+    ``models/scoring_profile.py``.
 
     The 0.05 it released was **not** reassigned by judgement. The four shared terms are now exactly
     ``0.80 x postscreen_sirna_v4`` -- 0.20 / 0.24 / 0.20 / 0.16 -- which is the proportional-scaling
