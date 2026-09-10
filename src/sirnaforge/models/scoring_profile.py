@@ -295,9 +295,10 @@ _RECORDS: tuple[TermRecord, ...] = (
         notes=(
             "It correlates rho +0.544 with A/U(1-5) on the panel and shares 30% of its variance with "
             "it, which is why D5 pre-declared a residual test rather than adding both blind. The "
-            "residual survived, so both terms are kept -- but asymmetry's *independent* rank "
-            "association is only rho +0.069, and the 0.40/0.25/0.18 weights predate that number and "
-            "were not fitted to it."
+            "residual survived, so both terms are kept -- and it survives dropping the 385 panel rows "
+            "whose provenance could not be established (beta +0.0532, t = 2.48, p = 0.019, 30 "
+            "clusters). But asymmetry's *independent* rank association is only rho +0.069, and the "
+            "0.40 / 0.25 / 0.20 weights predate that number and were not fitted to it."
         ),
     ),
     TermRecord(
