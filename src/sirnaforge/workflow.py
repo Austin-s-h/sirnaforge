@@ -91,7 +91,7 @@ from sirnaforge.data.orthology import (
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
-from sirnaforge.data.transcriptome_manager import TranscriptomeManager
+from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
     DesignMode,
@@ -1568,6 +1568,19 @@ class SiRNAWorkflow:
         )
         return input_fasta
 
+    @staticmethod
+    def _carry_index_build_error(
+        manager: TranscriptomeManager, prepared: Mapping[str, Any], payload: dict[str, Any]
+    ) -> None:
+        """Copy a failed index build onto the prepared reference, so the caller can refuse it.
+
+        The manager records the reason against the FASTA rather than in its result dict, whose type
+        is shared with the genome and annotation managers.
+        """
+        error = manager.index_build_errors.get(str(prepared.get("fasta")))
+        if error:
+            payload[INDEX_BUILD_ERROR_KEY] = error
+
     async def _prepare_transcriptome_database(
         self, transcriptome_ref: str, filter_spec: list[str] | None = None
     ) -> dict[str, Any] | None:
@@ -1605,6 +1618,7 @@ class SiRNAWorkflow:
                 species = manager.SOURCES[transcriptome_ref].species or "transcriptome"
                 enriched_result: dict[str, Any] = {"species": species}
                 enriched_result.update(raw_result)
+                self._carry_index_build_error(manager, raw_result, enriched_result)
                 return enriched_result
 
             # Otherwise treat as custom path/URL
@@ -1634,6 +1648,7 @@ class SiRNAWorkflow:
                 )
             enriched_custom: dict[str, Any] = {"species": inferred or "transcriptome"}
             enriched_custom.update(raw_custom)
+            self._carry_index_build_error(manager, raw_custom, enriched_custom)
             return enriched_custom
 
         except Exception as e:
@@ -1687,6 +1702,17 @@ class SiRNAWorkflow:
 
         # Stash the resolved FASTA so repeat detection can reuse it instead of fetching it again.
         self._species_cdna_fasta.setdefault(transcriptome_species, Path(transcriptome_result["fasta"]))
+
+        # An index build that was attempted and failed leaves no index, and the FASTA is not a
+        # substitute: handed to Nextflow as an index prefix it aligns nothing, which the pipeline
+        # reports as success. Refuse the reference and record why, so the species is unscreened
+        # rather than silently screened against nothing.
+        index_build_error = transcriptome_result.get(INDEX_BUILD_ERROR_KEY)
+        if index_build_error and not transcriptome_result.get("index"):
+            self._species_screening_shortfalls[transcriptome_species] = str(index_build_error)
+            console.print(f"❌ No usable index for {transcriptome_species}: {index_build_error}")
+            logger.error(f"Refusing to screen {transcriptome_species} without an index: {index_build_error}")
+            return None
 
         # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
         # Nextflow will build the index in Docker if needed

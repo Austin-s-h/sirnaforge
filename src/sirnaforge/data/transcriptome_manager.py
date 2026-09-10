@@ -29,6 +29,10 @@ from .reference_manager import CacheMetadata, ReferenceManager, ReferenceSource
 
 logger = logging.getLogger(__name__)
 
+#: Result key carrying the reason an index build failed. A reference with this key has no index, so
+#: it cannot be screened against -- the FASTA is not a substitute for the index it failed to become.
+INDEX_BUILD_ERROR_KEY = "index_build_error"
+
 
 @dataclass
 class TranscriptomeSource(ReferenceSource):
@@ -94,6 +98,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         self.sources: dict[str, TranscriptomeSource] = dict(sources or self.SOURCES)
         self.source_label = source_label or self.SOURCE_LABEL
         self.local_content_index: dict[str, str] = {}
+        # FASTA path -> why its index build failed. Kept here rather than in the result dict because
+        # the result type is shared with the genome and annotation managers; callers copy it onto
+        # their own payload (see workflow._prepare_transcriptome_database).
+        self.index_build_errors: dict[str, str] = {}
         self._rebuild_local_content_index()
 
     def _rebuild_local_content_index(self) -> None:
@@ -776,8 +784,17 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             self._save_metadata()
             return {"fasta": fasta, "index": index_prefix}
 
-        logger.warning("Index build failed, returning FASTA without index")
+        # A failed build is a completeness fact about this reference, not a downgrade to the FASTA.
+        # Returning the FASTA where an index is expected made bwa-mem2 align nothing, which Nextflow
+        # reported as success: a screen that examined no sequence published as a clean one.
+        error = (
+            f"BWA-MEM2 index build failed for {fasta.name} (prefix {index_prefix.name}); the most common "
+            "cause is running out of memory (human transcriptomes can need 32GB+). No index is available "
+            "for this reference, so nothing can be aligned against it."
+        )
+        logger.error(error)
         self._save_metadata()
+        self.index_build_errors[str(fasta)] = error
         return {"fasta": fasta}
 
     def list_available_sources(self) -> dict[str, TranscriptomeSource]:

@@ -15,7 +15,13 @@ from pathlib import Path
 
 import pytest
 
+from sirnaforge.config.reference_policy import ReferenceChoice
 from sirnaforge.core.off_target import aggregate_offtarget_results
+from sirnaforge.data.transcriptome_manager import (
+    INDEX_BUILD_ERROR_KEY,
+    TranscriptomeManager,
+    TranscriptomeSource,
+)
 from sirnaforge.models.off_target import MiRNAHit, OffTargetHit
 from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
 from sirnaforge.pipeline.nextflow_cli import offtarget_analysis_cli
@@ -278,6 +284,42 @@ def test_a_species_dropped_before_nextflow_reaches_the_run_warnings(tmp_path):
     assert any("mouse" in warning for warning in outcome["warnings"]), outcome["warnings"]
     assert "mouse" in outcome["filtering_stats"]["species_screening_shortfalls"]
     assert "mouse" in outcome["filtering_stats"]["unscreened_species"]
+
+
+@pytest.mark.unit
+def test_a_failed_index_build_records_the_reason_instead_of_returning_a_bare_fasta(tmp_path, monkeypatch):
+    """An OOM-killed build used to log a warning and hand back the FASTA, with nothing recorded."""
+    manager = TranscriptomeManager(cache_dir=tmp_path / "cache")
+    fasta = manager.cache_dir / "ref.fa"
+    fasta.write_text(">ENST1\nACGT\n")
+    manager._record_cache_entry("refkey", TranscriptomeSource(name="ref", url=str(fasta), species="mouse"), fasta)
+    monkeypatch.setattr(TranscriptomeManager, "_build_index", lambda *_args, **_kwargs: False)
+
+    result = manager._prepare_result_with_index(fasta, tmp_path / "cache" / "ref_index", "refkey", True)
+
+    assert "index" not in result
+    assert "index build failed" in manager.index_build_errors[str(fasta)]
+
+
+@pytest.mark.unit
+def test_a_reference_whose_index_failed_is_refused_rather_than_screened_against_a_fasta(tmp_path):
+    """transcriptome_manager handed Nextflow the FASTA where an index was expected: a no-op screen."""
+    workflow = _workflow(tmp_path, "index_build_failed", species=["mouse"])
+    fasta = tmp_path / "mouse_cdna.fa"
+    fasta.write_text(">ENSMUST00000000002 gene:ENSMUSG00000000002 gene_symbol:Tp53\nACGT\n")
+
+    async def _prepared(*_args, **_kwargs):
+        return {
+            "species": "mouse",
+            "fasta": fasta,
+            INDEX_BUILD_ERROR_KEY: "BWA-MEM2 index build failed for mouse_cdna.fa; ran out of memory",
+        }
+
+    workflow._prepare_transcriptome_database = _prepared  # type: ignore[method-assign]
+    materialized = asyncio.run(workflow._materialize_transcriptome_reference(ReferenceChoice.explicit(str(fasta))))
+
+    assert materialized is None, "a FASTA must not be passed where an index prefix is expected"
+    assert "ran out of memory" in workflow._species_screening_shortfalls["mouse"]
 
 
 @pytest.mark.unit
