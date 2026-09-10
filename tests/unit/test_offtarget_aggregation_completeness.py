@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from sirnaforge.config.reference_policy import ReferenceChoice
+from sirnaforge.config.reference_policy import ReferenceForm, ReferenceRequest, ReferenceState
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, HIT_CLASS_COLUMN, UNCLASSIFIED_CELL
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.core.off_target import aggregate_offtarget_results
@@ -60,7 +60,7 @@ def _workflow(tmp_path: Path, name: str, species: list[str] | None = None) -> Si
     config = WorkflowConfig(
         output_dir=tmp_path / name,
         gene_query="TP53",
-        genome_species=species or ["human"],
+        screen_species=species or ["human"],
         design_params=DesignParameters(),
         ortholog_mapping_file=_ORTHOLOG_MAPPING_FIXTURE,
     )
@@ -136,7 +136,7 @@ def _aggregate(root: Path) -> dict:
     """Run the real aggregator over the staged layout and return its published summary."""
     staged = _staged_species_results(root)
     output_dir = root / "aggregated"
-    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human,mouse,rat")
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human,mouse,rat")
     return json.loads((output_dir / "combined_summary.json").read_text())
 
 
@@ -187,7 +187,7 @@ def test_the_final_summary_text_warns_about_the_rejected_species(tmp_path):
     """The human-readable report is where a WARNINGS block was entirely absent."""
     staged = _staged_species_results(tmp_path)
     output_dir = tmp_path / "aggregated"
-    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human,mouse,rat")
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human,mouse,rat")
 
     report = (output_dir / "final_summary.txt").read_text()
     assert "WARNINGS" in report
@@ -210,7 +210,7 @@ def test_nothing_screened_is_not_reported_as_zero_aggregated_hits(tmp_path, caps
     staged.mkdir(parents=True)
     (staged / "mouse_analysis.tsv").touch()
     aggregate_offtarget_results(
-        results_dir=results_dir / "staged", output_dir=results_dir / "aggregated", genome_species="mouse"
+        results_dir=results_dir / "staged", output_dir=results_dir / "aggregated", transcriptome_species="mouse"
     )
 
     asyncio.run(workflow._process_nextflow_results([_candidate()], results_dir, {"status": "completed"}))
@@ -233,7 +233,7 @@ def test_a_rejected_species_is_not_reported_as_having_no_hits(tmp_path, capsys):
     aggregate_offtarget_results(
         results_dir=_staged_species_results(results_dir),
         output_dir=results_dir / "aggregated",
-        genome_species="human,mouse,rat",
+        transcriptome_species="human,mouse,rat",
     )
 
     asyncio.run(workflow._process_nextflow_results([_candidate()], results_dir, {"status": "completed"}))
@@ -254,7 +254,7 @@ def test_a_run_with_a_rejected_species_reports_partial_and_says_which(tmp_path):
     aggregate_offtarget_results(
         results_dir=_staged_species_results(results_dir),
         output_dir=results_dir / "aggregated",
-        genome_species="human,mouse,rat",
+        transcriptome_species="human,mouse,rat",
     )
 
     candidate = _candidate()
@@ -278,7 +278,7 @@ def test_a_schema_rejection_says_which_column_and_check_failed(tmp_path):
     bad = _genome_row("human", "ENST00000000009", nm=0) | {"offtarget_score": "9.0"}
     _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [bad])
     output_dir = tmp_path / "aggregated"
-    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human")
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human")
 
     summary = json.loads((output_dir / "combined_summary.json").read_text())
     reason = summary["rejected_species_files"]["human"][0]
@@ -311,7 +311,7 @@ def test_a_half_annotated_species_file_is_repaired_not_thrown_away(tmp_path):
         [annotated],
     )
     output_dir = tmp_path / "aggregated"
-    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human")
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human")
 
     summary = json.loads((output_dir / "combined_summary.json").read_text())
     assert summary["rejected_species_files"] == {}
@@ -374,7 +374,7 @@ def test_a_species_with_no_resolved_reference_is_recorded_not_erased(tmp_path):
     """A requested species with no index used to be filtered out before Nextflow and vanish."""
     workflow = _workflow(tmp_path, "dropped_species", species=["human", "mouse"])
 
-    active = workflow._resolve_active_genome_species({"genome_indices": "human:/nonexistent/human_index"})
+    active = workflow._resolve_active_screen_species({"transcriptome_indices": "human:/nonexistent/human_index"})
 
     assert active == ["human"]
     assert "mouse" in workflow._species_screening_shortfalls
@@ -386,7 +386,7 @@ def test_a_species_dropped_before_nextflow_reaches_the_run_warnings(tmp_path):
     """It must be a published fact, not only a log line: partial status, a warning, and in the stats."""
     workflow = _workflow(tmp_path, "dropped_reported", species=["human", "mouse"])
     _with_human_index(workflow, tmp_path, "dropped_reported")
-    workflow._resolve_active_genome_species({"genome_indices": "human:/nonexistent/human_index"})
+    workflow._resolve_active_screen_species({"transcriptome_indices": "human:/nonexistent/human_index"})
 
     results_dir = workflow.config.output_dir / "off_target" / "results"
     _write_aggregate(results_dir / "aggregated", [_genome_row("human", "ENST00000000009")], ["human"])
@@ -445,21 +445,29 @@ def test_a_reference_whose_index_failed_is_refused_rather_than_screened_against_
 
     async def _prepared(*_args, **_kwargs):
         return {
-            "species": "mouse",
+            "source_species": "mouse",
             "fasta": fasta,
             INDEX_BUILD_ERROR_KEY: "BWA-MEM2 index build failed for mouse_cdna.fa; ran out of memory",
         }
 
     workflow._prepare_transcriptome_database = _prepared  # type: ignore[method-assign]
-    materialized = asyncio.run(workflow._materialize_transcriptome_reference(ReferenceChoice.explicit(str(fasta))))
+    request = ReferenceRequest(
+        value=str(fasta),
+        form=ReferenceForm.REFERENCE,
+        state=ReferenceState.EXPLICIT,
+        reason="explicit transcriptome override",
+        declared_species="mouse",
+    )
+    resolved, rejection = asyncio.run(workflow._resolve_screening_reference(request))
 
-    assert materialized is None, "a FASTA must not be passed where an index prefix is expected"
+    assert resolved is None, "a FASTA must not be passed where an index prefix is expected"
+    assert rejection is not None and "ran out of memory" in rejection.reason
     assert "ran out of memory" in workflow._species_screening_shortfalls["mouse"]
 
 
 @pytest.mark.unit
 def test_a_named_index_prefix_that_does_not_exist_publishes_a_failure_not_a_clean_screen(tmp_path):
-    """--genome-indices with a bad prefix published a completed screen with zero hits."""
+    """--transcriptome-indices with a bad prefix published a completed screen with zero hits."""
     staged = tmp_path / "staged" / "mouse"
     result = offtarget_analysis_cli(
         species="mouse",
@@ -524,7 +532,7 @@ def test_a_bad_index_prefix_becomes_an_unscreened_species_with_the_reason_on_it(
     )
 
     output_dir = tmp_path / "aggregated"
-    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human,mouse")
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human,mouse")
     summary = json.loads((output_dir / "combined_summary.json").read_text())
 
     assert summary["unscreened_species"] == ["mouse"]
@@ -545,7 +553,7 @@ def test_the_rejection_survives_the_staging_the_nextflow_module_actually_does(tm
     (flat / "mouse_analysis.tsv").touch()
 
     result = aggregate_results_cli(
-        genome_species="human,mouse",
+        transcriptome_species="human,mouse",
         output_dir=str(tmp_path / "aggregated"),
         analysis_files=[str(flat / "human_analysis.tsv"), str(flat / "mouse_analysis.tsv")],
         summary_files=[],
@@ -573,7 +581,7 @@ def test_the_producer_publishes_the_classification_columns_explicitly_undecided(
     staged = tmp_path / "staged"
     _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
     output_dir = tmp_path / "aggregated"
-    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human")
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human")
 
     frame = pd.read_csv(output_dir / "combined_offtargets.tsv", sep="\t", dtype=str)
     assert list(frame.columns) == GENOME_COLUMNS + list(CLASSIFICATION_COLUMNS)
@@ -613,7 +621,9 @@ def test_the_workflow_fills_the_producers_columns_in_place(tmp_path):
     results_dir = workflow.config.output_dir / "off_target" / "results"
     staged = tmp_path / "staged"
     _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
-    aggregate_offtarget_results(results_dir=staged, output_dir=results_dir / "aggregated", genome_species="human")
+    aggregate_offtarget_results(
+        results_dir=staged, output_dir=results_dir / "aggregated", transcriptome_species="human"
+    )
     published = results_dir / "aggregated" / "combined_offtargets.tsv"
     columns_before = pd.read_csv(published, sep="\t", dtype=str).columns.tolist()
 

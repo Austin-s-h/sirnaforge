@@ -34,7 +34,7 @@ uv run sirnaforge workflow TP53 \
 
 - `--input-fasta` accepts local paths or URLs, bypassing the transcript lookup while retaining familiar file naming via the positional gene argument.
 - `--transcriptome-fasta` selects the reference used for transcriptome off-target analysis (local/remote/preset). Provide it whenever you need species other than the bundled Ensembl set.
-- `--offtarget-indices` and `--species` feed the BWA-MEM2/Nextflow pipeline; details live in {ref}`Workflows → Nextflow Pipeline <nextflow-pipeline>`.
+- `--transcriptome-indices` and `--species` feed the BWA-MEM2/Nextflow pipeline; details live in {ref}`Workflows → Nextflow Pipeline <nextflow-pipeline>`.
 
 ## 4. Inspect Results
 

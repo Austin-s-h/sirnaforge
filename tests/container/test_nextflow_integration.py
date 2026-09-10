@@ -225,7 +225,7 @@ def test_nextflow_config_generation():
             args = config.get_nextflow_args(
                 input_file=Path(tf.name),
                 output_dir=Path("/tmp/test"),
-                genome_species=["human"],
+                screen_species=["human"],
                 include_test_profile=True,
             )
 

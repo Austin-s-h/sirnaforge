@@ -94,7 +94,7 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
-from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
+from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
@@ -931,7 +931,7 @@ def workflow(  # noqa: PLR0912
         help=(
             "Organism the TARGET transcripts belong to, which decides which species' hits are "
             "on-target and whose alignment must succeed before candidates can be scored after "
-            "screening. --species is an unordered set of genomes to screen AGAINST and never "
+            "screening. --species is an unordered set of references to screen AGAINST and never "
             "sets this. Defaults to the organism the gene-query database serves (human), which "
             "is also the species of the default transcriptome; set it when designing against an "
             "input FASTA from another organism."
@@ -957,6 +957,8 @@ def workflow(  # noqa: PLR0912
         help=(
             "Override or extend transcriptome references for off-target analysis. "
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "Prefix it with a species to state one -- 'mouse:/path/custom_cdna.fa' -- otherwise the "
+            "species is read from the reference's own Ensembl cDNA headers. "
             "When omitted, automatically fetches Ensembl cDNA for species selected via --species. "
             "Custom FASTA files are cached and indexed automatically. "
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
@@ -973,13 +975,18 @@ def workflow(  # noqa: PLR0912
             "Filtered versions are cached separately with automatic indexing."
         ),
     ),
-    offtarget_indices: str | None = typer.Option(
+    transcriptome_indices: str | None = typer.Option(
         None,
+        "--transcriptome-indices",
         "--offtarget-indices",
         help=(
-            "Comma-separated overrides for genome indices used in off-target analysis. "
-            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39. "
-            "When provided, overrides cached/default genome references."
+            "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is that "
+            "reference's species and is added to the screen; it does NOT suppress the references "
+            "--species resolves, so pass --transcriptome-fasta (or --run-mode design_only) if you "
+            "do not want the Ensembl defaults fetched as well. The cDNA FASTA the index was built "
+            "from must be readable beside the prefix (the prefix itself, or <prefix>.fa) so hits "
+            "can be resolved to genes."
         ),
     ),
     ortholog_mapping: Path | None = typer.Option(
@@ -1336,7 +1343,7 @@ def workflow(  # noqa: PLR0912
 
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
-        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
+        override_species = extract_declared_species_from_indices(transcriptome_indices)
     except ValueError as exc:
         logger.error("Species resolution failed: %s", exc)
         console.print(f"❌ Error: {exc}", style="red")
@@ -1344,7 +1351,7 @@ def workflow(  # noqa: PLR0912
 
     source_normalized = resolved_species.source_normalized
     canonical_species = resolved_species.canonical_species
-    species_list = resolved_species.genome_species
+    species_list = resolved_species.screen_species
     mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
@@ -1387,8 +1394,8 @@ def workflow(  # noqa: PLR0912
             "ensembl_human_cdna (or a path/URL) to screen against a reference.",
             style="yellow",
         )
-    genome_species_for_workflow = override_species or species_list
-    offtarget_override_label = offtarget_indices or "cached defaults"
+    screen_species_for_workflow = override_species or species_list
+    index_override_label = transcriptome_indices or "resolved from --species"
     nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 
     console.print(
@@ -1406,7 +1413,7 @@ def workflow(  # noqa: PLR0912
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
-            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"  ↳ Prebuilt Index Override: [green]{index_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]\n"
             f"Modifications: [magenta]{policy.design_parameters.modification_pattern}[/magenta]\n"
             f"Overhang: [magenta]{policy.design_parameters.default_overhang}[/magenta]\n"
@@ -1434,9 +1441,9 @@ def workflow(  # noqa: PLR0912
                     # One resolved policy, so the CLI and a direct API call cannot diverge. Every
                     # threshold, the design mode and the run mode travel inside it.
                     resolved_policy=policy,
-                    genome_species=genome_species_for_workflow,
+                    screen_species=screen_species_for_workflow,
                     query_species=query_species,
-                    genome_indices_override=offtarget_indices,
+                    transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
@@ -1596,7 +1603,7 @@ def offtarget(  # noqa: PLR0912
         help=(
             "Organism the supplied guides were designed against, which decides whose alignment "
             "must succeed before candidates can be scored after screening. --species is the set "
-            "of genomes to screen AGAINST and never sets this. Defaults to human."
+            "of references to screen AGAINST and never sets this. Defaults to human."
         ),
     ),
     mirna_db: str = typer.Option(
@@ -1614,7 +1621,9 @@ def offtarget(  # noqa: PLR0912
         "--transcriptome-fasta",
         help=(
             "Override or extend transcriptome references for off-target analysis. "
-            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "Prefix it with a species to state one -- 'mouse:/path/custom_cdna.fa' -- otherwise the "
+            "species is read from the reference's own Ensembl cDNA headers."
         ),
     ),
     transcriptome_filter: str | None = typer.Option(
@@ -1626,12 +1635,15 @@ def offtarget(  # noqa: PLR0912
             "Example: --transcriptome-filter protein_coding,canonical_only."
         ),
     ),
-    offtarget_indices: str | None = typer.Option(
+    transcriptome_indices: str | None = typer.Option(
         None,
+        "--transcriptome-indices",
         "--offtarget-indices",
         help=(
-            "Comma-separated overrides for genome indices used in off-target analysis. "
-            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39."
+            "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is added to "
+            "the screen and does not suppress the references --species resolves. The cDNA FASTA the "
+            "index was built from must be readable beside the prefix so hits can be resolved to genes."
         ),
     ),
     ortholog_mapping: Path | None = typer.Option(
@@ -1721,14 +1733,14 @@ def offtarget(  # noqa: PLR0912
 
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
-        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
+        override_species = extract_declared_species_from_indices(transcriptome_indices)
     except ValueError as exc:
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
     source_normalized = resolved_species.source_normalized
     canonical_species = resolved_species.canonical_species
-    species_list = resolved_species.genome_species
+    species_list = resolved_species.screen_species
     mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
@@ -1745,8 +1757,8 @@ def offtarget(  # noqa: PLR0912
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
 
-    genome_species_for_workflow = override_species or species_list
-    offtarget_override_label = offtarget_indices or "cached defaults"
+    screen_species_for_workflow = override_species or species_list
+    index_override_label = transcriptome_indices or "resolved from --species"
     nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 
     console.print(
@@ -1760,7 +1772,7 @@ def offtarget(  # noqa: PLR0912
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
-            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"  ↳ Prebuilt Index Override: [green]{index_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]",
             title="Off-Target Configuration",
         )
@@ -1784,9 +1796,9 @@ def offtarget(  # noqa: PLR0912
                 run_offtarget_only_workflow(
                     input_candidates_fasta=str(input_candidates_fasta),
                     output_dir=str(output_dir),
-                    genome_species=genome_species_for_workflow,
+                    screen_species=screen_species_for_workflow,
                     query_species=query_species,
-                    genome_indices_override=offtarget_indices,
+                    transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,

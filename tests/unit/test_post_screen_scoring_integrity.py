@@ -104,7 +104,7 @@ def _workflow(
     tmp_path: Path,
     out_name: str,
     design_params: DesignParameters | None = None,
-    genome_species: list[str] | None = None,
+    screen_species: list[str] | None = None,
     nextflow_config: dict[str, str] | None = None,
     query_species: str | None = None,
 ) -> SiRNAWorkflow:
@@ -112,7 +112,7 @@ def _workflow(
     config = WorkflowConfig(
         output_dir=tmp_path / out_name,
         gene_query="TP53",
-        genome_species=genome_species,
+        screen_species=screen_species,
         query_species=query_species,
         nextflow_config=nextflow_config,
         design_params=design_params or DesignParameters(),
@@ -203,7 +203,7 @@ def test_partial_run_missing_query_species_does_not_score_perfect_specificity(tm
     candidate took the no-hits branch, received off_target_sub_score(0) = 1.0 -- perfect
     specificity -- and was marked off_target_screened=True.
     """
-    workflow = _workflow(tmp_path, "partial_out", genome_species=["human", "mouse"])
+    workflow = _workflow(tmp_path, "partial_out", screen_species=["human", "mouse"])
     candidate = _candidate("cand_partial", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
     design_time_score = candidate.design_score
@@ -267,8 +267,8 @@ def test_candidate_never_submitted_is_not_scored_as_clean(tmp_path: Path) -> Non
 def test_conservation_denominator_counts_species_screened_only_via_indices(tmp_path: Path) -> None:
     """F10 (denominator half): the denominator is the species handed to the aligner, not the CLI list.
 
-    Species supplied only through genome_fastas/genome_indices are appended to the ACTIVE list
-    handed to Nextflow but never to mirna_genome_species. The ortholog hit here is in mouse ONLY,
+    Species supplied only through transcriptome_fastas/transcriptome_indices are appended to the
+    ACTIVE list handed to Nextflow but never to config.screen_species. The ortholog hit here is in mouse ONLY,
     so the two candidate denominators give different answers and the test can tell them apart:
     the screened set {mouse, rat} scores 1/2, while the CLI list {mouse} scores a perfect 1/1.
     Pinning the *value* rather than merely "scoring did not abort" is deliberate -- the numerator
@@ -278,16 +278,16 @@ def test_conservation_denominator_counts_species_screened_only_via_indices(tmp_p
     workflow = _workflow(
         tmp_path,
         "conservation_out",
-        genome_species=["human", "mouse"],
-        nextflow_config={"genome_fastas": "human:human.fa,mouse:mouse.fa,rat:rat.fa"},
+        screen_species=["human", "mouse"],
+        nextflow_config={"transcriptome_fastas": "human:human.fa,mouse:mouse.fa,rat:rat.fa"},
     )
     candidate = _candidate("cand_conservation", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
     design_time_score = candidate.design_score
     _build_species_indices(workflow, tmp_path)
 
-    assert workflow._resolve_active_genome_species({}) == ["human", "mouse", "rat"], (
-        "rat is screened even though it was never named on --genome-species"
+    assert workflow._resolve_active_screen_species({}) == ["human", "mouse", "rat"], (
+        "rat is screened even though it was never named on --species"
     )
 
     hits = [{"rname": "ENSMUST00000000002", "species": "mouse", "nm": 0, "seed_mismatches": 0}]
@@ -318,8 +318,8 @@ def test_ortholog_hits_outside_the_requested_species_do_not_break_conservation(t
     workflow = _workflow(
         tmp_path,
         "unrequested_out",
-        genome_species=["human", "mouse"],
-        nextflow_config={"genome_fastas": "human:human.fa,mouse:mouse.fa,rat:rat.fa"},
+        screen_species=["human", "mouse"],
+        nextflow_config={"transcriptome_fastas": "human:human.fa,mouse:mouse.fa,rat:rat.fa"},
     )
     candidate = _candidate("cand_unrequested", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
@@ -331,7 +331,7 @@ def test_ortholog_hits_outside_the_requested_species_do_not_break_conservation(t
     )
     workflow._transcript_index.build("dog", dog_reference)
 
-    assert workflow._resolve_active_genome_species({}) == ["human", "mouse", "rat"]
+    assert workflow._resolve_active_screen_species({}) == ["human", "mouse", "rat"]
 
     hits = [
         {"rname": "ENSMUST00000000002", "species": "mouse", "nm": 0, "seed_mismatches": 0},
@@ -363,7 +363,7 @@ def test_partial_screen_does_not_outscore_the_equivalent_complete_screen(tmp_pat
     """
 
     def _run(out_name: str, screened: list[str]) -> SiRNACandidate:
-        workflow = _workflow(tmp_path, out_name, genome_species=["human", "mouse"])
+        workflow = _workflow(tmp_path, out_name, screen_species=["human", "mouse"])
         candidate = _candidate(f"cand_{out_name}", BONUS_GUIDE)
         _score(MiRNADesigner(DesignParameters()), [candidate])
         workflow._integrate_offtarget_results(
@@ -388,20 +388,20 @@ def test_partial_screen_does_not_outscore_the_equivalent_complete_screen(tmp_pat
 def test_transcriptome_index_species_stay_in_the_conservation_denominator(tmp_path: Path) -> None:
     """main.nf screens --transcriptome-indices species, so conservation must count them.
 
-    main.nf mixes transcriptome_indices into the same ch_genomes alignment channel as
-    genome_indices/genome_fastas, and the subworkflow derives the aggregation species list from
-    that channel. _resolve_active_genome_species scanned only the two genome_* keys, so a
+    main.nf mixes transcriptome_indices into the same reference channel as transcriptome_fastas,
+    and the subworkflow derives the aggregation species list from that channel.
+    _resolve_active_screen_species scanned only the FASTA key, so a
     transcriptome-only species was dropped from the ACTIVE list -- and with mouse dropped the
     denominator here empties, conservation goes inactive, and its weight is redistributed to the
     remaining terms even though mouse was aligned and its ortholog hit is right there in the table.
     """
-    workflow = _workflow(tmp_path, "tx_indices_out", genome_species=["human", "mouse"])
+    workflow = _workflow(tmp_path, "tx_indices_out", screen_species=["human", "mouse"])
     candidate = _candidate("cand_tx_indices", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
     _build_species_indices(workflow, tmp_path)
 
-    params = {"genome_indices": "human:human.idx", "transcriptome_indices": "mouse:mouse.idx"}
-    assert workflow._resolve_active_genome_species(params) == ["human", "mouse"]
+    params = {"transcriptome_fastas": "human:human.fa", "transcriptome_indices": "mouse:mouse.idx"}
+    assert workflow._resolve_active_screen_species(params) == ["human", "mouse"]
 
     hits = [{"rname": "ENSMUST00000000002", "species": "mouse", "nm": 0, "seed_mismatches": 0}]
     workflow._integrate_offtarget_results(
@@ -473,7 +473,7 @@ def test_missing_aggregate_is_not_treated_as_a_clean_screen(tmp_path: Path) -> N
     off_target_sub_score(0) = 1.0. Positive evidence (a published alignment file per species) is
     the only reading that survives its own absence.
     """
-    workflow = _workflow(tmp_path, "no_aggregate_out", genome_species=["human", "mouse"])
+    workflow = _workflow(tmp_path, "no_aggregate_out", screen_species=["human", "mouse"])
     candidate = _candidate("cand_no_aggregate", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
     design_time_score = candidate.design_score
@@ -498,11 +498,11 @@ def test_missing_aggregate_is_not_treated_as_a_clean_screen(tmp_path: Path) -> N
 def test_mirna_only_mode_does_not_claim_transcriptome_specificity(tmp_path: Path) -> None:
     """miRNA-only mode aligns against no transcriptome, so it cannot earn the off-target term.
 
-    sirna_offtarget_analysis.nf derives the aggregation species list from ch_genome_indices with
+    sirna_offtarget_analysis.nf derives the aggregation species list from ch_reference_indices with
     `.ifEmpty { '' }`, so a miRNA-only run publishes a summary naming no species and reporting no
     missing ones. That shape used to read as a complete, perfectly specific screen.
     """
-    workflow = _workflow(tmp_path, "mirna_only_out", genome_species=["human", "mouse"])
+    workflow = _workflow(tmp_path, "mirna_only_out", screen_species=["human", "mouse"])
     candidate = _candidate("cand_mirna_only", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
     design_time_score = candidate.design_score
@@ -533,7 +533,7 @@ def test_partial_screen_reports_its_hits_as_a_lower_bound(tmp_path: Path) -> Non
     to the filters -- so the flag means "this screen was incomplete", not "these counts are zero".
     Zeroing them would produce the worse contradiction of a filter failure with no hits behind it.
     """
-    workflow = _workflow(tmp_path, "lower_bound_out", genome_species=["human", "mouse"])
+    workflow = _workflow(tmp_path, "lower_bound_out", screen_species=["human", "mouse"])
     candidate = _candidate("cand_lower_bound", BONUS_GUIDE)
     _score(MiRNADesigner(DesignParameters()), [candidate])
     design_time_score = candidate.design_score
@@ -640,12 +640,12 @@ def test_isoform_coverage_gate_fires_only_when_a_floor_is_configured(tmp_path: P
     assert on.composite_score == pytest.approx(off.composite_score)
 
 
-def _cli_default_genome_species() -> list[str]:
-    """The genome species a bare ``sirnaforge workflow GENE`` actually resolves, in CLI order."""
+def _cli_default_screen_species() -> list[str]:
+    """The screen species a bare ``sirnaforge workflow GENE`` actually resolves, in CLI order."""
     return list(
         resolve_species_inputs(
             species=DEFAULT_SPECIES_ARGUMENT, mirna_db=DEFAULT_MIRNA_SOURCE, mirna_species=None
-        ).genome_species
+        ).screen_species
     )
 
 
@@ -663,7 +663,7 @@ def test_cli_default_species_list_scores_a_complete_screen(tmp_path: Path) -> No
 
     Every other test here hands ``_integrate_offtarget_results`` an explicit species list or
     ``screened_species=None``, which is exactly why this escaped: the query species was taken from
-    ``mirna_genome_species[0]``, and the CLI's own ``--species`` default happens to start with
+    ``screen_species[0]``, and the CLI's own ``--species`` default happens to start with
     chicken while the default transcriptome set aligns human/mouse/rat/macaque. So a bare
     ``sirnaforge workflow TP53`` declared a chicken run, found no chicken alignment in a completely
     successful four-transcriptome screen, and kept the design-time score for every candidate while
@@ -677,7 +677,7 @@ def test_cli_default_species_list_scores_a_complete_screen(tmp_path: Path) -> No
         "vacuous if it ever stops holding"
     )
 
-    workflow = _workflow(tmp_path, "cli_default_out", genome_species=_cli_default_genome_species())
+    workflow = _workflow(tmp_path, "cli_default_out", screen_species=_cli_default_screen_species())
     assert workflow._query_species in screened, (
         "the query species must be the organism the target transcripts came from, not whichever "
         "name happens to sit first in the off-target species list"
@@ -700,7 +700,7 @@ def test_cli_default_species_list_scores_a_complete_screen(tmp_path: Path) -> No
 
 @pytest.mark.unit
 def test_query_species_is_independent_of_species_list_order(tmp_path: Path) -> None:
-    """``--species`` is an unordered set of genomes to screen AGAINST; no position identifies the target.
+    """``--species`` is an unordered set of references to screen AGAINST; no position identifies the target.
 
     Reversing the CLI default list changes nothing about the run: the same gene was queried from
     the same database, so the same organism is the target and the same composite must come out.
@@ -708,10 +708,10 @@ def test_query_species_is_independent_of_species_list_order(tmp_path: Path) -> N
     could be scored at all.
     """
     screened = _cli_default_screened_species()
-    forward = _cli_default_genome_species()
+    forward = _cli_default_screen_species()
 
-    def _run(out_name: str, genome_species: list[str]) -> SiRNACandidate:
-        workflow = _workflow(tmp_path, out_name, genome_species=genome_species)
+    def _run(out_name: str, screen_species: list[str]) -> SiRNACandidate:
+        workflow = _workflow(tmp_path, out_name, screen_species=screen_species)
         candidate = _candidate("cand_order", BONUS_GUIDE)
         _score(MiRNADesigner(DesignParameters()), [candidate])
         workflow._integrate_offtarget_results(
@@ -739,7 +739,7 @@ def test_explicit_query_species_decides_whose_alignment_must_have_run(tmp_path: 
     design-time score. This also pins that the new setting is what drives the guard, so the guard
     cannot be satisfied by the mere presence of a human alignment.
     """
-    workflow = _workflow(tmp_path, "explicit_query_out", genome_species=["human", "mouse"], query_species="mouse")
+    workflow = _workflow(tmp_path, "explicit_query_out", screen_species=["human", "mouse"], query_species="mouse")
     assert workflow._query_species == "mouse"
 
     candidate = _candidate("cand_explicit_query", BONUS_GUIDE)

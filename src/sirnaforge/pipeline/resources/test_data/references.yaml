@@ -1,0 +1,37 @@
+# Screening reference configuration for the siRNA/miRNA off-target pipeline.
+#
+# siRNA acts on mRNA, so every screening reference here is a TRANSCRIPTOME (cDNA). "genome" means
+# genomic DNA and belongs to ZFN only (#99): there is no genomic screening mode for siRNA.
+#
+# Nothing in the pipeline reads this file automatically -- it is a worked example of the three ways
+# to name a reference:
+#
+#   1. A bundled Ensembl cDNA source, resolved and indexed for you:
+#        sirnaforge workflow TP53 --species human,mouse
+#        sirnaforge workflow TP53 --transcriptome-fasta ensembl_mouse_cdna
+#   2. Your own cDNA FASTA (optionally prefixed with the species you mean it to be):
+#        sirnaforge workflow TP53 --transcriptome-fasta mouse:/data/cdna/GRCm39.cdna.fa
+#   3. A BWA-MEM2 index you have already built, one entry per species:
+#        sirnaforge workflow TP53 --transcriptome-indices human:/data/idx/hs_cdna,mouse:/data/idx/mm_cdna
+#        nextflow run main.nf --transcriptome_indices 'human:/data/idx/hs_cdna'
+#        nextflow run main.nf --transcriptome_fastas  'human:/data/cdna/hs.fa'
+#
+# For form 3 the cDNA FASTA the index was built from must be readable beside the prefix (the prefix
+# itself, or <prefix>.fa): hits are resolved to genes from its headers, and a species whose sequence
+# cannot be read is reported unscreened rather than screened against nothing.
+
+human:
+  source: ensembl_human_cdna
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+mouse:
+  source: ensembl_mouse_cdna
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+rat:
+  source: ensembl_rat_cdna
+  container: biocontainers/bwa-mem2:v2.2.1_cv1
+
+macaque:
+  source: ensembl_macaque_cdna
+  container: biocontainers/bwa-mem2:v2.2.1_cv1

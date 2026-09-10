@@ -82,9 +82,93 @@ where the two defects removed here were first written down as outstanding.)
 - **BREAKING: `MiRNADesignConfig.scoring_weights` is removed, and with it `seed_clean_bonus` (0.15)
   and `five_p_end_destabilization_bonus` (0.10)** — 0.25 of declared bonus weight that was read
   nowhere in `src/`.
+- **BREAKING (#99): the screening vocabulary collapses onto `transcriptome`; `genome` now means ZFN's
+  genomic DNA and nothing else.** There was never a genomic reference in the siRNA/miRNA path —
+  `config/reference_policy.py` declares only `ensembl_{human,mouse,rat,macaque}_cdna`, and every
+  reference materialised for screening was cDNA — so `genome_*` was transport naming over
+  transcriptome content. It is also the mechanism of two measured defects, which is why it moved
+  rather than being left as ambient naming. **A hard break with a named replacement everywhere:
+  nothing maps an old name onto a new one silently, because the two were never the same thing.**
+
+  | Removed | Replacement | How the break surfaces |
+  | ------- | ----------- | ---------------------- |
+  | `--genome-indices` / `--genome-species` CLI options | `--transcriptome-indices` (`--offtarget-indices` still accepted) / `--species` | Both had already been renamed before 0.7.1; Typer reports "no such option" |
+  | `genome_indices`, `genome_fastas`, `genome_species` pipeline params | `transcriptome_indices`, `transcriptome_fastas`, `transcriptome_species` | `main.nf` **errors by name** in any spelling (`--genome_indices`, `--genome-indices`, `--genomeIndices`: every supplied key is folded to snake_case first, because Nextflow files a hyphenated flag under a camelCase key), because it otherwise accepts an unknown `--param` silently and the run would screen against nothing and report success |
+  | `nextflow_config={"genome_indices": ...}` | `transcriptome_indices=...` | `WorkflowConfig` raises `ValueError` naming the new parameter |
+  | `WorkflowConfig`/`run_sirna_workflow`/`run_offtarget_only_workflow` `genome_species=`, `genome_indices_override=` | `screen_species=`, `transcriptome_indices=` | `TypeError` quoting the replacement, not "unexpected keyword argument" |
+  | `WorkflowConfig.mirna_genome_species` | `WorkflowConfig.screen_species` | attribute is gone |
+  | `off_target/results/genome/` publishDir | `off_target/results/transcriptome/` | published output path changes |
+  | `BUILD_BWA_INDEX` `(species, genome_fasta)` input tuple | `(species, transcriptome_fasta)` | module signature |
+  | `aggregate_offtarget_results(genome_species=)`, `aggregate_results_cli(genome_species=)` | `transcriptome_species=` | `TypeError` |
+  | `pipeline/resources/genomes.yaml` (and its `test_data` copy), which advertised whole-genome igenomes indices for a transcriptome screen | `references.yaml`, worked examples of the three real reference forms | file renamed; `ResourceManager.get_test_config()` key `genomes_config` → `references_config` |
+
+  `workflow.py` used to reconcile `genome_indices`, `genome_fastas` and `transcriptome_indices` side
+  by side in one params dict; that reconciliation is gone. `data/genome_manager.py` keeps its
+  `SOURCE_LABEL = "genome"` and stays ZFN-only. **No genomic screening mode was added for siRNA** —
+  siRNA acts on mRNA — and naming a genomic assembly (e.g. `ensembl_human_hg38_primary`) for a
+  screen now raises `ReferenceKindError` before any download or index build, and the same refusal covers
+  a prebuilt index named on a ZFN run — arriving on `--transcriptome-indices`, it is a transcriptome
+  index by construction. (`WorkflowConfig` raises before it creates its own output tree;
+  `run_sirna_workflow` creates the top-level output directory one step earlier, so on that entry point
+  an empty directory is left behind.)
+- **BREAKING (#99): a prebuilt index whose sequence cannot be read is refused, not screened.**
+  `--transcriptome-indices` previously bypassed reference resolution entirely, so the transcript→gene
+  index the classifier reads was never built for it: on the public human+mouse screen mouse recorded
+  `species_index_missing` on **211,359 candidate-rows — 100% of mouse classifications unevidenced** —
+  and **17,935 of 95,136 alignments (18.9%)** were classified with no evidence, up from 4.1% on a
+  single species. Both doors now run through one resolver, which locates the cDNA FASTA beside the
+  index prefix (the prefix itself, or `<prefix>.fa`/`.fasta`/`.fna`, and it must read as plain text — a
+  gzipped or binary neighbour parses as an empty index, which classifies nothing) and builds that index. When no
+  sequence is readable there the species becomes a **per-species rejection** with the remedy in the
+  reason, and the run reports `partial` — the same treatment a failed index build already got, on the
+  same grounds: alignments nothing can classify are not evidence. A run that relied on handing over an
+  index with no readable sequence will now report that species unscreened instead of publishing
+  undetermined hits for it.
 
 ### Added
 
+- **`--transcriptome_species` is passed to Nextflow exactly once (#99).** The runner names the active
+  species and the resolver names the resolved ones; emitting both left the pipeline reporting whichever
+  flag came last, which need not be the set handed to the aligner.
+- **A reference with no index yet travels on `transcriptome_fastas`, not as a prefix (#99).** The two
+  parameters are read differently — the pipeline indexes a FASTA and reads an index prefix as one — and
+  a run that had no host-built index used to name the FASTA on the index parameter, where it aligns
+  nothing and the pipeline calls that a completed screen. The resolver now routes by what it actually
+  has. This does not change the case where a host index build was **attempted and failed**: that stays
+  a per-species rejection, because a build that ran out of memory on the host will usually do the same
+  in the container, and a failed `BUILD_BWA_INDEX` fails the whole pipeline run rather than one species.
+- **One resolved, typed screening reference (#99).** `config/reference_policy.py` grows
+  `ScreeningReference` — `{species, kind, identity, index}` plus `form`, `state` and `reason` — and
+  `ScreeningReferenceSet`, which also carries the requests it could **not** use as
+  `ReferenceRejection`s rather than dropping them. `build_screening_requests` is the single place a
+  screening reference can enter a run; `kind` is keyed to modality (`transcriptome` for siRNA/miRNA,
+  `genome` for ZFN) and a mismatch raises `ReferenceKindError` before any expensive work. A resolved
+  *default* whose kind does not match is disabled with a recorded reason instead — a ZFN run no longer
+  publishes four cDNA sources in its reference summary.
+- **A reference's species comes from the reference, with the authority recorded (#99).**
+  `SpeciesAuthority` orders it `declared` > bundled-source registry > the reference's own headers >
+  `unresolved`, so **an explicitly declared species is now honoured for custom paths** and header
+  inference is the fallback rather than the authority. `--transcriptome-fasta` and
+  `--transcriptome-indices` both accept a `species:` prefix. On `--transcriptome-fasta` the prefix is
+  read as a species only when the registry recognises it, so a URL scheme is never mistaken for a
+  species; on `--transcriptome-indices`, where the declaration is the *only* authority for the label,
+  an unrecognised name is **refused** with the supported list, exactly as `--species` refuses one.
+  A declared species that contradicts the file's headers is reported rather than silently discarded. The unresolved label is `unknown`,
+  not `transcriptome`: that word is the *kind*, and using it as a species is what made a local cDNA
+  path match no query species, publish `species_analyzed: ['transcriptome']` and score nothing.
+  Header inference's three limits are unchanged — a gzipped reference infers nothing (it no longer
+  aborts the run either), a mixed-assembly file returns `None` rather than guessing, and only
+  assemblies in `ENSEMBL_ASSEMBLIES` are recognised.
+- **The #104 contracts are wired (#99).** Every run publishes `reference_summary.screening` (what
+  resolved, over which species, and what did not), `reference_summary.scope` — a
+  `models.policy.FilterScope` holding the explicit species set the screen *planned* to cover, fixed at
+  resolution (a species whose alignment published nothing is subtracted in
+  `filtering_stats.unscreened_species`, not here) — and
+  `reference_summary.screening_plan`, one `models.evidence.ScreeningPlanEntry` per reference carrying
+  the channel, the canonical species, the reference identity and a digest of the guide set actually
+  submitted. Both types landed unwired with the shared contracts; this is what fills them. **No gate
+  reads the scope in 0.7.1** — applying a filter scope is #101's, and the plan has no evidence
+  counterpart to reconcile against yet.
 - **A scoring term registry, `sirnaforge.models.scoring_profile`.** Per term it records the molecule,
   strand and positions read, the endpoint _claimed_, the applicability condition, the formula, units
   and transform, the missing-value policy, the **declared** and **attainable** feature ranges, the
@@ -294,7 +378,9 @@ where the two defects removed here were first written down as outstanding.)
 - **`filtering_stats.species_screening_shortfalls`**: species requested for screening that never
   reached Nextflow, with the reason on each. They are also merged into
   `filtering_stats.unscreened_species`, so that field means what its name says regardless of where
-  the shortfall was decided.
+  the shortfall was decided. Each entry is keyed on the species the reference itself resolved to (#99),
+  not on the parameter it was declared on, so an undeclared reference whose index build fails is
+  reported against its own species rather than against `unknown`.
 - **`filtering_stats.hit_classes_candidate_weighted`**, the per-candidate-summed class counts, which
   is what the gates act on. See Fixed for why it needed its own name.
 
@@ -537,6 +623,40 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Known limitations
 
+- **The #99 reference work was verified on unit tests, `nextflow lint` and a real `-stub-run`, not on a
+  real screen.** `bwa-mem2` is Docker-only on arm64, so the 211,359-row and 18.9% figures quoted above
+  were **not re-measured** after the fix — they are the pre-fix measurements that motivated it. What
+  was executed: the resolver's behaviour under unit test (including mutation checks), `nextflow lint`
+  over 11 files, a non-stub refusal of `--genome_indices` by name, and a `-stub-run` confirming the
+  renamed parameters wire up and publish under `off_target/results/transcriptome/`.
+- **A species can still reach the aligner without a resolved reference, via a raw `nextflow_config`
+  passthrough.** Writing `transcriptome_fastas`/`transcriptome_indices` into `nextflow_config` by hand
+  bypasses the resolver, so no transcript index is built on the host and those hits publish as
+  `undetermined` with `species_index_missing`. The workflow now logs a warning naming that consequence
+  for any active species with no transcript index, but does not refuse it: the caller wrote a pipeline
+  parameter directly, which the resolver is not asked to police.
+- **On a host with no `bwa-mem2`, every reference is refused rather than routed to the container
+  build.** `TranscriptomeManager` treats a missing executable and an OOM kill the same way — both are
+  recorded as an index-build failure, and an index-build failure refuses the reference (Wave 1's
+  behaviour, deliberately not loosened here). So the new `transcriptome_fastas` route, which exists so
+  `BUILD_BWA_INDEX` can index a reference inside the container, is only reached when index building is
+  switched off or an existing index blocks reuse — not on an arm64 host where `bwa-mem2` is
+  Docker-only. Distinguishing the two causes is a `transcriptome_manager` change nobody has made.
+- **`--transcriptome-indices` adds a reference; it does not replace the ones `--species` resolves.**
+  Both are kept by `build_screening_requests`, so a run that names its own index still fetches and
+  indexes the four Ensembl cDNA defaults unless `--transcriptome-fasta` or `--run-mode design_only`
+  narrows the selection. Pre-existing (0.7.0 resolved the same selection beside
+  `genome_indices_override`); the help text and the override guide previously claimed the opposite and
+  now say what the code does.
+- **`MiRNADatabaseManager`'s `"genome"` registry key survives, and it doubles as the screen-species
+  list.** The key names each organism's miRNA *annotation set*, not a reference, so it kept its name;
+  but `utils/cli_inputs.py` maps `species_resolution["genome"]` onto `screen_species`, which means a
+  miRNA-annotation label decides which transcriptome references get fetched. A real conflation, left
+  to the module that owns it.
+- **`DesignParameters.genome_index` and the `sirnaforge design --genome-index` option survive the
+  rename, unused.** Nothing in `src/` reads the field — it is forwarded as a run-policy passthrough and
+  never consulted — so it is an inert option with a misleading name. Removing it touches the run-policy
+  passthrough set and `models/sirna.py`, both outside #99's scope.
 - The weights are **declared expert priors, not fitted values, and every one of them is
   `experimental`.** `design_v4`'s three numbers in particular are round numbers awaiting sign-off.
   Two terms carry evidence against measured knockdown on the vendored Huesken panel

@@ -280,7 +280,7 @@ def _on_target_workflow(tmp_path, out_name: str):
     config = WorkflowConfig(
         output_dir=tmp_path / out_name,
         gene_query="TP53",
-        genome_species=["human", "mouse"],
+        screen_species=["human", "mouse"],
         design_params=DesignParameters(),
     )
     workflow = SiRNAWorkflow(config)

@@ -21,7 +21,7 @@ DEFAULT_MIRNA_SPECIES_ARGUMENT = ",".join(DEFAULT_MIRNA_CANONICAL_SPECIES)
 
 
 def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") -> dict[str, Any]:
-    """Build BWA-MEM2 index for genome/transcriptome.
+    """Build a BWA-MEM2 index for one screening reference.
 
     Args:
         fasta_file: Path to input FASTA file
@@ -120,17 +120,17 @@ def offtarget_analysis_cli(
 
 
 def aggregate_results_cli(  # noqa: PLR0912
-    genome_species: str,
+    transcriptome_species: str,
     output_dir: str = ".",
     mirna_db: str | None = None,
     mirna_species: str | None = None,
     analysis_files: list[str] | None = None,
     summary_files: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Aggregate off-target analysis results from multiple candidates and genomes.
+    """Aggregate off-target analysis results from multiple candidates and references.
 
     Args:
-        genome_species: Comma-separated list of species
+        transcriptome_species: Comma-separated list of species screened
         output_dir: Directory to write aggregated results
         mirna_db: The database that provided the reference
         mirna_species: The species code for the matching miRNA
@@ -164,7 +164,7 @@ def aggregate_results_cli(  # noqa: PLR0912
         results_dir.mkdir(exist_ok=True)
 
         # Organize files by species (extract from filename)
-        species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
+        species_list = [s.strip() for s in transcriptome_species.split(",") if s.strip()]
         for species in species_list:
             species_dir = results_dir / species
             species_dir.mkdir(exist_ok=True)
@@ -209,7 +209,7 @@ def aggregate_results_cli(  # noqa: PLR0912
 
         # Run aggregation using core function
         result_path = aggregate_offtarget_results(
-            results_dir=str(results_dir), output_dir=output_dir, genome_species=genome_species
+            results_dir=str(results_dir), output_dir=output_dir, transcriptome_species=transcriptome_species
         )
 
         logger.info(f"Aggregation completed: {result_path}")

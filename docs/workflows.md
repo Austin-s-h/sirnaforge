@@ -148,8 +148,9 @@ siRNAforge runs off-target analysis via an embedded Nextflow workflow.
 The `SIRNA_OFFTARGET_ANALYSIS` subworkflow runs two independent scans over the same
 candidate FASTA and aggregates them into a single report. The **miRNA seed scan always
 runs** (lightweight, no reference download beyond the miRNA database); the
-**transcriptome/genome scan is conditional** on a reference being supplied via
-`--genome_fastas`, `--genome_indices`, or `--transcriptome_indices`.
+**transcriptome scan is conditional** on a reference being supplied via
+`--transcriptome_fastas` or `--transcriptome_indices`. There is no genomic scan for siRNA/miRNA:
+siRNA acts on mRNA, so the transcriptome is the reference for on- and off-target alike (#99).
 
 ```{mermaid}
 flowchart TD
@@ -169,11 +170,11 @@ flowchart TD
         FILT -->|"no (e.g. 3' region)"| RAWONLY["Retained in *_raw only,<br/>NOT a hit"]
     end
 
-    GATE{"--genome_fastas /<br/>--genome_indices /<br/>--transcriptome_indices<br/>provided?"}
+    GATE{"--transcriptome_fastas /<br/>--transcriptome_indices<br/>provided?"}
     GATE -->|no| SKIP["Transcriptome scan skipped<br/>(miRNA-only run)"]
-    GATE -->|yes| GENOME
+    GATE -->|yes| TXSCAN
 
-    subgraph GENOME["Transcriptome/genome scan — CONDITIONAL"]
+    subgraph TXSCAN["Transcriptome scan — CONDITIONAL"]
         direction TB
         BIDX["BUILD_BWA_INDEX<br/>(only for FASTA inputs; indices reused as-is)"]
         BIDX --> OT["OFFTARGET_ANALYSIS per species<br/>run_bwa_alignment_analysis()<br/>one BWA-MEM2 session, all candidates"]

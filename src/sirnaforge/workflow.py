@@ -34,11 +34,21 @@ from rich.progress import Progress
 from sirnaforge import __version__
 from sirnaforge.config import (
     DEFAULT_TRANSCRIPTOME_SOURCES,
+    UNRESOLVED_SPECIES,
     ReferenceChoice,
+    ReferenceForm,
     ReferencePolicyResolver,
+    ReferenceRejection,
+    ReferenceRequest,
     ReferenceSelection,
+    ScreeningReference,
+    ScreeningReferenceSet,
+    SpeciesAuthority,
     WorkflowInputSpec,
+    build_screening_requests,
+    screening_kind_for_design_mode,
 )
+from sirnaforge.config.reference_policy import parse_index_entries, resolve_reference_species
 from sirnaforge.config.run_policy import (
     EntryPoint,
     ResolvedRunPolicy,
@@ -99,6 +109,7 @@ from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
+from sirnaforge.models.evidence import ScreeningPlan
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
     DesignMode,
@@ -146,6 +157,47 @@ _PER_SPECIES_COUNTERS: tuple[str, ...] = (
 )
 
 
+#: 0.7.0 keyword arguments the #99 rename removed, and what to pass instead. A hard break: nothing
+#: silently maps an old name onto the new one, because the two were never quite the same thing --
+#: ``genome_indices_override`` bypassed reference resolution, and ``transcriptome_indices`` does not.
+#: They are still named here so the failure quotes the replacement instead of "unexpected keyword".
+RENAMED_ARGUMENTS: Mapping[str, str] = {
+    "genome_species": "screen_species",
+    "genome_indices_override": "transcriptome_indices",
+}
+
+
+#: Pipeline parameters the rename removed. Refused rather than ignored: Nextflow accepts an unknown
+#: ``--param`` silently, so a stale ``genome_indices`` in a raw ``nextflow_config`` would configure
+#: nothing and the run would screen against nothing and report success.
+RENAMED_NEXTFLOW_PARAMS: Mapping[str, str] = {
+    "genome_indices": "transcriptome_indices",
+    "genome_fastas": "transcriptome_fastas",
+    "genome_species": "transcriptome_species",
+}
+
+
+def refuse_renamed_arguments(supplied: Mapping[str, Any]) -> None:
+    """Refuse a removed ``genome_*`` keyword, naming its replacement.
+
+    Raises:
+        TypeError: Any keyword was supplied. Unknown keywords are reported the same way Python
+            would, so a typo does not read as a rename.
+    """
+    if not supplied:
+        return
+    renamed = sorted(name for name in supplied if name in RENAMED_ARGUMENTS)
+    unknown = sorted(name for name in supplied if name not in RENAMED_ARGUMENTS)
+    parts = [f"{name!r} was renamed to {RENAMED_ARGUMENTS[name]!r} in 0.7.1" for name in renamed]
+    parts += [f"unexpected keyword argument {name!r}" for name in unknown]
+    detail = "; ".join(parts)
+    if renamed:
+        detail += (
+            ". Screening references are transcriptomes: 'genome' now means genomic DNA and belongs to ZFN only (#99)"
+        )
+    raise TypeError(detail)
+
+
 class WorkflowConfig:
     """Configuration for the complete siRNA design workflow."""
 
@@ -158,8 +210,8 @@ class WorkflowConfig:
         design_params: DesignParameters | None = None,
         # off-target selection now always equals design_params.top_n
         nextflow_config: Mapping[str, Any] | None = None,
-        genome_indices_override: str | None = None,
-        genome_species: list[str] | None = None,
+        transcriptome_indices: str | None = None,
+        screen_species: list[str] | None = None,
         query_species: str | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
@@ -176,6 +228,7 @@ class WorkflowConfig:
         variant_config: VariantWorkflowConfig | None = None,
         zfn_config: ZFNWorkflowConfig | None = None,
         resolved_policy: ResolvedRunPolicy | None = None,
+        **renamed: Any,
     ):
         """Initialize workflow configuration.
 
@@ -184,7 +237,13 @@ class WorkflowConfig:
         so every path -- CLI, Python API, off-target-only, direct WorkflowConfig -- carries a policy
         and none of them re-derives a threshold. Resolution happens before the output directories
         below are created, so an invalid configuration costs nothing.
+
+        ``screen_species`` are the species this run asks to screen; ``transcriptome_indices`` are
+        ``species:index_prefix`` references the caller has already built. Both feed one resolver
+        (#99), so an override and a default differ only in provenance. ``**renamed`` exists solely
+        to refuse the 0.7.0 ``genome_*`` spellings with the new name rather than a bare TypeError.
         """
+        refuse_renamed_arguments(renamed)
         self.output_dir = Path(output_dir)
         self.input_source = input_source
         self.zfn_config = zfn_config
@@ -212,27 +271,38 @@ class WorkflowConfig:
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
         self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
+        stale_params = sorted(set(self.nextflow_config) & set(RENAMED_NEXTFLOW_PARAMS))
+        if stale_params:
+            raise ValueError(
+                "nextflow_config carries pipeline parameters the #99 rename removed: "
+                + ", ".join(f"{name!r} is now {RENAMED_NEXTFLOW_PARAMS[name]!r}" for name in stale_params)
+                + ". Nextflow ignores an unknown parameter, so leaving them would screen against nothing."
+            )
 
-        override_species: list[str] | None = None
-        if genome_indices_override:
-            self.nextflow_config["genome_indices"] = genome_indices_override
-            override_species = self._extract_species_from_indices(genome_indices_override)
+        # Explicit index entries are references like any other: they are parsed here, before any
+        # directory is created, and resolved by the same resolver as the defaults rather than being
+        # written straight into the Nextflow parameters. Writing them straight through is what let a
+        # cDNA file align successfully and then classify against nothing (#99 defect 1).
+        index_requests = parse_index_entries(
+            transcriptome_indices,
+            option="--transcriptome-indices",
+            reason="explicit index override (--transcriptome-indices)",
+        )
+        override_species = [request.declared_species or "" for request in index_requests] or None
 
-        # miRNA genome species: used for miRNA database lookups, not genomic DNA alignment
-        # Track whether species were explicitly requested (vs defaulting)
-        species_explicitly_provided = genome_species is not None or override_species is not None
-        default_mirna_genomes = genome_species or ["human", "rat", "rhesus"]
+        # Species this run asks to screen against. Track whether they were requested or defaulted.
+        species_explicitly_provided = screen_species is not None or override_species is not None
+        requested_species = screen_species or ["human", "rat", "rhesus"]
         if override_species:
-            default_mirna_genomes = override_species
+            requested_species = override_species
 
         # Normalize all species names to canonical form for consistent comparisons
-        normalized_genomes = [normalize_species_name(s) for s in default_mirna_genomes]
-        self.mirna_genome_species: list[str] = list(dict.fromkeys(normalized_genomes))
+        self.screen_species: list[str] = list(dict.fromkeys(normalize_species_name(s) for s in requested_species))
         self.species_explicitly_requested = species_explicitly_provided
         # Organism of the TARGET transcripts, when the caller states it outright. None means
         # "derive it from where the transcripts actually came from" -- see SiRNAWorkflow.__init__.
-        # Deliberately NOT defaulted from mirna_genome_species: that list is an unordered set of
-        # genomes to screen against, so no position in it identifies the target.
+        # Deliberately NOT defaulted from screen_species: that list is an unordered set of
+        # references to screen against, so no position in it identifies the target.
         stated_query_species = (query_species or "").strip()
         self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
         self.mirna_database = mirna_database
@@ -254,6 +324,15 @@ class WorkflowConfig:
         self.transcriptome_references = [
             choice.value for choice in self.transcriptome_selection.choices if choice.value
         ]
+        # The one door. Every screening reference -- explicit index override or resolved default --
+        # becomes a request here, and a modality mismatch (a genomic assembly handed to an siRNA run,
+        # a transcriptome handed to ZFN) raises now, before a multi-gigabyte download.
+        self.screening_kind = screening_kind_for_design_mode(self.design_params.design_mode)
+        self.screening_requests, self.screening_request_rejections = build_screening_requests(
+            kind=self.screening_kind,
+            selection=self.transcriptome_selection,
+            index_requests=index_requests,
+        )
         # Offline orthologue evidence (#101): when set, cross-species classification reads this file
         # instead of calling Ensembl Compara, so an air-gapped run -- and every fixture -- is
         # deterministic and never waits on REST.
@@ -280,19 +359,6 @@ class WorkflowConfig:
         if self.design_params.design_mode != DesignMode.ZFN:
             (self.output_dir / "transcripts").mkdir(exist_ok=True)
             (self.output_dir / "orf_reports").mkdir(exist_ok=True)
-
-    @staticmethod
-    def _extract_species_from_indices(indices: str) -> list[str]:
-        """Derive species list from comma-separated species:/index_prefix entries."""
-        species: list[str] = []
-        for token in indices.split(","):
-            entry = token.strip()
-            if not entry:
-                continue
-            head = entry.split(":", 1)[0].strip() if ":" in entry else entry
-            if head and head not in species:
-                species.append(head)
-        return species
 
 
 class ZFNWorkflowConfig:
@@ -346,10 +412,17 @@ class SiRNAWorkflow:
         self._protein_coding_transcript_count: int = 0
         self._transcript_index = TranscriptGeneIndex()
         self._species_explicitly_requested: bool = False
-        # Species actually handed to Nextflow, which is a superset of mirna_genome_species when
-        # extra species arrive via --genome-indices/--genome-fastas. Conservation is scored against
-        # this list, so its denominator can never be smaller than the set of species screened.
-        self._active_genome_species: list[str] = []
+        # Species actually handed to Nextflow, which is a superset of config.screen_species when
+        # extra species arrive on transcriptome_indices/transcriptome_fastas. Conservation is scored
+        # against this list, so its denominator can never be smaller than the set screened.
+        self._active_screen_species: list[str] = []
+        # What the one resolver produced: {species, kind, identity, index} per reference, plus the
+        # requests it could not use. Empty until _resolve_screening_references runs.
+        self._screening_references = ScreeningReferenceSet(kind=config.screening_kind)
+        # What those references intend to screen, digest-keyed to the guide set actually submitted.
+        # None until the Nextflow stage records one; a run with no resolved reference records an
+        # empty plan, which claims nothing.
+        self._screening_plan: ScreeningPlan | None = None
         # Species requested for screening that never reached Nextflow, and why. A species with no
         # resolvable reference used to be filtered out of the species list before the pipeline ran,
         # so it appeared in no artifact at all: the run reported on the species it managed to screen
@@ -358,7 +431,7 @@ class SiRNAWorkflow:
         self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         self._candidate_id_to_representative: dict[str, str] = {}
         # Single authoritative query species, set once (not re-inferred per call site), and never
-        # read out of the off-target species list. Taking mirna_genome_species[0] declared the
+        # read out of the off-target species list. Taking screen_species[0] declared the
         # query species from a LIST POSITION in a set whose order carries no meaning: the CLI's own
         # --species default is "chicken,pig,rat,mouse,human,rhesus,macaque", so every default run
         # called itself a chicken run, found no chicken alignment in the four human/mouse/rat/
@@ -488,9 +561,7 @@ class SiRNAWorkflow:
             "design_parameters": design_parameters,
             "repeat_summary": self._repeat_summary,
             "offtarget_summary": offtarget_results,
-            "reference_summary": {
-                "transcriptome": self.config.transcriptome_selection.to_metadata(),
-            },
+            "reference_summary": self._summarize_screening_references(),
         }
 
         # Optionally save workflow summary JSON (store in logs/)
@@ -1443,10 +1514,10 @@ class SiRNAWorkflow:
         # Prepare input files
         input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
 
-        # Materialize transcriptome references once; repeat detection and Nextflow both reuse
-        # this instead of each fetching/indexing their own copy.
+        # Resolve the screening references once; repeat detection and Nextflow both reuse them
+        # instead of each fetching/indexing their own copy.
         additional_params: dict[str, Any] = dict(self.config.nextflow_config)
-        has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
+        has_transcriptome = await self._resolve_screening_references(additional_params)
         self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
         # Exclude repeat-flagged candidates from top_candidates now, so the exclusion holds even
         # if screening below never runs (Nextflow unavailable/failed).
@@ -1622,17 +1693,21 @@ class SiRNAWorkflow:
     async def _prepare_transcriptome_database(
         self, transcriptome_ref: str, filter_spec: list[str] | None = None
     ) -> dict[str, Any] | None:
-        """Prepare transcriptome database from user-provided reference.
+        """Fetch and index one transcriptome reference, reporting what each species authority saw.
+
+        Deliberately does **not** decide the species: it reports the bundled source's own label and
+        what the reference's headers say, and :meth:`_resolve_screening_reference` applies the
+        authority order. A method that both fetched and labelled is how a parameter name came to
+        stand in for a species.
 
         Args:
-            transcriptome_ref: Can be:
-                - Pre-configured source name (e.g., 'ensembl_human_cdna')
-                - Local file path
-                - HTTP(S)/FTP URL
-            filter_spec: Optional list of filter names (e.g., ['protein_coding', 'canonical_only'])
+            transcriptome_ref: Bundled source name (e.g. ``ensembl_human_cdna``), local path, or
+                HTTP(S)/FTP URL.
+            filter_spec: Optional list of filter names (e.g. ``['protein_coding']``).
 
         Returns:
-            Dictionary with 'fasta' and 'index' paths, or None if preparation failed
+            ``fasta``/``index`` paths plus ``source_species`` and ``header_species``, or None when
+            preparation failed.
         """
         try:
             manager = TranscriptomeManager()
@@ -1653,8 +1728,7 @@ class SiRNAWorkflow:
                 if raw_result is None:
                     return None
 
-                species = manager.SOURCES[transcriptome_ref].species or "transcriptome"
-                enriched_result: dict[str, Any] = {"species": species}
+                enriched_result: dict[str, Any] = {"source_species": manager.SOURCES[transcriptome_ref].species}
                 enriched_result.update(raw_result)
                 self._carry_index_build_error(manager, raw_result, enriched_result)
                 return enriched_result
@@ -1667,24 +1741,9 @@ class SiRNAWorkflow:
             if raw_custom is None:
                 return None
 
-            # Species comes from the resolved reference, not from the parameter it arrived through
-            # (#99). Labelling a custom path "transcriptome" makes it match no species at all, so
-            # every hit is cross-species with no resolvable orthologue: a mouse-cDNA screen published
-            # 10,217 hits as unqualified off_target with zero orthologs. Fall back to the old literal
-            # only when the headers genuinely do not say, and say so out loud.
-            inferred = infer_species_from_cdna_headers(Path(raw_custom["fasta"]))
-            if inferred is None:
-                logger.warning(
-                    "Could not infer the species of custom transcriptome %s from its headers; labelling it "
-                    "'transcriptome'. Orthology cannot be resolved for it, so cross-species hits will be "
-                    "reported as unqualified off-targets.",
-                    transcriptome_ref,
-                )
-            else:
-                logger.info(
-                    "Inferred species '%s' for custom transcriptome %s from its headers", inferred, transcriptome_ref
-                )
-            enriched_custom: dict[str, Any] = {"species": inferred or "transcriptome"}
+            enriched_custom: dict[str, Any] = {
+                "header_species": infer_species_from_cdna_headers(Path(raw_custom["fasta"]))
+            }
             enriched_custom.update(raw_custom)
             self._carry_index_build_error(manager, raw_custom, enriched_custom)
             return enriched_custom
@@ -1694,90 +1753,176 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation error: {e}")
             return None
 
-    async def _materialize_transcriptome_reference(self, choice: ReferenceChoice) -> tuple[str, str] | None:
-        """Prepare a transcriptome reference for Nextflow usage."""
-        if not choice.value:
-            return None
+    @staticmethod
+    def _readable_cdna_fasta(path: Path) -> bool:
+        """Whether a file can be read as plain-text FASTA, which is what the classifier needs.
 
-        console.print(f"📚 Transcriptome reference: {choice.value} ({choice.state.value})")
-
-        # Parse filter specification from config
-        from sirnaforge.data.transcriptome_filter import get_filter_spec  # noqa: PLC0415
-
-        filter_spec: list[str] | None = None
-        if self.config.transcriptome_filter:
-            try:
-                filter_spec = get_filter_spec(self.config.transcriptome_filter)
-                if filter_spec:
-                    console.print(f"🔍 Applying transcriptome filters: {', '.join(filter_spec)}")
-            except ValueError as exc:
-                logger.error(f"Invalid transcriptome filter specification: {exc}")
-                console.print(f"⚠️  Invalid filter specification: {exc}")
-                # Continue without filters rather than failing
-                filter_spec = None
-
+        A compressed or binary neighbour of an index prefix parses as an empty transcript index, and
+        an empty index classifies nothing while reporting a completed screen.
+        """
         try:
-            transcriptome_result = await self._prepare_transcriptome_database(choice.value, filter_spec)
-        except Exception as exc:  # pragma: no cover - defensive logging path
-            logger.exception("Failed to prepare transcriptome database")
-            console.print(f"⚠️  Transcriptome preparation failed: {exc}")
-            return None
+            with path.open() as handle:
+                for line in handle:
+                    if line.strip():
+                        return line.startswith(">")
+        except (OSError, UnicodeDecodeError):
+            return False
+        return False
 
-        if not transcriptome_result or not transcriptome_result.get("fasta"):
-            console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
-            return None
+    def _adopt_prebuilt_index(self, request: ReferenceRequest) -> dict[str, Any]:
+        """Adopt a caller-built index, locating the sequence file its hits must be classified against.
 
-        species_value = transcriptome_result.get("species")
-        raw_species = species_value if isinstance(species_value, str) else "transcriptome"
-        # Normalize species name to canonical form (e.g., 'hsa' -> 'human', 'mmu' -> 'mouse')
-        transcriptome_species = normalize_species_name(raw_species)
+        bwa-mem2 writes its index files beside the FASTA they were built from, so an index prefix is
+        usually that FASTA's path; the plain suffixes are tried after it. Only a file that reads as
+        plain-text FASTA counts, because that is what the transcript->gene index is built from. The
+        index files at the prefix are never checked -- they may exist only inside the container -- but
+        a host-readable sequence file is required, so an index bundle mounted into the container alone
+        is refused rather than screened against something nothing can classify.
+        """
+        prefix = Path(request.value)
+        candidates = [prefix, *(prefix.with_name(prefix.name + suffix) for suffix in (".fa", ".fasta", ".fna"))]
+        companion = next((path for path in candidates if path.is_file() and self._readable_cdna_fasta(path)), None)
+        return {
+            "index": prefix,
+            "fasta": companion,
+            "header_species": infer_species_from_cdna_headers(companion) if companion else None,
+        }
 
-        # Build a transcript->gene index for EVERY screened species (not just human) so
-        # orthologs can be recognized across species. This fixes the central defect where
-        # ortholog recognition only ever worked for human.
-        if not self._transcript_index.for_species(transcriptome_species):
-            self._transcript_index.build(transcriptome_species, Path(transcriptome_result["fasta"]))
+    def _reject_reference(self, request: ReferenceRequest, species: str, reason: str) -> ReferenceRejection:
+        """Record a reference the run cannot use, so the species is unscreened rather than assumed clean."""
+        self._species_screening_shortfalls[species] = reason
+        console.print(f"❌ No usable reference for {species}: {reason}")
+        logger.error(f"Refusing to screen {species} with {request.value}: {reason}")
+        return ReferenceRejection(species=species, identity=request.value, reason=reason)
 
-        # Stash the resolved FASTA so repeat detection can reuse it instead of fetching it again.
-        self._species_cdna_fasta.setdefault(transcriptome_species, Path(transcriptome_result["fasta"]))
+    async def _resolve_screening_reference(
+        self, request: ReferenceRequest
+    ) -> tuple[ScreeningReference | None, ReferenceRejection | None]:
+        """Resolve one request into a typed ``{species, kind, identity, index}`` reference.
+
+        The one door: an explicit index override and a resolved default run through this method
+        alike, so both build the species label, the transcript->gene index the classifier reads and
+        the cDNA FASTA repeat detection reuses. The override used to bypass all three, which is why a
+        cDNA file handed to it aligned successfully and then classified against nothing.
+        """
+        console.print(f"📚 Transcriptome reference: {request.value} ({request.state.value}, {request.form.value})")
+        declared = request.declared_species
+        fallback_species = normalize_species_name(declared) if declared else UNRESOLVED_SPECIES
+
+        if request.form is ReferenceForm.PREBUILT_INDEX:
+            payload: dict[str, Any] | None = self._adopt_prebuilt_index(request)
+        else:
+            try:
+                payload = await self._prepare_transcriptome_database(request.value, self._resolve_filter_spec())
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                logger.exception("Failed to prepare transcriptome database")
+                return None, self._reject_reference(request, fallback_species, f"preparation failed: {exc}")
+            if payload and not payload.get("fasta"):
+                payload = None
+
+        if not payload:
+            return None, self._reject_reference(
+                request, fallback_species, "the reference could not be fetched, cached or read"
+            )
+
+        # Resolved before any refusal below, so a rejection names the species that went unscreened
+        # rather than 'unknown': the shortfall map is what reports the missing species, and blaming a
+        # phantom one is how "unscreened" started reading as "clean" in the first place.
+        species, authority, conflict = resolve_reference_species(
+            declared=declared,
+            source_species=payload.get("source_species"),
+            header_species=payload.get("header_species"),
+        )
+        if conflict:
+            logger.warning("Species labels disagree for %s: %s", request.value, conflict)
+            console.print(f"⚠️  Species labels disagree for {request.value}: {conflict}")
+        if authority is SpeciesAuthority.UNRESOLVED:
+            logger.warning(
+                "Could not establish the species of %s: neither the caller nor its headers name one, so it is "
+                "labelled '%s'. Orthology cannot be resolved for it, so cross-species hits would be reported as "
+                "unqualified off-targets.",
+                request.value,
+                UNRESOLVED_SPECIES,
+            )
+        else:
+            logger.info("Species '%s' for %s, from its %s", species, request.value, authority.value)
 
         # An index build that was attempted and failed leaves no index, and the FASTA is not a
         # substitute: handed to Nextflow as an index prefix it aligns nothing, which the pipeline
         # reports as success. Refuse the reference and record why, so the species is unscreened
         # rather than silently screened against nothing.
-        index_build_error = transcriptome_result.get(INDEX_BUILD_ERROR_KEY)
-        if index_build_error and not transcriptome_result.get("index"):
-            self._species_screening_shortfalls[transcriptome_species] = str(index_build_error)
-            console.print(f"❌ No usable index for {transcriptome_species}: {index_build_error}")
-            logger.error(f"Refusing to screen {transcriptome_species} without an index: {index_build_error}")
+        index_build_error = payload.get(INDEX_BUILD_ERROR_KEY)
+        if index_build_error and not payload.get("index"):
+            return None, self._reject_reference(request, species, str(index_build_error))
+
+        fasta = payload.get("fasta")
+        if not fasta:
+            return None, self._reject_reference(
+                request,
+                species,
+                "no readable plain-text cDNA FASTA was found beside the index prefix (a gzipped or binary "
+                "neighbour does not count), so its hits could not be resolved to genes: put the cDNA FASTA "
+                f"at '{request.value}' (or '{request.value}.fa'), or pass it to --transcriptome-fasta and "
+                "let the run index it",
+            )
+
+        # A transcript->gene index for EVERY screened species (not just human), so orthologs can be
+        # recognized across species, and the FASTA is stashed for repeat detection to reuse.
+        if not self._transcript_index.for_species(species):
+            self._transcript_index.build(species, Path(fasta))
+        self._species_cdna_fasta.setdefault(species, Path(fasta))
+
+        # An index when there is one, otherwise the FASTA -- and then the reference travels on the
+        # FASTA parameter, so the pipeline indexes it. Naming a FASTA as an index prefix instead
+        # aligns nothing, which the pipeline reports as a completed screen.
+        prebuilt = payload.get("index")
+        index = prebuilt or fasta
+        console.print(
+            f"✨ Screening reference resolved: {species} ({authority.value}) → {Path(index).name}"
+            f"{'' if prebuilt else ' (the pipeline will build the index)'}"
+        )
+        return (
+            ScreeningReference(
+                species=species,
+                kind=self.config.screening_kind,
+                identity=request.value,
+                index=str(index),
+                species_authority=authority,
+                form=request.form,
+                state=request.state,
+                reason=request.reason,
+                fasta=str(fasta),
+                needs_index_build=prebuilt is None,
+            ),
+            None,
+        )
+
+    def _resolve_filter_spec(self) -> list[str] | None:
+        """Parse the configured transcriptome filter names, continuing unfiltered when invalid."""
+        if not self.config.transcriptome_filter:
             return None
 
-        # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
-        # Nextflow will build the index in Docker if needed
-        transcriptome_path = transcriptome_result.get("index") or transcriptome_result["fasta"]
-        transcriptome_index = str(transcriptome_path)
+        from sirnaforge.data.transcriptome_filter import get_filter_spec  # noqa: PLC0415
 
-        if transcriptome_result.get("index"):
-            console.print(
-                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
-                f"(index: {transcriptome_result['index'].name})"
-            )
-        else:
-            console.print(
-                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} (Nextflow will build index)"
-            )
-        return transcriptome_species, transcriptome_index
+        try:
+            filter_spec = get_filter_spec(self.config.transcriptome_filter)
+        except ValueError as exc:
+            logger.error(f"Invalid transcriptome filter specification: {exc}")
+            console.print(f"⚠️  Invalid filter specification: {exc}")
+            return None
+        if filter_spec:
+            console.print(f"🔍 Applying transcriptome filters: {', '.join(filter_spec)}")
+        return filter_spec
 
-    def _resolve_active_genome_species(self, params: Mapping[str, Any]) -> list[str]:
-        """Filter genome species down to those with available indices."""
-        requested = [species.strip() for species in self.config.mirna_genome_species if species.strip()]
+    def _resolve_active_screen_species(self, params: Mapping[str, Any]) -> list[str]:
+        """Filter the requested screen species down to those with a reference the pipeline received."""
+        requested = [species.strip() for species in self.config.screen_species if species.strip()]
         available: set[str] = set()
-        # transcriptome_indices belongs in this list: main.nf mixes it into the SAME ch_genomes
-        # alignment channel as genome_indices/genome_fastas, so those species really are screened.
-        # Omitting it dropped every transcriptome-only species from the list below — including the
-        # ones _configure_transcriptome_inputs had just appended to mirna_genome_species — and the
-        # conservation denominator then excluded species that had in fact been aligned.
-        for key in ("genome_indices", "genome_fastas", "transcriptome_indices"):
+        # Both keys are read because main.nf mixes them into ONE alignment channel: transcriptome
+        # FASTAs are indexed in the container, prebuilt indices are used as they are, and either way
+        # the species really is screened. Omitting one dropped species that had in fact been aligned
+        # from the conservation denominator.
+        for key in ("transcriptome_indices", "transcriptome_fastas"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
             available.update(self._parse_species_entries(raw_value))
 
@@ -1798,6 +1943,17 @@ class SiRNAWorkflow:
             for species in sorted(available):
                 if species not in filtered:
                     filtered.append(species)
+            # A species that reached the pipeline parameters without going through the resolver -- a
+            # raw nextflow_config passthrough -- has no transcript index here, so its alignments can
+            # only ever publish as undetermined. Reported rather than refused: the caller wrote a
+            # pipeline parameter by hand, which the resolver is not asked to police.
+            for species in filtered:
+                if not self._transcript_index.for_species(species):
+                    logger.warning(
+                        f"Species '{species}' reaches the aligner without a reference resolved on this host, so no "
+                        "transcript index was built for it: its hits cannot be resolved to genes and will publish "
+                        "as undetermined with species_index_missing set."
+                    )
         else:
             # No reference resolved for ANYTHING, so no transcriptome screen was configured at all
             # (miRNA-only, or --skip-off-targets). Recording a per-species shortfall here would
@@ -1806,10 +1962,10 @@ class SiRNAWorkflow:
             # the "no alignment evidence for any species" guard in _process_nextflow_results.
             filtered = requested
 
-        # Remembered because this list, not config.mirna_genome_species, is what gets screened:
-        # scoring conservation against the shorter config list yielded a denominator smaller than
-        # its numerator, which aborted post-screen scoring for the whole candidate.
-        self._active_genome_species = list(filtered)
+        # Remembered because this list, not config.screen_species, is what gets screened: scoring
+        # conservation against the shorter config list yielded a denominator smaller than its
+        # numerator, which aborted post-screen scoring for the whole candidate.
+        self._active_screen_species = list(filtered)
         return filtered
 
     @staticmethod
@@ -1842,7 +1998,7 @@ class SiRNAWorkflow:
     def _prepare_nextflow_cache(
         self,
         nf_config: NextflowConfig,
-        genome_species: Sequence[str],
+        screen_species: Sequence[str],
         additional_params: Mapping[str, Any],
         pipeline_revision: str,
     ) -> dict[str, Any]:
@@ -1850,7 +2006,7 @@ class SiRNAWorkflow:
 
         Args:
             nf_config: Nextflow configuration
-            genome_species: Species for miRNA genome lookups (used in cache key)
+            screen_species: Species the screen covers (used in cache key)
             additional_params: Additional pipeline parameters
             pipeline_revision: Git revision of pipeline
 
@@ -1869,7 +2025,7 @@ class SiRNAWorkflow:
             "max_cpus": nf_config.max_cpus,
             "max_memory": nf_config.max_memory,
             "max_time": nf_config.max_time,
-            "genome_species": sorted(genome_species),
+            "screen_species": sorted(screen_species),
             "additional_params": self._normalize_param_dict(additional_params),
             "extra_params": self._normalize_param_dict(nf_config.extra_params),
         }
@@ -2014,39 +2170,104 @@ class SiRNAWorkflow:
 
         return aggregated
 
-    async def _configure_transcriptome_inputs(self, additional_params: dict[str, Any]) -> bool:
-        """Prepare transcriptome inputs for Nextflow runs."""
-        selection = self.config.transcriptome_selection
-        if not selection.enabled:
-            console.print(f"ℹ️  Transcriptome off-target disabled ({selection.disabled_reason})")
-            return False
-        if not self.config.transcriptome_references:
+    async def _resolve_screening_references(self, additional_params: dict[str, Any]) -> bool:
+        """Resolve every screening reference request and write the resolved set into the parameters.
+
+        One resolver for both doors, so the pipeline receives one species list and one index list
+        that cannot disagree with the metadata the classifier holds. Requests that resolved to
+        nothing are kept as rejections, not dropped.
+        """
+        requests = self.config.screening_requests
+        rejections = list(self.config.screening_request_rejections)
+        for rejection in self.config.screening_request_rejections:
+            logger.info("Screening reference not resolved: %s (%s)", rejection.identity, rejection.reason)
+        if not requests:
+            reason = self.config.transcriptome_selection.disabled_reason or "no screening reference requested"
+            console.print(f"ℹ️  Transcriptome off-target disabled ({reason})")
+            self._screening_references = ScreeningReferenceSet(
+                kind=self.config.screening_kind,
+                rejections=tuple(rejections),
+                requested_species=tuple(self.config.screen_species),
+            )
             return False
 
-        prepared_entries: list[str] = []
-        prepared_species: list[str] = []
-        for choice in selection.choices:
-            materialized = await self._materialize_transcriptome_reference(choice)
-            if not materialized:
+        references: list[ScreeningReference] = []
+        for request in requests:
+            resolved, refusal = await self._resolve_screening_reference(request)
+            if refusal is not None:
+                rejections.append(refusal)
+            if resolved is None:
                 continue
-            transcriptome_species, transcriptome_index = materialized
-            if transcriptome_species not in self.config.mirna_genome_species:
-                self.config.mirna_genome_species.append(transcriptome_species)
-            prepared_entries.append(f"{transcriptome_species}:{transcriptome_index}")
-            prepared_species.append(transcriptome_species)
+            if resolved.species not in self.config.screen_species:
+                self.config.screen_species.append(resolved.species)
+            references.append(resolved)
 
-        if not prepared_entries:
+        self._screening_references = ScreeningReferenceSet(
+            kind=self.config.screening_kind,
+            references=tuple(references),
+            rejections=tuple(rejections),
+            requested_species=tuple(self.config.screen_species),
+        )
+        if not references:
             return False
 
-        existing_indices = additional_params.get("transcriptome_indices")
-        merged_entries = [token.strip() for token in existing_indices.split(",")] if existing_indices else []
-        merged_entries = [entry for entry in merged_entries if entry]
-        for entry in prepared_entries:
-            if entry not in merged_entries:
-                merged_entries.append(entry)
-        additional_params["transcriptome_indices"] = ",".join(merged_entries)
-        additional_params["transcriptome_species"] = ",".join(dict.fromkeys(prepared_species))
+        # An already-built index and a FASTA still to be indexed travel on different parameters: the
+        # pipeline reads one as a prefix and indexes the other, and naming a FASTA as a prefix aligns
+        # nothing while reporting success.
+        for key, resolved_value in (
+            ("transcriptome_indices", self._screening_references.index_parameter),
+            ("transcriptome_fastas", self._screening_references.fasta_parameter),
+        ):
+            existing = additional_params.get(key)
+            merged = [token.strip() for token in str(existing).split(",")] if existing else []
+            merged = [entry for entry in merged if entry]
+            for entry in resolved_value.split(","):
+                if entry and entry not in merged:
+                    merged.append(entry)
+            if merged:
+                additional_params[key] = ",".join(merged)
+        additional_params["transcriptome_species"] = ",".join(self._screening_references.species)
         return True
+
+    @staticmethod
+    def _plan_search_settings(additional_params: Mapping[str, Any]) -> dict[str, str | int | float | bool | None]:
+        """The alignment settings a plan entry needs to be reproducible, as stated for this run."""
+        settings: dict[str, str | int | float | bool | None] = {}
+        for key in ("max_hits", "bwa_k", "bwa_T", "seed_start", "seed_end"):
+            if key not in additional_params:
+                continue
+            value = additional_params[key]
+            settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
+        return settings
+
+    def _record_screening_plan(self, input_fasta: Path, additional_params: Mapping[str, Any]) -> None:
+        """Record what this run intends to screen, one entry per resolved reference.
+
+        The guide-set digest is the submitted FASTA's own hash: two screens of one reference with
+        different guide sets are different evidence, and joining them would attribute one screen's
+        counts to the other's guides.
+        """
+        self._screening_plan = self._screening_references.plan(
+            guide_set_digest=self._file_hash_sha256(input_fasta)[:16],
+            search_settings=self._plan_search_settings(additional_params),
+        )
+
+    def _summarize_screening_references(self) -> dict[str, Any]:
+        """The published reference record: what resolved, over which species, and what did not.
+
+        ``scope`` is the resolved screen's species set as a :class:`FilterScope`: what the run
+        planned to screen, fixed at resolution. It is not a coverage report -- a species whose
+        alignment published nothing is subtracted post-run in ``filtering_stats.unscreened_species``,
+        not from here. No gate reads it in 0.7.1; applying a scope is #101's.
+        """
+        summary: dict[str, Any] = {
+            "transcriptome": self.config.transcriptome_selection.to_metadata(),
+            "screening": self._screening_references.to_metadata(),
+            "scope": self._screening_references.scope().model_dump(mode="json"),
+        }
+        if self._screening_plan is not None:
+            summary["screening_plan"] = self._screening_plan.model_dump(mode="json")
+        return summary
 
     def _log_nextflow_targets(
         self,
@@ -2054,7 +2275,7 @@ class SiRNAWorkflow:
         has_transcriptome: bool,
         additional_params: Mapping[str, Any],
     ) -> None:
-        """Emit console updates about genome and transcriptome targets."""
+        """Emit console updates about the screening references handed to the pipeline."""
         if active_species:
             console.print(f"🔭 Nextflow transcriptome species: {', '.join(active_species)}")
         else:
@@ -2077,17 +2298,18 @@ class SiRNAWorkflow:
         Args:
             candidates: Candidates to screen.
             input_fasta: Deduplicated FASTA input for the Nextflow pipeline.
-            additional_params: Pre-configured Nextflow parameters (transcriptome inputs already
-                materialized), or None to configure them here.
+            additional_params: Pre-configured Nextflow parameters (screening references already
+                resolved), or None to resolve them here.
             has_transcriptome: Paired with additional_params; ignored when that is None.
         """
         if additional_params is None:
             additional_params = dict(self.config.nextflow_config)
-            has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
+            has_transcriptome = await self._resolve_screening_references(additional_params)
         has_transcriptome = bool(has_transcriptome)
-        active_species = self._resolve_active_genome_species(additional_params)
+        active_species = self._resolve_active_screen_species(additional_params)
         has_transcriptome = has_transcriptome or bool(additional_params.get("transcriptome_indices"))
         self._log_nextflow_targets(active_species, has_transcriptome, additional_params)
+        self._record_screening_plan(input_fasta, additional_params)
 
         if not active_species and not has_transcriptome:
             console.print("ℹ️  No transcriptome indices configured; skipping Nextflow run")
@@ -2105,7 +2327,7 @@ class SiRNAWorkflow:
         results = await runner.run_offtarget_analysis(
             input_file=input_fasta,
             output_dir=nf_output_dir,
-            genome_species=active_species,
+            screen_species=active_species,
             additional_params=additional_params,
             show_progress=True,
         )
@@ -2128,13 +2350,13 @@ class SiRNAWorkflow:
 
     def _setup_nextflow_runner(
         self,
-        genome_species: Sequence[str],
+        screen_species: Sequence[str],
         additional_params: Mapping[str, Any],
     ) -> tuple[NextflowRunner, dict[str, Any]]:
         """Configure Nextflow runner with user settings and cached workdirs.
 
         Args:
-            genome_species: Species for miRNA genome lookups
+            screen_species: Species the screen covers
             additional_params: Additional pipeline parameters
 
         Returns:
@@ -2164,7 +2386,7 @@ class SiRNAWorkflow:
         runner = NextflowRunner(nf_config)
         cache_info = self._prepare_nextflow_cache(
             nf_config=nf_config,
-            genome_species=genome_species,
+            screen_species=screen_species,
             additional_params=additional_params,
             pipeline_revision=runner.get_pipeline_revision(),
         )
@@ -2279,7 +2501,7 @@ class SiRNAWorkflow:
     def _persist_hit_classifications(parsed: Mapping[str, Any]) -> list[str]:
         """Write the class, symbols, shortfall flags and ortholog evidence tier onto every table read.
 
-        Every genome file the parser read is rewritten with the classification columns appended, so
+        Every transcriptome file the parser read is rewritten with the classification columns appended, so
         a reviewer can tell an on-target isoform alignment from a liability without re-deriving
         anything. A header-only table is rewritten too: the published schema must not depend on
         whether the run produced any hits, or a consumer selecting ``hit_class`` fails on exactly
@@ -2290,7 +2512,7 @@ class SiRNAWorkflow:
         unannotated-row branch here: an unannotated row is a reconciliation failure, reported as
         one, rather than a silent skip.
         """
-        tables = cast(list[dict[str, Any]], parsed.get("genome_hit_tables") or [])
+        tables = cast(list[dict[str, Any]], parsed.get("transcriptome_hit_tables") or [])
         persisted = 0
         tally: dict[str, int] = {}
         for table in tables:
@@ -2367,7 +2589,7 @@ class SiRNAWorkflow:
         - the aggregate is missing entirely (aggregation never ran, so nothing reported anything);
         - the aggregate exists but names no species (a hand-written or legacy summary);
         - miRNA-only mode, where sirna_offtarget_analysis.nf derives the species list from
-          ch_genome_indices and falls back to '' — no transcriptome alignment happened at all, so
+          the resolved index channel and falls back to '' — no transcriptome alignment happened at all, so
           the off-target term has nothing to stand on.
 
         ``species_screened`` is preferred over any file tally because a file can be discovered and
@@ -2574,7 +2796,7 @@ class SiRNAWorkflow:
     async def _parse_nextflow_results(self, output_dir: Path) -> dict[str, Any]:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis.
 
-        Parses BOTH genome/transcriptome AND miRNA results from their respective
+        Parses BOTH transcriptome AND miRNA results from their respective
         output directories and combines them into a single results structure for
         candidate filtering.
         """
@@ -2583,7 +2805,7 @@ class SiRNAWorkflow:
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-        # Check for combined genome/transcriptome results in aggregated subdirectory
+        # Check for combined transcriptome results in aggregated subdirectory
         aggregated_dir = output_dir / "aggregated"
 
         def _aggregate_path(filename: str) -> Path:
@@ -2602,12 +2824,12 @@ class SiRNAWorkflow:
             entry["off_target_score"] = max(entry["off_target_score"], score)
             entry["hits"].append(row)
 
-        # One table per genome file read, each keeping its own ordered row list, so the
+        # One table per transcriptome file read, each keeping its own ordered row list, so the
         # classification columns are written back onto exactly the rows that were read from that
-        # file. Every genome row reaching a candidate counter is in one of these tables: the
+        # file. Every transcriptome row reaching a candidate counter is in one of these tables: the
         # fallback used to ingest per-species files with no table at all, which published a
         # header-only hit table beside candidates carrying dozens of hits each.
-        genome_tables: list[dict[str, Any]] = []
+        transcriptome_tables: list[dict[str, Any]] = []
 
         def _ingest_tsv(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
@@ -2625,12 +2847,12 @@ class SiRNAWorkflow:
                     found = True
             return found
 
-        def _ingest_genome_tsv(path: Path) -> bool:
-            """Ingest a genome/transcriptome hit file into its own persistable table."""
+        def _ingest_transcriptome_tsv(path: Path) -> bool:
+            """Ingest a transcriptome hit file into its own persistable table."""
             table: dict[str, Any] = {"path": None, "fieldnames": [], "rows": []}
             found = _ingest_tsv(path, table)
             if table["path"] is not None:
-                genome_tables.append(table)
+                transcriptome_tables.append(table)
             return found
 
         def _ingest_json(path: Path, table: dict[str, Any] | None = None) -> bool:
@@ -2660,7 +2882,7 @@ class SiRNAWorkflow:
                 found = True
             return found
 
-        def _ingest_genome_json(path: Path, tsv_path: Path) -> bool:
+        def _ingest_transcriptome_json(path: Path, tsv_path: Path) -> bool:
             """Ingest the JSON aggregate into a table that will be published as ``tsv_path``.
 
             The JSON aggregate is the one path whose rows reached the candidate counters with no
@@ -2672,12 +2894,12 @@ class SiRNAWorkflow:
             found = _ingest_json(path, table)
             if found and table["fieldnames"]:
                 table["path"] = tsv_path
-                genome_tables.append(table)
+                transcriptome_tables.append(table)
             return found
 
-        genome_hits_found = _ingest_genome_tsv(_aggregate_path("combined_offtargets.tsv"))
-        if not genome_hits_found:
-            genome_hits_found = _ingest_genome_json(
+        transcriptome_hits_found = _ingest_transcriptome_tsv(_aggregate_path("combined_offtargets.tsv"))
+        if not transcriptome_hits_found:
+            transcriptome_hits_found = _ingest_transcriptome_json(
                 _aggregate_path("combined_offtargets.json"), _aggregate_path("combined_offtargets.tsv")
             )
 
@@ -2685,14 +2907,14 @@ class SiRNAWorkflow:
         if not mirna_hits_found:
             mirna_hits_found = _ingest_json(_aggregate_path("combined_mirna_hits.json"))
 
-        if not genome_hits_found or not mirna_hits_found:
-            genome_files: list[Path] = []
+        if not transcriptome_hits_found or not mirna_hits_found:
+            transcriptome_files: list[Path] = []
             mirna_files: list[Path] = []
 
-            if not genome_hits_found:
-                genome_dir = output_dir / "genome"
-                if genome_dir.exists():
-                    genome_files = list(genome_dir.glob("*_analysis.tsv"))
+            if not transcriptome_hits_found:
+                transcriptome_dir = output_dir / "transcriptome"
+                if transcriptome_dir.exists():
+                    transcriptome_files = list(transcriptome_dir.glob("*_analysis.tsv"))
 
             if not mirna_hits_found:
                 mirna_dir = output_dir / "mirna"
@@ -2700,24 +2922,24 @@ class SiRNAWorkflow:
                     mirna_files = list(mirna_dir.glob("*_analysis.tsv"))
 
             files: list[Path] = []
-            if not genome_hits_found:
-                files.extend(genome_files)
+            if not transcriptome_hits_found:
+                files.extend(transcriptome_files)
             if not mirna_hits_found:
                 files.extend(mirna_files)
 
-            if not files and not genome_hits_found and not mirna_hits_found:
-                # Last resort: scan for any TSV files. Treated as genome hits, which is what the
+            if not files and not transcriptome_hits_found and not mirna_hits_found:
+                # Last resort: scan for any TSV files. Treated as transcriptome hits, which is what the
                 # *_offtargets.tsv name means, so they are persisted rather than counted and lost.
-                genome_files = list(output_dir.glob("**/*_offtargets.tsv"))
-                files = list(genome_files)
+                transcriptome_files = list(output_dir.glob("**/*_offtargets.tsv"))
+                files = list(transcriptome_files)
 
-            genome_file_set = {Path(path) for path in genome_files}
+            transcriptome_file_set = {Path(path) for path in transcriptome_files}
             for fpath in files:
                 path = Path(fpath)
                 # Genome rows carry a class and must reach the published table; miRNA rows have no
                 # class of their own and feed the miRNA counters only.
-                if path in genome_file_set:
-                    _ingest_genome_tsv(path)
+                if path in transcriptome_file_set:
+                    _ingest_transcriptome_tsv(path)
                 elif _ingest_tsv(path):
                     # Recording the ingest here is what stops it happening twice. The glob above
                     # already matches mirna/mirna_analysis.tsv, so a trailing "if not
@@ -2732,7 +2954,7 @@ class SiRNAWorkflow:
             "method": "nextflow",
             "output_dir": str(output_dir),
             "results": results,
-            "genome_hit_tables": genome_tables,
+            "transcriptome_hit_tables": transcriptome_tables,
         }
 
     def _check_offtarget_filters(
@@ -2847,7 +3069,7 @@ class SiRNAWorkflow:
         """
         query_species = self._query_species
         candidates_for_lookup = (
-            frozenset(normalize_species_name(s) for s in (screened_species or self._active_genome_species or ()))
+            frozenset(normalize_species_name(s) for s in (screened_species or self._active_screen_species or ()))
             & self._species_present_on_hits(offtarget_data)
         ) - {query_species}
         if not candidates_for_lookup or not (self._query_gene_ids or self._query_gene_symbols):
@@ -2935,12 +3157,12 @@ class SiRNAWorkflow:
 
         # Conservation is keyed on the set handed to the aligner, not on whether species were typed
         # on the CLI: the term goes inactive exactly when that set is query-species-only.
-        # _active_genome_species, not config.mirna_genome_species, is what Nextflow was handed:
-        # extra species can arrive via --genome-indices/--genome-fastas/--transcriptome-indices and
+        # _active_screen_species, not config.screen_species, is what Nextflow was handed: extra
+        # species can arrive on transcriptome_indices/transcriptome_fastas and
         # can return ortholog hits, so scoring them against the shorter config list made the
         # conservation numerator exceed its denominator.
         requested_species = frozenset(
-            normalize_species_name(s) for s in (self._active_genome_species or self.config.mirna_genome_species)
+            normalize_species_name(s) for s in (self._active_screen_species or self.config.screen_species)
         )
         # A species whose alignment never ran STAYS in this denominator. Subtracting it (as the
         # first pass at this fix did) let a degraded run outscore the complete run it degraded
@@ -3330,7 +3552,7 @@ class SiRNAWorkflow:
         own query sequence and counted. Every table the parser read is covered, which is what lets
         the writer publish unconditionally instead of guarding against blank verdicts.
         """
-        tables = cast(list[dict[str, Any]], offtarget_data.get("genome_hit_tables") or [])
+        tables = cast(list[dict[str, Any]], offtarget_data.get("transcriptome_hit_tables") or [])
         orphans = [
             row
             for table in tables
@@ -3737,9 +3959,9 @@ async def run_sirna_workflow(
     database: str = "ensembl",
     design_mode: str = "sirna",
     top_n_candidates: int | None = None,
-    genome_species: list[str] | None = None,
+    screen_species: list[str] | None = None,
     query_species: str | None = None,
-    genome_indices_override: str | None = None,
+    transcriptome_indices: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
@@ -3781,6 +4003,7 @@ async def run_sirna_workflow(
     plfold_window: int | None = None,
     plfold_max_bp_span: int | None = None,
     accessibility_log_floor: float | None = None,
+    **renamed: Any,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -3792,11 +4015,13 @@ async def run_sirna_workflow(
         design_mode: Design mode (sirna, mirna, or zfn)
         top_n_candidates: Cap on how many top-ranked candidates are reported (None = no cap, the
             default). Enumeration and screening always cover every candidate.
-        genome_species: Species genomes for off-target analysis
+        screen_species: Species to screen against for off-target liabilities
         query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
             gene-query database serves (human), which is also the species of the default
             transcriptome; set it when designing against an input FASTA from another organism.
-        genome_indices_override: Comma-separated species:/index_prefix overrides for off-target analysis
+        transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
+            caller has already built. Resolved by the same resolver as the defaults, so an override
+            and a default differ only in provenance (#99).
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -3861,10 +4086,13 @@ async def run_sirna_workflow(
         accessibility_log_floor: Override the log10-probability floor the accessibility term is
             normalised against (None keeps -5.0). Changing any of these three changes the numeric
             scale of composite_score, so results are not comparable with a default run.
+        **renamed: Accepted only to refuse the ``genome_*`` names the #99 rename removed, quoting
+            the replacement instead of "unexpected keyword argument".
 
     Returns:
         Dictionary with complete workflow results
     """
+    refuse_renamed_arguments(renamed)
     # Resolve the policy exactly once, before anything creates a directory or fetches a reference.
     # An unstated argument is None, so the profile applies to it; a stated one wins. This is the
     # same call the CLI makes -- when the CLI has already made it, its result arrives as
@@ -3909,7 +4137,7 @@ async def run_sirna_workflow(
             stated=stated,
             filter_actions=filter_actions,
             query_species=query_species,
-            screen_species=genome_species or (),
+            screen_species=screen_species or (),
         )
     mode_enum = policy.design_mode
     design_params = policy.design_parameters
@@ -3979,8 +4207,8 @@ async def run_sirna_workflow(
         input_fasta=input_path,
         database=database_enum,
         design_params=design_params,
-        genome_indices_override=genome_indices_override,
-        genome_species=genome_species or ["human", "rat", "rhesus"],
+        transcriptome_indices=transcriptome_indices,
+        screen_species=screen_species or ["human", "rat", "rhesus"],
         query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
@@ -4018,9 +4246,9 @@ if __name__ == "__main__":
 async def run_offtarget_only_workflow(
     input_candidates_fasta: str,
     output_dir: str,
-    genome_species: list[str] | None = None,
+    screen_species: list[str] | None = None,
     query_species: str | None = None,
-    genome_indices_override: str | None = None,
+    transcriptome_indices: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
@@ -4033,6 +4261,7 @@ async def run_offtarget_only_workflow(
     run_mode: str | None = None,
     policy_config: Path | str | None = None,
     filter_actions: Mapping[str, Any] | None = None,
+    **renamed: Any,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
 
@@ -4044,9 +4273,10 @@ async def run_offtarget_only_workflow(
     Args:
         input_candidates_fasta: Path to FASTA file with 21-nt siRNA guide sequences
         output_dir: Directory for output files
-        genome_species: Species genomes for off-target analysis
+        screen_species: Species to screen against for off-target liabilities
         query_species: Organism the input guides were designed against (defaults to human)
-        genome_indices_override: Comma-separated species:/index_prefix overrides
+        transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
+            caller has already built
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -4062,10 +4292,13 @@ async def run_offtarget_only_workflow(
         run_mode: design_only, exploratory or qualified (default: qualified).
         policy_config: JSON/TOML policy file; beats the built-in profile, loses to explicit values.
         filter_actions: ``filter_id -> off|warn|fail``.
+        **renamed: Accepted only to refuse the ``genome_*`` names the #99 rename removed, quoting
+            the replacement instead of "unexpected keyword argument".
 
     Returns:
         Dictionary with off-target analysis results
     """
+    refuse_renamed_arguments(renamed)
     # Resolved before the output tree is created, exactly as the other two entry points do it.
     policy = resolved_policy or resolve_run_policy(
         entry_point=EntryPoint.OFFTARGET_ONLY,
@@ -4073,7 +4306,7 @@ async def run_offtarget_only_workflow(
         config_file=policy_config,
         filter_actions=filter_actions,
         query_species=query_species,
-        screen_species=genome_species or (),
+        screen_species=screen_species or (),
     )
 
     console.print("\n🎯 [bold cyan]Starting Off-Target Analysis (Pre-Designed siRNAs)[/bold cyan]")
@@ -4182,8 +4415,6 @@ async def run_offtarget_only_workflow(
 
     # Set up Nextflow configuration
     nextflow_config: dict[str, Any] = {}
-    if genome_indices_override:
-        nextflow_config["genome_indices"] = genome_indices_override
     if nextflow_docker_image:
         nextflow_config["docker_image"] = nextflow_docker_image
 
@@ -4209,8 +4440,8 @@ async def run_offtarget_only_workflow(
         database=DatabaseType.ENSEMBL,  # Not used, but required
         resolved_policy=policy,
         nextflow_config=nextflow_config,
-        genome_indices_override=genome_indices_override,
-        genome_species=genome_species or ["human", "rat", "rhesus"],
+        transcriptome_indices=transcriptome_indices,
+        screen_species=screen_species or ["human", "rat", "rhesus"],
         query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
@@ -4246,6 +4477,9 @@ async def run_offtarget_only_workflow(
         "output_dir": str(output_path),
         "processing_time": total_time,
         "offtarget_summary": offtarget_results,
+        # Same reference record as the full workflow publishes: which references resolved, over which
+        # species, and what did not. This path used to report nothing about its own references.
+        "reference_summary": workflow._summarize_screening_references(),
     }
 
     console.print(f"\n✅ [bold green]Off-target analysis completed in {total_time:.2f}s[/bold green]")
