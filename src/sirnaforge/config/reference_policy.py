@@ -321,7 +321,11 @@ class ScreeningReference:
         }
 
     def plan_entry(self, *, guide_set_digest: str, search_settings: SearchSettings | None = None) -> ScreeningPlanEntry:
-        """The :class:`~sirnaforge.models.evidence.ScreeningPlanEntry` this reference plans to screen."""
+        """The :class:`~sirnaforge.models.evidence.ScreeningPlanEntry` this reference plans to screen.
+
+        The channel is always ``TRANSCRIPTOME``: only a transcriptome reference ever resolves, since a
+        genome-kind run refuses every screening reference before it is materialised.
+        """
         from sirnaforge.models.evidence import ScreeningPlanEntry  # noqa: PLC0415
         from sirnaforge.models.policy import ScreeningChannel  # noqa: PLC0415
 
@@ -375,7 +379,11 @@ class ScreeningReferenceSet:
         return bool(self.references)
 
     def scope(self) -> FilterScope:
-        """The species scope this screen covers, as an explicit set rather than a counter's name."""
+        """The species this screen resolved references for, as an explicit set rather than a counter's name.
+
+        Planned, not covered: it is fixed when the references resolve, and a species whose alignment
+        later published nothing is reported as a shortfall rather than removed from here.
+        """
         from sirnaforge.models.policy import FilterScope  # noqa: PLC0415
 
         return FilterScope(species=frozenset(self.species))
@@ -441,9 +449,14 @@ def parse_index_entries(raw: str | None, *, option: str, reason: str) -> tuple[R
         reason: Why these requests exist, carried into the resolved reference.
 
     Raises:
-        ValueError: An entry does not name a species. An index prefix carries no headers to fall
-            back on, so an undeclared species there is unresolvable rather than merely unstated.
+        ValueError: An entry does not name a species, or names one the registry does not recognise.
+            An index prefix carries no headers to fall back on, so a declared species here is the
+            only authority for that reference's label -- an unrecognised one would be accepted as
+            the species (``transcriptome:`` and typos alike), and orthology would silently resolve
+            against nothing. ``--species`` refuses an unknown name for the same reason.
     """
+    from sirnaforge.data.species_registry import CANONICAL_SPECIES_ALIAS_MAP  # noqa: PLC0415
+
     if not raw:
         return ()
 
@@ -455,6 +468,12 @@ def parse_index_entries(raw: str | None, *, option: str, reason: str) -> tuple[R
         species, separator, prefix = entry.partition(":")
         if not separator or not species.strip() or not prefix.strip():
             raise ValueError(f"{option} entries must be in species:/index_prefix form; got {entry!r}")
+        if species.strip().lower() not in CANONICAL_SPECIES_ALIAS_MAP:
+            supported = ", ".join(sorted(set(CANONICAL_SPECIES_ALIAS_MAP.values())))
+            raise ValueError(
+                f"{option} entry {entry!r} names an unsupported species {species.strip()!r}. "
+                f"Supported canonical species: {supported}"
+            )
         requests.append(
             ReferenceRequest(
                 value=prefix.strip(),
@@ -565,11 +584,14 @@ def build_screening_requests(
             declared_species=declared,
         )
         source_kind = kind_of_bundled_source(request.value)
-        mismatch = source_kind is not None and source_kind is not kind
-        if not mismatch and kind is ReferenceKind.GENOME and request.form is ReferenceForm.REFERENCE:
+        if kind is ReferenceKind.GENOME:
             # ZFN screens genomic DNA. A transcriptome reference reaching it is a mismatch whether or
-            # not it names a bundled source, so the check cannot rest on the source table alone.
-            mismatch = source_kind is None or source_kind is ReferenceKind.TRANSCRIPTOME
+            # not it names a bundled source, so the check cannot rest on the source table alone -- and
+            # a prebuilt index arrives on --transcriptome-indices, so it is a transcriptome index by
+            # construction and must be refused here too, not only in its REFERENCE form.
+            mismatch = source_kind is not ReferenceKind.GENOME
+        else:
+            mismatch = source_kind is not None and source_kind is not kind
         if not mismatch:
             kept.append(request)
             continue

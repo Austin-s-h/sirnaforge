@@ -93,7 +93,7 @@ def _network_available() -> bool:
 
 
 @pytest.fixture
-def toy_genome_path():
+def toy_transcriptome_path():
     """Path to toy transcriptome database for testing off-target analysis.
 
     This provides a small transcriptome database suitable for testing
@@ -101,31 +101,31 @@ def toy_genome_path():
     Note: This is transcriptome (cDNA) alignment, not genomic DNA.
     """
     test_data_dir = Path(__file__).parent / "unit" / "data"
-    genome_path = test_data_dir / "toy_transcriptome_db.fasta"
+    transcriptome_db_path = test_data_dir / "toy_transcriptome_db.fasta"
 
-    if not genome_path.exists():
-        pytest.skip(f"Toy genome database not found: {genome_path}")
+    if not transcriptome_db_path.exists():
+        pytest.skip(f"Toy transcriptome database not found: {transcriptome_db_path}")
 
-    return genome_path
+    return transcriptome_db_path
 
 
 @pytest.fixture(scope="session")
-def toy_genome_index_prefix(tmp_path_factory):
+def toy_transcriptome_index_prefix(tmp_path_factory):
     """Build a BWA index for the toy transcriptome database once per test session."""
     test_data_dir = Path(__file__).parent / "unit" / "data"
-    genome_fasta = test_data_dir / "toy_transcriptome_db.fasta"
+    transcriptome_fasta = test_data_dir / "toy_transcriptome_db.fasta"
 
-    if not genome_fasta.exists():
-        pytest.skip(f"Toy genome database not found: {genome_fasta}")
+    if not transcriptome_fasta.exists():
+        pytest.skip(f"Toy transcriptome database not found: {transcriptome_fasta}")
 
     index_dir = tmp_path_factory.mktemp("toy_transcriptome_index")
     index_prefix = Path(index_dir) / "toy_transcriptome"
 
     if not all(index_prefix.with_suffix(suffix).exists() for suffix in (".amb", ".ann", ".bwt.2bit.64", ".pac", ".sa")):
         try:
-            build_bwa_index(genome_fasta, index_prefix)
+            build_bwa_index(transcriptome_fasta, index_prefix)
         except Exception as exc:  # pragma: no cover - requires bwa tooling
-            pytest.skip(f"Unable to build toy genome index: {exc}")
+            pytest.skip(f"Unable to build toy transcriptome index: {exc}")
 
     return index_prefix
 
@@ -142,19 +142,18 @@ def realistic_transcripts_fasta():
 
 
 @pytest.fixture
-def genome_config_for_nextflow(toy_genome_path):
+def transcriptome_config_for_nextflow(toy_transcriptome_path):
     """Nextflow-compatible transcriptome configuration for tests.
 
     Enables the optional resource-intensive transcriptome off-target analysis
     (BWA alignment against cDNA sequences). Without this, only lightweight
     miRNA seed match analysis runs.
 
-    Returns a dict with genome parameters that can be passed to Nextflow workflows.
-    Note: 'genome' in parameter names refers to the Nextflow convention, not genomic DNA.
+    Returns a dict with the transcriptome parameters passed to Nextflow workflows.
     """
     return {
         "--transcriptome_species": "test_species",
-        "--transcriptome_fastas": f"test_species:{toy_genome_path}",
+        "--transcriptome_fastas": f"test_species:{toy_transcriptome_path}",
     }
 
 
@@ -162,7 +161,7 @@ def genome_config_for_nextflow(toy_genome_path):
 def mirna_only_config_for_nextflow():
     """Nextflow configuration for lightweight miRNA-only analysis.
 
-    This skips the resource-intensive genome/transcriptome analysis (8-60GB RAM)
+    This skips the resource-intensive transcriptome analysis (8-60GB RAM)
     and only runs lightweight miRNA seed match comparison (<1GB RAM).
 
     Returns a dict with minimal parameters for miRNA-only mode.

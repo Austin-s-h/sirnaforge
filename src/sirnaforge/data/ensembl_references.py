@@ -187,7 +187,9 @@ def infer_species_from_cdna_headers(fasta_path: Path, max_records: int = 200) ->
                         parts = token.split(":")
                         if len(parts) > 1 and parts[1] in assembly_to_species:
                             seen.add(assembly_to_species[parts[1]])
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A compressed or binary file at this path infers nothing rather than aborting the run: the
+        # caller may have named an index prefix whose neighbouring file is not plain-text cDNA.
         return None
 
     if len(seen) == 1:

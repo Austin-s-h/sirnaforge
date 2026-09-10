@@ -265,13 +265,21 @@ class NextflowConfig:
         abs_input_file = input_file.resolve()
         abs_output_dir = output_dir.resolve()
         abs_work_dir = self.work_dir.resolve()
+        # The resolver may also state the species it resolved. Emitted once either way: two
+        # --transcriptome_species flags with different values leave the pipeline reporting whichever
+        # came last, which need not be the set actually handed to the aligner.
+        species_value = (
+            str(additional_params["transcriptome_species"])
+            if additional_params and "transcriptome_species" in additional_params
+            else ",".join(screen_species)
+        )
         args = [
             "--input",
             str(abs_input_file),
             "--outdir",
             str(abs_output_dir),
             "--transcriptome_species",
-            ",".join(screen_species),
+            species_value,
             "-profile",
             self.profile,
             "-w",
@@ -310,6 +318,8 @@ class NextflowConfig:
         # Add additional runtime parameters
         if additional_params:
             for key, value in additional_params.items():
+                if key == "transcriptome_species":
+                    continue  # already emitted once above
                 if isinstance(value, bool):
                     if value:
                         args.append(f"--{key}")

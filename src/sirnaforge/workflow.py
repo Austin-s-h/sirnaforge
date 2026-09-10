@@ -420,7 +420,8 @@ class SiRNAWorkflow:
         # requests it could not use. Empty until _resolve_screening_references runs.
         self._screening_references = ScreeningReferenceSet(kind=config.screening_kind)
         # What those references intend to screen, digest-keyed to the guide set actually submitted.
-        # None until a screen is configured: a plan for a run that screens nothing claims nothing.
+        # None until the Nextflow stage records one; a run with no resolved reference records an
+        # empty plan, which claims nothing.
         self._screening_plan: ScreeningPlan | None = None
         # Species requested for screening that never reached Nextflow, and why. A species with no
         # resolvable reference used to be filtered out of the species list before the pipeline ran,
@@ -1752,17 +1753,35 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation error: {e}")
             return None
 
+    @staticmethod
+    def _readable_cdna_fasta(path: Path) -> bool:
+        """Whether a file can be read as plain-text FASTA, which is what the classifier needs.
+
+        A compressed or binary neighbour of an index prefix parses as an empty transcript index, and
+        an empty index classifies nothing while reporting a completed screen.
+        """
+        try:
+            with path.open() as handle:
+                for line in handle:
+                    if line.strip():
+                        return line.startswith(">")
+        except (OSError, UnicodeDecodeError):
+            return False
+        return False
+
     def _adopt_prebuilt_index(self, request: ReferenceRequest) -> dict[str, Any]:
         """Adopt a caller-built index, locating the sequence file its hits must be classified against.
 
         bwa-mem2 writes its index files beside the FASTA they were built from, so an index prefix is
-        usually that FASTA's path; the plain suffixes are tried after it. The prefix itself is never
-        checked for existence -- the embedded pipeline runs in a container, where a perfectly good
-        prefix need not resolve on the host.
+        usually that FASTA's path; the plain suffixes are tried after it. Only a file that reads as
+        plain-text FASTA counts, because that is what the transcript->gene index is built from. The
+        index files at the prefix are never checked -- they may exist only inside the container -- but
+        a host-readable sequence file is required, so an index bundle mounted into the container alone
+        is refused rather than screened against something nothing can classify.
         """
         prefix = Path(request.value)
         candidates = [prefix, *(prefix.with_name(prefix.name + suffix) for suffix in (".fa", ".fasta", ".fna"))]
-        companion = next((path for path in candidates if path.is_file()), None)
+        companion = next((path for path in candidates if path.is_file() and self._readable_cdna_fasta(path)), None)
         return {
             "index": prefix,
             "fasta": companion,
@@ -1806,14 +1825,9 @@ class SiRNAWorkflow:
                 request, fallback_species, "the reference could not be fetched, cached or read"
             )
 
-        # An index build that was attempted and failed leaves no index, and the FASTA is not a
-        # substitute: handed to Nextflow as an index prefix it aligns nothing, which the pipeline
-        # reports as success. Refuse the reference and record why, so the species is unscreened
-        # rather than silently screened against nothing.
-        index_build_error = payload.get(INDEX_BUILD_ERROR_KEY)
-        if index_build_error and not payload.get("index"):
-            return None, self._reject_reference(request, fallback_species, str(index_build_error))
-
+        # Resolved before any refusal below, so a rejection names the species that went unscreened
+        # rather than 'unknown': the shortfall map is what reports the missing species, and blaming a
+        # phantom one is how "unscreened" started reading as "clean" in the first place.
         species, authority, conflict = resolve_reference_species(
             declared=declared,
             source_species=payload.get("source_species"),
@@ -1833,14 +1847,23 @@ class SiRNAWorkflow:
         else:
             logger.info("Species '%s' for %s, from its %s", species, request.value, authority.value)
 
+        # An index build that was attempted and failed leaves no index, and the FASTA is not a
+        # substitute: handed to Nextflow as an index prefix it aligns nothing, which the pipeline
+        # reports as success. Refuse the reference and record why, so the species is unscreened
+        # rather than silently screened against nothing.
+        index_build_error = payload.get(INDEX_BUILD_ERROR_KEY)
+        if index_build_error and not payload.get("index"):
+            return None, self._reject_reference(request, species, str(index_build_error))
+
         fasta = payload.get("fasta")
         if not fasta:
             return None, self._reject_reference(
                 request,
                 species,
-                "no sequence file was found beside the index prefix, so its hits could not be resolved to "
-                f"genes: put the cDNA FASTA at '{request.value}' (or '{request.value}.fa'), or pass it to "
-                "--transcriptome-fasta and let the run index it",
+                "no readable plain-text cDNA FASTA was found beside the index prefix (a gzipped or binary "
+                "neighbour does not count), so its hits could not be resolved to genes: put the cDNA FASTA "
+                f"at '{request.value}' (or '{request.value}.fa'), or pass it to --transcriptome-fasta and "
+                "let the run index it",
             )
 
         # A transcript->gene index for EVERY screened species (not just human), so orthologs can be
@@ -2232,8 +2255,10 @@ class SiRNAWorkflow:
     def _summarize_screening_references(self) -> dict[str, Any]:
         """The published reference record: what resolved, over which species, and what did not.
 
-        ``scope`` is the resolved screen's species set as a :class:`FilterScope`. It states what the
-        screen covered; no gate reads it in 0.7.1 -- applying a scope is #101's.
+        ``scope`` is the resolved screen's species set as a :class:`FilterScope`: what the run
+        planned to screen, fixed at resolution. It is not a coverage report -- a species whose
+        alignment published nothing is subtracted post-run in ``filtering_stats.unscreened_species``,
+        not from here. No gate reads it in 0.7.1; applying a scope is #101's.
         """
         summary: dict[str, Any] = {
             "transcriptome": self.config.transcriptome_selection.to_metadata(),

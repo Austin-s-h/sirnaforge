@@ -70,14 +70,18 @@ workflow SIRNAFORGE_OFFTARGET {
     // silently, so a stale genome_indices would configure no reference at all and the run would
     // report success having screened nothing.
     //
+    // Nextflow stores a hyphenated --genome-indices under the camelCase key genomeIndices, so every
+    // supplied key is folded to snake_case before it is compared: checking the snake_case spellings
+    // alone let the hyphenated form through, and a stale one screened nothing and reported success.
     def renamed_params = [
         genome_fastas : 'transcriptome_fastas',
         genome_indices: 'transcriptome_indices',
         genome_species: 'transcriptome_species',
     ]
-    renamed_params.each { old_name, new_name ->
-        if (params.containsKey(old_name)) {
-            error "--${old_name} was renamed to --${new_name}: siRNA/miRNA screening references are transcriptomes, and 'genome' now means ZFN genomic DNA."
+    params.keySet().each { supplied ->
+        def folded = supplied.toString().replaceAll('-', '_').replaceAll(/([a-z0-9])([A-Z])/, '$1_$2').toLowerCase()
+        if (renamed_params.containsKey(folded)) {
+            error "--${supplied} was renamed to --${renamed_params[folded]}: siRNA/miRNA screening references are transcriptomes, and 'genome' now means ZFN genomic DNA."
         }
     }
 

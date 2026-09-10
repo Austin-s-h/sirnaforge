@@ -9,6 +9,7 @@ classified against nothing (211,359 candidate-rows, 100% of mouse classification
 from __future__ import annotations
 
 import asyncio
+import gzip
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -23,10 +24,11 @@ from sirnaforge.config.reference_policy import (
     ReferenceState,
     SpeciesAuthority,
     WorkflowInputSpec,
+    parse_index_entries,
 )
 from sirnaforge.data.transcriptome_manager import TranscriptomeManager
 from sirnaforge.models.sirna import DesignMode, DesignParameters
-from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
+from sirnaforge.workflow import INDEX_BUILD_ERROR_KEY, SiRNAWorkflow, WorkflowConfig
 
 WORKFLOWS = Path("src/sirnaforge/pipeline/nextflow/workflows")
 
@@ -180,6 +182,70 @@ def test_an_index_prefix_with_no_readable_sequence_is_refused_not_screened(tmp_p
 
 
 @pytest.mark.unit
+def test_a_gzipped_or_binary_neighbour_of_an_index_prefix_is_refused_not_read(tmp_path: Path) -> None:
+    """Header inference used to abort the whole run on such a file, and then to build an empty index.
+
+    Both outcomes are wrong: an unreadable neighbour means the hits cannot be classified, which is a
+    per-species completeness fact, not a crash and not a screen.
+    """
+    compressed = tmp_path / "mm_cdna.fa.gz"
+    with gzip.open(compressed, "wt") as handle:
+        handle.write(f"{MOUSE_CDNA_HEADER}\nACGTACGTACGTACGTACGTA\n")
+    binary = tmp_path / "mm_index"
+    binary.write_bytes(bytes(range(256)) * 4)
+
+    for name, prefix in (("gz_out", compressed), ("binary_out", binary)):
+        workflow = _workflow(tmp_path, name, transcriptome_indices=f"mouse:{prefix}")
+
+        configured, params = _resolve(workflow)
+
+        assert configured is False, prefix
+        assert params == {}
+        assert "gzipped or binary" in workflow._species_screening_shortfalls["mouse"]
+        assert workflow._transcript_index.for_species("mouse") is None, "an empty index classifies nothing"
+
+
+@pytest.mark.unit
+def test_an_index_build_failure_names_the_species_of_the_reference_it_failed_for(tmp_path: Path) -> None:
+    """Wave 1's per-species rejection is only useful if it names the species that went unscreened.
+
+    The species has to be resolved before the refusal: keyed on the declaration alone, an undeclared
+    reference recorded its shortfall against ``unknown`` and the real species vanished from the
+    published record.
+    """
+    workflow = _workflow(tmp_path, "build_failed_out", transcriptome_fasta="ensembl_mouse_cdna")
+    fasta = _mouse_cdna(tmp_path)
+
+    async def _prepared(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "source_species": "mouse",
+            "fasta": fasta,
+            INDEX_BUILD_ERROR_KEY: "BWA-MEM2 index build failed for mm_cdna.fa; ran out of memory",
+        }
+
+    workflow._prepare_transcriptome_database = _prepared  # type: ignore[method-assign]
+
+    configured, _ = _resolve(workflow)
+
+    assert configured is False
+    assert "ran out of memory" in workflow._species_screening_shortfalls["mouse"]
+    assert UNRESOLVED_SPECIES not in workflow._species_screening_shortfalls
+    assert workflow._screening_references.rejections[0].species == "mouse"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("declared", ["transcriptome", "moose"])
+def test_a_species_the_registry_does_not_recognise_is_refused_on_the_index_door(declared: str) -> None:
+    """The index door has no header fallback for its label, so an unrecognised one becomes the species.
+
+    ``transcriptome`` as a species is the defect this module exists to close, and ``--species``
+    already refuses a name the registry does not know.
+    """
+    with pytest.raises(ValueError, match="unsupported species"):
+        parse_index_entries(f"{declared}:/idx/prefix", option="--transcriptome-indices", reason="test")
+
+
+@pytest.mark.unit
 def test_a_declared_species_wins_over_the_headers_and_the_disagreement_is_reported(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -298,6 +364,27 @@ def test_a_zfn_run_resolves_no_transcriptome_reference(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.unit
+def test_a_zfn_run_refuses_a_prebuilt_transcriptome_index(tmp_path: Path) -> None:
+    """The kind check has to cover both doors, or the override is the one that skips validation.
+
+    A prebuilt index arrives on ``--transcriptome-indices``, so it is a transcriptome index by
+    construction; naming one on a ZFN run used to resolve a genome-kind reference onto the
+    transcriptome parameters, with a plan entry contradicting its own kind.
+    """
+    output_dir = tmp_path / "zfn_index_out"
+
+    with pytest.raises(ReferenceKindError, match="screens against a genome"):
+        WorkflowConfig(
+            output_dir=output_dir,
+            gene_query="TP53",
+            design_params=DesignParameters(design_mode=DesignMode.ZFN),
+            transcriptome_indices=f"mouse:{_mouse_cdna(tmp_path)}",
+        )
+
+    assert not output_dir.exists(), "validation must precede even the output tree"
+
+
 # ---------------------------------------------------------------------------
 # The rename: nothing silently maps an old name onto a new one
 # ---------------------------------------------------------------------------
@@ -355,7 +442,12 @@ def test_the_pipeline_refuses_the_removed_parameters_by_name() -> None:
     ):
         assert f"{old_name} : '{new_name}'" in main_nf or f"{old_name}: '{new_name}'" in main_nf, old_name
         assert f"params.{old_name}" not in main_nf, f"{old_name} must not still configure anything"
-    assert "params.containsKey(old_name)" in main_nf
+    # Every supplied key is folded before it is compared, because Nextflow files a hyphenated
+    # --genome-indices under the camelCase key genomeIndices: matching the three snake_case
+    # spellings alone let that form through, and it then screened nothing and reported success.
+    assert "params.keySet()" in main_nf
+    assert "replaceAll('-', '_')" in main_nf
+    assert "([a-z0-9])([A-Z])" in main_nf
 
 
 @pytest.mark.unit
@@ -392,3 +484,22 @@ def test_the_published_summary_carries_the_scope_and_the_plan(tmp_path: Path) ->
     assert entry["reference_id"] == str(fasta)
     assert entry["search_settings"] == {"max_hits": 100, "bwa_k": 12}
     assert len(entry["guide_set_digest"]) == 16, "the digest identifies the guide set actually submitted"
+
+
+@pytest.mark.unit
+def test_the_species_parameter_reaches_nextflow_exactly_once(tmp_path: Path) -> None:
+    """The resolver and the runner both name the species; two flags leave the last one silently winning."""
+    from sirnaforge.pipeline.nextflow.config import NextflowConfig  # noqa: PLC0415
+
+    input_file = tmp_path / "candidates.fasta"
+    input_file.write_text(">cand_1\nACGTACGTACGTACGTACGTA\n")
+
+    args = NextflowConfig(work_dir=tmp_path / "work").get_nextflow_args(
+        input_file=input_file,
+        output_dir=tmp_path / "out",
+        screen_species=["human", "mouse"],
+        additional_params={"transcriptome_species": "human"},
+    )
+
+    assert args.count("--transcriptome_species") == 1
+    assert args[args.index("--transcriptome_species") + 1] == "human"
