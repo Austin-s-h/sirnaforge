@@ -19,7 +19,7 @@ where the two defects removed here were first written down as outstanding.)
 ### Breaking changes
 
 - **BREAKING (`weight_set_version` 3.0.0 → 4.0.0): one flat weight vector becomes three named ones.**
-  `ScoringWeights` is now a container of `design_v4` (`target_accessibility` 0.40, `asymmetry` 0.35,
+  `ScoringWeights` is now a container of `design_v4` (`asymmetry` 0.40, `target_accessibility` 0.35,
   `gc_content` 0.25), `postscreen_sirna_v4` (`off_target` 0.25, `target_accessibility` 0.30,
   `asymmetry` 0.25, `gc_content` 0.20) and `postscreen_mirna_v4` (the same four scaled to 0.75 plus
   `ago_start` 0.10, `pos1_mismatch` 0.05, `supp_13_16` 0.10). Each validates against its own term set
@@ -68,6 +68,35 @@ where the two defects removed here were first written down as outstanding.)
   nowhere in `src/`.
 
 ### Added
+
+- **One run-policy resolver: `sirnaforge.config.run_policy.resolve_run_policy` → `ResolvedRunPolicy`
+  (issue #99).** Run mode, design mode, every filter threshold and every filter *action* are resolved
+  once, before any download and before the output directory exists, and the same immutable object
+  reaches `sirnaforge design`, `sirnaforge workflow`, `sirnaforge offtarget`, `run_sirna_workflow`,
+  `run_offtarget_only_workflow` and a direct `WorkflowConfig` (via `describe_parameters`, which wraps
+  an already-built `DesignParameters` without changing a number). Precedence is applied exactly once:
+  built-in versioned profile < `--design-mode mirna` preset < `--policy-config` file < an explicitly
+  stated value. The resolver is pure — no downloads, no folding, no alignment.
+- **`--run-mode design_only|exploratory|qualified`** on `workflow` and `offtarget`. `design` defaults
+  to `design_only`, the screening commands to `qualified`, and `--skip-off-targets` maps to
+  `design_only` with the mapping recorded as a rule rather than as a user choice. `qualified` plus
+  explicitly disabled screening is rejected, and required qualified-mode evidence completeness cannot
+  be waived while keeping `qualified` status (waiving it resolves to `exploratory`). Run mode is
+  independent of design mode. **The resolver defines and validates the modes; deciding candidate
+  eligibility from the resulting evidence requirements is not implemented here.**
+- **Per-filter actions: `--filter-action filter_id=off|warn|fail`** (repeatable) on `design`,
+  `workflow` and `offtarget`, plus `filter_actions=` on both workflow entry points. Every one of the
+  16 declared gates can be disabled independently, and a disabled gate is **not evaluated** rather
+  than passed — as is a gate with no declared threshold, and a post-screen gate in a design-only run.
+  The gates now carry machine-readable descriptors (`column`, `comparator`, `threshold`, `scope`,
+  `action`, `stage`) built from the models rather than restated, so a consumer can re-apply one.
+- **`--policy-config FILE`** (JSON or TOML) on `design`, `workflow` and `offtarget`. An unknown
+  setting name is rejected rather than ignored, because a silently dropped override reads as an
+  applied one.
+- **`manifest.json` gains a `run_policy` block**: requested *and* resolved settings, the authority
+  that supplied each value (`builtin_profile`, `design_mode_preset`, `config_file`, `explicit`,
+  `run_mode_rule`), the profile's name, version and `sha256` content hash, and per gate its action,
+  threshold, comparator, scope, stage, definition and whether the column it reads is exported.
 
 - **`--ortholog-mapping` on `sirnaforge workflow` and `sirnaforge offtarget`** (also
   `WorkflowConfig(ortholog_mapping_file=...)`, `run_sirna_workflow`, `run_offtarget_only_workflow`):
@@ -193,6 +222,23 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Changed
 
+- **BREAKING (Python API): `run_sirna_workflow`'s `gc_min`, `gc_max`, `sirna_length`,
+  `modification_pattern`, `overhang` and `check_off_targets` now default to `None`, meaning
+  "unstated", so the resolved profile applies.** `gc_max` used to default to **52.0** here — the miRNA
+  ceiling — so the function's default GC window disagreed with the CLI's; an unstated `gc_max` in
+  siRNA mode now resolves to 60.0. Passing `resolved_policy=` together with any of these raises
+  `RunPolicyError`, because a run must be resolved once.
+- **`WorkflowConfig` gains `resolved_policy`** and always exposes one: a caller that supplies
+  `design_params` instead gets the equivalent policy from the adapter. Supplying both with different
+  parameters is an error.
+- **The `legacy` profile carries 0.7.1's numbers verbatim, and is derived from the model field
+  defaults rather than retyped**, with exactly one declared exception: `gc_min` is 30.0, the value the
+  CLI has always sent, where `FilterCriteria.gc_min`'s field default is 35.0 (which only ever applied
+  to code constructing the model directly). The exception is recorded in the profile with its reason,
+  a test pins the exception set at exactly `{gc_min}`, and **no numeric default was changed to close
+  it** — which of the two is right is a filter-default decision left to filter-scope work. Every
+  profile in 0.7.1 is `experimental = True`.
+
 - **`EvidenceRequirements` declares requiredness per channel × species pair** rather than as two
   channel sets and two species sets, and `ScreeningPlanEntry`/`ScreeningEvidenceEntry` no longer carry
   a `required` flag of their own — three authorities on requiredness became one. `unknown_evidence_action`
@@ -210,6 +256,42 @@ where the two defects removed here were first written down as outstanding.)
   written down, and the version exists precisely so that is visible.
 
 ### Fixed
+
+- **An explicit `--gc-max` in miRNA design mode is no longer overwritten (issue #99/#101 item 1).**
+  `cli.py::_resolve_design_mode` decided whether to apply the miRNA preset by comparing the supplied
+  value against the siRNA default (`if gc_min == 30.0 and gc_max == 60.0:`), so `--design-mode mirna
+  --gc-max 60` was silently rewritten to 52, and `--overhang dTdT` to `UU`. A value test cannot
+  distinguish an omitted option from one typed with that value; the resolver reads Click's parameter
+  source instead. `--gc-max 65` is documented and supported in either mode. **Six options were also
+  never reaching the resolver at all under the new mechanism until the parameter name was carried
+  explicitly** (`--length`, `--top-n`, `--max-off-targets`, `--min-asymmetry`, `--min-empirical`,
+  `--overhang` are not named after the settings they set).
+- **Cross-field configuration errors no longer escape as tracebacks (issue #95 item 2).**
+  `sirnaforge design --plfold-window 40 --plfold-max-bp-span 100` raised a raw pydantic
+  `ValidationError`; both commands now report `max_bp_span (100) must not exceed window_size (40)` and
+  exit 1. The `workflow` command additionally validated *after* creating the output tree and the log
+  file, so an invalid run left directories behind; resolution now happens first.
+- **Documented-versus-actual default drift, and the mechanism that allowed it.** The off-target cap
+  was documented as 3 (`SiRNACandidate.off_target_count`, `SiRNACandidateSchema`) while
+  `OffTargetFilterCriteria` enforces 15, and `--max-off-targets`' help said "default: 3". The
+  `design_v4` weights were documented as `target_accessibility` 0.40 / `asymmetry` 0.35 while the code
+  applies 0.35 / 0.40, and `min_empirical_score` was documented as 0.5 with range 0.4–0.7 while the
+  code defaults to 0.4 with range 0.4–0.6. **In every case the documentation moved, not the code**: no
+  numeric default changed. CLI help now interpolates `run_policy.default_for(...)`, and two tests
+  compare the help strings and the documentation's parameter tables against the model defaults.
+- **`OffTargetFilterCriteria` field descriptions now say which counter each gate reads.** Six of the
+  nine gates (`max_transcriptome_hits_{0,1,2}mm`, `max_mirna_perfect_seed`, `fail_on_high_risk_mirna`,
+  `max_total_offtarget_hits`) are compared against a **human-or-unlabelled** counter, not the
+  identically named all-species candidate column, and none of them said so. The resolved descriptors
+  carry `scope.species = {human}` and mark the counter as not exported. `max_mirna_1mm_seed` declares
+  a threshold of 10 and is read by **no** gate in 0.7.1, so it resolves to `off`; the descriptions and
+  the manifest now say that rather than implying an enforced limit. Exporting the human-stratified
+  counters is separate filter-scope work and is not done here.
+- **The off-target-only path no longer gates on thresholds from nowhere.**
+  `run_offtarget_only_workflow` built a bare `DesignParameters()`, so the off-target gates it applied
+  came from a default the caller could neither see nor set; it now resolves a policy like every other
+  entry point.
+
 
 - **An unreachable Ensembl Compara cost every screen its full retry ladder, and the unit tests paid
   it 20 times over.** `_process_nextflow_results` resolved orthologues over REST whenever a screen
