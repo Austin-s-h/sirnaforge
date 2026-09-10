@@ -103,11 +103,15 @@ sirnaforge workflow TP53 \
 ```
 
 **Format**: `species:/absolute/path/to/index_prefix` (`--offtarget-indices` is the same option)
-**Effect**: Bypasses Ensembl downloads and uses your existing BWA-MEM2 indices
-**Requirement**: the cDNA FASTA the index was built from must be readable beside the prefix (the
-prefix itself, or `<prefix>.fa`). Hits are resolved to genes from its headers, so a species whose
-sequence cannot be read is reported **unscreened**, with the reason, rather than screened against
-something nothing can classify. The species you name here is the label that reference carries.
+**Effect**: adds your existing BWA-MEM2 index as a screening reference. It does **not** suppress the
+references `--species` resolves — those are still fetched and indexed alongside it, so pass
+`--transcriptome-fasta` (or `--run-mode design_only`) when you want no Ensembl download at all.
+**Requirement**: the cDNA FASTA the index was built from must be readable as plain text beside the
+prefix (the prefix itself, or `<prefix>.fa`/`.fasta`/`.fna`; a gzipped or binary neighbour does not
+count). Hits are resolved to genes from its headers, so a species whose sequence cannot be read is
+reported **unscreened**, with the reason, rather than screened against something nothing can
+classify. The species you name here is the label that reference carries, and it must be one the
+registry recognises — the same set `--species` accepts.
 
 ---
 
@@ -146,7 +150,9 @@ belongs to `sirnaforge zfn`, which targets DNA.
 
 When multiple parameters affect the same resource:
 
-1. **Explicit overrides win**: `--transcriptome-indices` > `--transcriptome-fasta` > `--species`
+1. **Explicit references are added, not substituted**: `--transcriptome-indices` and
+   `--transcriptome-fasta` name references of their own; only `--transcriptome-fasta` replaces what
+   `--species` would resolve. An index override is screened *in addition to* those defaults.
 2. **miRNA overrides are independent**: `--mirna-species` doesn't affect transcriptomes
 3. **Defaults are smart**: System auto-detects what's available (e.g., only 4/7 species have Ensembl cDNA)
 

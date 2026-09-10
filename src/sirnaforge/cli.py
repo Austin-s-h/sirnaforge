@@ -957,6 +957,8 @@ def workflow(  # noqa: PLR0912
         help=(
             "Override or extend transcriptome references for off-target analysis. "
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "Prefix it with a species to state one -- 'mouse:/path/custom_cdna.fa' -- otherwise the "
+            "species is read from the reference's own Ensembl cDNA headers. "
             "When omitted, automatically fetches Ensembl cDNA for species selected via --species. "
             "Custom FASTA files are cached and indexed automatically. "
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
@@ -979,10 +981,12 @@ def workflow(  # noqa: PLR0912
         "--offtarget-indices",
         help=(
             "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
-            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. Overrides the references --species "
-            "would resolve, and the species you name here decides the screen. The cDNA FASTA the "
-            "index was built from must be readable beside the prefix (the prefix itself, or "
-            "<prefix>.fa) so hits can be resolved to genes."
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is that "
+            "reference's species and is added to the screen; it does NOT suppress the references "
+            "--species resolves, so pass --transcriptome-fasta (or --run-mode design_only) if you "
+            "do not want the Ensembl defaults fetched as well. The cDNA FASTA the index was built "
+            "from must be readable beside the prefix (the prefix itself, or <prefix>.fa) so hits "
+            "can be resolved to genes."
         ),
     ),
     ortholog_mapping: Path | None = typer.Option(
@@ -1617,7 +1621,9 @@ def offtarget(  # noqa: PLR0912
         "--transcriptome-fasta",
         help=(
             "Override or extend transcriptome references for off-target analysis. "
-            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "Prefix it with a species to state one -- 'mouse:/path/custom_cdna.fa' -- otherwise the "
+            "species is read from the reference's own Ensembl cDNA headers."
         ),
     ),
     transcriptome_filter: str | None = typer.Option(
@@ -1635,8 +1641,9 @@ def offtarget(  # noqa: PLR0912
         "--offtarget-indices",
         help=(
             "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
-            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The cDNA FASTA the index was built "
-            "from must be readable beside the prefix so hits can be resolved to genes."
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is added to "
+            "the screen and does not suppress the references --species resolves. The cDNA FASTA the "
+            "index was built from must be readable beside the prefix so hits can be resolved to genes."
         ),
     ),
     ortholog_mapping: Path | None = typer.Option(

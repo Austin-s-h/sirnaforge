@@ -25,7 +25,7 @@
 ### Why siRNAforge?
 
 - 🎯 **End-to-end workflow** — From gene symbol to ranked candidates in one command
-- 🔬 **Multi-species validation** — Off-target analysis of transcriptome and miRNA seed matches across human, rat, and rhesus macaque genomes
+- 🔬 **Multi-species validation** — Off-target analysis of transcriptome and miRNA seed matches across the human, rat, and rhesus macaque transcriptomes
 - 🐍 **Developer-friendly** — Modern Python API with full type hints and Pydantic models. Easily extend with your own scoring methods.
 
 ### Key Features
@@ -104,7 +104,7 @@ Need more control? Customize with parameters:
 
 ```bash
 sirnaforge workflow BRCA1 \
-  --genome-species "human,rat,rhesus" \
+  --species "human,rat,rhesus" \
   --gc-min 40 --gc-max 60 \
   --max-off-targets 20 \
   --design-mode mirna \
@@ -277,7 +277,7 @@ Gene Symbol → Transcript Retrieval → siRNA Design → Off-target Analysis �
 **Core Components:**
 - **Gene Search** — Multi-database transcript retrieval (Ensembl, RefSeq, GENCODE)
 - **Design Engine** — Thermodynamic scoring with ViennaRNA integration
-- **Off-target Analysis** — BWA-MEM2 genome-wide alignment
+- **Off-target Analysis** — BWA-MEM2 transcriptome-wide alignment
 - **Nextflow Pipeline** — Scalable containerized execution
 
 📖 **[Architecture documentation →](docs/developer/architecture.md)**

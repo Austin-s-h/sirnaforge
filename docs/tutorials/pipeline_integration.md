@@ -35,7 +35,7 @@ Common knobs:
 - `--species`: drives both transcriptome fetching and miRNA seed matching defaults.
 - `--mirna-db` / `--mirna-species`: control miRNA reference selection.
 - `--transcriptome-fasta`: override/extend the transcriptome reference.
-- `--transcriptome-indices`: name cDNA alignment indices for specific species (`species:/abs/path/index_prefix`).
+- `--transcriptome-indices`: name cDNA alignment indices for specific species (`species:/abs/path/index_prefix`); the cDNA FASTA the index was built from must be readable beside the prefix.
 
 ## Step 3 – Run Off-Target Analysis (embedded Nextflow)
 
