@@ -106,6 +106,104 @@ def _mirna_row(qname: str = "cand_1") -> dict[str, str]:
     }
 
 
+def _staged_species_results(root: Path) -> Path:
+    """Stage what Nextflow hands the aggregator: human usable, mouse 0-byte, rat header-only.
+
+    A 0-byte ``<species>_analysis.tsv`` is exactly what ``offtarget_analysis.nf``'s stub emits and
+    what an aligner that died mid-write leaves behind. A header-only file is a different thing: a
+    real screen that found nothing.
+    """
+    staged = root / "staged"
+    _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
+    (staged / "mouse").mkdir(parents=True, exist_ok=True)
+    (staged / "mouse" / "mouse_analysis.tsv").touch()
+    _write_tsv(staged / "rat" / "rat_analysis.tsv", GENOME_COLUMNS, [])
+    return staged
+
+
+def _aggregate(root: Path) -> dict:
+    """Run the real aggregator over the staged layout and return its published summary."""
+    staged = _staged_species_results(root)
+    output_dir = root / "aggregated"
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human,mouse,rat")
+    return json.loads((output_dir / "combined_summary.json").read_text())
+
+
+# ---------------------------------------------------------------------------
+# Partial per-species rejection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_rejected_species_file_is_published_as_a_rejection(tmp_path):
+    """The summary must have a field that carries the rejection, with the reason on it."""
+    summary = _aggregate(tmp_path)
+
+    assert "mouse" in summary["rejected_species_files"], "a discovered but unusable file must be reported"
+    assert "mouse_analysis.tsv" in summary["rejected_species_files"]["mouse"][0]
+    assert "empty" in summary["rejected_species_files"]["mouse"][0]
+    # The file WAS discovered: the count that used to be the only evidence still says 1.
+    assert summary["species_file_counts"]["mouse"] == 1
+    assert summary["usable_species_file_counts"]["mouse"] == 0
+
+
+@pytest.mark.unit
+def test_a_rejected_species_does_not_read_as_screened(tmp_path):
+    """species_screened is positive evidence; a rejected species is unscreened and the status is partial."""
+    summary = _aggregate(tmp_path)
+
+    assert summary["species_screened"] == ["human", "rat"]
+    assert summary["unscreened_species"] == ["mouse"]
+    # missing_species stays what it says it is: no file at all. Mouse produced one.
+    assert summary["missing_species"] == []
+    assert summary["status"] == "partial"
+    assert SiRNAWorkflow._species_with_alignment_evidence(summary) == ["human", "rat"]
+
+
+@pytest.mark.unit
+def test_an_unscreened_species_gets_no_hit_count_at_all(tmp_path):
+    """A zero for a species nothing aligned is a fabricated zero; absence of the key is the honest shape."""
+    summary = _aggregate(tmp_path)
+
+    assert summary["hits_per_species"]["human"] == 1
+    # Rat was screened and found nothing: that zero is real.
+    assert summary["hits_per_species"]["rat"] == 0
+    assert "mouse" not in summary["hits_per_species"]
+
+
+@pytest.mark.unit
+def test_the_final_summary_text_warns_about_the_rejected_species(tmp_path):
+    """The human-readable report is where a WARNINGS block was entirely absent."""
+    staged = _staged_species_results(tmp_path)
+    output_dir = tmp_path / "aggregated"
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human,mouse,rat")
+
+    report = (output_dir / "final_summary.txt").read_text()
+    assert "WARNINGS" in report
+    assert "mouse" in report.split("RESULTS SUMMARY")[0]
+    assert "Species actually screened: human, rat" in report
+
+
+@pytest.mark.unit
+def test_a_run_with_a_rejected_species_reports_partial_and_says_which(tmp_path):
+    """End to end: the workflow must not report a completed screen, and must name the species."""
+    workflow = _workflow(tmp_path, "rejected_species", species=["human", "mouse", "rat"])
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    aggregate_offtarget_results(
+        results_dir=_staged_species_results(results_dir),
+        output_dir=results_dir / "aggregated",
+        genome_species="human,mouse,rat",
+    )
+
+    candidate = _candidate()
+    outcome = asyncio.run(workflow._process_nextflow_results([candidate], results_dir, {"status": "completed"}))
+
+    assert outcome["status"] == "partial"
+    assert any("mouse" in warning for warning in outcome["warnings"]), outcome["warnings"]
+    assert outcome["filtering_stats"]["unscreened_species"] == ["mouse"]
+
+
 # ---------------------------------------------------------------------------
 # miRNA double-ingest
 # ---------------------------------------------------------------------------

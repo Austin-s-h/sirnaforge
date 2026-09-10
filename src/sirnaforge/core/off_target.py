@@ -15,10 +15,11 @@ import statistics
 import subprocess  # nosec B404
 import tempfile
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import pandas as pd
 
@@ -34,7 +35,7 @@ from sirnaforge.models.off_target import (
     MiRNASummary,
     OffTargetHit,
 )
-from sirnaforge.models.schemas import GenomeAlignmentSchema, MiRNAAlignmentSchema
+from sirnaforge.models.schemas import AggregatedOffTargetSchema, GenomeAlignmentSchema, MiRNAAlignmentSchema
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.species import human_vs_other_totals
@@ -173,6 +174,56 @@ def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
             label = str(value)
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+#: Label for a rejected analysis file the results layout could not attribute to a requested species.
+UNATTRIBUTED_SPECIES_LABEL = "unattributed"
+
+
+def _attribute_analysis_files(
+    analysis_files: Sequence[Path], species_list: Sequence[str]
+) -> dict[str | None, list[Path]]:
+    """Group analysis files by the species directory they were staged in.
+
+    ``nextflow_cli`` stages each species' files under ``<results>/<species>/``, so the parent
+    directory is the attribution. A file that matches no requested species is grouped under
+    ``None``: it still has to be read and, if unusable, still has to be reported.
+    """
+    grouped: dict[str | None, list[Path]] = {}
+    for analysis_file in sorted(analysis_files):
+        species = next((s for s in species_list if analysis_file.parent.name == s), None)
+        if species is None:
+            species = next((s for s in species_list if s in analysis_file.name), None)
+        grouped.setdefault(species, []).append(analysis_file)
+    return grouped
+
+
+def _read_species_analysis_file(analysis_file: Path) -> tuple[pd.DataFrame | None, str | None]:
+    """Read and validate one per-species analysis file.
+
+    Returns ``(frame, None)`` when the file is usable -- including a header-only file, which is a
+    real "no hits" result -- and ``(None, reason)`` when it is not. The reason is what makes the
+    rejection reportable rather than merely logged.
+    """
+    if not analysis_file.exists():
+        return None, "file does not exist"
+    if analysis_file.stat().st_size == 0:
+        return None, "file is empty (0 bytes): the alignment step produced no table"
+    try:
+        frame = pd.read_csv(analysis_file, sep="\t")
+    except Exception as exc:
+        return None, f"unreadable as TSV: {exc}"
+    try:
+        # The aggregated schema, not the narrow producer one: the workflow appends the
+        # classification columns to these same per-species files, so both widths are legitimate.
+        return AggregatedOffTargetSchema.validate(frame, lazy=True), None
+    except Exception as exc:
+        return None, f"rejected by AggregatedOffTargetSchema: {_first_line(exc)}"
+
+
+def _first_line(exc: Exception) -> str:
+    """The first line of an exception's message, so a Pandera report stays one summary field."""
+    return str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
 
 
 def _normalize_nucleotide_sequence(sequence: str) -> str:
@@ -1657,6 +1708,12 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     are aggregated separately by aggregate_mirna_results() to keep output files
     distinct and properly typed.
 
+    Rejecting a file is a fact about a species, not a log line. A per-species ``*_analysis.tsv``
+    that cannot be read (the 0-byte file ``offtarget_analysis.nf``'s stub emits, or one the schema
+    rejects) used to be dropped with a ``logger.warning`` while the species still counted in
+    ``species_file_counts`` and stayed out of ``missing_species`` -- so the species read as screened
+    and clean. ``species_screened`` and ``rejected_species_files`` carry that verdict now.
+
     Args:
         results_dir: Directory containing individual analysis results
         output_dir: Directory to write aggregated results
@@ -1670,49 +1727,47 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     output_path.mkdir(parents=True, exist_ok=True)
 
     species_list = [s.strip() for s in genome_species.split(",") if s.strip()]
-    species_file_counts: dict[str, int] = {}
-    missing_species: list[str] = []
-    for species in species_list:
-        species_dir = results_path / species
-        count = len(list(species_dir.glob("*_analysis.tsv"))) if species_dir.exists() else 0
-        species_file_counts[species] = count
-        if count == 0:
-            missing_species.append(species)
 
     # Collect ONLY genome/transcriptome TSV analysis files
     # miRNA files are handled separately by aggregate_mirna_results()
-    analysis_files = list(results_path.glob("**/*_analysis.tsv"))
-    # Filter out miRNA files explicitly to avoid schema validation errors
-    analysis_files = [f for f in analysis_files if "mirna" not in f.name.lower()]
+    analysis_files = [f for f in results_path.glob("**/*_analysis.tsv") if "mirna" not in f.name.lower()]
 
     logger.info(f"Found {len(analysis_files)} transcriptome analysis files to aggregate")
 
-    if analysis_files:
-        # Read all files into DataFrames and concatenate (vectorized operation)
-        dfs = []
-        for analysis_file in analysis_files:
-            try:
-                # Pandas reads TSV much faster than manual line splitting
-                df = pd.read_csv(analysis_file, sep="\t")
+    inventory = _attribute_analysis_files(analysis_files, species_list)
+    species_file_counts = {species: len(files) for species, files in inventory.items() if species is not None}
+    for species in species_list:
+        species_file_counts.setdefault(species, 0)
+    missing_species = [species for species in species_list if species_file_counts[species] == 0]
 
-                # Validate schema with Pandera
-                df = GenomeAlignmentSchema.validate(df, lazy=True)
-                dfs.append(df)
-
-            except Exception as e:
-                logger.warning(f"Failed to read/validate {analysis_file}: {e}")
+    dfs: list[pd.DataFrame] = []
+    usable_file_counts: dict[str, int] = dict.fromkeys(species_list, 0)
+    rejected_species_files: dict[str, list[str]] = {}
+    for attributed, files in inventory.items():
+        for analysis_file in files:
+            frame, rejection = _read_species_analysis_file(analysis_file)
+            if rejection is not None:
+                # Attributed to the species whose directory it was staged in; a file the layout
+                # cannot attribute is still reported, under the label the aggregator saw.
+                label = attributed if attributed is not None else UNATTRIBUTED_SPECIES_LABEL
+                rejected_species_files.setdefault(label, []).append(f"{analysis_file.name}: {rejection}")
+                logger.warning(f"Rejected transcriptome analysis file {analysis_file} ({label}): {rejection}")
                 continue
+            dfs.append(cast(pd.DataFrame, frame))
+            if attributed is not None:
+                usable_file_counts[attributed] = usable_file_counts.get(attributed, 0) + 1
 
+    if dfs:
         # Concatenate all DataFrames at once (much faster than append in loop)
-        if dfs:
-            combined_df = pd.concat(dfs, ignore_index=True)
-        else:
-            # Create empty DataFrame with correct schema
-            combined_df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
-
+        combined_df = pd.concat(dfs, ignore_index=True)
     else:
-        # No files found - create empty DataFrame
+        # No usable files - create empty DataFrame with the producer's columns
         combined_df = pd.DataFrame(columns=list(GenomeAlignmentSchema.__annotations__.keys()))
+
+    # Positive evidence: a species is screened only where a file was read, never where one merely
+    # existed. Everything else requested is unscreened, whatever the reason.
+    species_screened = [species for species in species_list if usable_file_counts.get(species, 0) > 0]
+    unscreened_species = [species for species in species_list if species not in species_screened]
 
     # Write combined results (pandas is much faster than manual TSV writing)
     combined_tsv = output_path / "combined_offtargets.tsv"
@@ -1723,10 +1778,9 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     combined_df.to_json(combined_json, orient="records", indent=2)
 
     species_counts = _compute_species_counts(combined_df)
-    if not species_counts:
-        species_counts = dict.fromkeys(species_list, 0) if species_list else {}
-
-    for species in species_list:
+    # Zero-fill only the species that were screened. A zero for an unscreened species is the
+    # fabricated zero this function exists to stop publishing; unscreened_species names it instead.
+    for species in species_screened:
         species_counts.setdefault(species, 0)
 
     human_hits, other_hits = human_vs_other_totals(species_counts)
@@ -1739,7 +1793,7 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     summary_json = output_path / "combined_summary.json"
 
     # Create validated aggregated summary
-    summary_status = "completed" if not missing_species else "partial"
+    summary_status = "completed" if not unscreened_species else "partial"
 
     summary = AggregatedOffTargetSummary(
         species_analyzed=species_list,
@@ -1752,6 +1806,10 @@ def aggregate_offtarget_results(  # noqa: PLR0912
         human_hits=human_hits,
         other_species_hits=other_hits,
         species_file_counts=species_file_counts,
+        usable_species_file_counts=usable_file_counts,
+        rejected_species_files=rejected_species_files,
+        species_screened=species_screened,
+        unscreened_species=unscreened_species,
         missing_species=missing_species,
         status=summary_status,
     )
@@ -1778,17 +1836,28 @@ def aggregate_offtarget_results(  # noqa: PLR0912
             f.write("  • Provide --genome_indices 'species:index,species2:index2'\n\n")
             f.write("=" * 50 + "\n\n")
 
-        if missing_species:
-            warning_list = ", ".join(missing_species)
+        if unscreened_species or rejected_species_files:
             f.write("WARNINGS\n")
             f.write("-" * 50 + "\n")
-            f.write(
-                "No transcriptome alignment files were produced for the following species: "
-                f"{warning_list}. This usually indicates the BWA-MEM2 indexing stage ran out of memory.\n"
-            )
-            f.write(
-                "Increase --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices on a host with more RAM.\n\n"
-            )
+            if missing_species:
+                f.write(
+                    "No transcriptome alignment files were produced for the following species: "
+                    f"{', '.join(missing_species)}. This usually indicates the BWA-MEM2 indexing stage "
+                    "ran out of memory.\n"
+                )
+                f.write(
+                    "Increase --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices on a host with more RAM.\n"
+                )
+            for label, reasons in sorted(rejected_species_files.items()):
+                f.write(f"Rejected alignment files for {label}:\n")
+                for reason in reasons:
+                    f.write(f"  - {reason}\n")
+            if unscreened_species:
+                f.write(
+                    f"UNSCREENED: {', '.join(unscreened_species)}. No usable alignment evidence exists for "
+                    "these species, so a zero hit count for them means UNKNOWN, not clean.\n"
+                )
+            f.write("\n")
 
         # Results summary
         f.write("RESULTS SUMMARY\n")
@@ -1800,11 +1869,12 @@ def aggregate_offtarget_results(  # noqa: PLR0912
         # Show species list or note if empty
         if species_list:
             f.write(f"Species requested for analysis: {', '.join(species_list)}\n")
+            f.write(f"Species actually screened: {', '.join(species_screened) or '(none)'}\n")
         else:
             f.write("Species requested for analysis: (none - miRNA-only mode)\n")
 
         if species_counts:
-            f.write("Per-species hit counts:\n")
+            f.write("Per-species hit counts (screened species only):\n")
             for species, count in sorted(species_counts.items()):
                 f.write(f"  {species}: {count}\n")
 
@@ -1818,10 +1888,18 @@ def aggregate_offtarget_results(  # noqa: PLR0912
             f.write(f"• {combined_tsv.name}: Header only (no hits found)\n")
             f.write(f"• {combined_json.name}: Empty array (no hits found)\n")
             f.write(f"• {summary_json.name}: Metadata only\n\n")
-            f.write(
-                "Note: Empty data files indicate NO problematic transcriptome off-targets were detected - this is GOOD!\n"
-            )
-            f.write("Your siRNA candidates are clean at the transcriptome alignment level.\n\n")
+            if unscreened_species or not species_screened:
+                # "No hits" only means "clean" where a search ran. Saying so here is how an absent
+                # screen was read as good news.
+                f.write(
+                    "Note: an empty table here is NOT a clean result -- no usable alignment evidence exists "
+                    f"for {', '.join(unscreened_species) or 'any requested species'}. Treat these counts as unknown.\n\n"
+                )
+            else:
+                f.write(
+                    "Note: Empty data files indicate NO problematic transcriptome off-targets were detected - this is GOOD!\n"
+                )
+                f.write("Your siRNA candidates are clean at the transcriptome alignment level.\n\n")
             f.write("For miRNA seed match analysis results, see:\n")
             f.write("  ../mirna/mirna_analysis.tsv\n")
             f.write("  ../mirna/mirna_summary.json\n")
@@ -1830,11 +1908,14 @@ def aggregate_offtarget_results(  # noqa: PLR0912
             f.write(f"• {combined_json.name}: {len(combined_df)} off-target hits (JSON format)\n")
             f.write(f"• {summary_json.name}: Analysis metadata and statistics\n")
 
-    if missing_species:
+    if unscreened_species:
         logger.warning(
-            "Transcriptome aggregation completed with missing species: %s. "
-            "Likely cause: insufficient memory while building BWA-MEM2 indices.",
-            ", ".join(missing_species),
+            "Transcriptome aggregation is PARTIAL: no usable alignment evidence for %s "
+            "(no files produced: %s; files rejected: %s). A zero hit count for these species is unknown, not clean.",
+            ", ".join(unscreened_species),
+            ", ".join(missing_species) or "none",
+            "; ".join(f"{label}: {', '.join(reasons)}" for label, reasons in sorted(rejected_species_files.items()))
+            or "none",
         )
     else:
         logger.info(f"Wrote aggregated results to {output_path}")

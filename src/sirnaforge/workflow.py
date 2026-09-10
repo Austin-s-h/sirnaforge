@@ -2106,14 +2106,8 @@ class SiRNAWorkflow:
 
         tx_summary = aggregated_views.get("transcriptome") if aggregated_views else None
         if tx_summary:
-            missing_species = cast(list[str], tx_summary.get("missing_species") or [])
-            if missing_species:
+            for warning_msg in self._transcriptome_shortfall_warnings(tx_summary):
                 run_status = "partial"
-                warning_msg = (
-                    "⚠️  No transcriptome alignment files were generated for: "
-                    f"{', '.join(missing_species)}. This usually means the BWA-MEM2 indexing stage ran out of memory. "
-                    "Increase Nextflow --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices."
-                )
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
 
@@ -2273,12 +2267,21 @@ class SiRNAWorkflow:
         - miRNA-only mode, where sirna_offtarget_analysis.nf derives the species list from
           ch_genome_indices and falls back to '' — no transcriptome alignment happened at all, so
           the off-target term has nothing to stand on.
+
+        ``species_screened`` is preferred over any file tally because a file can be discovered and
+        still be unusable: a 0-byte ``*_analysis.tsv`` (what offtarget_analysis.nf's stub emits) or
+        one the schema rejects counts in ``species_file_counts`` while contributing no alignment.
+        An explicitly empty ``species_screened`` is evidence, not a missing key, so it is honoured.
         """
         if not tx_summary:
             return []
-        # species_file_counts is the aggregator's own per-species file tally: >0 means it read
-        # alignment output for that species.
-        file_counts = cast(dict[str, int], tx_summary.get("species_file_counts") or {})
+        screened = tx_summary.get("species_screened")
+        if screened is not None:
+            return [str(species) for species in cast(list[Any], screened)]
+        # Older summaries carry no screened list; their per-species file tally is the same evidence,
+        # coarser, and cannot see a file that was discovered and then rejected.
+        usable_counts = cast(dict[str, int], tx_summary.get("usable_species_file_counts") or {})
+        file_counts = usable_counts or cast(dict[str, int], tx_summary.get("species_file_counts") or {})
         if file_counts:
             return [species for species, count in file_counts.items() if count]
         # Older summaries carry no per-species counts; species_analyzed minus the species the
@@ -2286,6 +2289,39 @@ class SiRNAWorkflow:
         analyzed = [str(species) for species in cast(list[Any], tx_summary.get("species_analyzed") or [])]
         missing = {str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])}
         return [species for species in analyzed if species not in missing]
+
+    @staticmethod
+    def _transcriptome_shortfall_warnings(tx_summary: Mapping[str, Any]) -> list[str]:
+        """Every way the aggregate says a requested species was not screened, as run warnings.
+
+        A rejected file and an absent file are different facts with the same consequence, so both
+        are reported with their reason. Without this the summary had no field that could carry a
+        per-species rejection, and the run printed "No transcriptome hits detected for: mouse" as
+        good news.
+        """
+        missing = [str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])]
+        unscreened = [str(species) for species in cast(list[Any], tx_summary.get("unscreened_species") or [])]
+        rejected = cast(dict[str, Any], tx_summary.get("rejected_species_files") or {})
+
+        warnings: list[str] = []
+        if missing:
+            warnings.append(
+                "⚠️  No transcriptome alignment files were generated for: "
+                f"{', '.join(missing)}. This usually means the BWA-MEM2 indexing stage ran out of memory. "
+                "Increase Nextflow --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices."
+            )
+        for species, reasons in sorted(rejected.items()):
+            detail = "; ".join(str(reason) for reason in cast(list[Any], reasons))
+            warnings.append(
+                f"⚠️  Alignment output for '{species}' was rejected and contributed nothing to this screen: {detail}"
+            )
+        rejected_only = [species for species in unscreened if species not in missing]
+        if rejected_only:
+            warnings.append(
+                f"⚠️  Not screened: {', '.join(rejected_only)}. Zero hits for these species means unknown, "
+                "not clean; they keep no off-target evidence in this run."
+            )
+        return warnings
 
     def _log_offtarget_statistics(
         self,
@@ -2329,24 +2365,7 @@ class SiRNAWorkflow:
         if aggregated_views:
             tx_summary = aggregated_views.get("transcriptome")
             if tx_summary:
-                species_counts = cast(dict[str, int], tx_summary.get("hits_per_species", {}) or {})
-                human_hits = tx_summary.get("human_hits", 0)
-                other_hits = tx_summary.get("other_species_hits", 0)
-                console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
-                if species_counts:
-                    formatted = ", ".join(f"{k}: {v}" for k, v in sorted(species_counts.items()))
-                    console.print(f"      per species: {formatted}")
-                missing_species = cast(list[str], tx_summary.get("missing_species") or [])
-                if missing_species:
-                    console.print(
-                        "      ⚠️ Transcriptome alignment files were missing for: "
-                        f"{', '.join(missing_species)} (likely insufficient memory during BWA indexing)."
-                    )
-
-                species_analyzed = cast(list[str], tx_summary.get("species_analyzed", []) or [])
-                zero_hit_species = [species for species in species_analyzed if species_counts.get(species, 0) == 0]
-                if zero_hit_species and not missing_species:
-                    console.print(f"      ℹ️ No transcriptome hits detected for: {', '.join(zero_hit_species)}")
+                self._log_aggregated_transcriptome(tx_summary)
 
             mirna_summary = aggregated_views.get("mirna")
             if mirna_summary:
@@ -2357,6 +2376,40 @@ class SiRNAWorkflow:
         trace_file = Path(output_dir) / "pipeline_info" / "execution_trace.txt"
         if trace_file.exists():
             console.print(f"   📘 Nextflow execution trace: {trace_file}")
+
+    def _log_aggregated_transcriptome(self, tx_summary: Mapping[str, Any]) -> None:
+        """Report the aggregate's per-species view, separating "clean" from "not screened"."""
+        species_counts = cast(dict[str, int], tx_summary.get("hits_per_species", {}) or {})
+        human_hits = tx_summary.get("human_hits", 0)
+        other_hits = tx_summary.get("other_species_hits", 0)
+        console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
+        if species_counts:
+            formatted = ", ".join(f"{k}: {v}" for k, v in sorted(species_counts.items()))
+            console.print(f"      per species: {formatted}")
+
+        missing_species = [str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])]
+        if missing_species:
+            console.print(
+                "      ⚠️ Transcriptome alignment files were missing for: "
+                f"{', '.join(missing_species)} (likely insufficient memory during BWA indexing)."
+            )
+
+        # "No hits detected" is a clean-screen claim, so it is made only about species that were
+        # screened. Reported against species_analyzed it read a rejected alignment as good news.
+        screened_species = self._species_with_alignment_evidence(tx_summary)
+        zero_hit_species = [species for species in screened_species if species_counts.get(species, 0) == 0]
+        if zero_hit_species:
+            console.print(f"      ℹ️ No transcriptome hits detected for: {', '.join(zero_hit_species)}")
+
+        unscreened = [
+            str(species)
+            for species in cast(list[Any], tx_summary.get("unscreened_species") or [])
+            if str(species) not in missing_species
+        ]
+        if unscreened:
+            console.print(
+                f"      ⚠️ No usable alignment evidence for: {', '.join(unscreened)} (counts unknown, not zero)."
+            )
 
     @staticmethod
     def _log_unscored_after_screening(stats: Mapping[str, Any]) -> None:
