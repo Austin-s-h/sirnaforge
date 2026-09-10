@@ -497,6 +497,28 @@ def test_the_producer_publishes_the_classification_columns_explicitly_undecided(
 
 
 @pytest.mark.unit
+def test_the_aggregate_stub_writes_the_producers_header_without_importing_the_package():
+    """A stub run must exercise the wiring with no container, no aligner and no importable package.
+
+    The stub emitted the header from a ``python3`` heredoc importing ``sirnaforge``, which turned a
+    ``nextflow run -stub-run`` that succeeded on the base branch into a ``ModuleNotFoundError``.
+    The header is written literally in bash instead, and pinned here so it cannot drift from the
+    code that writes the real one.
+    """
+    module = (
+        Path(__file__).resolve().parents[2]
+        / "src/sirnaforge/pipeline/nextflow/workflows/modules/local/aggregate_results.nf"
+    )
+    stub = module.read_text().split("stub:", 1)[1]
+    header_line = next(line for line in stub.splitlines() if "combined_offtargets.tsv" in line)
+
+    assert "python" not in stub.split("versions.yml")[0], "the stub must not need an interpreter"
+    # The Groovy string escapes the shell escapes, so \\t reaches bash as \t.
+    emitted = header_line.split("'")[1].removesuffix("\\\\n").split("\\\\t")
+    assert emitted == GENOME_COLUMNS + list(CLASSIFICATION_COLUMNS)
+
+
+@pytest.mark.unit
 def test_the_workflow_fills_the_producers_columns_in_place(tmp_path):
     """The read-modify-write becomes an update: same columns before and after classification."""
     workflow = _workflow(tmp_path, "producer_columns")
