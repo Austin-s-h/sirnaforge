@@ -180,10 +180,18 @@ def test_mirna_biogenesis_terms_reach_the_post_screen_composite(tmp_path: Path) 
     assert bonus.composite_score > high_base.composite_score, (
         "miRNA mode must rank the better-biogenesis guide first after screening"
     )
-    # Each biogenesis term contributes its own declared weight, visible on the row.
-    for term in MIRNA_TERM_NAMES:
+    # Each biogenesis term *of the vector* contributes its own declared weight, visible on the row.
+    # Read from the vector rather than from MIRNA_TERM_NAMES: since issue #102 the three computed
+    # biogenesis features and the two scored ones are different lists, because pos1_mismatch is
+    # exactly constant and holds no weight.
+    scored_biogenesis = [term for term in MIRNA_TERM_NAMES if term in mirna_params.scoring.postscreen_mirna.terms]
+    assert scored_biogenesis == ["ago_start", "supp_13_16"]
+    for term in scored_biogenesis:
         assert getattr(bonus, f"score_{term}") is not None
         assert getattr(sirna_bonus, f"score_{term}") is None, "siRNA mode has no such term"
+    # And the unscored one is computed but contributes nothing on either vector.
+    assert bonus.component_scores["pos1_mismatch"] == 0.0
+    assert bonus.score_pos1_mismatch is None
 
 
 @pytest.mark.unit
