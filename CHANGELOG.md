@@ -21,8 +21,9 @@ where the two defects removed here were first written down as outstanding.)
 - **BREAKING (`weight_set_version` 3.0.0 → 4.0.0): one flat weight vector becomes three named ones.**
   `ScoringWeights` is now a container of `design_v4` (`target_accessibility` 0.40, `asymmetry` 0.35,
   `gc_content` 0.25), `postscreen_sirna_v4` (`off_target` 0.25, `target_accessibility` 0.30,
-  `asymmetry` 0.25, `gc_content` 0.20) and `postscreen_mirna_v4` (the same four scaled to 0.75 plus
-  `ago_start` 0.10, `pos1_mismatch` 0.05, `supp_13_16` 0.10). Each validates against its own term set
+  `asymmetry` 0.25, `gc_content` 0.20) and `postscreen_mirna_v4` (the same four at exactly 0.80x --
+  `off_target` 0.20, `target_accessibility` 0.24, `asymmetry` 0.20, `gc_content` 0.16 -- plus
+  `ago_start` 0.10 and `supp_13_16` 0.10). Each validates against its own term set
   and refuses to construct unless it is named and already sums to 1.0 — the previous validator
   accepted 0.95–1.05, i.e. up to 5% of undeclared rescaling per run. `ScoringWeights.asymmetry` and
   friends no longer exist; use `weights.design.asymmetry`, `weights.postscreen_sirna.asymmetry`, or
@@ -35,8 +36,9 @@ where the two defects removed here were first written down as outstanding.)
 - **BREAKING: `composite_score` is null before screening; `design_score` is the design-stage score.**
   `off_target` does not exist until off-target screening has run, so the design stage scores a
   different vector into a different field. The two are **not comparable** — different term sets, and
-  `design_score` is systematically optimistic because the term it lacks can only subtract evidence.
-  `ranking_score(candidate)` is the single place that decides which number a candidate has. Both CSV
+  the two vectors also weight their _shared_ terms differently, so **neither is systematically the
+  larger**: all features at 0.5 with `off_target = 1.0` gives `design_v4` 50.0 against
+  `postscreen_sirna_v4`'s 62.5. `ranking_score(candidate)` is the single place that decides which number a candidate has. Both CSV
   paths gain a `design_score` column and `composite_score` is now nullable.
 - **BREAKING: `empirical`, `conservation` and `isoform_coverage` leave the composite.** All three are
   still computed and reported on every candidate — `empirical_score`, `conservation_score` and
@@ -46,17 +48,31 @@ where the two defects removed here were first written down as outstanding.)
   runs and `isoform_coverage` is None on the `design_from_sequence`/miRNA paths, so any vector
   containing them needs either variant vectors or arithmetic. With them out, every scoring term is
   universally computable. The `score_empirical`, `score_isoform_coverage` and `score_conservation`
-  contribution columns are removed; `score_ago_start`, `score_pos1_mismatch`, `score_supp_13_16`,
-  `weight_vector` and `design_score` are added.
+  contribution columns are removed; `score_ago_start`, `score_supp_13_16`, `weight_vector` and
+  `design_score` are added. `score_pos1_mismatch` is added as a column too but is **always null**: the
+  term is computed and reported and is in no vector (see the `pos1_mismatch` entry below).
 - **BREAKING: the miRNA biogenesis divisor is gone and the three live bonuses are declared terms.**
   `apply_mirna_biogenesis_bonus` and `mirna_max_biogenesis_bonus` are deleted, along with
   `MIRNA_BONUS_MAX_KEY` and `MiRNADesignConfig.scoring_weights`. Contributions now sum to
   `composite_score` exactly in **both** modes. Because both post-screen vectors sum to 1.0, the two
   modes are on one scale: a candidate whose biogenesis sub-scores match its other sub-scores scores
-  identically in either mode, at every level. A candidate earning nothing on the three biogenesis
-  terms retains 0.75 of the equivalent siRNA score — three weights readable in the manifest and
+  identically in either mode, at every level. A candidate earning nothing on the two live biogenesis
+  terms retains 0.80 of the equivalent siRNA score — four weights readable in the manifest and
   attributable term by term on the row, where the old 0.80 was an undeclared factor on the whole
   vector including `off_target`.
+- **BREAKING: `pos1_mismatch` is not a scored term.** It rewards a G:U wobble or a mismatch at guide
+  position 1, and siRNAforge builds the passenger as the exact reverse complement of the guide, so
+  position 1 always forms a Watson-Crick pair and the feature is **exactly 0.0 on every candidate** —
+  min = max = mean = sd = 0, one distinct value over all 13,415 scored candidates of the frozen public
+  TP53 baseline, 0.000% of composite variance. A term that ranks nothing must not consume weight, so
+  it is absent from `postscreen_mirna_v4`, which has six terms. The 0.05 it would have held was not
+  reassigned by judgement: the four shared terms sit at exactly `0.80 x postscreen_sirna_v4`, the
+  proportional-scaling rule the vector already declared, which the released 0.05 makes reachable at
+  two decimal places without rounding — so the previous `off_target`/`asymmetry` tie-break is gone
+  too. `biogenesis_features` still computes it and `score_pos1_mismatch` is still a column, so a run
+  stays auditable and the term can return to a vector if the designer ever builds deliberately
+  mismatched passengers. `COMPOSITE_TERM_NAMES` and the manifest's `scoring.scored_terms` no longer
+  list it.
 - **BREAKING (`EMPIRICAL_SCORE_MAX` 0.7 → 0.6): the G/C-at-guide-position-1 clause is deleted.** It
   contradicted the biogenesis rule rewarding A/U at the same base. Measured over 29,605 candidates,
   G/C gained +1.6 empirical points there and lost 7.9 to the biogenesis adjustment — a declared
@@ -69,6 +85,46 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Added
 
+- **A scoring term registry, `sirnaforge.models.scoring_profile`.** Per term it records the molecule,
+  strand and positions read, the endpoint _claimed_, the applicability condition, the formula, units
+  and transform, the missing-value policy, the **declared** and **attainable** feature ranges, the
+  evidence source and an `EvidenceStatus`. `ScoringProfile` bundles a named vector set with those
+  records and refuses at construction to pay weight to a term the registry does not describe, to a
+  term marked `deprecated`, or to a term whose attainable range is a single point — which is the
+  machine-checked form of "a constant term must not consume weight", and which rejects the
+  pre-#102 `postscreen_mirna_v4` outright. It resolves nothing and scores nothing:
+  `compute_composite` remains the only scorer and stays a pure weighted sum over a validated vector,
+  and `ScoringWeights.vector_for` remains the only vector selector.
+  **Every term is `experimental` and nothing is promoted.** No weight or threshold in siRNAforge has
+  been held out and independently replicated, so no term is `validated` and a profile that claims to
+  be is refused at construction. A composite score ranks candidates; it is not a calibrated potency
+  and not a probability of any safety event.
+- **`au_1_5` on every candidate's `component_scores`** (`core.design.au_content_5p_score`): A/U
+  content over guide positions 1-5 as a fraction, pure sequence, so computable on every path
+  including `design_from_sequence` and injected dirty controls. **Reported only — no default vector
+  scores it, and there is no `min_au_content` filter.** It is the strongest single sequence feature on
+  the vendored Huesken panel after guide position 1 alone (Spearman ρ +0.378 against measured
+  inhibition, n = 2,816 / 41 transcripts, against ρ −0.017 / p = 0.37 for the same count at guide
+  positions 17-21). Issue #97's window is **pre-declared** at 1-5 and was not swept.
+  Issue #97's replace-or-add question was settled by a rule declared before the measurement: regress
+  `au_1_5` out of `asymmetry_score` and test the residual against efficacy **with by-transcript
+  clustering**. The residual carries independent signal (β +0.0533, cluster-robust SE 0.0213,
+  t = 2.50, p = 0.017, 41 clusters; p = 0.013 under a saturated removal), so **both** terms belong in
+  the vector — recorded as the `au_1_5_experimental` profile, which is deliberately **not** a default.
+  Three limits, stated because they bound what the ρ is worth: on predeclared held-out transcripts the
+  candidate vector buys 0.008 of ρ over the shipped one (+0.335 → +0.343, rank agreement +0.967);
+  guide position 1 alone tracks efficacy *better* than the 1-5 count (ρ +0.415 vs +0.378), so the
+  pre-declared flat window is measurably not the best available and is kept anyway rather than
+  re-selected; and it is one study on one assay, so nothing here is replication.
+- **`scripts/validate_scoring_profiles.py`** — the calibration record for the above. Reproduces the
+  published marginal ρ and its null control, executes and prints D5's decision rule, quantifies the
+  `ago_start` / `au_1_5` overlap, cross-checks each registered term's `attainable_range` against what
+  the panel attains, and compares profiles by rank agreement on splits predeclared **by transcript**.
+  Panel evaluation is kept out of the unit tests; the tracked guards pin deterministic geometry and
+  scorer behaviour. Needs `scipy`, which is not a runtime dependency:
+  `uv run --with scipy python scripts/validate_scoring_profiles.py --benchmark-csv work/sirna_bench.csv`.
+- Dataset checksums, and predeclared development/held-out splits by transcript accession with the
+  overlapping-provenance rows shown to partition by accession, in `tests/unit/data/README.md`.
 - **`--ortholog-mapping` on `sirnaforge workflow` and `sirnaforge offtarget`** (also
   `WorkflowConfig(ortholog_mapping_file=...)`, `run_sirna_workflow`, `run_offtarget_only_workflow`):
   a JSON mapping of query gene → species → orthologue gene IDs that replaces the Ensembl Compara
@@ -280,13 +336,37 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Known limitations
 
-- The weights are **declared expert priors, not fitted values.** Only `target_accessibility` and
-  `off_target` have benchmark evidence behind them. `design_v4`'s three numbers in particular are
-  round numbers awaiting sign-off.
-- Holding `off_target` at 0.25 while the scored budget shrank from six terms to four **reduces** its
-  relative influence, from 0.25/0.60 of the old scored budget to 0.25/1.00. Given it measured 2.24×
-  its nominal share of composite variance that is probably the right direction, but it arrives as a
-  side effect of the restructuring rather than as an explicit choice.
+- The weights are **declared expert priors, not fitted values, and every one of them is
+  `experimental`.** `design_v4`'s three numbers in particular are round numbers awaiting sign-off.
+  Two terms carry evidence against measured knockdown on the vendored Huesken panel
+  (`target_accessibility` ρ +0.267; `gc_content` cluster-robust β +0.152), and `off_target`'s rests on
+  a variance share, not on any efficacy or safety measurement. `models/scoring_profile.py` states,
+  per term, exactly how far its evidence goes.
+- Holding `off_target` at 0.25 while the scored budget shrank from six terms to four **raises** its
+  share of the scored budget, from 0.25/0.60 to 0.25/1.00. This entry previously justified that with
+  "it measured 2.24× its nominal share of composite variance"; that figure is from an internal run
+  under weight set 2.0.0 and has never been re-derived, and **the frozen public baseline measures the
+  opposite** — `off_target` is the *least* influential of the four scored terms there, at 0.39× its
+  nominal weight, its contribution compressed against the 25.0 ceiling (mean 18.465, 142 distinct
+  values on 34,861 rows). Screening one more species doubles the share to 0.193, so the number
+  describes the **screening scope**, not the term, and must never be quoted without it. Whether 0.25
+  is the right weight is open pending a full-reference run.
+- **`supp_13_16`'s declared endpoint has never been measured.** It is documented as a specificity
+  heuristic — less 3' supplementary pairing — and nothing measures specificity against truth data.
+  What has been measured is an efficacy association (β +0.148, cluster-robust t = 8.06, surviving a
+  control for A/U(1-5) at β +0.104), which a plain A/U-tracks-duplex-stability mechanism would also
+  produce, so the number does not support the stated mechanism. On the frozen baseline it delivers
+  0.11× its nominal 0.10 while `ago_start` delivers 2.71× the same nominal.
+- **The `gc_content` term's optimum and the GC filter's window disagree.** The score is
+  `exp(-((GC%−40)/10)²)`, a Gaussian centred on a hard-coded 40% GC, while the default filter window
+  is `gc_min` 35 / `gc_max` 60 (midpoint 47.5). A candidate mid-window is scored as mildly
+  off-optimum. Recorded, not changed — filter defaults are out of this change's scope.
+- **`ago_start` and `au_1_5` must never both be scored.** `ago_start` reads guide position 1;
+  `au_1_5` reads positions 1-5, which contains it, so they are nested rather than merely correlated
+  (rank correlation +0.476 on the panel, and each still adds to the other in a joint model). Scoring
+  both pays twice for the base that already drives 27.1% of `postscreen_mirna_v4`'s ranking variance
+  on the baseline. The `au_1_5_experimental` profile therefore drops `ago_start`, at a stated cost:
+  `ago_start` alone tracks efficacy better than the count that replaces it.
 - A candidate whose `target_accessibility` cannot be computed now has **no score at all** rather than
   a rescaled one. In real runs the transcript is always in scope and the residual 5'-end case is
   numerically negligible (0 of 2,492 TP53 sites), but calling `_score_candidates` without transcript

@@ -24,15 +24,21 @@ is _chosen_ by stage and design mode, never combined:
 ```
 design_v4                        postscreen_sirna_v4          postscreen_mirna_v4
   target_accessibility  0.40       off_target           0.25    off_target            0.20
-  asymmetry             0.35       target_accessibility 0.30    target_accessibility  0.22
-  gc_content            0.25       asymmetry            0.25    asymmetry             0.18
-                        ----       gc_content           0.20    gc_content            0.15
+  asymmetry             0.35       target_accessibility 0.30    target_accessibility  0.24
+  gc_content            0.25       asymmetry            0.25    asymmetry             0.20
+                        ----       gc_content           0.20    gc_content            0.16
                         1.00                            ----    ago_start             0.10
-                                                        1.00    pos1_mismatch         0.05
-                                                                supp_13_16            0.10
+                                                        1.00    supp_13_16            0.10
                                                                                       ----
                                                                                       1.00
 ```
+
+`postscreen_mirna_v4`'s four shared terms are exactly `0.80 x postscreen_sirna_v4`; its two
+biogenesis terms hold the remaining 0.20. It had a seventh term, `pos1_mismatch` at 0.05, until
+issue #102 measured it **exactly constant at 0.0** on all 13,415 scored candidates of the public
+baseline — constant by construction, because the passenger is the exact reverse complement of the
+guide, so guide position 1 always pairs. A term that ranks nothing must not consume weight, so it
+was removed from the vector; it is still computed and still reported on `score_pos1_mismatch`.
 
 `postscreen_sirna_v4` is exactly `design_v4`'s terms plus `off_target` — one extra term, cleanly
 interpretable. Every row records the vector that produced it in `weight_vector`, and the manifest's
@@ -44,9 +50,12 @@ made it.
 | `design_score`    | `design_v4`                                   | at design time, from the three terms computable before screening                                  |
 | `composite_score` | `postscreen_sirna_v4` / `postscreen_mirna_v4` | only after off-target screening produced usable evidence for that candidate; **null before that** |
 
-**The two are not comparable.** They are different vectors over different term sets, and
-`design_score` is systematically the more optimistic number because the term it lacks (`off_target`)
-can only subtract evidence. Do not rank a mixture of the two; the workflow does not (see
+**The two are not comparable.** They are different vectors over different term sets, and they also
+weight their _shared_ terms differently, so **neither is systematically the larger**. Issue #102
+deleted the claim that `design_score` is the more optimistic number: all features at 0.5 with
+`off_target = 1.0` gives `design_v4` **50.0** against `postscreen_sirna_v4`'s **62.5**, because the
+post-screen vector spends 0.25 on a term the design vector does not have and takes it from asymmetry
+and accessibility. Do not rank a mixture of the two; the workflow does not (see
 _What `top_candidates` excludes_).
 
 The three declared terms:
@@ -56,28 +65,55 @@ The three declared terms:
   target site's **3' end**, so that is the end scored; the 5'-end 8-mer is a measured near-null
   (ρ +0.07 vs +0.27 against knockdown). See `docs/models_and_scoring.md` §2.5.
 - **Thermodynamic asymmetry** (0.35 / 0.25) — guide strand preferentially enters RISC.
-- **GC content** (0.25 / 0.20) — balance between stability and accessibility.
+- **GC content** (0.25 / 0.20) — balance between stability and accessibility. `exp(-((GC%-40)/10)^2)`,
+  a Gaussian centred on 40% GC — note that 40 is not the midpoint of the default GC filter window
+  (35-60), so the score's optimum and the gate's optimum are different numbers.
 
 plus, post-screen only:
 
 - **Off-target specificity** (0.25 siRNA / 0.20 miRNA) — decays with the _genuine_ off-target count
   (on-target, ortholog and repeat-mediated hits excluded), `exp(-count / 10)`.
 
-and in `--design-mode mirna` only, three biogenesis terms that used to be an undeclared bonus:
+and in `--design-mode mirna` only, two biogenesis terms that used to be an undeclared bonus:
 
 - **`ago_start`** (0.10) — A/U at guide position 1, the Argonaute loading preference.
-- **`pos1_mismatch`** (0.05) — a G:U wobble or mismatch at position 1, preferred over a perfect pair.
-- **`supp_13_16`** (0.10) — low 3' supplementary pairing potential at guide positions 13-16.
+- **`supp_13_16`** (0.10) — low 3' supplementary pairing potential at guide positions 13-16. Its
+  declared endpoint is _specificity_, and nothing has measured it against that endpoint.
 
 Because both post-screen vectors sum to 1.0, the two modes are on **one scale**: a candidate whose
 biogenesis sub-scores match its other sub-scores scores identically in either mode, at every level.
-A miRNA candidate earning nothing on the three biogenesis terms scores 0.75 of the equivalent siRNA
-candidate — and that 0.75 is three weights you can read in the manifest and attribute term by term on
+A miRNA candidate earning nothing on the two biogenesis terms scores 0.80 of the equivalent siRNA
+candidate — and that 0.80 is four weights you can read in the manifest and attribute term by term on
 the row, not a factor applied to the whole vector.
 
-These are **declared expert priors, not fitted values.** Only `target_accessibility` and `off_target`
-have any benchmark evidence behind them. `design_v4`'s three numbers in particular are round numbers
-awaiting sign-off.
+These are **declared expert priors, not fitted values, and every one of them is `experimental`.**
+`src/sirnaforge/models/scoring_profile.py` is the term registry: per term it records the molecule,
+strand and positions read, the endpoint claimed, the applicability condition, the formula and
+transform, the missing-value policy, the declared and **attainable** feature ranges, the evidence
+source and the evidence status. Nothing in siRNAforge is `validated` — no weight has been held out
+and independently replicated — so a composite score ranks candidates and is neither a predicted
+knockdown level nor a probability of any safety event.
+
+Two terms carry benchmark evidence against measured knockdown (`target_accessibility` ρ +0.267,
+`gc_content` cluster-robust β +0.152 on the Huesken panel, n = 2,816 / 41 transcripts) and
+`off_target`'s weight rests on a screening-scope-dependent variance share rather than on any
+efficacy or safety measurement. `design_v4`'s three numbers are round numbers awaiting sign-off.
+
+### A/U content at guide positions 1-5
+
+Computed on every candidate as `au_1_5` in `component_scores`, and **scored by no default vector**.
+It is the strongest single feature on the Huesken panel after guide position 1 alone (ρ +0.378, against
+ρ −0.017 / p = 0.37 for the same count at guide positions 17-21), and issue #97's decision D5 accepted
+it as a scored term with the window **pre-declared** at 1-5 — no ρ-maximising sweep.
+
+D5's pre-declared rule for whether it replaces `asymmetry` or joins it was executed in
+`scripts/validate_scoring_profiles.py`: regress `au_1_5` out of `asymmetry_score`, then test the
+residual against efficacy with by-transcript clustering. The residual survived (β +0.0533,
+cluster-robust SE 0.0213, t = 2.50, p = 0.017, 41 clusters), so **both terms score** in the candidate
+vector recorded as the `au_1_5_experimental` profile. It is not a default in 0.7.1 for two reasons,
+both stated rather than implied: on predeclared held-out transcripts it buys 0.008 of ρ, and wiring
+it into `postscreen_sirna_v4` needs the post-screen feature assembly to forward it, which is not part
+of this change.
 
 ### Computed and reported, but not scored
 
