@@ -108,11 +108,11 @@ where the two defects removed here were first written down as outstanding.)
   (`test_a_row_annotated_in_part_is_repaired_rather_than_republished_with_blank_cells`). The
   per-candidate class counters are derived from these persisted rows, and the published row count is
   reconciled against the hits that fed those counters, so **no counted hit can go unpublished
-  silently**: any shortfall is reported as a run warning. Two limits, stated because they are easy to
-  over-read. It is a reconciliation warning, not an impossibility — the `combined_offtargets.json`
-  aggregate has rows that feed candidates and no TSV to be republished into, and that path fires it.
-  And it compares **row totals**, not per-candidate attribution, so a mis-attribution that nets to
-  zero across the table does not raise it. No gate, threshold or score changes: see `undetermined`
+  silently**: any shortfall is reported as a run warning. One limit, stated because it is easy to
+  over-read: it is a reconciliation warning rather than an impossibility, and it compares **row
+  totals**, not per-candidate attribution, so a mis-attribution that nets to zero across the table
+  does not raise it. (The `combined_offtargets.json` path, which used to fire it for want of a table to
+  republish into, is closed — see Fixed.) No gate, threshold or score changes: see `undetermined`
   below for why.
 - **`hit_class = undetermined`, and `undetermined_hits` on every candidate row.** A hit whose species
   has no transcript index cannot be checked for orthology or for the query gene, so it used to fall
@@ -190,6 +190,20 @@ where the two defects removed here were first written down as outstanding.)
   and `OrthologyAssertion` provenance (an explicit mapping is validated orthology; symbol equality is
   a heuristic and says so). Coverage that silently shrinks to the isoforms surviving design filtering
   is now representable as a difference between two declared sets rather than being unobservable.
+- **`combined_summary.json` can say that a species was not screened, and why.** Four fields:
+  `species_screened` (the positive evidence — a species absent from it has no hit count, not a hit
+  count of zero), `usable_species_file_counts`, `rejected_species_files` (one `filename: reason` entry
+  per discovered analysis file that could not be read or validated) and `unscreened_species` (a
+  superset of `missing_species`, covering "no file was produced" and "every file was rejected"
+  alike). `status` is `completed` only when every requested species was screened, and the text report
+  grows a WARNINGS block naming the rejected files. The summary previously had **no field that could
+  carry a per-species rejection**, which is why one existed and was invisible.
+- **`filtering_stats.species_screening_shortfalls`**: species requested for screening that never
+  reached Nextflow, with the reason on each. They are also merged into
+  `filtering_stats.unscreened_species`, so that field means what its name says regardless of where
+  the shortfall was decided.
+- **`filtering_stats.hit_classes_candidate_weighted`**, the per-candidate-summed class counts, which
+  is what the gates act on. See Fixed for why it needed its own name.
 
 ### Changed
 
@@ -208,9 +222,67 @@ where the two defects removed here were first written down as outstanding.)
   silently rewritten in miRNA mode.
 - `EVIDENCE_SCHEMA_VERSION` is `2`. Nothing produced version 1, but the shape changed after it was
   written down, and the version exists precisely so that is visible.
+- **The seven classification columns are written by the producer, not by the consumer.** They were
+  appended by a post-hoc read-modify-write in the Python workflow, so the published column set was
+  entry-point dependent: a direct `nextflow run` published a 12-column `combined_offtargets.tsv` and
+  `sirnaforge workflow` published a 19-column one under the same name.
+  `aggregate_offtarget_results` now writes all seven itself, holding the literal `not_classified` in
+  every cell until something classifies the row, and the workflow fills the verdicts **in place**.
+  `AggregatedOffTargetSchema` admits `not_classified` in each of those columns and keeps them optional
+  so older tables still validate; the `AGGREGATE_RESULTS` stub publishes the same header (and no rows,
+  and no screened species, because a stub screened nothing).
+- **The four documented-but-unenforced invariants on `ObservedCount` / `ScreeningEvidenceEntry` are
+  enforced.** `truncated` implies `is_lower_bound`, a value may not exceed its own declared `cap`,
+  `FAILED`/`CENSORED` evidence must carry a `detail`, and a `NOT_REQUESTED` entry may not carry an
+  observed count — a zero on a search nobody ran is the fabricated zero the counts model exists to
+  prevent. Every other invariant in those modules was already enforced by a `model_validator`.
 
 ### Fixed
 
+- **A species whose alignment file was rejected still reported as screened and clean.** With two
+  species valid and one species' `*_analysis.tsv` unreadable — a 0-byte file, which is exactly what
+  `offtarget_analysis.nf`'s stub emits and what an aligner that died mid-write leaves — the file was
+  dropped with a `logger.warning` while the species still counted in `species_file_counts` and stayed
+  out of `missing_species`. The aggregate published `status: completed`, the species read as screened,
+  and the run printed `No transcriptome hits detected for: <species>` **as good news**. The rejection
+  is now published with its reason (see Added), the workflow reads `species_screened` so a rejected
+  species is unscreened for scoring, conservation and the console, `hits_per_species` no longer
+  zero-fills a species nothing aligned, and "no hits detected" is said only about species that were
+  screened. Per-species files are validated with `AggregatedOffTargetSchema` rather than the narrow
+  producer schema, so a table an earlier run already annotated is not itself a rejection.
+- **Two more ways a missing species read as clean.** A species requested for screening with no
+  resolved index or FASTA was filtered out of the species list before Nextflow ran and appeared in no
+  artifact at all; it is now recorded with its reason, warned about, published, and the run reports
+  `partial`. A species named with a non-existent index prefix reached the aligner, which failed and
+  published a header-only table — a completed screen with zero hits. `OFFTARGET_ANALYSIS` now goes
+  through `offtarget_analysis_cli`, which validates the prefix first and publishes an empty analysis
+  file plus a `status: failed` summary; the aggregator turns that into a per-species rejection and
+  quotes the reason the module recorded.
+- **A failed index build handed Nextflow the FASTA where an index was expected.**
+  `transcriptome_manager` logged `Index build failed, returning FASTA without index`; bwa-mem2 then
+  aligned nothing, Nextflow reported success, and the run still wrote a passing-candidate FASTA. On the
+  reproduction the existing guard only caught it because the **query** species happened to be
+  unscreened for an unrelated reason — a secondary species failing the same way degraded to a silent
+  no-op screen with no such protection. The manager now records the failure per FASTA, the prepared
+  reference carries it, and the workflow refuses such a reference and records the species as an
+  unscreened shortfall. Resolving this into a screening plan stays with #99.
+- **Every miRNA counter was exactly 2x.** `mirna/mirna_analysis.tsv` matches the
+  `*_analysis.tsv` glob in `_parse_nextflow_results` and was ingested, but `mirna_hits_found` was
+  never set inside that loop, so the trailing named retry of the same path read the identical file
+  again. Inert under the defaults (`max_mirna_perfect_seed=0`, `max_total_offtarget_hits=None`), but a
+  user who sets `max_total_offtarget_hits` was gating on
+  `human_transcriptome_hits + 2 × mirna_human_total`.
+- **`filtering_stats.hit_classes` was candidate-weighted under a name that reads per-alignment.**
+  It was accumulated inside the per-candidate loop over fanned-out hits, so on the frozen baseline the
+  console printed `off_target=43,536` while `workflow_summary.json` recorded ≈632,000 for what looks
+  like the same quantity. `hit_classes` now counts each alignment once, from the same
+  `count_persisted_classes` the console line uses, so the stat and the published hit table agree; the
+  candidate-weighted view keeps its own name.
+- **The `combined_offtargets.json` fallback fed the candidate counters with rows it never published.**
+  Those rows had no TSV to be republished into, so the published hit table under-reported liabilities
+  the candidates had already been charged for — and the reconciliation warning fired on every run that
+  took the path. They are now collected into the table the producer would have written, so the warning
+  speaks only to real divergence again.
 - **An unreachable Ensembl Compara cost every screen its full retry ladder, and the unit tests paid
   it 20 times over.** `_process_nextflow_results` resolved orthologues over REST whenever a screen
   declared more than one species and a hit row came from a non-query species; behind a
