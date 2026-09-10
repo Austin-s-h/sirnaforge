@@ -216,15 +216,20 @@ def _read_species_analysis_file(analysis_file: Path) -> tuple[pd.DataFrame | Non
         frame = pd.read_csv(analysis_file, sep="\t")
     except Exception as exc:
         return None, f"unreadable as TSV: {exc}"
+    # A table an earlier run half-annotated carries blank classification cells (the shape
+    # ``is_annotated`` documents), and the schema's ``isin`` rejects a blank. Repairing the cell to
+    # the undecided sentinel -- the same thing the producer writes -- keeps the species' real
+    # alignment rows instead of throwing the whole species away over an unfilled verdict.
+    frame = _with_classification_columns(frame, add_missing=False)
     try:
         # The aggregated schema, not the narrow producer one: the workflow appends the
         # classification columns to these same per-species files, so both widths are legitimate.
         return AggregatedOffTargetSchema.validate(frame, lazy=True), None
     except Exception as exc:
-        return None, f"rejected by AggregatedOffTargetSchema: {_first_line(exc)}"
+        return None, f"rejected by AggregatedOffTargetSchema: {_schema_rejection_reason(exc)}"
 
 
-def _with_classification_columns(frame: pd.DataFrame) -> pd.DataFrame:
+def _with_classification_columns(frame: pd.DataFrame, *, add_missing: bool = True) -> pd.DataFrame:
     """Add the classification columns to the published table, explicitly undecided where unfilled.
 
     The producer writes them so the published column set is the same whichever entry point ran:
@@ -232,10 +237,14 @@ def _with_classification_columns(frame: pd.DataFrame) -> pd.DataFrame:
     ``nextflow run`` published 12 columns and ``sirnaforge workflow`` published 19. A per-species
     file that a previous workflow run already annotated keeps its verdicts; everything else says
     ``not_classified`` until a classifier decides it.
+
+    ``add_missing=False`` repairs only the columns a frame already has, for callers reading a
+    narrow file that must stay narrow.
     """
     for column, placeholder in unclassified_cells().items():
         if column not in frame.columns:
-            frame[column] = placeholder
+            if add_missing:
+                frame[column] = placeholder
             continue
         filled = frame[column].astype("object").where(frame[column].notna(), placeholder)
         frame[column] = filled.replace("", placeholder)
@@ -262,8 +271,34 @@ def _reported_analysis_failure(analysis_file: Path) -> str | None:
 
 
 def _first_line(exc: Exception) -> str:
-    """The first line of an exception's message, so a Pandera report stays one summary field."""
+    """The first line of an exception's message, for exceptions whose message is a single line."""
     return str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+
+
+#: How many distinct (column, check) failures a rejection reason names before it says "and N more".
+_MAX_REPORTED_SCHEMA_FAILURES = 3
+
+
+def _schema_rejection_reason(exc: Exception) -> str:
+    """Summarise a Pandera rejection as one line that names the columns and checks that failed.
+
+    ``str(exc)`` on ``SchemaErrors`` is a multi-line JSON report whose first line is ``{``, so
+    taking the first line published a rejection reason carrying no reason at all. The failure cases
+    hold the actionable part -- which column, which check, how many rows -- and that is what the
+    aggregate summary and ``final_summary.txt`` need to be worth reading.
+    """
+    cases = getattr(exc, "failure_cases", None)
+    if not isinstance(cases, pd.DataFrame) or cases.empty or not {"column", "check"} <= set(cases.columns):
+        return _first_line(exc)
+    grouped = cases.groupby(["column", "check"], dropna=False).size()
+    parts = [
+        f"{column} failed {check} on {count} row(s)"
+        for (column, check), count in list(grouped.items())[:_MAX_REPORTED_SCHEMA_FAILURES]
+    ]
+    remaining = len(grouped) - len(parts)
+    if remaining > 0:
+        parts.append(f"and {remaining} more check(s)")
+    return "; ".join(parts) or _first_line(exc)
 
 
 def _normalize_nucleotide_sequence(sequence: str) -> str:

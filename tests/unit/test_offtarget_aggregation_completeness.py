@@ -236,6 +236,64 @@ def test_a_run_with_a_rejected_species_reports_partial_and_says_which(tmp_path):
     assert outcome["filtering_stats"]["unscreened_species"] == ["mouse"]
 
 
+@pytest.mark.unit
+def test_a_schema_rejection_says_which_column_and_check_failed(tmp_path):
+    """The reason field has to carry a reason.
+
+    ``str(SchemaErrors)`` is a JSON report whose first line is ``{``, so summarising it by its first
+    line published ``rejected by AggregatedOffTargetSchema: {`` -- the one rejection cause of the
+    three for which nothing actionable survived.
+    """
+    staged = tmp_path / "staged"
+    # nm == 0 with a non-zero score fails the schema's cross-field score-consistency check.
+    bad = _genome_row("human", "ENST00000000009", nm=0) | {"offtarget_score": "9.0"}
+    _write_tsv(staged / "human" / "human_analysis.tsv", GENOME_COLUMNS, [bad])
+    output_dir = tmp_path / "aggregated"
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human")
+
+    summary = json.loads((output_dir / "combined_summary.json").read_text())
+    reason = summary["rejected_species_files"]["human"][0]
+    assert "validate_score_consistency" in reason, reason
+    assert not reason.rstrip().endswith("{"), reason
+
+
+@pytest.mark.unit
+def test_a_half_annotated_species_file_is_repaired_not_thrown_away(tmp_path):
+    """A blank classification cell must not cost a species its real alignment evidence.
+
+    ``is_annotated`` documents the shape: a table written before ``ortholog_evidence`` existed
+    carries it blank. The schema's ``isin`` rejects a blank, so validating such a file rejected the
+    whole species. The blank is repaired to the undecided sentinel the producer itself writes, and
+    the orphan pass stays the single path that decides the verdict.
+    """
+    staged = tmp_path / "staged"
+    annotated = _genome_row("human", "ENST00000000009") | {
+        "hit_class": HitClass.OFF_TARGET.value,
+        "matched_symbol": "unknown",
+        "symbol_lookup_missing": "False",
+        "hit_symbol": "OTHER",
+        "hit_symbol_missing": "False",
+        "species_index_missing": "False",
+        "ortholog_evidence": "",
+    }
+    _write_tsv(
+        staged / "human" / "human_analysis.tsv",
+        [*GENOME_COLUMNS, *CLASSIFICATION_COLUMNS],
+        [annotated],
+    )
+    output_dir = tmp_path / "aggregated"
+    aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, genome_species="human")
+
+    summary = json.loads((output_dir / "combined_summary.json").read_text())
+    assert summary["rejected_species_files"] == {}
+    assert summary["species_screened"] == ["human"]
+    assert summary["hits_per_species"] == {"human": 1}
+    published = pd.read_csv(output_dir / "combined_offtargets.tsv", sep="\t", dtype=str)
+    assert published["ortholog_evidence"].tolist() == [UNCLASSIFIED_CELL]
+    # The verdicts the file did carry survive the repair.
+    assert published[HIT_CLASS_COLUMN].tolist() == [HitClass.OFF_TARGET.value]
+
+
 def _with_human_index(workflow: SiRNAWorkflow, tmp_path: Path, name: str) -> None:
     """Give the workflow a human transcript->gene index, so an unrelated hit is a real off-target.
 
