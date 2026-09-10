@@ -195,7 +195,7 @@ async def test_skip_off_targets_materializes_no_reference_and_runs_no_repeat_sca
 ) -> None:
     """Even with an enabled selection, check_off_targets=False must do no reference work.
 
-    Pre-fix, step5 called _configure_transcriptome_inputs and _run_repeat_detection *above*
+    Pre-fix, step5 called _resolve_screening_references and _run_repeat_detection *above*
     the check_off_targets guard, so a run that asked to skip off-target analysis still
     downloaded, indexed and scanned before printing "skipped by user request".
     """
@@ -212,14 +212,14 @@ async def test_skip_off_targets_materializes_no_reference_and_runs_no_repeat_sca
 
     calls: list[str] = []
 
-    async def _no_materialize(self: SiRNAWorkflow, choice: object) -> None:
-        calls.append("materialize")
+    async def _no_resolve(self: SiRNAWorkflow, request: object) -> None:
+        calls.append("resolve_reference")
 
     def _no_repeat_scan(self: SiRNAWorkflow, candidates: object) -> dict[str, Any]:
         calls.append("repeat_scan")
         return {"status": "completed"}
 
-    monkeypatch.setattr(SiRNAWorkflow, "_materialize_transcriptome_reference", _no_materialize)
+    monkeypatch.setattr(SiRNAWorkflow, "_resolve_screening_reference", _no_resolve)
     monkeypatch.setattr(SiRNAWorkflow, "_run_repeat_detection", _no_repeat_scan)
 
     candidate = _candidate("cand_skip")
@@ -268,10 +268,10 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
 
     calls: list[str] = []
 
-    async def _no_materialize(self: SiRNAWorkflow, choice: object) -> None:
-        calls.append("materialize")
+    async def _no_resolve(self: SiRNAWorkflow, request: object) -> None:
+        calls.append("resolve_reference")
 
-    monkeypatch.setattr(SiRNAWorkflow, "_materialize_transcriptome_reference", _no_materialize)
+    monkeypatch.setattr(SiRNAWorkflow, "_resolve_screening_reference", _no_resolve)
 
     screened: list[str] = []
 

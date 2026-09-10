@@ -310,7 +310,7 @@ def test_per_species_breakdown_is_populated_for_every_screened_species(tmp_path:
     config = WorkflowConfig(
         output_dir=tmp_path / "species_out",
         gene_query="TP53",
-        genome_species=["human", "mouse"],
+        screen_species=["human", "mouse"],
         design_params=DesignParameters(),
     )
     workflow = SiRNAWorkflow(config)

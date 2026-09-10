@@ -148,7 +148,7 @@ def _write_fallback_results_dir(results_dir: Path, rows: list[dict[str, str]]) -
 
     ``aggregate_offtarget_results`` writes a header-only ``combined_offtargets.tsv`` when
     ``GenomeAlignmentSchema`` rejects every per-species file. The real rows are still published
-    under ``genome/``, and the parser's fallback is what reads them.
+    under ``transcriptome/``, and the parser's fallback is what reads them.
 
     Returns:
         (header-only aggregated table, per-species table carrying the rows)
@@ -160,9 +160,9 @@ def _write_fallback_results_dir(results_dir: Path, rows: list[dict[str, str]]) -
         csv.DictWriter(handle, fieldnames=TSV_COLUMNS, delimiter="\t", lineterminator="\n").writeheader()
     _write_summary(aggregated, len(rows))
 
-    genome = results_dir / "genome"
-    genome.mkdir(parents=True, exist_ok=True)
-    species_path = genome / "human_analysis.tsv"
+    per_species = results_dir / "transcriptome"
+    per_species.mkdir(parents=True, exist_ok=True)
+    species_path = per_species / "human_analysis.tsv"
     with species_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=TSV_COLUMNS, delimiter="\t", lineterminator="\n")
         writer.writeheader()
@@ -182,7 +182,7 @@ def _workflow(tmp_path: Path, name: str, *, with_symbol_index: bool = True) -> S
     config = WorkflowConfig(
         output_dir=tmp_path / name,
         gene_query="TP53",
-        genome_species=["human", "mouse", "rat"],
+        screen_species=["human", "mouse", "rat"],
         design_params=DesignParameters(),
         ortholog_mapping_file=_ORTHOLOG_MAPPING_FIXTURE,
     )
@@ -557,7 +557,7 @@ def test_zero_hit_table_still_gains_the_classification_columns(tmp_path):
 def test_fallback_per_species_rows_reach_the_published_table(tmp_path):
     """Rows the fallback ingests must be published with their class, not counted and discarded.
 
-    When the aggregated table is header-only, the parser globs ``genome/*_analysis.tsv``. Those
+    When the aggregated table is header-only, the parser globs ``transcriptome/*_analysis.tsv``. Those
     rows used to reach ``off_target_count`` while the published table was rewritten header-only,
     so the hit table authoritatively reported no liabilities beside candidates carrying dozens.
     """
@@ -604,7 +604,7 @@ def test_a_hit_that_is_never_published_is_reported_as_a_reconciliation_failure(t
             # A miRNA hit has no class of its own and must not be counted against the hit table.
             "cand_repeat": {"hits": [{"qname": "cand_repeat", "mirna_id": "hsa-miR-1"}]},
         },
-        "genome_hit_tables": [],
+        "transcriptome_hit_tables": [],
     }
 
     warnings = SiRNAWorkflow._persist_hit_classifications(parsed)
@@ -778,7 +778,7 @@ def test_the_twelve_column_producer_shape_also_validates(tmp_path):
     """A table written before the producer owned the classification columns has only 12.
 
     The producer writes all 19 now, so both entry points agree on the shape (#100). The narrow
-    shape stays valid because the per-species ``genome/*_analysis.tsv`` files carry it and so do
+    shape stays valid because the per-species ``transcriptome/*_analysis.tsv`` files carry it and so do
     tables published by earlier versions.
     """
     frame = pd.DataFrame([_hit_row("cand_clean", CLEAN_GUIDE, "human", "ENST00000000009")])
@@ -997,7 +997,7 @@ def test_an_unclassified_published_row_is_reported_rather_than_silently_skipped(
         writer.writerow(row)
     parsed = {
         "results": {},
-        "genome_hit_tables": [{"path": tsv_path, "fieldnames": TSV_COLUMNS, "rows": [row]}],
+        "transcriptome_hit_tables": [{"path": tsv_path, "fieldnames": TSV_COLUMNS, "rows": [row]}],
     }
 
     warnings = SiRNAWorkflow._persist_hit_classifications(parsed)

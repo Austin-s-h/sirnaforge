@@ -153,8 +153,8 @@ def genome_config_for_nextflow(toy_genome_path):
     Note: 'genome' in parameter names refers to the Nextflow convention, not genomic DNA.
     """
     return {
-        "--genome_species": "test_species",
-        "--genome_fastas": f"test_species:{toy_genome_path}",
+        "--transcriptome_species": "test_species",
+        "--transcriptome_fastas": f"test_species:{toy_genome_path}",
     }
 
 
