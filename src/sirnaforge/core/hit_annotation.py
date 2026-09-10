@@ -221,27 +221,33 @@ def is_annotated(row: Mapping[str, Any]) -> bool:
 def accumulate_hit_class(
     row: Mapping[str, Any],
     counts: HitClassCounts,
-    species_bucket: MutableMapping[str, int],
+    species_bucket: MutableMapping[str, int] | None,
     hit_species: str,
 ) -> HitClass:
-    """Add one persisted row to the candidate-level and per-species counters.
+    """Add one persisted row to the candidate-level and, optionally, per-species counters.
 
     Every quantity here is derived from the row's own columns, which is what keeps the per-hit
     table and the per-candidate totals from disagreeing. The counter field names are the
     ``HitClass`` values verbatim, so there is no class-to-counter mapping to get wrong.
+
+    ``species_bucket=None`` skips the per-species tally, for a caller counting alignments once
+    each rather than once per candidate that shares them.
     """
     hit_class = hit_class_of(row)
     field = hit_class.value
     setattr(counts, field, getattr(counts, field) + 1)
-    species_bucket[field] = species_bucket.get(field, 0) + 1
+    if species_bucket is not None:
+        species_bucket[field] = species_bucket.get(field, 0) + 1
 
     if _as_bool(row.get(SYMBOL_LOOKUP_MISSING_COLUMN)):
         counts.symbol_lookup_missing += 1
-        species_bucket["symbol_lookup_missing"] = species_bucket.get("symbol_lookup_missing", 0) + 1
+        if species_bucket is not None:
+            species_bucket["symbol_lookup_missing"] = species_bucket.get("symbol_lookup_missing", 0) + 1
 
     if _as_bool(row.get(SPECIES_INDEX_MISSING_COLUMN)):
         counts.no_species_index += 1
-        species_bucket[SPECIES_INDEX_MISSING_COLUMN] = species_bucket.get(SPECIES_INDEX_MISSING_COLUMN, 0) + 1
+        if species_bucket is not None:
+            species_bucket[SPECIES_INDEX_MISSING_COLUMN] = species_bucket.get(SPECIES_INDEX_MISSING_COLUMN, 0) + 1
 
     if hit_class is HitClass.ORTHOLOG and str(row.get(MATCHED_SYMBOL_COLUMN)) != UNKNOWN_SYMBOL:
         counts.ortholog_species = frozenset(counts.ortholog_species | {hit_species})

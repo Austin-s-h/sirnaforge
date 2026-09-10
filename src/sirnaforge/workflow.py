@@ -132,6 +132,14 @@ from sirnaforge.zfn.design import ZFNDesigner
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
 
+#: Keys of one ``filtering_stats.per_species`` bucket: the five classes plus the two shortfall flags
+#: ``accumulate_hit_class`` tallies. Named once so the pre-seeded bucket and the tally cannot drift.
+_PER_SPECIES_COUNTERS: tuple[str, ...] = (
+    *(member.value for member in HitClass),
+    "symbol_lookup_missing",
+    "species_index_missing",
+)
+
 
 class WorkflowConfig:
     """Configuration for the complete siRNA design workflow."""
@@ -2953,16 +2961,7 @@ class SiRNAWorkflow:
         # but produced no hits is distinguishable from one never requested (absent key). Species
         # seen on a hit but not requested (unexpected) still get a bucket via setdefault below.
         per_species: dict[str, dict[str, int]] = {
-            species: {
-                "on_target": 0,
-                "ortholog": 0,
-                "repeat": 0,
-                "off_target": 0,
-                "undetermined": 0,
-                "symbol_lookup_missing": 0,
-                "species_index_missing": 0,
-            }
-            for species in requested_species
+            species: dict.fromkeys(_PER_SPECIES_COUNTERS, 0) for species in requested_species
         }
 
         stats: dict[str, Any] = {
@@ -3095,26 +3094,16 @@ class SiRNAWorkflow:
                     classification = classify_hit(hit, candidate.guide_sequence, classification_context)
                     # A blank/missing species label belongs to the query species (see classifier).
                     hit_species = normalize_species_name(species_label) if species_label else query_species
-                    species_bucket = per_species.setdefault(
-                        hit_species,
-                        {
-                            "on_target": 0,
-                            "ortholog": 0,
-                            "repeat": 0,
-                            "off_target": 0,
-                            "undetermined": 0,
-                            "symbol_lookup_missing": 0,
-                            "species_index_missing": 0,
-                        },
-                    )
 
                     # Persist the verdict on the hit row, then count from the row that was
                     # written. The class, both symbols and both shortfall flags reach the hit
                     # table and the candidate counters from one place, so a counted hit is always
                     # a published hit. _reconcile_persisted_hits checks that as a row total; it
                     # does not check which candidate a row was attributed to.
+                    # No species bucket here: per_species counts alignments, and this loop visits a
+                    # deduplicated guide's rows once per candidate carrying it. See below.
                     annotate_hit_row(hit, classification, annotator)
-                    hit_class = accumulate_hit_class(hit, hit_counts, species_bucket, hit_species)
+                    hit_class = accumulate_hit_class(hit, hit_counts, None, hit_species)
 
                     # Only liabilities feed the mismatch-stratified counters. Letting on-target
                     # isoform hits through here would fail every guide on a multi-isoform gene
@@ -3240,11 +3229,37 @@ class SiRNAWorkflow:
 
         # Counted here, after every row has a class, and over each alignment exactly once: the
         # per-candidate loop above visits a deduplicated guide's rows once per candidate carrying it.
-        stats["hit_classes"] = count_persisted_classes(self._alignment_rows(results))
+        alignment_rows = self._alignment_rows(results)
+        stats["hit_classes"] = count_persisted_classes(alignment_rows)
+        # per_species is the same quantity decomposed by species, so it is counted the same way.
+        # Filled from the loop it read 2x on the frozen baseline's deduplicated guides, which put
+        # two contradicting decompositions of one number side by side in workflow_summary.json.
+        self._tally_per_species(alignment_rows, per_species, query_species)
 
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    @staticmethod
+    def _tally_per_species(
+        alignment_rows: Sequence[Mapping[str, Any]],
+        per_species: dict[str, dict[str, int]],
+        query_species: str,
+    ) -> None:
+        """Decompose the alignment-level class tally by species, in place.
+
+        Requested species keep their zero-filled bucket, so "screened and clean" stays
+        distinguishable from "never requested" (absent key). A blank species label belongs to the
+        query species, exactly as the classifier reads it.
+        """
+        discarded = HitClassCounts()
+        for hit in alignment_rows:
+            if not is_annotated(hit):
+                continue
+            species_label = hit.get("species")
+            hit_species = normalize_species_name(species_label) if species_label else query_species
+            bucket = per_species.setdefault(hit_species, dict.fromkeys(_PER_SPECIES_COUNTERS, 0))
+            accumulate_hit_class(hit, discarded, bucket, hit_species)
 
     @staticmethod
     def _alignment_rows(results: Mapping[str, Any]) -> list[Mapping[str, Any]]:

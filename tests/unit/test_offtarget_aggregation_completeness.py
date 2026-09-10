@@ -590,6 +590,12 @@ def test_hit_classes_counts_alignments_and_the_candidate_weighted_view_says_so(t
     assert len(published_rows) == 1
     assert stats["hit_classes"]["off_target"] == 1, "hit_classes must count alignments, like the table it names"
     assert stats["hit_classes_candidate_weighted"]["off_target"] == 2
+    # per_species is hit_classes decomposed by species, so it has to sum to it. Left in the
+    # per-candidate loop it published 2 beside a hit_classes of 1, in the same JSON object.
+    assert stats["per_species"]["human"]["off_target"] == 1, "per_species must agree with hit_classes"
+    assert sum(stats["per_species"]["human"][name] for name in stats["hit_classes"]) == sum(
+        stats["hit_classes"].values()
+    )
     assert [candidate.off_target_count for candidate in candidates] == [1, 1]
 
 
