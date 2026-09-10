@@ -238,7 +238,7 @@ The `candidates_pass.csv` and `candidates_all.csv` files include:
 | `off_target_count`                                                | The liability population: `off_target` **plus** `undetermined` (on-target, ortholog and repeat-mediated hits excluded) |
 | `on_target_hits` / `ortholog_hits` / `repeat_hits`                | Three of the other four classes from the same five-way split                                                           |
 | `undetermined_hits`                                               | The part of `off_target_count` whose class could not be decided for want of a transcript index                         |
-| `ortholog_species`                                                | Comma-joined canonical species names with at least one ortholog hit                                                    |
+| `ortholog_species`                                                | Comma-joined canonical species with an ortholog hit; `ortholog_evidence` says which tier decided each                  |
 | `repeat_flagged` / `repeat_transcript_fraction`                   | Design-time k-mer repeat verdict and the frequency it was based on                                                     |
 | `isoform_coverage` / `conservation_score`                         | Reported, unscored (empty when not computable); isoform coverage feeds an optional gate                                |
 | `empirical_score`                                                 | Reported, unscored; the `min_empirical_score` gate input                                                               |

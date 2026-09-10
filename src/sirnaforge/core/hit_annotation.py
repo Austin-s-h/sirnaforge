@@ -7,7 +7,7 @@ counter without reaching a published table. That is a row-count guarantee, repor
 when it is violated — it is not per-candidate attribution, which can still be wrong in ways that net to
 zero across the table.
 
-Six columns are written. ``hit_class`` is the persisted class; ``matched_symbol`` carries the
+Seven columns are written. ``hit_class`` is the persisted class; ``matched_symbol`` carries the
 symbol that *established* the class (ortholog match, or a symbol-recognised on-target) and is the
 literal string ``unknown`` otherwise — it is not a per-hit gene name. ``hit_symbol`` is the
 per-row gene name: the symbol the transcript index resolves for ``rname``, independent of class,
@@ -19,6 +19,12 @@ The one decision this module does make is UNDETERMINED. A hit species with no tr
 cannot be checked for orthology or for the query gene, so its alignments used to fall through to an
 unqualified ``off_target``; ``species_index_missing`` is persisted alongside so the reason is on the
 row.
+
+``ortholog_evidence`` records *how* an ORTHOLOG verdict was reached — a resolved Compara gene-ID
+mapping, or gene-symbol equality — and is the literal ``not_applicable``, never an empty cell, on
+every other class. Without it a symbol-heuristic ortholog and a validated one are the same cell,
+which #101 forbids: HGNC and MGI are different nomenclature authorities, so symbol equality both
+misses real orthologues (mouse TP53 is ``Trp53``) and can assert false ones.
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sirnaforge.core.hit_classification import HitClass, HitClassCounts, HitClassification
+from sirnaforge.core.hit_classification import HitClass, HitClassCounts, HitClassification, OrthologEvidence
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 
@@ -40,6 +46,7 @@ SYMBOL_LOOKUP_MISSING_COLUMN = "symbol_lookup_missing"
 HIT_SYMBOL_COLUMN = "hit_symbol"
 HIT_SYMBOL_MISSING_COLUMN = "hit_symbol_missing"
 SPECIES_INDEX_MISSING_COLUMN = "species_index_missing"
+ORTHOLOG_EVIDENCE_COLUMN = "ortholog_evidence"
 CLASSIFICATION_COLUMNS: tuple[str, ...] = (
     HIT_CLASS_COLUMN,
     MATCHED_SYMBOL_COLUMN,
@@ -47,9 +54,22 @@ CLASSIFICATION_COLUMNS: tuple[str, ...] = (
     HIT_SYMBOL_COLUMN,
     HIT_SYMBOL_MISSING_COLUMN,
     SPECIES_INDEX_MISSING_COLUMN,
+    ORTHOLOG_EVIDENCE_COLUMN,
 )
 
 UNKNOWN_SYMBOL = "unknown"
+
+#: ``ortholog_evidence`` for a row that made no orthology claim. Spelled out rather than left blank
+#: because the published table never carries an empty cell (a blank renders as missing data), and
+#: distinct from ``unknown`` because nothing was looked up and failed -- there was nothing to look up.
+ORTHOLOG_EVIDENCE_NOT_APPLICABLE = "not_applicable"
+
+#: Every value the ``ortholog_evidence`` cell may hold. Must stay in step with
+#: :data:`~sirnaforge.models.schemas.ORTHOLOG_EVIDENCE_VALUES`, which the schema enforces; kept here
+#: rather than imported to avoid a core -> models dependency.
+ORTHOLOG_EVIDENCE_CELL_VALUES: frozenset[str] = frozenset(
+    {member.value for member in OrthologEvidence} | {ORTHOLOG_EVIDENCE_NOT_APPLICABLE}
+)
 
 # What the gates count. UNDETERMINED is absent evidence, not innocence: excluding it here would
 # make a run with no transcript index pass candidates that today fail, i.e. a missing reference
@@ -120,6 +140,11 @@ def annotate_hit_row(
     row[HIT_SYMBOL_COLUMN] = hit_symbol or UNKNOWN_SYMBOL
     row[HIT_SYMBOL_MISSING_COLUMN] = hit_symbol is None
     row[SPECIES_INDEX_MISSING_COLUMN] = species_index_missing
+    row[ORTHOLOG_EVIDENCE_COLUMN] = (
+        classification.ortholog_evidence.value
+        if classification.ortholog_evidence is not None
+        else ORTHOLOG_EVIDENCE_NOT_APPLICABLE
+    )
     return hit_class_of(row)
 
 
@@ -127,7 +152,8 @@ def _persisted_class(classification: HitClassification, species_index_missing: b
     """Downgrade an ``off_target`` fallthrough to UNDETERMINED when no reference could be consulted.
 
     ON_TARGET, ORTHOLOG and REPEAT were each decided by positive evidence (a transcript ID, a
-    matched symbol, a repeat-flagged guide) and stand whatever the reference inventory looks like.
+    resolved orthologue gene ID or matched symbol, a repeat-flagged guide) and stand whatever the
+    reference inventory looks like.
     OFF_TARGET is the only verdict reached by exclusion, so it is the only one a missing index
     invalidates.
     """
@@ -149,19 +175,26 @@ def hit_class_of(row: Mapping[str, Any]) -> HitClass:
 def is_annotated(row: Mapping[str, Any]) -> bool:
     """True when this row carries a usable value in **every** classification column.
 
-    Authoritative over all of :data:`CLASSIFICATION_COLUMNS`, not over ``hit_class`` alone.
-    Presence of a key is not enough: a table read back from disk can carry an empty cell, and
-    treating that as annotated republished the blank — for ``hit_class`` that raised ``ValueError``
-    on the next read after the file had already been overwritten, and for the other five it
-    published ``hit_symbol=''`` / ``hit_symbol_missing=''`` / ``species_index_missing=''``, which
-    ``AggregatedOffTargetSchema`` rejects on the very table the same run publishes against it. A
-    partially annotated row is re-annotated by the orphan pass, which stays the single repair path.
+    Checks the class, both symbols and the three flag columns, not ``hit_class`` alone. Presence of a
+    key is not enough: a table read back from disk can carry an empty cell, and treating that as
+    annotated republished the blank — for ``hit_class`` that raised ``ValueError`` on the next read
+    after the file had already been overwritten, and for the others it published ``hit_symbol=''`` /
+    ``hit_symbol_missing=''`` / ``species_index_missing=''``, which ``AggregatedOffTargetSchema``
+    rejects on the very table the same run publishes against it. A partially annotated row is
+    re-annotated by the orphan pass, which stays the single repair path.
+
+    ``ortholog_evidence`` is checked the same way, against its own vocabulary rather than for mere
+    non-emptiness: a table written before that column existed carries it blank, and treating such a
+    row as annotated republished the blank, which the schema's ``isin`` then rejects on the very
+    table the same run publishes.
     """
     if str(row.get(HIT_CLASS_COLUMN) or "") not in {member.value for member in HitClass}:
         return False
     if not str(row.get(MATCHED_SYMBOL_COLUMN) or "").strip():
         return False
     if not str(row.get(HIT_SYMBOL_COLUMN) or "").strip():
+        return False
+    if str(row.get(ORTHOLOG_EVIDENCE_COLUMN) or "") not in ORTHOLOG_EVIDENCE_CELL_VALUES:
         return False
     return all(
         _is_parseable_flag(row.get(column))
