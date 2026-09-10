@@ -85,11 +85,15 @@ where the two defects removed here were first written down as outstanding.)
   independent of design mode. **The resolver defines and validates the modes; deciding candidate
   eligibility from the resulting evidence requirements is not implemented here.**
 - **Per-filter actions: `--filter-action filter_id=off|warn|fail`** (repeatable) on `design`,
-  `workflow` and `offtarget`, plus `filter_actions=` on both workflow entry points. Every one of the
-  16 declared gates can be disabled independently, and a disabled gate is **not evaluated** rather
-  than passed — as is a gate with no declared threshold, and a post-screen gate in a design-only run.
-  The gates now carry machine-readable descriptors (`column`, `comparator`, `threshold`, `scope`,
-  `action`, `stage`) built from the models rather than restated, so a consumer can re-apply one.
+  `workflow` and `offtarget`, plus `filter_actions=` on both workflow entry points. A gate is
+  **not evaluated** rather than passed when it is off, when it has no declared threshold, or when it
+  is a post-screen gate in a design-only run. The gates now carry machine-readable descriptors
+  (`column`, `comparator`, `threshold`, `scope`, `action`, `stage`) built from the models rather than
+  restated, so a consumer can re-apply one. **Two limits, stated because 0.7.1's gate application does
+  not read a filter action:** `off` works by clearing the gate's threshold, which the existing gate
+  code already treats as no gate, so it is available for the **ten** gates whose threshold has an
+  absent state and is **refused** for the six design-stage float thresholds rather than faked with an
+  inert number; and `warn` is **recorded, not enforced** — the gate still rejects the candidate.
 - **`--policy-config FILE`** (JSON or TOML) on `design`, `workflow` and `offtarget`. An unknown
   setting name is rejected rather than ignored, because a silently dropped override reads as an
   applied one.

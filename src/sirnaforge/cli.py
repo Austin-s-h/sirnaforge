@@ -56,11 +56,11 @@ from sirnaforge.config.run_policy import (
     EntryPoint,
     ResolvedRunPolicy,
     RunPolicyError,
-    declared_filter_ids,
     default_for,
     format_validation_error,
     mirna_preset_default_for,
     resolve_run_policy,
+    switchable_filter_ids,
 )
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
@@ -750,8 +750,11 @@ def workflow(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|warn|fail (repeatable). A filter set to off is "
-            f"not evaluated, which is not the same as passing. Filters: {', '.join(declared_filter_ids())}"
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated -- which is not the same as passing -- and works for "
+            f"these gates: {', '.join(switchable_filter_ids())}. The six design-stage gates read a "
+            "threshold with no absent state and are refused rather than faked. 'warn' is recorded in "
+            "the manifest and NOT yet enforced: the gate still rejects the candidate."
         ),
     ),
     input_fasta: str | None = typer.Option(
@@ -2095,8 +2098,9 @@ def design(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|warn|fail (repeatable). A filter set to off is "
-            "not evaluated, which is not the same as passing."
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated, which is not the same as passing. 'warn' is recorded "
+            "and not yet enforced."
         ),
     ),
     length: int | None = typer.Option(

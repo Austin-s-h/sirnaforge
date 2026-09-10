@@ -27,6 +27,7 @@ from sirnaforge.config.run_policy import (
     default_for,
     describe_parameters,
     resolve_run_policy,
+    switchable_filter_ids,
 )
 from sirnaforge.models.policy import (
     FilterAction,
@@ -364,36 +365,71 @@ def test_exploratory_requires_nothing_and_a_design_only_run_declares_no_channels
 
 
 @pytest.mark.unit
-def test_every_biological_filter_can_be_disabled_independently():
-    """Turning one gate off must not disturb any other gate's action or threshold."""
+def test_every_filter_with_a_clearable_threshold_can_be_disabled_independently():
+    """Switching one gate off must actually clear its threshold, and disturb no other gate.
+
+    Recording the action alone would not be enough: nothing in the 0.7.1 gate application reads a
+    filter action, so a gate is switched off by removing the number it compares against -- which is
+    the state ``_check_offtarget_filters`` already reads as "no gate".
+    """
     baseline = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
-    for filter_id in declared_filter_ids():
+    switchable = switchable_filter_ids()
+    assert len(switchable) == 10, switchable
+
+    for filter_id in switchable:
         policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={filter_id: "off"})
-        assert policy.descriptor(filter_id).action is FilterAction.OFF
+        descriptor = policy.descriptor(filter_id)
+        assert descriptor.action is FilterAction.OFF
+        # The threshold is gone from the validated parameters, so the gate cannot fire.
+        setting = next(resolved.setting_key for resolved in policy.filters if resolved.filter_id == filter_id)
+        assert policy.value_of(setting) in (None, False)
         others = {
-            resolved.filter_id: resolved.descriptor.action
+            resolved.filter_id: (resolved.descriptor.action, resolved.descriptor.threshold)
             for resolved in policy.filters
             if resolved.filter_id != filter_id
         }
         assert others == {
-            resolved.filter_id: resolved.descriptor.action
+            resolved.filter_id: (resolved.descriptor.action, resolved.descriptor.threshold)
             for resolved in baseline.filters
             if resolved.filter_id != filter_id
         }
 
 
 @pytest.mark.unit
+def test_a_design_stage_gate_cannot_be_switched_off_in_0_7_1_and_says_so():
+    """Reported rather than faked: the six design thresholds are floats with no absent value.
+
+    Setting one to an inert extreme would record a threshold the user never chose, and making the
+    action authoritative needs the gate application to read it, which belongs to the filter-verdict
+    work rather than to the resolver.
+    """
+    unswitchable = set(declared_filter_ids()) - set(switchable_filter_ids())
+    assert unswitchable == {
+        "gc_content_min",
+        "gc_content_max",
+        "max_poly_runs",
+        "max_paired_fraction",
+        "min_asymmetry_score",
+        "min_empirical_score",
+    }
+
+    for filter_id in sorted(unswitchable):
+        with pytest.raises(RunPolicyError, match="no 'no threshold' state"):
+            resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={filter_id: "off"})
+
+
+@pytest.mark.unit
 def test_a_disabled_filter_is_not_evaluated_rather_than_passed():
     """The distinction the whole vocabulary exists for: off makes no claim about the candidate."""
     policy = resolve_run_policy(
-        entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"min_asymmetry_score": "off"}
+        entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_off_target_count": "off"}
     )
-    descriptor = policy.descriptor("min_asymmetry_score")
+    descriptor = policy.descriptor("max_off_target_count")
 
-    assert FilterVerdict(descriptor=descriptor, observed=0.1, evaluation=FilterEvaluation.NOT_EVALUATED)
+    assert FilterVerdict(descriptor=descriptor, observed=40, evaluation=FilterEvaluation.NOT_EVALUATED)
     for evaluation in (FilterEvaluation.PASS, FilterEvaluation.FAIL, FilterEvaluation.UNKNOWN):
         with pytest.raises(ValidationError):
-            FilterVerdict(descriptor=descriptor, observed=0.1, evaluation=evaluation)
+            FilterVerdict(descriptor=descriptor, observed=40, evaluation=evaluation)
 
 
 @pytest.mark.unit

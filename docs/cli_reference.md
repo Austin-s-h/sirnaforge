@@ -96,9 +96,21 @@ design says nothing about evidence completeness.
 
 `--filter-action filter_id=off|warn|fail` (repeatable) sets one gate's action. A gate can be off for
 three different reasons — you turned it off, it has no declared threshold, or the run holds no
-evidence of the kind it reads — and all three mean **not evaluated**, never passed. Every gate can be
-turned off independently; what cannot be waived while staying `qualified` is required evidence
-completeness (`--run-mode exploratory` is how you say that out loud).
+evidence of the kind it reads — and all three mean **not evaluated**, never passed. What cannot be
+waived while staying `qualified` is required evidence completeness (`--run-mode exploratory` is how
+you say that out loud).
+
+Two limits, because 0.7.1's gate application does not read a filter action:
+
+- `off` works by **clearing the gate's threshold**, which the existing gate code already reads as "no
+  gate". That is available for the ten gates whose threshold has an absent state (`sirnaforge workflow
+  --help` lists them). The six design-stage gates (`gc_content_min`, `gc_content_max`,
+  `max_poly_runs`, `max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score`) read a plain
+  float with no absent value, so switching them off is **refused** rather than faked with an inert
+  number that would be reported as a threshold you chose. Widen the threshold instead.
+- `warn` is **recorded and not yet enforced.** It appears in the resolved policy and the manifest, and
+  the gate still rejects the candidate. Demoting a failure to a label needs per-filter verdicts on the
+  candidate row, which is separate work.
 
 Two honesty notes the manifest carries per gate, because the code earns them and prose would not:
 

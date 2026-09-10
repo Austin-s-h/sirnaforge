@@ -31,7 +31,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import tomllib
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -165,6 +165,25 @@ LEGACY_DEFAULT_EXCEPTIONS: Mapping[str, tuple[Any, str]] = {
 def _owner(parameters: DesignParameters, spec: SettingSpec) -> BaseModel:
     """The model instance one setting lives on; the pseudo-model ``design`` is the root object."""
     return parameters if spec.model == "design" else getattr(parameters, spec.model)
+
+
+def _switch_off_value(spec: SettingSpec) -> Any:
+    """The value that removes one setting's threshold, or raise if the field has no such state.
+
+    A gate is switched off by clearing the number it compares against, which is a state the model
+    already has for every nullable threshold (``_check_offtarget_filters`` skips a ``None``) and for
+    the one boolean flag. The six design-stage thresholds are plain floats with no "absent" value, so
+    the resolver refuses rather than fabricating an inert number and reporting it as a threshold.
+    """
+    field = _MODEL_FOR_TARGET[spec.model].model_fields[spec.field]
+    if type(None) in get_args(field.annotation):
+        return None
+    if field.annotation is bool:
+        return False
+    raise RunPolicyError(
+        f"{spec.key} has no 'no threshold' state in 0.7.1, so the filter reading it cannot be "
+        "switched off; widen the threshold instead"
+    )
 
 
 def _model_default(spec: SettingSpec) -> Any:
@@ -1008,10 +1027,19 @@ def resolve_run_policy(
             values[key] = value
             winners[key] = layer
 
+    # A gate the caller switched off must stop comparing, not merely record an intent: clearing its
+    # threshold is what the existing gate code already reads as "no gate".
+    actions = _resolve_actions({**config_actions, **(filter_actions or {})})
+    for filter_id, action in actions.items():
+        if action is not FilterAction.OFF:
+            continue
+        spec = SETTING_BY_KEY[FILTER_SPEC_BY_ID[filter_id].setting_key]
+        values[spec.key] = _switch_off_value(spec)
+        winners[spec.key] = _Layer(SettingSource.EXPLICIT, {}, f"cleared because filter {filter_id} was switched off")
+
     parameters = _build_design_parameters(values, resolved_design_mode, passthrough or {})
     _check_finite_weights(parameters.scoring)
 
-    actions = _resolve_actions({**config_actions, **(filter_actions or {})})
     filters = _resolve_filters(parameters=parameters, run_mode=resolved_run_mode, actions=actions)
 
     requested: list[SettingProvenance] = [
@@ -1144,6 +1172,22 @@ def declared_filter_ids() -> tuple[str, ...]:
     return tuple(spec.filter_id for spec in FILTER_SPECS)
 
 
+def switchable_filter_ids() -> tuple[str, ...]:
+    """Gates that can be switched off, which is those whose threshold has an absent state.
+
+    The other six read a plain float with no "no threshold" value, so switching them off would need
+    the gate application itself to read the action -- which it does not do in 0.7.1.
+    """
+    switchable: list[str] = []
+    for spec in FILTER_SPECS:
+        try:
+            _switch_off_value(SETTING_BY_KEY[spec.setting_key])
+        except RunPolicyError:
+            continue
+        switchable.append(spec.filter_id)
+    return tuple(switchable)
+
+
 __all__ = [
     "BUILTIN_PROFILES",
     "DEFAULT_PROFILE_NAME",
@@ -1158,6 +1202,7 @@ __all__ = [
     "SETTING_SPECS",
     "SettingSpec",
     "declared_filter_ids",
+    "switchable_filter_ids",
     "describe_parameters",
     "default_for",
     "format_validation_error",
