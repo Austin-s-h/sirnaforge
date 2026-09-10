@@ -28,7 +28,7 @@ from sirnaforge.data.transcriptome_manager import (
 from sirnaforge.models.off_target import MiRNAHit, OffTargetHit
 from sirnaforge.models.schemas import AggregatedOffTargetSchema
 from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
-from sirnaforge.pipeline.nextflow_cli import offtarget_analysis_cli
+from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli, offtarget_analysis_cli
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 
 GUIDE = "ATGCGATGCGATGCGATGCGC"
@@ -364,6 +364,32 @@ def test_a_bad_index_prefix_becomes_an_unscreened_species_with_the_reason_on_it(
     assert summary["unscreened_species"] == ["mouse"]
     assert summary["status"] == "partial"
     assert "No usable BWA-MEM2 index" in summary["rejected_species_files"]["mouse"][0]
+
+
+@pytest.mark.unit
+def test_the_rejection_survives_the_staging_the_nextflow_module_actually_does(tmp_path, monkeypatch):
+    """Attribution runs through ``aggregate_results_cli``'s staging, not only the direct call.
+
+    The production route copies each species' files into ``temp_results/<species>/`` and then calls
+    the aggregator, so a per-species rejection has to survive that hop to be reported at all.
+    """
+    monkeypatch.chdir(tmp_path)
+    flat = tmp_path / "staged_flat"
+    _write_tsv(flat / "human_analysis.tsv", GENOME_COLUMNS, [_genome_row("human", "ENST00000000009")])
+    (flat / "mouse_analysis.tsv").touch()
+
+    result = aggregate_results_cli(
+        genome_species="human,mouse",
+        output_dir=str(tmp_path / "aggregated"),
+        analysis_files=[str(flat / "human_analysis.tsv"), str(flat / "mouse_analysis.tsv")],
+        summary_files=[],
+    )
+    summary = json.loads((tmp_path / "aggregated" / "combined_summary.json").read_text())
+
+    assert result["status"] == "completed", "the CLI's own status describes the aggregation call"
+    assert summary["status"] == "partial", "the published summary describes the screen"
+    assert summary["species_screened"] == ["human"]
+    assert "mouse" in summary["rejected_species_files"]
 
 
 # ---------------------------------------------------------------------------

@@ -57,8 +57,10 @@ PYEOF
 
     stub:
     """
+    # Deliberately empty, not a header: a stub aligned nothing, so the aggregator must report this
+    # species as unscreened rather than as screened and clean.
     touch ${species}_analysis.tsv
-    echo '{"species": "${species}", "total_candidates": 0, "total_hits": 0}' > ${species}_summary.json
+    echo '{"species": "${species}", "status": "stub", "total_candidates": 0, "total_hits": 0}' > ${species}_summary.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
