@@ -37,7 +37,7 @@ sirnaforge workflow TP53
 1. **Species**: Uses `DEFAULT_MIRNA_CANONICAL_SPECIES` (7 species: chicken, pig, rat, mouse, human, rhesus, macaque)
 2. **miRNA Database**: MirGeneDB lookups for all 7 species
 3. **Transcriptome**: Ensembl cDNA auto-fetched for 4 species (human, mouse, rat, macaque)
-4. **Genomic DNA**: None (optional, resource-intensive)
+4. **Genomic DNA**: never. siRNA acts on mRNA, so screening is transcriptome-only (#99)
 
 ---
 
@@ -95,15 +95,19 @@ sirnaforge workflow TP53 --transcriptome-fasta combined.fa
 
 ### Override BWA Indices Directly
 
-Skip automatic fetching and use pre-built indices:
+Skip automatic fetching and use cDNA indices you have already built:
 
 ```bash
 sirnaforge workflow TP53 \
-  --offtarget-indices human:/data/GRCh38_index,mouse:/data/GRCm39_index
+  --transcriptome-indices human:/data/hs_cdna_index,mouse:/data/mm_cdna_index
 ```
 
-**Format**: `species:/absolute/path/to/index_prefix`
+**Format**: `species:/absolute/path/to/index_prefix` (`--offtarget-indices` is the same option)
 **Effect**: Bypasses Ensembl downloads and uses your existing BWA-MEM2 indices
+**Requirement**: the cDNA FASTA the index was built from must be readable beside the prefix (the
+prefix itself, or `<prefix>.fa`). Hits are resolved to genes from its headers, so a species whose
+sequence cannot be read is reported **unscreened**, with the reason, rather than screened against
+something nothing can classify. The species you name here is the label that reference carries.
 
 ---
 
@@ -129,17 +133,12 @@ sirnaforge design transcripts.fasta --top-n 50
 
 **Result:** Generates `candidates_all.csv` and `candidates_pass.csv` with thermodynamic scores only.
 
-### Genomic DNA Off-Target (Resource-Intensive)
+### Genomic DNA Off-Target
 
-Requires pre-built BWA indices for full genomes:
-
-```bash
-sirnaforge workflow TP53 \
-  --offtarget-indices human:/data/genomes/GRCh38_bwa
-```
-
-**Storage requirements:** ~3GB per genome index
-**Compute requirements:** ~4-8GB RAM per parallel BWA job
+Not available, by design. siRNA and miRNA guides act on mRNA, so the transcriptome is the correct
+reference for on- and off-target alike; naming a genomic assembly (for example
+`ensembl_human_hg38_primary`) for a screen is refused before anything is downloaded. Genomic search
+belongs to `sirnaforge zfn`, which targets DNA.
 
 ---
 
@@ -147,7 +146,7 @@ sirnaforge workflow TP53 \
 
 When multiple parameters affect the same resource:
 
-1. **Explicit overrides win**: `--offtarget-indices` > `--transcriptome-fasta` > `--species`
+1. **Explicit overrides win**: `--transcriptome-indices` > `--transcriptome-fasta` > `--species`
 2. **miRNA overrides are independent**: `--mirna-species` doesn't affect transcriptomes
 3. **Defaults are smart**: System auto-detects what's available (e.g., only 4/7 species have Ensembl cDNA)
 
@@ -158,14 +157,14 @@ sirnaforge workflow TP53 \
   --species human,mouse,rat,macaque \
   --mirna-species hsa,mmu,rno,mml,gga,ssc \
   --transcriptome-fasta /custom/human_isoforms.fa \
-  --offtarget-indices mouse:/data/GRCm39,rat:/data/rn7
+  --transcriptome-indices mouse:/data/mm_cdna,rat:/data/rn_cdna
 ```
 
 **Interpretation:**
 - **Canonical species**: 4 (human, mouse, rat, macaque)
 - **miRNA checks**: 6 species (includes chicken, pig)
 - **Transcriptome**: Custom human file (replaces default Ensembl human cDNA)
-- **Off-target indices**: Custom mouse/rat indices (replaces Ensembl-fetched)
+- **Prebuilt indices**: Custom mouse/rat cDNA indices (replaces Ensembl-fetched)
 - **Macaque**: Falls back to default Ensembl behavior (no override)
 
 ---
@@ -223,14 +222,14 @@ sirnaforge workflow CUSTOM_GENE \
 - `--input-fasta`: Skips gene search, uses these sequences for siRNA design
 - `--transcriptome-fasta`: Uses these sequences for off-target checking
 
-### 4. Pre-Indexed Genomes (Production)
+### 4. Pre-Indexed Transcriptomes (Production)
 
 ```bash
 sirnaforge workflow BRCA1 \
-  --offtarget-indices \
-    human:/mnt/refs/GRCh38,\
-    mouse:/mnt/refs/GRCm39,\
-    rat:/mnt/refs/rn7
+  --transcriptome-indices \
+    human:/mnt/refs/hs_cdna,\
+    mouse:/mnt/refs/mm_cdna,\
+    rat:/mnt/refs/rn_cdna
 ```
 
 ---
@@ -255,7 +254,7 @@ If you encounter this error, verify spelling or check `src/sirnaforge/data/speci
 ### "BWA index not found"
 
 **Cause:** Automatic index building failed or was interrupted
-**Solution:** Check cache dir permissions, re-run with `--force-refresh`, or provide `--offtarget-indices`
+**Solution:** Check cache dir permissions, re-run with `--force-refresh`, or provide `--transcriptome-indices`
 
 ### Custom FASTA not detected
 
@@ -270,13 +269,12 @@ If you encounter this error, verify spelling or check `src/sirnaforge/data/speci
 
 1. **Additive transcriptomes**: Not yet exposed via CLI (internal support exists)
 2. **Custom miRNA FASTA**: No direct CLI override (use cache manipulation)
-3. **Genomic DNA defaults**: None (must provide `--offtarget-indices` explicitly)
+3. **Genomic DNA**: out of scope for siRNA/miRNA screening
 
 ### Future Enhancements
 
 - [ ] Comma-separated `--transcriptome-fasta` for additive mode
 - [ ] `--custom-mirna` parameter accepting FASTA files
-- [ ] Automatic genomic DNA fetching (NCBI/Ensembl FTP)
 - [ ] `--add-sequence` for on-the-fly contig injection
 
 ---
@@ -368,6 +366,6 @@ results = await workflow.run()
 | `--species` | All layers | 7 species (miRNA) | `--species human,mouse` |
 | `--mirna-species` | miRNA only | Maps from `--species` | `--mirna-species hsa,mmu` |
 | `--transcriptome-fasta` | Transcriptome only | Ensembl cDNA (4 species) | `--transcriptome-fasta custom.fa` |
-| `--offtarget-indices` | BWA indices | Auto-build from transcriptome | `--offtarget-indices human:/data/idx` |
+| `--transcriptome-indices` | cDNA BWA indices | Auto-build from transcriptome | `--transcriptome-indices human:/data/hs_cdna` |
 
 **Key insight:** One parameter (`--species`) intelligently drives everything, with surgical overrides available when needed.

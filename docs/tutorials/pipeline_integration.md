@@ -35,7 +35,7 @@ Common knobs:
 - `--species`: drives both transcriptome fetching and miRNA seed matching defaults.
 - `--mirna-db` / `--mirna-species`: control miRNA reference selection.
 - `--transcriptome-fasta`: override/extend the transcriptome reference.
-- `--offtarget-indices`: override alignment indices for specific species (`species:/abs/path/index_prefix`).
+- `--transcriptome-indices`: name cDNA alignment indices for specific species (`species:/abs/path/index_prefix`).
 
 ## Step 3 – Run Off-Target Analysis (embedded Nextflow)
 
@@ -55,7 +55,9 @@ uv run sirnaforge offtarget \
 Important parameters:
 - `--candidates`: FASTA file with siRNA sequences (one per record)
 - `--outdir`: Output directory for per-species TSV/JSON summaries
-- `--genome_species`: Comma-separated list for miRNA genome lookups (not genomic DNA alignment)
+- `--transcriptome_species`: Comma-separated list of the species the screen covers
+- `--transcriptome_fastas` / `--transcriptome_indices`: `species:path` references to screen against.
+  The `genome_*` spellings were removed in 0.7.1 and the pipeline now refuses them by name.
 - `--max_hits`, `--bwa_k`, `--bwa_T`: Override transcriptome alignment sensitivity (see pipeline config)
 - `--seed_start`, `--seed_end`: Override the miRNA seed window used by the shared analysis contract
 
@@ -101,8 +103,8 @@ Each TSV/JSON pair originates from the corresponding Python entrypoints in `sirn
 
 ## Troubleshooting
 
-- **Missing genome files** → verify paths in `genomes.yaml` and that containers can reach the host paths (bind mount the directories when using Docker).
-- **Slow throughput** → lower `--genome_species`, reduce `--top-n` during candidate generation, or increase parallelism with `-process.maxForks` in `nextflow.config`.
+- **Missing reference files** → verify the `species:path` entries (see `references.yaml` for worked examples) and that containers can reach the host paths (bind mount the directories when using Docker).
+- **Slow throughput** → screen fewer species, reduce `--top-n` during candidate generation, or increase parallelism with `-process.maxForks` in `nextflow.config`.
 - **Tool not found** → ensure you are using the provided Docker image or run `make docker-build` to rebuild locally.
 
 ## Additional Resources

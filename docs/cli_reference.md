@@ -53,7 +53,11 @@ siRNAforge accepts complementary inputs when you need to bypass gene search or c
 
 - `--input-fasta` replaces the transcript retrieval step. Point it at a local FASTA file, HTTP(S) URL, or FTP location. The positional argument (`GENE_QUERY`) still names the outputs, while the workflow designs guides from the supplied sequences. **When you pass `--input-fasta` without `--transcriptome-fasta`, transcriptome off-target analysis is disabled** (design-only mode).
 - `--transcriptome-fasta` selects the dataset used for transcriptome off-target analysis. It accepts local paths, remote URLs, or presets such as `ensembl_human_cdna` and `ensembl_mouse_cdna` (see `sirnaforge cache --info`). **Provide this flag to re-enable transcriptome off-target analysis when running from a custom FASTA.**
-- `--offtarget-indices` overrides the genome indices used for Nextflow/BWA-MEM2 with explicit `species:/path/to/index_prefix` entries. When present, these drive the set of species processed by the off-target pipeline.
+- `--transcriptome-indices` (also spelled `--offtarget-indices`) names transcriptome BWA-MEM2 indices you have already
+  built, as `species:/path/to/index_prefix` entries. When present, these drive the set of species processed by the
+  off-target pipeline, and the species you declare is the label the reference carries. The cDNA FASTA the index was
+  built from must be readable beside the prefix, or that species is reported unscreened rather than screened against
+  a reference its hits cannot be classified with.
 
 Passing both flags is common: the input FASTA feeds the design engine, while the transcriptome FASTA controls which reference is indexed for the Nextflow stage. Remote resources are cached under `~/.cache/sirnaforge/` and reused automatically.
 
