@@ -9,6 +9,7 @@ the fix stick, not a record that it was made once.
 
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 import typer
@@ -65,7 +66,7 @@ DOCUMENTED_MODELS = {
 }
 
 CLASS_LINE = re.compile(r"^class ([A-Za-z]+)\(")
-FIELD_LINE = re.compile(r"^ {4}([a-z_0-9]+):\s*[A-Za-z|\[\]0-9 ]+=\s*([^#\n]+?)\s*(?:#.*)?$")
+FIELD_LINE = re.compile(r"^ {4}([a-z_0-9]+):\s*([A-Za-z|\[\]0-9 ]+?)\s*=\s*([^#\n]+?)\s*(?:#.*)?$")
 DEFAULT_IN_HELP = re.compile(r"default:\s*(-?[0-9]+(?:\.[0-9]+)?)")
 
 
@@ -80,7 +81,7 @@ def _option_help(command_name: str, parameter: str) -> str:
 
 
 def _documented_fields(path: Path):
-    """Yield ``(line_number, class_name, field, literal)`` for field defaults in python code blocks."""
+    """Yield ``(line_number, class_name, field, annotation, literal)`` for documented field defaults."""
     in_block = False
     current: str | None = None
     for number, line in enumerate(path.read_text().splitlines(), 1):
@@ -96,7 +97,7 @@ def _documented_fields(path: Path):
             continue
         field_match = FIELD_LINE.match(line)
         if field_match and current in DOCUMENTED_MODELS:
-            yield number, current, field_match.group(1), field_match.group(2).strip()
+            yield number, current, field_match.group(1), field_match.group(2).strip(), field_match.group(3).strip()
 
 
 def _as_value(literal: str):
@@ -151,7 +152,7 @@ def test_field_defaults_quoted_in_the_documentation_match_the_models():
     document = "docs/models_and_scoring.md"
     path = REPO_ROOT / document
     checked = 0
-    for number, class_name, field, literal in _documented_fields(path):
+    for number, class_name, field, _annotation, literal in _documented_fields(path):
         model = DOCUMENTED_MODELS[class_name]
         if field not in model.model_fields:
             continue
@@ -167,6 +168,30 @@ def test_field_defaults_quoted_in_the_documentation_match_the_models():
 
 
 @pytest.mark.unit
+def test_documented_field_annotations_agree_with_the_models_on_nullability():
+    """A default checker that reads only the literal lets the *type* drift, and here it matters.
+
+    ``--filter-action <id>=off`` works by clearing a threshold to ``None``, so whether a threshold is
+    nullable is a documented capability, not a detail. The docs said ``max_off_target_count: int = 15``
+    where the model is ``int | None``.
+    """
+    path = REPO_ROOT / "docs/models_and_scoring.md"
+    checked = 0
+    for number, class_name, field, annotation, _literal in _documented_fields(path):
+        model = DOCUMENTED_MODELS[class_name]
+        if field not in model.model_fields:
+            continue
+        documented_nullable = "None" in annotation
+        actual_nullable = type(None) in get_args(model.model_fields[field].annotation)
+        checked += 1
+        assert documented_nullable == actual_nullable, (
+            f"docs/models_and_scoring.md:{number} documents {class_name}.{field} as {annotation!r}; "
+            f"the model field is {'nullable' if actual_nullable else 'not nullable'}"
+        )
+    assert checked, "no documented annotations were compared; the parser has stopped matching"
+
+
+@pytest.mark.unit
 def test_the_documented_off_target_cap_is_the_enforced_one():
     """Both halves of the `8dce4ae` cap drift: the field description and the documentation."""
     cap = OffTargetFilterCriteria.model_fields["max_off_target_count"].get_default(call_default_factory=False)
@@ -178,7 +203,7 @@ def test_the_documented_off_target_cap_is_the_enforced_one():
 
     for document in ("docs/models_and_scoring.md",):
         text = (REPO_ROOT / document).read_text()
-        assert "max_off_target_count: int = 15" in text
+        assert "max_off_target_count: int | None = 15" in text
 
 
 @pytest.mark.unit

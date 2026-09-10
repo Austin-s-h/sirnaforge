@@ -174,18 +174,19 @@ Specialized filtering for off-target analysis results, applied after screening:
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
-    # Genuine off-target count (on-target, ortholog and repeat hits excluded)
-    max_off_target_count: int = 15
+    # Genuine off-target count (on-target, ortholog and repeat hits excluded).
+    # None means "no gate", which is what --filter-action <id>=off sets.
+    max_off_target_count: int | None = 15
 
     # Transcriptome GENUINE off-targets (mismatch tolerance)
-    max_transcriptome_hits_0mm: int = 1    # Perfect matches
-    max_transcriptome_hits_1mm: int = 10   # 1-mismatch hits
-    max_transcriptome_hits_2mm: int = 50   # 2-mismatch hits
+    max_transcriptome_hits_0mm: int | None = 1    # Perfect matches
+    max_transcriptome_hits_1mm: int | None = 10   # 1-mismatch hits
+    max_transcriptome_hits_2mm: int | None = 50   # 2-mismatch hits
     max_transcriptome_seed_perfect: int | None = None  # off by default; see the warning below
 
     # miRNA seed matches (positions 2-8)
-    max_mirna_perfect_seed: int = 0
-    max_mirna_1mm_seed: int = 10
+    max_mirna_perfect_seed: int | None = 0
+    max_mirna_1mm_seed: int | None = 10   # read by no gate in 0.7.1; resolves to off
     fail_on_high_risk_mirna: bool = True
 ```
 

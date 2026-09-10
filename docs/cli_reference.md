@@ -90,17 +90,21 @@ is a supported setting in either mode.
 | `qualified` | The transcriptome channel in the query species must complete | `sirnaforge workflow`, `sirnaforge offtarget` |
 
 `--skip-off-targets` maps to `--run-mode design_only`, and the manifest records the rule that did it
-rather than presenting the mode as something you chose. Asking for `--run-mode qualified` together
-with `--skip-off-targets` is rejected. Run mode is **independent of `--design-mode`**: choosing miRNA
+rather than presenting the mode as something you chose. The two are one run: both suppress reference
+resolution, so `reference_summary.transcriptome` reads `disabled` either way. Asking for `--run-mode
+qualified` together with `--skip-off-targets` is rejected. `--run-mode exploratory` **is** accepted
+with `--skip-off-targets` (a run that keeps incomplete evidence and screens nothing is a coherent
+thing to ask for), and every post-screen gate is `off` for it, because what decides that is whether
+the run screened — not the mode's name. Run mode is **independent of `--design-mode`**: choosing miRNA
 design says nothing about evidence completeness.
 
-`--filter-action filter_id=off|warn|fail` (repeatable) sets one gate's action. A gate can be off for
+`--filter-action filter_id=off|fail` (repeatable) sets one gate's action. A gate can be off for
 three different reasons — you turned it off, it has no declared threshold, or the run holds no
 evidence of the kind it reads — and all three mean **not evaluated**, never passed. What cannot be
 waived while staying `qualified` is required evidence completeness (`--run-mode exploratory` is how
 you say that out loud).
 
-Two limits, because 0.7.1's gate application does not read a filter action:
+Three limits, because 0.7.1's gate application does not read a filter action:
 
 - `off` works by **clearing the gate's threshold**, which the existing gate code already reads as "no
   gate". That is available for the ten gates whose threshold has an absent state (`sirnaforge workflow
@@ -108,16 +112,27 @@ Two limits, because 0.7.1's gate application does not read a filter action:
   `max_poly_runs`, `max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score`) read a plain
   float with no absent value, so switching them off is **refused** rather than faked with an inert
   number that would be reported as a threshold you chose. Widen the threshold instead.
-- `warn` is **recorded and not yet enforced.** It appears in the resolved policy and the manifest, and
-  the gate still rejects the candidate. Demoting a failure to a label needs per-filter verdicts on the
-  candidate row, which is separate work.
+- `warn` is **not selectable in 0.7.1** and is rejected with an error. `FilterAction.WARN` exists in
+  the vocabulary, but no code path demotes a rejection to a label, so resolving it would put
+  `action: warn, evaluated: true` in the manifest beside a candidate the gate rejected — a claim a
+  client re-applying the descriptor could not detect as wrong. Demoting a failure to a label needs
+  per-filter verdicts on the candidate row, which is separate work.
+- **A gate can only be turned off, never on.** `fail` is refused when the gate would be off anyway —
+  it has no threshold to compare, the boolean it reads is `False`, the run holds no screening evidence,
+  or no 0.7.1 code reads it at all (`max_mirna_1mm_seed`). Accepting it would report an enforced limit
+  that does not exist.
 
 Two honesty notes the manifest carries per gate, because the code earns them and prose would not:
 
-- Six of the nine off-target gates read a **human-or-unlabelled** counter, not the all-species column
-  of the same name, so their `scope.species` is `["human"]` and `evidence_exported` is `false` — the
+- Six of the nine off-target gates read a **human-stratified** counter, not the all-species column of
+  the same name, so their `scope.species` is `["human"]` and `evidence_exported` is `false` — the
   counter they compare is not in the candidate CSV, so a client cannot re-apply them and get the
-  pipeline's answer. Exporting those counters is separate filter-scope work.
+  pipeline's answer. Exporting those counters is separate filter-scope work. The six do **not** all
+  stratify the same way, and each gate's `definition` says which it is: `max_transcriptome_hits_0mm`,
+  `_1mm` and `_2mm` count hits that are human **or unlabelled** (a blank species label is read as the
+  query species); `max_mirna_perfect_seed` and `fail_on_high_risk_mirna` count hits labelled human
+  **only**, so an unlabelled miRNA hit reaches neither gate; and `max_total_offtarget_hits` **sums the
+  two conventions** in one number.
 - `max_mirna_1mm_seed` declares a threshold of 10 and is read by no gate in 0.7.1, so it resolves to
   `off`.
 

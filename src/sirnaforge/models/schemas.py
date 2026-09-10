@@ -124,11 +124,7 @@ class SiRNACandidateSchema(DataFrameModel):
         coerce=True,
     )
     off_target_count: Series[int] = Field(
-        ge=0,
-        description=(
-            "Number of genuine off-target sites (on-target, ortholog, repeat excluded). The enforced "
-            "ceiling is OffTargetFilterCriteria.max_off_target_count, default 15"
-        ),
+        ge=0, description="Number of genuine off-target sites (on-target, ortholog, repeat excluded, goal: ≤3)"
     )
 
     # Hit classification metrics

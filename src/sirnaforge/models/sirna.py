@@ -211,7 +211,7 @@ class OffTargetFilterCriteria(BaseModel):
         default=0,
         ge=0,
         description=(
-            "Maximum perfect miRNA seed matches (typical: 3-5, None = no limit). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+            "Maximum perfect miRNA seed matches (typical: 3-5, None = no limit). HUMAN-STRATIFIED: read against hits labelled human ONLY -- unlike the transcriptome gates, an unlabelled hit is not counted -- so it does not match the identically named all-species column"
         ),
     )
     max_mirna_1mm_seed: int | None = Field(
@@ -225,7 +225,7 @@ class OffTargetFilterCriteria(BaseModel):
     fail_on_high_risk_mirna: bool = Field(
         default=True,
         description=(
-            "Fail if high-risk miRNA hits detected (perfect seed + offtarget_score < 5.0). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+            "Fail if high-risk miRNA hits detected (perfect seed + offtarget_score < 5.0). HUMAN-STRATIFIED: read against hits labelled human ONLY -- unlike the transcriptome gates, an unlabelled hit is not counted -- so it does not match the identically named all-species column"
         ),
     )
 
@@ -234,7 +234,7 @@ class OffTargetFilterCriteria(BaseModel):
         default=None,
         ge=0,
         description=(
-            "Maximum total off-target hits (transcriptome + miRNA, None = no limit). HUMAN-STRATIFIED: read against hits whose species is human or unlabelled, so it does not match the identically named all-species column"
+            "Maximum total off-target hits (transcriptome + miRNA, None = no limit). HUMAN-STRATIFIED: read against human-or-unlabelled transcriptome hits plus human-labelled-only miRNA hits, so it does not match the identically named all-species column"
         ),
     )
 
