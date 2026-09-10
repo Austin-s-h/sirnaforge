@@ -196,6 +196,27 @@ def test_the_final_summary_text_warns_about_the_rejected_species(tmp_path):
 
 
 @pytest.mark.unit
+def test_a_rejected_species_is_not_reported_as_having_no_hits(tmp_path, capsys):
+    """The console printed "No transcriptome hits detected for: mouse" as good news."""
+    workflow = _workflow(tmp_path, "no_good_news", species=["human", "mouse", "rat"])
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    aggregate_offtarget_results(
+        results_dir=_staged_species_results(results_dir),
+        output_dir=results_dir / "aggregated",
+        genome_species="human,mouse,rat",
+    )
+
+    asyncio.run(workflow._process_nextflow_results([_candidate()], results_dir, {"status": "completed"}))
+    printed = capsys.readouterr().out
+
+    no_hits_line = next(line for line in printed.splitlines() if "No transcriptome hits detected" in line)
+    assert "rat" in no_hits_line, "rat was screened and found nothing: that is a real clean result"
+    assert "mouse" not in no_hits_line
+    assert "No usable alignment evidence for: mouse" in printed
+
+
+@pytest.mark.unit
 def test_a_run_with_a_rejected_species_reports_partial_and_says_which(tmp_path):
     """End to end: the workflow must not report a completed screen, and must name the species."""
     workflow = _workflow(tmp_path, "rejected_species", species=["human", "mouse", "rat"])
