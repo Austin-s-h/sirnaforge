@@ -849,7 +849,7 @@ def test_the_returned_results_map_is_looked_up_by_the_screening_id(tmp_path):
     """``offtarget_summary.results`` must not report a fabricated zero for a deduplicated candidate.
 
     This map is serialized into ``logs/workflow_summary.json``. Keyed and looked up by ``id``, the
-    non-representative of a deduplicated pair got ``off_target_count: 0`` and no hits while
+    non-representative of a deduplicated pair got ``off_target_count: 0`` while
     ``candidates_all.csv`` carried its real count for the same id -- 32,463 of 34,863 ids on the
     frozen baseline. Every other test in this file bypasses ``_prepare_offtarget_input``, so the
     dedup map is empty and this whole class of defect is invisible to them.
@@ -857,6 +857,10 @@ def test_the_returned_results_map_is_looked_up_by_the_screening_id(tmp_path):
     The count is also pinned against the candidate rather than the ingest tally: the ingest counts
     every row it read, on-target rows included, so the two hit rows here must publish
     ``off_target_count: 1``, not 2.
+
+    The map carries counts only. It used to carry the alignment rows too, re-serialised once per
+    candidate sharing a guide, which is what made this file 2.9 GiB on a real run; the rows now stay
+    in the tables ``detail_files`` names.
     """
     workflow = _workflow(tmp_path, "out_dedup_results_map")
     results_dir = workflow.config.output_dir / "off_target" / "results"
@@ -883,7 +887,14 @@ def test_the_returned_results_map_is_looked_up_by_the_screening_id(tmp_path):
         assert candidate.off_target_count == 1, "one liability, fanned out to both candidates"
         entry = published[candidate.id]
         assert entry["off_target_count"] == candidate.off_target_count
-        assert [row["rname"] for row in entry["hits"]] == ["ENST00000000001.2", "ENST00000000009"]
+        assert "hits" not in entry, "the summary publishes counts; the rows live in detail_files"
+
+    # The rows are not lost, they are pointed at: the table the parser actually read.
+    detail = outcome["detail_files"]
+    assert detail["transcriptome"], "the summary must name the table holding the alignments"
+    assert all(Path(path).exists() for path in detail["transcriptome"]), (
+        "a pointer to a file that does not exist is worse than no pointer"
+    )
 
 
 @pytest.mark.unit

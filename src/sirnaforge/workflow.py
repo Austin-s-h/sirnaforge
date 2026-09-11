@@ -2481,6 +2481,12 @@ class SiRNAWorkflow:
         # candidate's evidence lives under its representative's id and looking it up by `id`
         # published a fabricated zero for every non-representative (32,463 of 34,863 ids on the
         # frozen baseline) while candidates_all.csv carried the real count for the same ids.
+        # Two scalars per candidate, never the rows behind them. Carrying `hits` here re-serialised
+        # every ingested alignment once per candidate sharing the guide -- a 7x fan-out on a
+        # deduplicated run -- and produced a 2.9 GiB workflow_summary.json whose other keys totalled
+        # 14 KB. Nothing reads the rows from this map: every consumer of the alignments works off
+        # `parsed` and has already run by the time this is built, so the rows were written only to be
+        # serialised. The detail stays on disk in the tables named by `detail_files`.
         mapped = {}
         for c in updated_candidates:
             entry = parsed.get("results", {}).get(c.screen_query_id or c.id)
@@ -2490,7 +2496,6 @@ class SiRNAWorkflow:
                 # name two different definitions across two artifacts of the same run.
                 "off_target_count": c.off_target_count,
                 "off_target_score": entry.get("off_target_score", 0.0) if entry else 0.0,
-                "hits": entry.get("hits", []) if entry else [],
             }
 
         return {
@@ -2498,10 +2503,31 @@ class SiRNAWorkflow:
             "method": "embedded_nextflow",
             "output_dir": str(output_dir),
             "results": mapped,
+            "detail_files": self._offtarget_detail_files(parsed, output_dir),
             "execution_metadata": results,
             "filtering_stats": stats,
             "aggregated": aggregated_views,
             "warnings": workflow_warnings,
+        }
+
+    @staticmethod
+    def _offtarget_detail_files(parsed: Mapping[str, Any], output_dir: Path) -> dict[str, list[str]]:
+        """Where the per-alignment rows actually live, so the summary can point instead of copy.
+
+        Paths are the ones the parser read, not a glob a reader has to re-derive: a guessed pattern
+        goes stale the moment the pipeline's layout changes, and the summary would then name files
+        that do not exist.
+        """
+        transcriptome = [
+            str(table["path"])
+            for table in cast(list[dict[str, Any]], parsed.get("transcriptome_hit_tables") or [])
+            if table.get("path")
+        ]
+        mirna = [str(path) for path in cast(list[Path], parsed.get("mirna_hit_files") or [])]
+        return {
+            "transcriptome": sorted(transcriptome),
+            "mirna": sorted(mirna),
+            "root": [str(output_dir)],
         }
 
     @staticmethod
@@ -2837,6 +2863,9 @@ class SiRNAWorkflow:
         # fallback used to ingest per-species files with no table at all, which published a
         # header-only hit table beside candidates carrying dozens of hits each.
         transcriptome_tables: list[dict[str, Any]] = []
+        # Recorded, not just logged: the run summary names these files rather than copying their rows,
+        # and a path only reachable from a log line is not a pointer a consumer can follow.
+        mirna_hit_files: list[Path] = []
 
         def _ingest_tsv(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
@@ -2954,6 +2983,7 @@ class SiRNAWorkflow:
                     # every miRNA counter; there is no layout in which the retry reached a file the
                     # glob did not.
                     logger.info(f"Parsed miRNA analysis results from {path}")
+                    mirna_hit_files.append(path)
                     mirna_hits_found = True
 
         return {
@@ -2962,6 +2992,7 @@ class SiRNAWorkflow:
             "output_dir": str(output_dir),
             "results": results,
             "transcriptome_hit_tables": transcriptome_tables,
+            "mirna_hit_files": mirna_hit_files,
         }
 
     def _check_offtarget_filters(
