@@ -35,10 +35,20 @@ The Docker image includes Nextflow, BWA-MEM2, SAMtools, and ViennaRNA for comple
 docker pull ghcr.io/austin-s-h/sirnaforge:latest
 
 # Run a workflow
-docker run --rm -v $(pwd):/data -w /data \
+SIRNAFORGE_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/sirnaforge"
+OUTPUT_DIR="$(pwd)/results"
+mkdir -p "$SIRNAFORGE_CACHE_DIR" "$OUTPUT_DIR"
+docker run --rm --userns=host --user "$(id -u):$(id -g)" \
+  -v "$(pwd)":/data:ro -w /tmp \
+  -v "$OUTPUT_DIR":/output \
+  -v "$SIRNAFORGE_CACHE_DIR":/home/sirnauser/.cache/sirnaforge \
+  -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge \
+  -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home \
   ghcr.io/austin-s-h/sirnaforge:latest \
-  sirnaforge workflow TP53 --output-dir results/
+  sirnaforge workflow TP53 --output-dir /output
 ```
+
+This reuses the global siRNAforge cache across container runs while keeping bind-mounted outputs owned by the invoking host user.
 
 :::{tip}
 Use Docker when you need:
