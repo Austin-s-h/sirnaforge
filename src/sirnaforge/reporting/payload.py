@@ -81,17 +81,28 @@ class GuideEntry:
         return sum(1 for g in self.gates if g[1] == _VERDICT_CODE[FilterEvaluation.UNKNOWN.value])
 
     @property
+    def n_gates_warned(self) -> int:
+        """Gates this guide exceeds whose action is ``warn``: reported, and not a rejection."""
+        return sum(1 for g in self.gates if g[1] == VERDICT_WARN)
+
+    @property
     def status(self) -> str:
-        """``fail`` / ``unknown`` / ``pass`` -- three states, because two would lie.
+        """``fail`` / ``unknown`` / ``warn`` / ``pass`` -- four states, because fewer would lie.
 
         A guide failing no gate is only clean when every gate could actually be evaluated. On the
         public 0.7.1 baseline 450 guides fail nothing here while the run failed them, because the
         gates that failed them read counters the run does not export. Collapsing that into "pass"
         is the fabricated-evidence mistake this whole report exists to make visible.
+
+        ``warn`` is separate from ``fail`` for the mirror-image reason. A warn-action gate the guide
+        exceeds is a real finding, but the run did not reject the guide for it, so calling it ``fail``
+        would make the report contradict a run PASS it actually agrees with.
         """
         if self.n_gates_failed:
             return "fail"
-        return "unknown" if self.n_gates_unknown else "pass"
+        if self.n_gates_unknown:
+            return "unknown"
+        return "warn" if self.n_gates_warned else "pass"
 
 
 @dataclass
@@ -152,6 +163,12 @@ _VERDICT_CODE = {
     FilterEvaluation.NOT_EVALUATED.value: 3,
 }
 
+#: A gate whose threshold was exceeded but whose action is ``warn``: a real finding the reader should
+#: see, and not a rejection. It needs its own code because folding it into ``fail`` would make the
+#: report contradict the run on every warn-flagged guide -- inverting the one metric
+#: (``contradicted_run_pass``) that exists to prove the report and the pipeline agree.
+VERDICT_WARN = 4
+
 
 def _evaluate(descriptor: Any, row: pd.Series) -> tuple[float | int | None, int, int]:
     """Evaluate one descriptor against one candidate row, independently of every other gate.
@@ -176,8 +193,13 @@ def _evaluate(descriptor: Any, row: pd.Series) -> tuple[float | int | None, int,
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_EMPTY_VALUE
 
     passed = _COMPARE[descriptor.comparator](value, descriptor.threshold)
-    verdict = FilterEvaluation.PASS.value if passed else FilterEvaluation.FAIL.value
-    return value, _VERDICT_CODE[verdict], REASON_OK
+    if passed:
+        code = _VERDICT_CODE[FilterEvaluation.PASS.value]
+    elif descriptor.action.value == FilterAction.WARN.value:
+        code = VERDICT_WARN
+    else:
+        code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
+    return value, code, REASON_OK
 
 
 def _scope_label(descriptor: Any) -> str:

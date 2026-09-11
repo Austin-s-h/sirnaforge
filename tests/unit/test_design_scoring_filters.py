@@ -164,16 +164,29 @@ def test_asymmetry_threshold_default_is_shared():
 
 @pytest.mark.unit
 def test_low_asymmetry_label_tracks_the_asymmetry_score(realistic_transcripts_fasta):
-    """The LOW_ASYMMETRY label must be consistent with the column it is named after."""
+    """The asymmetry verdict must be consistent with the column it is named after.
+
+    The gate ships as ``warn``, so it records its verdict and does not reject: a candidate below the
+    floor is flagged in ``filter_verdicts`` and still reaches the passing set. The floor decides more
+    of the design space than any other single number and has never been validated, so this asserts
+    the verdict tracks the column -- not that the label rejects anybody.
+    """
     result = _design_gaphd(realistic_transcripts_fasta)
     threshold = result.parameters.filters.min_asymmetry_score
-    labelled = [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_ASYMMETRY]
-    passing = [c for c in result.candidates if c.passes_filters is True]
+    failed = [c for c in result.candidates if c.filter_verdicts.get("min_asymmetry_score") == "fail"]
+    passed = [c for c in result.candidates if c.filter_verdicts.get("min_asymmetry_score") == "pass"]
 
-    assert labelled, "expected some candidates to fail the asymmetry gate"
-    assert passing, "expected some candidates to pass"
-    assert all(c.asymmetry_score < threshold for c in labelled)
-    assert all(c.asymmetry_score >= threshold for c in passing)
+    assert failed, "expected some candidates below the asymmetry floor"
+    assert passed, "expected some candidates above it"
+    assert all(c.asymmetry_score < threshold for c in failed)
+    assert all(c.asymmetry_score >= threshold for c in passed)
+    assert all(c.filter_observed["min_asymmetry_score"] == c.asymmetry_score for c in result.candidates)
+
+    # Warn means warn: being below the floor must not, on its own, reject a candidate.
+    assert not [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_ASYMMETRY], (
+        "min_asymmetry_score ships as warn; it must record its verdict without rejecting"
+    )
+    assert any(c.passes_filters is True for c in failed), "a warn-flagged candidate still passes"
 
 
 @pytest.mark.unit

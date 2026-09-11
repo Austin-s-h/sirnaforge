@@ -228,9 +228,22 @@ class RunPolicyProfile:
         )
 
     def identity(self) -> ProfileIdentity:
-        """Name, version and a content hash over the baseline this profile actually applied."""
+        """Name, version and a content hash over everything this profile decides.
+
+        The hash covers the per-filter default ACTIONS as well as the baseline numbers. It did not,
+        and that made it a lie in the one case it most needed to be true: an action lives in
+        ``FILTER_SPECS`` rather than in the baseline, so demoting a gate from ``fail`` to ``warn``
+        changed which candidates a run rejects while ``content_hash`` stayed byte-identical. Two runs
+        with the same hash have to mean the same policy, thresholds and actions both.
+        """
         payload = json.dumps(
-            {"name": self.name, "version": self.version, "baseline": self.baseline, "exceptions": self.exceptions},
+            {
+                "name": self.name,
+                "version": self.version,
+                "baseline": self.baseline,
+                "exceptions": self.exceptions,
+                "default_actions": {spec.filter_id: spec.default_action.value for spec in FILTER_SPECS},
+            },
             sort_keys=True,
             default=str,
         )
@@ -390,8 +403,13 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="asymmetry_score",
         comparator=FilterComparator.GE,
         stage=FilterStage.DESIGN,
-        definition="Thermodynamic asymmetry floor for RISC loading; fails LOW_ASYMMETRY.",
-        default_action=FilterAction.FAIL,
+        definition=(
+            "Thermodynamic asymmetry floor for RISC loading; records LOW_ASYMMETRY without rejecting. "
+            "Warn rather than fail because the floor decides more of the design space than any other "
+            "single number -- 65.9% of candidates on a 40,079-candidate MSH3 run -- and has never been "
+            "validated against measured knockdown. A gate that uncalibrated should report, not reject."
+        ),
+        default_action=FilterAction.WARN,
     ),
     _FilterSpec(
         filter_id="min_empirical_score",
@@ -485,8 +503,14 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         column="mirna_hits_0mm_seed_human",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
-        definition=f"Perfect miRNA seed matches: {_HUMAN_ONLY_NOTE}; fails MIRNA_PERFECT_SEED.",
-        default_action=FilterAction.FAIL,
+        definition=(
+            f"Perfect miRNA seed matches: {_HUMAN_ONLY_NOTE}; records MIRNA_PERFECT_SEED without "
+            "rejecting. Warn rather than fail because a ceiling of 0 means one perfect seed match "
+            "anywhere in the miRNA database disqualifies a guide outright, which is a stronger claim "
+            "than the evidence supports: it rejected 1,246 candidates on one MSH3 run with no "
+            "threshold calibration behind the number 0."
+        ),
+        default_action=FilterAction.WARN,
         scope_species=_HUMAN_STRATIFIED,
         evidence_exported=False,
     ),
@@ -509,9 +533,14 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(
-            f"High-risk miRNA hits (perfect seed and offtarget_score < 5.0): {_HUMAN_ONLY_NOTE}; fails HIGH_RISK_MIRNA."
+            f"High-risk miRNA hits (perfect seed and offtarget_score < 5.0): {_HUMAN_ONLY_NOTE}; records "
+            "HIGH_RISK_MIRNA without rejecting. Demoted together with max_mirna_perfect_seed and not "
+            "separable from it: a high-risk hit is by definition a perfect seed hit, so this gate only "
+            "ever saw candidates the seed gate had already rejected -- it labelled nothing on a run "
+            "where 1,990 candidates carried a high-risk hit. Left at fail it would simply inherit "
+            "those rejections and undo the demotion above."
         ),
-        default_action=FilterAction.FAIL,
+        default_action=FilterAction.WARN,
         scope_species=_HUMAN_STRATIFIED,
         transform="a boolean flag, expressed as a ceiling of 0 so it carries a comparator like every other gate",
         evidence_exported=False,
@@ -666,11 +695,12 @@ def _reject_undeclared(values: Mapping[str, Any], origin: str) -> None:
         )
 
 
-#: Actions a caller may select in 0.7.1. ``WARN`` stays in the vocabulary -- it is what makes the
-#: "record it, do not reject" state representable -- but nothing applies it: the gate rejects the
-#: candidate regardless, so resolving it would put ``action: warn`` beside a rejected candidate in
-#: the manifest. Demoting a rejection to a label needs per-filter verdicts on the candidate row.
-SELECTABLE_ACTIONS: tuple[FilterAction, ...] = (FilterAction.OFF, FilterAction.FAIL)
+#: Actions a caller may select. ``WARN`` became selectable once candidates carried per-filter
+#: verdicts: the gate now records its own outcome in ``filter_verdicts`` and leaves
+#: ``passes_filters`` alone, which is what "record it, do not reject" needs. Before that it was
+#: refused, because resolving it would have put ``action: warn`` in the manifest beside a candidate
+#: the gate rejected anyway.
+SELECTABLE_ACTIONS: tuple[FilterAction, ...] = (FilterAction.OFF, FilterAction.WARN, FilterAction.FAIL)
 
 
 def _coerce_action(value: Any, filter_id: str) -> FilterAction:
@@ -684,9 +714,8 @@ def _coerce_action(value: Any, filter_id: str) -> FilterAction:
         ) from exc
     if action not in SELECTABLE_ACTIONS:
         raise RunPolicyError(
-            f"filter {filter_id!r} was set to {action.value}, which 0.7.1 does not apply: the gate "
-            f"would still reject the candidate. Choose one of {[a.value for a in SELECTABLE_ACTIONS]}, "
-            "or widen the threshold"
+            f"filter {filter_id!r} was set to {action.value}, which is not an action this build "
+            f"applies. Choose one of {[a.value for a in SELECTABLE_ACTIONS]}"
         )
     return action
 

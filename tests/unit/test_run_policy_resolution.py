@@ -639,17 +639,26 @@ def test_a_boolean_gate_that_is_disabled_cannot_be_switched_on_by_its_action():
 
 
 @pytest.mark.unit
-def test_warn_is_not_selectable_in_0_7_1_because_nothing_applies_it():
-    """A `warn` in the manifest beside a rejected candidate is a claim the gate code does not hold.
+def test_warn_is_selectable_now_that_candidates_carry_per_filter_verdicts():
+    """`warn` became selectable when a gate gained somewhere to put a verdict other than a rejection.
 
-    `FilterAction.WARN` stays in the vocabulary, but no 0.7.1 code path demotes a rejection to a
-    label, so resolving it would emit `action: warn, evaluated: true` for a candidate the gate failed.
+    It was refused while `passes_filters` was a gate's only way to express a failure: resolving
+    `warn` would have emitted `action: warn` in the manifest beside a candidate the gate rejected
+    anyway. Candidates now carry `filter_verdicts`, so "record it, do not reject" is representable and
+    the manifest and the candidate row agree.
     """
-    with pytest.raises(RunPolicyError, match="which 0.7.1 does not apply"):
-        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_off_target_count": "warn"})
+    policy = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_off_target_count": "warn"}
+    )
 
-    assert FilterAction.WARN not in SELECTABLE_ACTIONS
-    assert set(SELECTABLE_ACTIONS) == {FilterAction.OFF, FilterAction.FAIL}
+    assert policy.descriptor("max_off_target_count").action is FilterAction.WARN
+    assert set(SELECTABLE_ACTIONS) == {FilterAction.OFF, FilterAction.WARN, FilterAction.FAIL}
+
+    # Every action in the vocabulary is selectable now, so the only way to get this wrong is a name
+    # that is not one. The error still has to name the filter, or a typo in a multi-filter config is
+    # unfindable.
+    with pytest.raises(RunPolicyError, match=r"max_off_target_count.*choose one of"):
+        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_off_target_count": "reject"})
 
 
 @pytest.mark.unit
@@ -751,7 +760,10 @@ def test_a_boolean_flag_is_expressed_as_a_ceiling_of_zero():
     ).descriptor("fail_on_high_risk_mirna")
 
     assert on.threshold == 0
-    assert on.action is FilterAction.FAIL
+    # Warn, not fail, and not separable from max_mirna_perfect_seed: a high-risk hit is by definition
+    # a perfect seed hit, so this gate only ever saw candidates that gate had already rejected. Left
+    # at fail while the seed gate was demoted, it would inherit those rejections and undo the demotion.
+    assert on.action is FilterAction.WARN
     assert on.comparator.passes(0, on.threshold) and not on.comparator.passes(1, on.threshold)
     assert off.action is FilterAction.OFF
 

@@ -9,12 +9,16 @@ from pandera.typing import DataFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
+from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterAction, FilterEvaluation
 from sirnaforge.models.schemas import SiRNACandidateSchema
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import get_modification_summary
 from sirnaforge.utils.typed_decorators import check_types_typed, field_validator_typed, model_validator_typed
 
 logger = get_logger(__name__)
+
+#: What a filter that did not run writes, rather than a blank a reader mistakes for a verdict.
+_NOT_EVALUATED = FilterEvaluation.NOT_EVALUATED.value
 
 # Sequence-length bounds for observed/input siRNA-like sequences the off-target
 # engine analyzes (SiRNACandidate). The classic siRNA guide is ~19-23 nt, but
@@ -970,7 +974,28 @@ class SiRNACandidate(BaseModel):
         HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
         TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
 
-    # Either True (passed) or one of the FilterStatus reasons (failed)
+    # One verdict per declared filter, so a gate's outcome is not lost when another gate rejects the
+    # same candidate. `passes_filters` holds a SINGLE label and each gate overwrites it, so a label
+    # count was never a rejection count: on a 40,079-candidate run 14,266 candidates carrying an
+    # off-target label had already failed a design gate, and the design gates' own counts read 3x
+    # lower than the number of candidates they actually rejected.
+    #
+    # These also carry the value each gate compared. That is not redundancy: six gates read
+    # human-stratified counters that exist only as locals at the gate site, and `max_poly_runs` reads
+    # a length that is not a candidate field at all, so for those filters the row cannot otherwise be
+    # used to check the verdict. `evidence_exported` on the descriptor says which ones those are.
+    filter_verdicts: dict[str, str] = Field(
+        default_factory=dict,
+        description="filter_id -> FilterEvaluation value (pass/fail/unknown/not_evaluated)",
+    )
+    filter_observed: dict[str, float | None] = Field(
+        default_factory=dict,
+        description="filter_id -> the value the gate compared against its threshold",
+    )
+
+    # Either True (passed) or one of the FilterStatus reasons (failed). Reflects FAIL-action filters
+    # only: a warn-action filter records its verdict above and leaves this alone, which is what makes
+    # "record it, do not reject" representable.
     passes_filters: bool | FilterStatus = Field(
         default=True, description="PASS if all filters passed, otherwise specific failure reason"
     )
@@ -1036,6 +1061,45 @@ class SiRNACandidate(BaseModel):
             raise ValueError("Guide and passenger sequences must be the same length")
         return v
 
+    def record_filter_verdict(
+        self,
+        filter_id: str,
+        *,
+        observed: float | None,
+        passed: bool,
+        action: FilterAction,
+        status: "SiRNACandidate.FilterStatus | None" = None,
+    ) -> None:
+        """Record one gate's own outcome, and reject only if that gate's action says to.
+
+        This is the split that makes ``FilterAction.WARN`` mean anything. Before it, a gate had
+        exactly one way to express a failure -- overwrite ``passes_filters`` -- so "record it, do not
+        reject" was unrepresentable and ``WARN`` sat in the vocabulary unapplied.
+
+        ``passes_filters`` keeps first-failure-wins: it is a single label and the first FAIL-action
+        gate to reject a candidate owns it. That is now only a display choice, because every gate's
+        verdict survives in ``filter_verdicts`` regardless of which label won.
+
+        Args:
+            filter_id: The declared filter this verdict belongs to.
+            observed: The value compared against the threshold. ``None`` records ``unknown``: the gate
+                was in force but its evidence was unavailable, which is not the same as passing.
+            passed: Whether the comparison succeeded.
+            action: The resolved action for this filter. Only ``FAIL`` may reject.
+            status: The label to put on ``passes_filters`` when this gate rejects. Required for a
+                FAIL-action gate; a warn-action gate never needs one.
+        """
+        self.filter_observed[filter_id] = observed
+        if observed is None:
+            self.filter_verdicts[filter_id] = FilterEvaluation.UNKNOWN.value
+            return
+
+        self.filter_verdicts[filter_id] = FilterEvaluation.PASS.value if passed else FilterEvaluation.FAIL.value
+        if passed or action is not FilterAction.FAIL:
+            return
+        if status is not None and self.passes_filters is True:
+            self.passes_filters = status
+
     def to_fasta(self, include_metadata: bool = False) -> str:
         """Return FASTA format representation of the guide sequence.
 
@@ -1079,6 +1143,8 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
     mod_summary = get_modification_summary(candidate) if candidate.guide_metadata else {}
     pass_state = candidate.passes_filters
     passes_filters = pass_state.value if hasattr(pass_state, "value") else pass_state
+    verdicts = candidate.filter_verdicts or {}
+    observed = candidate.filter_observed or {}
 
     def _maybe_attr(name: str, default: Any = None) -> Any:
         return getattr(candidate, name, default)
@@ -1173,6 +1239,11 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "allele_specific": _maybe_attr("allele_specific", False),
         "targeted_alleles": json.dumps(_maybe_attr("targeted_alleles", [])),
         "overlapped_variants": json.dumps(_maybe_attr("overlapped_variants", [])),
+        # Per-filter verdicts, appended last so every column above keeps its position and meaning.
+        # One pair per declared filter, always the same columns in the same order: a filter that did
+        # not run writes `not_evaluated` rather than a blank, because a blank cell is read as a verdict.
+        **{f"{filter_id}_verdict": verdicts.get(filter_id, _NOT_EVALUATED) for filter_id in DECLARED_FILTER_IDS},
+        **{f"{filter_id}_observed": observed.get(filter_id) for filter_id in DECLARED_FILTER_IDS},
     }
 
 

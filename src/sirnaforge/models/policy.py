@@ -50,6 +50,31 @@ class FilterAction(str, Enum):
     FAIL = "fail"
 
 
+#: Every declared filter, in registry order. Lives here rather than beside ``FILTER_SPECS`` because
+#: the candidate row needs it to emit one fixed verdict column per filter, and ``models`` cannot
+#: import ``config.run_policy`` -- that module imports this package. ``FILTER_SPECS`` is the single
+#: source of truth for what a filter *is*; this is only the ordered set of ids, and a unit test pins
+#: the two against each other so a filter cannot be added in one place and forgotten in the other.
+DECLARED_FILTER_IDS: tuple[str, ...] = (
+    "gc_content_min",
+    "gc_content_max",
+    "max_poly_runs",
+    "max_paired_fraction",
+    "min_asymmetry_score",
+    "min_empirical_score",
+    "min_isoform_coverage",
+    "max_off_target_count",
+    "max_transcriptome_hits_0mm",
+    "max_transcriptome_hits_1mm",
+    "max_transcriptome_hits_2mm",
+    "max_transcriptome_seed_perfect",
+    "max_mirna_perfect_seed",
+    "max_mirna_1mm_seed",
+    "fail_on_high_risk_mirna",
+    "max_total_offtarget_hits",
+)
+
+
 class FilterEvaluation(str, Enum):
     """The verdict itself, which is distinct from the action taken on it.
 

@@ -5,12 +5,14 @@ import logging
 import math
 import sys
 import time
+from collections.abc import Mapping
 
 import Bio
 from Bio import SeqIO
 from Bio.Seq import Seq
 
 from sirnaforge import __version__
+from sirnaforge.config.run_policy import FILTER_SPEC_BY_ID
 from sirnaforge.core.repeat_detection import RepeatObservation, normalize_guide_sequence
 from sirnaforge.core.scoring import ScoringError, compute_composite, target_accessibility_sub_score
 from sirnaforge.core.thermodynamics import (
@@ -19,6 +21,7 @@ from sirnaforge.core.thermodynamics import (
     TargetSiteAccessibility,
     ThermodynamicCalculator,
 )
+from sirnaforge.models.policy import FilterAction
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
     EMPIRICAL_SCORE_MIN,
@@ -53,10 +56,33 @@ def _as_rna(sequence: str) -> str:
 class SiRNADesigner:
     """Main siRNA design engine following the algorithm specification."""
 
-    def __init__(self, parameters: DesignParameters) -> None:
-        """Initialize designer with given parameters."""
+    def __init__(
+        self,
+        parameters: DesignParameters,
+        *,
+        filter_actions: Mapping[str, FilterAction] | None = None,
+    ) -> None:
+        """Initialize designer with given parameters.
+
+        Args:
+            parameters: Thresholds and scoring settings.
+            filter_actions: Per-filter actions from the resolved run policy. Keyword-only with a
+                default because the declared defaults are the right answer when a caller has no
+                policy in hand -- ``DesignParameters`` carries thresholds and says nothing about
+                whether exceeding one rejects a candidate, so without this the designer could only
+                ever reject and ``FilterAction.WARN`` would be inert.
+        """
         self.parameters = parameters
+        self._filter_actions: Mapping[str, FilterAction] = filter_actions or {}
         self.last_guide_to_transcripts: dict[str, set[str]] | None = None
+
+    def _action_for(self, filter_id: str) -> FilterAction:
+        """The action in force for one filter: the caller's policy, else the declared default."""
+        override = self._filter_actions.get(filter_id)
+        if override is not None:
+            return override
+        spec = FILTER_SPEC_BY_ID.get(filter_id)
+        return spec.default_action if spec is not None else FilterAction.FAIL
 
     def design_from_file(self, input_file: str) -> DesignResult:
         """Design siRNAs from input FASTA file."""
@@ -523,8 +549,14 @@ class SiRNADesigner:
 
     def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
         """Flag a candidate whose guide is too structured to be accessible."""
-        if candidate.passes_filters is True and paired_fraction > self.parameters.filters.max_paired_fraction:
-            candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
+        ceiling = self.parameters.filters.max_paired_fraction
+        candidate.record_filter_verdict(
+            "max_paired_fraction",
+            observed=paired_fraction,
+            passed=paired_fraction <= ceiling,
+            action=self._action_for("max_paired_fraction"),
+            status=_ModelCandidate.FilterStatus.EXCESS_PAIRING,
+        )
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
         """Score internal sequence repetitiveness as a design-time off-target proxy.
@@ -579,21 +611,33 @@ class SiRNADesigner:
         return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
 
     def _apply_score_filters(self, candidate: SiRNACandidate, asymmetry_score: float, empirical_score: float) -> None:
-        """Flag candidates failing the asymmetry or empirical-rule thresholds.
+        """Record the asymmetry and empirical-rule verdicts, rejecting only where the action says to.
 
         Each threshold gates the quantity it is named after: min_asymmetry_score
         gates the thermodynamic asymmetry score, min_empirical_score gates the
-        empirical design-rule score. Only the first failure is recorded, matching
-        the earlier GC / poly-run / excess-pairing gates.
-        """
-        if candidate.passes_filters is not True:
-            return
+        empirical design-rule score.
 
+        Both verdicts are recorded unconditionally. The old ``passes_filters is not True`` early
+        return meant a candidate already rejected by GC or pairing was never *measured* against these
+        thresholds, so the two gates' reported counts were a function of gate ordering rather than of
+        the candidates -- which is how LOW_ASYMMETRY came to report 6,464 rejections on a run where
+        it independently rejected 26,431. ``passes_filters`` still keeps the first label.
+        """
         filters = self.parameters.filters
-        if not ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score):
-            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
-        elif empirical_score < filters.min_empirical_score:
-            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE
+        candidate.record_filter_verdict(
+            "min_asymmetry_score",
+            observed=asymmetry_score,
+            passed=ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score),
+            action=self._action_for("min_asymmetry_score"),
+            status=_ModelCandidate.FilterStatus.LOW_ASYMMETRY,
+        )
+        candidate.record_filter_verdict(
+            "min_empirical_score",
+            observed=empirical_score,
+            passed=empirical_score >= filters.min_empirical_score,
+            action=self._action_for("min_empirical_score"),
+            status=_ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE,
+        )
 
     @staticmethod
     def stamp_repeat_verdict(candidate: SiRNACandidate, observations: dict[str, RepeatObservation]) -> None:
@@ -736,9 +780,14 @@ class MiRNADesigner(SiRNADesigner):
     - Seed region quality assessment
     """
 
-    def __init__(self, parameters: DesignParameters) -> None:
+    def __init__(
+        self,
+        parameters: DesignParameters,
+        *,
+        filter_actions: Mapping[str, FilterAction] | None = None,
+    ) -> None:
         """Initialize miRNA designer with miRNA-specific config validation."""
-        super().__init__(parameters)
+        super().__init__(parameters, filter_actions=filter_actions)
         # Optionally apply miRNA-specific filter adjustments based on MiRNADesignConfig
         # For now, we rely on the caller to set appropriate filters for miRNA mode
 

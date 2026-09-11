@@ -50,6 +50,7 @@ from sirnaforge.config import (
 )
 from sirnaforge.config.reference_policy import parse_index_entries, resolve_reference_species
 from sirnaforge.config.run_policy import (
+    FILTER_SPEC_BY_ID,
     EntryPoint,
     ResolvedRunPolicy,
     RunPolicyError,
@@ -110,6 +111,7 @@ from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
 from sirnaforge.models.evidence import ScreeningPlan
+from sirnaforge.models.policy import FilterAction, FilterEvaluation
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
     DesignMode,
@@ -176,6 +178,17 @@ RENAMED_NEXTFLOW_PARAMS: Mapping[str, str] = {
     "genome_fastas": "transcriptome_fastas",
     "genome_species": "transcriptome_species",
 }
+
+
+def _policy_filter_actions(policy: ResolvedRunPolicy | None) -> dict[str, FilterAction] | None:
+    """The per-filter actions a resolved policy decided, or None when there is no policy to ask.
+
+    None rather than an empty dict on purpose: empty would read as "every filter has no action" and
+    the designer would fall back to declared defaults for a run that did resolve a policy.
+    """
+    if policy is None:
+        return None
+    return {resolved.filter_id: resolved.descriptor.action for resolved in policy.filters}
 
 
 def refuse_renamed_arguments(supplied: Mapping[str, Any]) -> None:
@@ -396,12 +409,16 @@ class SiRNAWorkflow:
         # Select designer based on design mode
         self.zfn_designer: ZFNDesigner | None = None
         self.sirnaforgeer: SiRNADesigner | MiRNADesigner | None = None
+        # The design gates need the ACTIONS as well as the thresholds. DesignParameters carries only
+        # the numbers, so without this a `--filter-action` override would reach the off-target gates
+        # and be silently ignored by the design ones.
+        design_actions = _policy_filter_actions(getattr(config, "resolved_policy", None))
         if config.design_params.design_mode == DesignMode.ZFN:
             self.zfn_designer = ZFNDesigner()
         elif config.design_params.design_mode == DesignMode.MIRNA:
-            self.sirnaforgeer = MiRNADesigner(config.design_params)
+            self.sirnaforgeer = MiRNADesigner(config.design_params, filter_actions=design_actions)
         else:
-            self.sirnaforgeer = SiRNADesigner(config.design_params)
+            self.sirnaforgeer = SiRNADesigner(config.design_params, filter_actions=design_actions)
 
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
@@ -3006,8 +3023,14 @@ class SiRNAWorkflow:
         total_hits: int,
         genuine_off_target_count: int,
         filter_criteria: OffTargetFilterCriteria,
+        candidate: SiRNACandidate,
     ) -> tuple[bool, SiRNACandidate.FilterStatus | None]:
-        """Check if candidate fails off-target filters.
+        """Record every off-target gate's verdict, and report the first that rejects.
+
+        Each gate writes its own outcome and the value it compared onto the candidate. That matters
+        more here than at the design stage: six of these gates read human-stratified counters that
+        exist only as locals in the caller, so before this the row could not be used to check the
+        verdict at all -- the identically named exported columns are all-species totals and disagree.
 
         ``transcriptome_seed_0mm`` is the only input that sees a *partial* hit whose seed paired
         perfectly. ``nm`` is a guide-level distance, so a clipped or gapped hit carries nm > 2 and
@@ -3021,55 +3044,112 @@ class SiRNAWorkflow:
         Returns:
             Tuple of (should_fail, fail_status enum or None)
         """
-        # Define filter checks with their thresholds and enum members
-        checks: list[tuple[int | None, int, SiRNACandidate.FilterStatus]] = [
+        # (filter_id, threshold, observed, label). The filter_id is what ties each check to the
+        # declared filter whose action decides whether exceeding the threshold rejects the candidate
+        # or is merely recorded, and it is the key the verdict is published under.
+        checks: list[tuple[str, int | None, int, SiRNACandidate.FilterStatus]] = [
             (
+                "max_transcriptome_hits_0mm",
                 filter_criteria.max_transcriptome_hits_0mm,
                 transcriptome_0mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH,
             ),
             (
+                "max_transcriptome_hits_1mm",
                 filter_criteria.max_transcriptome_hits_1mm,
                 transcriptome_1mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM,
             ),
             (
+                "max_transcriptome_hits_2mm",
                 filter_criteria.max_transcriptome_hits_2mm,
                 transcriptome_2mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM,
             ),
             (
+                "max_transcriptome_seed_perfect",
                 filter_criteria.max_transcriptome_seed_perfect,
                 transcriptome_seed_0mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT,
             ),
             (
+                "max_mirna_perfect_seed",
                 filter_criteria.max_mirna_perfect_seed,
                 mirna_0mm_seed,
                 SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED,
             ),
             (
+                "max_total_offtarget_hits",
                 filter_criteria.max_total_offtarget_hits,
                 total_hits,
                 SiRNACandidate.FilterStatus.TOTAL_OFFTARGETS,
             ),
             (
+                "max_off_target_count",
                 filter_criteria.max_off_target_count,
                 genuine_off_target_count,
                 SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
             ),
+            # The boolean flag, as a ceiling of zero, so it goes through the same path as every other
+            # gate instead of a trailing special case. It used to be unreachable: a high-risk hit is by
+            # definition a perfect seed hit, so max_mirna_perfect_seed's ceiling of 0 returned first and
+            # HIGH_RISK_MIRNA labelled nothing on a run where 1,990 candidates carried such a hit.
+            (
+                "fail_on_high_risk_mirna",
+                0 if filter_criteria.fail_on_high_risk_mirna else None,
+                mirna_high_risk,
+                SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA,
+            ),
         ]
 
-        # Check all threshold-based filters
-        for threshold, value, status in checks:
-            if threshold is not None and value > threshold:
-                return True, status
+        # Every check is evaluated and recorded. Returning on the first rejection left the remaining
+        # gates unmeasured, so their reported counts were a function of this list's order.
+        rejection: SiRNACandidate.FilterStatus | None = None
+        for filter_id, threshold, value, status in checks:
+            action = self._offtarget_action_for(filter_id, threshold)
+            if threshold is None or action is FilterAction.OFF:
+                candidate.filter_verdicts[filter_id] = FilterEvaluation.NOT_EVALUATED.value
+                candidate.filter_observed[filter_id] = value
+                continue
+            candidate.record_filter_verdict(
+                filter_id,
+                observed=value,
+                passed=value <= threshold,
+                action=action,
+                status=status,
+            )
+            if value > threshold and action is FilterAction.FAIL and rejection is None:
+                rejection = status
 
-        # Check high-risk miRNA (boolean flag)
-        if filter_criteria.fail_on_high_risk_mirna and mirna_high_risk > 0:
-            return True, SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA
+        return rejection is not None, rejection
 
-        return False, None
+    def _offtarget_action_for(self, filter_id: str, threshold: int | None) -> FilterAction:
+        """The action in force for one off-target filter: the run's policy, else the declared default.
+
+        ``threshold`` decides the OFF case. A registry default of ``off`` means "no threshold is
+        configured", not "never gate on this" -- ``max_transcriptome_seed_perfect`` ships that way
+        precisely so a caller can opt in by setting one. Treating the default as authoritative would
+        silently ignore a threshold the caller asked for, which is the defect that gate already had
+        once. ``warn`` is the only action chosen independently of whether a threshold exists.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is not None:
+            try:
+                descriptor = policy.descriptor(filter_id)
+            except (KeyError, RunPolicyError):
+                descriptor = None
+            if descriptor is not None:
+                # OFF because the policy has no threshold is not the same as OFF because a caller
+                # asked for it. Only the first is overridden by a threshold arriving on the criteria.
+                if descriptor.action is FilterAction.OFF and descriptor.threshold is None and threshold is not None:
+                    return FilterAction.FAIL
+                return cast(FilterAction, descriptor.action)
+        spec = FILTER_SPEC_BY_ID.get(filter_id)
+        if spec is None:
+            return FilterAction.FAIL
+        if spec.default_action is FilterAction.OFF and threshold is not None:
+            return FilterAction.FAIL
+        return spec.default_action
 
     @staticmethod
     def _normalize_transcript_id(transcript_id: str) -> str:
@@ -3502,10 +3582,15 @@ class SiRNAWorkflow:
                 human_total_hits_for_filters,
                 liabilities_counted(hit_counts),
                 filter_criteria,
+                candidate,
             )
 
             if should_fail and fail_status:
-                candidate.passes_filters = fail_status
+                # `passes_filters` is set by the gate that rejected, through record_filter_verdict,
+                # which keeps the first failure. It is no longer assigned here: overwriting it
+                # unconditionally is what let an off-target label mask a design verdict already on the
+                # row, so 14,266 candidates on one run reported an off-target rejection for a
+                # candidate a design gate had already rejected.
                 logger.info(f"Candidate {candidate_id} failed off-target filter: {fail_status.value}")
 
                 # Update stat counters
