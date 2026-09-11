@@ -9,6 +9,7 @@ pass, which is the mistake the report exists to make visible.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -205,5 +206,27 @@ def test_the_rendered_report_is_one_file_with_no_sidecars(tmp_path: Path) -> Non
     assert html.startswith("<!DOCTYPE html>")
     for placeholder in ("PLOTLY_JS_PLACEHOLDER", "GUIDES_JSON_PLACEHOLDER", "FILTERS_JSON_PLACEHOLDER"):
         assert placeholder not in html, f"{placeholder} was not substituted"
-    assert "Plotly.newPlot" in html, "the chart is drawn from the inlined bundle"
+    assert "<svg" in html, "the chart is hand-drawn inline SVG"
     assert "GUIDE_SEQUENCE_TODO" not in html
+
+
+@pytest.mark.unit
+def test_the_report_reaches_nothing_outside_itself(tmp_path: Path) -> None:
+    """Quilt's default iframe sandbox withholds ``allow-same-origin``, so any reach outward fails.
+
+    Enforced as a static check because that is what #103 asks for, and it is only enforceable now that
+    plotly is gone: its bundle carried 45 external URLs and browser-storage references in map traces
+    the report never invokes, and a static check cannot tell an inert string from a live call (D16).
+    """
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST00000000001", 10)],
+        [_hit_row(GUIDE, "human", "ENST00000099999", 1, "off_target", "SOMEGENE")],
+    )
+    html = render_html(build_payload(run))
+
+    assert not re.findall(r"https?://", html), "the report contains an external URL"
+    external = [m for m in re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)""", html) if not m.startswith("#")]
+    assert external == [], f"the report links a non-inline resource: {external}"
+    for forbidden in ("fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "document.cookie"):
+        assert forbidden not in html, f"{forbidden} cannot work in Quilt's default sandbox"
