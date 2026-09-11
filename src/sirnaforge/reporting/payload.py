@@ -553,10 +553,10 @@ def _transcript_maps(
     rows["_val"] = pd.to_numeric(rows.get("composite_score"), errors="coerce")
     rows = rows.dropna(subset=["_pos", "_val"])
     run_pass = rows["passes_filters"].astype(str).str.split(" (", regex=False).str[0].eq("PASS")
+    # A row the run rejected is a rejection; otherwise the point carries its guide's *report* status,
+    # so a window whose guide cannot be established is not drawn under "passes every gate".
     rows["_class"] = [
-        (status_by_guide.get(guide, "pass") if status_by_guide.get(guide) in {"pass", "warn"} else "pass")
-        if passed
-        else "fail"
+        "fail" if not passed else status_by_guide.get(guide, "unknown")
         for guide, passed in zip(rows["_guide"], run_pass, strict=True)
     ]
 

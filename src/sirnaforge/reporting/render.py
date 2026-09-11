@@ -356,8 +356,9 @@ function structureCard(g){
   if(!db) return '';
   const pairCount=(db.match(/\(/g)||[]).length, degenerate=/^\.+$/.test(db);
   const laid=!!(LAYOUTS[db] && LAYOUTS[db].length===db.length);
+  // No run-specific figures in this text: the card ships with the tool and is read against every target.
   const caption = degenerate
-    ? `No pairs predicted over ${db.length} nt. This is the open chain, the physical floor of the MFE — a real answer, and the shape 34.8% of one MSH3 run's passing pool takes.`
+    ? `No pairs predicted over ${db.length} nt. This is the open chain, the physical floor of the MFE, and a common answer for a guide this short — not a failed fold.`
     : `${pairCount} pair${pairCount===1?'':'s'}, ${2*pairCount} of ${db.length} nt paired.`;
   return `<div class="card"><h2>Secondary structure — the fold the gates were decided on</h2>
     ${degenerate?`<div class="warn"><b>Degenerate fold.</b> ${caption} <code>paired_fraction</code> and
@@ -374,7 +375,7 @@ function structureCard(g){
         </div>
         <p class="empty" style="margin:10px 0 0">Laid out from the run's published dot-bracket and never
         refolded: a re-fold here could disagree with the <code>paired_fraction</code> the gates used.
-        Seed ${2}–${8} shaded.</p>
+        Seed 2&ndash;8 shaded.</p>
       </div>
     </div></div>`;
 }
@@ -443,6 +444,7 @@ def render_html(payload: ReportPayload) -> str:
 #: rejected one. Labels are the legend text.
 _MAP_SERIES = (
     ("fail", "rejected by at least one gate"),
+    ("unknown", "kept by the run, not established here"),
     ("warn", "passes, over a warn threshold"),
     ("pass", "passes every gate"),
 )

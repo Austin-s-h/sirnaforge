@@ -409,6 +409,22 @@ def test_the_payload_carries_a_design_map_and_the_report_draws_it(tmp_path: Path
 
 
 @pytest.mark.unit
+def test_the_map_does_not_colour_an_unestablished_window_as_passing(tmp_path: Path) -> None:
+    """The map is subject to the same rule as the status column: report less, never more.
+
+    Classifying a run-PASS row as "passes every gate" regardless of whether the report could establish
+    it drew all 11,520 passing windows of one MSH3 run under that legend while the report itself called
+    every one of their guides *not established*.
+    """
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    payload = build_payload(run)
+    classes = {k for t in payload.run["transcripts"] for k in t["series"]}
+
+    assert payload.guides[0].status == "unknown", "the fixture exports none of the screening counters"
+    assert classes == {"unknown"}, "a window the report cannot establish is not drawn as passing"
+
+
+@pytest.mark.unit
 def test_the_structure_is_laid_out_from_the_published_dot_bracket(tmp_path: Path) -> None:
     """The picture must be of the fold the gates used, so the dot-bracket travels with the guide.
 
