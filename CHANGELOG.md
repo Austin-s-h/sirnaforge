@@ -127,6 +127,27 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Added
 
+- **`sirnaforge report <run_dir>`: one self-contained HTML file over a finished run
+  (`reporting/`, #103).** The tool advertised an off-target report on every completed run and shipped a
+  `touch`ed empty file for it. This is the report. The unit is the **guide sequence**, not the candidate
+  id: a guide is enumerated once per transcript it was found on -- median 6 and up to 34 rows on the
+  public baseline -- while screening runs once per distinct guide, so joining on `id` would leave most
+  candidates falsely reading as zero-off-target. It classifies nothing and declares no threshold of its
+  own: gate descriptors come from the resolved run policy and `hit_class` from the published table, so
+  the report cannot disagree with the run. A hit table without the classification columns is **refused**
+  rather than rendered, because on the public baseline **50.1% of alignments are not liabilities** and
+  displaying them as off-targets is the defect this exists to prevent. Verdicts have **three** states:
+  a guide failing no gate is only clean when every gate could be evaluated, and six of the twelve active
+  gates read human-stratified counters 0.7.1 does not export yet, which leaves 450 guides on the public
+  baseline that the run failed and the report cannot re-derive -- reported `not established`, never
+  flipped to pass, with the agreement against the run's own verdict published in the header. The one
+  figure is hand-drawn inline SVG and `jinja2` is the only new runtime dependency: `plotly` was adopted,
+  implemented and then **removed**, because its 4.29 MB bundle carries external URLs and
+  browser-storage references in map traces the report never invokes, and a static check cannot tell
+  those apart from live ones -- so the "zero external URLs" guarantee was unenforceable with it present
+  and is now pinned by a test. Client-side re-thresholding, preset views and the Nextflow entry point
+  are not in this slice.
+
 - **`--transcriptome_species` is passed to Nextflow exactly once (#99).** The runner names the active
   species and the resolver names the resolved ones; emitting both left the pipeline reporting whichever
   flag came last, which need not be the set handed to the aligner.

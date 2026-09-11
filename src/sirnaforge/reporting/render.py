@@ -5,8 +5,9 @@ Quilt Catalog with permissive HTML rendering **disabled** -- which is the defaul
 the ``allow-same-origin`` sandbox token. That rules out ``fetch``, ``LocalStorage`` and cookies, so
 everything lives in the one file and reader state lives in memory and the URL fragment.
 
-``plotly.js`` is read from the installed ``plotly`` package and **inlined**; it is never fetched from a
-CDN, because the report carries target sequences and must not contact a third party (D15).
+The one figure is a hand-drawn inline SVG. plotly was tried and removed (D16): its bundle is 4.29 MB
+and its map traces carry external URLs and browser-storage/network API references this report never
+invokes, which no static check can tell apart from live ones. One stacked bar does not justify that.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-import plotly
 from jinja2 import Environment, select_autoescape
 
 from sirnaforge.reporting.payload import ReportPayload
@@ -23,22 +23,6 @@ from sirnaforge.reporting.payload import ReportPayload
 #: Guides embedded in the index. The per-guide detail is rendered for all of them; this bounds only
 #: how many rows the client holds, and the number is reported in the header so it is never a silent cap.
 MAX_INDEX_GUIDES = 5000
-
-
-def plotly_js() -> str:
-    """The minified plotly bundle, read from package data.
-
-    Raises:
-        FileNotFoundError: plotly's package data is missing, which means the report cannot be made
-            self-contained and must not fall back to a CDN.
-    """
-    path = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"plotly.min.js not found at {path}. The report inlines it deliberately; falling back to a "
-            "CDN would send target sequences to a third party and would break in Quilt's sandbox."
-        )
-    return path.read_text(encoding="utf-8")
 
 
 _TEMPLATE = """<!DOCTYPE html>
@@ -113,7 +97,6 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
  </div>
  <div id="right"><p class="empty">Select a guide.</p></div>
 </main>
-<script>PLOTLY_JS_PLACEHOLDER</script>
 <script>
 const G = GUIDES_JSON_PLACEHOLDER;
 const FILTERS = FILTERS_JSON_PLACEHOLDER;
@@ -151,6 +134,44 @@ document.getElementById('q').oninput = e => {
   renderIndex();
 };
 
+// Hand-drawn inline SVG, deliberately: plotly.min.js is 4.29 MB and its map traces carry external
+// URLs and browser-storage/network API references this report never invokes, which no static check
+// can tell apart from live ones (D16). One stacked bar does not justify that.
+const CLASS_FILL={off_target:'#b91c1c',undetermined:'#b45309',on_target:'#9ca3af',ortholog:'#6b7280',repeat:'#d1d5db'};
+const LIABILITY_CLASSES=new Set(['off_target','undetermined']);
+function drawMatrix(id, matrix){
+  const host=document.getElementById(id); if(!host) return;
+  const bands=['0','1','2','>=3','unknown'].filter(b=>matrix.some(m=>m.nm===b));
+  const cls=[...new Set(matrix.map(m=>m.hit_class))].sort(
+    (a,b)=>(LIABILITY_CLASSES.has(b)?1:0)-(LIABILITY_CLASSES.has(a)?1:0)||a.localeCompare(b));
+  const at=(b,c)=>matrix.filter(m=>m.nm===b&&m.hit_class===c).reduce((a,m)=>a+m.n,0);
+  const totals=bands.map(b=>cls.reduce((a,c)=>a+at(b,c),0));
+  const max=Math.max(1,...totals);
+  const W=Math.max(320,host.clientWidth||520), H=200, L=46, R=8, T=10, B=30;
+  const pw=W-L-R, ph=H-T-B, bw=Math.min(64, pw/bands.length*0.62), step=pw/bands.length;
+  const y=v=>T+ph-(v/max)*ph;
+  // Two gridlines and the max, so a bar height is readable without a tooltip.
+  const ticks=[0,Math.round(max/2),max].filter((v,i,a)=>a.indexOf(v)===i);
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img"
+    aria-label="alignments by mismatch count, stacked by hit class">`;
+  s+=ticks.map(v=>`<g><line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="#e5e7eb"/>
+    <text x="${L-6}" y="${y(v)+3.5}" text-anchor="end" font-size="10" fill="#6b7280">${v.toLocaleString()}</text></g>`).join('');
+  bands.forEach((b,bi)=>{
+    const x=L+bi*step+(step-bw)/2; let acc=0;
+    cls.forEach(c=>{const n=at(b,c); if(!n) return;
+      const h=(n/max)*ph; acc+=n;
+      s+=`<rect x="${x}" y="${y(acc)}" width="${bw}" height="${Math.max(1,h)}" fill="${CLASS_FILL[c]||'#9ca3af'}">
+        <title>${c}, ${b===' >=3'?b:b} mismatch: ${n.toLocaleString()} alignment(s)</title></rect>`;});
+    s+=`<text x="${x+bw/2}" y="${H-B+14}" text-anchor="middle" font-size="10" fill="#6b7280">${b}</text>`;
+    if(totals[bi]) s+=`<text x="${x+bw/2}" y="${y(totals[bi])-4}" text-anchor="middle" font-size="10"
+      fill="#1a1d21" font-weight="650">${totals[bi].toLocaleString()}</text>`;
+  });
+  s+=`<text x="${L+pw/2}" y="${H-2}" text-anchor="middle" font-size="10" fill="#6b7280">mismatches</text></svg>`;
+  s+=`<div style="font-size:11px;color:#6b7280;margin-top:2px">`+cls.map(c=>
+    `<span style="margin-right:12px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;
+     background:${CLASS_FILL[c]||'#9ca3af'};margin-right:4px"></span>${c}${LIABILITY_CLASSES.has(c)?' (liability)':''}</span>`).join('')+`</div>`;
+  host.innerHTML=s;
+}
 const VERDICT=['pass','fail','unknown','not_evaluated'];
 function gateReason(f,value,verdict,reason){
   if(reason===1) return 'the run does not export '+f.column;
@@ -230,18 +251,7 @@ function show(g){
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
    ${gatesCard(g)}${isoformCard(g)}${offtargetCard(g,i)}${mirnaCard(g)}`;
-  if(g.offtarget_matrix.length){
-    const cls=[...new Set(g.offtarget_matrix.map(m=>m.hit_class))];
-    const bands=['0','1','2','>=3','unknown'].filter(b=>g.offtarget_matrix.some(m=>m.nm===b));
-    Plotly.newPlot('mx'+i, cls.map(c=>({
-      x:bands, y:bands.map(b=>g.offtarget_matrix.filter(m=>m.nm===b&&m.hit_class===c).reduce((a,m)=>a+m.n,0)),
-      name:c, type:'bar'})),
-      {barmode:'stack',margin:{l:44,r:8,t:8,b:34},height:230,
-       xaxis:{title:{text:'mismatches',font:{size:11}}},yaxis:{title:{text:'alignments',font:{size:11}}},
-       legend:{orientation:'h',y:-0.28,font:{size:11}},font:{size:11},
-       paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)'},
-      {displayModeBar:false,responsive:true});
-  }
+  if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
   location.hash = encodeURIComponent(g.guide);
 }
 renderIndex();
@@ -272,10 +282,8 @@ def render_html(payload: ReportPayload) -> str:
     env = Environment(autoescape=select_autoescape(default=True), trim_blocks=True, lstrip_blocks=True)
     # Rendered before the payload is substituted, so no JSON string can be parsed as template syntax.
     html = env.from_string(_TEMPLATE).render(p=payload)
-    return (
-        html.replace("PLOTLY_JS_PLACEHOLDER", plotly_js())
-        .replace("GUIDES_JSON_PLACEHOLDER", json.dumps(guides, separators=(",", ":")))
-        .replace("FILTERS_JSON_PLACEHOLDER", json.dumps(payload.filters, separators=(",", ":")))
+    return html.replace("GUIDES_JSON_PLACEHOLDER", json.dumps(guides, separators=(",", ":"))).replace(
+        "FILTERS_JSON_PLACEHOLDER", json.dumps(payload.filters, separators=(",", ":"))
     )
 
 
