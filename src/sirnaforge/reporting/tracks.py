@@ -13,7 +13,7 @@ the HTML report, a notebook and a standalone figure all draw the same map:
     svg, geometry = transcript_map_svg(
         regions,
         [PointSeries("passes every gate", "pass", passing_points)],
-        gaps=not_enumerated_stretches(positions, regions.length, window=23),
+        gaps=uncovered_stretches(positions, regions.length, window=23),
     )
 
 Constraints inherited from #103: no external URLs, no fonts, no script, no raster. Everything here is
@@ -38,7 +38,8 @@ SERIES_FILL = {
     "selected": "#1d4ed8",
 }
 
-_REGION_FILL = {"utr5": "#cbd5e1", "cds": "#94a3b8", "utr3": "#cbd5e1"}
+_REGION_FILL = {"utr5": "#cbd5e1", "cds": "#94a3b8", "utr3": "#cbd5e1", "unknown": "#e2e8f0"}
+_REGION_LABEL = {"utr5": "5'UTR", "utr3": "3'UTR", "unknown": "no ORF called"}
 _AXIS = "#6b7280"
 _GRID = "#e5e7eb"
 _GAP_FILL = "#f1f5f9"
@@ -67,7 +68,7 @@ class TranscriptRegions:
     def spans(self) -> list[tuple[str, int, int]]:
         """``(region, start, end)`` in transcript order, 1-based inclusive."""
         if self.cds_start is None or self.cds_end is None:
-            return [("cds", 1, self.length)]
+            return [("unknown", 1, self.length)]
         out = []
         if self.cds_start > 1:
             out.append(("utr5", 1, self.cds_start - 1))
@@ -77,11 +78,11 @@ class TranscriptRegions:
         return out
 
     def region_of(self, position: int) -> str:
-        """Which region a 1-based position falls in."""
+        """Which region a 1-based position falls in, or ``unknown`` outside every span."""
         for region, start, end in self.spans:
             if start <= position <= end:
                 return region
-        return "cds"
+        return "unknown"
 
 
 @dataclass(frozen=True)
@@ -153,13 +154,20 @@ def transcript_regions(run_dir: Path | str) -> dict[str, TranscriptRegions]:
     return out
 
 
-def not_enumerated_stretches(
+def uncovered_stretches(
     positions: Iterable[int], length: int, *, window: int, min_nt: int = 40
 ) -> list[tuple[int, int]]:
-    """Stretches of the transcript no enumerated window covers, at least ``min_nt`` long.
+    """Stretches of the transcript no row in the candidate table covers, at least ``min_nt`` long.
 
-    Drawn because an empty region of the map is otherwise ambiguous: a gate rejecting every window and
-    no window existing look identical, and only one of them is a design decision.
+    Drawn because an empty region of the plot is otherwise unreadable: a reader cannot tell a stretch
+    that scored badly from one with nothing in it at all.
+
+    **This is coverage of the table, not of the transcript, and the two differ a lot.** Candidates
+    rejected at enumeration on GC or poly-run never reach ``candidates_all.csv``: on one MSH3 run
+    2,021 of the 4,421 possible 23-mer windows on the canonical transcript -- 46% -- are absent for
+    that reason, and the file carries no ``GC_OUT_OF_RANGE`` or ``POLY_RUNS`` label to say so. A
+    shaded stretch therefore means "no candidate here", which may be because a gate emptied it or
+    because no window could start there. Callers must not label it as the latter.
     """
     covered = bytearray(length + 2)
     for start in positions:
@@ -200,7 +208,7 @@ def transcript_map_svg(
         title: Heading above the region bar.
         value_label: Y-axis label.
         value_range: Y bounds; taken from the data when omitted.
-        gaps: Stretches to shade as not enumerated, from :func:`not_enumerated_stretches`.
+        gaps: Stretches to shade as not enumerated, from :func:`uncovered_stretches`.
         ticks: One-dimensional lanes drawn beneath the plot.
         width: Total SVG width in px.
         plot_height: Height of the scatter area alone.
@@ -300,7 +308,7 @@ def legend_html(series: Sequence[PointSeries], *, gaps: bool = False) -> str:
     if gaps:
         items.append(
             f'<span style="white-space:nowrap"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;'
-            f'background:{_GAP_FILL};border:1px solid {_GRID};margin-right:5px"></span>no enumerated window</span>'
+            f'background:{_GAP_FILL};border:1px solid {_GRID};margin-right:5px"></span>no candidate in this table</span>'
         )
     return f'<div style="font-size:11.5px;color:#6b7280;margin:6px 0 2px">{"".join(items)}</div>'
 
@@ -311,7 +319,7 @@ def _region_bar(regions: TranscriptRegions, sx: Callable[[float], float], y: flo
     for region, start, end in regions.spans:
         rx, rw = sx(start), max(sx(end) - sx(start), 1.0)
         out.append(f'<rect x="{rx:g}" y="{y:g}" width="{rw:g}" height="{height:g}" fill="{_REGION_FILL[region]}"/>')
-        label = {"utr5": "5'UTR", "cds": f"CDS {start:,}-{end:,}", "utr3": "3'UTR"}[region]
+        label = _REGION_LABEL.get(region) or f"CDS {start:,}-{end:,}"
         if rw > 8 * len(label) * 0.55:
             out.append(
                 f'<text x="{rx + rw / 2:g}" y="{y + height / 2 + 4:g}" text-anchor="middle" '

@@ -76,11 +76,24 @@ def is_degenerate(structure: str) -> bool:
 
 
 def layout_xy(structure: str) -> list[tuple[float, float]] | None:
-    """Naview coordinates for each base, or None when ViennaRNA is not installed.
+    """Naview coordinates for each base, or None when there is no layout to be had.
+
+    ``None`` covers three cases: ViennaRNA is not installed, the dot-bracket does not describe a
+    structure, or the layout call failed. All three fall back to the arc diagram.
+
+    **The validity check is not defensive tidiness -- it is load-bearing.**
+    ``RNA.naview_xy_coordinates`` *segfaults* on an unbalanced dot-bracket (verified on ViennaRNA
+    2.7.2 for both ``..((..`` and ``..)(..``), which no ``except`` can catch and which would take the
+    whole report process down over one malformed cell in a ``structure`` column. ``pair_table`` rejects
+    the same strings in Python first, so ViennaRNA only ever sees input it can lay out.
 
     ViennaRNA returns one sentinel entry past the end; it is dropped here so the result is exactly as
     long as the structure.
     """
+    try:
+        pair_table(structure)
+    except StructureError:
+        return None
     try:
         import RNA  # noqa: PLC0415  # optional at runtime; the arc fallback covers its absence
     except ImportError:

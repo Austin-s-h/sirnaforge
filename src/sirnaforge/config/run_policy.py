@@ -643,6 +643,11 @@ class ResolvedRunPolicy(BaseModel):
         }
 
 
+def _named(entry: object) -> str:
+    """A filter entry's id for an error message, when the entry may not be a mapping at all."""
+    return str(entry.get("filter_id", "?")) if isinstance(entry, Mapping) else "?"
+
+
 def filters_from_manifest(block: Mapping[str, Any]) -> tuple[ResolvedFilter, ...]:
     """Rebuild the resolved gates from a manifest's ``run_policy`` block.
 
@@ -681,9 +686,7 @@ def filters_from_manifest(block: Mapping[str, Any]) -> tuple[ResolvedFilter, ...
                 )
             )
         except (KeyError, ValidationError) as exc:
-            raise RunPolicyError(
-                f"manifest run_policy filter {entry.get('filter_id', '?')!r} is unusable: {exc}"
-            ) from exc
+            raise RunPolicyError(f"manifest run_policy filter {_named(entry)!r} is unusable: {exc}") from exc
     return tuple(out)
 
 

@@ -17,7 +17,7 @@ import pytest
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, unclassified_cells
 from sirnaforge.reporting import ReportInputError, build_payload, render_html
-from sirnaforge.reporting.payload import EMBED_MAX_NM, REASON_OK
+from sirnaforge.reporting.payload import EMBED_MAX_NM, MIN_UNCOVERED_NT, REASON_OK
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
 OTHER = "UUUUCCCCAAAAGGGGUUUUC"
@@ -409,18 +409,39 @@ def test_the_payload_carries_a_design_map_and_the_report_draws_it(tmp_path: Path
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("drop", ["position", "composite_score", None])
-def test_a_run_missing_what_the_map_needs_still_renders(tmp_path: Path, drop: str | None) -> None:
-    """The map is an addition to the report, so its inputs going missing costs the panel and nothing else."""
-    columns = [c for c in _CANDIDATE_COLUMNS.split(",") if c != drop]
-    values = dict(zip(_CANDIDATE_COLUMNS.split(","), _candidate_row("c1", GUIDE, "ENST1", 10).split(","), strict=True))
+@pytest.mark.parametrize(
+    ("drop", "maps", "why"),
+    [
+        ((), True, "everything present"),
+        (("composite_score",), True, "design_score is the documented fallback"),
+        (("composite_score", "design_score"), False, "no value column left to plot"),
+        (("position",), False, "no x axis"),
+        (("passes_filters",), False, "no run verdict to class a point by"),
+    ],
+)
+def test_the_map_needs_a_value_column_and_says_so_when_it_has_none(
+    tmp_path: Path, drop: tuple[str, ...], maps: bool, why: str
+) -> None:
+    """``composite_score`` does not exist before post-screen scoring, so the map cannot require it.
+
+    A design-only run, a run whose screening failed, and the "keeping design-time score" path all
+    produce candidates with no composite. Requiring it dropped the whole map for those runs with no
+    caveat; requiring a *value* column and naming the one used keeps the panel and explains any loss.
+    """
+    names = _CANDIDATE_COLUMNS.split(",")
+    values = dict(zip(names, _candidate_row("c1", GUIDE, "ENST1", 10).split(","), strict=True))
+    keep = [c for c in names if c not in drop]
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
     (run / "sirnaforge" / "candidates_all.csv").write_text(
-        ",".join(columns) + "\n" + ",".join(values[c] for c in columns) + "\n"
+        ",".join(keep) + "\n" + ",".join(values[c] for c in keep) + "\n"
     )
 
     payload = build_payload(run)
-    assert len(payload.run["transcripts"]) == (1 if drop is None else 0)
+    assert bool(payload.run["transcripts"]) is maps, why
+    if maps:
+        assert payload.run["transcripts"][0]["value_column"] == ("design_score" if drop else "composite_score")
+    else:
+        assert any("no design map" in c for c in payload.caveats), "a lost panel is explained, not silent"
     assert render_html(payload).startswith("<!DOCTYPE html>")
 
 
@@ -460,6 +481,44 @@ def test_the_structure_is_laid_out_from_the_published_dot_bracket(tmp_path: Path
 
     assert {g.structure for g in payload.guides} == {fold}, "each guide carries its own published fold"
     assert len(payload.run["structure_layouts"]) == 1, "two guides, one distinct structure, one layout"
+
+
+@pytest.mark.unit
+def test_a_malformed_structure_costs_its_own_panel_and_nothing_else(tmp_path: Path) -> None:
+    """A dot-bracket that cannot describe the guide must not take the rest of the detail pane down.
+
+    The JS drawer indexed a coordinate array by sequence position; a structure shorter than its guide
+    made that undefined, threw inside the template literal, and blanked gates, isoforms and off-targets
+    along with the structure.
+    """
+    columns = _CANDIDATE_COLUMNS + ",structure"
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text(
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},..((..\n"
+    )
+    html = render_html(build_payload(run))
+
+    assert "function balanced(" in html, "the client checks the same things structure.py raises on"
+    assert "db.length!==g.guide.length" in html
+    assert "function card(render, g)" in html, "and one panel raising cannot cost the pane"
+
+
+@pytest.mark.unit
+def test_the_map_note_states_the_threshold_the_code_uses(tmp_path: Path) -> None:
+    """A caption naming a hardcoded 40 nt outlives the constant it was copied from."""
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST1", 1), _candidate_row("c2", OTHER, "ENST1", 900)],
+        [],
+    )
+    (run / "orf_reports").mkdir()
+    (run / "orf_reports" / "orf_validation.txt").write_text(
+        "transcript_id\tsequence_length\tlongest_orf_start\tlongest_orf_end\nENST1\t1000\t100\t900\n"
+    )
+    html = render_html(build_payload(run))
+
+    assert f"{MIN_UNCOVERED_NT} nt or more carry no candidate in this table" in html
+    assert "no enumerated window" not in html, "the table's coverage is not the transcript's"
 
 
 @pytest.mark.unit

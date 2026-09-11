@@ -3002,6 +3002,7 @@ def report(
             f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, self-contained)\n"
             f"{payload.run['guides']:,} guides from {payload.run['candidate_rows']:,} candidate rows\n"
             f"[green]{counts['pass']} pass[/green] · "
+            f"[yellow]{counts['warn']} pass with a warning[/yellow] · "
             f"[yellow]{counts['unknown']} not established[/yellow] · [red]{counts['fail']} fail[/red]",
             title=f"Report — {payload.run['gene_query']}",
         )

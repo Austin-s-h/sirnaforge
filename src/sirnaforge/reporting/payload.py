@@ -34,7 +34,7 @@ from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, hit_class_of,
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
 from sirnaforge.reporting.structure import layouts_for
-from sirnaforge.reporting.tracks import not_enumerated_stretches, transcript_regions
+from sirnaforge.reporting.tracks import transcript_regions, uncovered_stretches
 
 #: Bump when the payload's shape changes, so a report and the run it describes can never be
 #: silently mismatched.
@@ -527,34 +527,46 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
     )
 
 
-#: Transcript stretches shorter than this are not called out as unenumerated: a 23-mer window cannot
-#: start in the last 22 nt of a transcript, so short tails are arithmetic rather than a design choice.
-MIN_UNENUMERATED_NT = 40
+#: Transcript stretches shorter than this are not reported as carrying no candidate: a 23-mer window
+#: cannot start in the last 22 nt of a transcript, so short tails are arithmetic, not a design choice.
+MIN_UNCOVERED_NT = 40
+
+#: Value plotted on the design map, in order of preference. ``composite_score`` does not exist until
+#: post-screen scoring, so a design-only run or one whose scoring failed has only ``design_score``.
+#: Without the fallback those runs lose the whole map to an all-NaN column.
+_MAP_VALUE_COLUMNS = ("composite_score", "design_score")
 
 
 def _transcript_maps(
     candidates: pd.DataFrame, guides: list[GuideEntry], run_dir: Path, caveats: list[str]
 ) -> list[dict[str, Any]]:
-    """Per-transcript position series for the design map, biggest transcript first.
+    """Per-transcript position series for the design map, most-enumerated transcript first.
 
-    Points are classified by the run's own row label, with passing rows split by their guide's report
-    status so a warn is visible on the map as it is in the index. Regions come from the run's ORF
-    report; a transcript missing from it still gets a map, without a region bar.
+    A row the run rejected is plotted as a rejection; every other row carries its guide's report
+    status, so a window the report cannot establish is not drawn as passing. Regions come from the
+    run's ORF report; a transcript missing from it still gets a map, without a region bar.
     """
-    if "position" not in candidates.columns or "transcript_id" not in candidates.columns:
+    required = {"position", "transcript_id", "passes_filters"}
+    missing = sorted(required - set(candidates.columns))
+    if missing:
+        caveats.append(f"no design map: this run exports no {', '.join(missing)}")
         return []
+    value_column = next((c for c in _MAP_VALUE_COLUMNS if c in candidates.columns), None)
+    if value_column is None:
+        caveats.append(f"no design map: this run exports none of {', '.join(_MAP_VALUE_COLUMNS)}")
+        return []
+
     regions = transcript_regions(run_dir)
     if not regions:
         caveats.append("no ORF report in this run, so the design map cannot label CDS and UTR")
 
     status_by_guide = {g.guide: g.status for g in guides}
-    rows = candidates[~candidates["id"].astype(str).str.contains("DIRTY", na=False)].copy()
+    ids = candidates["id"].astype(str) if "id" in candidates.columns else pd.Series("", index=candidates.index)
+    rows = candidates[~ids.str.contains("DIRTY", na=False)].copy()
     rows["_pos"] = pd.to_numeric(rows["position"], errors="coerce")
-    rows["_val"] = pd.to_numeric(rows.get("composite_score"), errors="coerce")
+    rows["_val"] = pd.to_numeric(rows[value_column], errors="coerce")
     rows = rows.dropna(subset=["_pos", "_val"])
     run_pass = rows["passes_filters"].astype(str).str.split(" (", regex=False).str[0].eq("PASS")
-    # A row the run rejected is a rejection; otherwise the point carries its guide's *report* status,
-    # so a window whose guide cannot be established is not drawn under "passes every gate".
     rows["_class"] = [
         "fail" if not passed else status_by_guide.get(guide, "unknown")
         for guide, passed in zip(rows["_guide"], run_pass, strict=True)
@@ -577,11 +589,12 @@ def _transcript_maps(
                 "cds_start": region.cds_start if region else None,
                 "cds_end": region.cds_end if region else None,
                 "windows": int(len(group)),
+                "value_column": value_column,
                 "series": series,
                 "gaps": [
                     [start, end]
-                    for start, end in not_enumerated_stretches(
-                        (int(p) for p in group["_pos"]), int(length), window=max(window, 1), min_nt=MIN_UNENUMERATED_NT
+                    for start, end in uncovered_stretches(
+                        (int(p) for p in group["_pos"]), int(length), window=max(window, 1), min_nt=MIN_UNCOVERED_NT
                     )
                 ]
                 if window

@@ -19,7 +19,7 @@ from typing import Any
 
 from jinja2 import Environment, select_autoescape
 
-from sirnaforge.reporting.payload import ReportPayload
+from sirnaforge.reporting.payload import MIN_UNCOVERED_NT, ReportPayload
 from sirnaforge.reporting.tracks import PointSeries, TranscriptRegions, legend_html, transcript_map_svg
 
 #: Guides embedded in the index. The per-guide detail is rendered for all of them; this bounds only
@@ -61,7 +61,9 @@ tbody tr.sel{background:#dbeafe}
 .v-unknown{color:var(--unk);background:#fef3c7}.v-not_evaluated{color:var(--off);background:#f3f4f6}
 .v-warn{color:#92400e;background:#fef9c3}
 #mapwrap{position:relative;overflow-x:auto}
-#mapover{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+/* Same max-width as the base map: without it a wide viewport stretches the overlay past the
+   base, preserveAspectRatio centres it, and the selection marker points at the wrong position. */
+#mapover{position:absolute;left:0;top:0;width:100%;height:100%;max-width:1120px;pointer-events:none}
 select{font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--line);border-radius:5px;
 background:var(--card);color:var(--fg);text-transform:none;letter-spacing:0}
 .struct{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
@@ -89,15 +91,14 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
   </div>
   <div class="sub" style="margin-top:6px">
     <span class="pill v-pass">{{ p.run.status_counts["pass"] }} pass</span>
-    <span class="pill v-warn">{{ p.run.status_counts["warn"] }} pass with a warning</span>
+    <span class="pill v-warn">{{ p.run.status_counts["warn"] }} pass, warned</span>
     <span class="pill v-unknown">{{ p.run.status_counts["unknown"] }} not established</span>
     <span class="pill v-fail">{{ p.run.status_counts["fail"] }} fail</span>
     {% if p.run.agreement.comparable %}
-    &nbsp;· vs the run's own verdict: <b>{{ p.run.agreement.contradicted_run_pass }}</b> of
-    {{ p.run.agreement.run_pass_guides }} run-PASS guides contradicted;
-    <b>{{ p.run.agreement.run_failed_not_rederivable }}</b> the run failed cannot be re-derived here
-    — reported <em>not established</em>, never flipped to pass;
-    <b>{{ p.run.agreement.overruled_run_fail }}</b> run rejections overruled.
+    &nbsp;· against the run's own verdicts:
+    <b>{{ p.run.agreement.contradicted_run_pass }}</b>/{{ p.run.agreement.run_pass_guides }} run PASS
+    contradicted, <b>{{ p.run.agreement.overruled_run_fail }}</b> run rejections overruled,
+    <b>{{ p.run.agreement.run_failed_not_rederivable }}</b> run rejections not re-derivable here.
     {% endif %}
   </div>
 </header>
@@ -111,7 +112,7 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
  </div>
  <div id="right">
    <div class="card" id="mapcard">
-     <h2>Design map &nbsp;<select id="tx" aria-label="transcript"></select></h2>
+     <h2>Candidate positions &nbsp;<select id="tx" aria-label="transcript"></select></h2>
      <div id="maplegend"></div>
      <div id="mapwrap"><div id="mapbase"></div><svg id="mapover"></svg></div>
      <div id="mapnote" class="empty"></div>
@@ -203,7 +204,7 @@ function gateReason(f,value,verdict,reason){
   if(reason===3) return 'filter is off';
   if(reason===4) return 'no threshold declared';
   const cmp=fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(f.threshold);
-  return verdict===4 ? cmp+' — action is warn, so the run did not reject it' : cmp;
+  return verdict===4 ? cmp+'; action=warn, not a rejection' : cmp;
 }
 function gatesCard(g){
   const order=[3,0,1,4,2];  // fail, unknown, warn, pass, not_evaluated -- worst news first
@@ -214,21 +215,21 @@ function gatesCard(g){
     <td>${fmt(value)}</td><td class="mono">${esc(f.comparator)} ${fmt(f.threshold)}</td>
     <td>${esc(f.scope_label)}</td><td>${esc(f.stage)}</td><td>${esc(gateReason(f,value,verdict,reason))}</td></tr>`;}).join('');
   const nu=g.n_gates_unknown;
-  return `<div class="card"><h2>Gates — all ${g.gates.length}, not only the first to fire</h2>
-    ${nu?`<div class="warn"><b>${nu} gate${nu>1?'s':''} could not be evaluated.</b> An unknown is not a pass.
-      The Why column names what each one was missing.</div>`:''}
-    ${(!nu&&g.status==='unknown')?`<div class="warn"><b>The run rejected this guide as
-      ${esc(g.run_verdict)}, and no declared gate expresses that.</b> Every gate below is satisfied, so
-      this report cannot re-derive the rejection — and will not overrule it.</div>`:''}
+  return `<div class="card"><h2>Gates — all ${g.gates.length}, independently evaluated</h2>
+    ${nu?`<div class="warn"><b>${nu} of ${g.gates.length} gates not evaluated.</b> An unevaluated gate is
+      not a pass. See the Why column for the missing input.</div>`:''}
+    ${(!nu&&g.status==='unknown')?`<div class="warn"><b>Run verdict: ${esc(g.run_verdict)}.</b>
+      No declared filter covers this rejection, so it cannot be re-derived from the ${g.gates.length}
+      gates below, all of which are satisfied. Reported as not established.</div>`:''}
     <table><thead><tr><th>Filter</th><th>Verdict</th><th>Value</th><th>Threshold</th>
     <th>Scope</th><th>Stage</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function isoformCard(g){
   const any=g.isoforms.some(i=>i.register_neighbours.length);
   return `<div class="card"><h2>Isoforms — ${g.isoforms.length} enumeration${g.isoforms.length===1?'':'s'} of this one guide</h2>
-   ${any?`<div class="warn"><b>Register neighbour.</b> Another design sits within 2 nt on the same transcript,
-     so the two share a window and can score identically. On the reference panel two such designs
-     differed 1.4&times; in measured knockdown — this is not a duplicate row.</div>`:''}
+   ${any?`<div class="warn"><b>Register neighbour.</b> Another design starts within 2 nt on the same
+     transcript. The two overlap and can receive identical scores, but are distinct designs: on the
+     reference panel two such designs differed 1.4&times; in measured knockdown.</div>`:''}
    <table><thead><tr><th>Candidate id</th><th>Transcript</th><th>Position</th><th>Register neighbours</th></tr></thead>
    <tbody>${g.isoforms.map(i=>`<tr><td class="mono">${esc(i.candidate_id)}</td><td class="mono">${esc(i.transcript)}</td>
      <td>${fmt(i.position)}</td><td>${i.register_neighbours.length?`<span class="pill v-unknown">${i.register_neighbours.join(', ')}</span>`:'—'}</td></tr>`).join('')}</tbody></table></div>`;
@@ -312,6 +313,12 @@ function showOn(g){
 }
 
 // ---- secondary structure: the run's own dot-bracket, laid out, never refolded ----
+function balanced(db){
+  let depth=0;
+  for(const c of db){ if(c==='(')depth++; else if(c===')'&&--depth<0) return false; }
+  return depth===0;
+}
+
 function pairsOf(db){
   const p=new Array(db.length).fill(-1), st=[];
   for(let i=0;i<db.length;i++){
@@ -354,15 +361,24 @@ function structureSvg(seq, db){
 function structureCard(g){
   const db=g.structure;
   if(!db) return '';
+  // structure.py refuses a dot-bracket that cannot describe this guide's structure; refuse the same
+  // here rather than indexing past the end of a coordinate array, which threw inside the template
+  // literal and took the entire detail pane -- gates, isoforms, off-targets -- down with it.
+  if(db.length!==g.guide.length || /[^.()]/.test(db) || !balanced(db))
+    return `<div class="card"><h2>Guide secondary structure</h2>
+      <div class="warn"><b>Not drawn.</b> The published <code>structure</code> is ${db.length} nt against
+      a ${g.guide.length} nt guide, or is not a balanced dot-bracket, so it cannot be laid out against
+      this sequence. Value as published: <code class="mono">${esc(db)}</code></div></div>`;
   const pairCount=(db.match(/\(/g)||[]).length, degenerate=/^\.+$/.test(db);
   const laid=!!(LAYOUTS[db] && LAYOUTS[db].length===db.length);
   // No run-specific figures in this text: the card ships with the tool and is read against every target.
   const caption = degenerate
-    ? `No pairs predicted over ${db.length} nt. This is the open chain, the physical floor of the MFE, and a common answer for a guide this short — not a failed fold.`
-    : `${pairCount} pair${pairCount===1?'':'s'}, ${2*pairCount} of ${db.length} nt paired.`;
-  return `<div class="card"><h2>Secondary structure — the fold the gates were decided on</h2>
-    ${degenerate?`<div class="warn"><b>Degenerate fold.</b> ${caption} <code>paired_fraction</code> and
-      <code>EXCESS_PAIRING</code> both read this structure, so a flat picture is the honest one.</div>`:''}
+    ? `Open chain over ${db.length} nt: mfe 0 is the minimum-free-energy floor for an unstructured oligo of this length.`
+    : `${pairCount} base pair${pairCount===1?'':'s'}, ${2*pairCount} of ${db.length} nt paired.`;
+  return `<div class="card"><h2>Guide secondary structure</h2>
+    ${degenerate?`<div class="warn"><b>No base pairs predicted.</b> ${caption}
+      <code>paired_fraction</code> and <code>EXCESS_PAIRING</code> are both derived from this
+      structure.</div>`:''}
     <div class="struct">
       <div>${structureSvg(g.guide, db)}</div>
       <div>
@@ -373,15 +389,23 @@ function structureCard(g){
           <div><b>mfe</b>${fmt(g.metrics.mfe)}</div>
           <div><b>Layout</b>${laid?'ViennaRNA naview':'arc diagram (no layout in payload)'}</div>
         </div>
-        <p class="empty" style="margin:10px 0 0">Laid out from the run's published dot-bracket and never
-        refolded: a re-fold here could disagree with the <code>paired_fraction</code> the gates used.
-        Seed 2&ndash;8 shaded.</p>
+        <p class="empty" style="margin:10px 0 0">Laid out from the <code>structure</code> column as
+        published by the run; not refolded, so the drawing and <code>paired_fraction</code> describe the
+        same structure. Guide positions 2&ndash;8 (seed) shaded.</p>
       </div>
     </div></div>`;
 }
 
 document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
 renderMap();
+
+// One card raising must cost that card, not the pane. Every panel below is independent evidence, so
+// losing the off-target table because a structure string was malformed is never the right trade.
+function card(render, g){
+  try { return render(g); }
+  catch(e){ return `<div class="card"><h2>Panel failed to render</h2>
+    <div class="warn"><b>${esc(e && e.message || String(e))}</b> The other panels are unaffected.</div></div>`; }
+}
 
 function show(g){
   selected=g.guide; renderIndex();
@@ -397,7 +421,7 @@ function show(g){
        <div><b>Design score</b>${fmt(g.design_score)}</div>
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
-   ${gatesCard(g)}${structureCard(g)}${isoformCard(g)}${offtargetCard(g,i)}${mirnaCard(g)}`;
+   ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
   showOn(g); drawOverlay();
   location.hash = encodeURIComponent(g.guide);
@@ -443,10 +467,10 @@ def render_html(payload: ReportPayload) -> str:
 #: Point classes on the design map, drawn in this order so a passing window is never hidden under a
 #: rejected one. Labels are the legend text.
 _MAP_SERIES = (
-    ("fail", "rejected by at least one gate"),
-    ("unknown", "kept by the run, not established here"),
-    ("warn", "passes, over a warn threshold"),
-    ("pass", "passes every gate"),
+    ("fail", "rejected"),
+    ("unknown", "run PASS, gate evidence incomplete"),
+    ("warn", "run PASS, warn threshold exceeded"),
+    ("pass", "PASS, all gates evaluated"),
 )
 
 
@@ -473,12 +497,17 @@ def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
         svg, geometry = transcript_map_svg(
             regions,
             series,
-            title=f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} enumerated windows",
+            title=f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidate windows",
+            value_label=entry.get("value_column") or "composite score",
             gaps=gaps,
             standalone=False,
         )
         counts = ", ".join(f"{len(s.points):,} {s.label}" for s in reversed(series))
-        note = f"{counts}." + (f" {len(gaps)} stretch(es) of >= 40 nt carry no enumerated window." if gaps else "")
+        note = f"{counts}." + (
+            f" {len(gaps)} stretch(es) of {MIN_UNCOVERED_NT} nt or more carry no candidate in this table."
+            if gaps
+            else ""
+        )
         out[regions.transcript_id] = {
             "label": f"{regions.transcript_id} ({entry['windows']:,} windows)",
             "svg": svg,

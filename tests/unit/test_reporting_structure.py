@@ -16,6 +16,7 @@ import pytest
 from sirnaforge.reporting.structure import (
     StructureError,
     is_degenerate,
+    layout_xy,
     layouts_for,
     pair_table,
     structure_svg,
@@ -121,3 +122,16 @@ def test_an_embedded_structure_declares_no_namespace_and_reaches_nothing() -> No
     assert not re.findall(r"https?://", embedded)
     assert 'xmlns="http://www.w3.org/2000/svg"' in standalone
     assert "<script" not in embedded
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["..((..", "..)(..", "..x..", "((("])
+def test_an_invalid_dot_bracket_never_reaches_viennarna(bad: str) -> None:
+    """``RNA.naview_xy_coordinates`` segfaults on an unbalanced dot-bracket, and a signal is uncatchable.
+
+    Verified on ViennaRNA 2.7.2: both ``..((..`` and ``..)(..`` abort the process. One malformed cell in
+    a run's ``structure`` column would therefore kill report generation outright, so validity is checked
+    in Python before the layout call rather than hoped for afterwards.
+    """
+    assert layout_xy(bad) is None
+    assert layouts_for([bad]) == {}

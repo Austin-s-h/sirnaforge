@@ -18,9 +18,9 @@ from sirnaforge.reporting.tracks import (
     TickSeries,
     TranscriptRegions,
     legend_html,
-    not_enumerated_stretches,
     transcript_map_svg,
     transcript_regions,
+    uncovered_stretches,
 )
 
 _ORF_HEADER = "transcript_id\tsequence_length\tutr5_length\tlongest_orf_start\tlongest_orf_end\tutr3_length"
@@ -53,9 +53,19 @@ def test_a_run_without_an_orf_report_yields_no_regions(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_a_transcript_with_no_called_orf_is_one_undifferentiated_bar() -> None:
-    """Inventing a CDS boundary would be the one thing the region bar must never do."""
-    assert TranscriptRegions("ENST1", 1000).spans == [("cds", 1, 1000)]
+def test_a_transcript_with_no_called_orf_is_not_labelled_coding() -> None:
+    """Inventing a CDS is the one thing the region bar must never do.
+
+    Returning ``("cds", 1, length)`` drew every lncRNA, NMD isoform and failed ORF call as
+    ``CDS 1-N``: fully coding, on no evidence.
+    """
+    regions = TranscriptRegions("ENST1", 1000)
+    assert regions.spans == [("unknown", 1, 1000)]
+    assert regions.region_of(500) == "unknown"
+
+    svg, _ = transcript_map_svg(regions, [PointSeries("p", "pass", [(1, 1.0)])])
+    assert "no ORF called" in svg
+    assert "CDS" not in svg
 
 
 @pytest.mark.unit
@@ -66,11 +76,11 @@ def test_unenumerated_stretches_are_found_and_short_ones_are_not_called_out() ->
     minimum length keeps arithmetic from being reported as a design decision.
     """
     positions = [1, 24, 47, 400, 423]
-    gaps = not_enumerated_stretches(positions, 500, window=23, min_nt=40)
+    gaps = uncovered_stretches(positions, 500, window=23, min_nt=40)
 
-    assert (70, 399) in gaps, "the 330 nt with no window is the point of the panel"
+    assert (70, 399) in gaps, "the 330 nt with no candidate is the point of the panel"
     assert all(end - start + 1 >= 40 for start, end in gaps)
-    assert not_enumerated_stretches([1], 30, window=23, min_nt=40) == [], "an 8 nt tail is arithmetic"
+    assert uncovered_stretches([1], 30, window=23, min_nt=40) == [], "an 8 nt tail is arithmetic"
 
 
 @pytest.mark.unit
@@ -134,5 +144,5 @@ def test_the_legend_reports_the_count_it_drew() -> None:
     html = legend_html(series, gaps=True)
 
     assert "passes every gate (3)" in html
-    assert "no enumerated window" in html
+    assert "no candidate in this table" in html
     assert "not established" not in html, "a class the map drew nothing for is not a legend key"
