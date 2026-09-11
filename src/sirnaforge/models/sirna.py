@@ -216,8 +216,11 @@ class OffTargetFilterCriteria(BaseModel):
             "Maximum perfect miRNA seed matches (typical: 3-5, None = no limit). HUMAN-STRATIFIED: read against hits labelled human ONLY -- unlike the transcriptome gates, an unlabelled hit is not counted -- so it does not match the identically named all-species column"
         ),
     )
+    # None, not 10: the policy resolves this filter to `off`, and a threshold beside an off action
+    # reads as a limit that applies. The manifest published `action: off` and `threshold: 10` side by
+    # side, which is two different answers to "is 11 rejected?".
     max_mirna_1mm_seed: int | None = Field(
-        default=10,
+        default=None,
         ge=0,
         description=(
             "Maximum 1-mismatch miRNA seed hits (typical: 10-20, None = no limit). NOT ENFORCED in "
@@ -596,7 +599,14 @@ class DesignParameters(BaseModel):
     )
 
     # Optional analysis parameters
-    avoid_snps: bool = Field(default=True, description="Exclude regions with known SNPs")
+    # Defaults to False because nothing reads it. No gate, scorer or enumerator consults this flag,
+    # so a True default put "avoid_snps: true" in every manifest ever written for a run that did no
+    # such thing -- a claim about the run that was never true. It stays in the model as the switch a
+    # variant-aware enumerator would read; until then, off is the only honest default.
+    avoid_snps: bool = Field(
+        default=False,
+        description="Exclude regions with known SNPs. NOT IMPLEMENTED in 0.7.1: no code reads this flag",
+    )
     check_off_targets: bool = Field(default=True, description="Perform genome-wide off-target analysis")
     predict_structure: bool = Field(default=True, description="Calculate RNA secondary structures")
 
@@ -739,9 +749,12 @@ class SiRNACandidate(BaseModel):
         default=0.0,
         ge=0,
         description=(
+            "SUPERSEDED by score_off_target; kept for continuity, do not gate or rank on it. "
             "Reporting only, direction depends on provenance: design-time internal-repeat penalty "
             "(higher = worse), overwritten post-screen by max offtarget_score (higher = safer, "
-            "0.0 = perfect match). Use off_target_count / the hit strata to judge risk."
+            "0.0 = perfect match). Measured on a 40,079-candidate run it barely tracks the quantity "
+            "a reader assumes it means: Pearson +0.20 against off_target_count, with 43% of rows "
+            "pinned at its 132 ceiling. Use off_target_count / the hit strata to judge risk."
         ),
     )
 

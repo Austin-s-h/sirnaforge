@@ -186,7 +186,7 @@ class OffTargetFilterCriteria(BaseModel):
 
     # miRNA seed matches (positions 2-8)
     max_mirna_perfect_seed: int | None = 0
-    max_mirna_1mm_seed: int | None = 10   # read by no gate in 0.7.1; resolves to off
+    max_mirna_1mm_seed: int | None = None  # read by no gate in 0.7.1; resolves to off
     fail_on_high_risk_mirna: bool = True
 ```
 
@@ -239,7 +239,7 @@ exact-reverse-complement passenger every design uses, so it ranked nothing while
 on two decimal places without rounding. `pos1_mismatch` is still computed, and the pairing state it
 derives from stays on the row as `guide_pos1_base` and `pos1_pairing_state`, so the removal is
 auditable and reversible if mismatched passengers are ever designed. `score_pos1_mismatch` is a
-*contribution* column, so with the term in no vector it is now **always null**.
+_contribution_ column, so with the term in no vector it is now **always null**.
 
 Validation is a `@model_validator(mode="after")` reading the subclass's own `TERM_NAMES`.
 `COMPOSITE_TERM_NAMES` is now only the ordered **union** of scored terms, used for column ordering;
@@ -1011,11 +1011,11 @@ benchmark evidence behind them.
 
 **`design_v4`** → `design_score` (design stage, both modes)
 
-| Term                 | Weight | Rationale                                                                                              |
-| -------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| Term                 | Weight | Rationale                                                                                                                            |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Asymmetry            | 0.40   | Indistinguishable from accessibility on the benchmark (ρ +0.273 vs +0.267), and additionally ρ +0.53 with A/U at guide positions 1-5 |
-| Target accessibility | 0.35   | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage |
-| GC content           | 0.25   | Stability/accessibility balance                                                                        |
+| Target accessibility | 0.35   | RNAplfold local opening at the seed-paired end; the only term with a knockdown benchmark at this stage                               |
+| GC content           | 0.25   | Stability/accessibility balance                                                                                                      |
 
 ⚠️ These three numbers are round numbers **awaiting sign-off** — they are the one part of the weight
 set not chosen by the repo owner.
@@ -1036,13 +1036,13 @@ set not chosen by the repo owner.
 
 **`postscreen_mirna_v4`** → `composite_score` (post-screen, `--design-mode mirna`)
 
-| Term                 | Weight | Rationale                                                             |
-| -------------------- | ------ | --------------------------------------------------------------------- |
-| Off-target           | 0.20   | exactly 0.80 × the siRNA vector's 0.25                                |
-| Target accessibility | 0.24   | exactly 0.80 × 0.30                                                   |
+| Term                 | Weight | Rationale                                                              |
+| -------------------- | ------ | ---------------------------------------------------------------------- |
+| Off-target           | 0.20   | exactly 0.80 × the siRNA vector's 0.25                                 |
+| Target accessibility | 0.24   | exactly 0.80 × 0.30                                                    |
 | Asymmetry            | 0.20   | exactly 0.80 × 0.25; ties `off_target`, as the siRNA vector also does  |
-| GC content           | 0.16   | exactly 0.80 × 0.20                                                   |
-| `ago_start`          | 0.10   | A/U at guide position 1 (Argonaute loading)                           |
+| GC content           | 0.16   | exactly 0.80 × 0.20                                                    |
+| `ago_start`          | 0.10   | A/U at guide position 1 (Argonaute loading)                            |
 | `supp_13_16`         | 0.10   | low 3' supplementary pairing potential; endpoint claimed, not measured |
 
 The two biogenesis terms hold 0.20 and the four shared terms hold exactly 0.80 × the siRNA values.

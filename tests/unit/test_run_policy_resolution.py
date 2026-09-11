@@ -654,12 +654,30 @@ def test_warn_is_not_selectable_in_0_7_1_because_nothing_applies_it():
 
 @pytest.mark.unit
 def test_the_gate_that_no_code_reads_resolves_to_off():
-    """max_mirna_1mm_seed carries a threshold of 10 and is compared by nothing in 0.7.1."""
+    """max_mirna_1mm_seed is compared by nothing in 0.7.1, and now says so in both fields.
+
+    It used to publish ``action: off`` beside ``threshold: 10``, which is two different answers to
+    "is 11 rejected?". A threshold next to an off action reads as a limit that applies.
+    """
     policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
     descriptor = policy.descriptor("max_mirna_1mm_seed")
 
-    assert descriptor.threshold == 10
+    assert descriptor.threshold is None, "an off gate must not advertise a number it does not apply"
     assert descriptor.action is FilterAction.OFF
+
+
+@pytest.mark.unit
+def test_a_setting_no_code_reads_does_not_default_to_on():
+    """``avoid_snps`` is read by nothing, so a True default made every manifest claim SNP avoidance.
+
+    The flag has no consumer: no gate, scorer or enumerator looks at it. Defaulting it on published
+    ``avoid_snps: true`` for runs that did no such thing -- a statement about the run, in the run's
+    own record, that was never true. If a variant-aware enumerator lands, it flips this default back
+    deliberately and this test changes with it.
+    """
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+
+    assert policy.value_of("avoid_snps") is False
 
 
 @pytest.mark.unit
