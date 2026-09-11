@@ -45,6 +45,10 @@ dependencies = [
   "pandera>=0.26.0",
   "psutil>=6.0.0",
   "pyarrow>=18.0.0",
+  # Report rendering (issue #103). plotly.js is read from plotly's package data and inlined into the
+  # report -- never fetched from a CDN, because the report carries target sequences.
+  "plotly>=6.0.0",
+  "jinja2>=3.1.0",
 ]
 
 [dependency-groups]

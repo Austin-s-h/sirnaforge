@@ -94,6 +94,7 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
+from sirnaforge.reporting import ReportInputError, build_payload, write_report
 from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
@@ -2974,6 +2975,39 @@ def internal_zfn_aggregate_shards(
         output_sites_csv=output_sites_csv,
         output_summary_json=output_summary_json,
     )
+
+
+@app_command()
+def report(
+    run_dir: Path = typer.Argument(..., help="A completed run output directory"),
+    output: Path = typer.Option(Path("report.html"), "--output", "-o", help="Where to write the report"),
+) -> None:
+    """Build a single self-contained HTML report over a finished run.
+
+    Works on any finished or archived run: it reads candidates_all.csv, the aggregated hit tables and
+    manifest.json, and needs no live pipeline state. The report classifies nothing and applies no
+    threshold of its own -- gate descriptors come from the resolved policy and hit_class from the
+    published table -- so it cannot disagree with the run it describes.
+    """
+    try:
+        payload = build_payload(run_dir)
+    except ReportInputError as exc:
+        console.print(f"❌ [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    written = write_report(payload, output)
+    counts = payload.run["status_counts"]
+    console.print(
+        Panel.fit(
+            f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, self-contained)\n"
+            f"{payload.run['guides']:,} guides from {payload.run['candidate_rows']:,} candidate rows\n"
+            f"[green]{counts['pass']} pass[/green] · "
+            f"[yellow]{counts['unknown']} not established[/yellow] · [red]{counts['fail']} fail[/red]",
+            title=f"Report — {payload.run['gene_query']}",
+        )
+    )
+    for caveat in payload.caveats:
+        console.print(f"   ⚠️  {caveat}")
 
 
 if __name__ == "__main__":
