@@ -288,7 +288,10 @@ class BaseAggregatedSummary(BaseModel):
 
     # Common file paths
     combined_tsv: Path | None = Field(default=None, description="Path to combined TSV file")
-    combined_json: Path | None = Field(default=None, description="Path to combined JSON file")
+    combined_json: Path | None = Field(
+        default=None,
+        description="Deprecated: no longer written. Kept so an archived run's summary still parses.",
+    )
     summary_file: Path | None = Field(default=None, description="Path to summary file")
 
     # Common metadata

@@ -21,7 +21,7 @@ from sirnaforge.core.thermodynamics import (
     TargetSiteAccessibility,
     ThermodynamicCalculator,
 )
-from sirnaforge.models.policy import FilterAction
+from sirnaforge.models.policy import FilterAction, FilterEvaluation
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
     EMPIRICAL_SCORE_MIN,
@@ -689,6 +689,13 @@ class SiRNADesigner:
         # Write repeat metadata regardless of verdict
         candidate.repeat_flagged = obs.is_repeat
         candidate.repeat_transcript_fraction = obs.transcript_fraction
+
+        # Record the verdict, so the gate is re-derivable from the exported row like every other one.
+        # `is_repeat` is `fraction > threshold`, so the gate is a ceiling on the fraction.
+        candidate.filter_verdicts["max_repeat_transcript_fraction"] = (
+            FilterEvaluation.FAIL.value if obs.is_repeat else FilterEvaluation.PASS.value
+        )
+        candidate.filter_observed["max_repeat_transcript_fraction"] = obs.transcript_fraction
 
         # Apply REPEAT_ELEMENT verdict only if currently passing
         if obs.is_repeat and (

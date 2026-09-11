@@ -91,6 +91,7 @@ _PASSING_OBSERVED = {
     "gc_content_min": 45.0,
     "gc_content_max": 45.0,
     "max_poly_runs": 2,
+    "max_repeat_transcript_fraction": 0.0,
     "max_paired_fraction": 0.3,
     "min_asymmetry_score": 0.8,
     "min_empirical_score": 0.5,
@@ -519,6 +520,61 @@ def test_the_map_note_states_the_threshold_the_code_uses(tmp_path: Path) -> None
 
     assert f"{MIN_UNCOVERED_NT} nt or more carry no candidate in this table" in html
     assert "no enumerated window" not in html, "the table's coverage is not the transcript's"
+
+
+@pytest.mark.unit
+def test_the_mirna_panel_names_the_mirna_it_matched(tmp_path: Path) -> None:
+    """A seed match with no name is not a finding.
+
+    The aggregate publishes the name as ``mirna_id``; the payload read ``rname`` or ``mirna``, neither
+    of which the table has, so every row rendered with an empty name -- 18,078 anonymous seed matches
+    on one MSH3 run. Which miRNA is mimicked is the whole question, and ``coord`` travels with it
+    because a motif matching away from position 1 is what a real defect in this scanner once counted
+    as a perfect seed hit.
+    """
+    hit = _hit_row(GUIDE, "hsa", "unused", 0, "off_target", "X")
+    hit = {k: v for k, v in hit.items() if k not in CLASSIFICATION_COLUMNS}
+    hit.update(mirna_id="Hsa-Mir-24-P2_3p", database="mirgenedb", coord=1, seed_mismatches=0)
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    table = run / "off_target" / "results" / "aggregated" / "combined_mirna_hits.tsv"
+    header = list(hit)
+    table.write_text("\t".join(header) + "\n" + "\t".join(str(hit[c]) for c in header) + "\n")
+
+    entry = build_payload(run).guides[0]
+
+    assert len(entry.mirna) == 1
+    assert entry.mirna[0]["mirna"] == "Hsa-Mir-24-P2_3p", "the name the table published"
+    assert entry.mirna[0]["database"] == "mirgenedb"
+    assert entry.mirna[0]["coord"] == 1, "the seed offset travels with the hit"
+
+
+@pytest.mark.unit
+def test_cross_species_conservation_is_published_per_species_with_its_mismatches(tmp_path: Path) -> None:
+    """The ortholog class is conservation evidence, and the summary of it cannot answer the question.
+
+    ``conservation_score`` is (species hit)/3 and counts a species conserved at up to 8 mismatches; on
+    one MSH3 run mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. Publishing the best
+    ``(nm, seed_mismatches)`` per species is what lets a reader require "perfect in macaque, seed-intact
+    in mouse" -- which took that run's cross-reactive pool from 49 guides to 113.
+    """
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST1", 10)],
+        [
+            _hit_row(GUIDE, "macaque", "ENSMMUT1", 0, "ortholog", "MSH3"),
+            _hit_row(GUIDE, "mouse", "ENSMUST2", 3, "ortholog", "Msh3"),
+            _hit_row(GUIDE, "mouse", "ENSMUST1", 1, "ortholog", "Msh3"),
+        ],
+    )
+    entry = build_payload(run).guides[0]
+
+    assert entry.ortholog["macaque"] == {"nm": 0, "seed_mismatches": 0}
+    assert entry.ortholog["mouse"]["nm"] == 1, "the best alignment, not the first or the worst"
+    assert "rat" not in entry.ortholog, "a species with no ortholog hit is absent, not zero"
+
+    html = render_html(build_payload(run))
+    assert "function passesConservation(" in html, "and it is a reader's threshold, not a gate"
+    assert "allow 1 mm outside the seed" in html
 
 
 @pytest.mark.unit

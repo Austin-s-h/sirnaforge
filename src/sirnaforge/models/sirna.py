@@ -8,6 +8,7 @@ import pandas as pd
 from pandera.typing import DataFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
+from sirnaforge.core.repeat_detection import DEFAULT_REPEAT_TRANSCRIPT_FRACTION
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterAction, FilterEvaluation
 from sirnaforge.models.schemas import SiRNACandidateSchema
@@ -105,6 +106,12 @@ class FilterCriteria(BaseModel):
     )
 
     # Secondary structure filters
+    max_repeat_transcript_fraction: float = Field(
+        default=DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+        gt=0,
+        le=1,
+        description="Ceiling on the fraction of reference transcripts containing the guide; fails REPEAT_ELEMENT",
+    )
     max_paired_fraction: float = Field(
         default=0.6, ge=0, le=1, description="Max secondary structure pairing (prevent rigid structures)"
     )

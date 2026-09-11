@@ -78,6 +78,8 @@ class GuideEntry:
     offtarget_embedded_scope_empty_but_counts_exist: bool
     liability_count: int
     mirna: list[dict[str, Any]]
+    #: species -> {nm, seed_mismatches} for the best ortholog alignment. Empty when none was found.
+    ortholog: dict[str, dict[str, Any]] = field(default_factory=dict)
     run_verdict: str | None = None
     structure: str | None = None
     transcript_hits: int | None = None
@@ -686,6 +688,7 @@ def _build_guide(
         offtarget_embedded_scope_empty_but_counts_exist=counts_exist,
         liability_count=liability,
         mirna=_mirna_table(mirna),
+        ortholog=_ortholog_conservation(hits),
     )
 
 
@@ -809,10 +812,54 @@ def _offtarget_views(
     return by_symbol, matrix, embedded, liability
 
 
+#: Columns the miRNA name may arrive under. ``mirna_id`` is what the aggregate actually publishes
+#: (``Hsa-Mir-24-P2_3p``); the table has no ``rname``, so reading only that returned an empty string
+#: for every row and the panel listed 18,078 anonymous seed matches. Which miRNA is mimicked is the
+#: whole question -- a perfect seed match to a cardiac or neuronal family is a different finding from
+#: one to an unexpressed paralogue, and a retraction in this programme turned on exactly that.
+_MIRNA_NAME_COLUMNS = ("mirna_id", "rname", "mirna", "name")
+
+
+def _ortholog_conservation(hits: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    """Best ortholog alignment per species: how conserved this guide's site is, per species.
+
+    Cross-species conservation is already in the screen and is thrown away twice over. The screen
+    aligns each guide against every requested species' transcriptome and classifies a hit on the
+    orthologous gene as ``ortholog`` -- explicitly *not* a liability -- and the candidate table then
+    summarises those hits as ``conservation_score``, which is ``(species hit) / 3``.
+
+    That summary cannot answer the question a cross-species programme asks, for two reasons. It is
+    **mismatch-blind**: on one MSH3 run it counted a species as conserved on alignments up to 8
+    mismatches, and mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. And it is
+    **seed-blind**: mouse nm=1 split 96 seed-intact against 79 seed-hit, and one mismatch outside
+    positions 2-8 is a different molecule from one inside them -- allowing it took the
+    mouse-and-macaque pool from 49 guides to 113.
+
+    So the per-species best ``(nm, seed_mismatches)`` is published instead and the thresholding is
+    left to the reader. Requiring "perfect in mouse and macaque" is a programme decision, not a
+    property of the target, and hard-coding it as a gate would put one programme's requirement in
+    every run.
+    """
+    if hits.empty or "_class" not in hits.columns:
+        return {}
+    ortholog = hits[hits["_class"].eq(HitClass.ORTHOLOG.value)]
+    if ortholog.empty:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for species, group in ortholog.groupby(ortholog["species"].astype(str).str.strip()):
+        nm = pd.to_numeric(group["nm"], errors="coerce")
+        seed = pd.to_numeric(group.get("seed_mismatches"), errors="coerce")
+        order = nm.fillna(99) * 100 + seed.fillna(99)
+        best = order.idxmin()
+        out[species or "query"] = {"nm": _num(nm.get(best)), "seed_mismatches": _num(seed.get(best))}
+    return out
+
+
 def _mirna_table(mirna: pd.DataFrame) -> list[dict[str, Any]]:
-    """Named miRNA seed hits at 0 and 1 seed mismatch, by source database."""
+    """Named miRNA seed hits at 0 and 1 seed mismatch, with the database and match coordinate."""
     if mirna.empty:
         return []
+    name_column = next((c for c in _MIRNA_NAME_COLUMNS if c in mirna.columns), None)
     out: list[dict[str, Any]] = []
     for _, r in mirna.iterrows():
         sm = _num(r.get("seed_mismatches"))
@@ -820,10 +867,15 @@ def _mirna_table(mirna: pd.DataFrame) -> list[dict[str, Any]]:
             continue
         out.append(
             {
-                "mirna": str(r.get("rname") or r.get("mirna") or ""),
+                "mirna": str(r.get(name_column) or "") if name_column else "",
                 "source": str(r.get("species") or r.get("source") or ""),
+                "database": str(r.get("database") or ""),
                 "seed_mismatches": sm,
                 "nm": _num(r.get("nm")),
+                # The seed offset. A v0.5.1 defect counted a guide-seed motif matching anywhere on a
+                # miRNA as a perfect seed hit, and coord != 1 is what distinguished the artifact from
+                # the real thing, so the report shows it rather than asking a reader to trust the fix.
+                "coord": _num(r.get("coord")),
             }
         )
     out.sort(key=lambda d: (d["seed_mismatches"] if d["seed_mismatches"] is not None else 99, d["mirna"]))

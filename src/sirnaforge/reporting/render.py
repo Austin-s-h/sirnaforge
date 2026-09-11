@@ -129,6 +129,8 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
     <summary>Thresholds — <span id="fcount"></span></summary>
     <div class="fstat" id="fstat"></div>
     <div id="frows"></div>
+    <div class="fstat" id="fcons" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
+    </div>
     <div style="margin-top:8px">
       <button class="cartbtn" id="addtop">Add top <input id="topn" value="10" style="width:42px"> to cart</button>
       <button class="cartbtn" id="freset">Reset</button>
@@ -344,10 +346,51 @@ function offtargetCard(g,idx){
 function mirnaCard(g){
   if(!g.mirna.length) return `<div class="card"><h2>miRNA seed resemblance</h2>
     <p class="empty">No named miRNA seed hit at 0 or 1 seed mismatch.</p></div>`;
-  return `<div class="card"><h2>miRNA seed resemblance — ${g.mirna.length} named hit(s)</h2>
-   <table><thead><tr><th>miRNA</th><th>Source</th><th>Seed mismatches</th><th>nm</th></tr></thead>
-   <tbody>${g.mirna.map(m=>`<tr><td class="mono">${esc(m.mirna)}</td><td>${esc(m.source)}</td>
-     <td>${fmt(m.seed_mismatches)}</td><td>${fmt(m.nm)}</td></tr>`).join('')}</tbody></table></div>`;
+  const perfect=g.mirna.filter(m=>m.seed_mismatches===0);
+  const offset=g.mirna.filter(m=>m.coord!==null&&m.coord!==undefined&&m.coord!==1);
+  return `<div class="card"><h2>miRNA seed resemblance — ${perfect.length} perfect,
+    ${g.mirna.length-perfect.length} at 1 mismatch</h2>
+   ${offset.length?`<div class="warn"><b>${offset.length} hit(s) do not start at seed position 1.</b>
+     A guide-seed motif matching elsewhere on a miRNA is not a seed match; that was a real defect in
+     this scanner once, so the coordinate is shown rather than assumed.</div>`:''}
+   <table><thead><tr><th>miRNA</th><th>Seed mm</th><th>nm</th><th>Coord</th><th>Species</th>
+   <th>Database</th></tr></thead>
+   <tbody>${g.mirna.map(m=>`<tr><td class="mono">${esc(m.mirna)||'<span class="empty">unnamed</span>'}</td>
+     <td>${m.seed_mismatches===0?'<span class="pill v-fail">0</span>':fmt(m.seed_mismatches)}</td>
+     <td>${fmt(m.nm)}</td><td>${fmt(m.coord)}</td><td>${esc(m.source)}</td>
+     <td>${esc(m.database)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+// ---- cross-species conservation: the ortholog class, read as evidence rather than discarded ----
+const CONS_SPECIES = ['mouse','macaque','rat'];
+
+function consOf(g, sp){ return (g.ortholog||{})[sp] || null; }
+
+// "Usable in this species" is a reader's call, not the tool's: nm=0, or nm<=1 with the seed intact.
+function consTier(d){
+  if(!d || d.nm===null || d.nm===undefined) return null;
+  if(d.nm===0) return 'perfect';
+  if(d.nm<=1 && d.seed_mismatches===0) return 'seed-intact 1 mm';
+  return `${d.nm} mm`;
+}
+
+function conservationCard(g){
+  const seen=CONS_SPECIES.filter(sp=>consOf(g,sp));
+  if(!seen.length) return `<div class="card"><h2>Cross-species conservation</h2>
+    <p class="empty">No ortholog alignment for this guide in any screened species. Either the site is
+    human-specific, or no ortholog index was available — the screen cannot tell those apart.</p></div>`;
+  const cell=sp=>{const d=consOf(g,sp), t=consTier(d);
+    if(!d) return `<div><b>${sp}</b><span class="empty">no ortholog hit</span></div>`;
+    const cls = t==='perfect' ? 'v-pass' : (t&&t.startsWith('seed-intact') ? 'v-warn' : 'v-fail');
+    return `<div><b>${sp}</b><span class="pill ${cls}">${esc(t)}</span>
+      <span class="empty"> nm ${fmt(d.nm)}, seed ${fmt(d.seed_mismatches)}</span></div>`;};
+  return `<div class="card"><h2>Cross-species conservation</h2>
+    <div class="kv">${CONS_SPECIES.map(cell).join('')}</div>
+    <p class="empty" style="margin:10px 0 0">Best ortholog alignment per species, from the off-target
+    screen's own <code>ortholog</code> class. This is transcript-level conservation of the target site,
+    not a genomic claim, and it depends on the ortholog gene mapping. A mismatch outside guide
+    positions 2&ndash;8 leaves the seed intact; whether that is acceptable is a programme decision, so
+    it is offered as a threshold above rather than enforced as a gate.</p></div>`;
 }
 // ---- design map: one pre-rendered transcript at a time, plus a live marker for the selection ----
 // The map itself is drawn in Python by reporting.tracks, so a notebook figure and this card cannot
@@ -524,13 +567,27 @@ const FILTERS_UI = [
   {k:'offt',      label:'off-target count',get:g=>g.metrics.off_target_count, dir:'max'},
   {k:'liab',      label:'liabilities',     get:g=>g.liability_count, dir:'max'},
 ];
-const F = {status:new Set(['pass','warn'])};
+const F = {status:new Set(['pass','warn']), cons:new Set(), consSeedIntact:true};
+
+// Conservation is a selection criterion, not a verdict: requiring mouse and macaque is one
+// programme's requirement and would be wrong baked into the tool, so it lives here as a threshold.
+function passesConservation(g){
+  if(!F.cons.size) return true;
+  for(const sp of F.cons){
+    const d=consOf(g,sp);
+    if(!d || d.nm===null || d.nm===undefined) return false;
+    if(d.nm>1) return false;
+    if(d.nm===1 && (!F.consSeedIntact || d.seed_mismatches!==0)) return false;
+  }
+  return true;
+}
 
 function fnum(id){ const el=document.getElementById(id); if(!el) return null;
   const v=el.value.trim(); return v===''?null:Number(v); }
 
 function passesFilters(g){
   if(F.status.size && !F.status.has(g.status)) return false;
+  if(!passesConservation(g)) return false;
   for(const f of FILTERS_UI){
     const v=f.get(g);
     const lo=fnum('f_'+f.k+'_lo'), hi=fnum('f_'+f.k+'_hi');
@@ -554,6 +611,14 @@ function buildFilterUI(){
   document.querySelectorAll('#fstat input').forEach(cb=>cb.onchange=()=>{
     cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status); applyFilters(); });
   document.querySelectorAll('#frows input').forEach(el=>el.oninput=applyFilters);
+  document.getElementById('fcons').innerHTML =
+    '<span style="color:var(--mut)">conserved in</span> ' +
+    CONS_SPECIES.map(sp=>`<label><input type="checkbox" data-cons="${sp}"${F.cons.has(sp)?' checked':''}> ${sp}</label>`).join('') +
+    `<label title="accept one mismatch outside guide positions 2-8">
+      <input type="checkbox" id="consseed"${F.consSeedIntact?' checked':''}> allow 1 mm outside the seed</label>`;
+  document.querySelectorAll('#fcons input[data-cons]').forEach(cb=>cb.onchange=()=>{
+    cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); });
+  document.getElementById('consseed').onchange = e => { F.consSeedIntact=e.target.checked; applyFilters(); };
 }
 
 function matching(){ return G.filter(passesFilters); }
@@ -594,11 +659,14 @@ function renderCart(){
   document.querySelectorAll('#cartlist tr[data-cart]').forEach(tr=>
     tr.querySelector('td.pick').onclick=()=>togglePick(tr.dataset.cart));
   const cols=['guide','passenger','status','composite_score','design_score','isoforms_hit','isoforms_in_run',
-              'gc_content','asymmetry_score','off_target_count','liabilities','structure'];
+              'gc_content','asymmetry_score','off_target_count','liabilities','structure',
+              ...CONS_SPECIES.flatMap(sp=>[sp+'_nm', sp+'_seed_mm'])];
   document.getElementById('carttsv').value = [cols.join('\t'), ...rows.map(g=>[
     g.guide, g.passenger??'', g.status, g.composite_score??'', g.design_score??'',
     g.transcript_hits??'', TX_IDS.length, g.metrics.gc_content??'', g.metrics.asymmetry_score??'',
-    g.metrics.off_target_count??'', g.liability_count, g.structure??''].join('\t'))].join('\n');
+    g.metrics.off_target_count??'', g.liability_count, g.structure??'',
+    ...CONS_SPECIES.flatMap(sp=>{const d=consOf(g,sp); return [d?.nm??'', d?.seed_mismatches??''];})
+    ].join('\t'))].join('\n');
 }
 
 document.getElementById('addtop').onclick = e => {
@@ -632,7 +700,7 @@ document.getElementById('cartdl').onclick = () => {
   }
 };
 document.getElementById('freset').onclick = () => {
-  F.status = new Set(['pass','warn']);
+  F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
   document.querySelectorAll('#frows input').forEach(el=>{ el.value=''; });
   buildFilterUI(); applyFilters();
 };
@@ -651,7 +719,7 @@ function show(g){
        <div><b>Design score</b>${fmt(g.design_score)}</div>
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
-   ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
+   ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(conservationCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
   showOn(g);
   location.hash = encodeURIComponent(g.guide);

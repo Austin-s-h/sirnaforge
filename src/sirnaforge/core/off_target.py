@@ -1853,9 +1853,10 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     combined_tsv = output_path / "combined_offtargets.tsv"
     combined_df.to_csv(combined_tsv, sep="\t", index=False)
 
-    # Write JSON (pandas handles serialization)
-    combined_json = output_path / "combined_offtargets.json"
-    combined_df.to_json(combined_json, orient="records", indent=2)
+    # No JSON row-dump beside it. `combined_offtargets.json` was a pretty-printed copy of this table
+    # and cost 313 MB against the TSV's 87 MB on one MSH3 run -- 367 MB of the run's 663 MB once the
+    # miRNA twin is counted, for rows nothing reads unless the TSV is missing. The summary JSONs stay:
+    # they carry different content, and they are kilobytes.
 
     species_counts = _compute_species_counts(combined_df)
     # Zero-fill only the species that were screened. A zero for an unscreened species is the
@@ -1880,7 +1881,6 @@ def aggregate_offtarget_results(  # noqa: PLR0912
         analysis_files_processed=len(analysis_files),
         total_results=len(combined_df),
         combined_tsv=combined_tsv,
-        combined_json=combined_json,
         summary_file=summary_json,
         hits_per_species=species_counts,
         human_hits=human_hits,
@@ -1975,7 +1975,6 @@ def aggregate_offtarget_results(  # noqa: PLR0912
 
         if len(combined_df) == 0:
             f.write(f"• {combined_tsv.name}: Header only (no hits found)\n")
-            f.write(f"• {combined_json.name}: Empty array (no hits found)\n")
             f.write(f"• {summary_json.name}: Metadata only\n\n")
             if unscreened_species or not species_screened:
                 # "No hits" only means "clean" where a search ran. Saying so here is how an absent
@@ -1994,7 +1993,6 @@ def aggregate_offtarget_results(  # noqa: PLR0912
             f.write("  ../mirna/mirna_summary.json\n")
         else:
             f.write(f"• {combined_tsv.name}: {len(combined_df)} off-target hits (TSV format)\n")
-            f.write(f"• {combined_json.name}: {len(combined_df)} off-target hits (JSON format)\n")
             f.write(f"• {summary_json.name}: Analysis metadata and statistics\n")
 
     if unscreened_species:
@@ -2295,9 +2293,7 @@ def aggregate_mirna_results(
     combined_tsv = output_path / "combined_mirna_hits.tsv"
     combined_df.to_csv(combined_tsv, sep="\t", index=False)
 
-    # Write JSON (pandas handles serialization)
-    combined_json = output_path / "combined_mirna_hits.json"
-    combined_df.to_json(combined_json, orient="records", indent=2)
+    # No JSON row-dump beside it, for the reason given in the transcriptome aggregate above.
 
     logger.info(f"Aggregated {len(combined_df)} miRNA hits from {len(analysis_files)} files using pandas")
 
@@ -2321,7 +2317,6 @@ def aggregate_mirna_results(
         analysis_files_processed=len(analysis_files),
         total_candidates=len(candidate_stats),
         combined_tsv=combined_tsv,
-        combined_json=combined_json,
         summary_file=output_path / "combined_mirna_summary.json",
         human_hits=human_hits,
         other_species_hits=other_hits,
@@ -2349,7 +2344,6 @@ def aggregate_mirna_results(
             f.write(f"  {species}: {count}\n")
         f.write("\nOutput files:\n")
         f.write(f"  - Combined TSV: {combined_tsv.name}\n")
-        f.write(f"  - Combined JSON: {combined_json.name}\n")
         f.write(f"  - Summary JSON: {summary_json.name}\n")
 
     logger.info(f"Wrote aggregated miRNA results to {output_path}")

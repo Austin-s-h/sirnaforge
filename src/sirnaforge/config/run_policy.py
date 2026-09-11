@@ -118,6 +118,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("gc_min", "filters", "gc_min"),
     SettingSpec("gc_max", "filters", "gc_max"),
     SettingSpec("max_poly_runs", "filters", "max_poly_runs"),
+    SettingSpec("max_repeat_transcript_fraction", "filters", "max_repeat_transcript_fraction"),
     SettingSpec("max_paired_fraction", "filters", "max_paired_fraction"),
     SettingSpec("min_asymmetry_score", "filters", "min_asymmetry_score"),
     SettingSpec("min_empirical_score", "filters", "min_empirical_score"),
@@ -386,6 +387,23 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition="Longest run of one nucleotide in the guide; fails POLY_RUNS.",
         default_action=FilterAction.FAIL,
         evidence_exported=False,
+    ),
+    _FilterSpec(
+        filter_id="max_repeat_transcript_fraction",
+        setting_key="max_repeat_transcript_fraction",
+        column="repeat_transcript_fraction",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.DESIGN,
+        definition=(
+            "Fraction of reference transcripts containing the guide; fails REPEAT_ELEMENT. A guide "
+            "occurring across the transcriptome is not target-specific whatever its off-target count "
+            "says, because the count is of alignments and this is of ubiquity. Declared because the "
+            "pipeline has always applied it: it stamped REPEAT_ELEMENT on passes_filters while the "
+            "registry declared no such gate, so a report re-deriving verdicts could account for every "
+            "rejection except this one -- 185 guides of one MSH3 run, reported not established because "
+            "no descriptor could express why the run threw them out."
+        ),
+        default_action=FilterAction.FAIL,
     ),
     _FilterSpec(
         filter_id="max_paired_fraction",

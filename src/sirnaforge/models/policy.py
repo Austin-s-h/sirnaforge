@@ -59,6 +59,7 @@ DECLARED_FILTER_IDS: tuple[str, ...] = (
     "gc_content_min",
     "gc_content_max",
     "max_poly_runs",
+    "max_repeat_transcript_fraction",
     "max_paired_fraction",
     "min_asymmetry_score",
     "min_empirical_score",

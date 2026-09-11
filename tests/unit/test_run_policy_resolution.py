@@ -508,7 +508,7 @@ def test_every_filter_with_a_clearable_threshold_can_be_disabled_independently()
 
 @pytest.mark.unit
 def test_a_design_stage_gate_cannot_be_switched_off_in_0_7_1_and_says_so():
-    """Reported rather than faked: the six design thresholds are floats with no absent value.
+    """Reported rather than faked: the seven design thresholds are floats with no absent value.
 
     Setting one to an inert extreme would record a threshold the user never chose, and making the
     action authoritative needs the gate application to read it, which belongs to the filter-verdict
@@ -519,6 +519,7 @@ def test_a_design_stage_gate_cannot_be_switched_off_in_0_7_1_and_says_so():
         "gc_content_min",
         "gc_content_max",
         "max_poly_runs",
+        "max_repeat_transcript_fraction",
         "max_paired_fraction",
         "min_asymmetry_score",
         "min_empirical_score",
