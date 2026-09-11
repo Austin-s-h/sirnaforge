@@ -155,6 +155,37 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
 
 
 @pytest.mark.unit
+def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The completed workflow publishes its self-contained report with its candidate artifacts."""
+    workflow = _minimal_workflow(tmp_path, "report_out")
+    candidate = _full_candidate("cand_report")
+    design_result = DesignResult(
+        input_file="<test>",
+        parameters=workflow.config.design_params,
+        candidates=[candidate],
+        top_candidates=[candidate],
+        total_sequences=1,
+        total_candidates=1,
+        filtered_candidates=1,
+        processing_time=0.1,
+    )
+
+    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda run_dir: {"run_dir": run_dir})
+
+    def _write_report(payload: object, output: Path) -> Path:
+        assert payload == {"run_dir": workflow.config.output_dir}
+        assert (workflow.config.output_dir / "sirnaforge" / "manifest.json").exists()
+        output.write_text("<html>report</html>")
+        return output
+
+    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_report)
+
+    asyncio.run(workflow.step6_generate_reports(design_result))
+
+    assert (workflow.config.output_dir / "sirnaforge" / "report.html").read_text() == "<html>report</html>"
+
+
+@pytest.mark.unit
 def test_enumerate_candidates_ids_do_not_collide_on_shared_prefix() -> None:
     """F1(i): truncating sanitized transcript ids at 24 chars used to collide.
 

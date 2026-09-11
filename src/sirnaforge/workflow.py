@@ -129,6 +129,7 @@ from sirnaforge.models.zfn import (
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
+from sirnaforge.reporting import build_payload, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
@@ -1323,10 +1324,16 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.warning(f"Failed to write FAIR manifest: {e}")
 
+        try:
+            write_report(build_payload(self.config.output_dir), base / "report.html")
+        except Exception as e:
+            logger.warning(f"Failed to write self-contained HTML report: {e}")
+
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         console.print("   - ORF validation report: orf_reports/")
         console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
         console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
+        console.print("   - Self-contained HTML report: sirnaforge/report.html")
 
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
         """Write passing candidates to FASTA format with simple headers.

@@ -172,6 +172,25 @@ def test_cli_transcriptome_fasta_still_enables_screening(tmp_path: Path, monkeyp
     assert [choice.value for choice in selection.choices] == ["ensembl_human_cdna"]
 
 
+@pytest.mark.unit
+def test_cli_transcriptome_fasta_accepts_multiple_named_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local design FASTA can explicitly screen against multiple Ensembl cDNA sources."""
+    references = ",".join(
+        (
+            "ensembl_human_cdna",
+            "ensembl_mouse_cdna",
+            "ensembl_macaque_cdna",
+            "ensembl_rat_cdna",
+        )
+    )
+    selection = _cli_resolved_selection(tmp_path, monkeypatch, "--transcriptome-fasta", references)
+
+    assert selection.enabled is True
+    assert [choice.value for choice in selection.choices] == references.split(",")
+
+
 def _candidate(candidate_id: str) -> SiRNACandidate:
     """Minimal candidate, enough for step 5 to accept it as screenable."""
     return SiRNACandidate(

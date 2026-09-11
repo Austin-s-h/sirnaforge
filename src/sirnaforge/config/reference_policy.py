@@ -151,8 +151,12 @@ class ReferencePolicyResolver:
 
         transcription_arg = (self.spec.transcriptome_argument or "").strip()
         if transcription_arg:
-            choice = ReferenceChoice.explicit(transcription_arg, reason="explicit transcriptome override")
-            return ReferenceSelection(choices=(choice,))
+            choices = tuple(
+                ReferenceChoice.explicit(value.strip(), reason="explicit transcriptome override")
+                for value in transcription_arg.split(",")
+                if value.strip()
+            )
+            return ReferenceSelection(choices=choices)
 
         if self.spec.input_fasta and not self.spec.allow_transcriptome_for_input_fasta:
             return ReferenceSelection.disabled(
