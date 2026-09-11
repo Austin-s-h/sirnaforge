@@ -373,3 +373,47 @@ def test_threshold_overrides_take_effect_and_stay_validated():
     # Constructed, not model_copy'd, so the declared bounds still hold.
     with pytest.raises(ValidationError):
         FilterCriteria(gc_min=30.0, gc_max=52.0, min_asymmetry_score=0.0)
+
+
+@pytest.mark.unit
+def test_the_enumeration_gates_record_what_they_observed():
+    """gc_content_min/max and max_poly_runs decide during enumeration and must still say so.
+
+    They used to set ``passes_filters`` directly and record no verdict, so all three exported
+    ``not_evaluated`` with an empty observed value on every row of every run. A consumer could not
+    tell a gate that passed from one that never ran, and the HTML report could not call any guide of
+    any run clean.
+    """
+    # A deliberate 6-mer poly-A run, so the poly-run gate has both outcomes to record.
+    sequence = "ATGGCACCTGTTAAAGCTCTGGACCAGGAAAAAAGTCTGCTGGCATGCTAGCTAGCATCGATCGGATCCAGT"
+    designer = SiRNADesigner(DesignParameters(sirna_length=21))
+    kept, rejected = designer._enumerate_candidates(sequence, "ENSTTEST")
+
+    assert kept and rejected, "the fixture must exercise both outcomes"
+    for candidate in kept + rejected:
+        for filter_id in ("gc_content_min", "gc_content_max", "max_poly_runs"):
+            assert filter_id in candidate.filter_verdicts, f"{filter_id} recorded no verdict"
+            assert candidate.filter_observed[filter_id] is not None, f"{filter_id} recorded no value"
+
+    survivor = kept[0]
+    assert survivor.filter_verdicts["max_poly_runs"] == "pass"
+    assert survivor.filter_observed["gc_content_min"] == pytest.approx(survivor.gc_content)
+
+    poly_rejected = [c for c in rejected if c.passes_filters is SiRNACandidate.FilterStatus.POLY_RUNS]
+    assert poly_rejected, "the fixture must reject something on poly-runs"
+    assert poly_rejected[0].filter_verdicts["max_poly_runs"] == "fail"
+    assert poly_rejected[0].filter_observed["max_poly_runs"] > 3
+
+
+@pytest.mark.unit
+def test_longest_poly_run_measures_the_run_rather_than_answering_yes_or_no():
+    """The gate compares a length, so the length is what the design path has to produce."""
+    assert SiRNADesigner._longest_poly_run("ACGT") == 1
+    assert SiRNADesigner._longest_poly_run("AACCGGTT") == 2
+    assert SiRNADesigner._longest_poly_run("ACGAAAAT") == 4
+    assert SiRNADesigner._longest_poly_run("AAAA") == 4
+    assert SiRNADesigner._longest_poly_run("") == 0
+
+    designer = SiRNADesigner(DesignParameters(sirna_length=21))
+    assert designer._has_poly_runs("ACGAAAAT", 3) is True
+    assert designer._has_poly_runs("ACGAAAT", 3) is False

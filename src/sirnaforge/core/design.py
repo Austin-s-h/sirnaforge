@@ -240,10 +240,11 @@ class SiRNADesigner:
 
             # Early filtering for computational efficiency
             gc_content = self._calculate_gc_content(guide_seq)
+            poly_run = self._longest_poly_run(guide_seq)
             fail_reason: SiRNACandidate.FilterStatus | None = None
             if not (filters.gc_min <= gc_content <= filters.gc_max):
                 fail_reason = SiRNACandidate.FilterStatus.GC_OUT_OF_RANGE
-            elif self._has_poly_runs(guide_seq, filters.max_poly_runs):
+            elif poly_run > filters.max_poly_runs:
                 fail_reason = SiRNACandidate.FilterStatus.POLY_RUNS
 
             # Create candidate ID with project moniker and sanitized transcript id
@@ -269,6 +270,8 @@ class SiRNADesigner:
                 asymmetry_score=0.0,  # Will be calculated in scoring
             )
 
+            self._record_enumeration_verdicts(candidate, gc_content, poly_run)
+
             if fail_reason is not None:
                 candidate.passes_filters = fail_reason
                 issues = list(candidate.quality_issues or [])
@@ -281,6 +284,31 @@ class SiRNADesigner:
             candidates.append(candidate)
 
         return candidates, rejected
+
+    def _record_enumeration_verdicts(self, candidate: SiRNACandidate, gc_content: float, poly_run: int) -> None:
+        """Record what the three enumeration-time gates observed on this candidate.
+
+        These gates decide during enumeration, and used to set ``passes_filters`` directly without
+        recording a verdict. That left ``gc_content_min``, ``gc_content_max`` and ``max_poly_runs``
+        exporting ``not_evaluated`` and an empty observed value on every row of every run -- so a
+        consumer could not tell a gate that passed from one that never ran, and no candidate could be
+        shown as clean. ``passes_filters`` is still set by the caller, which owns the first-label rule.
+        """
+        filters = self.parameters.filters
+        for filter_id, observed, passed in (
+            ("gc_content_min", gc_content, gc_content >= filters.gc_min),
+            ("gc_content_max", gc_content, gc_content <= filters.gc_max),
+            ("max_poly_runs", float(poly_run), poly_run <= filters.max_poly_runs),
+        ):
+            candidate.record_filter_verdict(
+                filter_id,
+                observed=observed,
+                passed=passed,
+                action=self._action_for(filter_id),
+                status=_ModelCandidate.FilterStatus.GC_OUT_OF_RANGE
+                if filter_id.startswith("gc_content")
+                else _ModelCandidate.FilterStatus.POLY_RUNS,
+            )
 
     def _apply_filters(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
         """Apply remaining filters (early GC and poly-run filtering already done in enumeration)."""
@@ -501,21 +529,22 @@ class SiRNADesigner:
         gc_count = sequence.count("G") + sequence.count("C")
         return (gc_count / len(sequence)) * 100
 
+    @staticmethod
+    def _longest_poly_run(sequence: str) -> int:
+        """Length of the longest run of one nucleotide -- the quantity ``max_poly_runs`` compares.
+
+        Returns the length rather than a bool so the gate can record what it observed. Reporting the
+        bool left ``max_poly_run_length`` unexported and the gate permanently ``unknown``.
+        """
+        longest = current = 1
+        for previous, base in zip(sequence, sequence[1:], strict=False):
+            current = current + 1 if base == previous else 1
+            longest = max(longest, current)
+        return longest if sequence else 0
+
     def _has_poly_runs(self, sequence: str, max_runs: int) -> bool:
         """Check for runs of identical nucleotides exceeding threshold."""
-        current_base = sequence[0]
-        current_run = 1
-
-        for base in sequence[1:]:
-            if base == current_base:
-                current_run += 1
-                if current_run > max_runs:
-                    return True
-            else:
-                current_base = base
-                current_run = 1
-
-        return False
+        return self._longest_poly_run(sequence) > max_runs
 
     def _calculate_asymmetry_score(self, candidate: SiRNACandidate) -> float:
         """Calculate thermodynamic asymmetry score via ViennaRNA."""
