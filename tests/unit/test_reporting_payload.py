@@ -381,6 +381,56 @@ def test_the_rendered_report_is_one_file_with_no_sidecars(tmp_path: Path) -> Non
 
 
 @pytest.mark.unit
+def test_the_payload_carries_a_design_map_and_the_report_draws_it(tmp_path: Path) -> None:
+    """Where designs sit on the transcript is the axis the guide index cannot show.
+
+    The map is drawn server-side by ``reporting.tracks`` so a notebook figure and this card come out of
+    one function; only the selection marker is client-side, because only it depends on the selection.
+    """
+    run = _write_run(
+        tmp_path,
+        [_candidate_row(f"c{i}", GUIDE, "ENST00000000001", 100 * i) for i in (1, 2, 3)],
+        [],
+    )
+    (run / "orf_reports").mkdir()
+    (run / "orf_reports" / "orf_validation.txt").write_text(
+        "transcript_id\tsequence_length\tlongest_orf_start\tlongest_orf_end\nENST00000000001\t1000\t100\t900\n"
+    )
+    payload = build_payload(run)
+    entry = next(t for t in payload.run["transcripts"] if t["transcript_id"] == "ENST00000000001")
+
+    assert (entry["cds_start"], entry["cds_end"], entry["length"]) == (100, 900, 1000)
+    assert entry["windows"] == 3
+    assert sum(len(v) for v in entry["series"].values()) == 3
+
+    html = render_html(payload)
+    assert "DESIGN MAP" in html.upper() or "Design map" in html
+    assert "CDS 100-900" in html, "the region bar is drawn from the run's own ORF call"
+
+
+@pytest.mark.unit
+def test_the_structure_is_laid_out_from_the_published_dot_bracket(tmp_path: Path) -> None:
+    """The picture must be of the fold the gates used, so the dot-bracket travels with the guide.
+
+    Layouts are keyed by structure and computed once per distinct one: 40,079 candidates on an MSH3 run
+    carry 1,333 distinct structures, which is the difference between embedding them and not.
+    """
+    fold = ".....((((....))))....."
+    columns = _CANDIDATE_COLUMNS + ",structure,mfe"
+    rows = [
+        f"{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},{fold},-1.9",
+        f"{_candidate_row('c2', OTHER, 'ENST00000000001', 40)},{fold},-1.9",
+    ]
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
+
+    payload = build_payload(run)
+
+    assert {g.structure for g in payload.guides} == {fold}, "each guide carries its own published fold"
+    assert len(payload.run["structure_layouts"]) == 1, "two guides, one distinct structure, one layout"
+
+
+@pytest.mark.unit
 def test_the_renderer_knows_every_verdict_the_payload_emits(tmp_path: Path) -> None:
     """A verdict code the renderer cannot name is a TypeError in the browser, not a blank cell.
 

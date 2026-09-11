@@ -33,6 +33,8 @@ from sirnaforge.config.run_policy import (
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, hit_class_of, is_annotated
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
+from sirnaforge.reporting.structure import layouts_for
+from sirnaforge.reporting.tracks import not_enumerated_stretches, transcript_regions
 
 #: Bump when the payload's shape changes, so a report and the run it describes can never be
 #: silently mismatched.
@@ -77,6 +79,7 @@ class GuideEntry:
     liability_count: int
     mirna: list[dict[str, Any]]
     run_verdict: str | None = None
+    structure: str | None = None
 
     @property
     def undeclared_run_rejection(self) -> bool:
@@ -490,6 +493,10 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         "gene_query": _gene_query(manifest, candidates),
         "status_counts": {s: sum(1 for g in guides if g.status == s) for s in STATUSES},
         "agreement": agreement,
+        "transcripts": _transcript_maps(candidates, guides, run_dir, caveats),
+        # Keyed by dot-bracket and computed once per distinct structure, which is what makes the
+        # layouts small enough to embed: 40,079 candidates carry 1,333 distinct structures.
+        "structure_layouts": layouts_for(g.structure for g in guides),
     }
     return ReportPayload(
         schema_version=PAYLOAD_SCHEMA_VERSION,
@@ -520,6 +527,71 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
     )
 
 
+#: Transcript stretches shorter than this are not called out as unenumerated: a 23-mer window cannot
+#: start in the last 22 nt of a transcript, so short tails are arithmetic rather than a design choice.
+MIN_UNENUMERATED_NT = 40
+
+
+def _transcript_maps(
+    candidates: pd.DataFrame, guides: list[GuideEntry], run_dir: Path, caveats: list[str]
+) -> list[dict[str, Any]]:
+    """Per-transcript position series for the design map, biggest transcript first.
+
+    Points are classified by the run's own row label, with passing rows split by their guide's report
+    status so a warn is visible on the map as it is in the index. Regions come from the run's ORF
+    report; a transcript missing from it still gets a map, without a region bar.
+    """
+    if "position" not in candidates.columns or "transcript_id" not in candidates.columns:
+        return []
+    regions = transcript_regions(run_dir)
+    if not regions:
+        caveats.append("no ORF report in this run, so the design map cannot label CDS and UTR")
+
+    status_by_guide = {g.guide: g.status for g in guides}
+    rows = candidates[~candidates["id"].astype(str).str.contains("DIRTY", na=False)].copy()
+    rows["_pos"] = pd.to_numeric(rows["position"], errors="coerce")
+    rows["_val"] = pd.to_numeric(rows.get("composite_score"), errors="coerce")
+    rows = rows.dropna(subset=["_pos", "_val"])
+    run_pass = rows["passes_filters"].astype(str).str.split(" (", regex=False).str[0].eq("PASS")
+    rows["_class"] = [
+        (status_by_guide.get(guide, "pass") if status_by_guide.get(guide) in {"pass", "warn"} else "pass")
+        if passed
+        else "fail"
+        for guide, passed in zip(rows["_guide"], run_pass, strict=True)
+    ]
+
+    # The run exports no window-length column, so take it from the guides themselves.
+    window = int(rows["guide_sequence"].astype(str).str.len().max() or 0) if len(rows) else 0
+    out: list[dict[str, Any]] = []
+    for tid, group in rows.groupby("transcript_id", sort=False):
+        region = regions.get(str(tid))
+        length = region.length if region else int(group["_pos"].max()) + max(window - 1, 0)
+        series = {
+            name: [[int(p), round(float(v), 3)] for p, v in zip(part["_pos"], part["_val"], strict=True)]
+            for name, part in group.groupby("_class", sort=False)
+        }
+        out.append(
+            {
+                "transcript_id": str(tid),
+                "length": int(length),
+                "cds_start": region.cds_start if region else None,
+                "cds_end": region.cds_end if region else None,
+                "windows": int(len(group)),
+                "series": series,
+                "gaps": [
+                    [start, end]
+                    for start, end in not_enumerated_stretches(
+                        (int(p) for p in group["_pos"]), int(length), window=max(window, 1), min_nt=MIN_UNENUMERATED_NT
+                    )
+                ]
+                if window
+                else [],
+            }
+        )
+    out.sort(key=lambda d: (-d["windows"], d["transcript_id"]))
+    return out
+
+
 def _build_guide(
     *,
     guide: str,
@@ -539,6 +611,7 @@ def _build_guide(
     counts_exist = bool(len(hits)) and not embedded
     return GuideEntry(
         run_verdict=_run_verdict(rows),
+        structure=(str(best.get("structure")) if pd.notna(best.get("structure")) else None),
         guide=guide,
         passenger=(str(best.get("passenger_sequence")) if pd.notna(best.get("passenger_sequence")) else None),
         overhang=(str(best.get("passenger_overhang")) if pd.notna(best.get("passenger_overhang")) else None),

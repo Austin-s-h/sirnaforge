@@ -15,17 +15,19 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, select_autoescape
 
 from sirnaforge.reporting.payload import ReportPayload
+from sirnaforge.reporting.tracks import PointSeries, TranscriptRegions, legend_html, transcript_map_svg
 
 #: Guides embedded in the index. The per-guide detail is rendered for all of them; this bounds only
 #: how many rows the client holds, and the number is reported in the header so it is never a silent cap.
 MAX_INDEX_GUIDES = 5000
 
 
-_TEMPLATE = """<!DOCTYPE html>
+_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>siRNAforge report — {{ p.run.gene_query }}</title>
 <style>
@@ -58,6 +60,15 @@ tbody tr.sel{background:#dbeafe}
 .v-pass{color:var(--pass);background:#dcfce7}.v-fail{color:var(--fail);background:#fee2e2}
 .v-unknown{color:var(--unk);background:#fef3c7}.v-not_evaluated{color:var(--off);background:#f3f4f6}
 .v-warn{color:#92400e;background:#fef9c3}
+#mapwrap{position:relative;overflow-x:auto}
+#mapover{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+select{font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--line);border-radius:5px;
+background:var(--card);color:var(--fg);text-transform:none;letter-spacing:0}
+.struct{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.struct>div:first-child{flex:0 0 380px;max-width:380px}
+.struct>div:last-child{flex:1 1 260px;min-width:240px}
+.struct .db{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+letter-spacing:.5px;line-height:1.5;word-break:break-all}
 .warn{background:#fffbeb;border-left:3px solid var(--unk);padding:9px 12px;font-size:12.5px;margin-bottom:12px;border-radius:0 5px 5px 0}
 .empty{color:var(--mut);font-style:italic;font-size:12.5px}
 .big{font-size:22px;font-weight:680}
@@ -98,11 +109,21 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
     <th data-k="failed">Fail / unknown</th><th data-k="liab">Liabilities</th><th data-k="rows">Isoforms</th>
   </tr></thead><tbody></tbody></table>
  </div>
- <div id="right"><p class="empty">Select a guide.</p></div>
+ <div id="right">
+   <div class="card" id="mapcard">
+     <h2>Design map &nbsp;<select id="tx" aria-label="transcript"></select></h2>
+     <div id="maplegend"></div>
+     <div id="mapwrap"><div id="mapbase"></div><svg id="mapover"></svg></div>
+     <div id="mapnote" class="empty"></div>
+   </div>
+   <div id="detail"><p class="empty">Select a guide.</p></div>
+ </div>
 </main>
 <script>
 const G = GUIDES_JSON_PLACEHOLDER;
 const FILTERS = FILTERS_JSON_PLACEHOLDER;
+const MAPS = MAPS_JSON_PLACEHOLDER;
+const LAYOUTS = LAYOUTS_JSON_PLACEHOLDER;
 const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Number.isInteger(n)?n.toLocaleString():n.toFixed(3)) : n);
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
@@ -243,12 +264,130 @@ function mirnaCard(g){
    <tbody>${g.mirna.map(m=>`<tr><td class="mono">${esc(m.mirna)}</td><td>${esc(m.source)}</td>
      <td>${fmt(m.seed_mismatches)}</td><td>${fmt(m.nm)}</td></tr>`).join('')}</tbody></table></div>`;
 }
+// ---- design map: one pre-rendered transcript at a time, plus a live marker for the selection ----
+// The map itself is drawn in Python by reporting.tracks, so a notebook figure and this card cannot
+// diverge. Only the selection marker is client-side, because only it depends on what is selected.
+const TXS = Object.keys(MAPS);
+let curTx = TXS[0] || null;
+
+function renderMap(){
+  const sel=document.getElementById('tx');
+  if(!TXS.length){ document.getElementById('mapcard').style.display='none'; return; }
+  sel.innerHTML = TXS.map(t=>`<option value="${esc(t)}"${t===curTx?' selected':''}>${esc(MAPS[t].label)}</option>`).join('');
+  const m=MAPS[curTx];
+  document.getElementById('mapbase').innerHTML=m.svg;
+  document.getElementById('maplegend').innerHTML=m.legend;
+  document.getElementById('mapover').setAttribute('viewBox', m.viewBox);
+  document.getElementById('mapnote').textContent=m.note;
+  drawOverlay();
+}
+
+// Where this guide sits on the transcript now shown -- a guide is enumerated once per transcript, so
+// a guide absent from the current one is a fact worth saying rather than an empty overlay.
+function selectedPositions(){
+  const g=G.find(x=>x.guide===selected);
+  if(!g||!curTx) return [];
+  return g.isoforms.filter(i=>i.transcript===curTx && i.position!==null).map(i=>i.position);
+}
+
+function drawOverlay(){
+  const over=document.getElementById('mapover'); if(!over||!curTx) return;
+  const geo=MAPS[curTx].geometry, ps=selectedPositions();
+  const x=p=>geo.x0+(geo.x1-geo.x0)*(Math.min(Math.max(p,1)-1,geo.length-1))/Math.max(geo.length-1,1);
+  over.innerHTML = ps.map(p=>{const px=x(p).toFixed(1);
+    return `<line x1="${px}" y1="${geo.y0}" x2="${px}" y2="${geo.y1}" stroke="#1d4ed8" stroke-width="1.4" stroke-dasharray="3 2"/>`
+         + `<path d="M${px} ${geo.y0-2}l-4.5-7h9z" fill="#1d4ed8"/>`;}).join('');
+  const note=document.getElementById('mapnote');
+  if(selected) note.textContent = ps.length
+    ? `${esc(selected)} is enumerated at ${ps.map(p=>p.toLocaleString()).join(', ')} on this transcript.`
+    : `${esc(selected)} is not enumerated on this transcript.`;
+  else note.textContent = MAPS[curTx].note;
+}
+
+function showOn(g){
+  // Follow the selection to a transcript that actually carries it, so the marker is never off-screen.
+  if(!curTx) return;
+  const here=g.isoforms.some(i=>i.transcript===curTx);
+  if(!here){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first){ curTx=first.transcript; renderMap(); } }
+}
+
+// ---- secondary structure: the run's own dot-bracket, laid out, never refolded ----
+function pairsOf(db){
+  const p=new Array(db.length).fill(-1), st=[];
+  for(let i=0;i<db.length;i++){
+    if(db[i]==='(') st.push(i);
+    else if(db[i]===')'){ const j=st.pop(); if(j!==undefined){ p[i]=j; p[j]=i; } }
+  }
+  return p;
+}
+
+function structureSvg(seq, db){
+  const W=380, H=230, pad=14, foot=14, SEED=[2,8];
+  const p=pairsOf(db), xy=LAYOUTS[db];
+  let body='';
+  if(xy && xy.length===db.length){
+    const xs=xy.map(a=>a[0]), ys=xy.map(a=>a[1]);
+    const xl=Math.min(...xs), xh=Math.max(...xs), yl=Math.min(...ys), yh=Math.max(...ys);
+    const sc=Math.min((W-2*pad)/Math.max(xh-xl,1e-6),(H-foot-pad)/Math.max(yh-yl,1e-6));
+    const dx=pad+((W-2*pad)-(xh-xl)*sc)/2, dy=pad+((H-foot-pad)-(yh-yl)*sc)/2;
+    const X=i=>(dx+(xy[i][0]-xl)*sc), Y=i=>(dy+(yh-xy[i][1])*sc);
+    body+=`<path d="${xy.map((_,i)=>(i?'L':'M')+X(i).toFixed(1)+' '+Y(i).toFixed(1)).join('')}" fill="none" stroke="#9ca3af" stroke-width="1.6"/>`;
+    for(let i=0;i<p.length;i++) if(p[i]>i)
+      body+=`<line x1="${X(i).toFixed(1)}" y1="${Y(i).toFixed(1)}" x2="${X(p[i]).toFixed(1)}" y2="${Y(p[i]).toFixed(1)}" stroke="#1d4ed8" stroke-width="1.2" stroke-opacity="0.55"/>`;
+    for(let i=0;i<seq.length;i++){
+      if(i+1>=SEED[0]&&i+1<=SEED[1]) body+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(i).toFixed(1)}" r="7" fill="#fef3c7"/>`;
+      body+=`<text x="${X(i).toFixed(1)}" y="${(Y(i)+3.5).toFixed(1)}" text-anchor="middle" font-size="9.5" fill="#1a1d21">${esc(seq[i]||'')}</text>`;
+    }
+  } else {
+    const n=seq.length, base=H-foot-24, step=(W-2*pad)/Math.max(n-1,1), px=i=>pad+i*step;
+    body+=`<rect x="${(px(SEED[0]-1)-step/2).toFixed(1)}" y="${base-12}" width="${((SEED[1]-SEED[0]+1)*step).toFixed(1)}" height="20" fill="#fef3c7"/>`;
+    body+=`<line x1="${pad}" y1="${base}" x2="${W-pad}" y2="${base}" stroke="#9ca3af" stroke-width="1.2"/>`;
+    for(let i=0;i<p.length;i++) if(p[i]>i){
+      const r=(px(p[i])-px(i))/2, top=Math.max(base-r,14);
+      body+=`<path d="M${px(i).toFixed(1)} ${base}Q${((px(i)+px(p[i]))/2).toFixed(1)} ${(2*top-base).toFixed(1)} ${px(p[i]).toFixed(1)} ${base}" fill="none" stroke="#1d4ed8" stroke-width="1.2" stroke-opacity="0.55"/>`;
+    }
+    for(let i=0;i<n;i++) body+=`<text x="${px(i).toFixed(1)}" y="${base+14}" text-anchor="middle" font-size="9.5" fill="#1a1d21">${esc(seq[i])}</text>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px" role="img">${body}</svg>`;
+}
+
+function structureCard(g){
+  const db=g.structure;
+  if(!db) return '';
+  const pairCount=(db.match(/\(/g)||[]).length, degenerate=/^\.+$/.test(db);
+  const laid=!!(LAYOUTS[db] && LAYOUTS[db].length===db.length);
+  const caption = degenerate
+    ? `No pairs predicted over ${db.length} nt. This is the open chain, the physical floor of the MFE — a real answer, and the shape 34.8% of one MSH3 run's passing pool takes.`
+    : `${pairCount} pair${pairCount===1?'':'s'}, ${2*pairCount} of ${db.length} nt paired.`;
+  return `<div class="card"><h2>Secondary structure — the fold the gates were decided on</h2>
+    ${degenerate?`<div class="warn"><b>Degenerate fold.</b> ${caption} <code>paired_fraction</code> and
+      <code>EXCESS_PAIRING</code> both read this structure, so a flat picture is the honest one.</div>`:''}
+    <div class="struct">
+      <div>${structureSvg(g.guide, db)}</div>
+      <div>
+        <div class="db">${[...db].map((c,i)=>`<span style="color:${c==='.'?'#9ca3af':'#1d4ed8'}">${c}</span>`).join('')}</div>
+        <div class="kv" style="margin-top:10px">
+          <div><b>Pairs</b>${pairCount}</div>
+          <div><b>paired_fraction</b>${fmt(g.metrics.paired_fraction)}</div>
+          <div><b>mfe</b>${fmt(g.metrics.mfe)}</div>
+          <div><b>Layout</b>${laid?'ViennaRNA naview':'arc diagram (no layout in payload)'}</div>
+        </div>
+        <p class="empty" style="margin:10px 0 0">Laid out from the run's published dot-bracket and never
+        refolded: a re-fold here could disagree with the <code>paired_fraction</code> the gates used.
+        Seed ${2}–${8} shaded.</p>
+      </div>
+    </div></div>`;
+}
+
+document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
+renderMap();
+
 function show(g){
   selected=g.guide; renderIndex();
   const i=G.indexOf(g);
-  document.getElementById('right').innerHTML = `
+  document.getElementById('detail').innerHTML = `
    <div class="card"><h2>Guide</h2>
-     <div class="mono big">${esc(g.guide)} <span class="pill ${({pass:'v-pass',unknown:'v-unknown',fail:'v-fail'})[g.status]}" style="font-size:12px;vertical-align:middle">${g.status==='unknown'?'not established':g.status}</span></div>
+     <div class="mono big">${esc(g.guide)} <span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[g.status]}" style="font-size:12px;vertical-align:middle">${g.status==='unknown'?'not established':g.status}</span></div>
      <div class="kv" style="margin-top:12px">
        <div><b>Passenger</b><span class="mono">${esc(g.passenger||'—')}</span></div>
        <div><b>Overhang</b>${esc(g.overhang||'—')}</div>
@@ -257,8 +396,9 @@ function show(g){
        <div><b>Design score</b>${fmt(g.design_score)}</div>
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
-   ${gatesCard(g)}${isoformCard(g)}${offtargetCard(g,i)}${mirnaCard(g)}`;
+   ${gatesCard(g)}${structureCard(g)}${isoformCard(g)}${offtargetCard(g,i)}${mirnaCard(g)}`;
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
+  showOn(g); drawOverlay();
   location.hash = encodeURIComponent(g.guide);
 }
 renderIndex();
@@ -289,9 +429,69 @@ def render_html(payload: ReportPayload) -> str:
     env = Environment(autoescape=select_autoescape(default=True), trim_blocks=True, lstrip_blocks=True)
     # Rendered before the payload is substituted, so no JSON string can be parsed as template syntax.
     html = env.from_string(_TEMPLATE).render(p=payload)
-    return html.replace("GUIDES_JSON_PLACEHOLDER", json.dumps(guides, separators=(",", ":"))).replace(
-        "FILTERS_JSON_PLACEHOLDER", json.dumps(payload.filters, separators=(",", ":"))
-    )
+    for placeholder, value in (
+        ("GUIDES_JSON_PLACEHOLDER", guides),
+        ("FILTERS_JSON_PLACEHOLDER", payload.filters),
+        ("MAPS_JSON_PLACEHOLDER", _design_maps(payload)),
+        ("LAYOUTS_JSON_PLACEHOLDER", payload.run.get("structure_layouts") or {}),
+    ):
+        html = html.replace(placeholder, json.dumps(value, separators=(",", ":")))
+    return html
+
+
+#: Point classes on the design map, drawn in this order so a passing window is never hidden under a
+#: rejected one. Labels are the legend text.
+_MAP_SERIES = (
+    ("fail", "rejected by at least one gate"),
+    ("warn", "passes, over a warn threshold"),
+    ("pass", "passes every gate"),
+)
+
+
+def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
+    """Pre-render one transcript map per transcript, using the shared track primitive.
+
+    Server-side because the drawing belongs in one place: a notebook figure and this card come out of
+    the same function, so they cannot drift. Only the selection marker is left to the client, because
+    only it depends on which guide is selected.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for entry in payload.run.get("transcripts") or []:
+        regions = TranscriptRegions(
+            transcript_id=entry["transcript_id"],
+            length=entry["length"],
+            cds_start=entry.get("cds_start"),
+            cds_end=entry.get("cds_end"),
+        )
+        series = [
+            PointSeries(label, key, [(int(p), float(v)) for p, v in entry["series"].get(key, [])])
+            for key, label in _MAP_SERIES
+        ]
+        gaps = [(int(a), int(b)) for a, b in entry.get("gaps") or []]
+        svg, geometry = transcript_map_svg(
+            regions,
+            series,
+            title=f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} enumerated windows",
+            gaps=gaps,
+            standalone=False,
+        )
+        counts = ", ".join(f"{len(s.points):,} {s.label}" for s in reversed(series))
+        note = f"{counts}." + (f" {len(gaps)} stretch(es) of >= 40 nt carry no enumerated window." if gaps else "")
+        out[regions.transcript_id] = {
+            "label": f"{regions.transcript_id} ({entry['windows']:,} windows)",
+            "svg": svg,
+            "legend": legend_html(series, gaps=bool(gaps)),
+            "geometry": geometry.as_dict(),
+            "viewBox": _view_box(svg),
+            "note": note,
+        }
+    return out
+
+
+def _view_box(svg: str) -> str:
+    """The base map's viewBox, so the marker overlay shares its coordinate system exactly."""
+    start = svg.index('viewBox="') + len('viewBox="')
+    return svg[start : svg.index('"', start)]
 
 
 def write_report(payload: ReportPayload, out_path: Path | str) -> Path:
