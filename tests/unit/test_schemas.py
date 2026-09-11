@@ -84,7 +84,6 @@ class TestSiRNACandidateSchema:
             "score_target_accessibility",
             "score_off_target",
             "score_ago_start",
-            "score_pos1_mismatch",
             "score_supp_13_16",
             "scored_after_screening",
             "weight_set_version",

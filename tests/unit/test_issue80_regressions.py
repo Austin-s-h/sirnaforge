@@ -140,7 +140,6 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
         # (empirical, isoform_coverage, conservation) with the miRNA terms that joined it, and
         # split the one score column into the two vectors that actually exist.
         "score_ago_start",
-        "score_pos1_mismatch",
         "score_supp_13_16",
         "empirical_score",
         "design_score",

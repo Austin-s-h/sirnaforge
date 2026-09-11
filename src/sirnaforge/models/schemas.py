@@ -274,13 +274,6 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
-    score_pos1_mismatch: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of the position-1 pairing term (miRNA mode only)",
-        nullable=True,
-        coerce=True,
-    )
     score_supp_13_16: Series[float] = Field(
         ge=0.0,
         le=100.0,

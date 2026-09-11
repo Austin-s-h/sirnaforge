@@ -1153,7 +1153,10 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "score_asymmetry": candidate.score_asymmetry,
         "score_gc_content": candidate.score_gc_content,
         "score_ago_start": _maybe_attr("score_ago_start"),
-        "score_pos1_mismatch": _maybe_attr("score_pos1_mismatch"),
+        # score_pos1_mismatch is not exported: #102 removed pos1_mismatch from the only vector that
+        # held it, so the contribution is null for every candidate of every run. An always-null column
+        # is not neutral -- a reader who finds it in the header tries to use it. The field stays on the
+        # model for whichever vector scores the term next; re-add the column with that vector.
         "score_supp_13_16": _maybe_attr("score_supp_13_16"),
         "empirical_score": cs.get("empirical"),
         "scored_after_screening": candidate.scored_after_screening,
