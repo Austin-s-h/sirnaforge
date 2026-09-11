@@ -409,6 +409,22 @@ def test_the_payload_carries_a_design_map_and_the_report_draws_it(tmp_path: Path
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("drop", ["position", "composite_score", None])
+def test_a_run_missing_what_the_map_needs_still_renders(tmp_path: Path, drop: str | None) -> None:
+    """The map is an addition to the report, so its inputs going missing costs the panel and nothing else."""
+    columns = [c for c in _CANDIDATE_COLUMNS.split(",") if c != drop]
+    values = dict(zip(_CANDIDATE_COLUMNS.split(","), _candidate_row("c1", GUIDE, "ENST1", 10).split(","), strict=True))
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text(
+        ",".join(columns) + "\n" + ",".join(values[c] for c in columns) + "\n"
+    )
+
+    payload = build_payload(run)
+    assert len(payload.run["transcripts"]) == (1 if drop is None else 0)
+    assert render_html(payload).startswith("<!DOCTYPE html>")
+
+
+@pytest.mark.unit
 def test_the_map_does_not_colour_an_unestablished_window_as_passing(tmp_path: Path) -> None:
     """The map is subject to the same rule as the status column: report less, never more.
 
