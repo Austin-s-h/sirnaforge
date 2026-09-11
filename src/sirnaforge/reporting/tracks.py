@@ -285,12 +285,17 @@ def transcript_map_svg(
 
 
 def legend_html(series: Sequence[PointSeries], *, gaps: bool = False) -> str:
-    """A legend as HTML rather than SVG text, so it wraps with the card instead of clipping."""
+    """A legend as HTML rather than SVG text, so it wraps with the card instead of clipping.
+
+    A series with no points is omitted: the map draws nothing for it, and a legend key for an absent
+    class reads as a class the reader failed to find.
+    """
     items = [
         f'<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:9px;height:9px;'
         f'border-radius:2px;background:{SERIES_FILL.get(s.fill_key, _AXIS)};margin-right:5px"></span>'
         f"{_esc(s.label)} ({len(s.points):,})</span>"
         for s in series
+        if s.points
     ]
     if gaps:
         items.append(

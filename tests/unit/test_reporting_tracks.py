@@ -127,8 +127,12 @@ def test_an_embedded_map_declares_no_namespace_and_reaches_nothing() -> None:
 @pytest.mark.unit
 def test_the_legend_reports_the_count_it_drew() -> None:
     """A legend whose counts come from anywhere but the drawn points can disagree with the picture."""
-    series = [PointSeries("passes every gate", "pass", [(1, 1.0), (2, 2.0), (3, 3.0)])]
+    series = [
+        PointSeries("passes every gate", "pass", [(1, 1.0), (2, 2.0), (3, 3.0)]),
+        PointSeries("not established", "unknown", []),
+    ]
     html = legend_html(series, gaps=True)
 
     assert "passes every gate (3)" in html
     assert "no enumerated window" in html
+    assert "not established" not in html, "a class the map drew nothing for is not a legend key"
