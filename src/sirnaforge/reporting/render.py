@@ -57,6 +57,7 @@ tbody tr.sel{background:#dbeafe}
 .pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:650}
 .v-pass{color:var(--pass);background:#dcfce7}.v-fail{color:var(--fail);background:#fee2e2}
 .v-unknown{color:var(--unk);background:#fef3c7}.v-not_evaluated{color:var(--off);background:#f3f4f6}
+.v-warn{color:#92400e;background:#fef9c3}
 .warn{background:#fffbeb;border-left:3px solid var(--unk);padding:9px 12px;font-size:12.5px;margin-bottom:12px;border-radius:0 5px 5px 0}
 .empty{color:var(--mut);font-style:italic;font-size:12.5px}
 .big{font-size:22px;font-weight:680}
@@ -72,18 +73,20 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      <span class="nonliab">{{ '{:,}'.format(p.run.non_liability_rows) }} not liabilities</span>) ·
     liability rows embedded for {{ p.run.embed_scope }} ·
     payload schema {{ p.schema_version }} · profile {{ p.provenance.policy_profile }} ·
-    run mode {{ p.provenance.run_mode }} · sirnaforge {{ p.provenance.tool_version }}
+    run mode {{ p.provenance.run_mode }} · gates from {{ p.provenance.policy_source }} ·
+    sirnaforge {{ p.provenance.tool_version }}
   </div>
   <div class="sub" style="margin-top:6px">
     <span class="pill v-pass">{{ p.run.status_counts["pass"] }} pass</span>
+    <span class="pill v-warn">{{ p.run.status_counts["warn"] }} pass with a warning</span>
     <span class="pill v-unknown">{{ p.run.status_counts["unknown"] }} not established</span>
     <span class="pill v-fail">{{ p.run.status_counts["fail"] }} fail</span>
     {% if p.run.agreement.comparable %}
     &nbsp;· vs the run's own verdict: <b>{{ p.run.agreement.contradicted_run_pass }}</b> of
     {{ p.run.agreement.run_pass_guides }} run-PASS guides contradicted;
     <b>{{ p.run.agreement.run_failed_not_rederivable }}</b> the run failed cannot be re-derived here
-    because it does not export the counters those gates read — reported <em>not established</em>,
-    never flipped to pass.
+    — reported <em>not established</em>, never flipped to pass;
+    <b>{{ p.run.agreement.overruled_run_fail }}</b> run rejections overruled.
     {% endif %}
   </div>
 </header>
@@ -104,7 +107,7 @@ const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Numbe
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
 
-const STATUS_RANK={pass:0,unknown:1,fail:2};
+const STATUS_RANK={pass:0,warn:1,unknown:2,fail:3};
 function rowKey(g,k){
   if(k==='guide')return g.guide; if(k==='composite')return g.composite_score??-1;
   if(k==='design')return g.design_score??-1; if(k==='failed')return g.n_gates_failed*100+g.n_gates_unknown;
@@ -115,7 +118,7 @@ function renderIndex(){
   const tb=document.querySelector('#idx tbody');
   view.sort((a,b)=>{const x=rowKey(a,sortK),y=rowKey(b,sortK);
     const c = typeof x==='string' ? x.localeCompare(y) : x-y; return sortAsc?c:-c;});
-  const V={pass:'v-pass',unknown:'v-unknown',fail:'v-fail'};
+  const V={pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'};
   tb.innerHTML = view.map(g=>`<tr data-i="${G.indexOf(g)}" class="${g.guide===selected?'sel':''}">
     <td><span class="pill ${V[g.status]}">${g.status}</span></td>
     <td class="mono">${esc(g.guide)}</td><td>${fmt(g.composite_score)}</td>
@@ -172,16 +175,17 @@ function drawMatrix(id, matrix){
      background:${CLASS_FILL[c]||'#9ca3af'};margin-right:4px"></span>${c}${LIABILITY_CLASSES.has(c)?' (liability)':''}</span>`).join('')+`</div>`;
   host.innerHTML=s;
 }
-const VERDICT=['pass','fail','unknown','not_evaluated'];
+const VERDICT=['pass','fail','unknown','not_evaluated','warn'];
 function gateReason(f,value,verdict,reason){
-  if(reason===1) return 'the run does not export '+f.column;
-  if(reason===2) return f.column+' is empty';
+  if(reason===1) return 'the run exports neither '+f.filter_id+'_observed nor '+f.column;
+  if(reason===2) return (f.read_column||f.column)+' is empty';
   if(reason===3) return 'filter is off';
   if(reason===4) return 'no threshold declared';
-  return fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(f.threshold);
+  const cmp=fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(f.threshold);
+  return verdict===4 ? cmp+' — action is warn, so the run did not reject it' : cmp;
 }
 function gatesCard(g){
-  const order=[2,0,3,1];  // fail, unknown, pass, not_evaluated -- worst news first
+  const order=[3,0,1,4,2];  // fail, unknown, warn, pass, not_evaluated -- worst news first
   const idx=g.gates.map((t,i)=>i).sort((a,b)=>order[g.gates[a][1]]-order[g.gates[b][1]]);
   const rows=idx.map(i=>{const [value,verdict,reason]=g.gates[i], f=FILTERS[i], v=VERDICT[verdict];
     return `<tr><td class="mono">${esc(f.filter_id)}</td>
@@ -190,8 +194,11 @@ function gatesCard(g){
     <td>${esc(f.scope_label)}</td><td>${esc(f.stage)}</td><td>${esc(gateReason(f,value,verdict,reason))}</td></tr>`;}).join('');
   const nu=g.n_gates_unknown;
   return `<div class="card"><h2>Gates — all ${g.gates.length}, not only the first to fire</h2>
-    ${nu?`<div class="warn"><b>${nu} gate${nu>1?'s':''} could not be evaluated.</b> An unknown is not a pass:
-      the run does not export the counter the threshold reads. Those gates are #101's counter-export work.</div>`:''}
+    ${nu?`<div class="warn"><b>${nu} gate${nu>1?'s':''} could not be evaluated.</b> An unknown is not a pass.
+      The Why column names what each one was missing.</div>`:''}
+    ${(!nu&&g.status==='unknown')?`<div class="warn"><b>The run rejected this guide as
+      ${esc(g.run_verdict)}, and no declared gate expresses that.</b> Every gate below is satisfied, so
+      this report cannot re-derive the rejection — and will not overrule it.</div>`:''}
     <table><thead><tr><th>Filter</th><th>Verdict</th><th>Value</th><th>Threshold</th>
     <th>Scope</th><th>Stage</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }

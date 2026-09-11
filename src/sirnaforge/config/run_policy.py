@@ -643,6 +643,50 @@ class ResolvedRunPolicy(BaseModel):
         }
 
 
+def filters_from_manifest(block: Mapping[str, Any]) -> tuple[ResolvedFilter, ...]:
+    """Rebuild the resolved gates from a manifest's ``run_policy`` block.
+
+    The inverse of :meth:`ResolvedRunPolicy.as_manifest`'s ``filters`` list, so a consumer reading a
+    finished run gets the gates **that run applied** rather than whatever the library would resolve
+    today. Re-resolving instead is not equivalent: it loses every threshold the caller stated, and a
+    built-in profile may have moved since the run.
+
+    Args:
+        block: A manifest ``run_policy`` mapping.
+
+    Returns:
+        The gates in reporting order, empty when the block declares none.
+
+    Raises:
+        RunPolicyError: A filter entry is missing a field or carries a value the models reject.
+    """
+    out: list[ResolvedFilter] = []
+    for entry in block.get("filters") or ():
+        try:
+            out.append(
+                ResolvedFilter(
+                    descriptor=FilterDescriptor(
+                        filter_id=entry["filter_id"],
+                        column=entry["column"],
+                        comparator=entry["comparator"],
+                        threshold=entry["threshold"],
+                        scope=FilterScope.model_validate(entry["scope"]),
+                        action=entry["action"],
+                        stage=entry["stage"],
+                    ),
+                    setting_key=entry["setting_key"],
+                    definition=entry["definition"],
+                    transform=entry.get("transform"),
+                    evidence_exported=entry["evidence_exported"],
+                )
+            )
+        except (KeyError, ValidationError) as exc:
+            raise RunPolicyError(
+                f"manifest run_policy filter {entry.get('filter_id', '?')!r} is unusable: {exc}"
+            ) from exc
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class _Layer:
     """One precedence layer: the values it supplies and the authority it speaks with."""

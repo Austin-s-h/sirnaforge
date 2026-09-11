@@ -14,15 +14,22 @@ per-transcript rows collapse into an isoform sub-table.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from sirnaforge.config.run_policy import EntryPoint, ResolvedRunPolicy, resolve_run_policy
+from sirnaforge.config.run_policy import (
+    EntryPoint,
+    ResolvedRunPolicy,
+    RunPolicyError,
+    filters_from_manifest,
+    resolve_run_policy,
+)
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, hit_class_of, is_annotated
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
@@ -69,6 +76,18 @@ class GuideEntry:
     offtarget_embedded_scope_empty_but_counts_exist: bool
     liability_count: int
     mirna: list[dict[str, Any]]
+    run_verdict: str | None = None
+
+    @property
+    def undeclared_run_rejection(self) -> bool:
+        """The run rejected this guide everywhere, and no declared gate accounts for it.
+
+        ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, and the 16-filter registry
+        declares no repeat gate, so the report has no descriptor that can re-derive the rejection. It
+        must not therefore call the guide clean -- on one MSH3 run that would have published 185
+        guides as passing that the run threw out.
+        """
+        return self.run_verdict not in (None, "PASS") and not (self.n_gates_failed or self.n_gates_unknown)
 
     @property
     def n_gates_failed(self) -> int:
@@ -97,10 +116,14 @@ class GuideEntry:
         ``warn`` is separate from ``fail`` for the mirror-image reason. A warn-action gate the guide
         exceeds is a real finding, but the run did not reject the guide for it, so calling it ``fail``
         would make the report contradict a run PASS it actually agrees with.
+
+        A rejection no declared gate can express is also ``unknown``: see
+        :attr:`undeclared_run_rejection`. The report may report less than the run. It may not report
+        more.
         """
         if self.n_gates_failed:
             return "fail"
-        if self.n_gates_unknown:
+        if self.n_gates_unknown or self.undeclared_run_rejection:
             return "unknown"
         return "warn" if self.n_gates_warned else "pass"
 
@@ -123,20 +146,25 @@ def _normalise_guide(seq: object) -> str:
 
 
 def _num(value: object) -> float | int | None:
-    """A number, or None for NaN/blank -- never a fabricated zero."""
+    """A number, or None for NaN/blank -- never a fabricated zero.
+
+    Coerces through ``float`` rather than testing ``isinstance(value, (int, float))``, because
+    ``numpy.int64`` is **not** a Python ``int`` while ``numpy.float64`` *is* a Python ``float``, and a
+    row taken with ``DataFrame.iloc`` hands back numpy scalars. The isinstance test therefore nulled
+    every integer-dtype column and let float columns through, which made ``max_off_target_count``
+    read ``unknown`` for every guide on a real run while its threshold was rejecting 65% of them.
+    """
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return None
-        try:
-            value = float(value)
-        except ValueError:
-            return None
-    if not isinstance(value, (int, float)) or pd.isna(value):
+    if isinstance(value, str) and not value.strip():
         return None
-    return int(value) if float(value).is_integer() else round(float(value), 6)
+    try:
+        number = float(value)  # type: ignore[arg-type]  # non-numeric raises, which is the answer
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):  # NaN or infinite is not a value
+        return None
+    return int(number) if number.is_integer() else round(number, 6)
 
 
 _COMPARE = {
@@ -169,14 +197,43 @@ _VERDICT_CODE = {
 #: (``contradicted_run_pass``) that exists to prove the report and the pipeline agree.
 VERDICT_WARN = 4
 
+#: Guide statuses, worst first. ``warn`` belongs in the header tally like the rest: counting only
+#: pass/unknown/fail dropped every warn-status guide out of a total that claims to be all of them.
+STATUSES = ("fail", "unknown", "warn", "pass")
 
-def _evaluate(descriptor: Any, row: pd.Series) -> tuple[float | int | None, int, int]:
+
+def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
+    """The column carrying the value this gate compared, or None if the run exports neither.
+
+    ``<filter_id>_observed`` is preferred over the descriptor's own ``column``, because it is the
+    number the pipeline itself compared. It is the answer for the gates that read human-stratified
+    counters: 0.7.1 does not export ``transcriptome_hits_1mm_human`` under that name (#101), but it
+    does export ``max_transcriptome_hits_1mm_observed``, and on a four-species MSH3 run the observed
+    column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named all-species
+    column disagrees -- 17,600 hits against 63,801. Reading the descriptor's column instead would let
+    the report contradict the run using a counter with a wider scope than the gate's.
+
+    ``populated`` must hold only columns that carry at least one value. A column present but empty
+    for every row is the shape a gate takes when the run never recorded its verdict, and preferring
+    it would turn a gate the descriptor column *can* answer into an unknown.
+    """
+    for candidate in (f"{descriptor.filter_id}_observed", descriptor.column):
+        if candidate in populated:
+            return candidate
+    return None
+
+
+def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[float | int | None, int, int]:
     """Evaluate one descriptor against one candidate row, independently of every other gate.
 
-    Returns ``unknown`` rather than a pass when the run does not export the column the threshold
-    reads. Six of the twelve active gates read human-stratified counters that 0.7.1 does not export
-    yet (#101), and reporting those as passes would be the fabricated-evidence failure this report
-    exists to make visible.
+    Returns ``unknown`` rather than a pass when the run exports no column the threshold can read.
+    Reporting those as passes would be the fabricated-evidence failure this report exists to make
+    visible.
+
+    Args:
+        descriptor: The gate as configured for this run.
+        row: One candidate row.
+        column: Column to read, from :func:`observed_column`; None when the run exports neither.
 
     Returns:
         ``(value, verdict_code, reason_code)``. The descriptor itself is emitted once per report.
@@ -185,10 +242,10 @@ def _evaluate(descriptor: Any, row: pd.Series) -> tuple[float | int | None, int,
         return None, _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value], REASON_FILTER_OFF
     if descriptor.threshold is None:
         return None, _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value], REASON_NO_THRESHOLD
-    if descriptor.column not in row.index:
+    if column is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_MISSING_COLUMN
 
-    value = _num(row.get(descriptor.column))
+    value = _num(row.get(column))
     if value is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_EMPTY_VALUE
 
@@ -200,6 +257,20 @@ def _evaluate(descriptor: Any, row: pd.Series) -> tuple[float | int | None, int,
     else:
         code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
     return value, code, REASON_OK
+
+
+def _run_verdict(rows: pd.DataFrame) -> str | None:
+    """The run's own verdict for a guide: PASS if any of its rows passed, else its first label.
+
+    Guide-level because screening is: one passing enumeration is enough for the run to keep the
+    guide, so the report must read the group rather than the best row.
+    """
+    if "passes_filters" not in rows.columns:
+        return None
+    labels = [str(v).split(" (")[0] for v in rows["passes_filters"].dropna()]
+    if not labels:
+        return None
+    return "PASS" if "PASS" in labels else labels[0]
 
 
 def _scope_label(descriptor: Any) -> str:
@@ -243,11 +314,16 @@ def _verdict_agreement(candidates: pd.DataFrame, guides: list[GuideEntry]) -> di
     by_status = {g.guide: g.status for g in guides}
     contradicted = sorted(g for g in run_pass if by_status.get(g) == "fail")
     not_rederivable = sorted(g for g, s in by_status.items() if s == "unknown" and g not in run_pass)
+    overruled = sorted(g.guide for g in guides if g.status in ("pass", "warn") and g.guide not in run_pass)
     return {
         "comparable": True,
         "run_pass_guides": len(run_pass),
         "contradicted_run_pass": len(contradicted),
         "run_failed_not_rederivable": len(not_rederivable),
+        # Must stay 0. It counts guides the report calls clean while the run rejected them -- the
+        # fabricated-evidence direction, which no earlier metric could see.
+        "overruled_run_fail": len(overruled),
+        "undeclared_run_rejections": sum(1 for g in guides if g.undeclared_run_rejection),
     }
 
 
@@ -273,13 +349,58 @@ def _read_hits(path: Path, caveats: list[str]) -> pd.DataFrame:
     return hits
 
 
+@dataclass(frozen=True)
+class _GatePanel:
+    """The gates the report will apply, and where they came from."""
+
+    filters: tuple[Any, ...]
+    profile_name: str
+    run_mode: str
+    source: str
+
+
+def _gate_panel(policy: ResolvedRunPolicy | None, manifest: Mapping[str, Any], caveats: list[str]) -> _GatePanel:
+    """The run's own gates: the live policy, else the manifest, else library defaults with a caveat.
+
+    Library defaults are the last resort and must be declared, because they are not this run's gates.
+    Defaulting silently published a GC ceiling of 60 against a run that set 65, which failed 227
+    guides on a threshold the run never applied and made the report contradict 41 of its PASSes.
+    """
+    if policy is not None:
+        return _GatePanel(tuple(policy.filters), policy.profile.name, policy.run_mode.value, "the live run policy")
+
+    block = manifest.get("run_policy")
+    if isinstance(block, Mapping):
+        try:
+            filters = filters_from_manifest(block)
+        except RunPolicyError as exc:
+            caveats.append(f"the manifest's gate registry is unusable ({exc}); gates below are library defaults")
+        else:
+            if filters:
+                profile = block.get("profile") or {}
+                return _GatePanel(
+                    filters,
+                    str(profile.get("name") or "unknown") if isinstance(profile, Mapping) else "unknown",
+                    str(block.get("run_mode") or "unknown"),
+                    "the run's own manifest",
+                )
+            caveats.append("the manifest declares no gates; gates below are library defaults")
+    else:
+        caveats.append("this run published no policy in its manifest; gates below are library defaults")
+
+    fallback = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW, query_species="human", screen_species=["human"]
+    )
+    return _GatePanel(tuple(fallback.filters), fallback.profile.name, fallback.run_mode.value, "library defaults")
+
+
 def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = None) -> ReportPayload:
     """Build the payload for a finished run directory.
 
     Args:
         run_dir: A completed output directory. No live pipeline state is required.
-        policy: Resolved policy supplying the gate descriptors. Resolved from the run's own
-            parameters when omitted.
+        policy: Resolved policy supplying the gate descriptors. Read from the run's own
+            ``manifest.json`` when omitted.
 
     Returns:
         A :class:`ReportPayload`.
@@ -301,10 +422,15 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
     mirna_path = agg / "combined_mirna_hits.tsv"
     mirna = pd.read_csv(mirna_path, sep="\t", low_memory=False) if mirna_path.exists() else pd.DataFrame()
 
-    if policy is None:
-        policy = resolve_run_policy(
-            entry_point=EntryPoint.SCREENING_WORKFLOW, query_species="human", screen_species=["human"]
-        )
+    manifest_path = next(iter(sorted(run_dir.glob("**/manifest.json"))), None)
+    manifest: dict[str, Any] = {}
+    if manifest_path is not None:
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:  # a bad manifest costs provenance, not the report
+            caveats.append(f"manifest.json could not be read ({exc}); the header shows less provenance")
+
+    panel = _gate_panel(policy, manifest, caveats)
 
     candidates["_guide"] = candidates["guide_sequence"].map(_normalise_guide)
     if not hits.empty:
@@ -317,18 +443,24 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
     hits_by_guide = dict(tuple(hits.groupby("_guide"))) if not hits.empty else {}
     mirna_by_guide = dict(tuple(mirna.groupby("_guide"))) if not mirna.empty and "_guide" in mirna else {}
 
-    descriptors = [f.descriptor for f in policy.filters]
+    descriptors = [f.descriptor for f in panel.filters]
+    populated = {c for c in candidates.columns if candidates[c].notna().any()}
+    gate_columns = [observed_column(d, populated) for d in descriptors]
     register = _register_index(candidates)
     guides: list[GuideEntry] = []
 
-    for guide, rows in candidates.groupby("_guide"):
-        best = rows.iloc[0]
+    # Sorted so `best` is the guide's best-scoring enumeration rather than whichever row the CSV
+    # happens to list first; the gates read constant-per-guide columns either way.
+    by = [c for c in ("composite_score", "design_score") if c in candidates.columns]
+    ranked = candidates.sort_values(by, ascending=False, na_position="last") if by else candidates
+    for guide, rows in ranked.groupby("_guide", sort=False):
         guides.append(
             _build_guide(
                 guide=str(guide),
                 rows=rows,
-                best=best,
+                best=rows.iloc[0],
                 descriptors=descriptors,
+                gate_columns=gate_columns,
                 hits=hits_by_guide.get(guide, pd.DataFrame()),
                 mirna=mirna_by_guide.get(guide, pd.DataFrame()),
                 register=register,
@@ -337,13 +469,14 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
 
     guides.sort(key=lambda g: (-(g.composite_score or g.design_score or -1), g.guide))
 
-    manifest_path = next(iter(sorted(run_dir.glob("**/manifest.json"))), None)
-    manifest: dict[str, Any] = {}
-    if manifest_path is not None:
-        try:
-            manifest = json.loads(manifest_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:  # a bad manifest costs provenance, not the report
-            caveats.append(f"manifest.json could not be read ({exc}); the header shows less provenance")
+    undeclared = sorted({g.run_verdict for g in guides if g.undeclared_run_rejection if g.run_verdict})
+    if undeclared:
+        caveats.append(
+            f"{sum(1 for g in guides if g.undeclared_run_rejection)} guides were rejected by the run as "
+            f"{', '.join(undeclared)}, which no declared gate expresses; they are reported not "
+            "established rather than clean"
+        )
+
     n_liab = sum(g.liability_count for g in guides)
     agreement = _verdict_agreement(candidates, guides)
     run = {
@@ -355,7 +488,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         "mirna_rows": int(len(mirna)),
         "embed_scope": f"{EMBED_SPECIES}, nm<={EMBED_MAX_NM}",
         "gene_query": _gene_query(manifest, candidates),
-        "status_counts": {s: sum(1 for g in guides if g.status == s) for s in ("pass", "unknown", "fail")},
+        "status_counts": {s: sum(1 for g in guides if g.status == s) for s in STATUSES},
         "agreement": agreement,
     }
     return ReportPayload(
@@ -367,8 +500,9 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
                 "setting_key": f.setting_key,
                 "definition": f.definition,
                 "scope_label": _scope_label(f.descriptor),
+                "read_column": column,
             }
-            for f in policy.filters
+            for f, column in zip(panel.filters, gate_columns, strict=True)
         ],
         guides=guides,
         provenance={
@@ -377,8 +511,9 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
             "manifest_present": manifest_path is not None,
             "tool_version": str(manifest.get("tool_version") or "unknown"),
             "run_timestamp": str(manifest.get("run_timestamp") or "unknown"),
-            "policy_profile": policy.profile.name,
-            "run_mode": policy.run_mode.value,
+            "policy_profile": panel.profile_name,
+            "run_mode": panel.run_mode,
+            "policy_source": panel.source,
             "payload_schema_version": PAYLOAD_SCHEMA_VERSION,
         },
         caveats=caveats,
@@ -391,17 +526,19 @@ def _build_guide(
     rows: pd.DataFrame,
     best: pd.Series,
     descriptors: list[Any],
+    gate_columns: list[str | None],
     hits: pd.DataFrame,
     mirna: pd.DataFrame,
     register: dict[str, list[int]],
 ) -> GuideEntry:
-    gates = [list(_evaluate(d, best)) for d in descriptors]
+    gates = [list(_evaluate(d, best, c)) for d, c in zip(descriptors, gate_columns, strict=True)]
 
     isoforms = _isoform_table(rows, register)
     by_symbol, matrix, embedded, liability = _offtarget_views(hits)
 
     counts_exist = bool(len(hits)) and not embedded
     return GuideEntry(
+        run_verdict=_run_verdict(rows),
         guide=guide,
         passenger=(str(best.get("passenger_sequence")) if pd.notna(best.get("passenger_sequence")) else None),
         overhang=(str(best.get("passenger_overhang")) if pd.notna(best.get("passenger_overhang")) else None),

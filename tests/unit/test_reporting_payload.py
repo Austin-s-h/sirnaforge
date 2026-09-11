@@ -14,9 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, unclassified_cells
 from sirnaforge.reporting import ReportInputError, build_payload, render_html
-from sirnaforge.reporting.payload import EMBED_MAX_NM
+from sirnaforge.reporting.payload import EMBED_MAX_NM, REASON_OK
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
 OTHER = "UUUUCCCCAAAAGGGGUUUUC"
@@ -83,6 +84,39 @@ def _write_run(tmp_path: Path, candidates: list[str], hits: list[dict[str, objec
     return run
 
 
+#: An observed value that satisfies each declared gate under the default profile. Twelve gates are
+#: evaluated and four are off; a run that records all of them is the only shape in which the report
+#: can legitimately call a guide clean.
+_PASSING_OBSERVED = {
+    "gc_content_min": 45.0,
+    "gc_content_max": 45.0,
+    "max_poly_runs": 2,
+    "max_paired_fraction": 0.3,
+    "min_asymmetry_score": 0.8,
+    "min_empirical_score": 0.5,
+    "min_isoform_coverage": "",
+    "max_off_target_count": 0,
+    "max_transcriptome_hits_0mm": 0,
+    "max_transcriptome_hits_1mm": 0,
+    "max_transcriptome_hits_2mm": 0,
+    "max_transcriptome_seed_perfect": "",
+    "max_mirna_perfect_seed": 0,
+    "max_mirna_1mm_seed": "",
+    "fail_on_high_risk_mirna": 0,
+    "max_total_offtarget_hits": "",
+}
+
+
+def _write_fully_evidenced_run(tmp_path: Path, *, run_label: str = "PASS") -> Path:
+    """A run that records what every declared gate observed, as the fixed design path now does."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
+    row = _candidate_row("c1", GUIDE, "ENST00000000001", 10).rsplit(",", 1)[0] + f",{run_label}"
+    row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
+    (run / "sirnaforge" / "candidates_all.csv").write_text(f"{columns}\n{row}\n")
+    return run
+
+
 @pytest.mark.unit
 def test_evidence_is_keyed_by_guide_sequence_not_candidate_id(tmp_path: Path) -> None:
     """One guide on three transcripts shows identical evidence on all three.
@@ -131,9 +165,8 @@ def test_on_target_and_ortholog_alignments_are_never_counted_as_off_targets(tmp_
 def test_a_gate_whose_column_the_run_does_not_export_is_unknown_not_pass(tmp_path: Path) -> None:
     """An unknown must never read as clean.
 
-    Six of the twelve active 0.7.1 gates read human-stratified counters the run does not export yet
-    (#101). On the public baseline that leaves 450 guides the run failed but this cannot re-derive --
-    they are reported ``not established``, never flipped to pass.
+    A gate the run exports no readable column for -- neither ``<filter_id>_observed`` nor the
+    descriptor's own column -- is reported ``not established``, never flipped to pass.
     """
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
     entry = build_payload(run).guides[0]
@@ -141,6 +174,143 @@ def test_a_gate_whose_column_the_run_does_not_export_is_unknown_not_pass(tmp_pat
     assert entry.n_gates_unknown > 0, "the synthetic run exports none of the screening counters"
     assert entry.status == "unknown", "a guide with unevaluable gates is not a pass"
     assert entry.n_gates_failed == 0, "and it is not a failure either"
+
+
+@pytest.mark.unit
+def test_an_integer_counter_is_read_rather_than_nulled(tmp_path: Path) -> None:
+    """``numpy.int64`` is not a Python ``int``, and ``DataFrame.iloc`` hands back numpy scalars.
+
+    An isinstance check against ``(int, float)`` therefore passed every float column and nulled every
+    integer one, so ``max_off_target_count`` read ``unknown`` on all 5,706 guides of an MSH3 run whose
+    threshold was rejecting 65% of its candidates.
+    """
+    columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed"
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text(
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},7,7\n"
+    )
+    payload = build_payload(run)
+    entry = payload.guides[0]
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "max_off_target_count")
+
+    assert entry.metrics["off_target_count"] == 7, "an int64 counter is a number, not a blank"
+    assert entry.gates[index][0] == 7, "and the gate reads it"
+    assert entry.gates[index][2] == REASON_OK
+
+
+@pytest.mark.unit
+def test_a_gate_reads_the_value_the_run_compared_not_a_wider_counter(tmp_path: Path) -> None:
+    """``<filter_id>_observed`` wins over the descriptor's column, because the run compared it.
+
+    The human-stratified gates read counters 0.7.1 does not export under the descriptor's name, but it
+    does export ``<filter_id>_observed``. Preferring the same-named all-species column instead would
+    let the report fail a guide on a scope wider than the gate's: on a four-species MSH3 run the two
+    disagree 17,600 hits against 63,801.
+    """
+    columns = _CANDIDATE_COLUMNS + ",transcriptome_hits_1mm,max_transcriptome_hits_1mm_observed"
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    # 40 all-species hits would fail the ceiling of 10; the 2 the gate actually counted pass it.
+    (run / "sirnaforge" / "candidates_all.csv").write_text(
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},40,2\n"
+    )
+    payload = build_payload(run)
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "max_transcriptome_hits_1mm")
+
+    assert payload.filters[index]["read_column"] == "max_transcriptome_hits_1mm_observed"
+    assert payload.guides[0].gates[index][0] == 2
+    assert payload.guides[0].gates[index][1] == 0, "2 <= 10 passes; reading the wider counter would fail it"
+
+
+@pytest.mark.unit
+def test_an_empty_observed_column_falls_back_to_the_descriptor_column(tmp_path: Path) -> None:
+    """A present-but-empty ``_observed`` column is a gate that recorded no verdict, not evidence.
+
+    Preferring it unconditionally turned ``gc_content_min``/``gc_content_max`` -- answerable from the
+    exported ``gc_content`` -- into unknowns.
+    """
+    columns = _CANDIDATE_COLUMNS + ",gc_content_max_observed"
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text(
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10, gc=45.0)},\n"
+    )
+    payload = build_payload(run)
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "gc_content_max")
+
+    assert payload.filters[index]["read_column"] == "gc_content"
+    assert payload.guides[0].gates[index][0] == 45.0
+
+
+@pytest.mark.unit
+def test_the_gate_panel_comes_from_the_run_not_from_library_defaults(tmp_path: Path) -> None:
+    """A report must publish the thresholds its run applied.
+
+    Resolving a fresh default policy published a GC ceiling of 60 against a run that set 65, which
+    failed 227 guides on a threshold the run never applied and contradicted 41 of its own PASSes.
+    """
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10, gc=62.0)], [])
+    policy = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"gc_max": 65.0},
+        query_species="human",
+        screen_species=["human"],
+    )
+    manifest = json.loads((run / "sirnaforge" / "manifest.json").read_text())
+    manifest["run_policy"] = policy.as_manifest()
+    (run / "sirnaforge" / "manifest.json").write_text(json.dumps(manifest))
+
+    payload = build_payload(run)
+    ceiling = next(f for f in payload.filters if f["filter_id"] == "gc_content_max")
+
+    assert ceiling["threshold"] == 65.0, "the run's ceiling, not the profile default"
+    assert payload.provenance["policy_source"] == "the run's own manifest"
+    index = payload.filters.index(ceiling)
+    assert payload.guides[0].gates[index][1] == 0, "62% GC passes the ceiling this run actually set"
+
+
+@pytest.mark.unit
+def test_a_run_with_no_published_policy_says_the_gates_are_defaults(tmp_path: Path) -> None:
+    """Falling back is allowed. Falling back silently is what shipped the wrong ceiling."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    payload = build_payload(run)
+
+    assert payload.provenance["policy_source"] == "library defaults"
+    assert any("library defaults" in c for c in payload.caveats)
+
+
+@pytest.mark.unit
+def test_a_rejection_no_declared_gate_expresses_is_not_overruled(tmp_path: Path) -> None:
+    """The report may report less than the run. It may not report more.
+
+    ``REPEAT_ELEMENT`` is stamped by the pipeline and declared by no filter, so no descriptor can
+    re-derive it. Calling such a guide clean would have published 185 guides of one MSH3 run as
+    passing that the run threw out -- the fabricated-evidence direction the reverse metric now guards.
+    """
+    payload = build_payload(_write_fully_evidenced_run(tmp_path, run_label="REPEAT_ELEMENT"))
+    entry = payload.guides[0]
+
+    assert entry.n_gates_unknown == 0, "every declared gate is evidenced in this fixture"
+    assert entry.run_verdict == "REPEAT_ELEMENT"
+    assert entry.undeclared_run_rejection is True
+    assert entry.status == "unknown", "a rejection the registry cannot express is not a pass"
+    assert payload.run["agreement"]["overruled_run_fail"] == 0
+    assert any("REPEAT_ELEMENT" in c for c in payload.caveats)
+
+
+@pytest.mark.unit
+def test_a_fully_evidenced_run_can_reach_a_pass(tmp_path: Path) -> None:
+    """The headline defect: no guide of any run could be called clean.
+
+    Three gates decided during enumeration and recorded no verdict, so every guide carried an
+    unevaluable gate and one MSH3 report published ``0 pass`` across 5,706 guides. With the verdicts
+    recorded, a guide that satisfies every gate reads as one.
+    """
+    payload = build_payload(_write_fully_evidenced_run(tmp_path))
+    entry = payload.guides[0]
+
+    assert entry.n_gates_unknown == 0
+    assert entry.status == "pass"
+    assert payload.run["status_counts"]["pass"] == 1
+    assert sum(payload.run["status_counts"].values()) == len(payload.guides), "every guide is counted once"
 
 
 @pytest.mark.unit
@@ -208,6 +378,34 @@ def test_the_rendered_report_is_one_file_with_no_sidecars(tmp_path: Path) -> Non
         assert placeholder not in html, f"{placeholder} was not substituted"
     assert "<svg" in html, "the chart is hand-drawn inline SVG"
     assert "GUIDE_SEQUENCE_TODO" not in html
+
+
+@pytest.mark.unit
+def test_the_renderer_knows_every_verdict_the_payload_emits(tmp_path: Path) -> None:
+    """A verdict code the renderer cannot name is a TypeError in the browser, not a blank cell.
+
+    ``VERDICT`` listed four codes while the payload emits five: a warn-action gate the guide exceeds
+    is code 4, so ``VERDICT[4]`` was undefined and ``v.replace`` threw for every guide carrying one.
+    On one MSH3 run that was 3,098 of 5,000 embedded guides -- the whole gate panel, gone.
+    """
+    observed = dict(_PASSING_OBSERVED, min_asymmetry_score=0.1)  # below the 0.65 warn-action floor
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in observed)
+    row = _candidate_row("c1", GUIDE, "ENST00000000001", 10) + "".join(f",{v}" for v in observed.values())
+    (run / "sirnaforge" / "candidates_all.csv").write_text(f"{columns}\n{row}\n")
+
+    payload = build_payload(run)
+    entry = payload.guides[0]
+    assert entry.n_gates_warned == 1, "the fixture must produce a warn verdict"
+    assert entry.status == "warn", "a warn is not a fail and not a plain pass"
+
+    html = render_html(payload)
+    codes = re.search(r"const VERDICT=\[(.*?)\];", html)
+    assert codes is not None
+    names = [c.strip().strip("'") for c in codes.group(1).split(",")]
+    assert len(names) == 5 and names[4] == "warn", "every emitted verdict code needs a name"
+    assert ".v-warn{" in html, "and a style, or the pill renders unstyled"
+    assert "warn:1" in html.replace(" ", ""), "and a sort rank, or sorting by status yields NaN"
 
 
 @pytest.mark.unit

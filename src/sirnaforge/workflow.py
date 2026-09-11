@@ -1342,7 +1342,10 @@ class SiRNAWorkflow:
             logger.warning(f"Failed to write FAIR manifest: {e}")
 
         try:
-            write_report(build_payload(self.config.output_dir), base / "report.html")
+            # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
+            # the gates it actually applied, and a default panel would report other thresholds.
+            payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
+            write_report(payload, base / "report.html")
         except Exception as e:
             logger.warning(f"Failed to write self-contained HTML report: {e}")
 

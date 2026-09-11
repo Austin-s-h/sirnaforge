@@ -169,10 +169,18 @@ def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monke
         processing_time=0.1,
     )
 
-    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda run_dir: {"run_dir": run_dir})
+    # The workflow hands over the policy it resolved, so the report cannot fall back to library
+    # default thresholds and publish gates this run never applied.
+    monkeypatch.setattr(
+        "sirnaforge.workflow.build_payload",
+        lambda run_dir, *, policy: {"run_dir": run_dir, "policy": policy},
+    )
 
     def _write_report(payload: object, output: Path) -> Path:
-        assert payload == {"run_dir": workflow.config.output_dir}
+        assert payload == {
+            "run_dir": workflow.config.output_dir,
+            "policy": workflow.config.resolved_policy,
+        }
         assert (workflow.config.output_dir / "sirnaforge" / "manifest.json").exists()
         output.write_text("<html>report</html>")
         return output
