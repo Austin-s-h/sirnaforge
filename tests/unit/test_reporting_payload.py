@@ -550,6 +550,24 @@ def test_the_renderer_knows_every_verdict_the_payload_emits(tmp_path: Path) -> N
 
 
 @pytest.mark.unit
+def test_the_cart_ships_its_controls_and_needs_no_api_the_sandbox_withholds(tmp_path: Path) -> None:
+    """Thresholding and shortlisting have to work inside Quilt's default iframe sandbox.
+
+    That sandbox withholds ``allow-same-origin`` and ``allow-downloads``, so the cart exports through a
+    textarea the reader copies rather than a Blob download or ``navigator.clipboard`` -- both of which
+    would fail silently exactly where the report is meant to be read.
+    """
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    html = render_html(build_payload(run))
+
+    for control in ('id="filters"', 'id="addtop"', 'id="cartcard"', 'id="carttsv"', "function togglePick("):
+        assert control in html, f"{control} is missing"
+    assert "function passesFilters(" in html, "thresholds are applied client-side"
+    for withheld in ("navigator.clipboard", "createObjectURL", "download=", "showSaveFilePicker"):
+        assert withheld not in html, f"{withheld} cannot be relied on in the report's sandbox"
+
+
+@pytest.mark.unit
 def test_the_report_reaches_nothing_outside_itself(tmp_path: Path) -> None:
     """Quilt's default iframe sandbox withholds ``allow-same-origin``, so any reach outward fails.
 

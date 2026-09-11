@@ -43,6 +43,22 @@ main{display:grid;grid-template-columns:minmax(430px,40%) 1fr;gap:0;height:calc(
    short headers it overflows its pane and the last column -- isoform coverage -- is the one lost. */
 #idx th,#idx td{padding:6px 7px}
 #idx td:first-child{white-space:nowrap}
+#idx td.pick,#idx th.pick{width:24px;padding:6px 2px 6px 8px;text-align:center}
+.filters{padding:0 12px 10px;border-bottom:1px solid var(--line);background:var(--card)}
+.filters summary{cursor:pointer;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;
+color:var(--mut);font-weight:600;padding:8px 0}
+.frow{display:grid;grid-template-columns:1fr auto auto;gap:6px 8px;align-items:center;font-size:12px;
+margin-bottom:5px}
+.frow input{width:62px;padding:2px 5px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px}
+.fstat label{margin-right:9px;font-size:12px;white-space:nowrap}
+.cartbtn{cursor:pointer;border:1px solid var(--line);background:var(--card);border-radius:5px;
+padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
+.cartbtn:hover{background:#f3f4f6}
+.picked{color:var(--acc);font-weight:700}
+#cartlist{max-height:210px;overflow:auto;font-size:12.5px}
+/* Tab-separated columns only line up if the text is not wrapped. */
+#carttsv{width:100%;height:96px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+border:1px solid var(--line);border-radius:5px;padding:7px;resize:vertical;white-space:pre;overflow:auto}
 #left{border-right:1px solid var(--line);overflow:auto;background:var(--card)}
 #right{overflow:auto;padding:20px 24px}
 #q{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;font-family:ui-monospace,monospace}
@@ -109,7 +125,17 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
 <main>
  <div id="left">
   <div class="searchbar"><input id="q" placeholder="Search guide sequence, candidate id or transcript…" autocomplete="off"></div>
+  <details class="filters" id="filters">
+    <summary>Thresholds — <span id="fcount"></span></summary>
+    <div class="fstat" id="fstat"></div>
+    <div id="frows"></div>
+    <div style="margin-top:8px">
+      <button class="cartbtn" id="addtop">Add top <input id="topn" value="10" style="width:42px"> to cart</button>
+      <button class="cartbtn" id="freset">Reset</button>
+    </div>
+  </details>
   <table id="idx"><thead><tr>
+    <th class="pick" title="in cart"></th>
     <th data-k="status">Status</th><th data-k="guide">Guide</th><th data-k="composite">Score</th>
     <th data-k="failed" title="gates failed / gates not evaluated">Gates</th>
     <th data-k="liab" title="off-target liabilities">Liab.</th>
@@ -117,6 +143,17 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
   </tr></thead><tbody></tbody></table>
  </div>
  <div id="right">
+   <div class="card" id="cartcard" style="display:none">
+     <h2>Cart &nbsp;<span id="cartn"></span></h2>
+     <div id="cartlist"></div>
+     <div style="margin:10px 0 8px">
+       <button class="cartbtn" id="cartclear">Clear</button>
+       <button class="cartbtn" id="cartcopy">Select all text</button>
+     </div>
+     <textarea id="carttsv" readonly aria-label="cart as TSV"></textarea>
+     <p class="empty" style="margin:6px 0 0">Tab-separated, one row per guide, with the values the
+     thresholds above were applied to. Copy it out; this report writes no files.</p>
+   </div>
    <div class="card" id="mapcard">
      <h2>Candidate positions</h2>
      <div style="font-size:12px;color:#6b7280;margin:-4px 0 10px">Every candidate the run enumerated
@@ -154,23 +191,22 @@ function renderIndex(){
     const c = typeof x==='string' ? x.localeCompare(y) : x-y; return sortAsc?c:-c;});
   const V={pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'};
   tb.innerHTML = view.map(g=>`<tr data-i="${G.indexOf(g)}" class="${g.guide===selected?'sel':''}">
+    <td class="pick" data-pick="${esc(g.guide)}" title="add to / remove from cart"
+      >${CART.has(g.guide)?'<span class="picked">\u2713</span>':'<span style="color:#d1d5db">+</span>'}</td>
     <td><span class="pill ${V[g.status]}">${g.status}</span></td>
     <td class="mono">${esc(g.guide)}</td><td>${fmt(g.composite_score)}</td>
     <td>${g.n_gates_failed} / ${g.n_gates_unknown}</td>
     <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td>
     <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('');
-  tb.querySelectorAll('tr').forEach(tr=>tr.onclick=()=>show(G[+tr.dataset.i]));
+  tb.querySelectorAll('tr').forEach(tr=>tr.onclick=e=>{
+    const cell=e.target.closest('td.pick');
+    if(cell){ togglePick(cell.dataset.pick); return; }   // the pick column selects, it does not navigate
+    show(G[+tr.dataset.i]);
+  });
 }
 document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
   const k=th.dataset.k; if(k===sortK) sortAsc=!sortAsc; else {sortK=k;sortAsc=(k==='guide');} renderIndex();});
-document.getElementById('q').oninput = e => {
-  const t=e.target.value.trim().toUpperCase().replace(/T/g,'U');
-  const raw=e.target.value.trim().toLowerCase();
-  view = !t ? G.slice() : G.filter(g => g.guide.includes(t)
-      || g.isoforms.some(i => String(i.candidate_id).toLowerCase().includes(raw)
-                           || String(i.transcript).toLowerCase().includes(raw)));
-  renderIndex();
-};
+document.getElementById('q').oninput = () => applyFilters();
 
 // Hand-drawn inline SVG, deliberately: plotly.min.js is 4.29 MB and its map traces carry external
 // URLs and browser-storage/network API references this report never invokes, which no static check
@@ -333,11 +369,21 @@ function selectedPositions(){
   return g.isoforms.filter(i=>i.transcript===curTx && i.position!==null).map(i=>i.position);
 }
 
+function cartPositions(){
+  const out=[];
+  for(const k of CART){ const g=G.find(x=>x.guide===k); if(!g) continue;
+    for(const i of g.isoforms) if(i.transcript===curTx && i.position!==null) out.push(i.position); }
+  return out;
+}
+
 function drawOverlay(){
   const over=document.getElementById('mapover'); if(!over||!curTx) return;
   const geo=MAPS[curTx].geometry, ps=selectedPositions();
   const x=p=>geo.x0+(geo.x1-geo.x0)*(Math.min(Math.max(p,1)-1,geo.length-1))/Math.max(geo.length-1,1);
-  over.innerHTML = ps.map(p=>{const px=x(p).toFixed(1);
+  // Cart members first, so the selection marker draws over them rather than under.
+  over.innerHTML = cartPositions().map(p=>
+      `<path d="M${x(p).toFixed(1)} ${geo.y1}l-3.5 7h7z" fill="#15803d"/>`).join('')
+    + ps.map(p=>{const px=x(p).toFixed(1);
     return `<line x1="${px}" y1="${geo.y0}" x2="${px}" y2="${geo.y1}" stroke="#1d4ed8" stroke-width="1.4" stroke-dasharray="3 2"/>`
          + `<path d="M${px} ${geo.y0-2}l-4.5-7h9z" fill="#1d4ed8"/>`;}).join('');
   const note=document.getElementById('mapnote');
@@ -345,6 +391,8 @@ function drawOverlay(){
     ? `${esc(selected)} is enumerated at ${ps.map(p=>p.toLocaleString()).join(', ')} on this transcript.`
     : `${esc(selected)} is not enumerated on this transcript.`;
   else note.textContent = MAPS[curTx].note;
+  const nc=cartPositions().length;
+  if(nc) note.textContent += ` ${nc} cart position${nc===1?'':'s'} marked below the axis.`;
 }
 
 function showOn(g){
@@ -441,7 +489,6 @@ function structureCard(g){
 }
 
 document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
-renderMap();
 
 // One card raising must cost that card, not the pane. Every panel below is independent evidence, so
 // losing the off-target table because a structure string was malformed is never the right trade.
@@ -450,6 +497,114 @@ function card(render, g){
   catch(e){ return `<div class="card"><h2>Panel failed to render</h2>
     <div class="warn"><b>${esc(e && e.message || String(e))}</b> The other panels are unaffected.</div></div>`; }
 }
+
+// ---- thresholds and cart -------------------------------------------------------------------------
+// Client-side only: the run's verdicts are fixed and are never recomputed here. A threshold below
+// *selects among* candidates the run already judged; it does not re-judge them, and the pill on each
+// row still shows what the run and the gate panel concluded.
+const CART = new Set();
+const STATUS_KEYS = ['pass','warn','unknown','fail'];
+
+//: label, how to read the value off a guide, direction, and the bound the field starts at.
+const FILTERS_UI = [
+  {k:'composite', label:'composite score', get:g=>g.composite_score, dir:'min'},
+  {k:'isoforms',  label:'isoforms hit',    get:g=>g.transcript_hits,  dir:'min'},
+  {k:'gc',        label:'GC %',            get:g=>g.metrics.gc_content, dir:'range'},
+  {k:'asym',      label:'asymmetry',       get:g=>g.metrics.asymmetry_score, dir:'min'},
+  {k:'offt',      label:'off-target count',get:g=>g.metrics.off_target_count, dir:'max'},
+  {k:'liab',      label:'liabilities',     get:g=>g.liability_count, dir:'max'},
+];
+const F = {status:new Set(['pass','warn'])};
+
+function fnum(id){ const el=document.getElementById(id); if(!el) return null;
+  const v=el.value.trim(); return v===''?null:Number(v); }
+
+function passesFilters(g){
+  if(F.status.size && !F.status.has(g.status)) return false;
+  for(const f of FILTERS_UI){
+    const v=f.get(g);
+    const lo=fnum('f_'+f.k+'_lo'), hi=fnum('f_'+f.k+'_hi');
+    if(lo!==null || hi!==null){
+      if(v===null||v===undefined) return false;   // an absent value cannot satisfy a threshold
+      if(lo!==null && v<lo) return false;
+      if(hi!==null && v>hi) return false;
+    }
+  }
+  return true;
+}
+
+function buildFilterUI(){
+  document.getElementById('fstat').innerHTML = STATUS_KEYS.map(k=>
+    `<label><input type="checkbox" data-status="${k}"${F.status.has(k)?' checked':''}> ${k}</label>`).join('');
+  document.getElementById('frows').innerHTML = FILTERS_UI.map(f=>{
+    const lo = f.dir==='max' ? '' : `<input id="f_${f.k}_lo" placeholder="min" inputmode="decimal">`;
+    const hi = f.dir==='min' ? '' : `<input id="f_${f.k}_hi" placeholder="max" inputmode="decimal">`;
+    return `<div class="frow"><span>${esc(f.label)}</span>${lo||'<span></span>'}${hi||'<span></span>'}</div>`;
+  }).join('');
+  document.querySelectorAll('#fstat input').forEach(cb=>cb.onchange=()=>{
+    cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status); applyFilters(); });
+  document.querySelectorAll('#frows input').forEach(el=>el.oninput=applyFilters);
+}
+
+function matching(){ return G.filter(passesFilters); }
+
+function applyFilters(){
+  const raw=(document.getElementById('q').value||'').trim();
+  const seq=raw.toUpperCase().replace(/T/g,'U'), id=raw.toLowerCase();
+  view = matching().filter(g => !raw || g.guide.includes(seq)
+    || g.isoforms.some(i=>String(i.candidate_id).toLowerCase().includes(id)
+                        || String(i.transcript).toLowerCase().includes(id)));
+  document.getElementById('fcount').textContent = `${view.length.toLocaleString()} of ${G.length.toLocaleString()} guides`;
+  renderIndex();
+}
+
+function togglePick(guide){
+  CART.has(guide) ? CART.delete(guide) : CART.add(guide);
+  renderIndex(); renderCart(); drawOverlay();
+}
+
+function cartRows(){
+  return [...CART].map(k=>G.find(g=>g.guide===k)).filter(Boolean)
+    .sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1));
+}
+
+function renderCart(){
+  const rows=cartRows(), card=document.getElementById('cartcard');
+  card.style.display = rows.length ? '' : 'none';
+  if(!rows.length){ return; }
+  document.getElementById('cartn').textContent = `${rows.length} guide${rows.length===1?'':'s'}`;
+  document.getElementById('cartlist').innerHTML =
+    `<table><thead><tr><th></th><th>Guide</th><th>Status</th><th>Score</th><th>Isoforms</th>
+      <th>Liab.</th></tr></thead><tbody>${rows.map(g=>
+      `<tr data-cart="${esc(g.guide)}"><td class="pick"><span class="picked">×</span></td>
+       <td class="mono">${esc(g.guide)}</td>
+       <td><span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[g.status]}">${g.status}</span></td>
+       <td>${fmt(g.composite_score)}</td><td>${isoformFrac(g)}</td>
+       <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td></tr>`).join('')}</tbody></table>`;
+  document.querySelectorAll('#cartlist tr[data-cart]').forEach(tr=>
+    tr.querySelector('td.pick').onclick=()=>togglePick(tr.dataset.cart));
+  const cols=['guide','passenger','status','composite_score','design_score','isoforms_hit','isoforms_in_run',
+              'gc_content','asymmetry_score','off_target_count','liabilities','structure'];
+  document.getElementById('carttsv').value = [cols.join('\t'), ...rows.map(g=>[
+    g.guide, g.passenger??'', g.status, g.composite_score??'', g.design_score??'',
+    g.transcript_hits??'', TX_IDS.length, g.metrics.gc_content??'', g.metrics.asymmetry_score??'',
+    g.metrics.off_target_count??'', g.liability_count, g.structure??''].join('\t'))].join('\n');
+}
+
+document.getElementById('addtop').onclick = e => {
+  if(e.target.id==='topn') return;                       // typing in the field is not a click on the button
+  const n=Math.max(0, parseInt(document.getElementById('topn').value,10)||0);
+  matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1))
+    .slice(0,n).forEach(g=>CART.add(g.guide));
+  renderIndex(); renderCart(); drawOverlay();
+};
+document.getElementById('cartclear').onclick = () => { CART.clear(); renderIndex(); renderCart(); drawOverlay(); };
+document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
+document.getElementById('freset').onclick = () => {
+  F.status = new Set(['pass','warn']);
+  document.querySelectorAll('#frows input').forEach(el=>{ el.value=''; });
+  buildFilterUI(); applyFilters();
+};
 
 function show(g){
   selected=g.guide; renderIndex();
@@ -470,7 +625,12 @@ function show(g){
   showOn(g);
   location.hash = encodeURIComponent(g.guide);
 }
-renderIndex();
+// One bootstrap block, at the end: renderMap reaches CART through drawOverlay, and a `const` is
+// hoisted but not initialised, so calling it from the map section threw a TDZ ReferenceError.
+buildFilterUI();
+applyFilters();
+renderCart();
+renderMap();
 const initial = decodeURIComponent(location.hash.slice(1));
 const start = G.find(g=>g.guide===initial) || G[0];
 if(start) show(start);
