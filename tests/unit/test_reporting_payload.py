@@ -17,7 +17,7 @@ import pytest
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, unclassified_cells
 from sirnaforge.reporting import ReportInputError, build_payload, render_html
-from sirnaforge.reporting.payload import EMBED_MAX_NM, MIN_UNCOVERED_NT, REASON_OK
+from sirnaforge.reporting.payload import EMBED_MAX_NM, MIN_UNCOVERED_NT, REASON_FILTER_OFF, REASON_OK
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
 OTHER = "UUUUCCCCAAAAGGGGUUUUC"
@@ -550,21 +550,48 @@ def test_the_renderer_knows_every_verdict_the_payload_emits(tmp_path: Path) -> N
 
 
 @pytest.mark.unit
-def test_the_cart_ships_its_controls_and_needs_no_api_the_sandbox_withholds(tmp_path: Path) -> None:
-    """Thresholding and shortlisting have to work inside Quilt's default iframe sandbox.
+def test_the_cart_exports_a_tsv_and_degrades_where_downloads_are_blocked(tmp_path: Path) -> None:
+    """Export is a real .tsv download, with a stated fallback rather than a silent failure.
 
-    That sandbox withholds ``allow-same-origin`` and ``allow-downloads``, so the cart exports through a
-    textarea the reader copies rather than a Blob download or ``navigator.clipboard`` -- both of which
-    would fail silently exactly where the report is meant to be read.
+    Quilt's default iframe sandbox can withhold ``allow-downloads``, so the Blob path is wrapped and
+    the textarea is the declared way out -- a button that quietly does nothing is worse than one that
+    says why. ``navigator.clipboard`` stays out entirely: it needs a permission the sandbox also
+    withholds, and there is no way to tell a refusal from a success.
     """
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
     html = render_html(build_payload(run))
 
-    for control in ('id="filters"', 'id="addtop"', 'id="cartcard"', 'id="carttsv"', "function togglePick("):
+    for control in ('id="filters"', 'id="addtop"', 'id="cartcard"', 'id="carttsv"', 'id="cartdl"'):
         assert control in html, f"{control} is missing"
     assert "function passesFilters(" in html, "thresholds are applied client-side"
-    for withheld in ("navigator.clipboard", "createObjectURL", "download=", "showSaveFilePicker"):
-        assert withheld not in html, f"{withheld} cannot be relied on in the report's sandbox"
+    assert "function togglePick(" in html
+
+    assert "URL.createObjectURL" in html and "a.download=name" in html, "export writes a real file"
+    assert "revokeObjectURL" in html, "and does not leak the blob url"
+    assert "download refused by this viewer" in html, "a blocked download is reported, not swallowed"
+    assert "navigator.clipboard" not in html, "needs a permission the sandbox withholds"
+    assert "GENE_JSON_PLACEHOLDER" not in html, "the filename's gene was substituted"
+
+
+@pytest.mark.unit
+def test_a_gate_that_is_off_still_reports_what_it_measured(tmp_path: Path) -> None:
+    """An off gate is not evaluated; that does not mean it measured nothing.
+
+    Three of the four off gates on the reference run carry a real per-guide number, and
+    ``max_mirna_1mm_seed``'s own policy definition says "the number is reported and nothing acts on
+    it" -- which returning None for the value made untrue. The verdict stays ``not_evaluated``.
+    """
+    columns = _CANDIDATE_COLUMNS + ",mirna_hits_1mm_seed"
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text(f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST1', 10)},4\n")
+    payload = build_payload(run)
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "max_mirna_1mm_seed")
+    value, verdict, reason = payload.guides[0].gates[index]
+
+    assert payload.filters[index]["action"] == "off"
+    assert value == 4, "the number the gate would have compared"
+    assert verdict == 3, "and it is still not_evaluated, not a pass"
+    assert reason == REASON_FILTER_OFF
 
 
 @pytest.mark.unit

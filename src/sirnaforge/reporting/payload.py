@@ -242,14 +242,18 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     Returns:
         ``(value, verdict_code, reason_code)``. The descriptor itself is emitted once per report.
     """
+    # Read the value first, and report it whatever the verdict turns out to be. A gate that is off or
+    # has no threshold still *measured* something the reader wants: three of the four off gates on the
+    # reference run carry a real per-guide number, and `max_mirna_1mm_seed`'s own policy definition says
+    # "the number is reported and nothing acts on it" -- which returning None made untrue.
+    value = _num(row.get(column)) if column is not None else None
+    not_evaluated = _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value]
     if descriptor.action.value == FilterAction.OFF.value:
-        return None, _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value], REASON_FILTER_OFF
+        return value, not_evaluated, REASON_FILTER_OFF
     if descriptor.threshold is None:
-        return None, _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value], REASON_NO_THRESHOLD
+        return value, not_evaluated, REASON_NO_THRESHOLD
     if column is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_MISSING_COLUMN
-
-    value = _num(row.get(column))
     if value is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_EMPTY_VALUE
 

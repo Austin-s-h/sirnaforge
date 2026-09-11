@@ -147,12 +147,16 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      <h2>Cart &nbsp;<span id="cartn"></span></h2>
      <div id="cartlist"></div>
      <div style="margin:10px 0 8px">
-       <button class="cartbtn" id="cartclear">Clear</button>
+       <button class="cartbtn" id="cartdl">Export TSV</button>
        <button class="cartbtn" id="cartcopy">Select all text</button>
+       <button class="cartbtn" id="cartclear">Clear</button>
+       <span id="dlnote" class="empty"></span>
      </div>
      <textarea id="carttsv" readonly aria-label="cart as TSV"></textarea>
      <p class="empty" style="margin:6px 0 0">Tab-separated, one row per guide, with the values the
-     thresholds above were applied to. Copy it out; this report writes no files.</p>
+     thresholds above were applied to. <b>Export TSV</b> downloads it. Some viewers -- including a
+     Quilt iframe without <code>allow-downloads</code> -- block that; the box above is then the way
+     out, and says so if the download is refused.</p>
    </div>
    <div class="card" id="mapcard">
      <h2>Candidate positions</h2>
@@ -173,6 +177,7 @@ const FILTERS = FILTERS_JSON_PLACEHOLDER;
 const MAPS = MAPS_JSON_PLACEHOLDER;
 const LAYOUTS = LAYOUTS_JSON_PLACEHOLDER;
 const TX_IDS = TX_IDS_JSON_PLACEHOLDER;
+const GENE = GENE_JSON_PLACEHOLDER;
 const REGISTER_NT = REGISTER_NT_PLACEHOLDER;
 const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Number.isInteger(n)?n.toLocaleString():n.toFixed(3)) : n);
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -248,10 +253,15 @@ function drawMatrix(id, matrix){
 }
 const VERDICT=['pass','fail','unknown','not_evaluated','warn'];
 function gateReason(f,value,verdict,reason){
+  const measured = (value!==null&&value!==undefined);
   if(reason===1) return 'the run exports neither '+f.filter_id+'_observed nor '+f.column;
   if(reason===2) return (f.read_column||f.column)+' is empty';
-  if(reason===3) return 'filter is off';
-  if(reason===4) return 'no threshold declared';
+  // An off gate still measured something on most runs. Saying only "filter is off" hid a real
+  // per-guide number -- and max_mirna_1mm_seed's own definition promises the number is reported.
+  if(reason===3) return measured ? 'filter is off; value measured, nothing acts on it'
+                                 : 'filter is off, and the run exports no value for '+f.column;
+  if(reason===4) return measured ? 'no threshold declared; value measured, nothing acts on it'
+                                 : 'no threshold declared, and no value exported';
   const cmp=fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(f.threshold);
   return verdict===4 ? cmp+'; action=warn, not a rejection' : cmp;
 }
@@ -600,6 +610,27 @@ document.getElementById('addtop').onclick = e => {
 };
 document.getElementById('cartclear').onclick = () => { CART.clear(); renderIndex(); renderCart(); drawOverlay(); };
 document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
+
+// A Blob download, because that is what "export" means, with the textarea as the declared fallback:
+// the report's own sandbox may withhold allow-downloads, and a button that silently does nothing is
+// worse than one that says why.
+document.getElementById('cartdl').onclick = () => {
+  const note=document.getElementById('dlnote'), n=CART.size;
+  const stamp=new Date().toISOString().slice(0,10).replace(/-/g,'');
+  const name=`${GENE.replace(/[^A-Za-z0-9_.-]/g,'_')}_cart_${n}guides_${stamp}.tsv`;
+  try{
+    const url=URL.createObjectURL(new Blob([document.getElementById('carttsv').value],
+      {type:'text/tab-separated-values'}));
+    const a=document.createElement('a');
+    a.href=url; a.download=name; a.style.display='none';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 0);
+    note.textContent=` ${name}`;
+  }catch(e){
+    note.textContent=' download refused by this viewer — copy the box below instead';
+    const t=document.getElementById('carttsv'); t.focus(); t.select();
+  }
+};
 document.getElementById('freset').onclick = () => {
   F.status = new Set(['pass','warn']);
   document.querySelectorAll('#frows input').forEach(el=>{ el.value=''; });
@@ -664,6 +695,7 @@ def render_html(payload: ReportPayload) -> str:
         ("MAPS_JSON_PLACEHOLDER", _design_maps(payload)),
         ("LAYOUTS_JSON_PLACEHOLDER", payload.run.get("structure_layouts") or {}),
         ("TX_IDS_JSON_PLACEHOLDER", payload.run.get("transcript_ids") or []),
+        ("GENE_JSON_PLACEHOLDER", str(payload.run.get("gene_query") or "run")),
         ("REGISTER_NT_PLACEHOLDER", REGISTER_NEIGHBOUR_NT),
     ):
         html = html.replace(placeholder, json.dumps(value, separators=(",", ":")))
