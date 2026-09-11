@@ -80,6 +80,7 @@ class GuideEntry:
     mirna: list[dict[str, Any]]
     run_verdict: str | None = None
     structure: str | None = None
+    transcript_hits: int | None = None
 
     @property
     def undeclared_run_rejection(self) -> bool:
@@ -260,6 +261,20 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     else:
         code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
     return value, code, REASON_OK
+
+
+def _transcript_hits(rows: pd.DataFrame) -> int | None:
+    """How many distinct transcripts carry this guide -- the numerator of isoform coverage.
+
+    Not the row count. A guide's site can occur twice in one transcript, so enumerations exceed
+    isoforms: on one MSH3 run 14 guides have more rows than transcripts and one has 19 rows over 10.
+    Prefers the run's own ``transcript_hit_count`` (which equals the distinct count on every row of
+    that run) and falls back to counting, so the report agrees with the column when it exists.
+    """
+    stated = _num(rows["transcript_hit_count"].iloc[0]) if "transcript_hit_count" in rows.columns else None
+    if stated is not None:
+        return int(stated)
+    return int(rows["transcript_id"].nunique()) if "transcript_id" in rows.columns else None
 
 
 def _run_verdict(rows: pd.DataFrame) -> str | None:
@@ -493,6 +508,12 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         "gene_query": _gene_query(manifest, candidates),
         "status_counts": {s: sum(1 for g in guides if g.status == s) for s in STATUSES},
         "agreement": agreement,
+        # The isoform-coverage denominator. Every transcript the design step enumerated on, which is
+        # not the same as the transcripts the map can plot -- a transcript can be present with no
+        # scoreable row and still be an isoform this guide either does or does not reach.
+        "transcript_ids": sorted(candidates["transcript_id"].dropna().astype(str).unique())
+        if "transcript_id" in candidates.columns
+        else [],
         "transcripts": _transcript_maps(candidates, guides, run_dir, caveats),
         # Keyed by dot-bracket and computed once per distinct structure, which is what makes the
         # layouts small enough to embed: 40,079 candidates carry 1,333 distinct structures.
@@ -624,6 +645,7 @@ def _build_guide(
     counts_exist = bool(len(hits)) and not embedded
     return GuideEntry(
         run_verdict=_run_verdict(rows),
+        transcript_hits=_transcript_hits(rows),
         structure=(str(best.get("structure")) if pd.notna(best.get("structure")) else None),
         guide=guide,
         passenger=(str(best.get("passenger_sequence")) if pd.notna(best.get("passenger_sequence")) else None),
@@ -686,9 +708,16 @@ def _isoform_table(rows: pd.DataFrame, register: dict[str, list[int]]) -> list[d
     """One entry per transcript the guide was enumerated on, flagging register neighbours.
 
     A shorter guide starting at *s* sits inside the longer window at *s-1*, so two designs one
-    nucleotide apart can share a window and receive an identical score. On the reference panel two
-    such designs differed 1.4x in measured knockdown, so the report says so rather than letting them
-    look like duplicates.
+    nucleotide apart can share a window and receive an identical score. That much is a property of the
+    enumeration and holds for any target.
+
+    An earlier version of this report told the reader "two such designs differed 1.4x in measured
+    knockdown" in the rendered card. That claim is now confined to this docstring, for two reasons.
+    It is traceable but **mislabelled**: 1.4x is the ratio of *fraction remaining* between AZ's HD-001
+    (0.49) and HD-002 (0.35) at transcript positions 1982/1983, and the ratio of *knockdown* for the
+    same pair is 1.27x. And it is not the strongest case on that panel -- the pair at 2733/2735
+    differs 1.97x in fraction remaining. Neither number belongs in a card that ships with the tool
+    and is read against targets that panel says nothing about.
     """
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():

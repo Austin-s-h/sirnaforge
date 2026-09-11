@@ -19,7 +19,7 @@ from typing import Any
 
 from jinja2 import Environment, select_autoescape
 
-from sirnaforge.reporting.payload import MIN_UNCOVERED_NT, ReportPayload
+from sirnaforge.reporting.payload import MIN_UNCOVERED_NT, REGISTER_NEIGHBOUR_NT, ReportPayload
 from sirnaforge.reporting.tracks import PointSeries, TranscriptRegions, legend_html, transcript_map_svg
 
 #: Guides embedded in the index. The per-guide detail is rendered for all of them; this bounds only
@@ -38,7 +38,11 @@ body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,s
 header{padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card)}
 h1{margin:0 0 4px;font-size:17px;font-weight:650}
 .sub{color:var(--mut);font-size:12.5px}
-main{display:grid;grid-template-columns:minmax(340px,38%) 1fr;gap:0;height:calc(100vh - 86px)}
+main{display:grid;grid-template-columns:minmax(430px,40%) 1fr;gap:0;height:calc(100vh - 86px)}
+/* The index carries six columns including a 23-nt monospace sequence. Without tightened padding and
+   short headers it overflows its pane and the last column -- isoform coverage -- is the one lost. */
+#idx th,#idx td{padding:6px 7px}
+#idx td:first-child{white-space:nowrap}
 #left{border-right:1px solid var(--line);overflow:auto;background:var(--card)}
 #right{overflow:auto;padding:20px 24px}
 #q{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;font-family:ui-monospace,monospace}
@@ -106,13 +110,19 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
  <div id="left">
   <div class="searchbar"><input id="q" placeholder="Search guide sequence, candidate id or transcript…" autocomplete="off"></div>
   <table id="idx"><thead><tr>
-    <th data-k="status">Status</th><th data-k="guide">Guide</th><th data-k="composite">Composite</th>
-    <th data-k="failed">Fail / unknown</th><th data-k="liab">Liabilities</th><th data-k="rows">Isoforms</th>
+    <th data-k="status">Status</th><th data-k="guide">Guide</th><th data-k="composite">Score</th>
+    <th data-k="failed" title="gates failed / gates not evaluated">Gates</th>
+    <th data-k="liab" title="off-target liabilities">Liab.</th>
+    <th data-k="rows" title="distinct isoforms carrying this guide, of all in the run">Isoforms</th>
   </tr></thead><tbody></tbody></table>
  </div>
  <div id="right">
    <div class="card" id="mapcard">
-     <h2>Candidate positions &nbsp;<select id="tx" aria-label="transcript"></select></h2>
+     <h2>Candidate positions</h2>
+     <div style="font-size:12px;color:#6b7280;margin:-4px 0 10px">Every candidate the run enumerated
+     on one isoform. <label for="tx">Isoform</label>
+     <select id="tx" aria-label="isoform"></select>
+     <span id="txnote"></span></div>
      <div id="maplegend"></div>
      <div id="mapwrap"><div id="mapbase"></div><svg id="mapover"></svg></div>
      <div id="mapnote" class="empty"></div>
@@ -125,6 +135,8 @@ const G = GUIDES_JSON_PLACEHOLDER;
 const FILTERS = FILTERS_JSON_PLACEHOLDER;
 const MAPS = MAPS_JSON_PLACEHOLDER;
 const LAYOUTS = LAYOUTS_JSON_PLACEHOLDER;
+const TX_IDS = TX_IDS_JSON_PLACEHOLDER;
+const REGISTER_NT = REGISTER_NT_PLACEHOLDER;
 const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Number.isInteger(n)?n.toLocaleString():n.toFixed(3)) : n);
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
@@ -145,7 +157,8 @@ function renderIndex(){
     <td><span class="pill ${V[g.status]}">${g.status}</span></td>
     <td class="mono">${esc(g.guide)}</td><td>${fmt(g.composite_score)}</td>
     <td>${g.n_gates_failed} / ${g.n_gates_unknown}</td>
-    <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td><td>${g.n_rows}</td></tr>`).join('');
+    <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td>
+    <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('');
   tb.querySelectorAll('tr').forEach(tr=>tr.onclick=()=>show(G[+tr.dataset.i]));
 }
 document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
@@ -224,12 +237,37 @@ function gatesCard(g){
     <table><thead><tr><th>Filter</th><th>Verdict</th><th>Value</th><th>Threshold</th>
     <th>Scope</th><th>Stage</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+// Distinct isoforms carrying the guide, over every isoform the run enumerated. Deliberately not the
+// enumeration count: a site can occur twice in one transcript, so the two differ.
+function isoformFrac(g){
+  const n=g.transcript_hits, d=TX_IDS.length;
+  return (n===null||n===undefined||!d) ? '—' : `${n}/${d}`;
+}
+
+function isoformStrip(g){
+  const hit=new Set(g.isoforms.map(i=>i.transcript));
+  return TX_IDS.map(t=>`<span title="${esc(t)}${hit.has(t)?' — carries this guide':''}"
+    style="display:inline-block;width:13px;height:13px;margin-right:3px;border-radius:2px;
+    background:${hit.has(t)?'#15803d':'#e5e7eb'}"></span>`).join('');
+}
+
 function isoformCard(g){
   const any=g.isoforms.some(i=>i.register_neighbours.length);
-  return `<div class="card"><h2>Isoforms — ${g.isoforms.length} enumeration${g.isoforms.length===1?'':'s'} of this one guide</h2>
-   ${any?`<div class="warn"><b>Register neighbour.</b> Another design starts within 2 nt on the same
-     transcript. The two overlap and can receive identical scores, but are distinct designs: on the
-     reference panel two such designs differed 1.4&times; in measured knockdown.</div>`:''}
+  const n=g.transcript_hits, d=TX_IDS.length;
+  const pct=(n!==null&&n!==undefined&&d)?` (${(100*n/d).toFixed(0)}%)`:'';
+  const extra=g.isoforms.length-(n||0);
+  return `<div class="card"><h2>Isoform coverage</h2>
+   <div class="kv" style="margin-bottom:12px">
+     <div><b>Isoforms carrying this guide</b><span class="big" style="font-size:17px">${isoformFrac(g)}</span>${pct}</div>
+     <div><b>Enumerations</b>${g.isoforms.length}${extra>0?` <span class="pill v-not_evaluated">${extra} repeat site${extra===1?'':'s'}</span>`:''}</div>
+     <div><b>Isoforms in this run</b>${d}</div>
+   </div>
+   <div style="margin-bottom:12px">${isoformStrip(g)}
+     <div style="font-size:11px;color:#6b7280;margin-top:5px">One square per isoform in the run;
+     filled where this guide's site occurs. Hover for the transcript id.</div></div>
+   ${any?`<div class="warn"><b>Register neighbour.</b> Another design starts within
+     ${REGISTER_NT} nt on the same transcript. The two overlap and can score identically; they are
+     still distinct designs and are not interchangeable.</div>`:''}
    <table><thead><tr><th>Candidate id</th><th>Transcript</th><th>Position</th><th>Register neighbours</th></tr></thead>
    <tbody>${g.isoforms.map(i=>`<tr><td class="mono">${esc(i.candidate_id)}</td><td class="mono">${esc(i.transcript)}</td>
      <td>${fmt(i.position)}</td><td>${i.register_neighbours.length?`<span class="pill v-unknown">${i.register_neighbours.join(', ')}</span>`:'—'}</td></tr>`).join('')}</tbody></table></div>`;
@@ -274,7 +312,11 @@ let curTx = TXS[0] || null;
 function renderMap(){
   const sel=document.getElementById('tx');
   if(!TXS.length){ document.getElementById('mapcard').style.display='none'; return; }
-  sel.innerHTML = TXS.map(t=>`<option value="${esc(t)}"${t===curTx?' selected':''}>${esc(MAPS[t].label)}</option>`).join('');
+  const carries=new Set((G.find(x=>x.guide===selected)||{isoforms:[]}).isoforms.map(i=>i.transcript));
+  sel.innerHTML = TXS.map(t=>`<option value="${esc(t)}"${t===curTx?' selected':''}>${
+    esc(MAPS[t].label)}${carries.has(t)?' \u25cf carries this guide':''}</option>`).join('');
+  document.getElementById('txnote').textContent = selected
+    ? ` \u2014 ${carries.size} of ${TXS.length} shown isoforms carry the selected guide.` : '';
   const m=MAPS[curTx];
   document.getElementById('mapbase').innerHTML=m.svg;
   document.getElementById('maplegend').innerHTML=m.legend;
@@ -306,10 +348,12 @@ function drawOverlay(){
 }
 
 function showOn(g){
-  // Follow the selection to a transcript that actually carries it, so the marker is never off-screen.
+  // Follow the selection to an isoform that actually carries it, so the marker is never off-screen,
+  // then re-label the picker: which isoforms carry the guide is part of the selection, not the map.
   if(!curTx) return;
   const here=g.isoforms.some(i=>i.transcript===curTx);
-  if(!here){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first){ curTx=first.transcript; renderMap(); } }
+  if(!here){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first) curTx=first.transcript; }
+  renderMap();
 }
 
 // ---- secondary structure: the run's own dot-bracket, laid out, never refolded ----
@@ -423,7 +467,7 @@ function show(g){
      </div></div>
    ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
-  showOn(g); drawOverlay();
+  showOn(g);
   location.hash = encodeURIComponent(g.guide);
 }
 renderIndex();
@@ -459,6 +503,8 @@ def render_html(payload: ReportPayload) -> str:
         ("FILTERS_JSON_PLACEHOLDER", payload.filters),
         ("MAPS_JSON_PLACEHOLDER", _design_maps(payload)),
         ("LAYOUTS_JSON_PLACEHOLDER", payload.run.get("structure_layouts") or {}),
+        ("TX_IDS_JSON_PLACEHOLDER", payload.run.get("transcript_ids") or []),
+        ("REGISTER_NT_PLACEHOLDER", REGISTER_NEIGHBOUR_NT),
     ):
         html = html.replace(placeholder, json.dumps(value, separators=(",", ":")))
     return html
@@ -509,7 +555,7 @@ def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
             else ""
         )
         out[regions.transcript_id] = {
-            "label": f"{regions.transcript_id} ({entry['windows']:,} windows)",
+            "label": f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidates",
             "svg": svg,
             "legend": legend_html(series, gaps=bool(gaps)),
             "geometry": geometry.as_dict(),
