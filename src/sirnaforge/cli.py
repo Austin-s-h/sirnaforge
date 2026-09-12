@@ -286,9 +286,18 @@ def _stated_settings(ctx: typer.Context, candidates: Mapping[str, tuple[str, Any
 
 
 def _parse_filter_actions(entries: Iterable[str]) -> dict[str, str]:
-    """Parse repeatable ``--filter-action filter_id=off|fail`` entries.
+    """Parse repeatable ``--filter-action filter_id=off|warn|fail`` entries.
 
-    The action itself is validated by the resolver, which rejects ``warn`` in 0.7.1.
+    Splitting only: the action itself is validated by
+    :data:`~sirnaforge.config.run_policy.SELECTABLE_ACTIONS`, which accepts all three words and
+    refuses an action the addressed gate could not apply -- ``off`` on a design-stage float
+    threshold, or anything but ``off`` on a gate with no threshold, no screening evidence in this
+    run, or no 0.7.1 reader at all.
+
+    ``warn`` is selectable, and the resolver accepting it is not the same as every gate honouring
+    it: four design-stage gates (``gc_content_min``, ``gc_content_max``, ``max_poly_runs``,
+    ``max_repeat_transcript_fraction``) reject regardless, because their rejection is written
+    outside ``record_filter_verdict``. The per-command ``--filter-action`` help names them.
     """
     actions: dict[str, str] = {}
     for raw in entries:
@@ -753,12 +762,21 @@ def workflow(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
             "threshold, so it is not evaluated -- which is not the same as passing -- and works for "
-            f"these gates: {', '.join(switchable_filter_ids())}. The six design-stage gates read a "
-            "threshold with no absent state and are refused rather than faked. 'warn' is rejected in "
-            "0.7.1: no code path demotes a rejection to a label, so resolving it would record an "
-            "action the gate does not honour."
+            f"these gates: {', '.join(switchable_filter_ids())}. The seven design-stage gates read a "
+            "threshold with no absent state and are refused rather than faked; widen the threshold "
+            "instead. 'warn' keeps the gate measuring and stops it rejecting: the outcome is "
+            "published in <filter_id>_verdict and <filter_id>_observed and passes_filters is left "
+            "alone, so a 'fail' verdict on a retained candidate is a finding, not a contradiction. "
+            "It is honoured by max_paired_fraction, min_asymmetry_score, min_empirical_score and "
+            "every post-screen gate. KNOWN GAP: gc_content_min, gc_content_max and max_poly_runs "
+            "decide during enumeration and drop the candidate from the design output before the "
+            "action is read, and max_repeat_transcript_fraction stamps REPEAT_ELEMENT without "
+            "reading it -- those four resolve to 'warn' in the manifest and still reject, so treat "
+            "warn on them as unimplemented rather than as a label. An action can only turn a gate "
+            "off, never on: 'warn' and 'fail' are refused for a gate that would be off anyway (no "
+            "threshold, no screening evidence, or no 0.7.1 reader -- max_mirna_1mm_seed)."
         ),
     ),
     input_fasta: str | None = typer.Option(
@@ -1568,10 +1586,17 @@ def offtarget(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
             f"threshold, so it is not evaluated, which is not the same as passing: {', '.join(switchable_filter_ids())}. "
-            "The six design-stage gates have no absent threshold and are refused rather than faked, and "
-            "'warn' is rejected because no 0.7.1 code path demotes a rejection to a label."
+            "The seven design-stage gates have no absent threshold and are refused rather than faked. "
+            "'warn' keeps the gate measuring and stops it rejecting: the outcome is published in "
+            "<filter_id>_verdict and <filter_id>_observed and passes_filters is left alone. Every gate "
+            "this command applies -- the off-target gates and min_isoform_coverage -- honours it, "
+            "because each one records through the shared verdict recorder. The design-stage gates do "
+            "not run on pre-designed guides at all, so an action set on one is accepted and applies "
+            "to nothing. min_isoform_coverage, max_transcriptome_seed_perfect and "
+            "max_total_offtarget_hits ship with no threshold, so set one before asking for 'warn' or "
+            "'fail'; max_mirna_1mm_seed is read by no 0.7.1 gate, so only 'off' is accepted for it."
         ),
     ),
     input_candidates_fasta: Path = typer.Option(
@@ -2123,9 +2148,17 @@ def design(  # noqa: PLR0912
         [],
         "--filter-action",
         help=(
-            "Set one filter's action: filter_id=off|fail (repeatable). 'off' clears the gate's "
-            "threshold, so it is not evaluated, which is not the same as passing. 'warn' is rejected in "
-            "0.7.1: nothing demotes a rejection to a label, so the action would not be honoured."
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated, which is not the same as passing; it is refused for "
+            "the seven design-stage gates, whose thresholds are plain floats with no absent state "
+            "(widen the threshold instead), and it is a no-op on a post-screen gate, which this "
+            "design_only command never evaluates anyway. 'warn' means record the verdict in "
+            "<filter_id>_verdict and leave passes_filters alone. KNOWN GAP: this command builds the "
+            "designer without handing it the resolved actions, so 'warn' here is recorded in the "
+            "manifest and is inert -- every design-stage gate applies its declared default instead. "
+            "Use 'sirnaforge workflow' if you need warn honoured, and note that even there "
+            "gc_content_min, gc_content_max, max_poly_runs and max_repeat_transcript_fraction "
+            "reject regardless of their action."
         ),
     ),
     length: int | None = typer.Option(
@@ -2347,8 +2380,17 @@ def design(  # noqa: PLR0912
 
             task1 = progress.add_task("Loading sequences...", total=None)
 
-            # Select designer based on design mode
-            designer = MiRNADesigner(parameters) if mode_enum == DesignMode.MIRNA else SiRNADesigner(parameters)
+            # Select designer based on design mode. The actions travel with the thresholds:
+            # DesignParameters carries only the numbers, so without them a --filter-action reached the
+            # manifest and was silently ignored by every design gate on this command.
+            from sirnaforge.workflow import _policy_filter_actions  # noqa: PLC0415
+
+            design_actions = _policy_filter_actions(policy)
+            designer = (
+                MiRNADesigner(parameters, filter_actions=design_actions)
+                if mode_enum == DesignMode.MIRNA
+                else SiRNADesigner(parameters, filter_actions=design_actions)
+            )
 
             progress.update(task1, description="Designing siRNAs...")
             result = designer.design_from_file(str(input_file))

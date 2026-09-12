@@ -89,11 +89,11 @@ is a supported setting in either mode.
 
 `--run-mode` declares how much screening evidence a run claims to have:
 
-| Run mode | Meaning | Default for |
-| --- | --- | --- |
-| `design_only` | No screening; every post-screen gate is **not evaluated**, which is not the same as passed | `sirnaforge design` |
-| `exploratory` | Screening ran; incomplete evidence is kept and labelled | — |
-| `qualified` | The transcriptome channel in the query species must complete | `sirnaforge workflow`, `sirnaforge offtarget` |
+| Run mode      | Meaning                                                                                    | Default for                                   |
+| ------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| `design_only` | No screening; every post-screen gate is **not evaluated**, which is not the same as passed | `sirnaforge design`                           |
+| `exploratory` | Screening ran; incomplete evidence is kept and labelled                                    | —                                             |
+| `qualified`   | The transcriptome channel in the query species must complete                               | `sirnaforge workflow`, `sirnaforge offtarget` |
 
 `--skip-off-targets` maps to `--run-mode design_only`, and the manifest records the rule that did it
 rather than presenting the mode as something you chose. The two are one run: both suppress reference
@@ -104,29 +104,52 @@ thing to ask for), and every post-screen gate is `off` for it, because what deci
 the run screened — not the mode's name. Run mode is **independent of `--design-mode`**: choosing miRNA
 design says nothing about evidence completeness.
 
-`--filter-action filter_id=off|fail` (repeatable) sets one gate's action. A gate can be off for
+`--filter-action filter_id=off|warn|fail` (repeatable) sets one gate's action. A gate can be off for
 three different reasons — you turned it off, it has no declared threshold, or the run holds no
 evidence of the kind it reads — and all three mean **not evaluated**, never passed. What cannot be
 waived while staying `qualified` is required evidence completeness (`--run-mode exploratory` is how
 you say that out loud).
 
-Three limits, because 0.7.1's gate application does not read a filter action:
+The three words are three different mechanisms, and that is why their limits differ:
 
 - `off` works by **clearing the gate's threshold**, which the existing gate code already reads as "no
-  gate". That is available for the ten gates whose threshold has an absent state (`sirnaforge workflow
-  --help` lists them). The six design-stage gates (`gc_content_min`, `gc_content_max`,
-  `max_poly_runs`, `max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score`) read a plain
-  float with no absent value, so switching them off is **refused** rather than faked with an inert
-  number that would be reported as a threshold you chose. Widen the threshold instead.
-- `warn` is **not selectable in 0.7.1** and is rejected with an error. `FilterAction.WARN` exists in
-  the vocabulary, but no code path demotes a rejection to a label, so resolving it would put
-  `action: warn, evaluated: true` in the manifest beside a candidate the gate rejected — a claim a
-  client re-applying the descriptor could not detect as wrong. Demoting a failure to a label needs
-  per-filter verdicts on the candidate row, which is separate work.
-- **A gate can only be turned off, never on.** `fail` is refused when the gate would be off anyway —
-  it has no threshold to compare, the boolean it reads is `False`, the run holds no screening evidence,
-  or no 0.7.1 code reads it at all (`max_mirna_1mm_seed`). Accepting it would report an enforced limit
-  that does not exist.
+  gate". That is available for the ten gates whose threshold has an absent state; the help text of
+  `sirnaforge workflow` lists them. The seven design-stage gates (`gc_content_min`, `gc_content_max`,
+  `max_poly_runs`, `max_repeat_transcript_fraction`, `max_paired_fraction`, `min_asymmetry_score`,
+  `min_empirical_score`) read a plain float with no absent value, so switching them off is **refused**
+  rather than faked with an inert number that would be reported as a threshold you chose. Widen the
+  threshold instead.
+- `warn` works by **leaving `passes_filters` alone**: the gate still measures, still compares, and
+  publishes its outcome in `<filter_id>_verdict` and `<filter_id>_observed`, but a `fail` verdict does
+  not remove the candidate. So a `fail` verdict beside `passes_filters=PASS` is consistent — read the
+  verdict columns, not the single label. This is what the per-filter verdict columns bought: before
+  them a gate had exactly one way to express a failure, and `warn` sat in the vocabulary unapplied.
+  It is honoured by `max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score` and **every**
+  post-screen gate, each of which records through `SiRNACandidate.record_filter_verdict`, the one
+  place that reads the action. `min_asymmetry_score`, `max_mirna_perfect_seed` and
+  `fail_on_high_risk_mirna` already **ship** as `warn`.
+- **Four gates accept `warn` and do not honour it — a known defect, not a design choice.**
+  `gc_content_min`, `gc_content_max` and `max_poly_runs` decide during candidate enumeration and
+  assign the rejection label directly, dropping the candidate into `DesignResult.rejected_candidates`
+  (kept only for dirty controls and auditing) before anything reads the action; the verdict is
+  recorded correctly, but the candidate is gone from the scored output. `max_repeat_transcript_fraction`
+  is stamped by a static method that stamps `REPEAT_ELEMENT` without being given the action at all.
+  For these four, `warn` resolves and appears in the manifest and the gate still rejects. Fixing them
+  means routing their rejection through `record_filter_verdict`, as `min_isoform_coverage` was in #105.
+- **A gate can only be turned off, never on.** `warn` and `fail` are refused when the gate would be
+  off anyway — it has no threshold to compare (`min_isoform_coverage`, `max_transcriptome_seed_perfect`
+  and `max_total_offtarget_hits` ship that way, so set a threshold first), the boolean it reads is
+  `False`, the run holds no screening evidence, or no 0.7.1 code reads it at all
+  (`max_mirna_1mm_seed`). Accepting it would report an enforced limit that does not exist. This is why
+  `sirnaforge design`, which defaults to `--run-mode design_only`, refuses `warn` and `fail` on every
+  post-screen gate: they evaluate nothing on that command.
+
+One more asymmetry between the commands, because `--filter-action` is offered on all three:
+`sirnaforge design` resolves the actions into its manifest but constructs its designer **without**
+them, so a `warn` set there is inert and each design-stage gate applies its declared default. Use
+`sirnaforge workflow` when you need `warn` honoured at the design stage. On `sirnaforge offtarget` the
+design-stage gates never run on pre-designed guides, so an action set on one is accepted and applies
+to nothing.
 
 Two honesty notes the manifest carries per gate, because the code earns them and prose would not:
 
@@ -139,8 +162,9 @@ Two honesty notes the manifest carries per gate, because the code earns them and
   query species); `max_mirna_perfect_seed` and `fail_on_high_risk_mirna` count hits labelled human
   **only**, so an unlabelled miRNA hit reaches neither gate; and `max_total_offtarget_hits` **sums the
   two conventions** in one number.
-- `max_mirna_1mm_seed` declares a threshold of 10 and is read by no gate in 0.7.1, so it resolves to
-  `off`.
+- `max_mirna_1mm_seed` is read by no gate in 0.7.1, so it resolves to `off`, and asking for `warn` or
+  `fail` on it is refused. It no longer declares a threshold either: the default was `10`, which read
+  as a limit the run enforced, and it is now `None` so the setting states nothing it cannot apply.
 
 `--skip-off-targets` disables **all** reference-based screening for the run: no transcriptome reference is resolved, downloaded or indexed, the Nextflow off-target stage does not run, **and repeat-element detection is skipped as well**. Repeat detection scans guides against the query species' cDNA reference, so it cannot run without the very download the flag exists to avoid; `logs/workflow_summary.json` reports it as `repeat_summary.status = "skipped"` with `reason = "user_disabled"`, and candidates keep `repeat_flagged = false`. Drop `--skip-off-targets` (optionally with `--transcriptome-fasta`) whenever you need repeat verdicts.
 

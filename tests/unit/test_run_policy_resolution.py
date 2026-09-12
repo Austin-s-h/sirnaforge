@@ -6,8 +6,9 @@ once; a preset must apply on provenance rather than on value equality; and a con
 must cost nothing.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -107,13 +108,16 @@ def _cli_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) ->
     return policy
 
 
-def _design_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> DesignParameters:
-    """Run the real `design` command and return the parameters the designer was constructed with."""
+def _design_cli_construction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> dict[str, Any]:
+    """Run the real `design` command and return everything the designer was constructed with."""
     captured: dict[str, Any] = {}
 
     class _StubDesigner:
-        def __init__(self, parameters: DesignParameters) -> None:
+        def __init__(
+            self, parameters: DesignParameters, *, filter_actions: Mapping[str, FilterAction] | None = None
+        ) -> None:
             captured["parameters"] = parameters
+            captured["filter_actions"] = filter_actions
 
         def design_from_file(self, _path: str) -> Any:
             raise SystemExit(0)
@@ -124,7 +128,29 @@ def _design_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) ->
         app,
         ["design", str(_fasta(tmp_path)), "--output", str(tmp_path / "out.csv"), *extra],
     )
-    return captured["parameters"]
+    return captured
+
+
+def _design_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> DesignParameters:
+    """The parameters the `design` command constructed its designer with."""
+    return cast(DesignParameters, _design_cli_construction(tmp_path, monkeypatch, *extra)["parameters"])
+
+
+@pytest.mark.unit
+def test_the_design_command_hands_the_resolved_actions_to_its_designer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A design-stage gate reads the action, so the command has to pass it, not only the threshold.
+
+    ``DesignParameters`` carries thresholds and says nothing about actions, so constructing the
+    designer without them made ``--filter-action`` reach the manifest and be silently ignored by every
+    design gate on this command -- while the same option worked through ``sirnaforge workflow``.
+    """
+    captured = _design_cli_construction(
+        tmp_path, monkeypatch, "--max-paired-fraction", "0.05", "--filter-action", "max_paired_fraction=warn"
+    )
+    assert captured["filter_actions"] is not None
+    assert captured["filter_actions"]["max_paired_fraction"] is FilterAction.WARN
 
 
 # --------------------------------------------------------------------------------------
