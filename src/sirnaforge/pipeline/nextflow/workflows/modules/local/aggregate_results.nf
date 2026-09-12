@@ -12,7 +12,6 @@ process AGGREGATE_RESULTS {
     path "combined_*.tsv", emit: combined_analyses, optional: true
     path "combined*.json", emit: combined_summary, optional: true
     path "final*_summary.txt", emit: final_summary
-    path "analysis_report.html", emit: html_report, optional: true
     path "versions.yml", emit: versions
 
     when:
@@ -70,7 +69,6 @@ PYEOF
     printf 'qname\\tqseq\\tspecies\\trname\\tcoord\\tstrand\\tcigar\\tmapq\\tas_score\\tnm\\tseed_mismatches\\tofftarget_score\\thit_class\\tmatched_symbol\\tsymbol_lookup_missing\\thit_symbol\\thit_symbol_missing\\tspecies_index_missing\\tortholog_evidence\\n' > combined_offtargets.tsv
     echo '{"status": "stub", "species_screened": [], "unscreened_species": [], "total_results": 0}' > combined_summary.json
     echo 'Aggregation completed' > final_summary.txt
-    touch analysis_report.html
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

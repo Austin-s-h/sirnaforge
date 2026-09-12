@@ -363,7 +363,6 @@ class NextflowRunner:
         output_files = {
             "combined_analyses": list(output_dir.glob("**/combined_*_analysis.tsv")),
             "combined_summary": list(output_dir.glob("**/combined_summary.json")),
-            "html_report": list(output_dir.glob("**/analysis_report.html")),
             "validation_report": list(output_dir.glob("**/validation_report.txt")),
             "individual_results": list(output_dir.glob("**/individual_results/")),
         }
@@ -373,7 +372,9 @@ class NextflowRunner:
             "total_files": sum(len(files) for files in output_files.values()),
             "analysis_files": len(output_files["combined_analyses"]),
             "summary_files": len(output_files["combined_summary"]),
-            "report_files": len(output_files["html_report"]),
+            # No report_files count: the only analysis_report.html this pipeline ever produced was an
+            # empty file the stub touched, so the count reported a report that did not exist. The real
+            # report is written by step6 (sirnaforge/report.html) and by `sirnaforge report`.
         }
 
         stdout_text = ""

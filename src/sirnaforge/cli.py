@@ -1556,8 +1556,9 @@ def workflow(  # noqa: PLR0912
             if json_summary:
                 console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
 
-            if offtarget_summary.get("method") == "nextflow":
-                console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
+            # The real report, at the path step6 actually writes. This line used to name
+            # off_target/results/offtarget_report.html, which no code path has ever produced (#103).
+            console.print("   • Self-contained HTML report: [blue]sirnaforge/report.html[/blue]")
 
     except Exception as e:
         logger.exception("Workflow execution failed")
@@ -1863,8 +1864,9 @@ def offtarget(  # noqa: PLR0912
         console.print(_offtarget_results_line(offtarget_summary, "results/"))
         console.print("   • Console log: [blue]logs/sirnaforge.log[/blue]")
 
-        if offtarget_summary.get("method") == "embedded_nextflow":
-            console.print("   • Full off-target report: [blue]results/offtarget_report.html[/blue]")
+        # No HTML report is advertised here: this command bypasses step6, so nothing writes one.
+        # The removed line named results/offtarget_report.html, which no code path produces (#103).
+        console.print("   • Build a report from this run with: [blue]sirnaforge report <output_dir>[/blue]")
 
     except Exception as e:
         console.print(f"❌ [red]Off-target analysis error:[/red] {str(e)}")
