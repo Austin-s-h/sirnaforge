@@ -4484,12 +4484,16 @@ class SiRNAWorkflow:
         total = design_results.total_candidates
         passed = design_results.filtered_candidates
         failed = max(0, total - passed)
-        repeat_excluded = sum(1 for c in design_results.candidates if c.repeat_flagged)
+        # Flagged, which is not the same as excluded once the repeat gate's action can be `warn`:
+        # naming it *_excluded_count put two contradicting numbers for one quantity in the same JSON,
+        # this one and selection_summary.repeat_excluded. This is the descriptive count; the selection
+        # summary owns what was actually held out.
+        repeat_flagged = sum(1 for c in design_results.candidates if c.repeat_flagged)
         base.update(
             {
                 "pass_count": passed,
                 "fail_count": failed,
-                "repeat_excluded_count": repeat_excluded,
+                "repeat_flagged_count": repeat_flagged,
                 "repeat_threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
                 "top_n_requested": self.config.top_n,
                 "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
@@ -4768,6 +4772,13 @@ async def run_sirna_workflow(
             filter_actions=filter_actions,
             query_species=query_species,
             screen_species=screen_species or (),
+            # The same fact the CLI reports, derived from the same inputs: an input FASTA with no
+            # transcriptome argument resolves no transcriptome reference, so this run cannot complete
+            # that channel. Without it the API and the CLI resolved the same inputs differently, and
+            # the API kept requiring evidence it could never obtain.
+            transcriptome_reference_available=(
+                False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
+            ),
         )
     mode_enum = policy.design_mode
     design_params = policy.design_parameters

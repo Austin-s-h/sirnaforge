@@ -825,7 +825,7 @@ def _resolve_run_mode(
     stated: Mapping[str, Any],
     legacy_skip_screening: bool | None,
     require_screening_completeness: bool | None,
-    screening_reference_available: bool | None = None,
+    transcriptome_reference_available: bool | None = None,
 ) -> tuple[RunMode, list[SettingProvenance], dict[str, Any]]:
     """Resolve the run mode and the screening switch together, since each constrains the other.
 
@@ -891,14 +891,17 @@ def _resolve_run_mode(
                 detail="check_off_targets=False was stated, so no screening evidence exists",
             )
         )
-    elif screening_reference_available is False:
-        mode = RunMode.DESIGN_ONLY
+    elif transcriptome_reference_available is False:
+        # EXPLORATORY, not DESIGN_ONLY. The miRNA seed channel has its own reference and still runs, so
+        # this is a run whose evidence is incomplete -- not one that screened nothing. Calling it
+        # design-only also derived check_off_targets=False, which killed the miRNA screen outright.
+        mode = RunMode.EXPLORATORY
         records.append(
             SettingProvenance(
                 key="run_mode",
                 value=mode.value,
                 source=SettingSource.RUN_MODE_RULE,
-                detail="no screening reference was available, so no screening evidence can exist",
+                detail="no transcriptome reference was available, so transcriptome evidence cannot complete",
             )
         )
     elif require_screening_completeness is False:
@@ -1113,7 +1116,7 @@ def resolve_run_policy(
     require_screening_completeness: bool | None = None,
     query_species: str | None = None,
     screen_species: Sequence[str] = (),
-    screening_reference_available: bool | None = None,
+    transcriptome_reference_available: bool | None = None,
 ) -> ResolvedRunPolicy:
     """Resolve one run's policy. Pure: no downloads, no folding, no alignment.
 
@@ -1135,12 +1138,14 @@ def resolve_run_policy(
         query_species: Species the target transcripts belong to; the pair that qualified mode
             requires. Defaults to human, as the rest of the pipeline does.
         screen_species: Species being screened against, recorded as exploratory pairs.
-        screening_reference_available: Whether the caller could resolve any screening reference at
-            all. ``False`` resolves the run to design-only, because a run with no reference cannot
-            hold screening evidence and must not claim to require it -- the case `--input-fasta`
-            with no `--transcriptome-fasta` produces, where the reference policy already reports
-            "design-only mode" while the run mode said `qualified`. ``None`` means the caller has
-            nothing to say, which is the honest default for a direct API caller.
+        transcriptome_reference_available: Whether the caller could resolve a transcriptome reference.
+            ``False`` resolves the run to exploratory: the transcriptome channel cannot complete, so
+            the run must not claim to *require* it -- the case ``--input-fasta`` with no
+            ``--transcriptome-fasta`` produces, where the reference policy already reports
+            "design-only mode" while the run mode said ``qualified``, and every candidate was then
+            withheld from a shortlist the run could never fill. Exploratory rather than design-only
+            because the miRNA seed channel has its own reference and still runs. ``None`` means the
+            caller has nothing to say, which is the honest default for a direct API caller.
 
     Returns:
         The immutable resolved policy.
@@ -1187,7 +1192,7 @@ def resolve_run_policy(
         stated=stated,
         legacy_skip_screening=legacy_skip_screening,
         require_screening_completeness=require_screening_completeness,
-        screening_reference_available=screening_reference_available,
+        transcriptome_reference_available=transcriptome_reference_available,
     )
 
     preset = _mirna_preset() if resolved_design_mode is DesignMode.MIRNA else {}

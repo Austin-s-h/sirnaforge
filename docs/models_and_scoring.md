@@ -603,7 +603,7 @@ gate, applied to every distinct guide against the query species' cDNA reference:
 
 | Filter           | Condition                                       | Rationale                                 |
 | ---------------- | ----------------------------------------------- | ----------------------------------------- |
-| `REPEAT_ELEMENT` | guide occurs in > 0.1% of reference transcripts | Flags guides overlapping a repeat element |
+| `REPEAT_ELEMENT` | guide occurs in more than `max_repeat_transcript_fraction` of reference transcripts (0.1% by default, and resolved rather than hard-coded) | Flags guides overlapping a repeat element. Only stamped when that gate's action is `fail`; under `warn` the fraction and verdict are still recorded and the guide is kept |
 
 `REPEAT_ELEMENT` is applied only if the candidate is currently passing (existing failures are not
 overwritten), and it excludes the candidate from ranking.

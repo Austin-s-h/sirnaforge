@@ -162,8 +162,12 @@ is a shortlist. `candidates_all.csv` holds every candidate, and all three are wr
 order. The gates:
 
 1. `passes_filters` is `PASS` — a failed off-target filter is a rejection, not a low score;
-2. `repeat_flagged` is `False` — a guide that saturates the query transcriptome is excluded even
-   when screening never ran;
+2. `repeat_flagged` is `False` **and `max_repeat_transcript_fraction` resolves to `fail`** — a guide
+   that saturates the query transcriptome is excluded even when screening never ran. The threshold is
+   the resolved `max_repeat_transcript_fraction` (0.1% by default), not a constant, and setting that
+   gate to `warn` keeps the guide. Note what warning it also does: a repeat-flagged guide's alignments
+   classify as `repeat` rather than as liabilities, so retaining it also spares it
+   `max_off_target_count`. Widen the threshold instead if you want the guide judged on its hits.
 3. **the evidence the run declares required is complete for that candidate**, in `qualified` mode
    only. See _Eligibility depends on the run mode_ below;
 4. `scored_after_screening` is `True`, **whenever some but not all candidates were scored after

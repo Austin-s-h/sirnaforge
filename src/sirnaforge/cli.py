@@ -381,21 +381,43 @@ def _fail_if_nothing_could_qualify(
     cause = describe_shortfall_reasons(reasons) if reasons else f"no evidence for {', '.join(missing)}"
     if logger is not None:
         logger.error("Nothing could be qualified: %s", cause)
-    console.print(
-        f"\n❌ [red]Nothing could be qualified:[/red] no candidate holds the evidence this run "
-        f"requires, so the qualified shortlist is empty ({withheld} of {considered} candidate(s) "
-        f"withheld: {cause})."
-    )
-    console.print(
-        "   ↳ supply the missing evidence (--transcriptome-fasta ensembl_human_cdna, or "
-        "--offtarget-indices human:/path/to/index), or re-run with --run-mode exploratory to keep "
-        "these candidates labelled."
-    )
+
+    # Two shapes, and they need different prose. With per-candidate reasons, N candidates were withheld
+    # by the evidence rule and carry `withheld_incomplete_evidence`. Without them, every candidate was
+    # dropped by a gate BEFORE the evidence check, so `withheld` is 0 and no row carries that state --
+    # saying "0 of N withheld ... see selection_state=withheld_incomplete_evidence" was wrong twice.
+    if reasons:
+        console.print(
+            f"\n❌ [red]Nothing could be qualified:[/red] no candidate holds the evidence this run "
+            f"requires, so the qualified shortlist is empty ({withheld} of {considered} candidate(s) "
+            f"withheld: {cause})."
+        )
+        state_hint = "selection_state=withheld_incomplete_evidence"
+    else:
+        console.print(
+            f"\n❌ [red]Nothing could be qualified:[/red] every one of {considered} candidate(s) was "
+            f"already excluded by a gate, and this run cannot qualify anything anyway ({cause})."
+        )
+        state_hint = "selection_state=not_eligible"
+
+    # The remedy follows the cause. An undecided gate on a completed screen is an annotation the gate
+    # could not read, and telling that user to supply a transcriptome is a wrong instruction.
+    if missing or any(str(key).startswith("no_evidence:") for key in reasons):
+        console.print(
+            "   ↳ supply the missing evidence (--transcriptome-fasta ensembl_human_cdna, or "
+            "--offtarget-indices <species>:/path/to/index), or re-run with --run-mode exploratory to "
+            "keep these candidates labelled."
+        )
+    else:
+        console.print(
+            "   ↳ the gates named above could not be decided on this run's inputs: supply what they "
+            "read, turn them off with --filter-action <id>=off, or re-run with --run-mode exploratory "
+            "to keep these candidates labelled."
+        )
     if json_summary:
         console.print(
-            "   ↳ selection_summary in [blue]logs/workflow_summary.json[/blue] has the counts by cause; "
-            "the candidates are in candidates_all.csv and candidates_pass.csv with "
-            "selection_state=withheld_incomplete_evidence."
+            f"   ↳ selection_summary in [blue]logs/workflow_summary.json[/blue] has the counts by "
+            f"cause; the candidates are in candidates_all.csv with {state_hint}."
         )
     raise typer.Exit(1)
 
@@ -830,14 +852,15 @@ def workflow(  # noqa: PLR0912
             "instead. 'warn' keeps the gate measuring and stops it rejecting: the outcome is "
             "published in <filter_id>_verdict and <filter_id>_observed and passes_filters is left "
             "alone, so a 'fail' verdict on a retained candidate is a finding, not a contradiction. "
-            "It is honoured by max_paired_fraction, min_asymmetry_score, min_empirical_score and "
-            "every post-screen gate. KNOWN GAP: gc_content_min, gc_content_max and max_poly_runs "
-            "decide during enumeration and drop the candidate from the design output before the "
-            "action is read, and max_repeat_transcript_fraction stamps REPEAT_ELEMENT without "
-            "reading it -- those four resolve to 'warn' in the manifest and still reject, so treat "
-            "warn on them as unimplemented rather than as a label. An action can only turn a gate "
-            "off, never on: 'warn' and 'fail' are refused for a gate that would be off anyway (no "
-            "threshold, no screening evidence, or no 0.7.1 reader -- max_mirna_1mm_seed)."
+            "Every declared gate honours it, including the four that used to reject regardless: "
+            "gc_content_min, gc_content_max and max_poly_runs decide during enumeration and now "
+            "retain the candidate (marked GATE_WARNED), and max_repeat_transcript_fraction no longer "
+            "stamps REPEAT_ELEMENT nor drops the guide from the shortlist. Warning a repeat gate has "
+            "a consequence worth knowing: a repeat-ubiquitous guide's alignments classify as "
+            "'repeat' rather than as liabilities, so retaining it also spares it max_off_target_count "
+            "-- widen the threshold instead if you want it judged on its hits. An action can only turn "
+            "a gate off, never on: 'warn' and 'fail' are refused for a gate that would be off anyway "
+            "(no threshold, no screening evidence, or no 0.7.1 reader -- max_mirna_1mm_seed)."
         ),
     ),
     input_fasta: str | None = typer.Option(
@@ -1344,11 +1367,11 @@ def workflow(  # noqa: PLR0912
         query_species=query_species,
         screen_species=[value.strip() for value in species.split(",") if value.strip()],
         # `--input-fasta` does not auto-resolve the default transcriptomes (see the reference-policy
-        # comment below), so with neither `--transcriptome-fasta` nor `--offtarget-indices` this run
-        # has no screening reference at all. It cannot hold screening evidence, and calling itself
-        # `qualified` meant it required evidence it could never obtain: every candidate was withheld
-        # from the shortlist of a run the CLI was simultaneously describing as design-only.
-        screening_reference_available=(
+        # comment below), so with neither `--transcriptome-fasta` nor `--offtarget-indices` this run has
+        # no transcriptome reference. Calling itself `qualified` meant it required evidence it could
+        # never obtain, and every candidate was withheld from a shortlist the run could never fill.
+        # This is the transcriptome channel only: the miRNA seed screen has its own reference and runs.
+        transcriptome_reference_available=(
             False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
         ),
     )
@@ -2231,12 +2254,9 @@ def design(  # noqa: PLR0912
             "the seven design-stage gates, whose thresholds are plain floats with no absent state "
             "(widen the threshold instead), and it is a no-op on a post-screen gate, which this "
             "design_only command never evaluates anyway. 'warn' means record the verdict in "
-            "<filter_id>_verdict and leave passes_filters alone. KNOWN GAP: this command builds the "
-            "designer without handing it the resolved actions, so 'warn' here is recorded in the "
-            "manifest and is inert -- every design-stage gate applies its declared default instead. "
-            "Use 'sirnaforge workflow' if you need warn honoured, and note that even there "
-            "gc_content_min, gc_content_max, max_poly_runs and max_repeat_transcript_fraction "
-            "reject regardless of their action."
+            "<filter_id>_verdict and leave passes_filters alone, and every design-stage gate honours "
+            "it here -- including gc_content_min, gc_content_max and max_poly_runs, which decide "
+            "during enumeration and now retain the candidate marked GATE_WARNED."
         ),
     ),
     length: int | None = typer.Option(

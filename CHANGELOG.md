@@ -485,9 +485,17 @@ where the two defects removed here were first written down as outstanding.)
   with neither `--transcriptome-fasta` nor `--offtarget-indices` nothing is screened; the reference
   policy already reported "design-only mode" on that run while the run mode said `qualified`. Measured
   against the previous tip on the repo's own documented example, every candidate was withheld and the
-  deliverable went from **152 guides to 0**. The resolver now derives `design_only` when the caller
-  reports no available reference, recorded as a `RUN_MODE_RULE` rather than a mode anybody chose, and
-  an explicitly stated mode still beats it.
+  deliverable went from **152 guides to 0**. The resolver now derives **`exploratory`** when the caller
+  reports no transcriptome reference, recorded as a `RUN_MODE_RULE` rather than a mode anybody chose,
+  and an explicitly stated mode still beats it. Both the CLI and `run_sirna_workflow` report it, so the
+  two surfaces cannot resolve the same inputs differently.
+
+  Exploratory and **not** design-only, which an intermediate version derived and adversarial review
+  caught: the miRNA seed channel has its own reference and still runs, and design-only additionally
+  derives `check_off_targets=False`, which would have deleted that screen outright. Measured on a real
+  mouse Trp53 run through Docker/Nextflow — 4,858 candidates, no transcriptome argument — the
+  exploratory run finds **13,458 aggregated miRNA seed hits** that the design-only version would have
+  discarded, while the transcriptome channel is correctly reported unscreened and its gates unknown.
 - **One non-zero exit code for a run that could not qualify anything** (#100). `sirnaforge workflow`
   exited 0 whatever happened, so "no candidate holds the required evidence" was indistinguishable from
   success without parsing JSON. It now exits **1** — 1, not 2, because Click already returns 2 for a
@@ -523,6 +531,26 @@ where the two defects removed here were first written down as outstanding.)
   `record_filter_verdict`: that writes `UNKNOWN` whenever there is no observed value, which is exactly
   an unscanned guide's shape, and this gate reads no screening channel — so in qualified mode it would
   have disqualified every candidate of a run whose repeat detection was skipped.
+- **`design_summary.repeat_excluded_count` counted flags, not exclusions**, so once the repeat gate
+  could resolve to `warn` it contradicted `selection_summary.repeat_excluded` in the same JSON. Renamed
+  `repeat_flagged_count`, which is what it always measured; the selection summary owns what was
+  actually held out.
+- **`quality_issues` is now exported on every candidate row.** `GATE_WARNED` is written there and no
+  artifact carried it, so the one per-row trace that a retained candidate exceeded a warned gate was
+  invisible to every consumer.
+- **The dirty-control sentinels could clone a live candidate.** Their pool now holds warned gate
+  failures (so `warn` does not silently disable the controls), which meant a clone could duplicate a
+  guide already in the order list and then be deduplicated away before the aligner saw it. Candidates
+  still in the live pool are excluded from the control draw.
+- **The report re-derived PASS for a gate the run never evaluated.** `_evaluate` now honours a recorded
+  `not_evaluated` as well as a recorded `unknown`: a run whose repeat scan never ran records
+  `not_evaluated` and leaves `repeat_transcript_fraction` at its 0.0 default, from which the report
+  produced a confident pass for a gate nobody applied. The report may report less than the run, never
+  more.
+- **The exit-1 message blamed screening for causes that were not screening.** The remedy now follows
+  the cause — an undecided gate on a completed screen points at the gate's input, not at
+  `--transcriptome-fasta` — and the run-level-only branch no longer says "0 of N withheld" nor points
+  at a `selection_state` no row carries in that branch.
 - **The resolved `max_repeat_transcript_fraction` never reached the scan.** `RepeatDetector` was built
   from the module constant, so a user who configured the threshold got the default — and
   `design_summary.repeat_threshold_fraction` and `repeat_summary.threshold_fraction` published the
@@ -867,6 +895,15 @@ where the two defects removed here were first written down as outstanding.)
   states that a pre-designed guide can hold a qualified SCREEN result with no potency composite, so
   "no composite" cannot by itself mean "not qualified" without first separating a requested potency
   ranking from a requested screen — which is #102's `core/selection.py` work.
+- **Warning a repeat gate also spares the guide its off-target count.** A repeat-flagged guide's
+  alignments classify as `repeat` rather than as liabilities — the class exists so a guide about to be
+  rejected is not also penalised for the hits the repeat drove — so retaining it with
+  `max_repeat_transcript_fraction=warn` means `max_off_target_count` no longer sees those hits either,
+  and the guide can lead the shortlist. Measured on a real mouse Trp53 screen: **42% of 24,867
+  alignments were repeat-mediated**, and the guides at that extreme carried up to 500 of them.
+  Documented in the CLI help and `docs/cli_reference.md` rather than fixed silently, because which of
+  the two behaviours is right is a scoring decision, not a wiring one — widen the threshold instead of
+  warning the gate if you want such a guide judged on its hits.
 - **The isoform-coverage floor is still uncalibrated, and `warn` does not change that.** Making the
   action selectable means a run can now report the gate instead of enforcing it; it does not supply a
   threshold anyone has validated against measured knockdown. The gate still ships **off** by default.

@@ -192,6 +192,8 @@ REASON_NO_THRESHOLD = 4
 #: The run itself recorded UNKNOWN for this gate. A distinct reason from an empty or absent column,
 #: because the run measured nothing on purpose and said so, rather than the report failing to find it.
 REASON_RUN_UNKNOWN = 5
+#: The run recorded NOT_EVALUATED for this gate, so it made no claim and the report makes none either.
+REASON_RUN_NOT_EVALUATED = 6
 
 _VERDICT_CODE = {
     FilterEvaluation.PASS.value: 0,
@@ -275,8 +277,17 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     # observed value so nothing re-derives a pass, but `observed_column` falls back to the descriptor's
     # own column when the observed one is empty for every row, and three of those fallbacks are exported
     # and default to 0. Without this an unscreened guide's `max_off_target_count` read as a pass at 0.
-    if _recorded_verdict(row, descriptor.filter_id) == FilterEvaluation.UNKNOWN.value:
-        return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_RUN_UNKNOWN
+    # The run's own non-decision wins, whichever it was: the report may report less than the run, never
+    # more. UNKNOWN because re-thresholding moves a ceiling and cannot conjure the measurement;
+    # NOT_EVALUATED because a gate the run did not apply is not the report's to apply.
+    # `max_repeat_transcript_fraction` is the live NOT_EVALUATED case -- a run whose repeat scan never
+    # ran leaves `repeat_transcript_fraction` at its 0.0 default, from which the report re-derived a
+    # confident PASS for a gate nobody evaluated.
+    recorded = _recorded_verdict(row, descriptor.filter_id)
+    if recorded in (FilterEvaluation.UNKNOWN.value, FilterEvaluation.NOT_EVALUATED.value):
+        undecided = _VERDICT_CODE[recorded]
+        reason = REASON_RUN_UNKNOWN if recorded == FilterEvaluation.UNKNOWN.value else REASON_RUN_NOT_EVALUATED
+        return (None if recorded == FilterEvaluation.UNKNOWN.value else value), undecided, reason
     if column is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_MISSING_COLUMN
     if value is None:

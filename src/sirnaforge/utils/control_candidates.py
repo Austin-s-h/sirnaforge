@@ -42,7 +42,15 @@ def inject_dirty_controls(design_result: DesignResult, count: int = 2) -> list[S
     if any(DIRTY_CONTROL_SUFFIX in candidate.id for candidate in design_result.candidates):
         return []
 
-    rejected_pool = [c for c in getattr(design_result, "rejected_candidates", []) if DIRTY_CONTROL_SUFFIX not in c.id]
+    # A gate resolved to `warn` retains its failures, and they join this pool too -- so exclude any
+    # candidate that is also live. Cloning one would put a near-duplicate of a shipped guide in the
+    # order list and lose the clone to sequence deduplication before the aligner ever saw it.
+    live_ids = {c.id for c in design_result.candidates}
+    rejected_pool = [
+        c
+        for c in getattr(design_result, "rejected_candidates", [])
+        if DIRTY_CONTROL_SUFFIX not in c.id and c.id not in live_ids
+    ]
     if not rejected_pool:
         return []
 

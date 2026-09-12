@@ -1003,25 +1003,26 @@ def test_resolving_twice_with_the_same_inputs_gives_the_same_answer():
 
 
 @pytest.mark.unit
-def test_a_run_with_no_screening_reference_resolves_design_only() -> None:
-    """`--input-fasta` alone resolves no reference, so the run cannot hold screening evidence.
+def test_a_run_with_no_transcriptome_reference_resolves_exploratory() -> None:
+    """`--input-fasta` alone resolves no transcriptome, so that channel cannot complete.
 
-    It resolved `qualified` anyway, which meant it *required* evidence it could never obtain -- while
-    the reference policy on the very same run reported "design-only mode". Every candidate was then
-    withheld from the shortlist of a run the CLI was simultaneously describing as design-only, and
-    the deliverable of a documented workflow went from 152 guides to 0.
+    It resolved `qualified` anyway, which meant it *required* evidence it could never obtain, and the
+    deliverable of a documented workflow went from 152 guides to 0.
 
-    The rule is recorded as a rule, not as a mode anybody chose.
+    EXPLORATORY, not DESIGN_ONLY: the miRNA seed channel has its own reference and still runs, and
+    design-only additionally derives `check_off_targets=False`, which would have killed that screen
+    outright. The rule is recorded as a rule, not as a mode anybody chose.
     """
-    derived = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, screening_reference_available=False)
-    assert derived.run_mode is RunMode.DESIGN_ONLY
+    derived = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, transcriptome_reference_available=False)
+    assert derived.run_mode is RunMode.EXPLORATORY
+    assert derived.design_parameters.check_off_targets is True, "the miRNA screen must still run"
     assert derived.source_of("run_mode") is SettingSource.RUN_MODE_RULE
-    assert derived.evidence_requirements.required_pairs == frozenset()
+    assert derived.evidence_requirements.required_pairs == frozenset(), "nothing is required in exploratory"
 
     # Silence is not the same claim: a caller with nothing to say leaves the entry point's default.
     assert resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW).run_mode is RunMode.QUALIFIED
     assert (
-        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, screening_reference_available=True).run_mode
+        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, transcriptome_reference_available=True).run_mode
         is RunMode.QUALIFIED
     )
 
@@ -1031,10 +1032,10 @@ def test_an_explicit_run_mode_still_beats_the_no_reference_rule() -> None:
     """The rule is a derivation, so it must lose to a mode the caller actually stated."""
     stated = resolve_run_policy(
         entry_point=EntryPoint.SCREENING_WORKFLOW,
-        run_mode=RunMode.EXPLORATORY,
-        screening_reference_available=False,
+        run_mode=RunMode.QUALIFIED,
+        transcriptome_reference_available=False,
     )
-    assert stated.run_mode is RunMode.EXPLORATORY
+    assert stated.run_mode is RunMode.QUALIFIED
 
 
 @pytest.mark.unit

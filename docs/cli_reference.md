@@ -129,18 +129,22 @@ The three words are three different mechanisms, and that is why their limits dif
   not remove the candidate. So a `fail` verdict beside `passes_filters=PASS` is consistent — read the
   verdict columns, not the single label. This is what the per-filter verdict columns bought: before
   them a gate had exactly one way to express a failure, and `warn` sat in the vocabulary unapplied.
-  It is honoured by `max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score` and **every**
-  post-screen gate, each of which records through `SiRNACandidate.record_filter_verdict`, the one
-  place that reads the action. `min_asymmetry_score`, `max_mirna_perfect_seed` and
+  **Every** declared gate honours it, each recording through `SiRNACandidate.record_filter_verdict`,
+  the one place that reads the action. `min_asymmetry_score`, `max_mirna_perfect_seed` and
   `fail_on_high_risk_mirna` already **ship** as `warn`.
-- **Four gates accept `warn` and do not honour it — a known defect, not a design choice.**
-  `gc_content_min`, `gc_content_max` and `max_poly_runs` decide during candidate enumeration and
-  assign the rejection label directly, dropping the candidate into `DesignResult.rejected_candidates`
-  (kept only for dirty controls and auditing) before anything reads the action; the verdict is
-  recorded correctly, but the candidate is gone from the scored output. `max_repeat_transcript_fraction`
-  is stamped by a static method that stamps `REPEAT_ELEMENT` without being given the action at all.
-  For these four, `warn` resolves and appears in the manifest and the gate still rejects. Fixing them
-  means routing their rejection through `record_filter_verdict`, as `min_isoform_coverage` was in #105.
+- **Warning a repeat gate also spares the guide its off-target count.** A guide flagged
+  repeat-ubiquitous has its alignments classified `repeat` rather than as liabilities — the class
+  exists so a guide you are about to reject is not also penalised for the hits the repeat drove — so
+  retaining it with `max_repeat_transcript_fraction=warn` means `max_off_target_count` no longer sees
+  those hits either. On a real mouse Trp53 screen 42% of 24,867 alignments were repeat-mediated, and
+  the guides at that extreme carried up to 500 of them. If you want such a guide judged on its hits
+  rather than kept, widen the threshold instead of warning the gate. Documented rather than fixed
+  silently: which of the two behaviours is correct is a scoring decision, not a wiring one.
+- **A retained enumeration failure is marked.** `gc_content_min`, `gc_content_max` and `max_poly_runs`
+  decide during candidate enumeration; under `warn` the candidate stays in the scored output, carries
+  `GATE_WARNED` in `quality_issues`, and `candidates_pass.fasta` names the gate in its header — that
+  file is an order list, so a guide outside a window you widened to `warn` must not look like one
+  inside it.
 - **A gate can only be turned off, never on.** `warn` and `fail` are refused when the gate would be
   off anyway — it has no threshold to compare (`min_isoform_coverage`, `max_transcriptome_seed_perfect`
   and `max_total_offtarget_hits` ship that way, so set a threshold first), the boolean it reads is

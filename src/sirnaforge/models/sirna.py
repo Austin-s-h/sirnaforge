@@ -1248,6 +1248,9 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # run was willing to claim about the candidate, which can differ once eligibility turns on the
         # evidence behind a gate rather than only on the gate's own outcome (#100).
         "selection_state": _maybe_attr("selection_state", "not_selected"),
+        # Exported because a claim nobody can read is not a claim: GATE_WARNED lives here, and it is
+        # the only per-row trace that a retained candidate exceeded a gate resolved to warn.
+        "quality_issues": ";".join(candidate.quality_issues or []),
         # Chemical modifications
         "guide_overhang": mod_summary.get("guide_overhang", ""),
         "guide_modifications": mod_summary.get("guide_modifications", ""),
