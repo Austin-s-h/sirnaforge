@@ -480,6 +480,56 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Fixed
 
+- **A run with no screening reference called itself `qualified`** — and therefore required evidence it
+  could never obtain. `--input-fasta` deliberately does not auto-resolve the default transcriptomes, so
+  with neither `--transcriptome-fasta` nor `--offtarget-indices` nothing is screened; the reference
+  policy already reported "design-only mode" on that run while the run mode said `qualified`. Measured
+  against the previous tip on the repo's own documented example, every candidate was withheld and the
+  deliverable went from **152 guides to 0**. The resolver now derives `design_only` when the caller
+  reports no available reference, recorded as a `RUN_MODE_RULE` rather than a mode anybody chose, and
+  an explicitly stated mode still beats it.
+- **One non-zero exit code for a run that could not qualify anything** (#100). `sirnaforge workflow`
+  exited 0 whatever happened, so "no candidate holds the required evidence" was indistinguishable from
+  success without parsing JSON. It now exits **1** — 1, not 2, because Click already returns 2 for a
+  usage error — with a message naming the cause from `evidence_shortfall_reasons`, the remedy, and
+  where the withheld candidates are. Deliberately narrow: a *complete* run that legitimately found
+  nothing eligible still exits 0, since otherwise every over-tight threshold would read as a tool
+  failure. `design_only`, `exploratory` and ZFN runs never fail here. The check sits outside the
+  command's `try`, because `typer.Exit` subclasses `RuntimeError` and would otherwise be caught by the
+  crash handler and reprinted as "Workflow error: 1"; the success banner is now "Workflow finished",
+  since the evidence verdict is decided after it. `selection_summary` gains
+  `required_evidence_missing`, a run-level key, because selection skips a gate-failing candidate before
+  it reaches the evidence check — so a run that screened nothing *and* designed nothing acceptable
+  reports no per-candidate reason at all.
+- **Four more gates accepted `warn` and rejected anyway** — the #105 defect class in every remaining
+  place. `gc_content_min`, `gc_content_max` and `max_poly_runs` are decided during enumeration, which
+  re-derived the rejection label from the thresholds and dropped the candidate unconditionally, right
+  after `_record_enumeration_verdicts` had recorded the verdict *with* the resolved action. The
+  recorder is now the only authority on both. `_apply_filters`, which reset `passes_filters = True` and
+  `quality_issues = []` on every candidate, is now a pass-through: the reset was invisible only because
+  a rejected candidate never reached it, and it erased exactly the verdict a warned candidate carries.
+  A retained gate failure is marked `GATE_WARNED` in `quality_issues`, and `candidates_pass.fasta`
+  names the gate in the header — that file leaves the tool as a list of sequences to order, so a guide
+  outside a window the user widened to `warn` must not look like one inside it.
+
+  Two things review caught that a narrower fix would have broken. The dirty-control sentinels draw
+  their pool only from enumeration rejections, so under `warn` there were none and the observability
+  controls disappeared silently; the pool now holds every gate failure whatever its action (measured:
+  5,057 either way, 2 controls injected either way). And `max_repeat_transcript_fraction=warn` was
+  *worse* than useless: `_apply_post_screen_ranking` excluded `repeat_flagged` candidates ahead of the
+  `passes_filters` test and independently of it, so flipping the action only flipped the CSV cell to
+  PASS — moving the guide into the order list while it stayed out of the shortlist. That exclusion now
+  consults the action too. The repeat verdict is deliberately **not** routed through
+  `record_filter_verdict`: that writes `UNKNOWN` whenever there is no observed value, which is exactly
+  an unscanned guide's shape, and this gate reads no screening channel — so in qualified mode it would
+  have disqualified every candidate of a run whose repeat detection was skipped.
+- **The resolved `max_repeat_transcript_fraction` never reached the scan.** `RepeatDetector` was built
+  from the module constant, so a user who configured the threshold got the default — and
+  `design_summary.repeat_threshold_fraction` and `repeat_summary.threshold_fraction` published the
+  value they asked for beside a scan that never used it. Latent rather than live, because the constant
+  and the model default are the same 0.001; reachable from the CLI today via `--policy-config`. All
+  five sites now read the resolved value, verified end to end: a run configured at 0.05 reports 0.05 in
+  all three fields.
 - **A completed screen that found nothing reached no off-target gate at all** (#106). The no-hit
   branch scored the candidate and continued, so the common case — a clean screen — exported every
   off-target gate as `not_evaluated` with a blank observed value. Because the #103 report re-derives

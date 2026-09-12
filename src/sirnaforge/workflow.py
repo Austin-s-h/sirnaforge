@@ -82,7 +82,6 @@ from sirnaforge.core.hit_classification import (
 )
 from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.core.repeat_detection import (
-    DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
     RepeatDetector,
     normalize_guide_sequence,
 )
@@ -173,6 +172,26 @@ _PER_SPECIES_COUNTERS: tuple[str, ...] = (
 _SELECTION_ELIGIBLE = "eligible"
 _SELECTION_WITHHELD = "withheld_incomplete_evidence"
 _SELECTION_NOT_ELIGIBLE = "not_eligible"
+
+
+def describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
+    """One human sentence naming what was actually missing, most costly first.
+
+    ``no_evidence:<channel>:<species>`` and ``unknown:<filter_id>`` are different problems with
+    different fixes -- a screen to re-run against, versus an annotation the gate could not read --
+    so the console says which rather than attributing both to screening.
+    """
+    parts: list[str] = []
+    for reason, count in reasons.items():
+        kind, _, detail = reason.partition(":")
+        if kind == "no_evidence":
+            channel, _, species = detail.partition(":")
+            parts.append(f"{count}x no {channel} evidence for {species}")
+        elif kind == "unknown":
+            parts.append(f"{count}x undecided {detail}")
+        else:  # pragma: no cover - defensive: an unrecognised reason is still reported verbatim
+            parts.append(f"{count}x {reason}")
+    return "; ".join(parts) if parts else "no reason recorded"
 
 
 def _tally(values: Iterable[str]) -> dict[str, int]:
@@ -1280,6 +1299,11 @@ class SiRNAWorkflow:
         then no reference to reuse.
         """
         distinct_guides = {normalize_guide_sequence(c.guide_sequence) for c in candidates}
+        # The RESOLVED threshold, not the module constant. They agree by default, so a user who set
+        # `max_repeat_transcript_fraction` got the constant silently -- and the run summary published
+        # the value they asked for beside a scan that never used it.
+        threshold = self.config.design_params.filters.max_repeat_transcript_fraction
+        action = self._filter_action_for("max_repeat_transcript_fraction", threshold)
 
         query_cdna_fasta = self._species_cdna_fasta.get(self._query_species)
         if not query_cdna_fasta:
@@ -1289,19 +1313,19 @@ class SiRNAWorkflow:
                 "reason": "reference_unavailable",
                 "query_species": self._query_species,
                 "repeat_flagged_count": 0,
-                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "threshold_fraction": threshold,
             }
 
         console.print(
             f"🔍 Scanning {len(distinct_guides)} distinct guides against {self._query_species} cDNA (~47s)..."
         )
-        detector = RepeatDetector(threshold_fraction=DEFAULT_REPEAT_TRANSCRIPT_FRACTION)
+        detector = RepeatDetector(threshold_fraction=threshold)
         scan_result = detector.scan(distinct_guides, query_cdna_fasta)
 
         # Stamp repeat verdicts on candidates
         observations = scan_result.observations
         for candidate in candidates:
-            SiRNADesigner.stamp_repeat_verdict(candidate, observations)
+            SiRNADesigner.stamp_repeat_verdict(candidate, observations, action)
 
         repeat_flagged_count = sum(1 for c in candidates if c.repeat_flagged)
         console.print(
@@ -1467,6 +1491,16 @@ class SiRNAWorkflow:
                 state = row.get("selection_state")
                 if isinstance(state, str) and state and state != _SELECTION_ELIGIBLE:
                     header = f"{header} selection={state}"
+                # A gate the run was told to only *warn* about still failed, and this file is an order
+                # list -- so the header says which. Without it a guide outside a GC window the user
+                # widened to `warn` sat here indistinguishable from one inside it.
+                warned = sorted(
+                    str(key)[: -len("_verdict")]
+                    for key, value in row.items()
+                    if str(key).endswith("_verdict") and value == FilterEvaluation.FAIL.value
+                )
+                if warned and row.get("passes_filters") == "PASS":
+                    header = f"{header} warned={','.join(warned)}"
                 sequence = str(row["guide_sequence"])
                 sequences.append((header, sequence))
 
@@ -1609,7 +1643,7 @@ class SiRNAWorkflow:
                 "status": "skipped",
                 "reason": "no_candidates",
                 "repeat_flagged_count": 0,
-                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
             }
             # Nothing to rank, but every step5 exit still publishes a selection outcome.
             self._apply_post_screen_ranking(design_results)
@@ -1627,7 +1661,7 @@ class SiRNAWorkflow:
                 "status": "skipped",
                 "reason": "user_disabled",
                 "repeat_flagged_count": 0,
-                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
             }
             # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
             # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
@@ -1761,8 +1795,16 @@ class SiRNAWorkflow:
         repeat_excluded = 0
         filter_excluded = 0
         unscored_excluded = 0
+        # The repeat exclusion consults the gate's action too. It used to fire ahead of the
+        # passes_filters test and independently of it, so `max_repeat_transcript_fraction=warn` was
+        # worse than useless: the row flipped to PASS -- putting the guide into the order list -- while
+        # the guide stayed out of the shortlist anyway, and nothing on the row explained why.
+        repeat_action = self._filter_action_for(
+            "max_repeat_transcript_fraction", self.config.design_params.filters.max_repeat_transcript_fraction
+        )
+        repeat_rejects = repeat_action is FilterAction.FAIL
         for candidate in candidates:
-            if candidate.repeat_flagged:
+            if candidate.repeat_flagged and repeat_rejects:
                 repeat_excluded += 1
                 continue
             if not self._passes_filters(candidate):
@@ -1802,6 +1844,10 @@ class SiRNAWorkflow:
             # Every distinct reason with its cost, not one example: a missing species alignment and a
             # missing coverage annotation are different problems with different fixes.
             "evidence_shortfall_reasons": _tally(reason for _, reasons in shortfalls for reason in reasons),
+            # Run-level, and not derivable from the per-candidate reasons above: the loop `continue`s on
+            # a failed gate before it reaches the evidence check, so a run whose screen produced nothing
+            # AND whose candidates also fail a gate reports no shortfall reasons at all.
+            "required_evidence_missing": self._missing_required_evidence(),
         }
         logger.info(
             f"Re-ranked {len(rankable)} eligible candidates after screening (excluded {repeat_excluded} "
@@ -1819,7 +1865,7 @@ class SiRNAWorkflow:
             # annotation gap is not a screening failure and does not have the same fix.
             console.print(
                 f"⚠️  {len(shortfalls)} candidate(s) excluded from the qualified shortlist "
-                f"({self._describe_shortfall_reasons(reasons)}). This run cannot qualify them; "
+                f"({describe_shortfall_reasons(reasons)}). This run cannot qualify them; "
                 "re-run with the missing evidence, or use run_mode=exploratory to keep them labelled."
             )
             console.print(
@@ -1833,25 +1879,22 @@ class SiRNAWorkflow:
                 "scores are not comparable."
             )
 
-    @staticmethod
-    def _describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
-        """One human sentence naming what was actually missing, most costly first.
+    def _missing_required_evidence(self) -> list[str]:
+        """Required channel/species pairs this run produced no completed evidence for.
 
-        ``no_evidence:<channel>:<species>`` and ``unknown:<filter_id>`` are different problems with
-        different fixes -- a screen to re-run against, versus an annotation the gate could not read --
-        so the console says which rather than attributing both to screening.
+        A property of the run, not of a candidate, so an empty shortlist can be explained even when
+        every candidate was excluded by something else first. Empty in design-only and exploratory
+        modes, where nothing is required.
         """
-        parts: list[str] = []
-        for reason, count in reasons.items():
-            kind, _, detail = reason.partition(":")
-            if kind == "no_evidence":
-                channel, _, species = detail.partition(":")
-                parts.append(f"{count}x no {channel} evidence for {species}")
-            elif kind == "unknown":
-                parts.append(f"{count}x undecided {detail}")
-            else:  # pragma: no cover - defensive: an unrecognised reason is still reported verbatim
-                parts.append(f"{count}x {reason}")
-        return "; ".join(parts) if parts else "no reason recorded"
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is None:
+            return []
+        completed = self._completed_evidence_pairs
+        return sorted(
+            f"{channel}:{species}"
+            for channel, species in policy.evidence_requirements.required_pairs
+            if completed is None or (channel, species) not in completed
+        )
 
     def _required_evidence_shortfall(self, candidate: SiRNACandidate) -> tuple[str, ...]:
         """Why this candidate cannot qualify: the required evidence it does not have.
@@ -4447,7 +4490,7 @@ class SiRNAWorkflow:
                 "pass_count": passed,
                 "fail_count": failed,
                 "repeat_excluded_count": repeat_excluded,
-                "repeat_threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "repeat_threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
                 "top_n_requested": self.config.top_n,
                 "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,

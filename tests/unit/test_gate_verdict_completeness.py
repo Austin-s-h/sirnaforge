@@ -27,6 +27,8 @@ import pandas as pd
 import pytest
 
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
+from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.core.repeat_detection import DEFAULT_REPEAT_TRANSCRIPT_FRACTION
 from sirnaforge.models.policy import (
     FilterAction,
     FilterEvaluation,
@@ -44,7 +46,12 @@ from sirnaforge.models.sirna import (
 )
 from sirnaforge.reporting.payload import REASON_OK, observed_column
 from sirnaforge.reporting.payload import _evaluate as evaluate_descriptor
-from sirnaforge.workflow import POST_SCREEN_FILTER_CHANNELS, SiRNAWorkflow, WorkflowConfig
+from sirnaforge.workflow import (
+    POST_SCREEN_FILTER_CHANNELS,
+    SiRNAWorkflow,
+    WorkflowConfig,
+    _policy_filter_actions,
+)
 
 GUIDE = "ACGTACGTACGTACGTACGTA"
 NO_HITS: dict[str, object] = {"status": "completed", "results": {}}
@@ -885,3 +892,128 @@ def test_the_report_cannot_re_derive_a_pass_from_a_verdict_the_run_called_unknow
 
     assert verdict_code == REPORT_UNKNOWN
     assert value is None
+
+
+# ---------------------------------------------------------------------------------------------
+# The enumeration and repeat gates honour a resolved warn action
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("filter_id", "stated"),
+    [
+        # Windows chosen so ONLY the gate under test can fail: with gc_min at 99 nothing clears the
+        # floor and nothing exceeds the ceiling, and vice versa.
+        ("gc_content_min", {"gc_min": 99.0, "gc_max": 100.0}),
+        ("gc_content_max", {"gc_min": 0.0, "gc_max": 1.0}),
+        ("max_poly_runs", {"max_poly_runs": 1}),
+    ],
+)
+def test_an_enumeration_gate_honours_warn(tmp_path: Path, filter_id: str, stated: dict[str, float]) -> None:
+    """The #105 defect class in three more places: these gates rejected whatever their action said.
+
+    ``_enumerate_candidates`` re-derived the rejection label from the thresholds and dropped the
+    candidate unconditionally, right after ``_record_enumeration_verdicts`` had correctly recorded the
+    verdict *with* the resolved action. So ``warn`` and ``fail`` produced identical output. The verdict
+    recorder is now the only authority on both the label and whether the candidate survives.
+    """
+    fasta = tmp_path / "in.fa"
+    fasta.write_text(">t1\n" + "ATGCGCATGCATCGATCGATCGGCATCGATCGATCGACTAGCATCGACTGACTGCATCAGCATCAGCATCAGCTACGATCAG\n")
+
+    def _design(action: str) -> tuple[list[SiRNACandidate], int]:
+        policy = resolve_run_policy(
+            entry_point=EntryPoint.DESIGN_COMMAND, stated=stated, filter_actions={filter_id: action}
+        )
+        designer = SiRNADesigner(policy.design_parameters, filter_actions=_policy_filter_actions(policy))
+        result = designer.design_from_file(str(fasta))
+        return result.candidates, len(result.rejected_candidates)
+
+    failed_kept, failed_pool = _design("fail")
+    warned_kept, warned_pool = _design("warn")
+
+    assert len(warned_kept) > len(failed_kept), "warn must retain candidates fail rejects"
+    gate_failures = [c for c in warned_kept if c.filter_verdicts.get(filter_id) == FilterEvaluation.FAIL.value]
+    assert gate_failures, "the chosen window must actually fail this gate"
+    # A later gate may still reject one of these; what must not happen is THIS gate labelling it.
+    own_label = (
+        SiRNACandidate.FilterStatus.GC_OUT_OF_RANGE
+        if filter_id.startswith("gc_content")
+        else SiRNACandidate.FilterStatus.POLY_RUNS
+    )
+    for candidate in gate_failures:
+        assert candidate.passes_filters != own_label, f"{filter_id}=warn must not stamp its rejection"
+        assert "GATE_WARNED" in (candidate.quality_issues or []), "a retained failure carries its trace"
+    # The reject pool is where the dirty-control sentinels come from, so warn must not empty it.
+    assert warned_pool == failed_pool > 0
+
+
+@pytest.mark.unit
+def test_the_repeat_gate_honours_warn_in_the_shortlist(tmp_path: Path) -> None:
+    """A repeat gate resolved to warn must change the shortlist, or the action is worse than useless.
+
+    ``_apply_post_screen_ranking`` excluded ``repeat_flagged`` candidates ahead of the
+    ``passes_filters`` test and independently of it. So flipping the action only flipped the CSV cell
+    to PASS -- which moved the guide *into* the order list while it stayed out of the shortlist, and
+    left nothing on the row explaining why. Both directions are asserted: the default still excludes.
+    """
+    outcomes = {}
+    for action in ("fail", "warn"):
+        workflow = _workflow(
+            tmp_path,
+            f"repeat_{action}",
+            run_mode=RunMode.EXPLORATORY,
+            filter_actions={"max_repeat_transcript_fraction": action},
+        )
+        candidate = _candidate("repeat_guide")
+        candidate.repeat_flagged = True
+        candidate.repeat_transcript_fraction = 0.5
+        candidate.off_target_screened = True
+        candidate.scored_after_screening = True
+        result = _design_result(workflow, [candidate])
+        workflow._apply_post_screen_ranking(result)
+        outcomes[action] = ([c.id for c in result.top_candidates], workflow._selection_summary["repeat_excluded"])
+
+    assert outcomes["fail"] == ([], 1)
+    assert outcomes["warn"] == (["repeat_guide"], 0)
+
+
+@pytest.mark.unit
+def test_an_unscanned_guide_is_not_evaluated_rather_than_unknown() -> None:
+    """The repeat verdict must never be UNKNOWN, or a skipped scan empties every qualified shortlist.
+
+    ``max_repeat_transcript_fraction`` reads no screening channel, so ``_evidence_shortfall`` treats it
+    as always in scope, and ``unknown_evidence_action`` is FAIL in qualified mode. Routing this gate
+    through ``record_filter_verdict`` -- which writes UNKNOWN whenever there is no observed value --
+    would therefore disqualify every candidate of a run whose repeat detection was skipped.
+    """
+    candidate = _candidate()
+    SiRNADesigner.stamp_repeat_verdict(candidate, {})  # no observation for this guide
+
+    assert candidate.filter_verdicts.get("max_repeat_transcript_fraction") in (None, "not_evaluated")
+    assert candidate.filter_verdicts.get("max_repeat_transcript_fraction") != FilterEvaluation.UNKNOWN.value
+    assert "max_repeat_transcript_fraction" not in POST_SCREEN_FILTER_CHANNELS, (
+        "if this gate ever gains a channel, revisit the unknown-blocks-qualification scope"
+    )
+
+
+@pytest.mark.unit
+def test_the_resolved_repeat_threshold_reaches_the_scan_and_the_summary(tmp_path: Path) -> None:
+    """The detector was built from the module constant, so a configured threshold was silently ignored.
+
+    Latent rather than live, because the constant and the model default are the same number -- but a
+    user who set the threshold got the default, and the run summary published the value they asked for
+    beside a scan that never used it. Three fields must now agree.
+    """
+    workflow = _workflow(tmp_path, "repeat_threshold", stated={"max_repeat_transcript_fraction": 0.05})
+    assert workflow.config.design_params.filters.max_repeat_transcript_fraction == pytest.approx(0.05)
+
+    # No cDNA reference is registered, so detection reports skipped -- and must still report the
+    # threshold the run resolved rather than the constant it used to name.
+    summary = workflow._run_repeat_detection([_candidate()])
+    assert summary["threshold_fraction"] == pytest.approx(0.05)
+
+    assert pytest.approx(0.001) == DEFAULT_REPEAT_TRANSCRIPT_FRACTION, (
+        "the constant and the model default agree, which is what made this latent; if they diverge, "
+        "every default run was already scanning at the wrong threshold"
+    )

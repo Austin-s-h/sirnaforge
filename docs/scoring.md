@@ -211,6 +211,17 @@ its state, and `candidates_pass.fasta` repeats a non-`eligible` state in the seq
 the run could not qualify cannot be mistaken for one it could. Split on the column to get the narrower
 list. Only `top_candidates` — the qualified claim — is narrowed.
 
+### Exit codes
+
+`sirnaforge workflow` exits **1** when a `qualified` run could not qualify a single candidate *for want
+of evidence* — the required screening did not complete, or a gate the run needs could not be decided.
+The message names the cause, the remedy and where the withheld candidates are.
+
+It exits **0** when a complete run legitimately found nothing eligible. That is a result, not a
+failure: a threshold set too tightly is not a tool error, and conflating the two would make every
+over-strict run look broken. `design_only` and `exploratory` runs never exit non-zero here, because
+neither claims completed evidence. Read `selection_summary` when you need the four-way distinction.
+
 An empty `top_candidates` therefore has several distinct causes, and
 `selection_summary` in `logs/workflow_summary.json` says which — the counts split by cause, plus
 `evidence_shortfall_reasons` naming each shortfall (`no_evidence:transcriptome:human`,

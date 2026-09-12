@@ -95,6 +95,11 @@ is a supported setting in either mode.
 | `exploratory` | Screening ran; incomplete evidence is kept and labelled                                    | —                                             |
 | `qualified`   | The transcriptome channel in the query species must complete                               | `sirnaforge workflow`, `sirnaforge offtarget` |
 
+A run that can resolve **no screening reference at all** also derives `design_only`: `--input-fasta`
+without `--transcriptome-fasta` or `--offtarget-indices` screens nothing, so it cannot hold screening
+evidence and must not require it. The manifest records that as a rule (`run_mode_rule`) rather than a
+mode you chose, and an explicit `--run-mode` still wins.
+
 `--skip-off-targets` maps to `--run-mode design_only`, and the manifest records the rule that did it
 rather than presenting the mode as something you chose. The two are one run: both suppress reference
 resolution, so `reference_summary.transcriptome` reads `disabled` either way. Asking for `--run-mode

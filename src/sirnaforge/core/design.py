@@ -48,6 +48,12 @@ TRANSCRIPT_ID_MAX_LEN = 24
 ID_DIGEST_LEN = 8
 
 
+#: What a candidate retained by a warn-action enumeration gate carries in ``quality_issues``. Its
+#: `<filter_id>_verdict` column already says which gate, and `passes_filters` stays PASS; this is the
+#: human-readable trace so the row does not read as clean.
+_GATE_WARNED_ISSUE = "GATE_WARNED"
+
+
 def _as_rna(sequence: str) -> str:
     """Read a stored (DNA) sequence as RNA so T and U compare equal."""
     return sequence.upper().replace("T", "U")
@@ -104,8 +110,8 @@ class SiRNADesigner:
             sequence = str(seq_record.seq).upper()
 
             # Generate candidates for this sequence
-            candidates, rejected = self._enumerate_candidates(sequence, transcript_id)
-            rejected_pool.extend(rejected)
+            candidates, gate_failed = self._enumerate_candidates(sequence, transcript_id)
+            rejected_pool.extend(gate_failed)
 
             # Apply filters
             filtered_candidates = self._apply_filters(candidates)
@@ -173,7 +179,7 @@ class SiRNADesigner:
         sequence = sequence.upper()
 
         # Generate candidates
-        candidates, rejected = self._enumerate_candidates(sequence, transcript_id)
+        candidates, gate_failed = self._enumerate_candidates(sequence, transcript_id)
 
         # Apply filters
         filtered_candidates = self._apply_filters(candidates)
@@ -218,7 +224,7 @@ class SiRNADesigner:
             ),
             processing_time=processing_time,
             tool_versions=self._get_tool_versions(),
-            rejected_candidates=rejected,
+            rejected_candidates=gate_failed,
         )
 
     def _enumerate_candidates(
@@ -226,9 +232,8 @@ class SiRNADesigner:
     ) -> tuple[list[SiRNACandidate], list[SiRNACandidate]]:
         """Enumerate all possible siRNA candidates and record those failing early filters."""
         candidates: list[SiRNACandidate] = []
-        rejected: list[SiRNACandidate] = []
+        gate_failed: list[SiRNACandidate] = []
         sirna_length = self.parameters.sirna_length
-        filters = self.parameters.filters
 
         # Slide window across sequence
         for i in range(len(sequence) - sirna_length + 1):
@@ -241,11 +246,6 @@ class SiRNADesigner:
             # Early filtering for computational efficiency
             gc_content = self._calculate_gc_content(guide_seq)
             poly_run = self._longest_poly_run(guide_seq)
-            fail_reason: SiRNACandidate.FilterStatus | None = None
-            if not (filters.gc_min <= gc_content <= filters.gc_max):
-                fail_reason = SiRNACandidate.FilterStatus.GC_OUT_OF_RANGE
-            elif poly_run > filters.max_poly_runs:
-                fail_reason = SiRNACandidate.FilterStatus.POLY_RUNS
 
             # Create candidate ID with project moniker and sanitized transcript id
             # Format: SIRNAF_<TRANSCRIPT>_<start>_<end>
@@ -272,18 +272,33 @@ class SiRNADesigner:
 
             self._record_enumeration_verdicts(candidate, gc_content, poly_run)
 
-            if fail_reason is not None:
-                candidate.passes_filters = fail_reason
+            # The recorder is the authority on both questions, so neither is re-derived here. It has
+            # already stamped `passes_filters` for any gate whose resolved action is FAIL, and left it
+            # alone for a gate that only warns -- which is what makes `warn` mean anything on these
+            # three gates. Re-deriving the label from the thresholds and rejecting unconditionally is
+            # what made the action unreachable: `warn` behaved exactly like `fail` (#105's defect
+            # class, in three more places).
+            failed_a_gate = any(
+                verdict == FilterEvaluation.FAIL.value for verdict in candidate.filter_verdicts.values()
+            )
+            rejected_here = candidate.passes_filters is not True
+            if failed_a_gate:
+                label = candidate.passes_filters
                 issues = list(candidate.quality_issues or [])
-                label = fail_reason.value if hasattr(fail_reason, "value") else str(fail_reason)
-                issues.append(label)
+                issues.append(
+                    (label.value if hasattr(label, "value") else str(label)) if rejected_here else _GATE_WARNED_ISSUE
+                )
                 candidate.quality_issues = issues
-                rejected.append(candidate)
+                # Every gate failure joins this pool, not only the rejections: it is the source the
+                # dirty-control sentinels draw from, and under `warn` there would otherwise be none --
+                # which would disable the observability controls silently.
+                gate_failed.append(candidate)
+            if rejected_here:
                 continue
 
             candidates.append(candidate)
 
-        return candidates, rejected
+        return candidates, gate_failed
 
     def _record_enumeration_verdicts(self, candidate: SiRNACandidate, gc_content: float, poly_run: int) -> None:
         """Record what the three enumeration-time gates observed on this candidate.
@@ -311,23 +326,16 @@ class SiRNADesigner:
             )
 
     def _apply_filters(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
-        """Apply remaining filters (early GC and poly-run filtering already done in enumeration)."""
-        filtered = []
+        """Pass the enumerated candidates through unchanged.
 
-        for candidate in candidates:
-            issues: list[str] = []
-            status: bool | _ModelCandidate.FilterStatus = True
-
-            # Note: GC content and poly-run filtering already done in _enumerate_candidates
-            # This is mainly for any additional filters or post-processing
-
-            # Update candidate with filter results
-            candidate.passes_filters = status
-            candidate.quality_issues = issues
-
-            filtered.append(candidate)
-
-        return filtered
+        It used to reset ``passes_filters = True`` and ``quality_issues = []`` on every candidate,
+        which was invisible only because a candidate rejected during enumeration never reached here.
+        Once an enumeration gate can *warn* -- retaining the candidate with its verdict recorded -- the
+        reset erased exactly that verdict and the row read as clean. The enumeration gates own their
+        own outcome and the scoring gates set theirs afterwards, so there is nothing left for this
+        stage to decide; it is kept as the named seam both callers use.
+        """
+        return candidates
 
     def _build_accessibility_profile(self, transcript_sequence: str | None) -> TargetAccessibilityProfile | None:
         """Fold the transcript once for target-site accessibility, or return None if impossible.
@@ -669,17 +677,23 @@ class SiRNADesigner:
         )
 
     @staticmethod
-    def stamp_repeat_verdict(candidate: SiRNACandidate, observations: dict[str, RepeatObservation]) -> None:
+    def stamp_repeat_verdict(
+        candidate: SiRNACandidate,
+        observations: dict[str, RepeatObservation],
+        action: FilterAction = FilterAction.FAIL,
+    ) -> None:
         """Stamp repeat metadata and verdict on a single candidate if its guide is flagged.
 
-        The REPEAT_ELEMENT verdict is applied only if the candidate is currently passing
-        (passes_filters is True or PASS). A candidate that already failed for another
-        reason (GC, asymmetry, etc.) retains its earlier verdict — precedence is:
+        The REPEAT_ELEMENT verdict is applied only if this gate's action is FAIL and the candidate
+        is currently passing (passes_filters is True or PASS). A candidate that already failed for
+        another reason (GC, asymmetry, etc.) retains its earlier verdict — precedence is:
         existing failure > REPEAT_ELEMENT > PASS.
 
         Args:
             candidate: Candidate to potentially flag.
             observations: Mapping from normalized guide sequence to RepeatObservation.
+            action: The resolved action for ``max_repeat_transcript_fraction``. Only FAIL rejects;
+                WARN records the verdict and the fraction and leaves the candidate passing.
         """
         norm_guide = normalize_guide_sequence(candidate.guide_sequence)
         obs = observations.get(norm_guide)
@@ -697,9 +711,15 @@ class SiRNADesigner:
         )
         candidate.filter_observed["max_repeat_transcript_fraction"] = obs.transcript_fraction
 
-        # Apply REPEAT_ELEMENT verdict only if currently passing
-        if obs.is_repeat and (
-            candidate.passes_filters is True or candidate.passes_filters == _ModelCandidate.FilterStatus.PASS
+        # Apply REPEAT_ELEMENT only if this gate's resolved action rejects, and only if the candidate
+        # is still passing. `action` defaults to FAIL so a caller with no policy keeps today's answer.
+        # Not routed through `record_filter_verdict`: that writes UNKNOWN whenever there is no observed
+        # value, and an unscanned guide has exactly that shape -- which in qualified mode would
+        # disqualify every candidate of a run whose repeat detection was skipped.
+        if (
+            obs.is_repeat
+            and action is FilterAction.FAIL
+            and (candidate.passes_filters is True or candidate.passes_filters == _ModelCandidate.FilterStatus.PASS)
         ):
             candidate.passes_filters = _ModelCandidate.FilterStatus.REPEAT_ELEMENT
 

@@ -11,10 +11,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import typer
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from sirnaforge.cli import app
+from sirnaforge.cli import _fail_if_nothing_could_qualify, app
 from sirnaforge.config.run_policy import (
     BUILTIN_PROFILES,
     DEFAULT_PROFILE_NAME,
@@ -94,6 +95,11 @@ def _cli_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) ->
             "workflow",
             "TOY",
             "--input-fasta",
+            str(_fasta(tmp_path)),
+            # An explicit reference, so these runs stay screening runs. `--input-fasta` alone resolves
+            # no reference at all, which now derives run_mode=design_only -- correct for that input, but
+            # it would make every policy assertion here about a run that screens nothing.
+            "--transcriptome-fasta",
             str(_fasta(tmp_path)),
             "--output-dir",
             str(tmp_path / "out"),
@@ -989,3 +995,106 @@ def test_resolving_twice_with_the_same_inputs_gives_the_same_answer():
         "screen_species": ["human", "mouse"],
     }
     assert resolve_run_policy(**kwargs).as_manifest() == resolve_run_policy(**kwargs).as_manifest()
+
+
+# --------------------------------------------------------------------------------------
+# A run with no reference cannot claim to require evidence, and one that cannot qualify says so
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_run_with_no_screening_reference_resolves_design_only() -> None:
+    """`--input-fasta` alone resolves no reference, so the run cannot hold screening evidence.
+
+    It resolved `qualified` anyway, which meant it *required* evidence it could never obtain -- while
+    the reference policy on the very same run reported "design-only mode". Every candidate was then
+    withheld from the shortlist of a run the CLI was simultaneously describing as design-only, and
+    the deliverable of a documented workflow went from 152 guides to 0.
+
+    The rule is recorded as a rule, not as a mode anybody chose.
+    """
+    derived = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, screening_reference_available=False)
+    assert derived.run_mode is RunMode.DESIGN_ONLY
+    assert derived.source_of("run_mode") is SettingSource.RUN_MODE_RULE
+    assert derived.evidence_requirements.required_pairs == frozenset()
+
+    # Silence is not the same claim: a caller with nothing to say leaves the entry point's default.
+    assert resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW).run_mode is RunMode.QUALIFIED
+    assert (
+        resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, screening_reference_available=True).run_mode
+        is RunMode.QUALIFIED
+    )
+
+
+@pytest.mark.unit
+def test_an_explicit_run_mode_still_beats_the_no_reference_rule() -> None:
+    """The rule is a derivation, so it must lose to a mode the caller actually stated."""
+    stated = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        run_mode=RunMode.EXPLORATORY,
+        screening_reference_available=False,
+    )
+    assert stated.run_mode is RunMode.EXPLORATORY
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("selection", "expect_exit"),
+    [
+        # A qualified run that could not qualify anything, with the cause named: the one failure case.
+        (
+            {
+                "run_mode": "qualified",
+                "eligible_candidates": 0,
+                "filter_excluded": 0,
+                "evidence_excluded": 5,
+                "evidence_shortfall_reasons": {"no_evidence:transcriptome:human": 5},
+                "required_evidence_missing": ["transcriptome:human"],
+            },
+            True,
+        ),
+        # Complete evidence, nothing eligible: a result, not a failure.
+        (
+            {
+                "run_mode": "qualified",
+                "eligible_candidates": 0,
+                "filter_excluded": 12,
+                "evidence_excluded": 0,
+                "evidence_shortfall_reasons": {},
+                "required_evidence_missing": [],
+            },
+            False,
+        ),
+        # The run qualified something.
+        ({"run_mode": "qualified", "eligible_candidates": 3, "required_evidence_missing": ["x:y"]}, False),
+        # Nothing reached selection at all: not an evidence verdict.
+        (
+            {
+                "run_mode": "qualified",
+                "eligible_candidates": 0,
+                "evidence_shortfall_reasons": {},
+                "required_evidence_missing": ["transcriptome:human"],
+            },
+            False,
+        ),
+        # Modes that claim less never fail here.
+        ({"run_mode": "design_only", "eligible_candidates": 0, "filter_excluded": 4}, False),
+        ({"run_mode": "exploratory", "eligible_candidates": 0, "filter_excluded": 4}, False),
+        # ZFN publishes no selection summary at all.
+        ({}, False),
+    ],
+)
+def test_only_an_unevidenced_qualified_run_exits_non_zero(selection: dict[str, Any], expect_exit: bool) -> None:
+    """One non-zero exit, and only for the case a user can act on.
+
+    #100 asks for machine-readable exit behaviour separating success, no-eligible-candidates,
+    incomplete and error. One code covers it as long as it fires on exactly the incomplete case: a
+    complete run that legitimately found nothing eligible is a result and must still exit 0, or every
+    over-tight threshold reads as a tool failure.
+    """
+    if expect_exit:
+        with pytest.raises(typer.Exit) as excinfo:
+            _fail_if_nothing_could_qualify({"selection_summary": selection}, json_summary=True)
+        assert excinfo.value.exit_code == 1, "1, not 2: Click already returns 2 for a usage error"
+    else:
+        _fail_if_nothing_could_qualify({"selection_summary": selection}, json_summary=True)

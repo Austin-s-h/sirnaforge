@@ -98,7 +98,7 @@ from sirnaforge.reporting import ReportInputError, build_payload, write_report
 from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
-from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
+from sirnaforge.workflow import describe_shortfall_reasons, run_offtarget_only_workflow, run_sirna_workflow
 from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
@@ -337,6 +337,67 @@ def _resolve_policy_or_exit(
         _fail_with_config_error(str(exc), logger=logger)
     except ValidationError as exc:
         _fail_with_config_error(format_validation_error(exc), logger=logger)
+
+
+#: Counters that together say whether selection considered anything at all. All zero means no
+#: candidate reached selection, which is not an evidence verdict.
+_SELECTION_COUNTERS = (
+    "eligible_candidates",
+    "repeat_excluded",
+    "filter_excluded",
+    "evidence_excluded",
+    "unscored_excluded",
+)
+
+
+def _fail_if_nothing_could_qualify(
+    results: Mapping[str, Any], *, json_summary: bool, logger: logging.Logger | None = None
+) -> None:
+    """Exit non-zero when a qualified run could not qualify a single candidate for want of evidence.
+
+    Deliberately narrow. A *complete* run that legitimately found nothing eligible exits 0 -- that is
+    a result, not a failure -- so the check requires a named evidence shortfall, either per candidate
+    (``evidence_shortfall_reasons``) or run-level (``required_evidence_missing``). Both are needed:
+    selection skips a gate-failing candidate before it reaches the evidence check, so a run that
+    screened nothing AND designed nothing acceptable reports no per-candidate reason at all.
+
+    Only ``qualified`` runs can fail here. design-only and exploratory claim less by construction, and
+    ZFN mode publishes no selection summary, so both return early.
+    """
+    selection = results.get("selection_summary") or {}
+    if selection.get("run_mode") != RunMode.QUALIFIED.value:
+        return
+    if selection.get("eligible_candidates"):
+        return
+    if sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS) == 0:
+        return
+    reasons = selection.get("evidence_shortfall_reasons") or {}
+    missing = selection.get("required_evidence_missing") or []
+    if not reasons and not missing:
+        return
+
+    withheld = int(selection.get("evidence_excluded") or 0)
+    considered = sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS)
+    cause = describe_shortfall_reasons(reasons) if reasons else f"no evidence for {', '.join(missing)}"
+    if logger is not None:
+        logger.error("Nothing could be qualified: %s", cause)
+    console.print(
+        f"\n❌ [red]Nothing could be qualified:[/red] no candidate holds the evidence this run "
+        f"requires, so the qualified shortlist is empty ({withheld} of {considered} candidate(s) "
+        f"withheld: {cause})."
+    )
+    console.print(
+        "   ↳ supply the missing evidence (--transcriptome-fasta ensembl_human_cdna, or "
+        "--offtarget-indices human:/path/to/index), or re-run with --run-mode exploratory to keep "
+        "these candidates labelled."
+    )
+    if json_summary:
+        console.print(
+            "   ↳ selection_summary in [blue]logs/workflow_summary.json[/blue] has the counts by cause; "
+            "the candidates are in candidates_all.csv and candidates_pass.csv with "
+            "selection_state=withheld_incomplete_evidence."
+        )
+    raise typer.Exit(1)
 
 
 def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
@@ -1282,6 +1343,14 @@ def workflow(  # noqa: PLR0912
         legacy_skip_screening=skip_off_targets or None,
         query_species=query_species,
         screen_species=[value.strip() for value in species.split(",") if value.strip()],
+        # `--input-fasta` does not auto-resolve the default transcriptomes (see the reference-policy
+        # comment below), so with neither `--transcriptome-fasta` nor `--offtarget-indices` this run
+        # has no screening reference at all. It cannot hold screening evidence, and calling itself
+        # `qualified` meant it required evidence it could never obtain: every candidate was withheld
+        # from the shortlist of a run the CLI was simultaneously describing as design-only.
+        screening_reference_available=(
+            False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
+        ),
     )
     mode_enum = policy.design_mode
     resolved_filters = policy.design_parameters.filters
@@ -1489,7 +1558,10 @@ def workflow(  # noqa: PLR0912
             progress.remove_task(task)
         # TODO: simplify the printing and console logging summaries
         # Display results summary
-        console.print("\n✅ [bold green]Workflow completed successfully![/bold green]")
+        # "finished", not "successfully": the qualified-evidence verdict is decided after this block,
+        # and a run that cannot qualify anything still reaches here. The file inventory below is what
+        # tells the user where the withheld candidates are, so it is still worth printing.
+        console.print("\n✅ [bold green]Workflow finished[/bold green]")
 
         # Workflow summary
         summary_table = Table(title="📊 Workflow Results Summary")
@@ -1566,6 +1638,10 @@ def workflow(  # noqa: PLR0912
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
+
+    # Outside the try on purpose: typer.Exit subclasses RuntimeError, so raising it inside would be
+    # caught by the handler above, logged as a crash, and reprinted as "Workflow error: 1".
+    _fail_if_nothing_could_qualify(results, json_summary=json_summary, logger=logger)
 
 
 @app_command()
