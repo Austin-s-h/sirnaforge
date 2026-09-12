@@ -688,7 +688,12 @@ it. Species whose lookup could not be completed are named in
 `offtarget_summary.filtering_stats.orthology.unresolved_species` in `logs/workflow_summary.json` and
 fall back to the heuristic; species with no hits at all are never looked up, so a single-species screen
 makes no network request. `conservation_score` is derived from `ortholog_species`, so it inherits
-whichever tiers those verdicts came from.
+whichever tiers those verdicts came from — and it is **empty** whenever any screened non-query species
+appears in `unresolved_species`, because a lookup that never completed cannot populate the numerator
+and a ratio over it would report "conserved in 0 of N" for a question nobody managed to ask. The
+denominator is not shrunk to the resolvable species: doing that lets a degraded run outscore the
+complete run it degraded from. A completed lookup that finds no orthologue still reports a real `0.0`,
+so an empty value means "not established" and `0.0` means "looked, found none".
 
 The **query species** is the organism the _target_ transcripts belong to. It is read from the
 database the gene query was answered by (Ensembl/RefSeq/GENCODE are all human-only), never from

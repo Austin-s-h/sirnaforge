@@ -189,6 +189,9 @@ REASON_MISSING_COLUMN = 1
 REASON_EMPTY_VALUE = 2
 REASON_FILTER_OFF = 3
 REASON_NO_THRESHOLD = 4
+#: The run itself recorded UNKNOWN for this gate. A distinct reason from an empty or absent column,
+#: because the run measured nothing on purpose and said so, rather than the report failing to find it.
+REASON_RUN_UNKNOWN = 5
 
 _VERDICT_CODE = {
     FilterEvaluation.PASS.value: 0,
@@ -229,6 +232,19 @@ def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
     return None
 
 
+def _recorded_verdict(row: pd.Series, filter_id: str) -> str | None:
+    """The verdict the RUN recorded for one gate on one row, from its ``<filter_id>_verdict`` column.
+
+    Distinct from :func:`_run_verdict`, which reads the single ``passes_filters`` label over a guide's
+    rows. Only this per-gate record can say "in force, evidence unavailable" -- a state no threshold
+    comparison reconstructs.
+    """
+    value = row.get(f"{filter_id}_verdict")
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    return str(value)
+
+
 def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[float | int | None, int, int]:
     """Evaluate one descriptor against one candidate row, independently of every other gate.
 
@@ -254,6 +270,13 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
         return value, not_evaluated, REASON_FILTER_OFF
     if descriptor.threshold is None:
         return value, not_evaluated, REASON_NO_THRESHOLD
+    # The run's own UNKNOWN wins, before any comparison: re-thresholding moves a ceiling, it cannot
+    # conjure the measurement. Load-bearing, not defensive -- the gate writes UNKNOWN with an empty
+    # observed value so nothing re-derives a pass, but `observed_column` falls back to the descriptor's
+    # own column when the observed one is empty for every row, and three of those fallbacks are exported
+    # and default to 0. Without this an unscreened guide's `max_off_target_count` read as a pass at 0.
+    if _recorded_verdict(row, descriptor.filter_id) == FilterEvaluation.UNKNOWN.value:
+        return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_RUN_UNKNOWN
     if column is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_MISSING_COLUMN
     if value is None:

@@ -124,12 +124,12 @@ relocated: `conservation` is `None` on single-species runs and `isoform_coverage
 `design_from_sequence`/miRNA paths, so any vector containing them needs either variant vectors or
 arithmetic. Every term that remains is universally computable.
 
-| Quantity                        | Column               | What reads it                                                                         |
-| ------------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
-| Empirical design rules          | `empirical_score`    | the `min_empirical_score` gate (LOW_EMPIRICAL_SCORE)                                  |
-| Protein-coding isoform coverage | `isoform_coverage`   | the optional `--min-isoform-coverage` gate (LOW_ISOFORM_COVERAGE), **off by default** |
-| Cross-species conservation      | `conservation_score` | nothing — reported for interpretation                                                 |
-| Guide self-structure            | `paired_fraction`    | the `max_paired_fraction` gate (EXCESS_PAIRING)                                       |
+| Quantity                        | Column               | What reads it                                                                                                            |
+| ------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Empirical design rules          | `empirical_score`    | the `min_empirical_score` gate (LOW_EMPIRICAL_SCORE)                                                                     |
+| Protein-coding isoform coverage | `isoform_coverage`   | the optional `--min-isoform-coverage` gate (LOW_ISOFORM_COVERAGE), **off by default**                                    |
+| Cross-species conservation      | `conservation_score` | nothing — reported for interpretation; **empty** when any screened non-query species' orthologue lookup did not complete |
+| Guide self-structure            | `paired_fraction`    | the `max_paired_fraction` gate (EXCESS_PAIRING)                                                                          |
 
 The empirical rubric no longer judges guide position 1. It paid +0.1 for G/C there while the
 biogenesis rule paid `ago_start` for A/U at the same base; measured over 29,605 candidates G/C gained
@@ -155,20 +155,68 @@ this restructuring. Always compare candidates within one run, one weight-set ver
 
 ### What `top_candidates` excludes
 
-`top_candidates` is rebuilt after screening from the candidates that clear **three** gates, so it
-can be shorter than `min(top_n, number passing)`. (`candidates_all.csv` and `candidates_pass.csv`
-are filtered on `passes_filters` alone, but both are written in the re-ranked order.) The gates:
+`top_candidates` is rebuilt after screening from the candidates that clear **four** gates, so it can
+be shorter than `min(top_n, number passing)`. `candidates_pass.csv` and `candidates_pass.fasta` hold
+everything that clears the same four — they are not truncated to `top_n`, because only the shortlist
+is a shortlist. `candidates_all.csv` holds every candidate, and all three are written in the re-ranked
+order. The gates:
 
 1. `passes_filters` is `PASS` — a failed off-target filter is a rejection, not a low score;
 2. `repeat_flagged` is `False` — a guide that saturates the query transcriptome is excluded even
    when screening never ran;
-3. `scored_after_screening` is `True`, **whenever some but not all candidates were scored after
+3. **the evidence the run declares required is complete for that candidate**, in `qualified` mode
+   only. See _Eligibility depends on the run mode_ below;
+4. `scored_after_screening` is `True`, **whenever some but not all candidates were scored after
    screening**. A design-stage score is on a different vector and is systematically the more
    optimistic number, so letting it compete against post-screen neighbours would put exactly the
    candidates whose evidence is missing at the top. Those rows stay in `candidates_all.csv` with
    their `design_score`, and the run logs an ERROR naming the count. If _no_ candidate was scored
-   after screening (a wholly failed or wholly pre-screen run) the list is internally consistent and
-   this gate does not apply.
+   after screening the batch is internally consistent on its own terms, so this gate does not apply —
+   gate 3 is what answers that case in `qualified` mode.
+
+### Eligibility depends on the run mode
+
+Whether missing screening evidence disqualifies a candidate is decided by what the run claimed, not by
+whether a score happened to compute:
+
+| Run mode      | A candidate with incomplete required evidence                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `design_only` | Kept. No screening was requested, so there is no evidence to be missing — `--skip-off-targets` keeps its design shortlist.                                                                       |
+| `exploratory` | Kept, and sorted below every candidate with complete evidence so it cannot outrank one.                                                                                                          |
+| `qualified`   | **Excluded from `top_candidates`.** It still appears in `candidates_all.csv` and `candidates_pass.csv` with every gate verdict it earned, marked `selection_state=withheld_incomplete_evidence`. |
+
+Two things disqualify a candidate in `qualified` mode. The first is a channel/species pair the policy
+declares **required** — today only the transcriptome channel in the query species — with no completed
+evidence for that candidate: a run whose query-species alignment produced nothing, or a candidate the
+aligner never saw. The second is an `UNKNOWN` verdict on a gate that reads required evidence, which is
+what `unknown_evidence_action: fail` means. That scoping matters: gates reading an _exploratory_
+channel are excluded from the rule, so a run whose miRNA aggregate is simply absent marks its miRNA
+gates unknown without disqualifying every candidate it did screen.
+
+### `selection_state`: what the run was willing to claim
+
+`passes_filters` answers one question — did a gate reject this candidate — and `selection_state` answers
+the other: did the run stand behind it. They can differ, because eligibility also turns on the
+_evidence_ behind a gate and not only on the gate's outcome.
+
+| Value | Meaning |
+| --- | --- |
+| `eligible` | In the resolved selection. Everything in `top_candidates` carries this. |
+| `withheld_incomplete_evidence` | Passed its gates, but the run holds no required evidence for it, so a `qualified` run will not claim it. |
+| `not_eligible` | Out for a reason the row already explains: a failed gate, a repeat flag, or a score not comparable with its neighbours'. |
+| `not_selected` | No selection has run — a `sirnaforge design` row, or a report over a design-only run. Not a verdict. |
+
+Nothing is deleted for being withheld. `candidates_pass.csv` holds every gate-passing candidate whatever
+its state, and `candidates_pass.fasta` repeats a non-`eligible` state in the sequence header, so a guide
+the run could not qualify cannot be mistaken for one it could. Split on the column to get the narrower
+list. Only `top_candidates` — the qualified claim — is narrowed.
+
+An empty `top_candidates` therefore has several distinct causes, and
+`selection_summary` in `logs/workflow_summary.json` says which — the counts split by cause, plus
+`evidence_shortfall_reasons` naming each shortfall (`no_evidence:transcriptome:human`,
+`unknown:min_isoform_coverage`) and how many candidates it cost. A complete run that found nothing
+eligible and a run that never produced the evidence to judge are different outcomes; read that field
+rather than inferring from an empty file.
 
 ### Per-term contribution columns
 
@@ -258,32 +306,60 @@ sirnaforge workflow GENE --gc-min 30 --gc-max 65
 
 The `candidates_pass.csv` and `candidates_all.csv` files include:
 
-| Column                                                            | Description                                                                                                            |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `sirna_id`                                                        | Unique identifier                                                                                                      |
-| `guide_sequence`                                                  | 21nt guide strand (5'→3')                                                                                              |
-| `passenger_sequence`                                              | Passenger/sense strand                                                                                                 |
-| `position`                                                        | Start position in transcript                                                                                           |
-| `design_score`                                                    | Design-stage score on `design_v4` (3 terms), available without screening                                               |
-| `composite_score`                                                 | Post-screen score on `postscreen_{sirna,mirna}_v4`; empty before screening                                             |
-| `asymmetry_score`                                                 | Thermodynamic asymmetry                                                                                                |
-| `gc_content`                                                      | GC percentage                                                                                                          |
-| `melting_temp_c`                                                  | Melting temperature (°C)                                                                                               |
-| `mfe`                                                             | Minimum free energy (kcal/mol)                                                                                         |
-| `duplex_stability_dg`                                             | Guide:passenger duplex ΔG (kcal/mol)                                                                                   |
-| `dg_5p` / `dg_3p`                                                 | Terminal 7 bp ΔG at each duplex end                                                                                    |
-| `delta_dg_end`                                                    | `dg_5p - dg_3p`; positive favours guide loading                                                                        |
-| `off_target_screened`                                             | `False` means the screen was incomplete, so the hit counts are a lower bound, not a total                              |
-| `off_target_count`                                                | The liability population: `off_target` **plus** `undetermined` (on-target, ortholog and repeat-mediated hits excluded) |
-| `on_target_hits` / `ortholog_hits` / `repeat_hits`                | Three of the other four classes from the same five-way split                                                           |
-| `undetermined_hits`                                               | The part of `off_target_count` whose class could not be decided for want of a transcript index                         |
-| `ortholog_species`                                                | Comma-joined canonical species with an ortholog hit; `ortholog_evidence` says which tier decided each                  |
-| `repeat_flagged` / `repeat_transcript_fraction`                   | Design-time k-mer repeat verdict and the frequency it was based on                                                     |
-| `isoform_coverage` / `conservation_score`                         | Reported, unscored (empty when not computable); isoform coverage feeds an optional gate                                |
-| `empirical_score`                                                 | Reported, unscored; the `min_empirical_score` gate input                                                               |
-| `score_*`                                                         | Per-term contribution, summing exactly to the score (see above)                                                        |
-| `scored_after_screening` / `weight_set_version` / `weight_vector` | Which stage, weight set and named vector produced this row's score                                                     |
-| `passes_filters`                                                  | `PASS` or the first failed filter                                                                                      |
+| Column                                                            | Description                                                                                                                                                                  |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sirna_id`                                                        | Unique identifier                                                                                                                                                            |
+| `guide_sequence`                                                  | 21nt guide strand (5'→3')                                                                                                                                                    |
+| `passenger_sequence`                                              | Passenger/sense strand                                                                                                                                                       |
+| `position`                                                        | Start position in transcript                                                                                                                                                 |
+| `design_score`                                                    | Design-stage score on `design_v4` (3 terms), available without screening                                                                                                     |
+| `composite_score`                                                 | Post-screen score on `postscreen_{sirna,mirna}_v4`; empty before screening                                                                                                   |
+| `asymmetry_score`                                                 | Thermodynamic asymmetry                                                                                                                                                      |
+| `gc_content`                                                      | GC percentage                                                                                                                                                                |
+| `melting_temp_c`                                                  | Melting temperature (°C)                                                                                                                                                     |
+| `mfe`                                                             | Minimum free energy (kcal/mol)                                                                                                                                               |
+| `duplex_stability_dg`                                             | Guide:passenger duplex ΔG (kcal/mol)                                                                                                                                         |
+| `dg_5p` / `dg_3p`                                                 | Terminal 7 bp ΔG at each duplex end                                                                                                                                          |
+| `delta_dg_end`                                                    | `dg_5p - dg_3p`; positive favours guide loading                                                                                                                              |
+| `off_target_screened`                                             | `False` means the screen was incomplete, so the hit counts are a lower bound, not a total                                                                                    |
+| `off_target_count`                                                | The liability population: `off_target` **plus** `undetermined` (on-target, ortholog and repeat-mediated hits excluded)                                                       |
+| `on_target_hits` / `ortholog_hits` / `repeat_hits`                | Three of the other four classes from the same five-way split                                                                                                                 |
+| `undetermined_hits`                                               | The part of `off_target_count` whose class could not be decided for want of a transcript index                                                                               |
+| `ortholog_species`                                                | Comma-joined canonical species with an ortholog hit; `ortholog_evidence` says which tier decided each                                                                        |
+| `repeat_flagged` / `repeat_transcript_fraction`                   | Design-time k-mer repeat verdict and the frequency it was based on                                                                                                           |
+| `isoform_coverage` / `conservation_score`                         | Reported, unscored (empty when not computable — conservation is empty when an orthologue lookup did not complete, which is not a 0); isoform coverage feeds an optional gate |
+| `empirical_score`                                                 | Reported, unscored; the `min_empirical_score` gate input                                                                                                                     |
+| `score_*`                                                         | Per-term contribution, summing exactly to the score (see above)                                                                                                              |
+| `scored_after_screening` / `weight_set_version` / `weight_vector` | Which stage, weight set and named vector produced this row's score                                                                                                           |
+| `passes_filters`                                                  | `PASS` or the first failed filter                                                                                                                                            |
+| `<filter_id>_verdict`                                             | That gate's own outcome: `pass`, `fail`, `unknown` or `not_evaluated` — one column per declared filter                                                                       |
+| `<filter_id>_observed`                                            | The value that gate actually compared; empty when it observed nothing                                                                                                        |
+| `selection_state` | What the resolved selection claimed: `eligible` / `withheld_incomplete_evidence` / `not_eligible` / `not_selected` |
+
+### The per-gate verdict columns
+
+`passes_filters` holds a **single** label and each gate overwrites it, so it answers "was this rejected,
+and by what" and nothing else: a candidate that fails four gates carries one name. The
+`<filter_id>_verdict` and `<filter_id>_observed` pairs are the per-gate record, one column each for
+every filter in the registry, so every gate's outcome survives even when another gate owns the label.
+
+Four verdicts, because three different things used to be spelled as a blank or a borrowed `pass`:
+
+- `pass` / `fail` — the gate had its evidence and decided. `fail` with an action of `warn` is a real
+  finding that did **not** reject the candidate, so a `fail` verdict beside `passes_filters=PASS` is
+  consistent, not a contradiction.
+- `unknown` — the gate was in force and could not be decided, because its evidence was unavailable.
+  `<filter_id>_observed` is **empty** for these, deliberately: the count the gate would have read is a
+  lower bound, and publishing it would let a client re-deriving the verdict compute a confident pass
+  the run never made. The measured lower bound is still on the row in the gate's own counter columns.
+- `not_evaluated` — the gate was not applied at all: switched off, or no threshold declared. It makes
+  no claim either way. `<filter_id>_observed` may still carry a real measurement.
+
+A zero is a pass only where the channel it came from completed. A candidate with
+`max_transcriptome_hits_0mm_verdict=pass` and `..._observed=0` was screened and found clean; one with
+`unknown` and an empty observed value was not screened for that channel at all, and the two must never
+be read alike. `off_target_screened` and `filtering_stats.mirna_channel_screened` name which channels
+the run completed.
 
 ## References
 

@@ -947,6 +947,14 @@ class SiRNACandidate(BaseModel):
         default=False,
         description="True if composite_score was computed post-screening (the only stage that computes it)",
     )
+    selection_state: str = Field(
+        default="not_selected",
+        description=(
+            "What the resolved selection was willing to claim: eligible | "
+            "withheld_incomplete_evidence | not_selected. Distinct from passes_filters, which answers "
+            "only whether a gate rejected the candidate (#100)"
+        ),
+    )
     weight_set_version: str = Field(
         default="", description="Scoring weight set version that produced the score (empty = not yet scored)"
     )
@@ -1236,6 +1244,10 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "weight_set_version": candidate.weight_set_version,
         "weight_vector": _maybe_attr("weight_vector", ""),
         "passes_filters": passes_filters,
+        # Two questions, two columns. passes_filters is the gate verdict; selection_state is what the
+        # run was willing to claim about the candidate, which can differ once eligibility turns on the
+        # evidence behind a gate rather than only on the gate's own outcome (#100).
+        "selection_state": _maybe_attr("selection_state", "not_selected"),
         # Chemical modifications
         "guide_overhang": mod_summary.get("guide_overhang", ""),
         "guide_modifications": mod_summary.get("guide_modifications", ""),

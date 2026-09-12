@@ -90,17 +90,17 @@ where the two defects removed here were first written down as outstanding.)
   rather than being left as ambient naming. **A hard break with a named replacement everywhere:
   nothing maps an old name onto a new one silently, because the two were never the same thing.**
 
-  | Removed | Replacement | How the break surfaces |
-  | ------- | ----------- | ---------------------- |
-  | `--genome-indices` / `--genome-species` CLI options | `--transcriptome-indices` (`--offtarget-indices` still accepted) / `--species` | Both had already been renamed before 0.7.1; Typer reports "no such option" |
-  | `genome_indices`, `genome_fastas`, `genome_species` pipeline params | `transcriptome_indices`, `transcriptome_fastas`, `transcriptome_species` | `main.nf` **errors by name** in any spelling (`--genome_indices`, `--genome-indices`, `--genomeIndices`: every supplied key is folded to snake_case first, because Nextflow files a hyphenated flag under a camelCase key), because it otherwise accepts an unknown `--param` silently and the run would screen against nothing and report success |
-  | `nextflow_config={"genome_indices": ...}` | `transcriptome_indices=...` | `WorkflowConfig` raises `ValueError` naming the new parameter |
-  | `WorkflowConfig`/`run_sirna_workflow`/`run_offtarget_only_workflow` `genome_species=`, `genome_indices_override=` | `screen_species=`, `transcriptome_indices=` | `TypeError` quoting the replacement, not "unexpected keyword argument" |
-  | `WorkflowConfig.mirna_genome_species` | `WorkflowConfig.screen_species` | attribute is gone |
-  | `off_target/results/genome/` publishDir | `off_target/results/transcriptome/` | published output path changes |
-  | `BUILD_BWA_INDEX` `(species, genome_fasta)` input tuple | `(species, transcriptome_fasta)` | module signature |
-  | `aggregate_offtarget_results(genome_species=)`, `aggregate_results_cli(genome_species=)` | `transcriptome_species=` | `TypeError` |
-  | `pipeline/resources/genomes.yaml` (and its `test_data` copy), which advertised whole-genome igenomes indices for a transcriptome screen | `references.yaml`, worked examples of the three real reference forms | file renamed; `ResourceManager.get_test_config()` key `genomes_config` → `references_config` |
+  | Removed                                                                                                                                 | Replacement                                                                    | How the break surfaces                                                                                                                                                                                                                                                                                                                             |
+  | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `--genome-indices` / `--genome-species` CLI options                                                                                     | `--transcriptome-indices` (`--offtarget-indices` still accepted) / `--species` | Both had already been renamed before 0.7.1; Typer reports "no such option"                                                                                                                                                                                                                                                                         |
+  | `genome_indices`, `genome_fastas`, `genome_species` pipeline params                                                                     | `transcriptome_indices`, `transcriptome_fastas`, `transcriptome_species`       | `main.nf` **errors by name** in any spelling (`--genome_indices`, `--genome-indices`, `--genomeIndices`: every supplied key is folded to snake_case first, because Nextflow files a hyphenated flag under a camelCase key), because it otherwise accepts an unknown `--param` silently and the run would screen against nothing and report success |
+  | `nextflow_config={"genome_indices": ...}`                                                                                               | `transcriptome_indices=...`                                                    | `WorkflowConfig` raises `ValueError` naming the new parameter                                                                                                                                                                                                                                                                                      |
+  | `WorkflowConfig`/`run_sirna_workflow`/`run_offtarget_only_workflow` `genome_species=`, `genome_indices_override=`                       | `screen_species=`, `transcriptome_indices=`                                    | `TypeError` quoting the replacement, not "unexpected keyword argument"                                                                                                                                                                                                                                                                             |
+  | `WorkflowConfig.mirna_genome_species`                                                                                                   | `WorkflowConfig.screen_species`                                                | attribute is gone                                                                                                                                                                                                                                                                                                                                  |
+  | `off_target/results/genome/` publishDir                                                                                                 | `off_target/results/transcriptome/`                                            | published output path changes                                                                                                                                                                                                                                                                                                                      |
+  | `BUILD_BWA_INDEX` `(species, genome_fasta)` input tuple                                                                                 | `(species, transcriptome_fasta)`                                               | module signature                                                                                                                                                                                                                                                                                                                                   |
+  | `aggregate_offtarget_results(genome_species=)`, `aggregate_results_cli(genome_species=)`                                                | `transcriptome_species=`                                                       | `TypeError`                                                                                                                                                                                                                                                                                                                                        |
+  | `pipeline/resources/genomes.yaml` (and its `test_data` copy), which advertised whole-genome igenomes indices for a transcriptome screen | `references.yaml`, worked examples of the three real reference forms           | file renamed; `ResourceManager.get_test_config()` key `genomes_config` → `references_config`                                                                                                                                                                                                                                                       |
 
   `workflow.py` used to reconcile `genome_indices`, `genome_fastas` and `transcriptome_indices` side
   by side in one params dict; that reconciliation is gone. `data/genome_manager.py` keeps its
@@ -111,6 +111,7 @@ where the two defects removed here were first written down as outstanding.)
   index by construction. (`WorkflowConfig` raises before it creates its own output tree;
   `run_sirna_workflow` creates the top-level output directory one step earlier, so on that entry point
   an empty directory is left behind.)
+
 - **BREAKING (#99): a prebuilt index whose sequence cannot be read is refused, not screened.**
   `--transcriptome-indices` previously bypassed reference resolution entirely, so the transcript→gene
   index the classifier reads was never built for it: on the public human+mouse screen mouse recorded
@@ -127,6 +128,23 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Added
 
+- **`selection_summary` in `logs/workflow_summary.json`: why the shortlist is the size it is** (#100).
+  Success, "complete run, nothing eligible", "incomplete evidence" and "execution error" all leave
+  `top_candidates` empty, so the distinguishing information has to be published rather than inferred.
+  It carries the resolved `run_mode`, how many candidates were eligible, how many were shortlisted,
+  how many carried a post-screen score, and the exclusion counts split by cause — repeat-flagged, gate
+  failure, incomplete required evidence, incomparable score — plus `evidence_shortfall_reasons`, a
+  tally naming each distinct shortfall (`no_evidence:transcriptome:human`,
+  `unknown:min_isoform_coverage`) and how many candidates it cost. Every reason, not one example:
+  three candidates that lost a species alignment and three that lost a coverage annotation are
+  different problems with different fixes. Published beside `design_summary` rather than inside it,
+  because it is a statement about evidence and run mode rather than about designs.
+- **`filtering_stats.mirna_channel_screened`: whether the miRNA seed scan actually ran** (#106).
+  Channel-level rather than per species, because the scan is one batch over every submitted guide. A
+  run with no miRNA evidence warns and marks the miRNA gates `UNKNOWN`, but is **not** downgraded to
+  `partial`: `run_status` speaks for the evidence the run _requires_, and every miRNA pair is
+  exploratory in 0.7.1, so calling the whole run partial for a missing exploratory channel would be
+  the mirror of the defect the required/exploratory split exists to prevent.
 - **`sirnaforge report <run_dir>`: one self-contained HTML file over a finished run
   (`reporting/`, #103).** The tool advertised an off-target report on every completed run and shipped a
   `touch`ed empty file for it. This is the report. The unit is the **guide sequence**, not the candidate
@@ -164,7 +182,7 @@ where the two defects removed here were first written down as outstanding.)
   `ReferenceRejection`s rather than dropping them. `build_screening_requests` is the single place a
   screening reference can enter a run; `kind` is keyed to modality (`transcriptome` for siRNA/miRNA,
   `genome` for ZFN) and a mismatch raises `ReferenceKindError` before any expensive work. A resolved
-  *default* whose kind does not match is disabled with a recorded reason instead — a ZFN run no longer
+  _default_ whose kind does not match is disabled with a recorded reason instead — a ZFN run no longer
   publishes four cDNA sources in its reference summary.
 - **A reference's species comes from the reference, with the authority recorded (#99).**
   `SpeciesAuthority` orders it `declared` > bundled-source registry > the reference's own headers >
@@ -172,17 +190,17 @@ where the two defects removed here were first written down as outstanding.)
   inference is the fallback rather than the authority. `--transcriptome-fasta` and
   `--transcriptome-indices` both accept a `species:` prefix. On `--transcriptome-fasta` the prefix is
   read as a species only when the registry recognises it, so a URL scheme is never mistaken for a
-  species; on `--transcriptome-indices`, where the declaration is the *only* authority for the label,
+  species; on `--transcriptome-indices`, where the declaration is the _only_ authority for the label,
   an unrecognised name is **refused** with the supported list, exactly as `--species` refuses one.
   A declared species that contradicts the file's headers is reported rather than silently discarded. The unresolved label is `unknown`,
-  not `transcriptome`: that word is the *kind*, and using it as a species is what made a local cDNA
+  not `transcriptome`: that word is the _kind_, and using it as a species is what made a local cDNA
   path match no query species, publish `species_analyzed: ['transcriptome']` and score nothing.
   Header inference's three limits are unchanged — a gzipped reference infers nothing (it no longer
   aborts the run either), a mixed-assembly file returns `None` rather than guessing, and only
   assemblies in `ENSEMBL_ASSEMBLIES` are recognised.
 - **The #104 contracts are wired (#99).** Every run publishes `reference_summary.screening` (what
   resolved, over which species, and what did not), `reference_summary.scope` — a
-  `models.policy.FilterScope` holding the explicit species set the screen *planned* to cover, fixed at
+  `models.policy.FilterScope` holding the explicit species set the screen _planned_ to cover, fixed at
   resolution (a species whose alignment published nothing is subtracted in
   `filtering_stats.unscreened_species`, not here) — and
   `reference_summary.screening_plan`, one `models.evidence.ScreeningPlanEntry` per reference carrying
@@ -218,7 +236,7 @@ where the two defects removed here were first written down as outstanding.)
   the vector — recorded as the `au_1_5_experimental` profile, which is deliberately **not** a default.
   Three limits, stated because they bound what the ρ is worth: on predeclared held-out transcripts the
   candidate vector buys 0.008 of ρ over the shipped one (+0.335 → +0.343, rank agreement +0.967);
-  guide position 1 alone tracks efficacy *better* than the 1-5 count (ρ +0.415 vs +0.378), so the
+  guide position 1 alone tracks efficacy _better_ than the 1-5 count (ρ +0.415 vs +0.378), so the
   pre-declared flat window is measurably not the best available and is kept anyway rather than
   re-selected; and it is one study on one assay, so nothing here is replication.
 - **`scripts/validate_scoring_profiles.py`** — the calibration record for the above. Reproduces the
@@ -232,7 +250,7 @@ where the two defects removed here were first written down as outstanding.)
   overlapping-provenance rows shown to partition by accession, in `tests/unit/data/README.md`.
 
 - **One run-policy resolver: `sirnaforge.config.run_policy.resolve_run_policy` → `ResolvedRunPolicy`
-  (issue #99).** Run mode, design mode, every filter threshold and every filter *action* are resolved
+  (issue #99).** Run mode, design mode, every filter threshold and every filter _action_ are resolved
   once, before any download and before the output directory exists, and the same immutable object
   reaches `sirnaforge design`, `sirnaforge workflow`, `sirnaforge offtarget`, `run_sirna_workflow`,
   `run_offtarget_only_workflow` and a direct `WorkflowConfig` (via `describe_parameters`, which wraps
@@ -263,7 +281,7 @@ where the two defects removed here were first written down as outstanding.)
 - **`--policy-config FILE`** (JSON or TOML) on `design`, `workflow` and `offtarget`. An unknown
   setting name is rejected rather than ignored, because a silently dropped override reads as an
   applied one.
-- **`manifest.json` gains a `run_policy` block**: requested *and* resolved settings, the authority
+- **`manifest.json` gains a `run_policy` block**: requested _and_ resolved settings, the authority
   that supplied each value (`builtin_profile`, `design_mode_preset`, `config_file`, `explicit`,
   `run_mode_rule`), the profile's name, version and `sha256` content hash, and per gate its action,
   threshold, comparator, scope, stage, definition and whether the column it reads is exported.
@@ -462,6 +480,140 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Fixed
 
+- **A completed screen that found nothing reached no off-target gate at all** (#106). The no-hit
+  branch scored the candidate and continued, so the common case — a clean screen — exported every
+  off-target gate as `not_evaluated` with a blank observed value. Because the #103 report re-derives
+  each verdict from the observed column, a measured clean screen read as **unknown**: on a real
+  Docker/Nextflow zero-hit run, two candidates screened against a completed human transcriptome and
+  scored after screening still published `max_transcriptome_hits_0mm_verdict=not_evaluated`. Both
+  branches now go through one `_gate_offtarget_counts` entry point, so a gate cannot be wired into
+  only one of them, and a completed channel's zero records **PASS with observed 0** — the same
+  number the report re-derives, so the two agree by construction.
+- **A gate could pass on a count from a channel that never ran** (#106, #100). Each gate now names
+  the screening channels its count depends on (`POST_SCREEN_FILTER_CHANNELS`, one map shared by the
+  gate application and by eligibility, so the two cannot drift). A gate whose channels did not all
+  complete records `UNKNOWN` with **no observed value** — deliberately not the lower bound, because
+  a 0 there would make the report re-derive a confident pass and contradict the run. Only the pass
+  direction needs completeness: a lower bound already above the ceiling still **FAILs**, because
+  hits that were found are real evidence whether or not the search finished. `max_total_offtarget_hits`
+  sums two channels and so is decided by neither alone. miRNA-channel completion is read from the
+  aggregate's `total_candidates`, which counts files that parsed and passed schema validation, not
+  `analysis_files_processed`, which counts what was globbed — including a 0-byte file, the same weak
+  signal that once let an empty `*_analysis.tsv` publish a completed transcriptome screen.
+- **The isoform-coverage gate ignored its own resolved action** (#105). It was the one gate that
+  assigned `passes_filters = LOW_ISOFORM_COVERAGE` by hand instead of going through
+  `record_filter_verdict`, so the action was unreachable: a run resolving `min_isoform_coverage` to
+  `warn` still rejected the candidate, and left `filter_verdicts` empty so nothing downstream could
+  tell that it had — the run could not be reproduced from its own policy. It now records PASS,
+  FAIL and UNKNOWN through the shared recorder and rejects only when the action is `fail`. Coverage
+  that could not be computed is `UNKNOWN` with no observed value and never rejects; whether such a
+  candidate can still _qualify_ is a run-mode decision, made in selection.
+- **An entirely unscreened batch entered `top_candidates` in qualified mode** (#100). The exclusion
+  was conditional on the batch being _mixed_: a list where only some candidates were scored held the
+  unscored ones out, but a list where none was scored was called internally consistent and shipped
+  whole — which is exactly the shape a failed or absent screen produces, so the one case the rule had
+  to catch was the one it waved through. Eligibility is now decided by run mode and evidence,
+  independently of score availability: `qualified` requires every channel/species pair the policy
+  declares **required** to have completed for that candidate, and refuses a candidate carrying an
+  `UNKNOWN` verdict on a gate reading required evidence. Comparability remains a separate rule, so an
+  unscored candidate still cannot compete against post-screen scores on a mixed batch. `design_only`
+  keeps its design shortlist (`--skip-off-targets` never promised screening evidence) and
+  `exploratory` retains incomplete evidence, sorted below complete evidence. The unknown-blocks rule
+  is scoped to gates **all** of whose channels are required, so adding or dropping an exploratory
+  species — or a run whose miRNA aggregate is simply absent — cannot silently decide a qualified
+  shortlist. A subset and not an intersection: `max_total_offtarget_hits` counts the transcriptome and
+  miRNA channels together, so an absent miRNA aggregate alone makes it `UNKNOWN`, and an intersection
+  test put that gate in scope anyway — emptying the shortlist of an otherwise complete and clean screen
+  over a channel the policy itself calls exploratory, the mirror of the defect the scoping exists to
+  prevent. Both directions are pinned by tests.
+
+  Ordering asks a **separate** question from disqualifying, because nothing is _required_ in
+  `exploratory` mode: the required set is empty there, so it cannot express "sorted below complete
+  evidence", and ranking on score alone let a candidate with an undecided gate lead a fully evidenced
+  one. Candidates are ordered by whether they are short of **any** declared evidence, then by score
+  comparability, then by score.
+
+- **A gate-passing row could not say whether the run stood behind it** (#100). `passes_filters`
+  answers only "did a gate reject this", which stopped being the whole answer once eligibility could
+  also turn on the _evidence_ behind a gate. Every candidate row gains **`selection_state`**
+  (`eligible` | `withheld_incomplete_evidence` | `not_eligible` | `not_selected`), stamped during
+  selection, and `candidates_pass.fasta` repeats it in the header of any guide that is not `eligible` —
+  that file leaves the tool as a list of sequences to order, so a guide the run could not qualify must
+  not look like one it could. The state is on the candidate rather than bolted onto a dataframe, so
+  both CSV writers emit it from `build_candidate_row` and cannot drift.
+
+  It **annotates and does not filter**, deliberately. An intermediate version of this fix narrowed
+  `candidates_pass.csv`/`.fasta` to the eligible set on the reasoning that they must not disagree with
+  `top_candidates`; measured against the previous tip, that deleted an entire documented deliverable —
+  `--input-fasta` with no `--transcriptome-fasta` resolves no reference, so nothing is screened, and
+  152 guides became 0 with the FASTA removed outright. #100 asks for the opposite ("legacy pass outputs
+  record selection semantics"), so the rows stay and say what they are. Only `top_candidates`, which is
+  the qualified claim, is narrowed by eligibility.
+
+- **Selection did not run on every exit from step 5** (#100). A screen that threw left the shortlist
+  as the pre-screen ranking had built it, so a qualified run whose screening failed still published a
+  shortlist assembled from design evidence alone. Step 5's body now runs under one `finally`, so
+  selection is the last thing it does on every return, on the caught Nextflow failure, **and** on an
+  exception that propagates — `_prepare_offtarget_input`'s duplicate-candidate-id refusal stays a
+  refusal rather than being downgraded to a skip.
+- **The miRNA detail pointer was empty on the normal aggregate path** (#108). Only the fallback ingest
+  recorded a path, so a run that read `combined_mirna_hits.tsv` — the successful path — published
+  `offtarget_summary.detail_files.mirna: []` beside non-zero miRNA counters. On a real Docker/Nextflow
+  run, three guides produced 9 miRNA hits with `filtering_stats.human_mirna_hits == 9` and an empty
+  pointer list; since the summary names these files rather than carrying their rows, that list was the
+  only route a consumer had to the hits it was being told about. Every ingested path is now recorded —
+  aggregate TSV, JSON aggregate and per-file fallback — deduplicated by path, because naming one file
+  twice reads as two independent sources of evidence for the same hits.
+- **`sirnaforge design` accepted `--filter-action <id>=warn` and then ignored it.** The command
+  constructed its designer with the thresholds but not the resolved actions, unlike the workflow path,
+  so every design-stage gate kept rejecting while the manifest recorded `warn`. Measured on
+  `examples/sample_transcripts.fasta` with `--max-paired-fraction 0.05`: 1,528 candidates were labelled
+  `EXCESS_PAIRING` under `warn` exactly as under `fail`. They are now retained with a `fail` verdict on
+  the row and `passes_filters` untouched.
+- **`_basic_offtarget_analysis` reported `status: completed`.** It aligns nothing against a reference
+  and never reaches `_integrate_offtarget_results`, so no candidate gets a verdict, a hit count or
+  `off_target_screened` — yet it is reached both when no reference resolves and **after a Nextflow
+  failure**, and reported the same word a real screen does, which the CLI printed as "Off-target
+  Analysis: Complete". Now `partial`, and the console line says it is not a completed screen.
+- **The report re-derived a confident pass from a verdict the run had called unknown** (#103/#106).
+  A gate with incomplete evidence records `UNKNOWN` with an _empty_ observed value precisely so nothing
+  re-derives a pass from it — but `observed_column` falls back to the descriptor's own column when the
+  observed one is empty for every row, and three of those fallbacks (`off_target_count`,
+  `transcriptome_hits_seed_0mm`, `mirna_hits_1mm_seed`) are exported and default to 0. So an unscreened
+  guide's `max_off_target_count` rendered as a pass at 0, from a run that had said it did not know —
+  the fabricated-evidence direction, produced by the report rather than the pipeline. `_evaluate` now
+  reads the run's own `<filter_id>_verdict` first and returns `unknown` when the run did: re-thresholding
+  moves a ceiling, it cannot conjure the measurement.
+- **An unresolvable orthologue lookup published `conservation_score = 0.0`, never null** (#101).
+  `conservation_score` is (non-query species with an ortholog hit) / (non-query species screened), and
+  a species whose Compara lookup never completed cannot contribute to that numerator — so every run
+  where Compara was unreachable reported "conserved in 0 of N" for a question nobody managed to ask.
+  A uniform 0.0 that reads as a measurement is strictly worse than the null it replaced. Conservation
+  is now **null** whenever the denominator contains a species with an unresolved lookup. The
+  denominator is deliberately not shrunk to the resolvable species: that was tried, and it let a
+  degraded run outscore the complete run it degraded from (#80 F10). A resolved lookup that finds
+  nothing still reports a real 0.0. Conservation is reported and not scored, so nothing about the
+  composite changes.
+- **The container tier's `test_transcriptome_index_override` asserted the pre-#99 contract.** Running
+  the container suite (which the previous tip collected but did not execute) surfaced it: a
+  caller-supplied index is now only accepted with a readable plain-text cDNA FASTA beside the prefix,
+  because the resolver needs that cDNA to build the transcript index that resolves a hit to a gene —
+  and an index whose sequences cannot be resolved is precisely the case that aligned fine and then
+  classified against nothing. The fixture built the index and left no cDNA next to it, so the reference
+  was refused, `species_analyzed` was `[]`, and the assertion failed. The **refusal is correct**; the
+  fixture now copies the cDNA beside the prefix, which is what the run's own error message instructs.
+  The run's diagnostics were the ones this tranche added: `status: partial`, the shortfall reason naming
+  the exact remedy, and `selection_summary` attributing all 1,297 excluded candidates to five named
+  causes.
+- **`make docs` failed its own gate with 39 warnings treated as errors** (#107), blocking
+  `make test-release` before any test ran. All 39 were duplicate object descriptions with one cause:
+  `napoleon_use_ivar = False` made Napoleon render each Google-style `Attributes:` section as
+  standalone `.. attribute::` directives, registering every name autodoc had already registered from
+  the same dataclass or enum. Set to `True`, so those descriptions render as `:ivar:` entries on the
+  class instead. Nothing is suppressed, `-W` stays, and the affected classes
+  (`ReferenceRequest`, `ScreeningReference`, `SpeciesAuthority`, `OrthologueMapping`,
+  `TargetSiteAccessibility` and the rest) keep their prose — including the 3 `TargetSiteAccessibility`
+  warnings that pre-dated this branch.
 - **A species whose alignment file was rejected still reported as screened and clean.** With two
   species valid and one species' `*_analysis.tsv` unreadable — a 0-byte file, which is exactly what
   `offtarget_analysis.nf`'s stub emits and what an aligner that died mid-write leaves — the file was
@@ -518,7 +670,7 @@ where the two defects removed here were first written down as outstanding.)
 - **An explicit `--gc-max` in miRNA design mode is no longer overwritten (issue #99/#101 item 1).**
   `cli.py::_resolve_design_mode` decided whether to apply the miRNA preset by comparing the supplied
   value against the siRNA default (`if gc_min == 30.0 and gc_max == 60.0:`), so `--design-mode mirna
-  --gc-max 60` was silently rewritten to 52, and `--overhang dTdT` to `UU`. A value test cannot
+--gc-max 60` was silently rewritten to 52, and `--overhang dTdT` to `UU`. A value test cannot
   distinguish an omitted option from one typed with that value; the resolver reads Click's parameter
   source instead. `--gc-max 65` is documented and supported in either mode. **Six options were also
   never reaching the resolver at all under the new mechanism until the parameter name was carried
@@ -527,7 +679,7 @@ where the two defects removed here were first written down as outstanding.)
 - **Cross-field configuration errors no longer escape as tracebacks (issue #95 item 2).**
   `sirnaforge design --plfold-window 40 --plfold-max-bp-span 100` raised a raw pydantic
   `ValidationError`; both commands now report `max_bp_span (100) must not exceed window_size (40)` and
-  exit 1. The `workflow` command additionally validated *after* creating the output tree and the log
+  exit 1. The `workflow` command additionally validated _after_ creating the output tree and the log
   file, so an invalid run left directories behind; resolution now happens first.
 - **Documented-versus-actual default drift, and the mechanism that allowed it.** The off-target cap
   was documented as 3 (`SiRNACandidate.off_target_count`) while `OffTargetFilterCriteria` enforces 15,
@@ -552,8 +704,8 @@ where the two defects removed here were first written down as outstanding.)
   the manifest now say that rather than implying an enforced limit. Exporting the human-stratified
   counters is separate filter-scope work and is not done here.
 - **A run that screens nothing no longer reports its off-target gates as enforced.** The post-screen
-  gates were turned off on the run-mode *label* (`design_only`), but `--run-mode exploratory
-  --skip-off-targets` is accepted and resolves `check_off_targets=False`, so step 5 short-circuits and
+  gates were turned off on the run-mode _label_ (`design_only`), but `--run-mode exploratory
+--skip-off-targets` is accepted and resolves `check_off_targets=False`, so step 5 short-circuits and
   no candidate ever gets an off-target verdict — while `manifest.json` reported `max_off_target_count`,
   `max_transcriptome_hits_{0,1,2}mm`, `max_mirna_perfect_seed` and `fail_on_high_risk_mirna` as
   `action: fail, evaluated: true`. The rule now reads the resolved screening switch, which is the fact
@@ -644,6 +796,30 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Known limitations
 
+- **A gate reading a per-species counter can still pass on a lower bound when a _non-query_ species'
+  alignment is missing.** Channel completion is tracked per channel, and `max_off_target_count` counts
+  liabilities across every screened species, so a run whose query species aligned but whose secondary
+  species did not records a measured PASS against a total that is short. The candidate's own
+  `off_target_screened` is still True, because the query species — the one that decides on-target
+  membership and post-screen scoring — did align. Closing this needs the per-species evidence the #100
+  producers will publish; a gate's `FilterScope.species` is already declared and is the axis to read.
+- **Per-candidate evidence is tracked per channel, not per channel × species** (#100). The query
+  species' transcriptome pair is answered per candidate from `off_target_screened`; any other required
+  pair falls back to a run-level record, and miRNA completion is run-level by construction (one batch
+  over every guide). That is the finest granularity the current evidence producers offer. It is exact
+  today because the only pair a run can declare **required** is the query-species transcriptome; it
+  becomes approximate the moment a second pair can be required, which is what #100's evidence
+  producers (versioned evidence JSON from the Nextflow modules) are for.
+- **A qualified batch where scoring failed for every candidate is still shortlisted.** Comparability
+  only excludes unscored candidates on a _mixed_ batch, and required-evidence eligibility asks about
+  evidence rather than about the score. So a batch whose evidence is complete but whose
+  `compute_composite` raised for all of it is ranked on design-time scores. Left deliberately: #100
+  states that a pre-designed guide can hold a qualified SCREEN result with no potency composite, so
+  "no composite" cannot by itself mean "not qualified" without first separating a requested potency
+  ranking from a requested screen — which is #102's `core/selection.py` work.
+- **The isoform-coverage floor is still uncalibrated, and `warn` does not change that.** Making the
+  action selectable means a run can now report the gate instead of enforcing it; it does not supply a
+  threshold anyone has validated against measured knockdown. The gate still ships **off** by default.
 - **The #99 reference work was verified on unit tests, `nextflow lint` and a real `-stub-run`, not on a
   real screen.** `bwa-mem2` is Docker-only on arm64, so the 211,359-row and 18.9% figures quoted above
   were **not re-measured** after the fix — they are the pre-fix measurements that motivated it. What
@@ -670,7 +846,7 @@ where the two defects removed here were first written down as outstanding.)
   `genome_indices_override`); the help text and the override guide previously claimed the opposite and
   now say what the code does.
 - **`MiRNADatabaseManager`'s `"genome"` registry key survives, and it doubles as the screen-species
-  list.** The key names each organism's miRNA *annotation set*, not a reference, so it kept its name;
+  list.** The key names each organism's miRNA _annotation set_, not a reference, so it kept its name;
   but `utils/cli_inputs.py` maps `species_resolution["genome"]` onto `screen_species`, which means a
   miRNA-annotation label decides which transcriptome references get fetched. A real conflation, left
   to the module that owns it.
@@ -688,7 +864,7 @@ where the two defects removed here were first written down as outstanding.)
   share of the scored budget, from 0.25/0.60 to 0.25/1.00. This entry previously justified that with
   "it measured 2.24× its nominal share of composite variance"; that figure is from an internal run
   under weight set 2.0.0 and has never been re-derived, and **the frozen public baseline measures the
-  opposite** — `off_target` is the *least* influential of the four scored terms there, at 0.39× its
+  opposite** — `off_target` is the _least_ influential of the four scored terms there, at 0.39× its
   nominal weight, its contribution compressed against the 25.0 ceiling (mean 18.465, 142 distinct
   values on 34,861 rows). Screening one more species doubles the share to 0.193, so the number
   describes the **screening scope**, not the term, and must never be quoted without it. Whether 0.25
@@ -701,7 +877,7 @@ where the two defects removed here were first written down as outstanding.)
   under the six-term vector that ships, it delivers **0.07×** its nominal 0.10 while `ago_start`
   delivers **2.46×** the same nominal (the run itself was scored under the pre-#102 seven-term vector,
   where the same rows give 0.11× and 2.71×; `scripts/validate_scoring_profiles.py
-  --baseline-mirna-csv` prints both columns and fails if it cannot reproduce the published one).
+--baseline-mirna-csv` prints both columns and fails if it cannot reproduce the published one).
 - **The `gc_content` term's optimum and the GC filter's window disagree.** The score is
   `exp(-((GC%−40)/10)²)`, a Gaussian centred on a hard-coded 40% GC, while the default filter window
   is `gc_min` 35 / `gc_max` 60 (midpoint 47.5). A candidate mid-window is scored as mildly

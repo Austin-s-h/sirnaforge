@@ -111,7 +111,13 @@ def toy_transcriptome_path():
 
 @pytest.fixture(scope="session")
 def toy_transcriptome_index_prefix(tmp_path_factory):
-    """Build a BWA index for the toy transcriptome database once per test session."""
+    """Build a BWA index for the toy transcriptome database once per test session.
+
+    The cDNA FASTA is copied beside the index prefix because a caller-supplied index is only accepted
+    with one there: the reference resolver needs readable cDNA to build the transcript index that
+    resolves a hit to a gene, and an index whose sequences cannot be resolved aligned fine and then
+    classified against nothing. A fixture that omits it is asserting the pre-#99 contract.
+    """
     test_data_dir = Path(__file__).parent / "unit" / "data"
     transcriptome_fasta = test_data_dir / "toy_transcriptome_db.fasta"
 
@@ -120,6 +126,7 @@ def toy_transcriptome_index_prefix(tmp_path_factory):
 
     index_dir = tmp_path_factory.mktemp("toy_transcriptome_index")
     index_prefix = Path(index_dir) / "toy_transcriptome"
+    shutil.copyfile(transcriptome_fasta, index_prefix.with_suffix(".fa"))
 
     if not all(index_prefix.with_suffix(suffix).exists() for suffix in (".amb", ".ann", ".bwt.2bit.64", ".pac", ".sa")):
         try:
