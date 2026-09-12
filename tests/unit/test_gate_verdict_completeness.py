@@ -295,7 +295,7 @@ def test_an_incomplete_channel_still_fails_a_count_over_its_ceiling(tmp_path: Pa
         0,
         OffTargetFilterCriteria(),
         candidate,
-        complete_channels=frozenset(),  # nothing completed
+        complete_pairs=frozenset(),  # nothing completed
     )
 
     assert should_fail is True
@@ -1017,3 +1017,112 @@ def test_the_resolved_repeat_threshold_reaches_the_scan_and_the_summary(tmp_path
         "the constant and the model default agree, which is what made this latent; if they diverge, "
         "every default run was already scanning at the wrong threshold"
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# The gates count the QUERY species, not literally human
+# ---------------------------------------------------------------------------------------------
+
+
+def _offtarget_hit(guide: str, species: str) -> dict[str, str]:
+    """One perfect-match alignment row, in the aggregator's own column order."""
+    return {
+        "qname": "probe",
+        "qseq": guide,
+        "species": species,
+        "rname": "ENSMUST00000999999",
+        "coord": "100",
+        "strand": "+",
+        "cigar": f"{len(guide)}M",
+        "mapq": "60",
+        "as_score": "42",
+        "nm": "0",
+        "seed_mismatches": "0",
+        "offtarget_score": "0.0",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("query", ["human", "mouse"])
+def test_a_perfect_match_in_the_query_species_reaches_its_gate(tmp_path: Path, query: str) -> None:
+    """Identical evidence must give an identical verdict whatever the query species is.
+
+    The mismatch gates read a counter stratified with ``is_human_species``, and their declared
+    ``scope.species`` was fixed at ``("human",)``. So on a non-human query run they measured zero on
+    real hits: four perfect-match mouse off-targets on a mouse-query run recorded observed 0 and
+    verdict PASS while the exported ``transcriptome_hits_0mm`` column said 4 -- the row contradicting
+    its own gate. Parametrised over both species because the human case passed throughout and is
+    what made the defect invisible.
+    """
+    workflow = _workflow(tmp_path, f"query_{query}", screen_species=[query])
+    workflow.config.query_species = query
+    workflow._query_species = query
+    candidate = _candidate()
+    data = {
+        "status": "completed",
+        "results": {
+            "probe": {"off_target_count": 4, "off_target_score": 1.0, "hits": [_offtarget_hit(GUIDE, query)] * 4}
+        },
+    }
+
+    workflow._integrate_offtarget_results([candidate], data, screened_species=[query], mirna_screened=True)
+
+    row = build_candidate_row(candidate)
+    assert row["transcriptome_hits_0mm"] == 4
+    assert candidate.filter_observed["max_transcriptome_hits_0mm"] == 4, "the gate must see the query species"
+    assert candidate.filter_verdicts["max_transcriptome_hits_0mm"] == FilterEvaluation.FAIL.value
+    assert candidate.passes_filters == SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH
+
+
+@pytest.mark.unit
+def test_a_gate_scope_follows_the_run_not_a_hard_coded_species(tmp_path: Path) -> None:
+    """The descriptor a #103 client re-applies must name the species the gate actually counted."""
+    workflow = _workflow(tmp_path, "scope_mouse", screen_species=["mouse"])
+    policy = workflow.config.resolved_policy
+    assert policy.descriptor("max_transcriptome_hits_0mm").scope.species == frozenset({"human"}), (
+        "this fixture resolves a human query, so its scope is human"
+    )
+
+    mouse = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW, query_species="mouse", screen_species=["mouse"]
+    )
+    assert mouse.descriptor("max_transcriptome_hits_0mm").scope.species == frozenset({"mouse"})
+
+
+@pytest.mark.unit
+def test_a_missing_secondary_species_stops_an_all_species_gate_passing(tmp_path: Path) -> None:
+    """#100 defect 3: a gate counting every screened species cannot pass on a lower bound.
+
+    ``max_off_target_count`` declares an unrestricted scope, so it counts liabilities across every
+    screened species -- while completeness used to be decided for the query species alone. A run whose
+    secondary species never aligned therefore recorded a confident ``pass`` on an undercount and the
+    candidate qualified. Completeness is now channel x species, keyed off each gate's own declared
+    scope, so the evidence a gate requires is the evidence it counts.
+
+    The both-screened case is asserted alongside it: without that, making every gate unknown would
+    look like a fix.
+    """
+    outcomes = {}
+    for screened, tag in ((["human", "mouse"], "both"), (["human"], "mouse_missing")):
+        workflow = _workflow(tmp_path, f"scope_{tag}", run_mode=RunMode.QUALIFIED, screen_species=["human", "mouse"])
+        workflow._active_screen_species = ["human", "mouse"]
+        candidate = _candidate()
+        hits = [
+            {**_offtarget_hit(GUIDE, "human"), "nm": "3", "seed_mismatches": "3", "offtarget_score": "2.0"}
+            for _ in range(12)
+        ]
+        data = {
+            "status": "completed",
+            "results": {"probe": {"off_target_count": 12, "off_target_score": 2.0, "hits": hits}},
+        }
+        workflow._integrate_offtarget_results([candidate], data, screened_species=screened, mirna_screened=True)
+        result = _design_result(workflow, [candidate])
+        workflow._apply_post_screen_ranking(result)
+        outcomes[tag] = (
+            candidate.filter_observed.get("max_off_target_count"),
+            candidate.filter_verdicts.get("max_off_target_count"),
+            [c.id for c in result.top_candidates],
+        )
+
+    assert outcomes["both"] == (12, FilterEvaluation.PASS.value, ["probe"])
+    assert outcomes["mouse_missing"] == (None, FilterEvaluation.UNKNOWN.value, [])

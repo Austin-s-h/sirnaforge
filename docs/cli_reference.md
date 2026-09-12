@@ -162,8 +162,8 @@ to nothing.
 
 Two honesty notes the manifest carries per gate, because the code earns them and prose would not:
 
-- Six of the nine off-target gates read a **human-stratified** counter, not the all-species column of
-  the same name, so their `scope.species` is `["human"]` and `evidence_exported` is `false` — the
+- Six of the nine off-target gates read a **query-species-stratified** counter, not the all-species
+  column of the same name, so their `scope.species` is the run's own query species and `evidence_exported` is `false` — the
   counter they compare is not in the candidate CSV, so a client cannot re-apply them and get the
   pipeline's answer. Exporting those counters is separate filter-scope work. The six do **not** all
   stratify the same way, and each gate's `definition` says which it is: `max_transcriptome_hits_0mm`,

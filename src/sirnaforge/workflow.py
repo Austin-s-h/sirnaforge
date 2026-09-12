@@ -545,6 +545,9 @@ class SiRNAWorkflow:
         # compare directly against ``EvidenceRequirements``. None means screening has not reported yet,
         # which is not the same as reporting that nothing completed.
         self._completed_evidence_pairs: frozenset[tuple[str, str]] | None = None
+        # Species a gate with an unrestricted scope counts, i.e. what this run screened. Set alongside
+        # the pair record so the two cannot describe different runs.
+        self._screened_species_scope: frozenset[str] = frozenset()
         # What the last selection decided and why, so an empty shortlist names its cause.
         self._selection_summary: dict[str, Any] = {}
         # Every eligible candidate, not the top_n slice. None until a selection has run.
@@ -3390,7 +3393,7 @@ class SiRNAWorkflow:
         *,
         counts: OffTargetGateCounts,
         filter_criteria: OffTargetFilterCriteria,
-        complete_channels: frozenset[ScreeningChannel],
+        complete_pairs: frozenset[tuple[str, str]],
         stats: dict[str, Any],
     ) -> None:
         """Apply every off-target gate to one candidate's counts, and count what rejected it.
@@ -3406,7 +3409,7 @@ class SiRNAWorkflow:
             *counts,
             filter_criteria,
             candidate,
-            complete_channels=complete_channels,
+            complete_pairs=complete_pairs,
         )
         if not should_fail or fail_status is None:
             return
@@ -3414,6 +3417,24 @@ class SiRNAWorkflow:
         stat_key = _OFFTARGET_REJECTION_STATS.get(fail_status)
         if stat_key is not None:
             stats[stat_key] += 1
+
+    def _gate_evidence_pairs(self, filter_id: str, channels: frozenset[ScreeningChannel]) -> frozenset[tuple[str, str]]:
+        """The channel x species pairs one gate needs before it may report a pass.
+
+        The species come from the gate's own declared ``FilterScope``, so the evidence a gate requires
+        is the evidence it counts. An unrestricted scope means every species this run screened -- which
+        is why ``max_off_target_count`` used to pass on a lower bound: it counts liabilities across all
+        of them while completeness was decided for the query species alone.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        scoped: frozenset[str] = frozenset()
+        if policy is not None:
+            try:
+                scoped = frozenset(policy.descriptor(filter_id).scope.species)
+            except (KeyError, RunPolicyError):
+                scoped = frozenset()
+        species = scoped or self._screened_species_scope
+        return frozenset((channel.value, name) for channel in channels for name in species)
 
     def _check_offtarget_filters(
         self,
@@ -3428,7 +3449,7 @@ class SiRNAWorkflow:
         filter_criteria: OffTargetFilterCriteria,
         candidate: SiRNACandidate,
         *,
-        complete_channels: frozenset[ScreeningChannel] = frozenset(ScreeningChannel),
+        complete_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> tuple[bool, SiRNACandidate.FilterStatus | None]:
         """Record every off-target gate's verdict, and report the first that rejects.
 
@@ -3437,7 +3458,8 @@ class SiRNAWorkflow:
         exist only as locals in the caller, so before this the row could not be used to check the
         verdict at all -- the identically named exported columns are all-species totals and disagree.
 
-        ``complete_channels`` is which channels' evidence this candidate has. A gate whose channels did
+        ``complete_pairs`` is which channel x species pairs this candidate holds evidence for; ``None``
+        means the caller has no per-species record and every gate is treated as evidenced. A gate whose channels did
         not all complete cannot report a pass -- its count is a lower bound, so a zero means "nothing was
         looked for" -- and records ``UNKNOWN`` with no observed value. Not the lower bound: #103's report
         re-derives verdicts from that column, and a 0 there would produce a confident pass the run never
@@ -3528,7 +3550,8 @@ class SiRNAWorkflow:
                 candidate.filter_observed[filter_id] = value
                 continue
             exceeds = value > threshold
-            if not exceeds and not channels <= complete_channels:
+            required = self._gate_evidence_pairs(filter_id, channels)
+            if not exceeds and complete_pairs is not None and not required <= complete_pairs:
                 # In force but undecidable: the count is a lower bound, so it cannot show the ceiling
                 # was respected. No observed value either -- see the docstring.
                 candidate.record_filter_verdict(
@@ -3780,6 +3803,14 @@ class SiRNAWorkflow:
             else frozenset()
         )
 
+        # The same pairs the gates read, so eligibility and gate evaluation cannot disagree about what
+        # completed. `unscreened_pairs` is what a candidate the query-species alignment missed loses.
+        self._screened_species_scope = requested_species | {query_species}
+        run_complete_pairs = self._completed_evidence_pairs or frozenset()
+        unscreened_pairs = frozenset(
+            {(ScreeningChannel.TRANSCRIPTOME.value, query_species)} if query_species_unscreened else ()
+        )
+
         classification_context = ClassificationContext(
             query_gene_ids=frozenset(self._query_gene_ids),
             query_gene_symbols=frozenset(self._query_gene_symbols),
@@ -3878,14 +3909,12 @@ class SiRNAWorkflow:
             unscreened_candidate = query_species_unscreened or never_submitted
             candidate.off_target_screened = not unscreened_candidate
 
-            # Which channels' evidence THIS candidate has: one the aligner never saw has neither.
-            complete_channels: frozenset[ScreeningChannel] = frozenset(
-                channel
-                for channel, complete in (
-                    (ScreeningChannel.TRANSCRIPTOME, not unscreened_candidate),
-                    (ScreeningChannel.MIRNA_SEED, mirna_channel_complete and not never_submitted),
-                )
-                if complete
+            # Which channel x SPECIES pairs THIS candidate holds evidence for. Pairs, not channels: a
+            # gate whose scope is every screened species -- max_off_target_count is the live one --
+            # passed on a lower bound whenever a secondary species failed, because completeness was
+            # decided query-species-only. A candidate the aligner never saw holds nothing.
+            complete_pairs: frozenset[tuple[str, str]] = (
+                frozenset() if never_submitted else run_complete_pairs - unscreened_pairs
             )
 
             if not offtarget_entry or not offtarget_entry.get("hits"):
@@ -3904,12 +3933,12 @@ class SiRNAWorkflow:
                 # Then gate it, on the same footing as a candidate that had hits. This branch used to
                 # `continue`, so a completed screen that found nothing reached no gate at all and
                 # exported every one as `not_evaluated` (#106). The counts are zero and
-                # ``complete_channels`` says whether that zero was measured.
+                # ``complete_pairs`` says whether that zero was measured.
                 self._gate_offtarget_counts(
                     candidate,
                     counts=_ZERO_OFFTARGET_COUNTS,
                     filter_criteria=filter_criteria,
-                    complete_channels=complete_channels,
+                    complete_pairs=complete_pairs,
                     stats=stats,
                 )
                 continue
@@ -3922,23 +3951,30 @@ class SiRNAWorkflow:
             # / transcriptome_human_total below (nm>=3 hits count toward the totals but land in
             # no bucket), so the two families never contradict each other.
             transcriptome_totals = {0: 0, 1: 0, 2: 0}
-            transcriptome_human = {0: 0, 1: 0, 2: 0}
+            transcriptome_query = {0: 0, 1: 0, 2: 0}
             transcriptome_off_target_total = 0
+            transcriptome_query_total = 0
             transcriptome_human_total = 0
             transcriptome_seed_0mm = 0
             mirna_total = 0
+            mirna_query_total = 0
             mirna_human_total = 0
             mirna_0mm_seed_total = 0
-            mirna_human_0mm_seed = 0
+            mirna_query_0mm_seed = 0
             mirna_1mm_seed = 0
             mirna_high_risk_total = 0
-            mirna_high_risk_human = 0
+            mirna_high_risk_query = 0
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
                 seed_mismatches = int(hit.get("seed_mismatches", 0))
                 offtarget_score = float(hit.get("offtarget_score", 0.0))
                 species_label = hit.get("species")
+                # The gates count the query species, not literally human. Testing `is_human_species`
+                # here meant that on any non-human query run the mismatch-stratified gates measured
+                # zero on real hits: four perfect-match mouse off-targets on a mouse-query run gave
+                # observed 0 / verdict pass while the exported column said 4.
+                species_is_query = (normalize_species_name(species_label) == query_species) if species_label else False
                 species_is_human = is_human_species(species_label)
 
                 is_mirna = "mirna_id" in hit or "database" in hit
@@ -3947,14 +3983,16 @@ class SiRNAWorkflow:
                     mirna_total += 1
                     if species_is_human:
                         mirna_human_total += 1
+                    if species_is_query:
+                        mirna_query_total += 1
                     if seed_mismatches == 0:
                         mirna_0mm_seed_total += 1
-                        if species_is_human:
-                            mirna_human_0mm_seed += 1
+                        if species_is_query:
+                            mirna_query_0mm_seed += 1
                         if offtarget_score < 5.0:
                             mirna_high_risk_total += 1
-                            if species_is_human:
-                                mirna_high_risk_human += 1
+                            if species_is_query:
+                                mirna_high_risk_query += 1
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
@@ -3985,22 +4023,27 @@ class SiRNAWorkflow:
                     # transcriptome_hits_total agrees with off_target_count even when nm>=3 hits
                     # occur (the default exhaustive search no longer caps hits at nm<=2).
                     transcriptome_off_target_total += 1
-                    treated_as_human = species_is_human or not species_label
-                    if treated_as_human:
+                    treated_as_query = species_is_query or not species_label
+                    if treated_as_query:
+                        transcriptome_query_total += 1
+                    # Kept alongside the query-species counter: the published human/other
+                    # decomposition is a statement about human specifically, and stays true on a run
+                    # whose query species is something else.
+                    if species_is_human or not species_label:
                         transcriptome_human_total += 1
 
                     if nm == 0:
                         transcriptome_totals[0] += 1
-                        if treated_as_human:
-                            transcriptome_human[0] += 1
+                        if treated_as_query:
+                            transcriptome_query[0] += 1
                     elif nm == 1:
                         transcriptome_totals[1] += 1
-                        if treated_as_human:
-                            transcriptome_human[1] += 1
+                        if treated_as_query:
+                            transcriptome_query[1] += 1
                     elif nm == 2:
                         transcriptome_totals[2] += 1
-                        if treated_as_human:
-                            transcriptome_human[2] += 1
+                        if treated_as_query:
+                            transcriptome_query[2] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
@@ -4061,17 +4104,17 @@ class SiRNAWorkflow:
             self._gate_offtarget_counts(
                 candidate,
                 counts=OffTargetGateCounts(
-                    transcriptome_0mm=transcriptome_human[0],
-                    transcriptome_1mm=transcriptome_human[1],
-                    transcriptome_2mm=transcriptome_human[2],
+                    transcriptome_0mm=transcriptome_query[0],
+                    transcriptome_1mm=transcriptome_query[1],
+                    transcriptome_2mm=transcriptome_query[2],
                     transcriptome_seed_0mm=transcriptome_seed_0mm,
-                    mirna_0mm_seed=mirna_human_0mm_seed,
-                    mirna_high_risk=mirna_high_risk_human,
-                    total_hits=human_transcriptome_hits + mirna_human_total,
+                    mirna_0mm_seed=mirna_query_0mm_seed,
+                    mirna_high_risk=mirna_high_risk_query,
+                    total_hits=transcriptome_query_total + mirna_query_total,
                     genuine_off_target_count=liabilities_counted(hit_counts),
                 ),
                 filter_criteria=filter_criteria,
-                complete_channels=complete_channels,
+                complete_pairs=complete_pairs,
                 stats=stats,
             )
 

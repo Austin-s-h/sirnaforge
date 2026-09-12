@@ -321,6 +321,10 @@ class _FilterSpec:
     definition: str
     default_action: FilterAction
     scope_species: tuple[str, ...] = ()
+    #: This gate counts the QUERY species, whatever that is, so the declared scope is resolved per run
+    #: rather than fixed. It was fixed at ("human",) while the counter used a literal human test, so on
+    #: any non-human query the gate silently measured zero on real hits.
+    scope_query_species: bool = False
     scope_max_mismatches: int | None = None
     scope_hit_classes: tuple[str, ...] = ()
     transform: str | None = None
@@ -343,20 +347,21 @@ _LIABILITY_CLASSES: tuple[str, ...] = ("off_target", "undetermined")
 # (``species_is_human or not species_label``); the miRNA loop tests ``is_human_species(label)``
 # alone, and ``is_human_species(None)`` is False, so an unlabelled miRNA hit is counted by neither
 # miRNA gate.
-_HUMAN_STRATIFIED = ("human",)
 _ALL_SPECIES_COLUMN_NOTE = (
     "the identically named candidate column is the all-species number, so the two disagree on a multi-species run"
 )
 _HUMAN_OR_UNLABELLED_NOTE = (
-    f"counts hits whose species is human or unlabelled, not every screened species; {_ALL_SPECIES_COLUMN_NOTE}"
+    "counts hits whose species is the QUERY species or unlabelled, not every screened species; "
+    f"{_ALL_SPECIES_COLUMN_NOTE}"
 )
 _HUMAN_ONLY_NOTE = (
-    "counts hits labelled human only -- an unlabelled hit is counted by neither miRNA gate, unlike "
-    f"the transcriptome gates, which treat a blank label as the query species; {_ALL_SPECIES_COLUMN_NOTE}"
+    "counts hits labelled with the QUERY species only -- an unlabelled hit is counted by neither miRNA "
+    f"gate, unlike the transcriptome gates, which treat a blank label as the query species; "
+    f"{_ALL_SPECIES_COLUMN_NOTE}"
 )
 _MIXED_HUMAN_NOTE = (
-    "sums two counters built on different conventions: human-or-unlabelled transcriptome hits plus "
-    f"human-labelled-only miRNA hits; {_ALL_SPECIES_COLUMN_NOTE}"
+    "sums two counters built on different conventions: query-species-or-unlabelled transcriptome hits "
+    f"plus query-species-labelled-only miRNA hits; {_ALL_SPECIES_COLUMN_NOTE}"
 )
 
 FILTER_SPECS: tuple[_FilterSpec, ...] = (
@@ -470,7 +475,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         stage=FilterStage.POST_SCREEN,
         definition=f"Perfect-match genuine off-target transcriptome hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
-        scope_species=_HUMAN_STRATIFIED,
+        scope_query_species=True,
         scope_max_mismatches=0,
         scope_hit_classes=_LIABILITY_CLASSES,
         evidence_exported=False,
@@ -483,7 +488,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         stage=FilterStage.POST_SCREEN,
         definition=f"1-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
-        scope_species=_HUMAN_STRATIFIED,
+        scope_query_species=True,
         scope_max_mismatches=1,
         scope_hit_classes=_LIABILITY_CLASSES,
         evidence_exported=False,
@@ -496,7 +501,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         stage=FilterStage.POST_SCREEN,
         definition=f"2-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
-        scope_species=_HUMAN_STRATIFIED,
+        scope_query_species=True,
         scope_max_mismatches=2,
         scope_hit_classes=_LIABILITY_CLASSES,
         evidence_exported=False,
@@ -529,7 +534,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             "threshold calibration behind the number 0."
         ),
         default_action=FilterAction.WARN,
-        scope_species=_HUMAN_STRATIFIED,
+        scope_query_species=True,
         evidence_exported=False,
     ),
     _FilterSpec(
@@ -559,7 +564,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             "those rejections and undo the demotion above."
         ),
         default_action=FilterAction.WARN,
-        scope_species=_HUMAN_STRATIFIED,
+        scope_query_species=True,
         transform="a boolean flag, expressed as a ceiling of 0 so it carries a comparator like every other gate",
         evidence_exported=False,
     ),
@@ -572,7 +577,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=(f"Transcriptome plus miRNA hits combined: {_MIXED_HUMAN_NOTE}; fails TOTAL_OFFTARGETS."),
         default_action=FilterAction.FAIL,
         evidence_exported=False,
-        scope_species=_HUMAN_STRATIFIED,
+        scope_query_species=True,
     ),
 )
 
@@ -1034,7 +1039,11 @@ def _check_finite_weights(scoring: ScoringWeights) -> None:
 
 
 def _resolve_filters(
-    *, parameters: DesignParameters, run_mode: RunMode, actions: Mapping[str, FilterAction]
+    *,
+    parameters: DesignParameters,
+    run_mode: RunMode,
+    actions: Mapping[str, FilterAction],
+    query_species: str,
 ) -> tuple[ResolvedFilter, ...]:
     """Attach each gate's resolved threshold and action to its static description.
 
@@ -1086,7 +1095,9 @@ def _resolve_filters(
                     comparator=spec.comparator,
                     threshold=threshold,
                     scope=FilterScope(
-                        species=frozenset(spec.scope_species),
+                        species=frozenset({query_species})
+                        if spec.scope_query_species
+                        else frozenset(spec.scope_species),
                         max_mismatches=spec.scope_max_mismatches,
                         hit_classes=frozenset(spec.scope_hit_classes),
                     ),
@@ -1224,7 +1235,13 @@ def resolve_run_policy(
     parameters = _build_design_parameters(values, resolved_design_mode, passthrough or {})
     _check_finite_weights(parameters.scoring)
 
-    filters = _resolve_filters(parameters=parameters, run_mode=resolved_run_mode, actions=actions)
+    resolved_query_species = normalize_species_name(query_species) if query_species else DEFAULT_TARGET_SPECIES
+    filters = _resolve_filters(
+        parameters=parameters,
+        run_mode=resolved_run_mode,
+        actions=actions,
+        query_species=resolved_query_species,
+    )
 
     requested: list[SettingProvenance] = [
         SettingProvenance(key=key, value=value, source=SettingSource.CONFIG_FILE, detail=str(config_file))
@@ -1302,7 +1319,7 @@ def resolve_run_policy(
         filters=filters,
         evidence_requirements=_evidence_requirements(
             run_mode=resolved_run_mode,
-            query_species=normalize_species_name(query_species) if query_species else DEFAULT_TARGET_SPECIES,
+            query_species=resolved_query_species,
             screen_species=screen_species,
         ),
         requested=tuple(requested),

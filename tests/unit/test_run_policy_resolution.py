@@ -762,26 +762,46 @@ def test_evidence_exported_agrees_with_the_columns_the_candidate_row_actually_ca
 
 
 @pytest.mark.unit
-def test_each_human_stratified_gate_names_its_own_stratification_convention():
+def test_each_query_stratified_gate_names_its_own_stratification_convention():
     """The six do not stratify the same way, and one shared sentence made three of them false.
 
-    ``_process_nextflow_results`` counts a transcriptome hit as human when its species is human *or*
-    the label is blank, but counts a miRNA hit only when ``is_human_species(label)`` is True -- and
-    ``is_human_species(None)`` is False. ``max_total_offtarget_hits`` sums the two.
+    ``_integrate_offtarget_results`` counts a transcriptome hit as in-scope when its species is the
+    query species *or* the label is blank, but counts a miRNA hit only on an explicit query-species
+    label. ``max_total_offtarget_hits`` sums the two.
     """
     policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
 
     for filter_id in ("max_transcriptome_hits_0mm", "max_transcriptome_hits_1mm", "max_transcriptome_hits_2mm"):
         definition = policy.filter(filter_id).definition
-        assert "human or unlabelled" in definition, filter_id
+        assert "QUERY species or unlabelled" in definition, filter_id
 
     for filter_id in ("max_mirna_perfect_seed", "fail_on_high_risk_mirna"):
         definition = policy.filter(filter_id).definition
-        assert "human or unlabelled" not in definition, f"{filter_id} counts human-labelled hits only"
-        assert "labelled human only" in definition, filter_id
+        assert "QUERY species or unlabelled" not in definition, f"{filter_id} counts labelled hits only"
+        assert "QUERY species only" in definition, filter_id
 
     combined = policy.filter("max_total_offtarget_hits").definition
     assert "different conventions" in combined
+
+
+@pytest.mark.unit
+def test_a_query_stratified_gate_declares_the_run_s_own_query_species():
+    """The scope must be the query species, not literally human, or the gate measures the wrong thing.
+
+    It was fixed at ``("human",)`` while the counter used a literal ``is_human_species`` test, so on
+    any non-human query run the mismatch gates saw zero on real hits: four perfect-match mouse
+    off-targets on a mouse-query run recorded observed 0 / verdict pass while the exported column
+    said 4.
+    """
+    for query in ("human", "mouse"):
+        policy = resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW, query_species=query, screen_species=[query, "rat"]
+        )
+        for filter_id in ("max_transcriptome_hits_0mm", "max_mirna_perfect_seed", "fail_on_high_risk_mirna"):
+            assert policy.descriptor(filter_id).scope.species == frozenset({query}), (filter_id, query)
+    # A gate counting every screened species keeps an unrestricted scope.
+    unrestricted = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, query_species="mouse")
+    assert unrestricted.descriptor("max_off_target_count").scope.species == frozenset()
 
 
 @pytest.mark.unit

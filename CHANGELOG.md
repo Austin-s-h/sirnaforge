@@ -558,6 +558,23 @@ where the two defects removed here were first written down as outstanding.)
   and the model default are the same 0.001; reachable from the CLI today via `--policy-config`. All
   five sites now read the resolved value, verified end to end: a run configured at 0.05 reports 0.05 in
   all three fields.
+- **Six gates measured zero on any non-human query species.** The mismatch- and miRNA-stratified gates
+  counted hits with a literal `is_human_species` test, and their declared `scope.species` was fixed at
+  `["human"]`, so on a mouse-query run they saw nothing while the exported column showed the hits.
+  Proved with identical evidence: four perfect-match off-targets in the query species gave observed 4 /
+  verdict **fail** with `query_species=human` and observed **0** / verdict **pass** with
+  `query_species=mouse` — the row contradicting its own gate. Both the counters and the declared scope
+  now follow the run's query species; the published human/other decomposition is kept beside them,
+  because it is a statement about human specifically and stays true on a run whose query is not human.
+  Live at HEAD, and it affected the real mouse screen described above.
+- **A gate counting every screened species could pass on a lower bound** — #100's third reproduced
+  defect, and the one that changed an answer at HEAD. `max_off_target_count` declares an unrestricted
+  scope, so it counts liabilities across all screened species, while completeness was decided for the
+  query species alone: a run whose secondary species never aligned recorded a confident `pass` on an
+  undercount and the candidate qualified. Completeness is now **channel × species**, keyed off each
+  gate's own declared `FilterScope` — so the evidence a gate requires is the evidence it counts.
+  Measured: 12 human liabilities with mouse requested and unscreened now record `unknown` with no
+  observed value and the candidate is withheld, where before it was `pass`/12 and shortlisted.
 - **A completed screen that found nothing reached no off-target gate at all** (#106). The no-hit
   branch scored the candidate and continued, so the common case — a clean screen — exported every
   off-target gate as `not_evaluated` with a blank observed value. Because the #103 report re-derives
@@ -874,20 +891,9 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Known limitations
 
-- **A gate reading a per-species counter can still pass on a lower bound when a _non-query_ species'
-  alignment is missing.** Channel completion is tracked per channel, and `max_off_target_count` counts
-  liabilities across every screened species, so a run whose query species aligned but whose secondary
-  species did not records a measured PASS against a total that is short. The candidate's own
-  `off_target_screened` is still True, because the query species — the one that decides on-target
-  membership and post-screen scoring — did align. Closing this needs the per-species evidence the #100
-  producers will publish; a gate's `FilterScope.species` is already declared and is the axis to read.
-- **Per-candidate evidence is tracked per channel, not per channel × species** (#100). The query
-  species' transcriptome pair is answered per candidate from `off_target_screened`; any other required
-  pair falls back to a run-level record, and miRNA completion is run-level by construction (one batch
-  over every guide). That is the finest granularity the current evidence producers offer. It is exact
-  today because the only pair a run can declare **required** is the query-species transcriptome; it
-  becomes approximate the moment a second pair can be required, which is what #100's evidence
-  producers (versioned evidence JSON from the Nextflow modules) are for.
+- **miRNA completion is run-level by construction** (#100). The scan is one batch over every
+  submitted guide, so there is no per-species miRNA evidence to have. The transcriptome channel is
+  now tracked per species; the miRNA channel cannot be until the scan reports per species.
 - **A qualified batch where scoring failed for every candidate is still shortlisted.** Comparability
   only excludes unscored candidates on a _mixed_ batch, and required-evidence eligibility asks about
   evidence rather than about the score. So a batch whose evidence is complete but whose
