@@ -162,18 +162,15 @@ def test_every_declared_filter_gets_a_column_even_when_it_did_not_run():
 
 
 @pytest.mark.unit
-def test_the_observed_value_is_exported_for_the_gates_whose_input_is_not():
-    """Six gates read human-stratified counters that no other column carries.
+def test_every_gate_publishes_the_value_it_compared():
+    """``<filter_id>_observed`` travels with every verdict, whatever the gate reads.
 
-    ``evidence_exported=False`` marks them. Their verdict is only checkable from the row because the
-    value they compared travels with it -- the identically named exported columns are all-species
-    totals and disagree with what the gate saw.
+    Every declared gate now also exports its own input column (#101), so this is no longer the only
+    route to a stratified gate's number -- but it stays the route that is true by construction: it is
+    written by the recorder at the moment of comparison, so it cannot be the wrong counter.
     """
-    unexported = [fid for fid, spec in FILTER_SPEC_BY_ID.items() if not spec.evidence_exported]
-
-    assert unexported, "the fixture assumes at least one gate does not export its input"
     candidate = _candidate()
-    for filter_id in unexported:
+    for filter_id in FILTER_SPEC_BY_ID:
         candidate.record_filter_verdict(
             filter_id,
             observed=7,
@@ -182,5 +179,5 @@ def test_the_observed_value_is_exported_for_the_gates_whose_input_is_not():
         )
 
     row = build_candidate_row(candidate)
-    for filter_id in unexported:
+    for filter_id in FILTER_SPEC_BY_ID:
         assert row[f"{filter_id}_observed"] == 7, f"{filter_id} must publish the value it compared"

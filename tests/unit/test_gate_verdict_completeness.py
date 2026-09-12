@@ -1126,3 +1126,79 @@ def test_a_missing_secondary_species_stops_an_all_species_gate_passing(tmp_path:
 
     assert outcomes["both"] == (12, FilterEvaluation.PASS.value, ["probe"])
     assert outcomes["mouse_missing"] == (None, FilterEvaluation.UNKNOWN.value, [])
+
+
+# ---------------------------------------------------------------------------------------------
+# #101 filter scope: every gate's declared column is on the row, and re-applying it agrees
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_every_declared_gate_names_a_column_the_row_carries() -> None:
+    """A gate whose column is absent cannot be re-applied, and the manifest had to admit it.
+
+    Six of the nine off-target gates compared query-species-stratified counters that existed only as
+    locals at the gate site, and `max_poly_runs` compared a run length that was never exported -- so
+    seven gates shipped `evidence_exported: false` and a client re-applying the descriptor read a
+    same-named all-species column instead, getting a different answer from the run.
+    """
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, query_species="human")
+    row = set(build_candidate_row(_candidate()))
+
+    absent = sorted(f.descriptor.filter_id for f in policy.filters if f.descriptor.column not in row)
+    assert absent == [], f"gates whose declared column is not on the candidate row: {absent}"
+    # evidence_exported is a claim about exactly that, so it must not be able to drift from it.
+    mismatched = sorted(
+        f.descriptor.filter_id for f in policy.filters if f.evidence_exported != (f.descriptor.column in row)
+    )
+    assert mismatched == []
+
+
+@pytest.mark.unit
+def test_re_applying_each_descriptor_reproduces_the_runs_verdict(tmp_path: Path) -> None:
+    """#103's gate-parity property, in its Python half: the report cannot disagree with the run.
+
+    Every gate that decided is re-evaluated from its own declared column and threshold. The three
+    mismatch gates are the ones that used to fail this: their column was the all-species counter while
+    the gate compared the query-species subset, so on a multi-species run the two disagreed. The
+    fixture carries hits at 0, 1 and 2 mismatches plus miRNA seed hits, so those gates decide rather
+    than sitting inert.
+    """
+    workflow = _workflow(tmp_path, "gate_parity", screen_species=["human"])
+    candidate = _candidate()
+    hits = (
+        [_offtarget_hit(GUIDE, "human")] * 3
+        + [{**_offtarget_hit(GUIDE, "human"), "nm": "1", "offtarget_score": "2.0"}] * 5
+        + [{**_offtarget_hit(GUIDE, "human"), "nm": "2", "offtarget_score": "2.0"}] * 2
+        + [{**_offtarget_hit(GUIDE, "human"), "mirna_id": "hsa-miR-1", "database": "mirgenedb"}] * 4
+    )
+    data = {
+        "status": "completed",
+        "results": {"probe": {"off_target_count": len(hits), "off_target_score": 1.0, "hits": hits}},
+    }
+    workflow._integrate_offtarget_results([candidate], data, screened_species=["human"], mirna_screened=True)
+
+    row = pd.Series(build_candidate_row(candidate))
+    policy = workflow.config.resolved_policy
+    decided = 0
+    for resolved in policy.filters:
+        descriptor = resolved.descriptor
+        verdict = candidate.filter_verdicts.get(descriptor.filter_id)
+        if verdict not in (FilterEvaluation.PASS.value, FilterEvaluation.FAIL.value):
+            continue
+        value = row.get(descriptor.column)
+        assert value is not None and not pd.isna(value), descriptor.filter_id
+        passes = descriptor.comparator.passes(float(value), float(descriptor.threshold))
+        expected = FilterEvaluation.PASS.value if passes else FilterEvaluation.FAIL.value
+        assert expected == verdict, (
+            f"{descriptor.filter_id}: run said {verdict}, re-applying {descriptor.column}={value} "
+            f"{descriptor.comparator.value} {descriptor.threshold} says {expected}"
+        )
+        decided += 1
+
+    assert decided >= 6, f"only {decided} gates decided; the fixture must exercise the stratified ones"
+    # The gate inputs and the all-species counters are different numbers, which is why both exist.
+    assert row["transcriptome_hits_0mm_query"] == 3
+    # Present on every row, so its gate is re-derivable. Its value comes from enumeration, which this
+    # fixture bypasses; the design tests cover that it is observed.
+    assert "max_poly_run_length" in row

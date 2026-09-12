@@ -4069,6 +4069,15 @@ class SiRNAWorkflow:
             candidate.transcriptome_hits_1mm = transcriptome_totals[1]
             candidate.transcriptome_hits_2mm = transcriptome_totals[2]
             candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
+            # The gate inputs, written onto the row rather than left as locals: these are the numbers
+            # the six query-species-stratified gates compare, and without them a client re-applying a
+            # descriptor read the all-species column and disagreed with the run (#101).
+            candidate.transcriptome_hits_0mm_query = transcriptome_query[0]
+            candidate.transcriptome_hits_1mm_query = transcriptome_query[1]
+            candidate.transcriptome_hits_2mm_query = transcriptome_query[2]
+            candidate.mirna_hits_0mm_seed_query = mirna_query_0mm_seed
+            candidate.mirna_hits_high_risk_query = mirna_high_risk_query
+            candidate.total_offtarget_hits_query = transcriptome_query_total + mirna_query_total
             candidate.on_target_confirmed = hit_counts.on_target > 0
             candidate.mirna_hits_total = mirna_total
             candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total

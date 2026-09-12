@@ -723,8 +723,14 @@ def test_a_setting_no_code_reads_does_not_default_to_on():
 
 
 @pytest.mark.unit
-def test_the_human_stratified_gates_declare_their_scope_and_their_missing_column():
-    """Six gates read a human-stratified counter that no candidate column exports (#101's work)."""
+def test_the_query_stratified_gates_declare_their_scope_and_export_their_counter():
+    """Six gates read a query-species-stratified counter, and now publish it (#101).
+
+    They used to declare a column no candidate row carried, so ``evidence_exported`` was False and a
+    client re-applying the descriptor read the same-named ALL-species column and disagreed with the
+    run. The stratified set is pinned as well as the export, because widening one of these gates to
+    every species silently changes what it measures.
+    """
     policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
 
     stratified = [resolved for resolved in policy.filters if resolved.descriptor.scope.species == frozenset({"human"})]
@@ -736,11 +742,11 @@ def test_the_human_stratified_gates_declare_their_scope_and_their_missing_column
         "fail_on_high_risk_mirna",
         "max_total_offtarget_hits",
     }
-    # None of their counters is in the candidate CSV, so a client cannot re-apply them and get the
-    # pipeline's answer -- said in the descriptor rather than discovered as a disagreement.
-    assert all(resolved.evidence_exported is False for resolved in stratified)
-    assert all("HUMAN-STRATIFIED" not in resolved.definition for resolved in stratified)
+    assert all(resolved.evidence_exported is True for resolved in stratified)
+    # Each still says its counter is not the same number as the identically named all-species column.
     assert all("all-species number" in resolved.definition for resolved in stratified)
+    # And the column it names is the stratified one, not the all-species counter.
+    assert all(resolved.descriptor.column.endswith("_query") for resolved in stratified)
 
 
 @pytest.mark.unit

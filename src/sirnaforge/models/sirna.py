@@ -775,11 +775,31 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_total: int = Field(
         default=0, ge=0, description="Total genuine off-target transcriptome hits (any mismatch count)"
     )
+    # The longest homopolymer run in the guide -- what max_poly_runs compares. Observed during
+    # enumeration and, like the six gate inputs below, previously left off the row, so that gate
+    # declared a column nothing carried.
+    max_poly_run_length: int = Field(
+        default=0, ge=0, description="Longest run of identical adjacent bases in the guide; gate input"
+    )
     transcriptome_hits_0mm: int = Field(
         default=0, ge=0, description="Perfect-match subset of transcriptome_hits_total (0 mismatches)"
     )
     transcriptome_hits_1mm: int = Field(default=0, ge=0, description="1-mismatch subset of transcriptome_hits_total")
     transcriptome_hits_2mm: int = Field(default=0, ge=0, description="2-mismatch subset of transcriptome_hits_total")
+    # The numbers the mismatch GATES actually compare, as opposed to the all-species counters above.
+    # They existed only as locals at the gate site, so six of nine off-target gates declared a column
+    # the row did not carry and were published with `evidence_exported: false`: a client re-applying the
+    # descriptor read the all-species column instead and got a different answer from the run.
+    # Query species or unlabelled, which is the convention those gates count by (#101).
+    transcriptome_hits_0mm_query: int = Field(
+        default=0, ge=0, description="Perfect-match liabilities in the query species (or unlabelled); gate input"
+    )
+    transcriptome_hits_1mm_query: int = Field(
+        default=0, ge=0, description="1-mismatch liabilities in the query species (or unlabelled); gate input"
+    )
+    transcriptome_hits_2mm_query: int = Field(
+        default=0, ge=0, description="2-mismatch liabilities in the query species (or unlabelled); gate input"
+    )
     # The only counter that sees a PARTIAL hit whose seed paired perfectly. Because nm is a
     # guide-level distance, a clipped or gapped hit (e.g. 6S15M/NM:i:0 on the minus strand, where
     # the clip lands on guide positions 16-21 and leaves the seed intact) carries nm=6: it is
@@ -840,6 +860,22 @@ class SiRNACandidate(BaseModel):
     mirna_hits_1mm_seed: int = Field(default=0, ge=0, description="miRNA seed matches with 1 mismatch in seed")
     mirna_hits_high_risk: int = Field(
         default=0, ge=0, description="High-risk miRNA hits (perfect seed + low offtarget_score)"
+    )
+    # The miRNA gate inputs. Query-species-LABELLED only: an unlabelled miRNA hit reaches neither miRNA
+    # gate, unlike the transcriptome gates which read a blank label as the query species. The two
+    # conventions differ, so the columns are separate rather than one shared "query" counter (#101).
+    mirna_hits_0mm_seed_query: int = Field(
+        default=0, ge=0, description="Perfect miRNA seed matches labelled with the query species; gate input"
+    )
+    mirna_hits_high_risk_query: int = Field(
+        default=0, ge=0, description="High-risk miRNA hits labelled with the query species; gate input"
+    )
+    # max_total_offtarget_hits sums the two conventions above, so it gets its own column rather than
+    # being re-derivable by addition.
+    total_offtarget_hits_query: int = Field(
+        default=0,
+        ge=0,
+        description="Query-species transcriptome liabilities plus query-species miRNA hits; gate input",
     )
 
     # miRNA-specific fields (populated when design_mode == "mirna")
@@ -1247,6 +1283,15 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # Two questions, two columns. passes_filters is the gate verdict; selection_state is what the
         # run was willing to claim about the candidate, which can differ once eligibility turns on the
         # evidence behind a gate rather than only on the gate's own outcome (#100).
+        # The six gate inputs, so every declared gate's own column is on the row and a client
+        # re-applying its descriptor reproduces the run's verdict (#101).
+        "max_poly_run_length": _maybe_attr("max_poly_run_length", 0),
+        "transcriptome_hits_0mm_query": _maybe_attr("transcriptome_hits_0mm_query", 0),
+        "transcriptome_hits_1mm_query": _maybe_attr("transcriptome_hits_1mm_query", 0),
+        "transcriptome_hits_2mm_query": _maybe_attr("transcriptome_hits_2mm_query", 0),
+        "mirna_hits_0mm_seed_query": _maybe_attr("mirna_hits_0mm_seed_query", 0),
+        "mirna_hits_high_risk_query": _maybe_attr("mirna_hits_high_risk_query", 0),
+        "total_offtarget_hits_query": _maybe_attr("total_offtarget_hits_query", 0),
         "selection_state": _maybe_attr("selection_state", "not_selected"),
         # Exported because a claim nobody can read is not a claim: GATE_WARNED lives here, and it is
         # the only per-row trace that a retained candidate exceeded a gate resolved to warn.

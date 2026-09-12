@@ -310,6 +310,9 @@ class SiRNADesigner:
         shown as clean. ``passes_filters`` is still set by the caller, which owns the first-label rule.
         """
         filters = self.parameters.filters
+        # Written onto the row, not only into filter_observed: max_poly_runs declares this as its
+        # column, so without it that gate could not be re-derived from the exported row.
+        candidate.max_poly_run_length = poly_run
         for filter_id, observed, passed in (
             ("gc_content_min", gc_content, gc_content >= filters.gc_min),
             ("gc_content_max", gc_content, gc_content <= filters.gc_max),

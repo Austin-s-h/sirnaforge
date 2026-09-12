@@ -163,14 +163,18 @@ to nothing.
 Two honesty notes the manifest carries per gate, because the code earns them and prose would not:
 
 - Six of the nine off-target gates read a **query-species-stratified** counter, not the all-species
-  column of the same name, so their `scope.species` is the run's own query species and `evidence_exported` is `false` — the
-  counter they compare is not in the candidate CSV, so a client cannot re-apply them and get the
-  pipeline's answer. Exporting those counters is separate filter-scope work. The six do **not** all
-  stratify the same way, and each gate's `definition` says which it is: `max_transcriptome_hits_0mm`,
-  `_1mm` and `_2mm` count hits that are human **or unlabelled** (a blank species label is read as the
-  query species); `max_mirna_perfect_seed` and `fail_on_high_risk_mirna` count hits labelled human
-  **only**, so an unlabelled miRNA hit reaches neither gate; and `max_total_offtarget_hits` **sums the
-  two conventions** in one number.
+  column of the same name, so their `scope.species` is the run's own query species. Each now **exports
+  that counter** as its own `*_query` column, so `evidence_exported` is `true` for every declared gate
+  and re-applying any descriptor against its declared column reproduces the run's verdict. Both
+  numbers are on the row on purpose: the all-species counter and the stratified one are different
+  quantities, and a client that reads the wrong one gets a different answer from the run.
+
+  The six do **not** all stratify the same way, and each gate's `definition` says which it is:
+  `max_transcriptome_hits_0mm`, `_1mm` and `_2mm` count hits in the query species **or unlabelled** (a
+  blank species label is read as the query species); `max_mirna_perfect_seed` and
+  `fail_on_high_risk_mirna` count hits **labelled** with the query species only, so an unlabelled miRNA
+  hit reaches neither gate; and `max_total_offtarget_hits` **sums the two conventions** in one number,
+  which is why it has its own column rather than being re-derivable by addition.
 - `max_mirna_1mm_seed` is read by no gate in 0.7.1, so it resolves to `off`, and asking for `warn` or
   `fail` on it is refused. It no longer declares a threshold either: the default was `10`, which read
   as a limit the run enforced, and it is now `None` so the setting states nothing it cannot apply.

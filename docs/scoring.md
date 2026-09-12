@@ -349,6 +349,7 @@ The `candidates_pass.csv` and `candidates_all.csv` files include:
 | `passes_filters`                                                  | `PASS` or the first failed filter                                                                                                                                            |
 | `<filter_id>_verdict`                                             | That gate's own outcome: `pass`, `fail`, `unknown` or `not_evaluated` — one column per declared filter                                                                       |
 | `<filter_id>_observed`                                            | The value that gate actually compared; empty when it observed nothing                                                                                                        |
+| every gate's own declared column | Each declared gate names a column the row carries, so re-applying its descriptor reproduces the run's verdict. The six query-species-stratified gates export `*_query` counters beside the all-species ones — different quantities, both published |
 | `selection_state` | What the resolved selection claimed: `eligible` / `withheld_incomplete_evidence` / `not_eligible` / `not_selected` |
 
 ### The per-gate verdict columns

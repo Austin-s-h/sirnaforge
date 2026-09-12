@@ -558,6 +558,20 @@ where the two defects removed here were first written down as outstanding.)
   and the model default are the same 0.001; reachable from the CLI today via `--policy-config`. All
   five sites now read the resolved value, verified end to end: a run configured at 0.05 reports 0.05 in
   all three fields.
+- **Seven gates declared a column the candidate row did not carry** (#101 filter scope), so they
+  shipped `evidence_exported: false` and a client re-applying the descriptor read a *same-named
+  all-species* column instead and got a different answer from the run. The six query-species-stratified
+  gates now export their own counter — `transcriptome_hits_{0,1,2}mm_query`,
+  `mirna_hits_0mm_seed_query`, `mirna_hits_high_risk_query`, `total_offtarget_hits_query` — and
+  `max_poly_runs` exports `max_poly_run_length`. Both numbers are on the row deliberately: the
+  all-species counter and the stratified one are different quantities.
+
+  **Every declared gate is now re-derivable from the exported row**, which is #103's gate-parity
+  property in its Python half. Verified on a real Docker/Nextflow mouse screen by rebuilding the gates
+  from the run's own `manifest.json` and re-applying each against its declared column over
+  `candidates_all.csv`: **63,148 verdicts re-derived across 13 deciding gates, 0 disagreements.**
+  `evidence_exported` is now `true` for all 17 and a test pins it against the row builder, so a renamed
+  column cannot turn it into a false claim.
 - **Six gates measured zero on any non-human query species.** The mismatch- and miRNA-stratified gates
   counted hits with a literal `is_human_species` test, and their declared `scope.species` was fixed at
   `["human"]`, so on a mouse-query run they saw nothing while the exported column showed the hits.

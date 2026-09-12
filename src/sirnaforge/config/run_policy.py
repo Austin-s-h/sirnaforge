@@ -391,7 +391,6 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         stage=FilterStage.DESIGN,
         definition="Longest run of one nucleotide in the guide; fails POLY_RUNS.",
         default_action=FilterAction.FAIL,
-        evidence_exported=False,
     ),
     _FilterSpec(
         filter_id="max_repeat_transcript_fraction",
@@ -470,7 +469,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
     _FilterSpec(
         filter_id="max_transcriptome_hits_0mm",
         setting_key="max_transcriptome_hits_0mm",
-        column="transcriptome_hits_0mm_human",
+        column="transcriptome_hits_0mm_query",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=f"Perfect-match genuine off-target transcriptome hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
@@ -478,12 +477,11 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         scope_query_species=True,
         scope_max_mismatches=0,
         scope_hit_classes=_LIABILITY_CLASSES,
-        evidence_exported=False,
     ),
     _FilterSpec(
         filter_id="max_transcriptome_hits_1mm",
         setting_key="max_transcriptome_hits_1mm",
-        column="transcriptome_hits_1mm_human",
+        column="transcriptome_hits_1mm_query",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=f"1-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
@@ -491,12 +489,11 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         scope_query_species=True,
         scope_max_mismatches=1,
         scope_hit_classes=_LIABILITY_CLASSES,
-        evidence_exported=False,
     ),
     _FilterSpec(
         filter_id="max_transcriptome_hits_2mm",
         setting_key="max_transcriptome_hits_2mm",
-        column="transcriptome_hits_2mm_human",
+        column="transcriptome_hits_2mm_query",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=f"2-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
@@ -504,7 +501,6 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         scope_query_species=True,
         scope_max_mismatches=2,
         scope_hit_classes=_LIABILITY_CLASSES,
-        evidence_exported=False,
     ),
     _FilterSpec(
         filter_id="max_transcriptome_seed_perfect",
@@ -523,7 +519,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
     _FilterSpec(
         filter_id="max_mirna_perfect_seed",
         setting_key="max_mirna_perfect_seed",
-        column="mirna_hits_0mm_seed_human",
+        column="mirna_hits_0mm_seed_query",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(
@@ -535,7 +531,6 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         ),
         default_action=FilterAction.WARN,
         scope_query_species=True,
-        evidence_exported=False,
     ),
     _FilterSpec(
         filter_id="max_mirna_1mm_seed",
@@ -552,7 +547,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
     _FilterSpec(
         filter_id="fail_on_high_risk_mirna",
         setting_key="fail_on_high_risk_mirna",
-        column="mirna_hits_high_risk_human",
+        column="mirna_hits_high_risk_query",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(
@@ -566,17 +561,15 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         default_action=FilterAction.WARN,
         scope_query_species=True,
         transform="a boolean flag, expressed as a ceiling of 0 so it carries a comparator like every other gate",
-        evidence_exported=False,
     ),
     _FilterSpec(
         filter_id="max_total_offtarget_hits",
         setting_key="max_total_offtarget_hits",
-        column="total_offtarget_hits_human",
+        column="total_offtarget_hits_query",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(f"Transcriptome plus miRNA hits combined: {_MIXED_HUMAN_NOTE}; fails TOTAL_OFFTARGETS."),
         default_action=FilterAction.FAIL,
-        evidence_exported=False,
         scope_query_species=True,
     ),
 )
