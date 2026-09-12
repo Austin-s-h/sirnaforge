@@ -113,14 +113,14 @@ class NextflowRunner:
         return self._pipeline_revision
 
     async def run(
-        self, input_file: Path, output_dir: Path, genome_species: list[str] | None = None, **kwargs: Any
+        self, input_file: Path, output_dir: Path, screen_species: list[str] | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         """Simple method to run Nextflow workflow with auto-validation and defaults.
 
         Args:
             input_file: Path to input FASTA file
             output_dir: Output directory for results
-            genome_species: List of species for miRNA genome lookups (defaults to ["human", "rat", "rhesus"])
+            screen_species: Species to screen against (defaults to ["human", "rat", "rhesus"])
             **kwargs: Additional parameters passed to run_offtarget_analysis
 
         Returns:
@@ -137,22 +137,22 @@ class NextflowRunner:
             raise NextflowExecutionError("Nextflow workflow files not found.")
 
         # Set defaults
-        genome_species = genome_species or ["human", "rat", "rhesus"]
+        screen_species = screen_species or ["human", "rat", "rhesus"]
 
         # Run the analysis
         return await self.run_offtarget_analysis(
-            input_file=input_file, output_dir=output_dir, genome_species=genome_species, **kwargs
+            input_file=input_file, output_dir=output_dir, screen_species=screen_species, **kwargs
         )
 
     def run_sync(
-        self, input_file: Path, output_dir: Path, genome_species: list[str] | None = None, **kwargs: Any
+        self, input_file: Path, output_dir: Path, screen_species: list[str] | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         """Synchronous version of run() for simpler usage without async/await.
 
         Args:
             input_file: Path to input FASTA file
             output_dir: Output directory for results
-            genome_species: List of species for miRNA genome lookups (defaults to ["human", "rat", "rhesus"])
+            screen_species: Species to screen against (defaults to ["human", "rat", "rhesus"])
             **kwargs: Additional parameters passed to run_offtarget_analysis
 
         Returns:
@@ -166,12 +166,12 @@ class NextflowRunner:
             raise NextflowExecutionError("Nextflow workflow files not found.")
 
         # Set defaults
-        genome_species = genome_species or ["human", "rat", "rhesus"]
+        screen_species = screen_species or ["human", "rat", "rhesus"]
 
         # Run synchronously
         return asyncio.run(
             self.run_offtarget_analysis(
-                input_file=input_file, output_dir=output_dir, genome_species=genome_species, **kwargs
+                input_file=input_file, output_dir=output_dir, screen_species=screen_species, **kwargs
             )
         )
 
@@ -179,7 +179,7 @@ class NextflowRunner:
         self,
         input_file: Path,
         output_dir: Path,
-        genome_species: list[str],
+        screen_species: list[str],
         additional_params: dict[str, Any] | None = None,
         show_progress: bool = True,
     ) -> dict[str, Any]:
@@ -188,7 +188,7 @@ class NextflowRunner:
         Args:
             input_file: Path to siRNA candidates FASTA file
             output_dir: Output directory for results
-            genome_species: List of species for miRNA genome lookups
+            screen_species: Species to screen against for off-target liabilities
             additional_params: Additional parameters for the workflow
             show_progress: Whether to show progress indicators
 
@@ -213,7 +213,7 @@ class NextflowRunner:
         args = self.config.get_nextflow_args(
             input_file=abs_input_file,
             output_dir=abs_output_dir,
-            genome_species=genome_species,
+            screen_species=screen_species,
             additional_params=additional_params,
         )
 
@@ -363,7 +363,6 @@ class NextflowRunner:
         output_files = {
             "combined_analyses": list(output_dir.glob("**/combined_*_analysis.tsv")),
             "combined_summary": list(output_dir.glob("**/combined_summary.json")),
-            "html_report": list(output_dir.glob("**/analysis_report.html")),
             "validation_report": list(output_dir.glob("**/validation_report.txt")),
             "individual_results": list(output_dir.glob("**/individual_results/")),
         }
@@ -373,7 +372,9 @@ class NextflowRunner:
             "total_files": sum(len(files) for files in output_files.values()),
             "analysis_files": len(output_files["combined_analyses"]),
             "summary_files": len(output_files["combined_summary"]),
-            "report_files": len(output_files["html_report"]),
+            # No report_files count: the only analysis_report.html this pipeline ever produced was an
+            # empty file the stub touched, so the count reported a report that did not exist. The real
+            # report is written by step6 (sirnaforge/report.html) and by `sirnaforge report`.
         }
 
         stdout_text = ""

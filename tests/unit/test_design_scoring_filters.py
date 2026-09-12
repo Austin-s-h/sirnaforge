@@ -23,7 +23,6 @@ from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
     FilterCriteria,
-    MiRNADesignConfig,
     SiRNACandidate,
 )
 from sirnaforge.workflow import run_sirna_workflow
@@ -165,22 +164,40 @@ def test_asymmetry_threshold_default_is_shared():
 
 @pytest.mark.unit
 def test_low_asymmetry_label_tracks_the_asymmetry_score(realistic_transcripts_fasta):
-    """The LOW_ASYMMETRY label must be consistent with the column it is named after."""
+    """The asymmetry verdict must be consistent with the column it is named after.
+
+    The gate ships as ``warn``, so it records its verdict and does not reject: a candidate below the
+    floor is flagged in ``filter_verdicts`` and still reaches the passing set. The floor decides more
+    of the design space than any other single number and has never been validated, so this asserts
+    the verdict tracks the column -- not that the label rejects anybody.
+    """
     result = _design_gaphd(realistic_transcripts_fasta)
     threshold = result.parameters.filters.min_asymmetry_score
-    labelled = [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_ASYMMETRY]
-    passing = [c for c in result.candidates if c.passes_filters is True]
+    failed = [c for c in result.candidates if c.filter_verdicts.get("min_asymmetry_score") == "fail"]
+    passed = [c for c in result.candidates if c.filter_verdicts.get("min_asymmetry_score") == "pass"]
 
-    assert labelled, "expected some candidates to fail the asymmetry gate"
-    assert passing, "expected some candidates to pass"
-    assert all(c.asymmetry_score < threshold for c in labelled)
-    assert all(c.asymmetry_score >= threshold for c in passing)
+    assert failed, "expected some candidates below the asymmetry floor"
+    assert passed, "expected some candidates above it"
+    assert all(c.asymmetry_score < threshold for c in failed)
+    assert all(c.asymmetry_score >= threshold for c in passed)
+    assert all(c.filter_observed["min_asymmetry_score"] == c.asymmetry_score for c in result.candidates)
+
+    # Warn means warn: being below the floor must not, on its own, reject a candidate.
+    assert not [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_ASYMMETRY], (
+        "min_asymmetry_score ships as warn; it must record its verdict without rejecting"
+    )
+    assert any(c.passes_filters is True for c in failed), "a warn-flagged candidate still passes"
 
 
 @pytest.mark.unit
 def test_low_empirical_label_tracks_the_empirical_score(realistic_transcripts_fasta):
-    """The empirical rule gets its own status, gated on its own threshold."""
-    result = _design_gaphd(realistic_transcripts_fasta)
+    """The empirical rule gets its own status, gated on its own threshold.
+
+    The threshold is set explicitly because the shipped default is EMPIRICAL_SCORE_MIN, i.e. the
+    gate is inert: the rubric's positional rules sit at the guide 3' end, where measured knockdown
+    shows no signal. This exercises the gate mechanism, not the default.
+    """
+    result = _design_gaphd(realistic_transcripts_fasta, filters=FilterCriteria(min_empirical_score=0.5))
     threshold = result.parameters.filters.min_empirical_score
     labelled = [c for c in result.candidates if c.passes_filters == SiRNACandidate.FilterStatus.LOW_EMPIRICAL_SCORE]
 
@@ -206,8 +223,11 @@ def test_pass_is_no_longer_decided_by_two_nucleotides(realistic_transcripts_fast
 
 @pytest.mark.unit
 def test_new_filter_label_survives_csv_schema_validation(realistic_transcripts_fasta, tmp_path):
-    """LOW_EMPIRICAL_SCORE must be registered with the candidate CSV schema."""
-    result = _design_gaphd(realistic_transcripts_fasta)
+    """LOW_EMPIRICAL_SCORE must be registered with the candidate CSV schema.
+
+    Threshold set explicitly: the shipped default leaves this gate inert.
+    """
+    result = _design_gaphd(realistic_transcripts_fasta, filters=FilterCriteria(min_empirical_score=0.5))
     output = tmp_path / "candidates.csv"
 
     validated = result.save_csv(str(output))
@@ -216,42 +236,48 @@ def test_new_filter_label_survives_csv_schema_validation(realistic_transcripts_f
 
 
 @pytest.mark.unit
-def test_mirna_composite_score_does_not_pile_up_at_the_ceiling(realistic_transcripts_fasta):
-    """MiRNA bonuses must rescale the score, not clamp it at 100.
+def test_design_scores_do_not_pile_up_at_the_ceiling(realistic_transcripts_fasta):
+    """The design score must discriminate at the top, not park candidates at 100.
 
-    Clamping parked the best candidates at exactly 100.0 -- nine of them on this
-    transcript -- so the top of the ranking carried no ordering information.
+    An earlier miRNA implementation clamped the bonus-inflated score, parking the best candidates
+    at exactly 100.0 -- nine of them on this transcript -- so the top of the ranking carried no
+    ordering information. design_v4 sums to 1.0 and takes features in [0, 1], so 100 is reachable
+    only by a candidate perfect on all three terms; nothing is clamped into it.
     """
     record = next(SeqIO.parse(realistic_transcripts_fasta, "fasta"))
     designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
 
     result = designer.design_from_sequence(str(record.seq).upper(), record.id)
-    scores = [c.composite_score for c in result.candidates]
+    scores = [c.design_score for c in result.candidates if c.design_score is not None]
 
+    assert scores, "no candidate received a design score"
     assert all(0.0 <= score <= 100.0 for score in scores)
     assert sum(1 for score in scores if score == 100.0) == 0, "candidates are still clamped at the ceiling"
 
 
 @pytest.mark.unit
-def test_mirna_composite_score_is_the_normalised_sirna_score(realistic_transcripts_fasta):
-    """The miRNA score is (base + bonus) rescaled by the maximum attainable bonus."""
+def test_mirna_mode_does_not_alter_the_design_score(realistic_transcripts_fasta):
+    """Issue #96: the design stage scores one vector, so miRNA mode and siRNA mode agree exactly.
+
+    Before the fix miRNA mode folded the biogenesis bonuses into the design-stage composite and
+    divided the result by 1.25, so every declared weight was silently scaled by 0.80 and a
+    candidate earning no bonus kept only 80% of its score. The biogenesis terms are now declared
+    members of postscreen_mirna_v4 and enter only once off_target exists.
+    """
     record = next(SeqIO.parse(realistic_transcripts_fasta, "fasta"))
     sequence = str(record.seq).upper()
-    weights = MiRNADesignConfig().scoring_weights
-    max_bonus = weights["ago_start_bonus"] + weights["pos1_mismatch_bonus"] + weights["supp_13_16_bonus"]
 
     base = SiRNADesigner(DesignParameters()).design_from_sequence(sequence, record.id)
     mirna = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA)).design_from_sequence(sequence, record.id)
-    base_scores = {c.id: c.composite_score for c in base.candidates}
+    base_scores = {c.id: c.design_score for c in base.candidates}
 
-    for candidate in mirna.candidates[:50]:
-        bonus = weights["supp_13_16_bonus"] * candidate.supp_13_16_score
-        if candidate.guide_pos1_base in ("A", "U", "T"):
-            bonus += weights["ago_start_bonus"]
-        if candidate.pos1_pairing_state in ("wobble", "mismatch"):
-            bonus += weights["pos1_mismatch_bonus"]
-        expected = (base_scores[candidate.id] + bonus * 100) / (1.0 + max_bonus)
-        assert candidate.composite_score == pytest.approx(expected)
+    assert len(mirna.candidates) == len(base.candidates)
+    for candidate in mirna.candidates:
+        assert candidate.design_score == pytest.approx(base_scores[candidate.id])
+        assert candidate.weight_vector == "design_v4"
+        # The biogenesis evidence is still recorded -- it is just not scored yet.
+        assert candidate.supp_13_16_score is not None
+        assert candidate.component_scores["ago_start"] in (0.0, 1.0)
 
 
 @pytest.mark.unit
@@ -347,3 +373,47 @@ def test_threshold_overrides_take_effect_and_stay_validated():
     # Constructed, not model_copy'd, so the declared bounds still hold.
     with pytest.raises(ValidationError):
         FilterCriteria(gc_min=30.0, gc_max=52.0, min_asymmetry_score=0.0)
+
+
+@pytest.mark.unit
+def test_the_enumeration_gates_record_what_they_observed():
+    """gc_content_min/max and max_poly_runs decide during enumeration and must still say so.
+
+    They used to set ``passes_filters`` directly and record no verdict, so all three exported
+    ``not_evaluated`` with an empty observed value on every row of every run. A consumer could not
+    tell a gate that passed from one that never ran, and the HTML report could not call any guide of
+    any run clean.
+    """
+    # A deliberate 6-mer poly-A run, so the poly-run gate has both outcomes to record.
+    sequence = "ATGGCACCTGTTAAAGCTCTGGACCAGGAAAAAAGTCTGCTGGCATGCTAGCTAGCATCGATCGGATCCAGT"
+    designer = SiRNADesigner(DesignParameters(sirna_length=21))
+    kept, rejected = designer._enumerate_candidates(sequence, "ENSTTEST")
+
+    assert kept and rejected, "the fixture must exercise both outcomes"
+    for candidate in kept + rejected:
+        for filter_id in ("gc_content_min", "gc_content_max", "max_poly_runs"):
+            assert filter_id in candidate.filter_verdicts, f"{filter_id} recorded no verdict"
+            assert candidate.filter_observed[filter_id] is not None, f"{filter_id} recorded no value"
+
+    survivor = kept[0]
+    assert survivor.filter_verdicts["max_poly_runs"] == "pass"
+    assert survivor.filter_observed["gc_content_min"] == pytest.approx(survivor.gc_content)
+
+    poly_rejected = [c for c in rejected if c.passes_filters is SiRNACandidate.FilterStatus.POLY_RUNS]
+    assert poly_rejected, "the fixture must reject something on poly-runs"
+    assert poly_rejected[0].filter_verdicts["max_poly_runs"] == "fail"
+    assert poly_rejected[0].filter_observed["max_poly_runs"] > 3
+
+
+@pytest.mark.unit
+def test_longest_poly_run_measures_the_run_rather_than_answering_yes_or_no():
+    """The gate compares a length, so the length is what the design path has to produce."""
+    assert SiRNADesigner._longest_poly_run("ACGT") == 1
+    assert SiRNADesigner._longest_poly_run("AACCGGTT") == 2
+    assert SiRNADesigner._longest_poly_run("ACGAAAAT") == 4
+    assert SiRNADesigner._longest_poly_run("AAAA") == 4
+    assert SiRNADesigner._longest_poly_run("") == 0
+
+    designer = SiRNADesigner(DesignParameters(sirna_length=21))
+    assert designer._has_poly_runs("ACGAAAAT", 3) is True
+    assert designer._has_poly_runs("ACGAAAT", 3) is False

@@ -58,15 +58,14 @@ def _full_candidate(
         repeat_transcript_fraction=0.0005,
         isoform_coverage=0.66,
         conservation_score=0.5,
+        design_score=71.0,
         score_asymmetry=8.4,
         score_gc_content=5.7,
         score_target_accessibility=9.1,
-        score_empirical=12.0,
         score_off_target=20.0,
-        score_isoform_coverage=9.9,
-        score_conservation=5.0,
         scored_after_screening=True,
-        weight_set_version="2.0.0",
+        weight_set_version="4.0.0",
+        weight_vector="postscreen_sirna_v4",
     )
 
 
@@ -134,18 +133,63 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
         "score_asymmetry",
         "score_gc_content",
         "score_target_accessibility",
-        "score_empirical",
         "score_off_target",
-        "score_isoform_coverage",
-        "score_conservation",
         "scored_after_screening",
         "weight_set_version",
+        # Issue #96 replaced the contributions of the three terms that left the composite
+        # (empirical, isoform_coverage, conservation) with the miRNA terms that joined it, and
+        # split the one score column into the two vectors that actually exist.
+        "score_ago_start",
+        "score_supp_13_16",
+        "empirical_score",
+        "design_score",
+        "composite_score",
+        "weight_vector",
     }
     missing = new_issue80_columns - workflow_columns
     assert not missing, f"workflow CSV is missing issue #80 columns: {sorted(missing)}"
 
     # The two writers must never again drift on which columns they emit.
     assert workflow_columns == save_csv_columns
+
+
+@pytest.mark.unit
+def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The completed workflow publishes its self-contained report with its candidate artifacts."""
+    workflow = _minimal_workflow(tmp_path, "report_out")
+    candidate = _full_candidate("cand_report")
+    design_result = DesignResult(
+        input_file="<test>",
+        parameters=workflow.config.design_params,
+        candidates=[candidate],
+        top_candidates=[candidate],
+        total_sequences=1,
+        total_candidates=1,
+        filtered_candidates=1,
+        processing_time=0.1,
+    )
+
+    # The workflow hands over the policy it resolved, so the report cannot fall back to library
+    # default thresholds and publish gates this run never applied.
+    monkeypatch.setattr(
+        "sirnaforge.workflow.build_payload",
+        lambda run_dir, *, policy: {"run_dir": run_dir, "policy": policy},
+    )
+
+    def _write_report(payload: object, output: Path) -> Path:
+        assert payload == {
+            "run_dir": workflow.config.output_dir,
+            "policy": workflow.config.resolved_policy,
+        }
+        assert (workflow.config.output_dir / "sirnaforge" / "manifest.json").exists()
+        output.write_text("<html>report</html>")
+        return output
+
+    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_report)
+
+    asyncio.run(workflow.step6_generate_reports(design_result))
+
+    assert (workflow.config.output_dir / "sirnaforge" / "report.html").read_text() == "<html>report</html>"
 
 
 @pytest.mark.unit
@@ -304,7 +348,7 @@ def test_per_species_breakdown_is_populated_for_every_screened_species(tmp_path:
     config = WorkflowConfig(
         output_dir=tmp_path / "species_out",
         gene_query="TP53",
-        genome_species=["human", "mouse"],
+        screen_species=["human", "mouse"],
         design_params=DesignParameters(),
     )
     workflow = SiRNAWorkflow(config)
@@ -342,6 +386,7 @@ def test_per_species_breakdown_is_populated_for_every_screened_species(tmp_path:
         "ortholog": 0,
         "repeat": 0,
         "off_target": 0,
+        "undetermined": 0,
         "symbol_lookup_missing": 0,
         "species_index_missing": 0,
     }

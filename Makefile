@@ -13,7 +13,10 @@ export SIRNAFORGE_NEXTFLOW_IMAGE
 # Host user mapping (prevents root-owned outputs on bind mounts)
 HOST_UID = $(shell id -u)
 HOST_GID = $(shell id -g)
-DOCKER_HOST_USER = --user $(HOST_UID):$(HOST_GID)
+# Docker daemons with userns-remap cannot represent directory-service IDs
+# unless the container opts into the host user namespace.
+DOCKER_HOST_NAMESPACE ?= --userns=host
+DOCKER_HOST_USER = $(DOCKER_HOST_NAMESPACE) --user $(HOST_UID):$(HOST_GID)
 
 # Docker configuration
 UV_CACHE_MOUNT = $(shell \
@@ -30,7 +33,7 @@ DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIR
 # Propagate CI-related env vars into the container so tests can reliably
 # skip known-flaky network flows in CI (e.g., Ensembl blocks runner IPs).
 DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE
-DOCKER_RUN = docker run --rm $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
+DOCKER_RUN = docker run --rm $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
 # GitHub Actions checkouts (and many local workspaces) are often owned by a
 # different UID than the container's default non-root user. Use the host
@@ -222,7 +225,7 @@ docker-shell: docker-ensure ## Interactive shell in Docker
 
 docker-run: GENE ?= TP53  ## Run workflow in Docker (usage: make docker-run GENE=TP53)
 docker-run: cache-ensure docker-ensure
-	$(DOCKER_RUN) $(DOCKER_HOST_USER) sirnaforge workflow $(GENE) --output-dir docker_results
+	$(DOCKER_RUN) sirnaforge workflow $(GENE) --output-dir docker_results
 
 docker-nextflow-help: cache-ensure docker-ensure ## Show embedded Nextflow pipeline help inside the container
 	docker run --rm $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest bash -c \
@@ -237,15 +240,22 @@ docker: docker-build
 # CODE QUALITY
 #==============================================================================
 
+# scripts/ is tracked, load-bearing tooling (baseline measurement, fixture builders) and was
+# outside every gate until 0.7.1, so it is now fully linted and type-checked with no exclusions.
+# tests/ stays out of mypy deliberately: `mypy tests` reports 125 pre-existing errors across 14
+# files, which is its own work package, not this one.
+RUFF_PATHS := src tests scripts
+MYPY_PATHS := src scripts
+
 lint: ## Check code quality
-	uv run ruff check src tests
-	uv run ruff format --check src tests
-	uv run mypy src
+	uv run ruff check $(RUFF_PATHS)
+	uv run ruff format --check $(RUFF_PATHS)
+	uv run mypy $(MYPY_PATHS)
 	@echo "Code quality checks passed!"
 
 format: ## Auto-format code
-	uv run ruff format src tests
-	uv run ruff check --fix src tests
+	uv run ruff format $(RUFF_PATHS)
+	uv run ruff check --fix $(RUFF_PATHS)
 	@echo "Code formatted!"
 
 check: format test-dev ## Quick check: format + fast tests

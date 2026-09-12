@@ -12,6 +12,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 from sirnaforge import __version__
+from sirnaforge.config.run_policy import FILTER_SPEC_BY_ID
 from sirnaforge.core.repeat_detection import RepeatObservation, normalize_guide_sequence
 from sirnaforge.core.scoring import ScoringError, compute_composite, target_accessibility_sub_score
 from sirnaforge.core.thermodynamics import (
@@ -20,12 +21,14 @@ from sirnaforge.core.thermodynamics import (
     TargetSiteAccessibility,
     ThermodynamicCalculator,
 )
+from sirnaforge.models.policy import FilterAction, FilterEvaluation
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
     EMPIRICAL_SCORE_MIN,
     DesignParameters,
     DesignResult,
     SiRNACandidate,
+    ranking_score,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
@@ -45,6 +48,12 @@ TRANSCRIPT_ID_MAX_LEN = 24
 ID_DIGEST_LEN = 8
 
 
+#: What a candidate retained by a warn-action enumeration gate carries in ``quality_issues``. Its
+#: `<filter_id>_verdict` column already says which gate, and `passes_filters` stays PASS; this is the
+#: human-readable trace so the row does not read as clean.
+_GATE_WARNED_ISSUE = "GATE_WARNED"
+
+
 def _as_rna(sequence: str) -> str:
     """Read a stored (DNA) sequence as RNA so T and U compare equal."""
     return sequence.upper().replace("T", "U")
@@ -53,10 +62,33 @@ def _as_rna(sequence: str) -> str:
 class SiRNADesigner:
     """Main siRNA design engine following the algorithm specification."""
 
-    def __init__(self, parameters: DesignParameters) -> None:
-        """Initialize designer with given parameters."""
+    def __init__(
+        self,
+        parameters: DesignParameters,
+        *,
+        filter_actions: Mapping[str, FilterAction] | None = None,
+    ) -> None:
+        """Initialize designer with given parameters.
+
+        Args:
+            parameters: Thresholds and scoring settings.
+            filter_actions: Per-filter actions from the resolved run policy. Keyword-only with a
+                default because the declared defaults are the right answer when a caller has no
+                policy in hand -- ``DesignParameters`` carries thresholds and says nothing about
+                whether exceeding one rejects a candidate, so without this the designer could only
+                ever reject and ``FilterAction.WARN`` would be inert.
+        """
         self.parameters = parameters
+        self._filter_actions: Mapping[str, FilterAction] = filter_actions or {}
         self.last_guide_to_transcripts: dict[str, set[str]] | None = None
+
+    def _action_for(self, filter_id: str) -> FilterAction:
+        """The action in force for one filter: the caller's policy, else the declared default."""
+        override = self._filter_actions.get(filter_id)
+        if override is not None:
+            return override
+        spec = FILTER_SPEC_BY_ID.get(filter_id)
+        return spec.default_action if spec is not None else FilterAction.FAIL
 
     def design_from_file(self, input_file: str) -> DesignResult:
         """Design siRNAs from input FASTA file."""
@@ -78,8 +110,8 @@ class SiRNADesigner:
             sequence = str(seq_record.seq).upper()
 
             # Generate candidates for this sequence
-            candidates, rejected = self._enumerate_candidates(sequence, transcript_id)
-            rejected_pool.extend(rejected)
+            candidates, gate_failed = self._enumerate_candidates(sequence, transcript_id)
+            rejected_pool.extend(gate_failed)
 
             # Apply filters
             filtered_candidates = self._apply_filters(candidates)
@@ -94,8 +126,8 @@ class SiRNADesigner:
 
             all_candidates.extend(scored_candidates)
 
-        # Sort by composite score (descending)
-        all_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        # Sort by design_score (descending); composite_score does not exist until screening.
+        all_candidates.sort(key=ranking_score, reverse=True)
 
         # Get top candidates only from those passing filters; fallback to all if none pass
         passing = [
@@ -147,7 +179,7 @@ class SiRNADesigner:
         sequence = sequence.upper()
 
         # Generate candidates
-        candidates, rejected = self._enumerate_candidates(sequence, transcript_id)
+        candidates, gate_failed = self._enumerate_candidates(sequence, transcript_id)
 
         # Apply filters
         filtered_candidates = self._apply_filters(candidates)
@@ -155,8 +187,8 @@ class SiRNADesigner:
         # Score candidates, with the transcript in scope for target_accessibility
         scored_candidates = self._score_candidates(filtered_candidates, sequence)
 
-        # Sort by composite score (descending)
-        scored_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        # Sort by design_score (descending); composite_score does not exist until screening.
+        scored_candidates.sort(key=ranking_score, reverse=True)
 
         # Get top candidates only from those passing filters; fallback to all if none pass
         passing = [
@@ -192,7 +224,7 @@ class SiRNADesigner:
             ),
             processing_time=processing_time,
             tool_versions=self._get_tool_versions(),
-            rejected_candidates=rejected,
+            rejected_candidates=gate_failed,
         )
 
     def _enumerate_candidates(
@@ -200,9 +232,8 @@ class SiRNADesigner:
     ) -> tuple[list[SiRNACandidate], list[SiRNACandidate]]:
         """Enumerate all possible siRNA candidates and record those failing early filters."""
         candidates: list[SiRNACandidate] = []
-        rejected: list[SiRNACandidate] = []
+        gate_failed: list[SiRNACandidate] = []
         sirna_length = self.parameters.sirna_length
-        filters = self.parameters.filters
 
         # Slide window across sequence
         for i in range(len(sequence) - sirna_length + 1):
@@ -214,11 +245,7 @@ class SiRNADesigner:
 
             # Early filtering for computational efficiency
             gc_content = self._calculate_gc_content(guide_seq)
-            fail_reason: SiRNACandidate.FilterStatus | None = None
-            if not (filters.gc_min <= gc_content <= filters.gc_max):
-                fail_reason = SiRNACandidate.FilterStatus.GC_OUT_OF_RANGE
-            elif self._has_poly_runs(guide_seq, filters.max_poly_runs):
-                fail_reason = SiRNACandidate.FilterStatus.POLY_RUNS
+            poly_run = self._longest_poly_run(guide_seq)
 
             # Create candidate ID with project moniker and sanitized transcript id
             # Format: SIRNAF_<TRANSCRIPT>_<start>_<end>
@@ -241,40 +268,77 @@ class SiRNADesigner:
                 gc_content=gc_content,
                 length=sirna_length,
                 asymmetry_score=0.0,  # Will be calculated in scoring
-                composite_score=0.0,  # Will be calculated in scoring
             )
 
-            if fail_reason is not None:
-                candidate.passes_filters = fail_reason
+            self._record_enumeration_verdicts(candidate, gc_content, poly_run)
+
+            # The recorder is the authority on both questions, so neither is re-derived here. It has
+            # already stamped `passes_filters` for any gate whose resolved action is FAIL, and left it
+            # alone for a gate that only warns -- which is what makes `warn` mean anything on these
+            # three gates. Re-deriving the label from the thresholds and rejecting unconditionally is
+            # what made the action unreachable: `warn` behaved exactly like `fail` (#105's defect
+            # class, in three more places).
+            failed_a_gate = any(
+                verdict == FilterEvaluation.FAIL.value for verdict in candidate.filter_verdicts.values()
+            )
+            rejected_here = candidate.passes_filters is not True
+            if failed_a_gate:
+                label = candidate.passes_filters
                 issues = list(candidate.quality_issues or [])
-                label = fail_reason.value if hasattr(fail_reason, "value") else str(fail_reason)
-                issues.append(label)
+                issues.append(
+                    (label.value if hasattr(label, "value") else str(label)) if rejected_here else _GATE_WARNED_ISSUE
+                )
                 candidate.quality_issues = issues
-                rejected.append(candidate)
+                # Every gate failure joins this pool, not only the rejections: it is the source the
+                # dirty-control sentinels draw from, and under `warn` there would otherwise be none --
+                # which would disable the observability controls silently.
+                gate_failed.append(candidate)
+            if rejected_here:
                 continue
 
             candidates.append(candidate)
 
-        return candidates, rejected
+        return candidates, gate_failed
+
+    def _record_enumeration_verdicts(self, candidate: SiRNACandidate, gc_content: float, poly_run: int) -> None:
+        """Record what the three enumeration-time gates observed on this candidate.
+
+        These gates decide during enumeration, and used to set ``passes_filters`` directly without
+        recording a verdict. That left ``gc_content_min``, ``gc_content_max`` and ``max_poly_runs``
+        exporting ``not_evaluated`` and an empty observed value on every row of every run -- so a
+        consumer could not tell a gate that passed from one that never ran, and no candidate could be
+        shown as clean. ``passes_filters`` is still set by the caller, which owns the first-label rule.
+        """
+        filters = self.parameters.filters
+        # Written onto the row, not only into filter_observed: max_poly_runs declares this as its
+        # column, so without it that gate could not be re-derived from the exported row.
+        candidate.max_poly_run_length = poly_run
+        for filter_id, observed, passed in (
+            ("gc_content_min", gc_content, gc_content >= filters.gc_min),
+            ("gc_content_max", gc_content, gc_content <= filters.gc_max),
+            ("max_poly_runs", float(poly_run), poly_run <= filters.max_poly_runs),
+        ):
+            candidate.record_filter_verdict(
+                filter_id,
+                observed=observed,
+                passed=passed,
+                action=self._action_for(filter_id),
+                status=_ModelCandidate.FilterStatus.GC_OUT_OF_RANGE
+                if filter_id.startswith("gc_content")
+                else _ModelCandidate.FilterStatus.POLY_RUNS,
+            )
 
     def _apply_filters(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
-        """Apply remaining filters (early GC and poly-run filtering already done in enumeration)."""
-        filtered = []
+        """Pass the enumerated candidates through unchanged.
 
-        for candidate in candidates:
-            issues: list[str] = []
-            status: bool | _ModelCandidate.FilterStatus = True
-
-            # Note: GC content and poly-run filtering already done in _enumerate_candidates
-            # This is mainly for any additional filters or post-processing
-
-            # Update candidate with filter results
-            candidate.passes_filters = status
-            candidate.quality_issues = issues
-
-            filtered.append(candidate)
-
-        return filtered
+        It used to reset ``passes_filters = True`` and ``quality_issues = []`` on every candidate,
+        which was invisible only because a candidate rejected during enumeration never reached here.
+        Once an enumeration gate can *warn* -- retaining the candidate with its verdict recorded -- the
+        reset erased exactly that verdict and the row read as clean. The enumeration gates own their
+        own outcome and the scoring gates set theirs afterwards, so there is nothing left for this
+        stage to decide; it is kept as the named seam both callers use.
+        """
+        return candidates
 
     def _build_accessibility_profile(self, transcript_sequence: str | None) -> TargetAccessibilityProfile | None:
         """Fold the transcript once for target-site accessibility, or return None if impossible.
@@ -328,8 +392,9 @@ class SiRNADesigner:
         Args:
             candidates: Candidates to score in place.
             transcript_sequence: The transcript the candidates were enumerated from, folded once
-                for the target_accessibility term. Omitting it leaves that term inactive and the
-                remaining weights renormalised -- never scored as if the site were accessible.
+                for the target_accessibility term. Omitting it leaves the term uncomputable, and
+                since no weight is ever redistributed, the candidate then has no design_score at
+                all -- it is never scored as if the site were accessible.
         """
         profile = self._build_accessibility_profile(transcript_sequence)
 
@@ -391,25 +456,29 @@ class SiRNADesigner:
             # a site that is genuinely closed.
             if access_score is not None:
                 candidate.component_scores["target_accessibility"] = access_score
+            # Reported, not scored (issue #97 / D5). Same omit-when-inactive rule as above.
+            au_score = au_content_5p_score(candidate.guide_sequence)
+            if au_score is not None:
+                candidate.component_scores["au_1_5"] = au_score
 
-            self._apply_design_composite(candidate, asym_score, gc_score, access_score, empirical_score)
+            self._apply_design_score(candidate, asym_score, gc_score, access_score)
             candidate.asymmetry_score = asym_score
 
         return candidates
 
-    def _apply_design_composite(
+    def _apply_design_score(
         self,
         candidate: SiRNACandidate,
         asym_score: float,
         gc_score: float,
         access_score: float | None,
-        empirical_score: float,
     ) -> None:
-        """Write the design-time composite score and its per-term contributions.
+        """Write ``design_score`` on the ``design_v4`` vector, and its per-term contributions.
 
-        A NaN sub-score (a ViennaRNA failure) and a None accessibility both mean "no evidence", so
-        both are omitted from the feature set and the remaining weights renormalise over what is
-        left. Neither is substituted with a value.
+        ``composite_score`` stays None: it needs ``off_target``, which does not exist until
+        screening has run. A NaN sub-score (a ViennaRNA failure) or a None accessibility means "no
+        evidence", and since weights are never renormalised there is then no design_score to
+        report -- the field stays None rather than being computed over a smaller term set.
         """
         features: dict[str, float] = {}
         if not math.isnan(asym_score):
@@ -418,34 +487,29 @@ class SiRNADesigner:
             features["gc_content"] = gc_score
         if access_score is not None:
             features["target_accessibility"] = access_score
-        if not math.isnan(empirical_score):
-            features["empirical"] = empirical_score
 
         candidate.scored_after_screening = False
-        if not features:
-            # Every term was unavailable; leave composite_score at its default (0.0)
-            logger.warning(f"All component scores are NaN for candidate {candidate.id}. Leaving composite_score=0.0.")
-            candidate.weight_set_version = ""
-            return
-
+        vector = self.parameters.scoring.vector_for(post_screen=False)
         try:
-            result = compute_composite(features, self.parameters.scoring)
+            result = compute_composite(features, vector)
         except ScoringError as e:
-            logger.warning(f"Scoring failed for candidate {candidate.id}: {e}. Setting composite_score=0.0.")
-            candidate.composite_score = 0.0
+            logger.warning(f"Design scoring skipped for candidate {candidate.id}: {e}")
+            candidate.design_score = None
             candidate.weight_set_version = ""
+            candidate.weight_vector = ""
             return
 
-        candidate.composite_score = result.score
+        candidate.design_score = result.score
         candidate.weight_set_version = result.weight_set_version
+        candidate.weight_vector = result.vector_name
         candidate.score_asymmetry = result.contributions.get("asymmetry")
         candidate.score_gc_content = result.contributions.get("gc_content")
         candidate.score_target_accessibility = result.contributions.get("target_accessibility")
-        candidate.score_empirical = result.contributions.get("empirical")
-        # Post-screen terms stay None at design time
+        # Terms outside design_v4 stay None at design time
         candidate.score_off_target = None
-        candidate.score_isoform_coverage = None
-        candidate.score_conservation = None
+        candidate.score_ago_start = None
+        candidate.score_pos1_mismatch = None
+        candidate.score_supp_13_16 = None
 
     def _calculate_duplex_score(self, candidate: SiRNACandidate) -> tuple[float, float | None]:
         """Compute duplex stability ΔG and a normalized score in [0,1].
@@ -476,21 +540,22 @@ class SiRNADesigner:
         gc_count = sequence.count("G") + sequence.count("C")
         return (gc_count / len(sequence)) * 100
 
+    @staticmethod
+    def _longest_poly_run(sequence: str) -> int:
+        """Length of the longest run of one nucleotide -- the quantity ``max_poly_runs`` compares.
+
+        Returns the length rather than a bool so the gate can record what it observed. Reporting the
+        bool left ``max_poly_run_length`` unexported and the gate permanently ``unknown``.
+        """
+        longest = current = 1
+        for previous, base in zip(sequence, sequence[1:], strict=False):
+            current = current + 1 if base == previous else 1
+            longest = max(longest, current)
+        return longest if sequence else 0
+
     def _has_poly_runs(self, sequence: str, max_runs: int) -> bool:
         """Check for runs of identical nucleotides exceeding threshold."""
-        current_base = sequence[0]
-        current_run = 1
-
-        for base in sequence[1:]:
-            if base == current_base:
-                current_run += 1
-                if current_run > max_runs:
-                    return True
-            else:
-                current_base = base
-                current_run = 1
-
-        return False
+        return self._longest_poly_run(sequence) > max_runs
 
     def _calculate_asymmetry_score(self, candidate: SiRNACandidate) -> float:
         """Calculate thermodynamic asymmetry score via ViennaRNA."""
@@ -524,8 +589,14 @@ class SiRNADesigner:
 
     def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
         """Flag a candidate whose guide is too structured to be accessible."""
-        if candidate.passes_filters is True and paired_fraction > self.parameters.filters.max_paired_fraction:
-            candidate.passes_filters = _ModelCandidate.FilterStatus.EXCESS_PAIRING
+        ceiling = self.parameters.filters.max_paired_fraction
+        candidate.record_filter_verdict(
+            "max_paired_fraction",
+            observed=paired_fraction,
+            passed=paired_fraction <= ceiling,
+            action=self._action_for("max_paired_fraction"),
+            status=_ModelCandidate.FilterStatus.EXCESS_PAIRING,
+        )
 
     def _calculate_off_target_score(self, candidate: SiRNACandidate) -> float:
         """Score internal sequence repetitiveness as a design-time off-target proxy.
@@ -555,9 +626,10 @@ class SiRNADesigner:
     def _calculate_empirical_score(self, candidate: SiRNACandidate) -> float:
         """Calculate empirical score using Reynolds et al. rules (simplified).
 
-        Guides are stored as DNA, so the sequence is read as RNA (T is U) before the
-        position-19 test; otherwise a T there never earned the A/U bonus. The
-        attainable range is EMPIRICAL_SCORE_MIN..EMPIRICAL_SCORE_MAX, not 0..1.
+        Gate only since issue #96: this score is reported and read by `min_empirical_score`, and is
+        not a term in any weight vector. Guides are stored as DNA, so the sequence is read as RNA
+        (T is U) before the position-19 test; otherwise a T there never earned the A/U bonus. The
+        attainable range is EMPIRICAL_SCORE_MIN..EMPIRICAL_SCORE_MAX (0.4-0.6), not 0..1.
         """
         guide = candidate.guide_sequence.upper().replace("T", "U")
         score = 0.5  # Base score
@@ -567,45 +639,64 @@ class SiRNADesigner:
         if len(guide) >= 19 and guide[18] in ("A", "U"):
             score += 0.1
 
-        # Prefer G/C at position 1
-        if guide[0] in ("G", "C"):
-            score += 0.1
-
         # Avoid C at position 19
         if len(guide) >= 19 and guide[18] == "C":
             score -= 0.1
 
+        # No rule here judges guide position 1. There used to be a +0.1 for G/C there, which
+        # contradicted the biogenesis rule rewarding A/U at the same base (see biogenesis_features):
+        # G/C gained +1.6 empirical points and lost 7.9 to the miRNA adjustment, so a 0.15-weight
+        # declared term was overridden ~5x by an undeclared one and `empirical` ended up with a
+        # NEGATIVE variance share. A/U wins; the clause is gone. Do not reinstate it.
         return max(EMPIRICAL_SCORE_MIN, min(EMPIRICAL_SCORE_MAX, score))
 
     def _apply_score_filters(self, candidate: SiRNACandidate, asymmetry_score: float, empirical_score: float) -> None:
-        """Flag candidates failing the asymmetry or empirical-rule thresholds.
+        """Record the asymmetry and empirical-rule verdicts, rejecting only where the action says to.
 
         Each threshold gates the quantity it is named after: min_asymmetry_score
         gates the thermodynamic asymmetry score, min_empirical_score gates the
-        empirical design-rule score. Only the first failure is recorded, matching
-        the earlier GC / poly-run / excess-pairing gates.
-        """
-        if candidate.passes_filters is not True:
-            return
+        empirical design-rule score.
 
+        Both verdicts are recorded unconditionally. The old ``passes_filters is not True`` early
+        return meant a candidate already rejected by GC or pairing was never *measured* against these
+        thresholds, so the two gates' reported counts were a function of gate ordering rather than of
+        the candidates -- which is how LOW_ASYMMETRY came to report 6,464 rejections on a run where
+        it independently rejected 26,431. ``passes_filters`` still keeps the first label.
+        """
         filters = self.parameters.filters
-        if not ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score):
-            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_ASYMMETRY
-        elif empirical_score < filters.min_empirical_score:
-            candidate.passes_filters = _ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE
+        candidate.record_filter_verdict(
+            "min_asymmetry_score",
+            observed=asymmetry_score,
+            passed=ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score),
+            action=self._action_for("min_asymmetry_score"),
+            status=_ModelCandidate.FilterStatus.LOW_ASYMMETRY,
+        )
+        candidate.record_filter_verdict(
+            "min_empirical_score",
+            observed=empirical_score,
+            passed=empirical_score >= filters.min_empirical_score,
+            action=self._action_for("min_empirical_score"),
+            status=_ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE,
+        )
 
     @staticmethod
-    def stamp_repeat_verdict(candidate: SiRNACandidate, observations: dict[str, RepeatObservation]) -> None:
+    def stamp_repeat_verdict(
+        candidate: SiRNACandidate,
+        observations: dict[str, RepeatObservation],
+        action: FilterAction = FilterAction.FAIL,
+    ) -> None:
         """Stamp repeat metadata and verdict on a single candidate if its guide is flagged.
 
-        The REPEAT_ELEMENT verdict is applied only if the candidate is currently passing
-        (passes_filters is True or PASS). A candidate that already failed for another
-        reason (GC, asymmetry, etc.) retains its earlier verdict — precedence is:
+        The REPEAT_ELEMENT verdict is applied only if this gate's action is FAIL and the candidate
+        is currently passing (passes_filters is True or PASS). A candidate that already failed for
+        another reason (GC, asymmetry, etc.) retains its earlier verdict — precedence is:
         existing failure > REPEAT_ELEMENT > PASS.
 
         Args:
             candidate: Candidate to potentially flag.
             observations: Mapping from normalized guide sequence to RepeatObservation.
+            action: The resolved action for ``max_repeat_transcript_fraction``. Only FAIL rejects;
+                WARN records the verdict and the fraction and leaves the candidate passing.
         """
         norm_guide = normalize_guide_sequence(candidate.guide_sequence)
         obs = observations.get(norm_guide)
@@ -616,9 +707,22 @@ class SiRNADesigner:
         candidate.repeat_flagged = obs.is_repeat
         candidate.repeat_transcript_fraction = obs.transcript_fraction
 
-        # Apply REPEAT_ELEMENT verdict only if currently passing
-        if obs.is_repeat and (
-            candidate.passes_filters is True or candidate.passes_filters == _ModelCandidate.FilterStatus.PASS
+        # Record the verdict, so the gate is re-derivable from the exported row like every other one.
+        # `is_repeat` is `fraction > threshold`, so the gate is a ceiling on the fraction.
+        candidate.filter_verdicts["max_repeat_transcript_fraction"] = (
+            FilterEvaluation.FAIL.value if obs.is_repeat else FilterEvaluation.PASS.value
+        )
+        candidate.filter_observed["max_repeat_transcript_fraction"] = obs.transcript_fraction
+
+        # Apply REPEAT_ELEMENT only if this gate's resolved action rejects, and only if the candidate
+        # is still passing. `action` defaults to FAIL so a caller with no policy keeps today's answer.
+        # Not routed through `record_filter_verdict`: that writes UNKNOWN whenever there is no observed
+        # value, and an unscanned guide has exactly that shape -- which in qualified mode would
+        # disqualify every candidate of a run whose repeat detection was skipped.
+        if (
+            obs.is_repeat
+            and action is FilterAction.FAIL
+            and (candidate.passes_filters is True or candidate.passes_filters == _ModelCandidate.FilterStatus.PASS)
         ):
             candidate.passes_filters = _ModelCandidate.FilterStatus.REPEAT_ELEMENT
 
@@ -638,168 +742,160 @@ class SiRNADesigner:
         }
 
 
-# component_scores keys carrying the miRNA biogenesis bonus past the design stage. The bonus is
-# folded into composite_score, not into the composite term set, so post-screen rescoring (which
-# rebuilds the composite from the term set) has to be able to reapply it from the candidate itself.
-MIRNA_BONUS_KEY = "mirna_biogenesis_bonus"
-MIRNA_BONUS_MAX_KEY = "mirna_biogenesis_bonus_max"
+# The three miRNA biogenesis features `biogenesis_features` produces. All three are pure functions
+# of the guide and passenger sequences, so they are computable for every candidate -- including
+# dirty controls, which never pass through MiRNADesigner. Two of them are scored terms of
+# postscreen_mirna_v4; `pos1_mismatch` is computed and reported only, because issue #102 measured it
+# exactly constant. Read a vector's own TERM_NAMES for what is scored -- this tuple is what is
+# *computed*, and the two are deliberately not the same list.
+MIRNA_TERM_NAMES = ("ago_start", "pos1_mismatch", "supp_13_16")
+
+# Guide positions 13-16 (1-based), the 3' supplementary pairing region.
+SUPP_REGION_SLICE = slice(12, 16)
+SUPP_REGION_MIN_LEN = 16
+
+# Guide positions 1-5 (1-based), the A/U window of issue #97. The window is **pre-declared** at 1-5
+# by decision D5 and must not be widened, narrowed or shifted to raise a correlation: single-dataset
+# tuning has already misfired twice here (the off-target cap of 3, the 0.65 asymmetry floor).
+AU_5P_WINDOW_SLICE = slice(0, 5)
+AU_5P_WINDOW_LEN = 5
+
+# Watson-Crick pairs and the G:U wobble, read as RNA.
+_PERFECT_PAIRS = frozenset({("A", "U"), ("U", "A"), ("G", "C"), ("C", "G")})
+_WOBBLE_PAIRS = frozenset({("G", "U"), ("U", "G")})
 
 
-def mirna_max_biogenesis_bonus(scoring_weights: Mapping[str, float] | None = None) -> float:
-    """Maximum attainable miRNA biogenesis bonus: the divisor that puts a miRNA run on one scale.
+def classify_pos1_pairing(guide_base: str, passenger_base: str) -> str:
+    """Classify the pairing state at guide position 1: perfect, wobble or mismatch.
 
-    Exposed as a function so post-screen rescoring can recover the divisor for a candidate that
-    never passed through MiRNADesigner._score_candidates (and therefore carries no
-    MIRNA_BONUS_MAX_KEY), instead of leaving that row on an undivided scale.
+    Bases are stored as DNA, so they are read as RNA before lookup: otherwise A:T is not found in
+    the Watson-Crick set and every A:U pair is called a mismatch.
     """
-    from sirnaforge.models.sirna import MiRNADesignConfig  # noqa: PLC0415
+    pair = (_as_rna(guide_base), _as_rna(passenger_base))
+    if pair in _PERFECT_PAIRS:
+        return "perfect"
+    if pair in _WOBBLE_PAIRS:
+        return "wobble"
+    return "mismatch"
 
-    weights = scoring_weights if scoring_weights is not None else MiRNADesignConfig().scoring_weights
-    # Every bonus below is capped by its weight (supp_bonus scales a [0,1] score).
-    return weights["ago_start_bonus"] + weights["pos1_mismatch_bonus"] + weights["supp_13_16_bonus"]
 
+def supplementary_score(guide: str) -> float:
+    """3' supplementary pairing sub-score from guide positions 13-16, in [0, 1].
 
-def apply_mirna_biogenesis_bonus(base_score: float, mirna_bonus: float, max_mirna_bonus: float) -> float:
-    """Fold the miRNA biogenesis bonus into a 0-100 composite score.
-
-    The bonuses widen the attainable range, so rescale by the maximum attainable total
-    instead of clamping: clamping parked every strong candidate at exactly 100.0 and
-    erased the ranking at the top. Order is preserved, since this is monotone in
-    (base score + bonus).
+    High A/U content there means low pairing stability, which is the desirable direction (less 3'
+    supplementary pairing, better specificity), so the sub-score rises with A/U as every other
+    term rises with the thing it wants.
     """
-    scaled = (base_score + mirna_bonus * 100) / (1.0 + max_mirna_bonus)
-    # Guard the model's 0-100 bound for non-default scoring weights
-    return max(0.0, min(100.0, scaled))
+    if len(guide) < SUPP_REGION_MIN_LEN:
+        return 0.5  # Default for short sequences
+
+    supp_region = _as_rna(guide[SUPP_REGION_SLICE])
+    au_count = supp_region.count("A") + supp_region.count("U")
+    return au_count / len(supp_region) if supp_region else 0.5
+
+
+def au_content_5p_score(guide: str) -> float | None:
+    """A/U content over guide positions 1-5, as a fraction in [0, 1]. Issue #97, window per D5.
+
+    Reported on every candidate and scored by no default vector in 0.7.1: promoting it needs the
+    post-screen feature assembly to forward it, which is not this module's file. Returns None for a
+    guide shorter than the window rather than a substituted midpoint -- a missing input must not
+    score as a good one.
+
+    Pure sequence, so it is computable wherever a guide exists, including on paths that have no
+    transcript context and no ViennaRNA.
+    """
+    if len(guide) < AU_5P_WINDOW_LEN:
+        return None
+    window = _as_rna(guide[AU_5P_WINDOW_SLICE])
+    return (window.count("A") + window.count("U")) / AU_5P_WINDOW_LEN
+
+
+def biogenesis_features(guide: str, passenger: str) -> dict[str, float]:
+    """The three miRNA biogenesis sub-scores, from sequence alone.
+
+    Computed here rather than read back off the candidate so post-screen scoring cannot be handed a
+    partially-populated row: every term in postscreen_mirna_v4 must be present, and re-deriving them
+    from the sequences means they always are. Each is in [0, 1] like every other term -- they are
+    features now, not bonuses added to a finished score.
+    """
+    pos1_state = classify_pos1_pairing(guide[0] if guide else "", passenger[-1] if passenger else "")
+    return {
+        # Argonaute loading prefers A/U at guide position 1.
+        "ago_start": 1.0 if _as_rna(guide[:1]) in ("A", "U") else 0.0,
+        # A G:U wobble or mismatch at position 1 is preferred over a perfect pair.
+        "pos1_mismatch": 1.0 if pos1_state in ("wobble", "mismatch") else 0.0,
+        "supp_13_16": supplementary_score(guide),
+    }
 
 
 class MiRNADesigner(SiRNADesigner):
     """miRNA-biogenesis-aware siRNA designer with specialized scoring.
 
     Extends SiRNADesigner with scoring rules optimized for miRNA-like processing:
-    - Argonaute selection preferences (pos1 A/U, mismatch at pos1)
+    - Argonaute selection preferences (pos1 A/U scored; pos1 pairing state reported only)
     - 3' supplementary pairing analysis (positions 13-16)
     - Conservative thermodynamic thresholds
     - Seed region quality assessment
     """
 
-    def __init__(self, parameters: DesignParameters) -> None:
+    def __init__(
+        self,
+        parameters: DesignParameters,
+        *,
+        filter_actions: Mapping[str, FilterAction] | None = None,
+    ) -> None:
         """Initialize miRNA designer with miRNA-specific config validation."""
-        super().__init__(parameters)
+        super().__init__(parameters, filter_actions=filter_actions)
         # Optionally apply miRNA-specific filter adjustments based on MiRNADesignConfig
         # For now, we rely on the caller to set appropriate filters for miRNA mode
 
     def _score_candidates(
         self, candidates: list[SiRNACandidate], transcript_sequence: str | None = None
     ) -> list[SiRNACandidate]:
-        """Score candidates using miRNA-biogenesis-aware composite scoring.
+        """Record the miRNA biogenesis evidence, then score exactly as siRNA mode does.
 
-        Adds miRNA-specific scoring components:
-        - Argonaute start bonus for A/U at guide position 1
-        - Position 1 mismatch/wobble preference
-        - 3' supplementary pairing score
-        - Enhanced asymmetry requirements
+        The design stage uses one vector (``design_v4``) in both modes, so this method no longer
+        touches any score: two of the three biogenesis quantities -- ``ago_start`` and
+        ``supp_13_16`` -- are terms of ``postscreen_mirna_v4`` and only enter once ``off_target``
+        exists, and ``pos1_mismatch`` is scored by no vector at all since #102. What this method does
+        do is record all three -- as reported fields and as ``component_scores`` entries -- so the CSV
+        shows why a miRNA run ranks as it does.
+
+        Before issue #96 this method folded the bonuses into ``composite_score`` and divided the
+        result by ``1 + max_bonus``, which scaled every declared weight by 0.80 in miRNA mode.
 
         Args:
             candidates: Candidates to score in place.
             transcript_sequence: Forwarded to the base scorer for target_accessibility.
         """
-        from sirnaforge.models.sirna import MiRNADesignConfig  # noqa: PLC0415
-
-        mirna_config = MiRNADesignConfig()
-        scoring_weights = mirna_config.scoring_weights
-        # Shared with post-screen rescoring, which needs the same divisor for candidates that never
-        # reached this method (see mirna_max_biogenesis_bonus).
-        max_mirna_bonus = mirna_max_biogenesis_bonus(scoring_weights)
-
-        # First, run the standard scoring
         candidates = super()._score_candidates(candidates, transcript_sequence)
 
-        # Add miRNA-specific scoring enhancements
         for candidate in candidates:
             guide = candidate.guide_sequence
             passenger = candidate.passenger_sequence
 
-            # 1. Argonaute selection: prefer A/U at guide position 1
-            # The reported base keeps the stored (DNA) spelling; the test does not.
-            guide_pos1_base = guide[0] if guide else ""
-            candidate.guide_pos1_base = guide_pos1_base
-            ago_start_bonus = scoring_weights["ago_start_bonus"] if _as_rna(guide_pos1_base) in ("A", "U") else 0.0
-
-            # 2. Position 1 pairing state: prefer G:U wobble or mismatch over perfect pair
-            pos1_pairing_state = self._classify_pos1_pairing(guide_pos1_base, passenger[-1] if passenger else "")
-            candidate.pos1_pairing_state = pos1_pairing_state
-            pos1_mismatch_bonus = (
-                scoring_weights["pos1_mismatch_bonus"] if pos1_pairing_state in ["wobble", "mismatch"] else 0.0
+            # Reported fields keep the stored (DNA) spelling of the base; the tests do not.
+            candidate.guide_pos1_base = guide[0] if guide else ""
+            candidate.pos1_pairing_state = classify_pos1_pairing(
+                candidate.guide_pos1_base, passenger[-1] if passenger else ""
             )
+            candidate.supp_13_16_score = supplementary_score(guide)
+            candidate.seed_class = self._classify_seed_region(guide)
 
-            # 3. 3' supplementary pairing (positions 13-16)
-            supp_score = self._calculate_supplementary_score(guide)
-            candidate.supp_13_16_score = supp_score
-            supp_bonus = scoring_weights["supp_13_16_bonus"] * supp_score
-
-            # 4. Seed class classification (positions 2-8)
-            seed_class = self._classify_seed_region(guide)
-            candidate.seed_class = seed_class
-
-            # 5. Apply miRNA-specific bonuses to composite score
-            mirna_bonus = ago_start_bonus + pos1_mismatch_bonus + supp_bonus
-
-            # Recorded on the candidate so off-target screening, which recomputes the composite
-            # from the term set afterwards, can reapply the same bonus instead of dropping it.
-            candidate.component_scores[MIRNA_BONUS_KEY] = mirna_bonus
-            candidate.component_scores[MIRNA_BONUS_MAX_KEY] = max_mirna_bonus
-
-            candidate.composite_score = apply_mirna_biogenesis_bonus(
-                candidate.composite_score, mirna_bonus, max_mirna_bonus
-            )
+            # Diagnostics on the row; post-screen scoring re-derives them from the sequences so a
+            # candidate that never reached this method is still fully scorable.
+            candidate.component_scores.update(biogenesis_features(guide, passenger))
 
         return candidates
 
     def _classify_pos1_pairing(self, guide_base: str, passenger_base: str) -> str:
-        """Classify pairing state at guide position 1.
-
-        Args:
-            guide_base: Guide strand base at position 1 (5' end)
-            passenger_base: Passenger strand base at position 21 (pairs with guide pos1)
-
-        Returns:
-            Pairing classification: "perfect", "wobble", or "mismatch"
-        """
-        # Watson-Crick pairs
-        perfect_pairs = {("A", "U"), ("U", "A"), ("G", "C"), ("C", "G")}
-        # G:U wobble pair
-        wobble_pairs = {("G", "U"), ("U", "G")}
-
-        # Bases are stored as DNA, so read them as RNA before lookup: otherwise A:T
-        # is not found in perfect_pairs and every A:U pair is called a mismatch.
-        pair = (_as_rna(guide_base), _as_rna(passenger_base))
-        if pair in perfect_pairs:
-            return "perfect"
-        if pair in wobble_pairs:
-            return "wobble"
-        return "mismatch"
+        """Classify pairing state at guide position 1 (delegates to `classify_pos1_pairing`)."""
+        return classify_pos1_pairing(guide_base, passenger_base)
 
     def _calculate_supplementary_score(self, guide: str) -> float:
-        """Calculate 3' supplementary pairing potential (positions 13-16).
-
-        Lower score is better (less 3' pairing = better specificity).
-
-        Args:
-            guide: Guide strand sequence
-
-        Returns:
-            Normalized score [0-1] where 0 = high pairing, 1 = low pairing
-        """
-        if len(guide) < 16:
-            return 0.5  # Default for short sequences
-
-        # Extract positions 13-16 (0-indexed: 12-15)
-        supp_region = _as_rna(guide[12:16])
-
-        # Simple heuristic: count A/U content (lower stability)
-        au_count = supp_region.count("A") + supp_region.count("U")
-        # High A/U = low stability = high score (good for avoiding 3' pairing)
-        return au_count / len(supp_region) if supp_region else 0.5
+        """3' supplementary pairing sub-score (delegates to `supplementary_score`)."""
+        return supplementary_score(guide)
 
     def _classify_seed_region(self, guide: str) -> str:
         """Classify seed match class based on guide positions 2-8.

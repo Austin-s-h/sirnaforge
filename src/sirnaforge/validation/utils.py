@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 
 from sirnaforge.models.schemas import OffTargetHitsSchema, ORFValidationSchema, SiRNACandidateSchema
-from sirnaforge.models.sirna import COMPOSITE_TERM_NAMES, DesignParameters, SiRNACandidate
+from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -113,18 +113,22 @@ class ValidationUtils:
         if params.filters.gc_max - params.filters.gc_min < 5:
             result.add_warning("Very narrow GC content range may yield few candidates")
 
-        # Sum by name from the canonical term list; enumerating the terms here is how this
-        # check silently stopped seeing new weights when the term set last grew.
-        total_weight = sum(getattr(params.scoring, term) for term in COMPOSITE_TERM_NAMES)
-
-        if abs(total_weight - 1.0) > 0.01:
-            result.add_error(f"Scoring weights sum to {total_weight:.3f}, should be 1.0")
+        # Every named vector must sum to 1.0 over ITS OWN terms -- the three vectors score 3, 4
+        # and 7 terms, so there is no single term list to sum. WeightVector already refuses to
+        # construct otherwise; this re-checks it because a config can be built from JSON where a
+        # validator was bypassed, and reports per vector so the offender is named.
+        vector_totals: dict[str, float] = {}
+        for vector in params.scoring.all_vectors():
+            total = sum(vector.as_mapping().values())
+            vector_totals[vector.name] = total
+            if abs(total - 1.0) > 0.01:
+                result.add_error(f"Weight vector '{vector.name}' sums to {total:.3f}, should be 1.0")
 
         # Check parameter ranges
         if params.top_n is not None and params.top_n > 1000:
             result.add_warning("Large top_n value may impact performance")
 
-        result.add_metadata("total_weight", total_weight)
+        result.add_metadata("vector_weight_totals", vector_totals)
         return result
 
     @staticmethod
@@ -148,9 +152,13 @@ class ValidationUtils:
                 f"Reported GC content ({candidate.gc_content:.1f}%) differs from calculated ({calculated_gc:.1f}%)"
             )
 
-        # Check score ranges
-        if not (0 <= candidate.composite_score <= 100):
-            result.add_error(f"Composite score {candidate.composite_score} outside valid range (0-100)")
+        # Check score ranges. Both scores are optional -- composite_score does not exist before
+        # screening and design_score does not exist when a design term could not be computed --
+        # so absence is not an error here; only an out-of-range value is.
+        for name in ("design_score", "composite_score"):
+            value = getattr(candidate, name)
+            if value is not None and not (0 <= value <= 100):
+                result.add_error(f"{name} {value} outside valid range (0-100)")
 
         if not (0 <= candidate.asymmetry_score <= 1):
             result.add_error(f"Asymmetry score {candidate.asymmetry_score} outside valid range (0-1)")

@@ -20,10 +20,11 @@ import re
 import shutil
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import pandas as pd
 from Bio.Seq import Seq
@@ -34,18 +35,44 @@ from rich.progress import Progress
 from sirnaforge import __version__
 from sirnaforge.config import (
     DEFAULT_TRANSCRIPTOME_SOURCES,
+    UNRESOLVED_SPECIES,
     ReferenceChoice,
+    ReferenceForm,
     ReferencePolicyResolver,
+    ReferenceRejection,
+    ReferenceRequest,
     ReferenceSelection,
+    ScreeningReference,
+    ScreeningReferenceSet,
+    SpeciesAuthority,
     WorkflowInputSpec,
+    build_screening_requests,
+    screening_kind_for_design_mode,
+)
+from sirnaforge.config.reference_policy import parse_index_entries, resolve_reference_species
+from sirnaforge.config.run_policy import (
+    FILTER_SPEC_BY_ID,
+    EntryPoint,
+    ResolvedRunPolicy,
+    RunPolicyError,
+    describe_parameters,
+    resolve_run_policy,
 )
 from sirnaforge.core.design import (
-    MIRNA_BONUS_KEY,
-    MIRNA_BONUS_MAX_KEY,
     MiRNADesigner,
     SiRNADesigner,
-    apply_mirna_biogenesis_bonus,
-    mirna_max_biogenesis_bonus,
+    biogenesis_features,
+)
+from sirnaforge.core.hit_annotation import (
+    CLASSIFICATION_COLUMNS,
+    LIABILITY_CLASSES,
+    HitAnnotator,
+    accumulate_hit_class,
+    annotate_hit_row,
+    count_persisted_classes,
+    is_annotated,
+    liabilities_counted,
+    write_classified_hits,
 )
 from sirnaforge.core.hit_classification import (
     ClassificationContext,
@@ -55,7 +82,6 @@ from sirnaforge.core.hit_classification import (
 )
 from sirnaforge.core.off_target import OffTargetAnalysisManager
 from sirnaforge.core.repeat_detection import (
-    DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
     RepeatDetector,
     normalize_guide_sequence,
 )
@@ -70,22 +96,37 @@ from sirnaforge.core.scoring import (
 )
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
+from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
+from sirnaforge.data.orthology import (
+    OrthologTable,
+    OrthologueMapping,
+    load_ortholog_table,
+    mapping_from_table,
+    resolve_orthologues,
+)
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
-from sirnaforge.data.transcriptome_manager import TranscriptomeManager
+from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
+from sirnaforge.models.evidence import ScreeningPlan
+from sirnaforge.models.policy import (
+    FilterAction,
+    FilterEvaluation,
+    RunMode,
+    ScreeningChannel,
+    UnknownEvidenceAction,
+)
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
     DesignResult,
-    FilterCriteria,
     OffTargetFilterCriteria,
     SiRNACandidate,
-    TargetAccessibilityConfig,
     build_candidate_row,
+    ranking_score,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.variant import VariantRecord
@@ -96,6 +137,7 @@ from sirnaforge.models.zfn import (
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
+from sirnaforge.reporting import build_payload, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
@@ -115,6 +157,153 @@ from sirnaforge.zfn.design import ZFNDesigner
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
 
+#: Keys of one ``filtering_stats.per_species`` bucket: the five classes plus the two shortfall flags
+#: ``accumulate_hit_class`` tallies. Named once so the pre-seeded bucket and the tally cannot drift.
+_PER_SPECIES_COUNTERS: tuple[str, ...] = (
+    *(member.value for member in HitClass),
+    "symbol_lookup_missing",
+    "species_index_missing",
+)
+
+
+#: ``selection_state`` cell values, stamped by :meth:`SiRNAWorkflow._apply_post_screen_ranking`.
+#: ``WITHHELD`` is the only one about evidence the run did not have; ``NOT_ELIGIBLE`` covers reasons the
+#: row already explains itself (a failed gate, a repeat flag, an incomparable score).
+_SELECTION_ELIGIBLE = "eligible"
+_SELECTION_WITHHELD = "withheld_incomplete_evidence"
+_SELECTION_NOT_ELIGIBLE = "not_eligible"
+
+
+def describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
+    """One human sentence naming what was actually missing, most costly first.
+
+    ``no_evidence:<channel>:<species>`` and ``unknown:<filter_id>`` are different problems with
+    different fixes -- a screen to re-run against, versus an annotation the gate could not read --
+    so the console says which rather than attributing both to screening.
+    """
+    parts: list[str] = []
+    for reason, count in reasons.items():
+        kind, _, detail = reason.partition(":")
+        if kind == "no_evidence":
+            channel, _, species = detail.partition(":")
+            parts.append(f"{count}x no {channel} evidence for {species}")
+        elif kind == "unknown":
+            parts.append(f"{count}x undecided {detail}")
+        else:  # pragma: no cover - defensive: an unrecognised reason is still reported verbatim
+            parts.append(f"{count}x {reason}")
+    return "; ".join(parts) if parts else "no reason recorded"
+
+
+def _tally(values: Iterable[str]) -> dict[str, int]:
+    """Count each distinct value, ordered most frequent first, then by name for a stable output."""
+    counts = Counter(values)
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+class OffTargetGateCounts(NamedTuple):
+    """The counts the off-target gates compare, in the order ``_check_offtarget_filters`` reads them.
+
+    Named so the no-hit and with-hit paths can hand the same eight numbers to the same gate call.
+    Every field defaults to zero and :data:`_ZERO_OFFTARGET_COUNTS` is that all-zero instance: a
+    completed screen that found nothing is a *measurement* of zero, and giving it a name is what
+    stopped the clean-screen path from skipping the gates entirely (issue #106).
+    """
+
+    transcriptome_0mm: int = 0
+    transcriptome_1mm: int = 0
+    transcriptome_2mm: int = 0
+    transcriptome_seed_0mm: int = 0
+    mirna_0mm_seed: int = 0
+    mirna_high_risk: int = 0
+    total_hits: int = 0
+    genuine_off_target_count: int = 0
+
+
+_ZERO_OFFTARGET_COUNTS = OffTargetGateCounts()
+
+_TRANSCRIPTOME_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPTOME})
+_MIRNA_SEED_CHANNEL = frozenset({ScreeningChannel.MIRNA_SEED})
+
+#: Which screening channel supplies each post-screen gate's count. One mapping, because
+#: ``_check_offtarget_filters`` and ``_apply_post_screen_ranking`` both need this answer and must not
+#: diverge. A declared filter absent from it reads design-time or annotation evidence instead
+#: (``min_isoform_coverage``, every design-stage gate), so an incomplete channel never excuses it.
+POST_SCREEN_FILTER_CHANNELS: Mapping[str, frozenset[ScreeningChannel]] = {
+    "max_transcriptome_hits_0mm": _TRANSCRIPTOME_CHANNEL,
+    "max_transcriptome_hits_1mm": _TRANSCRIPTOME_CHANNEL,
+    "max_transcriptome_hits_2mm": _TRANSCRIPTOME_CHANNEL,
+    "max_transcriptome_seed_perfect": _TRANSCRIPTOME_CHANNEL,
+    "max_off_target_count": _TRANSCRIPTOME_CHANNEL,
+    "max_mirna_perfect_seed": _MIRNA_SEED_CHANNEL,
+    "max_mirna_1mm_seed": _MIRNA_SEED_CHANNEL,
+    "fail_on_high_risk_mirna": _MIRNA_SEED_CHANNEL,
+    # Counts two channels at once, so it is decided by neither alone.
+    "max_total_offtarget_hits": _TRANSCRIPTOME_CHANNEL | _MIRNA_SEED_CHANNEL,
+}
+
+#: Which run statistic each off-target rejection increments. Shared by the no-hit and with-hit paths.
+_OFFTARGET_REJECTION_STATS: Mapping[SiRNACandidate.FilterStatus, str] = {
+    SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH: "failed_perfect_match",
+    SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM: "failed_transcriptome_1mm",
+    SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM: "failed_transcriptome_2mm",
+    SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT: "failed_transcriptome_seed_perfect",
+    SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED: "failed_mirna_seed",
+    SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA: "failed_high_risk_mirna",
+    SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS: "failed_excess_off_targets",
+}
+
+
+#: 0.7.0 keyword arguments the #99 rename removed, and what to pass instead. A hard break: nothing
+#: silently maps an old name onto the new one, because the two were never quite the same thing --
+#: ``genome_indices_override`` bypassed reference resolution, and ``transcriptome_indices`` does not.
+#: They are still named here so the failure quotes the replacement instead of "unexpected keyword".
+RENAMED_ARGUMENTS: Mapping[str, str] = {
+    "genome_species": "screen_species",
+    "genome_indices_override": "transcriptome_indices",
+}
+
+
+#: Pipeline parameters the rename removed. Refused rather than ignored: Nextflow accepts an unknown
+#: ``--param`` silently, so a stale ``genome_indices`` in a raw ``nextflow_config`` would configure
+#: nothing and the run would screen against nothing and report success.
+RENAMED_NEXTFLOW_PARAMS: Mapping[str, str] = {
+    "genome_indices": "transcriptome_indices",
+    "genome_fastas": "transcriptome_fastas",
+    "genome_species": "transcriptome_species",
+}
+
+
+def _policy_filter_actions(policy: ResolvedRunPolicy | None) -> dict[str, FilterAction] | None:
+    """The per-filter actions a resolved policy decided, or None when there is no policy to ask.
+
+    None rather than an empty dict on purpose: empty would read as "every filter has no action" and
+    the designer would fall back to declared defaults for a run that did resolve a policy.
+    """
+    if policy is None:
+        return None
+    return {resolved.filter_id: resolved.descriptor.action for resolved in policy.filters}
+
+
+def refuse_renamed_arguments(supplied: Mapping[str, Any]) -> None:
+    """Refuse a removed ``genome_*`` keyword, naming its replacement.
+
+    Raises:
+        TypeError: Any keyword was supplied. Unknown keywords are reported the same way Python
+            would, so a typo does not read as a rename.
+    """
+    if not supplied:
+        return
+    renamed = sorted(name for name in supplied if name in RENAMED_ARGUMENTS)
+    unknown = sorted(name for name in supplied if name not in RENAMED_ARGUMENTS)
+    parts = [f"{name!r} was renamed to {RENAMED_ARGUMENTS[name]!r} in 0.7.1" for name in renamed]
+    parts += [f"unexpected keyword argument {name!r}" for name in unknown]
+    detail = "; ".join(parts)
+    if renamed:
+        detail += (
+            ". Screening references are transcriptomes: 'genome' now means genomic DNA and belongs to ZFN only (#99)"
+        )
+    raise TypeError(detail)
+
 
 class WorkflowConfig:
     """Configuration for the complete siRNA design workflow."""
@@ -128,14 +317,15 @@ class WorkflowConfig:
         design_params: DesignParameters | None = None,
         # off-target selection now always equals design_params.top_n
         nextflow_config: Mapping[str, Any] | None = None,
-        genome_indices_override: str | None = None,
-        genome_species: list[str] | None = None,
+        transcriptome_indices: str | None = None,
+        screen_species: list[str] | None = None,
         query_species: str | None = None,
         mirna_database: str = "mirgenedb",
         mirna_species: Sequence[str] | None = None,
         transcriptome_fasta: str | None = None,
         transcriptome_filter: str | None = None,
         transcriptome_selection: ReferenceSelection | None = None,
+        ortholog_mapping_file: Path | str | None = None,
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
@@ -144,8 +334,23 @@ class WorkflowConfig:
         keep_nextflow_work: bool = False,
         variant_config: VariantWorkflowConfig | None = None,
         zfn_config: ZFNWorkflowConfig | None = None,
+        resolved_policy: ResolvedRunPolicy | None = None,
+        **renamed: Any,
     ):
-        """Initialize workflow configuration."""
+        """Initialize workflow configuration.
+
+        ``resolved_policy`` is the run policy resolved once by ``config/run_policy.py``. A caller
+        that supplies its own ``design_params`` instead gets the same object built by the adapter,
+        so every path -- CLI, Python API, off-target-only, direct WorkflowConfig -- carries a policy
+        and none of them re-derives a threshold. Resolution happens before the output directories
+        below are created, so an invalid configuration costs nothing.
+
+        ``screen_species`` are the species this run asks to screen; ``transcriptome_indices`` are
+        ``species:index_prefix`` references the caller has already built. Both feed one resolver
+        (#99), so an override and a default differ only in provenance. ``**renamed`` exists solely
+        to refuse the 0.7.0 ``genome_*`` spellings with the new name rather than a bare TypeError.
+        """
+        refuse_renamed_arguments(renamed)
         self.output_dir = Path(output_dir)
         self.input_source = input_source
         self.zfn_config = zfn_config
@@ -155,31 +360,56 @@ class WorkflowConfig:
         # Preserve the user-supplied gene_query as the logical label even when using an input FASTA
         self.gene_query = gene_query
         self.database = database
-        self.design_params = design_params or DesignParameters()
+        if (
+            resolved_policy is not None
+            and design_params is not None
+            and design_params != resolved_policy.design_parameters
+        ):
+            raise RunPolicyError(
+                "WorkflowConfig received both a resolved policy and different design_params; "
+                "pass one or the other so there is a single resolved configuration"
+            )
+        self.design_params = (
+            resolved_policy.design_parameters if resolved_policy else (design_params or DesignParameters())
+        )
+        self.resolved_policy = resolved_policy or describe_parameters(
+            self.design_params, entry_point=EntryPoint.SCREENING_WORKFLOW, query_species=query_species
+        )
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
         self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
+        stale_params = sorted(set(self.nextflow_config) & set(RENAMED_NEXTFLOW_PARAMS))
+        if stale_params:
+            raise ValueError(
+                "nextflow_config carries pipeline parameters the #99 rename removed: "
+                + ", ".join(f"{name!r} is now {RENAMED_NEXTFLOW_PARAMS[name]!r}" for name in stale_params)
+                + ". Nextflow ignores an unknown parameter, so leaving them would screen against nothing."
+            )
 
-        override_species: list[str] | None = None
-        if genome_indices_override:
-            self.nextflow_config["genome_indices"] = genome_indices_override
-            override_species = self._extract_species_from_indices(genome_indices_override)
+        # Explicit index entries are references like any other: they are parsed here, before any
+        # directory is created, and resolved by the same resolver as the defaults rather than being
+        # written straight into the Nextflow parameters. Writing them straight through is what let a
+        # cDNA file align successfully and then classify against nothing (#99 defect 1).
+        index_requests = parse_index_entries(
+            transcriptome_indices,
+            option="--transcriptome-indices",
+            reason="explicit index override (--transcriptome-indices)",
+        )
+        override_species = [request.declared_species or "" for request in index_requests] or None
 
-        # miRNA genome species: used for miRNA database lookups, not genomic DNA alignment
-        # Track whether species were explicitly requested (vs defaulting)
-        species_explicitly_provided = genome_species is not None or override_species is not None
-        default_mirna_genomes = genome_species or ["human", "rat", "rhesus"]
+        # Species this run asks to screen against. Track whether they were requested or defaulted.
+        species_explicitly_provided = screen_species is not None or override_species is not None
+        requested_species = screen_species or ["human", "rat", "rhesus"]
         if override_species:
-            default_mirna_genomes = override_species
+            requested_species = override_species
 
         # Normalize all species names to canonical form for consistent comparisons
-        normalized_genomes = [normalize_species_name(s) for s in default_mirna_genomes]
-        self.mirna_genome_species: list[str] = list(dict.fromkeys(normalized_genomes))
+        self.screen_species: list[str] = list(dict.fromkeys(normalize_species_name(s) for s in requested_species))
         self.species_explicitly_requested = species_explicitly_provided
         # Organism of the TARGET transcripts, when the caller states it outright. None means
         # "derive it from where the transcripts actually came from" -- see SiRNAWorkflow.__init__.
-        # Deliberately NOT defaulted from mirna_genome_species: that list is an unordered set of
-        # genomes to screen against, so no position in it identifies the target.
+        # Deliberately NOT defaulted from screen_species: that list is an unordered set of
+        # references to screen against, so no position in it identifies the target.
         stated_query_species = (query_species or "").strip()
         self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
         self.mirna_database = mirna_database
@@ -201,6 +431,19 @@ class WorkflowConfig:
         self.transcriptome_references = [
             choice.value for choice in self.transcriptome_selection.choices if choice.value
         ]
+        # The one door. Every screening reference -- explicit index override or resolved default --
+        # becomes a request here, and a modality mismatch (a genomic assembly handed to an siRNA run,
+        # a transcriptome handed to ZFN) raises now, before a multi-gigabyte download.
+        self.screening_kind = screening_kind_for_design_mode(self.design_params.design_mode)
+        self.screening_requests, self.screening_request_rejections = build_screening_requests(
+            kind=self.screening_kind,
+            selection=self.transcriptome_selection,
+            index_requests=index_requests,
+        )
+        # Offline orthologue evidence (#101): when set, cross-species classification reads this file
+        # instead of calling Ensembl Compara, so an air-gapped run -- and every fixture -- is
+        # deterministic and never waits on REST.
+        self.ortholog_mapping_file = Path(ortholog_mapping_file) if ortholog_mapping_file else None
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
@@ -223,19 +466,6 @@ class WorkflowConfig:
         if self.design_params.design_mode != DesignMode.ZFN:
             (self.output_dir / "transcripts").mkdir(exist_ok=True)
             (self.output_dir / "orf_reports").mkdir(exist_ok=True)
-
-    @staticmethod
-    def _extract_species_from_indices(indices: str) -> list[str]:
-        """Derive species list from comma-separated species:/index_prefix entries."""
-        species: list[str] = []
-        for token in indices.split(","):
-            entry = token.strip()
-            if not entry:
-                continue
-            head = entry.split(":", 1)[0].strip() if ":" in entry else entry
-            if head and head not in species:
-                species.append(head)
-        return species
 
 
 class ZFNWorkflowConfig:
@@ -272,12 +502,16 @@ class SiRNAWorkflow:
         # Select designer based on design mode
         self.zfn_designer: ZFNDesigner | None = None
         self.sirnaforgeer: SiRNADesigner | MiRNADesigner | None = None
+        # The design gates need the ACTIONS as well as the thresholds. DesignParameters carries only
+        # the numbers, so without this a `--filter-action` override would reach the off-target gates
+        # and be silently ignored by the design ones.
+        design_actions = _policy_filter_actions(getattr(config, "resolved_policy", None))
         if config.design_params.design_mode == DesignMode.ZFN:
             self.zfn_designer = ZFNDesigner()
         elif config.design_params.design_mode == DesignMode.MIRNA:
-            self.sirnaforgeer = MiRNADesigner(config.design_params)
+            self.sirnaforgeer = MiRNADesigner(config.design_params, filter_actions=design_actions)
         else:
-            self.sirnaforgeer = SiRNADesigner(config.design_params)
+            self.sirnaforgeer = SiRNADesigner(config.design_params, filter_actions=design_actions)
 
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
@@ -289,14 +523,37 @@ class SiRNAWorkflow:
         self._protein_coding_transcript_count: int = 0
         self._transcript_index = TranscriptGeneIndex()
         self._species_explicitly_requested: bool = False
-        # Species actually handed to Nextflow, which is a superset of mirna_genome_species when
-        # extra species arrive via --genome-indices/--genome-fastas. Conservation is scored against
-        # this list, so its denominator can never be smaller than the set of species screened.
-        self._active_genome_species: list[str] = []
+        # Species actually handed to Nextflow, which is a superset of config.screen_species when
+        # extra species arrive on transcriptome_indices/transcriptome_fastas. Conservation is scored
+        # against this list, so its denominator can never be smaller than the set screened.
+        self._active_screen_species: list[str] = []
+        # What the one resolver produced: {species, kind, identity, index} per reference, plus the
+        # requests it could not use. Empty until _resolve_screening_references runs.
+        self._screening_references = ScreeningReferenceSet(kind=config.screening_kind)
+        # What those references intend to screen, digest-keyed to the guide set actually submitted.
+        # None until the Nextflow stage records one; a run with no resolved reference records an
+        # empty plan, which claims nothing.
+        self._screening_plan: ScreeningPlan | None = None
+        # Species requested for screening that never reached Nextflow, and why. A species with no
+        # resolvable reference used to be filtered out of the species list before the pipeline ran,
+        # so it appeared in no artifact at all: the run reported on the species it managed to screen
+        # and said nothing about the one it dropped.
+        self._species_screening_shortfalls: dict[str, str] = {}
         self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         self._candidate_id_to_representative: dict[str, str] = {}
+        # Channel/species pairs with completed evidence, spelled as ``ChannelRequirement.key`` so they
+        # compare directly against ``EvidenceRequirements``. None means screening has not reported yet,
+        # which is not the same as reporting that nothing completed.
+        self._completed_evidence_pairs: frozenset[tuple[str, str]] | None = None
+        # Species a gate with an unrestricted scope counts, i.e. what this run screened. Set alongside
+        # the pair record so the two cannot describe different runs.
+        self._screened_species_scope: frozenset[str] = frozenset()
+        # What the last selection decided and why, so an empty shortlist names its cause.
+        self._selection_summary: dict[str, Any] = {}
+        # Every eligible candidate, not the top_n slice. None until a selection has run.
+        self._eligible_candidate_ids: frozenset[str] | None = None
         # Single authoritative query species, set once (not re-inferred per call site), and never
-        # read out of the off-target species list. Taking mirna_genome_species[0] declared the
+        # read out of the off-target species list. Taking screen_species[0] declared the
         # query species from a LIST POSITION in a set whose order carries no meaning: the CLI's own
         # --species default is "chicken,pig,rat,mouse,human,rhesus,macaque", so every default run
         # called itself a chicken run, found no chicken alignment in the four human/mouse/rat/
@@ -306,6 +563,11 @@ class SiRNAWorkflow:
         # database (GeneSearcher.query_species). An input FASTA states no organism, so it takes the
         # same answer, and WorkflowConfig(query_species=...) states it outright when it differs.
         self._query_species: str = self.config.query_species or self.gene_searcher.query_species(self.config.database)
+        # Parsed here, not at first use: a malformed mapping file must be reported before a screen
+        # runs, not after it. None means "no file supplied, resolve orthologues over REST".
+        self._ortholog_table: OrthologTable | None = (
+            load_ortholog_table(self.config.ortholog_mapping_file) if self.config.ortholog_mapping_file else None
+        )
         self._species_cdna_fasta: dict[str, Path] = {}
         self._guide_to_transcripts: dict[str, frozenset[str]] = {}
         self._repeat_summary: dict[str, Any] = {"status": "not_run"}
@@ -418,12 +680,14 @@ class SiRNAWorkflow:
             "transcript_annotation_summary": self._annotation_summary or {"enabled": False},
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
+            # Why the shortlist is the size it is. Beside design_summary, not inside it: this is a
+            # statement about evidence and run mode. An empty shortlist from an incomplete screen and
+            # one from a complete screen that found nothing eligible must not read alike.
+            "selection_summary": self._selection_summary,
             "design_parameters": design_parameters,
             "repeat_summary": self._repeat_summary,
             "offtarget_summary": offtarget_results,
-            "reference_summary": {
-                "transcriptome": self.config.transcriptome_selection.to_metadata(),
-            },
+            "reference_summary": self._summarize_screening_references(),
         }
 
         # Optionally save workflow summary JSON (store in logs/)
@@ -878,7 +1142,7 @@ class SiRNAWorkflow:
             c.transcript_hit_fraction = (hits / total_seqs) if total_seqs > 0 else 0.0
 
         # Sort, compute top-N (prefer passing candidates)
-        all_candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        all_candidates.sort(key=ranking_score, reverse=True)
         passing = [
             c
             for c in all_candidates
@@ -1038,6 +1302,11 @@ class SiRNAWorkflow:
         then no reference to reuse.
         """
         distinct_guides = {normalize_guide_sequence(c.guide_sequence) for c in candidates}
+        # The RESOLVED threshold, not the module constant. They agree by default, so a user who set
+        # `max_repeat_transcript_fraction` got the constant silently -- and the run summary published
+        # the value they asked for beside a scan that never used it.
+        threshold = self.config.design_params.filters.max_repeat_transcript_fraction
+        action = self._filter_action_for("max_repeat_transcript_fraction", threshold)
 
         query_cdna_fasta = self._species_cdna_fasta.get(self._query_species)
         if not query_cdna_fasta:
@@ -1047,19 +1316,19 @@ class SiRNAWorkflow:
                 "reason": "reference_unavailable",
                 "query_species": self._query_species,
                 "repeat_flagged_count": 0,
-                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "threshold_fraction": threshold,
             }
 
         console.print(
             f"🔍 Scanning {len(distinct_guides)} distinct guides against {self._query_species} cDNA (~47s)..."
         )
-        detector = RepeatDetector(threshold_fraction=DEFAULT_REPEAT_TRANSCRIPT_FRACTION)
+        detector = RepeatDetector(threshold_fraction=threshold)
         scan_result = detector.scan(distinct_guides, query_cdna_fasta)
 
         # Stamp repeat verdicts on candidates
         observations = scan_result.observations
         for candidate in candidates:
-            SiRNADesigner.stamp_repeat_verdict(candidate, observations)
+            SiRNADesigner.stamp_repeat_verdict(candidate, observations, action)
 
         repeat_flagged_count = sum(1 for c in candidates if c.repeat_flagged)
         console.print(
@@ -1185,13 +1454,27 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.warning(f"Failed to write FAIR manifest: {e}")
 
+        try:
+            # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
+            # the gates it actually applied, and a default panel would report other thresholds.
+            payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
+            write_report(payload, base / "report.html")
+        except Exception as e:
+            logger.warning(f"Failed to write self-contained HTML report: {e}")
+
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         console.print("   - ORF validation report: orf_reports/")
         console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
         console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
+        console.print("   - Self-contained HTML report: sirnaforge/report.html")
 
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
-        """Write passing candidates to FASTA format with simple headers.
+        """Write passing candidates to FASTA, each header naming its selection state.
+
+        This file leaves the tool as a list of sequences to order, so a guide the run could not qualify
+        must not look like one it could. On the header rather than filtered out: filtering deleted the
+        whole deliverable of an unscreened run (152 guides to 0 on a measured ``--input-fasta`` run), and
+        a reader who splits on the state gets the narrower list whenever they want it.
 
         Args:
             pass_df: DataFrame containing passing candidates
@@ -1200,8 +1483,27 @@ class SiRNAWorkflow:
         try:
             sequences: list[tuple[str, str]] = []
             for _, row in pass_df.iterrows():
-                # Create simple header with candidate ID and score
-                header = f"{row['id']} score={row['composite_score']:.1f}"
+                # Header carries whichever score the row actually has: composite_score is null
+                # until screening, and a design-only run has design_score instead.
+                score = row.get("composite_score")
+                if score is None or pd.isna(score):
+                    score = row.get("design_score")
+                header = (
+                    f"{row['id']} score={score:.1f}" if score is not None and not pd.isna(score) else str(row["id"])
+                )
+                state = row.get("selection_state")
+                if isinstance(state, str) and state and state != _SELECTION_ELIGIBLE:
+                    header = f"{header} selection={state}"
+                # A gate the run was told to only *warn* about still failed, and this file is an order
+                # list -- so the header says which. Without it a guide outside a GC window the user
+                # widened to `warn` sat here indistinguishable from one inside it.
+                warned = sorted(
+                    str(key)[: -len("_verdict")]
+                    for key, value in row.items()
+                    if str(key).endswith("_verdict") and value == FilterEvaluation.FAIL.value
+                )
+                if warned and row.get("passes_filters") == "PASS":
+                    header = f"{header} warned={','.join(warned)}"
                 sequence = str(row["guide_sequence"])
                 sequences.append((header, sequence))
 
@@ -1300,8 +1602,10 @@ class SiRNAWorkflow:
         add_file("candidates_pass_fasta", pass_fasta, "fasta", {"sequences": self._count_fasta_sequences(pass_fasta)})
         add_file("orf_validation_report", orf_report, "tsv")
 
-        # Scoring metadata with weight set version and active terms
-        weights_dict = self.config.design_params.scoring.model_dump(mode="json")
+        # Scoring metadata: every named vector with its weights, so a row's weight_vector column
+        # resolves to the exact numbers that produced it. Weights are never altered at runtime, so
+        # what is recorded here is what applied.
+        scoring_weights = self.config.design_params.scoring
 
         return {
             "tool": "sirnaforge",
@@ -1311,10 +1615,15 @@ class SiRNAWorkflow:
             # Dumped wholesale: hand-listing fields silently dropped thresholds
             # (min_asymmetry_score, max_poly_runs, ...) from the run record.
             "design_parameters": self.config.design_params.model_dump(mode="json"),
+            # What was requested, what it resolved to, and which authority won for each setting --
+            # a threshold in design_parameters above says what applied but not why.
+            "run_policy": self.config.resolved_policy.as_manifest(),
             "scoring": {
                 "weight_set_version": SCORING_WEIGHT_SET_VERSION,
-                "weights": weights_dict,
-                "active_terms": list(COMPOSITE_TERMS),
+                "vectors": scoring_weights.as_manifest(),
+                "vector_terms": {vector.name: list(vector.terms) for vector in scoring_weights.all_vectors()},
+                "scored_terms": list(COMPOSITE_TERMS),
+                "reported_not_scored": ["empirical", "isoform_coverage", "conservation", "paired_fraction"],
             },
             "files": files,
         }
@@ -1337,8 +1646,10 @@ class SiRNAWorkflow:
                 "status": "skipped",
                 "reason": "no_candidates",
                 "repeat_flagged_count": 0,
-                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
             }
+            # Nothing to rank, but every step5 exit still publishes a selection outcome.
+            self._apply_post_screen_ranking(design_results)
             return {"status": "skipped", "reason": "no_candidates"}
 
         # Honour the skip request BEFORE touching any reference: materializing the default
@@ -1353,38 +1664,40 @@ class SiRNAWorkflow:
                 "status": "skipped",
                 "reason": "user_disabled",
                 "repeat_flagged_count": 0,
-                "threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
             }
             # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
             # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
             self._apply_post_screen_ranking(design_results)
             return {"status": "skipped", "reason": "user_disabled"}
 
-        # Prepare input files
-        input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
-
-        # Materialize transcriptome references once; repeat detection and Nextflow both reuse
-        # this instead of each fetching/indexing their own copy.
-        additional_params: dict[str, Any] = dict(self.config.nextflow_config)
-        has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
-        self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
-        # Exclude repeat-flagged candidates from top_candidates now, so the exclusion holds even
-        # if screening below never runs (Nextflow unavailable/failed).
-        self._apply_post_screen_ranking(design_results)
-
-        # Try Nextflow pipeline first. We do NOT run the simplistic sequence-based fallback
-        # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
-        # so downstream steps/users can see the explicit reason.
+        # One `finally`, so selection runs on every exit: the returns, the caught Nextflow failure, and
+        # an exception that propagates. Not a try/except, because `_prepare_offtarget_input`'s
+        # duplicate-id refusal must stay a refusal rather than becoming a skip. Without this a qualified
+        # run whose screen produced no evidence still published the pre-screen shortlist (#100).
         try:
-            offtarget_result = await self._run_nextflow_offtarget_analysis(
-                candidates_for_offtarget, input_fasta, additional_params, has_transcriptome
-            )
+            # Prepare input files
+            input_fasta = await self._prepare_offtarget_input(candidates_for_offtarget)
+
+            # Resolve the screening references once; repeat detection and Nextflow both reuse them
+            # instead of each fetching/indexing their own copy.
+            additional_params: dict[str, Any] = dict(self.config.nextflow_config)
+            has_transcriptome = await self._resolve_screening_references(additional_params)
+            self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
+
+            # Try Nextflow pipeline first. We do NOT run the simplistic sequence-based fallback
+            # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
+            # so downstream steps/users can see the explicit reason.
+            try:
+                return await self._run_nextflow_offtarget_analysis(
+                    candidates_for_offtarget, input_fasta, additional_params, has_transcriptome
+                )
+            except Exception as e:
+                console.print(f"⚠️  Nextflow execution failed: {e}")
+                logger.exception("Nextflow pipeline execution error")
+                return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
+        finally:
             self._apply_post_screen_ranking(design_results)
-            return offtarget_result
-        except Exception as e:
-            console.print(f"⚠️  Nextflow execution failed: {e}")
-            logger.exception("Nextflow pipeline execution error")
-            return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
 
     def _select_candidates_for_offtarget(self, design_results: DesignResult) -> list[SiRNACandidate]:
         """Return ALL candidates plus any dirty controls for off-target analysis.
@@ -1430,45 +1743,221 @@ class SiRNAWorkflow:
         return candidate.passes_filters is True or candidate.passes_filters == SiRNACandidate.FilterStatus.PASS
 
     def _apply_post_screen_ranking(self, design_results: DesignResult) -> None:
-        """Re-rank candidates by their post-screen composite score.
+        """Re-rank candidates and rebuild ``top_candidates`` from the ones the run can stand behind.
 
-        Screening activates the off_target, isoform_coverage and conservation terms, so the
-        design-time order no longer reflects the final ranking. Re-sorts design_results.candidates
-        in place (step6_generate_reports writes CSVs in this order) and rebuilds top_candidates
-        from the viable subset (excluding repeat-flagged and failing candidates).
+        Screening activates the off_target, isoform_coverage and conservation terms, so the design-time
+        order no longer reflects the final ranking. Re-sorts ``design_results.candidates`` in place
+        (step6 writes the CSVs in this order). Called after repeat detection and again on every path out
+        of screening, failures included; idempotent.
 
-        Called once right after repeat detection (so the exclusion holds even if screening
-        never runs) and again after successful screening (so post-screen scores take effect).
-        Idempotent: re-sorting/re-filtering an already-ranked list is harmless.
+        Two independent reasons a gate-passing candidate is still held out, kept separate because
+        neither implies the other:
 
-        A design-time score is not on the same scale as a post-screen one (it lacks the
-        off_target, isoform_coverage and conservation terms, and is systematically optimistic
-        because those terms only ever subtract evidence). So when only *some* candidates were
-        scored after screening, the unscored ones are sorted below every scored one and held out
-        of top_candidates rather than competing with an incomparable number.
+        1. **Comparability.** A design-time score is on a different vector and is systematically the
+           more optimistic number, so an unscored candidate cannot compete against post-screen
+           neighbours. Applies only to a batch holding both; a wholly unscored batch is internally
+           consistent on its own terms.
+        2. **Required evidence**, decided by run mode and independently of score availability. This is
+           the rule the previous version lacked, and its absence is why an entirely unscreened batch
+           went out whole (#100): comparability was the only test, and a wholly unscored list -- exactly
+           what a failed or absent screen produces -- passed it.
+
+        - ``DESIGN_ONLY``: nothing was screened, so nothing is missing; the design shortlist stands.
+        - ``QUALIFIED``: requires the policy's declared required evidence, and no ``UNKNOWN`` verdict on
+          a gate reading it.
+        - ``EXPLORATORY``: incomplete evidence is retained, sorted below complete evidence.
+
+        Every exclusion is counted by reason in :attr:`_selection_summary`, because a qualified run that
+        found nothing eligible and one that never produced the evidence both leave the shortlist empty.
         """
-        scored_count = sum(1 for c in design_results.candidates if c.scored_after_screening)
-        # Mixed scales only: a wholly pre-screen (or wholly failed) list is internally consistent.
-        mixed_scales = 0 < scored_count < len(design_results.candidates)
+        policy = getattr(self.config, "resolved_policy", None)
+        run_mode = policy.run_mode if policy is not None else None
+        qualified = run_mode is RunMode.QUALIFIED
 
-        design_results.candidates.sort(
-            key=lambda c: (bool(c.scored_after_screening) if mixed_scales else False, c.composite_score),
+        candidates = design_results.candidates
+        scored_count = sum(1 for c in candidates if c.scored_after_screening)
+        # Mixed scales: some candidates carry a post-screen score and some do not, so the unscored ones
+        # cannot be ranked against them. A wholly unscored list is not mixed; the evidence rule answers
+        # that case instead.
+        mixed_scales = 0 < scored_count < len(candidates)
+
+        # Two questions. `any_shortfall` orders: exploratory retains an incomplete candidate but must
+        # not let it outrank a complete one, and nothing is *required* in that mode, so the required set
+        # is empty and cannot express the ordering. `required_shortfall` disqualifies, in qualified only.
+        any_shortfall = {c.id: self._evidence_shortfall(c, required_only=False) for c in candidates}
+        required_shortfall = {c.id: self._required_evidence_shortfall(c) for c in candidates}
+        candidates.sort(
+            key=lambda c: (not any_shortfall[c.id], bool(c.scored_after_screening), ranking_score(c)),
             reverse=True,
         )
-        rankable = [
-            c
-            for c in design_results.candidates
-            if not c.repeat_flagged and self._passes_filters(c) and (not mixed_scales or c.scored_after_screening)
-        ]
+
+        # A list, not a dict keyed by id: duplicate ids are refused before screening, but selection
+        # still runs on such a list via step5's `finally`, and a dict would collapse two exclusions.
+        shortfalls: list[tuple[str, tuple[str, ...]]] = []
+        rankable: list[SiRNACandidate] = []
+        repeat_excluded = 0
+        filter_excluded = 0
+        unscored_excluded = 0
+        # The repeat exclusion consults the gate's action too. It used to fire ahead of the
+        # passes_filters test and independently of it, so `max_repeat_transcript_fraction=warn` was
+        # worse than useless: the row flipped to PASS -- putting the guide into the order list -- while
+        # the guide stayed out of the shortlist anyway, and nothing on the row explained why.
+        repeat_action = self._filter_action_for(
+            "max_repeat_transcript_fraction", self.config.design_params.filters.max_repeat_transcript_fraction
+        )
+        repeat_rejects = repeat_action is FilterAction.FAIL
+        for candidate in candidates:
+            if candidate.repeat_flagged and repeat_rejects:
+                repeat_excluded += 1
+                continue
+            if not self._passes_filters(candidate):
+                filter_excluded += 1
+                continue
+            missing = required_shortfall[candidate.id]
+            if missing and qualified:
+                shortfalls.append((candidate.id, missing))
+                continue
+            if mixed_scales and not candidate.scored_after_screening:
+                unscored_excluded += 1
+                continue
+            rankable.append(candidate)
+
         design_results.top_candidates = rankable[: self.config.top_n]
-        repeat_excluded = sum(1 for c in design_results.candidates if c.repeat_flagged)
-        logger.info(f"Re-ranked {len(rankable)} candidates after screening (excluded {repeat_excluded} repeat-flagged)")
+        # On the candidate, not bolted onto a dataframe later, so both CSV writers emit one column set
+        # from build_candidate_row and the FASTA header can read it.
+        eligible_ids = {id(candidate) for candidate in rankable}
+        withheld_ids = {candidate_id for candidate_id, _ in shortfalls}
+        for candidate in candidates:
+            if id(candidate) in eligible_ids:
+                candidate.selection_state = _SELECTION_ELIGIBLE
+            elif candidate.id in withheld_ids:
+                candidate.selection_state = _SELECTION_WITHHELD
+            else:
+                candidate.selection_state = _SELECTION_NOT_ELIGIBLE
+        self._eligible_candidate_ids = frozenset(candidate.id for candidate in rankable)
+        self._selection_summary = {
+            "run_mode": run_mode.value if run_mode is not None else None,
+            "eligible_candidates": len(rankable),
+            "top_candidates": len(design_results.top_candidates),
+            "scored_after_screening": scored_count,
+            "repeat_excluded": repeat_excluded,
+            "filter_excluded": filter_excluded,
+            "evidence_excluded": len(shortfalls),
+            "unscored_excluded": unscored_excluded,
+            # Every distinct reason with its cost, not one example: a missing species alignment and a
+            # missing coverage annotation are different problems with different fixes.
+            "evidence_shortfall_reasons": _tally(reason for _, reasons in shortfalls for reason in reasons),
+            # Run-level, and not derivable from the per-candidate reasons above: the loop `continue`s on
+            # a failed gate before it reaches the evidence check, so a run whose screen produced nothing
+            # AND whose candidates also fail a gate reports no shortfall reasons at all.
+            "required_evidence_missing": self._missing_required_evidence(),
+        }
+        logger.info(
+            f"Re-ranked {len(rankable)} eligible candidates after screening (excluded {repeat_excluded} "
+            f"repeat-flagged, {filter_excluded} failing a gate, {len(shortfalls)} for incomplete required "
+            f"evidence, {unscored_excluded} for an incomparable score)"
+        )
+        if shortfalls:
+            reasons = cast(dict[str, int], self._selection_summary["evidence_shortfall_reasons"])
+            logger.error(
+                f"{len(shortfalls)} of {len(candidates)} candidates are held out of the qualified shortlist for "
+                f"incomplete required evidence: {reasons}. Re-run with the missing evidence, or use "
+                "run_mode=exploratory to retain them with that scope stated."
+            )
+            # The reasons, not a generic sentence about screening: an unknown caused by a coverage
+            # annotation gap is not a screening failure and does not have the same fix.
+            console.print(
+                f"⚠️  {len(shortfalls)} candidate(s) excluded from the qualified shortlist "
+                f"({describe_shortfall_reasons(reasons)}). This run cannot qualify them; "
+                "re-run with the missing evidence, or use run_mode=exploratory to keep them labelled."
+            )
+            console.print(
+                "   ↳ they remain in candidates_all.csv and candidates_pass.csv with "
+                f"selection_state={_SELECTION_WITHHELD}"
+            )
         if mixed_scales:
             logger.error(
-                f"{len(design_results.candidates) - scored_count} of {len(design_results.candidates)} candidates "
-                "could not be scored after screening; they keep design-time scores and are excluded from "
-                "top_candidates because the two scores are not comparable."
+                f"{len(candidates) - scored_count} of {len(candidates)} candidates could not be scored after "
+                "screening; they keep design-time scores and are excluded from top_candidates because the two "
+                "scores are not comparable."
             )
+
+    def _missing_required_evidence(self) -> list[str]:
+        """Required channel/species pairs this run produced no completed evidence for.
+
+        A property of the run, not of a candidate, so an empty shortlist can be explained even when
+        every candidate was excluded by something else first. Empty in design-only and exploratory
+        modes, where nothing is required.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is None:
+            return []
+        completed = self._completed_evidence_pairs
+        return sorted(
+            f"{channel}:{species}"
+            for channel, species in policy.evidence_requirements.required_pairs
+            if completed is None or (channel, species) not in completed
+        )
+
+    def _required_evidence_shortfall(self, candidate: SiRNACandidate) -> tuple[str, ...]:
+        """Why this candidate cannot qualify: the required evidence it does not have.
+
+        Two ways to be short, reported by name so the summary can say which. A declared ``REQUIRED``
+        channel/species pair with no completed evidence -- the query-species transcriptome pair answered
+        per candidate from ``off_target_screened``, any other from the run-level record, which is the
+        finest granularity the evidence producers offer today. Or a gate whose verdict is ``UNKNOWN``
+        while ``unknown_evidence_action`` is ``FAIL``.
+
+        The unknown rule is scoped to gates *all* of whose channels are required. A subset and not an
+        intersection: ``max_total_offtarget_hits`` counts the transcriptome and miRNA channels together,
+        so an absent miRNA aggregate alone makes it ``UNKNOWN``, and an intersection put it in scope --
+        emptying the shortlist of a complete screen over a channel the policy calls exploratory, the
+        mirror of the defect the scoping exists to prevent (#101). A gate reading no channel at all
+        (``min_isoform_coverage``, the design-stage gates) is always in scope: its unknown is the run's.
+        """
+        return self._evidence_shortfall(candidate, required_only=True)
+
+    def _evidence_shortfall(self, candidate: SiRNACandidate, *, required_only: bool) -> tuple[str, ...]:
+        """The evidence this candidate does not have, named so a summary can say which.
+
+        ``required_only=True`` is what disqualifies in ``qualified`` mode. ``False`` is every declared
+        pair and every undecided gate whatever its requiredness, and it is what **orders** candidates --
+        a separate question, because nothing is required in ``exploratory`` mode, so the required set is
+        always empty there and could not put an incomplete candidate below a complete one.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is None:
+            return ()
+        requirements = policy.evidence_requirements
+        completed = self._completed_evidence_pairs
+        in_scope_pairs = (
+            requirements.required_pairs
+            if required_only
+            else frozenset(entry.key for entry in requirements.channel_requirements)
+        )
+
+        missing: list[str] = []
+        for channel, species in sorted(in_scope_pairs):
+            if channel == ScreeningChannel.TRANSCRIPTOME.value and species == self._query_species:
+                if not candidate.off_target_screened:
+                    missing.append(f"no_evidence:{channel}:{species}")
+                continue
+            if completed is None or (channel, species) not in completed:
+                missing.append(f"no_evidence:{channel}:{species}")
+
+        # An UNKNOWN verdict is a shortfall for ordering purposes always; for *disqualifying* purposes
+        # only when the run said an undecided gate should fail.
+        unknown_counts = not required_only or requirements.unknown_evidence_action is UnknownEvidenceAction.FAIL
+        if unknown_counts:
+            in_scope_channels = {channel for channel, _ in in_scope_pairs}
+            for filter_id, verdict in sorted((candidate.filter_verdicts or {}).items()):
+                if verdict != FilterEvaluation.UNKNOWN.value:
+                    continue
+                channels = POST_SCREEN_FILTER_CHANNELS.get(filter_id)
+                if channels is None or not required_only or {c.value for c in channels} <= in_scope_channels:
+                    missing.append(f"unknown:{filter_id}")
+
+        return tuple(dict.fromkeys(missing))
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
         """Prepare FASTA input file for off-target analysis with deduplication.
@@ -1509,6 +1998,9 @@ class SiRNAWorkflow:
             representative_to_candidates[representative.id] = cand_list
             for cand in cand_list:
                 candidate_id_to_representative[cand.id] = representative.id
+                # The FASTA header the aligner sees, hence qname on every hit row. Written onto the
+                # candidate so the join is an id match rather than a byte comparison of sequences.
+                cand.screen_query_id = representative.id
 
         FastaUtils.save_sequences_fasta(sequences, input_fasta)
 
@@ -1523,20 +2015,37 @@ class SiRNAWorkflow:
         )
         return input_fasta
 
+    @staticmethod
+    def _carry_index_build_error(
+        manager: TranscriptomeManager, prepared: Mapping[str, Any], payload: dict[str, Any]
+    ) -> None:
+        """Copy a failed index build onto the prepared reference, so the caller can refuse it.
+
+        The manager records the reason against the FASTA rather than in its result dict, whose type
+        is shared with the genome and annotation managers.
+        """
+        error = manager.index_build_errors.get(str(prepared.get("fasta")))
+        if error:
+            payload[INDEX_BUILD_ERROR_KEY] = error
+
     async def _prepare_transcriptome_database(
         self, transcriptome_ref: str, filter_spec: list[str] | None = None
     ) -> dict[str, Any] | None:
-        """Prepare transcriptome database from user-provided reference.
+        """Fetch and index one transcriptome reference, reporting what each species authority saw.
+
+        Deliberately does **not** decide the species: it reports the bundled source's own label and
+        what the reference's headers say, and :meth:`_resolve_screening_reference` applies the
+        authority order. A method that both fetched and labelled is how a parameter name came to
+        stand in for a species.
 
         Args:
-            transcriptome_ref: Can be:
-                - Pre-configured source name (e.g., 'ensembl_human_cdna')
-                - Local file path
-                - HTTP(S)/FTP URL
-            filter_spec: Optional list of filter names (e.g., ['protein_coding', 'canonical_only'])
+            transcriptome_ref: Bundled source name (e.g. ``ensembl_human_cdna``), local path, or
+                HTTP(S)/FTP URL.
+            filter_spec: Optional list of filter names (e.g. ``['protein_coding']``).
 
         Returns:
-            Dictionary with 'fasta' and 'index' paths, or None if preparation failed
+            ``fasta``/``index`` paths plus ``source_species`` and ``header_species``, or None when
+            preparation failed.
         """
         try:
             manager = TranscriptomeManager()
@@ -1557,9 +2066,9 @@ class SiRNAWorkflow:
                 if raw_result is None:
                     return None
 
-                species = manager.SOURCES[transcriptome_ref].species or "transcriptome"
-                enriched_result: dict[str, Any] = {"species": species}
+                enriched_result: dict[str, Any] = {"source_species": manager.SOURCES[transcriptome_ref].species}
                 enriched_result.update(raw_result)
+                self._carry_index_build_error(manager, raw_result, enriched_result)
                 return enriched_result
 
             # Otherwise treat as custom path/URL
@@ -1570,8 +2079,11 @@ class SiRNAWorkflow:
             if raw_custom is None:
                 return None
 
-            enriched_custom: dict[str, Any] = {"species": "transcriptome"}
+            enriched_custom: dict[str, Any] = {
+                "header_species": infer_species_from_cdna_headers(Path(raw_custom["fasta"]))
+            }
             enriched_custom.update(raw_custom)
+            self._carry_index_build_error(manager, raw_custom, enriched_custom)
             return enriched_custom
 
         except Exception as e:
@@ -1579,94 +2091,219 @@ class SiRNAWorkflow:
             console.print(f"⚠️  Transcriptome preparation error: {e}")
             return None
 
-    async def _materialize_transcriptome_reference(self, choice: ReferenceChoice) -> tuple[str, str] | None:
-        """Prepare a transcriptome reference for Nextflow usage."""
-        if not choice.value:
-            return None
+    @staticmethod
+    def _readable_cdna_fasta(path: Path) -> bool:
+        """Whether a file can be read as plain-text FASTA, which is what the classifier needs.
 
-        console.print(f"📚 Transcriptome reference: {choice.value} ({choice.state.value})")
-
-        # Parse filter specification from config
-        from sirnaforge.data.transcriptome_filter import get_filter_spec  # noqa: PLC0415
-
-        filter_spec: list[str] | None = None
-        if self.config.transcriptome_filter:
-            try:
-                filter_spec = get_filter_spec(self.config.transcriptome_filter)
-                if filter_spec:
-                    console.print(f"🔍 Applying transcriptome filters: {', '.join(filter_spec)}")
-            except ValueError as exc:
-                logger.error(f"Invalid transcriptome filter specification: {exc}")
-                console.print(f"⚠️  Invalid filter specification: {exc}")
-                # Continue without filters rather than failing
-                filter_spec = None
-
+        A compressed or binary neighbour of an index prefix parses as an empty transcript index, and
+        an empty index classifies nothing while reporting a completed screen.
+        """
         try:
-            transcriptome_result = await self._prepare_transcriptome_database(choice.value, filter_spec)
-        except Exception as exc:  # pragma: no cover - defensive logging path
-            logger.exception("Failed to prepare transcriptome database")
-            console.print(f"⚠️  Transcriptome preparation failed: {exc}")
-            return None
+            with path.open() as handle:
+                for line in handle:
+                    if line.strip():
+                        return line.startswith(">")
+        except (OSError, UnicodeDecodeError):
+            return False
+        return False
 
-        if not transcriptome_result or not transcriptome_result.get("fasta"):
-            console.print("⚠️  Failed to prepare transcriptome database, continuing without it")
-            return None
+    def _adopt_prebuilt_index(self, request: ReferenceRequest) -> dict[str, Any]:
+        """Adopt a caller-built index, locating the sequence file its hits must be classified against.
 
-        species_value = transcriptome_result.get("species")
-        raw_species = species_value if isinstance(species_value, str) else "transcriptome"
-        # Normalize species name to canonical form (e.g., 'hsa' -> 'human', 'mmu' -> 'mouse')
-        transcriptome_species = normalize_species_name(raw_species)
+        bwa-mem2 writes its index files beside the FASTA they were built from, so an index prefix is
+        usually that FASTA's path; the plain suffixes are tried after it. Only a file that reads as
+        plain-text FASTA counts, because that is what the transcript->gene index is built from. The
+        index files at the prefix are never checked -- they may exist only inside the container -- but
+        a host-readable sequence file is required, so an index bundle mounted into the container alone
+        is refused rather than screened against something nothing can classify.
+        """
+        prefix = Path(request.value)
+        candidates = [prefix, *(prefix.with_name(prefix.name + suffix) for suffix in (".fa", ".fasta", ".fna"))]
+        companion = next((path for path in candidates if path.is_file() and self._readable_cdna_fasta(path)), None)
+        return {
+            "index": prefix,
+            "fasta": companion,
+            "header_species": infer_species_from_cdna_headers(companion) if companion else None,
+        }
 
-        # Build a transcript->gene index for EVERY screened species (not just human) so
-        # orthologs can be recognized across species. This fixes the central defect where
-        # ortholog recognition only ever worked for human.
-        if not self._transcript_index.for_species(transcriptome_species):
-            self._transcript_index.build(transcriptome_species, Path(transcriptome_result["fasta"]))
+    def _reject_reference(self, request: ReferenceRequest, species: str, reason: str) -> ReferenceRejection:
+        """Record a reference the run cannot use, so the species is unscreened rather than assumed clean."""
+        self._species_screening_shortfalls[species] = reason
+        console.print(f"❌ No usable reference for {species}: {reason}")
+        logger.error(f"Refusing to screen {species} with {request.value}: {reason}")
+        return ReferenceRejection(species=species, identity=request.value, reason=reason)
 
-        # Stash the resolved FASTA so repeat detection can reuse it instead of fetching it again.
-        self._species_cdna_fasta.setdefault(transcriptome_species, Path(transcriptome_result["fasta"]))
+    async def _resolve_screening_reference(
+        self, request: ReferenceRequest
+    ) -> tuple[ScreeningReference | None, ReferenceRejection | None]:
+        """Resolve one request into a typed ``{species, kind, identity, index}`` reference.
 
-        # Use pre-built index if available (host has bwa-mem2), otherwise pass FASTA path
-        # Nextflow will build the index in Docker if needed
-        transcriptome_path = transcriptome_result.get("index") or transcriptome_result["fasta"]
-        transcriptome_index = str(transcriptome_path)
+        The one door: an explicit index override and a resolved default run through this method
+        alike, so both build the species label, the transcript->gene index the classifier reads and
+        the cDNA FASTA repeat detection reuses. The override used to bypass all three, which is why a
+        cDNA file handed to it aligned successfully and then classified against nothing.
+        """
+        console.print(f"📚 Transcriptome reference: {request.value} ({request.state.value}, {request.form.value})")
+        declared = request.declared_species
+        fallback_species = normalize_species_name(declared) if declared else UNRESOLVED_SPECIES
 
-        if transcriptome_result.get("index"):
-            console.print(
-                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} "
-                f"(index: {transcriptome_result['index'].name})"
+        if request.form is ReferenceForm.PREBUILT_INDEX:
+            payload: dict[str, Any] | None = self._adopt_prebuilt_index(request)
+        else:
+            try:
+                payload = await self._prepare_transcriptome_database(request.value, self._resolve_filter_spec())
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                logger.exception("Failed to prepare transcriptome database")
+                return None, self._reject_reference(request, fallback_species, f"preparation failed: {exc}")
+            if payload and not payload.get("fasta"):
+                payload = None
+
+        if not payload:
+            return None, self._reject_reference(
+                request, fallback_species, "the reference could not be fetched, cached or read"
+            )
+
+        # Resolved before any refusal below, so a rejection names the species that went unscreened
+        # rather than 'unknown': the shortfall map is what reports the missing species, and blaming a
+        # phantom one is how "unscreened" started reading as "clean" in the first place.
+        species, authority, conflict = resolve_reference_species(
+            declared=declared,
+            source_species=payload.get("source_species"),
+            header_species=payload.get("header_species"),
+        )
+        if conflict:
+            logger.warning("Species labels disagree for %s: %s", request.value, conflict)
+            console.print(f"⚠️  Species labels disagree for {request.value}: {conflict}")
+        if authority is SpeciesAuthority.UNRESOLVED:
+            logger.warning(
+                "Could not establish the species of %s: neither the caller nor its headers name one, so it is "
+                "labelled '%s'. Orthology cannot be resolved for it, so cross-species hits would be reported as "
+                "unqualified off-targets.",
+                request.value,
+                UNRESOLVED_SPECIES,
             )
         else:
-            console.print(
-                f"✨ Transcriptome database prepared: {transcriptome_result['fasta'].name} (Nextflow will build index)"
-            )
-        return transcriptome_species, transcriptome_index
+            logger.info("Species '%s' for %s, from its %s", species, request.value, authority.value)
 
-    def _resolve_active_genome_species(self, params: Mapping[str, Any]) -> list[str]:
-        """Filter genome species down to those with available indices."""
-        requested = [species.strip() for species in self.config.mirna_genome_species if species.strip()]
+        # An index build that was attempted and failed leaves no index, and the FASTA is not a
+        # substitute: handed to Nextflow as an index prefix it aligns nothing, which the pipeline
+        # reports as success. Refuse the reference and record why, so the species is unscreened
+        # rather than silently screened against nothing.
+        index_build_error = payload.get(INDEX_BUILD_ERROR_KEY)
+        if index_build_error and not payload.get("index"):
+            return None, self._reject_reference(request, species, str(index_build_error))
+
+        fasta = payload.get("fasta")
+        if not fasta:
+            return None, self._reject_reference(
+                request,
+                species,
+                "no readable plain-text cDNA FASTA was found beside the index prefix (a gzipped or binary "
+                "neighbour does not count), so its hits could not be resolved to genes: put the cDNA FASTA "
+                f"at '{request.value}' (or '{request.value}.fa'), or pass it to --transcriptome-fasta and "
+                "let the run index it",
+            )
+
+        # A transcript->gene index for EVERY screened species (not just human), so orthologs can be
+        # recognized across species, and the FASTA is stashed for repeat detection to reuse.
+        if not self._transcript_index.for_species(species):
+            self._transcript_index.build(species, Path(fasta))
+        self._species_cdna_fasta.setdefault(species, Path(fasta))
+
+        # An index when there is one, otherwise the FASTA -- and then the reference travels on the
+        # FASTA parameter, so the pipeline indexes it. Naming a FASTA as an index prefix instead
+        # aligns nothing, which the pipeline reports as a completed screen.
+        prebuilt = payload.get("index")
+        index = prebuilt or fasta
+        console.print(
+            f"✨ Screening reference resolved: {species} ({authority.value}) → {Path(index).name}"
+            f"{'' if prebuilt else ' (the pipeline will build the index)'}"
+        )
+        return (
+            ScreeningReference(
+                species=species,
+                kind=self.config.screening_kind,
+                identity=request.value,
+                index=str(index),
+                species_authority=authority,
+                form=request.form,
+                state=request.state,
+                reason=request.reason,
+                fasta=str(fasta),
+                needs_index_build=prebuilt is None,
+            ),
+            None,
+        )
+
+    def _resolve_filter_spec(self) -> list[str] | None:
+        """Parse the configured transcriptome filter names, continuing unfiltered when invalid."""
+        if not self.config.transcriptome_filter:
+            return None
+
+        from sirnaforge.data.transcriptome_filter import get_filter_spec  # noqa: PLC0415
+
+        try:
+            filter_spec = get_filter_spec(self.config.transcriptome_filter)
+        except ValueError as exc:
+            logger.error(f"Invalid transcriptome filter specification: {exc}")
+            console.print(f"⚠️  Invalid filter specification: {exc}")
+            return None
+        if filter_spec:
+            console.print(f"🔍 Applying transcriptome filters: {', '.join(filter_spec)}")
+        return filter_spec
+
+    def _resolve_active_screen_species(self, params: Mapping[str, Any]) -> list[str]:
+        """Filter the requested screen species down to those with a reference the pipeline received."""
+        requested = [species.strip() for species in self.config.screen_species if species.strip()]
         available: set[str] = set()
-        # transcriptome_indices belongs in this list: main.nf mixes it into the SAME ch_genomes
-        # alignment channel as genome_indices/genome_fastas, so those species really are screened.
-        # Omitting it dropped every transcriptome-only species from the list below — including the
-        # ones _configure_transcriptome_inputs had just appended to mirna_genome_species — and the
-        # conservation denominator then excluded species that had in fact been aligned.
-        for key in ("genome_indices", "genome_fastas", "transcriptome_indices"):
+        # Both keys are read because main.nf mixes them into ONE alignment channel: transcriptome
+        # FASTAs are indexed in the container, prebuilt indices are used as they are, and either way
+        # the species really is screened. Omitting one dropped species that had in fact been aligned
+        # from the conservation denominator.
+        for key in ("transcriptome_indices", "transcriptome_fastas"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
             available.update(self._parse_species_entries(raw_value))
 
         if available:
             filtered = [species for species in requested if species in available]
+            # Dropping a requested species here is a completeness fact about the run, not a detail
+            # of list construction: recorded so it reaches the warnings and the published summary.
+            for species in requested:
+                if species not in available:
+                    self._species_screening_shortfalls[species] = (
+                        "requested for screening but no transcriptome index or FASTA was resolved for it, "
+                        "so it was never submitted to the aligner"
+                    )
+                    logger.warning(
+                        f"Species '{species}' was requested for off-target screening but no reference was "
+                        "resolved for it; it will not be screened and its hit counts are unknown."
+                    )
             for species in sorted(available):
                 if species not in filtered:
                     filtered.append(species)
+            # A species that reached the pipeline parameters without going through the resolver -- a
+            # raw nextflow_config passthrough -- has no transcript index here, so its alignments can
+            # only ever publish as undetermined. Reported rather than refused: the caller wrote a
+            # pipeline parameter by hand, which the resolver is not asked to police.
+            for species in filtered:
+                if not self._transcript_index.for_species(species):
+                    logger.warning(
+                        f"Species '{species}' reaches the aligner without a reference resolved on this host, so no "
+                        "transcript index was built for it: its hits cannot be resolved to genes and will publish "
+                        "as undetermined with species_index_missing set."
+                    )
         else:
+            # No reference resolved for ANYTHING, so no transcriptome screen was configured at all
+            # (miRNA-only, or --skip-off-targets). Recording a per-species shortfall here would
+            # blame each species for a screen nobody asked for; the aggregate reports that case as
+            # "TRANSCRIPTOME ANALYSIS STATUS: NOT PERFORMED" and the run still reports partial via
+            # the "no alignment evidence for any species" guard in _process_nextflow_results.
             filtered = requested
 
-        # Remembered because this list, not config.mirna_genome_species, is what gets screened:
-        # scoring conservation against the shorter config list yielded a denominator smaller than
-        # its numerator, which aborted post-screen scoring for the whole candidate.
-        self._active_genome_species = list(filtered)
+        # Remembered because this list, not config.screen_species, is what gets screened: scoring
+        # conservation against the shorter config list yielded a denominator smaller than its
+        # numerator, which aborted post-screen scoring for the whole candidate.
+        self._active_screen_species = list(filtered)
         return filtered
 
     @staticmethod
@@ -1699,7 +2336,7 @@ class SiRNAWorkflow:
     def _prepare_nextflow_cache(
         self,
         nf_config: NextflowConfig,
-        genome_species: Sequence[str],
+        screen_species: Sequence[str],
         additional_params: Mapping[str, Any],
         pipeline_revision: str,
     ) -> dict[str, Any]:
@@ -1707,7 +2344,7 @@ class SiRNAWorkflow:
 
         Args:
             nf_config: Nextflow configuration
-            genome_species: Species for miRNA genome lookups (used in cache key)
+            screen_species: Species the screen covers (used in cache key)
             additional_params: Additional pipeline parameters
             pipeline_revision: Git revision of pipeline
 
@@ -1726,7 +2363,7 @@ class SiRNAWorkflow:
             "max_cpus": nf_config.max_cpus,
             "max_memory": nf_config.max_memory,
             "max_time": nf_config.max_time,
-            "genome_species": sorted(genome_species),
+            "screen_species": sorted(screen_species),
             "additional_params": self._normalize_param_dict(additional_params),
             "extra_params": self._normalize_param_dict(nf_config.extra_params),
         }
@@ -1871,39 +2508,104 @@ class SiRNAWorkflow:
 
         return aggregated
 
-    async def _configure_transcriptome_inputs(self, additional_params: dict[str, Any]) -> bool:
-        """Prepare transcriptome inputs for Nextflow runs."""
-        selection = self.config.transcriptome_selection
-        if not selection.enabled:
-            console.print(f"ℹ️  Transcriptome off-target disabled ({selection.disabled_reason})")
-            return False
-        if not self.config.transcriptome_references:
+    async def _resolve_screening_references(self, additional_params: dict[str, Any]) -> bool:
+        """Resolve every screening reference request and write the resolved set into the parameters.
+
+        One resolver for both doors, so the pipeline receives one species list and one index list
+        that cannot disagree with the metadata the classifier holds. Requests that resolved to
+        nothing are kept as rejections, not dropped.
+        """
+        requests = self.config.screening_requests
+        rejections = list(self.config.screening_request_rejections)
+        for rejection in self.config.screening_request_rejections:
+            logger.info("Screening reference not resolved: %s (%s)", rejection.identity, rejection.reason)
+        if not requests:
+            reason = self.config.transcriptome_selection.disabled_reason or "no screening reference requested"
+            console.print(f"ℹ️  Transcriptome off-target disabled ({reason})")
+            self._screening_references = ScreeningReferenceSet(
+                kind=self.config.screening_kind,
+                rejections=tuple(rejections),
+                requested_species=tuple(self.config.screen_species),
+            )
             return False
 
-        prepared_entries: list[str] = []
-        prepared_species: list[str] = []
-        for choice in selection.choices:
-            materialized = await self._materialize_transcriptome_reference(choice)
-            if not materialized:
+        references: list[ScreeningReference] = []
+        for request in requests:
+            resolved, refusal = await self._resolve_screening_reference(request)
+            if refusal is not None:
+                rejections.append(refusal)
+            if resolved is None:
                 continue
-            transcriptome_species, transcriptome_index = materialized
-            if transcriptome_species not in self.config.mirna_genome_species:
-                self.config.mirna_genome_species.append(transcriptome_species)
-            prepared_entries.append(f"{transcriptome_species}:{transcriptome_index}")
-            prepared_species.append(transcriptome_species)
+            if resolved.species not in self.config.screen_species:
+                self.config.screen_species.append(resolved.species)
+            references.append(resolved)
 
-        if not prepared_entries:
+        self._screening_references = ScreeningReferenceSet(
+            kind=self.config.screening_kind,
+            references=tuple(references),
+            rejections=tuple(rejections),
+            requested_species=tuple(self.config.screen_species),
+        )
+        if not references:
             return False
 
-        existing_indices = additional_params.get("transcriptome_indices")
-        merged_entries = [token.strip() for token in existing_indices.split(",")] if existing_indices else []
-        merged_entries = [entry for entry in merged_entries if entry]
-        for entry in prepared_entries:
-            if entry not in merged_entries:
-                merged_entries.append(entry)
-        additional_params["transcriptome_indices"] = ",".join(merged_entries)
-        additional_params["transcriptome_species"] = ",".join(dict.fromkeys(prepared_species))
+        # An already-built index and a FASTA still to be indexed travel on different parameters: the
+        # pipeline reads one as a prefix and indexes the other, and naming a FASTA as a prefix aligns
+        # nothing while reporting success.
+        for key, resolved_value in (
+            ("transcriptome_indices", self._screening_references.index_parameter),
+            ("transcriptome_fastas", self._screening_references.fasta_parameter),
+        ):
+            existing = additional_params.get(key)
+            merged = [token.strip() for token in str(existing).split(",")] if existing else []
+            merged = [entry for entry in merged if entry]
+            for entry in resolved_value.split(","):
+                if entry and entry not in merged:
+                    merged.append(entry)
+            if merged:
+                additional_params[key] = ",".join(merged)
+        additional_params["transcriptome_species"] = ",".join(self._screening_references.species)
         return True
+
+    @staticmethod
+    def _plan_search_settings(additional_params: Mapping[str, Any]) -> dict[str, str | int | float | bool | None]:
+        """The alignment settings a plan entry needs to be reproducible, as stated for this run."""
+        settings: dict[str, str | int | float | bool | None] = {}
+        for key in ("max_hits", "bwa_k", "bwa_T", "seed_start", "seed_end"):
+            if key not in additional_params:
+                continue
+            value = additional_params[key]
+            settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
+        return settings
+
+    def _record_screening_plan(self, input_fasta: Path, additional_params: Mapping[str, Any]) -> None:
+        """Record what this run intends to screen, one entry per resolved reference.
+
+        The guide-set digest is the submitted FASTA's own hash: two screens of one reference with
+        different guide sets are different evidence, and joining them would attribute one screen's
+        counts to the other's guides.
+        """
+        self._screening_plan = self._screening_references.plan(
+            guide_set_digest=self._file_hash_sha256(input_fasta)[:16],
+            search_settings=self._plan_search_settings(additional_params),
+        )
+
+    def _summarize_screening_references(self) -> dict[str, Any]:
+        """The published reference record: what resolved, over which species, and what did not.
+
+        ``scope`` is the resolved screen's species set as a :class:`FilterScope`: what the run
+        planned to screen, fixed at resolution. It is not a coverage report -- a species whose
+        alignment published nothing is subtracted post-run in ``filtering_stats.unscreened_species``,
+        not from here. No gate reads it in 0.7.1; applying a scope is #101's.
+        """
+        summary: dict[str, Any] = {
+            "transcriptome": self.config.transcriptome_selection.to_metadata(),
+            "screening": self._screening_references.to_metadata(),
+            "scope": self._screening_references.scope().model_dump(mode="json"),
+        }
+        if self._screening_plan is not None:
+            summary["screening_plan"] = self._screening_plan.model_dump(mode="json")
+        return summary
 
     def _log_nextflow_targets(
         self,
@@ -1911,7 +2613,7 @@ class SiRNAWorkflow:
         has_transcriptome: bool,
         additional_params: Mapping[str, Any],
     ) -> None:
-        """Emit console updates about genome and transcriptome targets."""
+        """Emit console updates about the screening references handed to the pipeline."""
         if active_species:
             console.print(f"🔭 Nextflow transcriptome species: {', '.join(active_species)}")
         else:
@@ -1934,17 +2636,18 @@ class SiRNAWorkflow:
         Args:
             candidates: Candidates to screen.
             input_fasta: Deduplicated FASTA input for the Nextflow pipeline.
-            additional_params: Pre-configured Nextflow parameters (transcriptome inputs already
-                materialized), or None to configure them here.
+            additional_params: Pre-configured Nextflow parameters (screening references already
+                resolved), or None to resolve them here.
             has_transcriptome: Paired with additional_params; ignored when that is None.
         """
         if additional_params is None:
             additional_params = dict(self.config.nextflow_config)
-            has_transcriptome = await self._configure_transcriptome_inputs(additional_params)
+            has_transcriptome = await self._resolve_screening_references(additional_params)
         has_transcriptome = bool(has_transcriptome)
-        active_species = self._resolve_active_genome_species(additional_params)
+        active_species = self._resolve_active_screen_species(additional_params)
         has_transcriptome = has_transcriptome or bool(additional_params.get("transcriptome_indices"))
         self._log_nextflow_targets(active_species, has_transcriptome, additional_params)
+        self._record_screening_plan(input_fasta, additional_params)
 
         if not active_species and not has_transcriptome:
             console.print("ℹ️  No transcriptome indices configured; skipping Nextflow run")
@@ -1962,7 +2665,7 @@ class SiRNAWorkflow:
         results = await runner.run_offtarget_analysis(
             input_file=input_fasta,
             output_dir=nf_output_dir,
-            genome_species=active_species,
+            screen_species=active_species,
             additional_params=additional_params,
             show_progress=True,
         )
@@ -1985,13 +2688,13 @@ class SiRNAWorkflow:
 
     def _setup_nextflow_runner(
         self,
-        genome_species: Sequence[str],
+        screen_species: Sequence[str],
         additional_params: Mapping[str, Any],
     ) -> tuple[NextflowRunner, dict[str, Any]]:
         """Configure Nextflow runner with user settings and cached workdirs.
 
         Args:
-            genome_species: Species for miRNA genome lookups
+            screen_species: Species the screen covers
             additional_params: Additional pipeline parameters
 
         Returns:
@@ -2021,7 +2724,7 @@ class SiRNAWorkflow:
         runner = NextflowRunner(nf_config)
         cache_info = self._prepare_nextflow_cache(
             nf_config=nf_config,
-            genome_species=genome_species,
+            screen_species=screen_species,
             additional_params=additional_params,
             pipeline_revision=runner.get_pipeline_revision(),
         )
@@ -2050,16 +2753,18 @@ class SiRNAWorkflow:
 
         tx_summary = aggregated_views.get("transcriptome") if aggregated_views else None
         if tx_summary:
-            missing_species = cast(list[str], tx_summary.get("missing_species") or [])
-            if missing_species:
+            for warning_msg in self._transcriptome_shortfall_warnings(tx_summary):
                 run_status = "partial"
-                warning_msg = (
-                    "⚠️  No transcriptome alignment files were generated for: "
-                    f"{', '.join(missing_species)}. This usually means the BWA-MEM2 indexing stage ran out of memory. "
-                    "Increase Nextflow --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices."
-                )
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
+
+        # Shortfalls decided before Nextflow ran are reported on the same footing as ones the
+        # aggregate found: a species dropped for want of a reference appeared in no artifact at all.
+        for species, reason in sorted(self._species_screening_shortfalls.items()):
+            run_status = "partial"
+            warning_msg = f"⚠️  '{species}' was not screened: {reason}"
+            console.print(warning_msg)
+            workflow_warnings.append(warning_msg)
 
         # POSITIVE evidence, deliberately not the aggregate's self-reported missing_species: this
         # method reports "completed" whenever the output directory merely exists, and
@@ -2081,35 +2786,174 @@ class SiRNAWorkflow:
         # alignments are passed through because a candidate with no hits from an alignment that
         # never ran must not be scored as if it had come back clean.
         filter_criteria = getattr(self.config.design_params, "offtarget_filters", None) or OffTargetFilterCriteria()
+        # Orthologue evidence is resolved here, in the async layer, and handed to the synchronous
+        # classifier as a plain gene-ID set: gene symbols cannot decide orthology (mouse TP53 is
+        # Trp53), and classify_hit is pure by contract. Degrades to the symbol heuristic on failure.
+        ortholog_mapping = await self._resolve_ortholog_mapping(screened_species, parsed)
+        mirna_screened = self._mirna_channel_completed(aggregated_views.get("mirna") if aggregated_views else None)
+        if not mirna_screened:
+            # Warned, but not a status downgrade: ``run_status`` speaks for the evidence the run
+            # *requires*, and every miRNA pair is exploratory in 0.7.1. The consequence is carried as
+            # UNKNOWN on the miRNA gates and as a flag in filtering_stats.
+            warning_msg = (
+                "⚠️  No miRNA seed evidence was published for this run: the miRNA gates report unknown rather "
+                "than a clean scan, and their observed values stay empty."
+            )
+            console.print(warning_msg)
+            workflow_warnings.append(warning_msg)
         updated_candidates, stats = self._integrate_offtarget_results(
-            candidates, parsed, filter_criteria, screened_species=screened_species
+            candidates,
+            parsed,
+            filter_criteria,
+            screened_species=screened_species,
+            ortholog_gene_ids=ortholog_mapping.all_gene_ids,
+            mirna_screened=mirna_screened,
+            unresolved_orthology_species=ortholog_mapping.unresolved_species,
         )
+        stats["mirna_channel_screened"] = mirna_screened
+        stats["orthology"] = ortholog_mapping.summary()
+        # A species dropped before Nextflow is unscreened in exactly the sense this field names, so
+        # it belongs in it; the reasons are published beside it rather than only logged.
+        stats["species_screening_shortfalls"] = dict(self._species_screening_shortfalls)
+        stats["unscreened_species"] = sorted(
+            set(cast(list[str], stats.get("unscreened_species") or [])) | set(self._species_screening_shortfalls)
+        )
+        workflow_warnings.extend(self._persist_hit_classifications(parsed))
         self._log_offtarget_statistics(stats, aggregated_views, output_dir)
 
-        # Map parsed results for return structure
+        # Map parsed results for return structure, keyed by candidate id. The LOOKUP is by
+        # screen_query_id: the aligner saw one record per distinct guide, so a deduplicated
+        # candidate's evidence lives under its representative's id and looking it up by `id`
+        # published a fabricated zero for every non-representative (32,463 of 34,863 ids on the
+        # frozen baseline) while candidates_all.csv carried the real count for the same ids.
+        # Two scalars per candidate, never the rows behind them. Carrying `hits` here re-serialised
+        # every ingested alignment once per candidate sharing the guide -- a 7x fan-out on a
+        # deduplicated run -- and produced a 2.9 GiB workflow_summary.json whose other keys totalled
+        # 14 KB. Nothing reads the rows from this map: every consumer of the alignments works off
+        # `parsed` and has already run by the time this is built, so the rows were written only to be
+        # serialised. The detail stays on disk in the tables named by `detail_files`.
         mapped = {}
         for c in updated_candidates:
-            qid = c.id
-            entry = parsed.get("results", {}).get(qid)
-            if entry:
-                mapped[qid] = {
-                    "off_target_count": entry.get("off_target_count", 0),
-                    "off_target_score": entry.get("off_target_score", 0.0),
-                    "hits": entry.get("hits", []),
-                }
-            else:
-                mapped[qid] = {"off_target_count": 0, "off_target_score": 0.0, "hits": []}
+            entry = parsed.get("results", {}).get(c.screen_query_id or c.id)
+            mapped[c.id] = {
+                # The candidate's own liability count, not the ingest tally: the raw entry counts
+                # on-target, ortholog, repeat and miRNA rows too, so taking it here gave one field
+                # name two different definitions across two artifacts of the same run.
+                "off_target_count": c.off_target_count,
+                "off_target_score": entry.get("off_target_score", 0.0) if entry else 0.0,
+            }
 
         return {
             "status": run_status,
             "method": "embedded_nextflow",
             "output_dir": str(output_dir),
             "results": mapped,
+            "detail_files": self._offtarget_detail_files(parsed, output_dir),
             "execution_metadata": results,
             "filtering_stats": stats,
             "aggregated": aggregated_views,
             "warnings": workflow_warnings,
         }
+
+    @staticmethod
+    def _offtarget_detail_files(parsed: Mapping[str, Any], output_dir: Path) -> dict[str, list[str]]:
+        """Where the per-alignment rows actually live, so the summary can point instead of copy.
+
+        Paths are the ones the parser read, not a glob a reader has to re-derive: a guessed pattern
+        goes stale the moment the pipeline's layout changes, and the summary would then name files
+        that do not exist.
+        """
+        transcriptome = [
+            str(table["path"])
+            for table in cast(list[dict[str, Any]], parsed.get("transcriptome_hit_tables") or [])
+            if table.get("path")
+        ]
+        mirna = [str(path) for path in cast(list[Path], parsed.get("mirna_hit_files") or [])]
+        return {
+            "transcriptome": sorted(transcriptome),
+            "mirna": sorted(mirna),
+            "root": [str(output_dir)],
+        }
+
+    @staticmethod
+    def _persist_hit_classifications(parsed: Mapping[str, Any]) -> list[str]:
+        """Write the class, symbols, shortfall flags and ortholog evidence tier onto every table read.
+
+        Every transcriptome file the parser read is rewritten with the classification columns appended, so
+        a reviewer can tell an on-target isoform alignment from a liability without re-deriving
+        anything. A header-only table is rewritten too: the published schema must not depend on
+        whether the run produced any hits, or a consumer selecting ``hit_class`` fails on exactly
+        the clean runs.
+
+        Returns the reconciliation warnings, which the caller surfaces alongside the run status.
+        Rows are annotated by ``_classify_orphan_hit_rows`` before this runs, so there is no
+        unannotated-row branch here: an unannotated row is a reconciliation failure, reported as
+        one, rather than a silent skip.
+        """
+        tables = cast(list[dict[str, Any]], parsed.get("transcriptome_hit_tables") or [])
+        persisted = 0
+        tally: dict[str, int] = {}
+        for table in tables:
+            tsv_path = table.get("path")
+            rows = cast(list[dict[str, Any]], table.get("rows") or [])
+            fieldnames = cast(list[str], table.get("fieldnames") or [])
+            if not tsv_path or not fieldnames:
+                continue
+            try:
+                written = write_classified_hits(Path(tsv_path), rows, fieldnames)
+            except OSError as exc:
+                logger.warning(f"Could not persist hit classification to {tsv_path}: {exc}")
+                continue
+            persisted += written
+            for name, count in count_persisted_classes(rows).items():
+                tally[name] = tally.get(name, 0) + count
+            logger.info(f"Wrote {'/'.join(CLASSIFICATION_COLUMNS)} onto {tsv_path} for {written} rows")
+
+        if tables:
+            console.print(
+                f"🏷️  Persisted hit classification for {persisted} alignment(s) across "
+                f"{len(tables)} file(s) ({', '.join(f'{name}={count}' for name, count in sorted(tally.items()))})"
+            )
+        return SiRNAWorkflow._reconcile_persisted_hits(parsed, persisted, sum(tally.values()))
+
+    @staticmethod
+    def _reconcile_persisted_hits(parsed: Mapping[str, Any], persisted: int, classified: int) -> list[str]:
+        """Check the published rows against the hits the candidate counters were built from.
+
+        The two are counted from different structures — ``results`` by the row ingest,
+        ``persisted`` by the tables that were written — so a path that feeds candidates hits it
+        never publishes shows up here. That is the failure this check exists for: an aggregated
+        table rejected upstream left the fallback ingesting real per-species rows into candidates
+        while the published table stayed header-only, so the hit table reported no liabilities
+        beside candidates carrying dozens each.
+
+        The ``combined_offtargets.json`` aggregate used to trip it for the same reason in another
+        format: its rows fed candidates with no TSV to be republished into. Those rows are now
+        collected into the table the producer would have written, so this check speaks only to real
+        divergence again.
+        """
+        counted = 0
+        for entry in cast(dict[str, dict[str, Any]], parsed.get("results") or {}).values():
+            for hit in cast(list[Mapping[str, Any]], entry.get("hits") or []):
+                if "mirna_id" not in hit and "database" not in hit:
+                    counted += 1
+
+        warnings: list[str] = []
+        if persisted < counted:
+            warnings.append(
+                f"⚠️  Hit table/candidate mismatch: {counted} transcriptome hit(s) reached the candidate counters "
+                f"but only {persisted} row(s) were published. The published hit table under-reports liabilities; "
+                "treat off_target_count, not the table, as the count for this run."
+            )
+        if classified < persisted:
+            warnings.append(
+                f"⚠️  {persisted - classified} published hit row(s) carry no usable classification; "
+                "their hit_class cell is not one of the taxonomy's values."
+            )
+        for warning in warnings:
+            logger.error(warning)
+            console.print(warning)
+        return warnings
 
     @staticmethod
     def _species_with_alignment_evidence(tx_summary: Mapping[str, Any] | None) -> list[str]:
@@ -2123,14 +2967,23 @@ class SiRNAWorkflow:
         - the aggregate is missing entirely (aggregation never ran, so nothing reported anything);
         - the aggregate exists but names no species (a hand-written or legacy summary);
         - miRNA-only mode, where sirna_offtarget_analysis.nf derives the species list from
-          ch_genome_indices and falls back to '' — no transcriptome alignment happened at all, so
+          the resolved index channel and falls back to '' — no transcriptome alignment happened at all, so
           the off-target term has nothing to stand on.
+
+        ``species_screened`` is preferred over any file tally because a file can be discovered and
+        still be unusable: a 0-byte ``*_analysis.tsv`` (what offtarget_analysis.nf's stub emits) or
+        one the schema rejects counts in ``species_file_counts`` while contributing no alignment.
+        An explicitly empty ``species_screened`` is evidence, not a missing key, so it is honoured.
         """
         if not tx_summary:
             return []
-        # species_file_counts is the aggregator's own per-species file tally: >0 means it read
-        # alignment output for that species.
-        file_counts = cast(dict[str, int], tx_summary.get("species_file_counts") or {})
+        screened = tx_summary.get("species_screened")
+        if screened is not None:
+            return [str(species) for species in cast(list[Any], screened)]
+        # Older summaries carry no screened list; their per-species file tally is the same evidence,
+        # coarser, and cannot see a file that was discovered and then rejected.
+        usable_counts = cast(dict[str, int], tx_summary.get("usable_species_file_counts") or {})
+        file_counts = usable_counts or cast(dict[str, int], tx_summary.get("species_file_counts") or {})
         if file_counts:
             return [species for species, count in file_counts.items() if count]
         # Older summaries carry no per-species counts; species_analyzed minus the species the
@@ -2138,6 +2991,60 @@ class SiRNAWorkflow:
         analyzed = [str(species) for species in cast(list[Any], tx_summary.get("species_analyzed") or [])]
         missing = {str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])}
         return [species for species in analyzed if species not in missing]
+
+    @staticmethod
+    def _mirna_channel_completed(mirna_summary: Mapping[str, Any] | None) -> bool:
+        """Whether the miRNA seed scan actually ran, per its own aggregated summary.
+
+        Channel-level, not per species: the scan is one batch over every submitted guide, so that is the
+        honest granularity.
+
+        ``total_candidates`` is the evidence, not ``analysis_files_processed`` -- the latter counts files
+        the aggregator *globbed*, including a 0-byte one it then failed to read, the same weak signal
+        that let an empty ``*_analysis.tsv`` publish a completed transcriptome screen. ``total_candidates``
+        counts files that parsed and validated, so a header-only table (a scan that found nothing) counts
+        and an unreadable one does not. An absent summary is unknown.
+        """
+        if not mirna_summary:
+            return False
+        for key in ("total_candidates", "analysis_files_processed"):
+            value = mirna_summary.get(key)
+            if isinstance(value, int):
+                return value > 0
+        return False
+
+    @staticmethod
+    def _transcriptome_shortfall_warnings(tx_summary: Mapping[str, Any]) -> list[str]:
+        """Every way the aggregate says a requested species was not screened, as run warnings.
+
+        A rejected file and an absent file are different facts with the same consequence, so both
+        are reported with their reason. Without this the summary had no field that could carry a
+        per-species rejection, and the run printed "No transcriptome hits detected for: mouse" as
+        good news.
+        """
+        missing = [str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])]
+        unscreened = [str(species) for species in cast(list[Any], tx_summary.get("unscreened_species") or [])]
+        rejected = cast(dict[str, Any], tx_summary.get("rejected_species_files") or {})
+
+        warnings: list[str] = []
+        if missing:
+            warnings.append(
+                "⚠️  No transcriptome alignment files were generated for: "
+                f"{', '.join(missing)}. This usually means the BWA-MEM2 indexing stage ran out of memory. "
+                "Increase Nextflow --max_memory (32GB+ recommended for human transcriptomes) or pre-build indices."
+            )
+        for species, reasons in sorted(rejected.items()):
+            detail = "; ".join(str(reason) for reason in cast(list[Any], reasons))
+            warnings.append(
+                f"⚠️  Alignment output for '{species}' was rejected and contributed nothing to this screen: {detail}"
+            )
+        rejected_only = [species for species in unscreened if species not in missing]
+        if rejected_only:
+            warnings.append(
+                f"⚠️  Not screened: {', '.join(rejected_only)}. Zero hits for these species means unknown, "
+                "not clean; they keep no off-target evidence in this run."
+            )
+        return warnings
 
     def _log_offtarget_statistics(
         self,
@@ -2156,6 +3063,7 @@ class SiRNAWorkflow:
                 ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
                 ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
                 ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
+                ("failed_isoform_coverage", "❌ {} failed: protein-coding isoform coverage floor"),
             )
             for key, template in summaries:
                 count = stats.get(key, 0)
@@ -2180,24 +3088,7 @@ class SiRNAWorkflow:
         if aggregated_views:
             tx_summary = aggregated_views.get("transcriptome")
             if tx_summary:
-                species_counts = cast(dict[str, int], tx_summary.get("hits_per_species", {}) or {})
-                human_hits = tx_summary.get("human_hits", 0)
-                other_hits = tx_summary.get("other_species_hits", 0)
-                console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
-                if species_counts:
-                    formatted = ", ".join(f"{k}: {v}" for k, v in sorted(species_counts.items()))
-                    console.print(f"      per species: {formatted}")
-                missing_species = cast(list[str], tx_summary.get("missing_species") or [])
-                if missing_species:
-                    console.print(
-                        "      ⚠️ Transcriptome alignment files were missing for: "
-                        f"{', '.join(missing_species)} (likely insufficient memory during BWA indexing)."
-                    )
-
-                species_analyzed = cast(list[str], tx_summary.get("species_analyzed", []) or [])
-                zero_hit_species = [species for species in species_analyzed if species_counts.get(species, 0) == 0]
-                if zero_hit_species and not missing_species:
-                    console.print(f"      ℹ️ No transcriptome hits detected for: {', '.join(zero_hit_species)}")
+                self._log_aggregated_transcriptome(tx_summary)
 
             mirna_summary = aggregated_views.get("mirna")
             if mirna_summary:
@@ -2208,6 +3099,46 @@ class SiRNAWorkflow:
         trace_file = Path(output_dir) / "pipeline_info" / "execution_trace.txt"
         if trace_file.exists():
             console.print(f"   📘 Nextflow execution trace: {trace_file}")
+
+    def _log_aggregated_transcriptome(self, tx_summary: Mapping[str, Any]) -> None:
+        """Report the aggregate's per-species view, separating "clean" from "not screened"."""
+        species_counts = cast(dict[str, int], tx_summary.get("hits_per_species", {}) or {})
+        human_hits = tx_summary.get("human_hits", 0)
+        other_hits = tx_summary.get("other_species_hits", 0)
+        # These roll-ups are derived from the screened species' counts, so on a run that screened
+        # nothing they are 0 for want of evidence. Printing that as the first line of the block was
+        # the same "absent reads as clean" the per-species reporting below exists to prevent.
+        if self._species_with_alignment_evidence(tx_summary):
+            console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
+        else:
+            console.print("   🧾 Aggregated transcriptome hits — none screened, so counts are unknown (not zero)")
+        if species_counts:
+            formatted = ", ".join(f"{k}: {v}" for k, v in sorted(species_counts.items()))
+            console.print(f"      per species: {formatted}")
+
+        missing_species = [str(species) for species in cast(list[Any], tx_summary.get("missing_species") or [])]
+        if missing_species:
+            console.print(
+                "      ⚠️ Transcriptome alignment files were missing for: "
+                f"{', '.join(missing_species)} (likely insufficient memory during BWA indexing)."
+            )
+
+        # "No hits detected" is a clean-screen claim, so it is made only about species that were
+        # screened. Reported against species_analyzed it read a rejected alignment as good news.
+        screened_species = self._species_with_alignment_evidence(tx_summary)
+        zero_hit_species = [species for species in screened_species if species_counts.get(species, 0) == 0]
+        if zero_hit_species:
+            console.print(f"      ℹ️ No transcriptome hits detected for: {', '.join(zero_hit_species)}")
+
+        unscreened = [
+            str(species)
+            for species in cast(list[Any], tx_summary.get("unscreened_species") or [])
+            if str(species) not in missing_species
+        ]
+        if unscreened:
+            console.print(
+                f"      ⚠️ No usable alignment evidence for: {', '.join(unscreened)} (counts unknown, not zero)."
+            )
 
     @staticmethod
     def _log_unscored_after_screening(stats: Mapping[str, Any]) -> None:
@@ -2258,13 +3189,19 @@ class SiRNAWorkflow:
         with results_file.open("w") as f:
             json.dump(results, f, indent=2)
 
-        console.print(f"📊 Basic off-target analysis completed for {len(candidates)} candidates")
-        return {"status": "completed", "method": "basic", "results": results, "aggregated": {}}
+        # `partial`, never `completed`: this path aligns nothing and never reaches
+        # _integrate_offtarget_results, so no candidate gets a verdict at all. It is also reached after a
+        # Nextflow failure, where `completed` printed as "Off-target Analysis: Complete".
+        console.print(
+            f"📊 Basic sequence-only off-target analysis for {len(candidates)} candidates "
+            "(no reference alignment: this is not a completed screen)"
+        )
+        return {"status": "partial", "method": "basic", "results": results, "aggregated": {}}
 
     async def _parse_nextflow_results(self, output_dir: Path) -> dict[str, Any]:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis.
 
-        Parses BOTH genome/transcriptome AND miRNA results from their respective
+        Parses BOTH transcriptome AND miRNA results from their respective
         output directories and combines them into a single results structure for
         candidate filtering.
         """
@@ -2273,7 +3210,7 @@ class SiRNAWorkflow:
         if not output_dir.exists():
             return {"status": "missing", "method": "nextflow", "output_dir": str(output_dir), "results": results}
 
-        # Check for combined genome/transcriptome results in aggregated subdirectory
+        # Check for combined transcriptome results in aggregated subdirectory
         aggregated_dir = output_dir / "aggregated"
 
         def _aggregate_path(filename: str) -> Path:
@@ -2292,18 +3229,55 @@ class SiRNAWorkflow:
             entry["off_target_score"] = max(entry["off_target_score"], score)
             entry["hits"].append(row)
 
-        def _ingest_tsv(path: Path) -> bool:
+        # One table per transcriptome file read, each keeping its own ordered row list, so the
+        # classification columns are written back onto exactly the rows that were read from that
+        # file. Every transcriptome row reaching a candidate counter is in one of these tables: the
+        # fallback used to ingest per-species files with no table at all, which published a
+        # header-only hit table beside candidates carrying dozens of hits each.
+        transcriptome_tables: list[dict[str, Any]] = []
+        # Recorded, not just logged: the run summary names these files rather than copying their rows,
+        # and a path only reachable from a log line is not a pointer a consumer can follow.
+        mirna_hit_files: list[Path] = []
+
+        def _record_mirna_file(path: Path) -> None:
+            """Publish one ingested miRNA file as a detail pointer, at most once.
+
+            Every path whose rows reached the miRNA counters, the aggregate included. Only the fallback
+            used to append, so a normal successful run published ``detail_files.mirna: []`` beside
+            non-zero counters -- and since the summary points at these files rather than carrying their
+            rows, that list was the only route to them (#108).
+
+            Deduplicated by path: the aggregate and a per-file fallback can name the same file, and
+            naming one twice reads as two sources of evidence.
+            """
+            if path not in mirna_hit_files:
+                mirna_hit_files.append(path)
+
+        def _ingest_tsv(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
                 return False
             found = False
             with path.open() as fh:
                 reader = csv.DictReader(fh, delimiter="\t")
+                if table is not None and reader.fieldnames:
+                    table["path"] = path
+                    table["fieldnames"] = [name for name in reader.fieldnames if name]
                 for row in reader:
                     _ingest_row(row)
+                    if table is not None:
+                        cast(list[dict[str, Any]], table["rows"]).append(row)
                     found = True
             return found
 
-        def _ingest_json(path: Path) -> bool:
+        def _ingest_transcriptome_tsv(path: Path) -> bool:
+            """Ingest a transcriptome hit file into its own persistable table."""
+            table: dict[str, Any] = {"path": None, "fieldnames": [], "rows": []}
+            found = _ingest_tsv(path, table)
+            if table["path"] is not None:
+                transcriptome_tables.append(table)
+            return found
+
+        def _ingest_json(path: Path, table: dict[str, Any] | None = None) -> bool:
             if not path.exists() or path.stat().st_size == 0:
                 return False
             raw_data: list[Any] | dict[str, Any] | str | int | float | bool | None
@@ -2323,25 +3297,52 @@ class SiRNAWorkflow:
                     data.append(cast(dict[str, Any], entry))
             for item in data:
                 _ingest_row(item)
+                if table is not None:
+                    if not table["fieldnames"]:
+                        table["fieldnames"] = [str(key) for key in item if key]
+                    cast(list[dict[str, Any]], table["rows"]).append(item)
                 found = True
             return found
 
-        genome_hits_found = _ingest_tsv(_aggregate_path("combined_offtargets.tsv"))
-        if not genome_hits_found:
-            genome_hits_found = _ingest_json(_aggregate_path("combined_offtargets.json"))
+        def _ingest_transcriptome_json(path: Path, tsv_path: Path) -> bool:
+            """Ingest the JSON aggregate into a table that will be published as ``tsv_path``.
 
-        mirna_hits_found = _ingest_tsv(_aggregate_path("combined_mirna_hits.tsv"))
-        if not mirna_hits_found:
-            mirna_hits_found = _ingest_json(_aggregate_path("combined_mirna_hits.json"))
+            The JSON aggregate is the one path whose rows reached the candidate counters with no
+            table to be republished into, so the published hit table under-reported liabilities the
+            candidates had already been charged for. Giving those rows the TSV the producer would
+            have written puts them back under the same guarantee as every other path.
+            """
+            table: dict[str, Any] = {"path": None, "fieldnames": [], "rows": []}
+            found = _ingest_json(path, table)
+            if found and table["fieldnames"]:
+                table["path"] = tsv_path
+                transcriptome_tables.append(table)
+            return found
 
-        if not genome_hits_found or not mirna_hits_found:
-            genome_files: list[Path] = []
+        transcriptome_hits_found = _ingest_transcriptome_tsv(_aggregate_path("combined_offtargets.tsv"))
+        if not transcriptome_hits_found:
+            transcriptome_hits_found = _ingest_transcriptome_json(
+                _aggregate_path("combined_offtargets.json"), _aggregate_path("combined_offtargets.tsv")
+            )
+
+        mirna_aggregate_tsv = _aggregate_path("combined_mirna_hits.tsv")
+        mirna_hits_found = _ingest_tsv(mirna_aggregate_tsv)
+        if mirna_hits_found:
+            _record_mirna_file(mirna_aggregate_tsv)
+        else:
+            mirna_aggregate_json = _aggregate_path("combined_mirna_hits.json")
+            mirna_hits_found = _ingest_json(mirna_aggregate_json)
+            if mirna_hits_found:
+                _record_mirna_file(mirna_aggregate_json)
+
+        if not transcriptome_hits_found or not mirna_hits_found:
+            transcriptome_files: list[Path] = []
             mirna_files: list[Path] = []
 
-            if not genome_hits_found:
-                genome_dir = output_dir / "genome"
-                if genome_dir.exists():
-                    genome_files = list(genome_dir.glob("*_analysis.tsv"))
+            if not transcriptome_hits_found:
+                transcriptome_dir = output_dir / "transcriptome"
+                if transcriptome_dir.exists():
+                    transcriptome_files = list(transcriptome_dir.glob("*_analysis.tsv"))
 
             if not mirna_hits_found:
                 mirna_dir = output_dir / "mirna"
@@ -2349,25 +3350,91 @@ class SiRNAWorkflow:
                     mirna_files = list(mirna_dir.glob("*_analysis.tsv"))
 
             files: list[Path] = []
-            if not genome_hits_found:
-                files.extend(genome_files)
+            if not transcriptome_hits_found:
+                files.extend(transcriptome_files)
             if not mirna_hits_found:
                 files.extend(mirna_files)
 
-            if not files and not genome_hits_found and not mirna_hits_found:
-                # Last resort: scan for any TSV files
-                files = list(output_dir.glob("**/*_offtargets.tsv"))
+            if not files and not transcriptome_hits_found and not mirna_hits_found:
+                # Last resort: scan for any TSV files. Treated as transcriptome hits, which is what the
+                # *_offtargets.tsv name means, so they are persisted rather than counted and lost.
+                transcriptome_files = list(output_dir.glob("**/*_offtargets.tsv"))
+                files = list(transcriptome_files)
 
+            transcriptome_file_set = {Path(path) for path in transcriptome_files}
             for fpath in files:
-                _ingest_tsv(Path(fpath))
-
-            if not mirna_hits_found:
-                mirna_tsv = output_dir / "mirna" / "mirna_analysis.tsv"
-                if _ingest_tsv(mirna_tsv):
-                    logger.info(f"Parsing miRNA analysis results from {mirna_tsv}")
+                path = Path(fpath)
+                # Genome rows carry a class and must reach the published table; miRNA rows have no
+                # class of their own and feed the miRNA counters only.
+                if path in transcriptome_file_set:
+                    _ingest_transcriptome_tsv(path)
+                elif _ingest_tsv(path):
+                    # Recording the ingest here is what stops it happening twice. The glob above
+                    # already matches mirna/mirna_analysis.tsv, so a trailing "if not
+                    # mirna_hits_found" retry of that exact path re-read the same file and doubled
+                    # every miRNA counter; there is no layout in which the retry reached a file the
+                    # glob did not.
+                    logger.info(f"Parsed miRNA analysis results from {path}")
+                    _record_mirna_file(path)
                     mirna_hits_found = True
 
-        return {"status": "completed", "method": "nextflow", "output_dir": str(output_dir), "results": results}
+        return {
+            "status": "completed",
+            "method": "nextflow",
+            "output_dir": str(output_dir),
+            "results": results,
+            "transcriptome_hit_tables": transcriptome_tables,
+            "mirna_hit_files": mirna_hit_files,
+        }
+
+    def _gate_offtarget_counts(
+        self,
+        candidate: SiRNACandidate,
+        *,
+        counts: OffTargetGateCounts,
+        filter_criteria: OffTargetFilterCriteria,
+        complete_pairs: frozenset[tuple[str, str]],
+        stats: dict[str, Any],
+    ) -> None:
+        """Apply every off-target gate to one candidate's counts, and count what rejected it.
+
+        One entry point for both the no-hit and with-hit paths, so a gate cannot be wired into only one
+        of them -- how the clean-screen case ended up ungated (#106).
+
+        ``passes_filters`` is set by the rejecting gate through ``record_filter_verdict``, which keeps
+        the first failure. Not assigned here: overwriting it unconditionally let an off-target label mask
+        a design verdict already on the row.
+        """
+        should_fail, fail_status = self._check_offtarget_filters(
+            *counts,
+            filter_criteria,
+            candidate,
+            complete_pairs=complete_pairs,
+        )
+        if not should_fail or fail_status is None:
+            return
+        logger.info(f"Candidate {candidate.id} failed off-target filter: {fail_status.value}")
+        stat_key = _OFFTARGET_REJECTION_STATS.get(fail_status)
+        if stat_key is not None:
+            stats[stat_key] += 1
+
+    def _gate_evidence_pairs(self, filter_id: str, channels: frozenset[ScreeningChannel]) -> frozenset[tuple[str, str]]:
+        """The channel x species pairs one gate needs before it may report a pass.
+
+        The species come from the gate's own declared ``FilterScope``, so the evidence a gate requires
+        is the evidence it counts. An unrestricted scope means every species this run screened -- which
+        is why ``max_off_target_count`` used to pass on a lower bound: it counts liabilities across all
+        of them while completeness was decided for the query species alone.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        scoped: frozenset[str] = frozenset()
+        if policy is not None:
+            try:
+                scoped = frozenset(policy.descriptor(filter_id).scope.species)
+            except (KeyError, RunPolicyError):
+                scoped = frozenset()
+        species = scoped or self._screened_species_scope
+        return frozenset((channel.value, name) for channel in channels for name in species)
 
     def _check_offtarget_filters(
         self,
@@ -2380,8 +3447,26 @@ class SiRNAWorkflow:
         total_hits: int,
         genuine_off_target_count: int,
         filter_criteria: OffTargetFilterCriteria,
+        candidate: SiRNACandidate,
+        *,
+        complete_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> tuple[bool, SiRNACandidate.FilterStatus | None]:
-        """Check if candidate fails off-target filters.
+        """Record every off-target gate's verdict, and report the first that rejects.
+
+        Each gate writes its own outcome and the value it compared onto the candidate. That matters
+        more here than at the design stage: six of these gates read human-stratified counters that
+        exist only as locals in the caller, so before this the row could not be used to check the
+        verdict at all -- the identically named exported columns are all-species totals and disagree.
+
+        ``complete_pairs`` is which channel x species pairs this candidate holds evidence for; ``None``
+        means the caller has no per-species record and every gate is treated as evidenced. A gate whose channels did
+        not all complete cannot report a pass -- its count is a lower bound, so a zero means "nothing was
+        looked for" -- and records ``UNKNOWN`` with no observed value. Not the lower bound: #103's report
+        re-derives verdicts from that column, and a 0 there would produce a confident pass the run never
+        made. The count survives on the candidate's own hit counters.
+
+        A gate whose incomplete count already exceeds its ceiling still FAILs: a lower bound above the
+        threshold is proof enough. Only the pass direction needs completeness.
 
         ``transcriptome_seed_0mm`` is the only input that sees a *partial* hit whose seed paired
         perfectly. ``nm`` is a guide-level distance, so a clipped or gapped hit carries nm > 2 and
@@ -2395,60 +3480,204 @@ class SiRNAWorkflow:
         Returns:
             Tuple of (should_fail, fail_status enum or None)
         """
-        # Define filter checks with their thresholds and enum members
-        checks: list[tuple[int | None, int, SiRNACandidate.FilterStatus]] = [
+        # (filter_id, threshold, observed, label). The filter_id is what ties each check to the
+        # declared filter whose action decides whether exceeding the threshold rejects the candidate
+        # or is merely recorded, the key the verdict is published under, and the lookup into
+        # POST_SCREEN_FILTER_CHANNELS for the channels its count depends on.
+        checks: list[tuple[str, int | None, int, SiRNACandidate.FilterStatus]] = [
             (
+                "max_transcriptome_hits_0mm",
                 filter_criteria.max_transcriptome_hits_0mm,
                 transcriptome_0mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH,
             ),
             (
+                "max_transcriptome_hits_1mm",
                 filter_criteria.max_transcriptome_hits_1mm,
                 transcriptome_1mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM,
             ),
             (
+                "max_transcriptome_hits_2mm",
                 filter_criteria.max_transcriptome_hits_2mm,
                 transcriptome_2mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM,
             ),
             (
+                "max_transcriptome_seed_perfect",
                 filter_criteria.max_transcriptome_seed_perfect,
                 transcriptome_seed_0mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT,
             ),
             (
+                "max_mirna_perfect_seed",
                 filter_criteria.max_mirna_perfect_seed,
                 mirna_0mm_seed,
                 SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED,
             ),
             (
+                "max_total_offtarget_hits",
                 filter_criteria.max_total_offtarget_hits,
                 total_hits,
                 SiRNACandidate.FilterStatus.TOTAL_OFFTARGETS,
             ),
             (
+                "max_off_target_count",
                 filter_criteria.max_off_target_count,
                 genuine_off_target_count,
                 SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
             ),
+            # The boolean flag, as a ceiling of zero, so it goes through the same path as every other
+            # gate instead of a trailing special case. It used to be unreachable: a high-risk hit is by
+            # definition a perfect seed hit, so max_mirna_perfect_seed's ceiling of 0 returned first and
+            # HIGH_RISK_MIRNA labelled nothing on a run where 1,990 candidates carried such a hit.
+            (
+                "fail_on_high_risk_mirna",
+                0 if filter_criteria.fail_on_high_risk_mirna else None,
+                mirna_high_risk,
+                SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA,
+            ),
         ]
 
-        # Check all threshold-based filters
-        for threshold, value, status in checks:
-            if threshold is not None and value > threshold:
-                return True, status
+        # Every check is evaluated and recorded. Returning on the first rejection left the remaining
+        # gates unmeasured, so their reported counts were a function of this list's order.
+        rejection: SiRNACandidate.FilterStatus | None = None
+        for filter_id, threshold, value, status in checks:
+            channels = POST_SCREEN_FILTER_CHANNELS[filter_id]
+            action = self._filter_action_for(filter_id, threshold)
+            if threshold is None or action is FilterAction.OFF:
+                candidate.filter_verdicts[filter_id] = FilterEvaluation.NOT_EVALUATED.value
+                candidate.filter_observed[filter_id] = value
+                continue
+            exceeds = value > threshold
+            required = self._gate_evidence_pairs(filter_id, channels)
+            if not exceeds and complete_pairs is not None and not required <= complete_pairs:
+                # In force but undecidable: the count is a lower bound, so it cannot show the ceiling
+                # was respected. No observed value either -- see the docstring.
+                candidate.record_filter_verdict(
+                    filter_id,
+                    observed=None,
+                    passed=False,
+                    action=action,
+                    status=status,
+                )
+                continue
+            candidate.record_filter_verdict(
+                filter_id,
+                observed=value,
+                passed=not exceeds,
+                action=action,
+                status=status,
+            )
+            if exceeds and action is FilterAction.FAIL and rejection is None:
+                rejection = status
 
-        # Check high-risk miRNA (boolean flag)
-        if filter_criteria.fail_on_high_risk_mirna and mirna_high_risk > 0:
-            return True, SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA
+        return rejection is not None, rejection
 
-        return False, None
+    def _filter_action_for(self, filter_id: str, threshold: float | None) -> FilterAction:
+        """The action in force for one post-screen filter: the run's policy, else the declared default.
+
+        Not off-target-specific despite where it sits: ``min_isoform_coverage`` resolves through it
+        too, which is what makes that gate configurable rather than hard-coded to reject.
+
+        ``threshold`` decides the OFF case. A registry default of ``off`` means "no threshold is
+        configured", not "never gate on this" -- ``max_transcriptome_seed_perfect`` ships that way
+        precisely so a caller can opt in by setting one. Treating the default as authoritative would
+        silently ignore a threshold the caller asked for, which is the defect that gate already had
+        once. ``warn`` is the only action chosen independently of whether a threshold exists.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is not None:
+            try:
+                descriptor = policy.descriptor(filter_id)
+            except (KeyError, RunPolicyError):
+                descriptor = None
+            if descriptor is not None:
+                # OFF because the policy has no threshold is not the same as OFF because a caller
+                # asked for it. Only the first is overridden by a threshold arriving on the criteria.
+                if descriptor.action is FilterAction.OFF and descriptor.threshold is None and threshold is not None:
+                    return FilterAction.FAIL
+                return cast(FilterAction, descriptor.action)
+        spec = FILTER_SPEC_BY_ID.get(filter_id)
+        if spec is None:
+            return FilterAction.FAIL
+        if spec.default_action is FilterAction.OFF and threshold is not None:
+            return FilterAction.FAIL
+        return spec.default_action
 
     @staticmethod
     def _normalize_transcript_id(transcript_id: str) -> str:
         """Strip Ensembl-style version suffixes (e.g. ``.9``) for identity comparisons."""
         return re.sub(r"\.\d+$", "", transcript_id.strip())
+
+    @staticmethod
+    def _species_present_on_hits(offtarget_data: dict[str, Any]) -> frozenset[str]:
+        """Canonical species that actually appear on a transcriptome hit row.
+
+        A species that was screened but aligned nothing needs no orthologue lookup, because there is
+        no cross-species hit to classify. Keeps a single-species screen (and any unit test) off the
+        network entirely.
+        """
+        seen: set[str] = set()
+        for entry in (offtarget_data.get("results") or {}).values():
+            for hit in (entry or {}).get("hits") or []:
+                if "mirna_id" in hit or "database" in hit:
+                    continue
+                label = hit.get("species")
+                if label and str(label).strip():
+                    seen.add(normalize_species_name(str(label)))
+        return frozenset(seen)
+
+    async def _resolve_ortholog_mapping(
+        self, screened_species: Sequence[str] | None, offtarget_data: dict[str, Any]
+    ) -> OrthologueMapping:
+        """Resolve orthologue gene IDs for non-query species that actually produced hits.
+
+        Skipped entirely for a single-species screen, which is the common case and needs no network
+        call. A configured ``ortholog_mapping_file`` replaces the Compara call outright, which is the
+        offline path #101 requires and the only path any test may take. A failure is not fatal: the
+        mapping comes back with the species in ``unresolved_species`` and its hits fall back to the
+        labelled symbol heuristic.
+        """
+        query_species = self._query_species
+        candidates_for_lookup = (
+            frozenset(normalize_species_name(s) for s in (screened_species or self._active_screen_species or ()))
+            & self._species_present_on_hits(offtarget_data)
+        ) - {query_species}
+        if not candidates_for_lookup or not (self._query_gene_ids or self._query_gene_symbols):
+            return OrthologueMapping.empty()
+
+        if self._ortholog_table is not None:
+            logger.info(
+                f"Reading orthologue evidence for {sorted(candidates_for_lookup)} from "
+                f"{self.config.ortholog_mapping_file} instead of Ensembl Compara"
+            )
+            return mapping_from_table(
+                self._ortholog_table,
+                frozenset(self._query_gene_ids),
+                query_species,
+                candidates_for_lookup,
+                query_gene_symbols=frozenset(self._query_gene_symbols),
+            )
+
+        mapping = await resolve_orthologues(
+            frozenset(self._query_gene_ids),
+            query_species,
+            candidates_for_lookup,
+            # An input FASTA supplies transcript IDs, not gene IDs, and Compara answers those with an
+            # empty 200. The symbol is the fallback identifier; the answer is still a stable gene ID.
+            query_gene_symbols=frozenset(self._query_gene_symbols),
+            # No wall-clock ceiling on a real run. Abandoning a slow-but-working Compara would report
+            # a resolvable species as unresolved, and unresolved conservation still publishes 0.0
+            # rather than null (#101) -- so a budget here buys speed by fabricating a measurement.
+            budget=None,
+        )
+        if mapping.unresolved_species:
+            logger.warning(
+                f"Orthologue mapping unresolved for {sorted(mapping.unresolved_species)}; hits in those species "
+                "fall back to gene-symbol equality, which is a heuristic and is labelled as such in the hit table."
+            )
+        return mapping
 
     def _integrate_offtarget_results(  # noqa: PLR0912, C901
         self,
@@ -2456,6 +3685,9 @@ class SiRNAWorkflow:
         offtarget_data: dict[str, Any],
         filter_criteria: OffTargetFilterCriteria | None = None,
         screened_species: Sequence[str] | None = None,
+        ortholog_gene_ids: frozenset[str] = frozenset(),
+        mirna_screened: bool | None = None,
+        unresolved_orthology_species: frozenset[str] = frozenset(),
     ) -> tuple[list[SiRNACandidate], dict[str, Any]]:
         """Integrate off-target analysis results, classify hits, and score candidates.
 
@@ -2477,6 +3709,21 @@ class SiRNAWorkflow:
                 its candidates keep their design-time scores instead of being awarded perfect
                 specificity. None means the caller has no per-species evidence to offer (direct
                 callers, the basic analysis fallback) and the requested set is assumed screened.
+            ortholog_gene_ids: Version-stripped gene IDs resolved as orthologues of the query gene,
+                from :func:`sirnaforge.data.orthology.resolve_orthologues`. Empty is the honest
+                default: orthology then falls back to the labelled gene-symbol heuristic, which
+                cannot resolve pairs like human TP53 / mouse Trp53.
+            unresolved_orthology_species: Species whose orthologue lookup did not complete, from
+                :attr:`OrthologueMapping.unresolved_species`. Conservation is null for a candidate
+                whose denominator includes one, rather than reporting a fraction over a numerator that
+                could not be populated. Empty is the honest default: a caller with no orthology outcome
+                to report is not asserting that every lookup succeeded, but it has nothing better, and
+                the alternative -- assuming failure -- would null out conservation on every direct call.
+            mirna_screened: Whether the miRNA seed channel completed. The miRNA scan is one batch
+                over every submitted guide, so completion is a property of the run and not of a
+                candidate. ``False`` makes the miRNA gates ``UNKNOWN`` rather than passing on a
+                fabricated zero. ``None`` means the caller has no channel evidence to offer -- the
+                same convention as ``screened_species`` -- and the channel is assumed to have run.
 
         Returns:
             Tuple of (updated candidates, statistics dict with hit class decomposition)
@@ -2495,18 +3742,19 @@ class SiRNAWorkflow:
 
         # Conservation is keyed on the set handed to the aligner, not on whether species were typed
         # on the CLI: the term goes inactive exactly when that set is query-species-only.
-        # _active_genome_species, not config.mirna_genome_species, is what Nextflow was handed:
-        # extra species can arrive via --genome-indices/--genome-fastas/--transcriptome-indices and
+        # _active_screen_species, not config.screen_species, is what Nextflow was handed: extra
+        # species can arrive on transcriptome_indices/transcriptome_fastas and
         # can return ortholog hits, so scoring them against the shorter config list made the
         # conservation numerator exceed its denominator.
         requested_species = frozenset(
-            normalize_species_name(s) for s in (self._active_genome_species or self.config.mirna_genome_species)
+            normalize_species_name(s) for s in (self._active_screen_species or self.config.screen_species)
         )
         # A species whose alignment never ran STAYS in this denominator. Subtracting it (as the
         # first pass at this fix did) let a degraded run outscore the complete run it degraded
-        # from: with the only non-query species removed the term goes inactive, compute_composite
-        # renormalises its weight onto the surviving terms, and one candidate scored 57.9 on the
-        # broken screen against 51.1 on the good one (see the regression test). The term is scoped to
+        # from, back when the scorer would redistribute the weight of an unavailable term onto the
+        # surviving ones (one candidate scored 57.9 on the broken screen against 51.1 on the good
+        # one). Conservation no longer scores anything, but the denominator still decides the
+        # reported fraction, so the same reasoning applies. The term is scoped to
         # the species that were screened: one that was screened and produced nothing can only lower
         # conservation, never raise it. Species with no resolvable index never enter this set at all,
         # so conservation is a statement about what was compared, not about the CLI species list.
@@ -2536,6 +3784,33 @@ class SiRNAWorkflow:
                 "reported with design-time scores. Re-run the screen before trusting the ranking."
             )
 
+        # Channel completion, not hit presence, is what lets a zero be read as clean. The miRNA scan is
+        # one batch, so its completion is run-level; the transcriptome channel is per candidate and is
+        # decided inside the loop.
+        unresolved_orthology = frozenset(normalize_species_name(s) for s in unresolved_orthology_species)
+        mirna_channel_complete = mirna_screened is not False
+        if not mirna_channel_complete:
+            logger.warning(
+                "No miRNA seed evidence in this run: the miRNA gates report unknown rather than passing on a "
+                "count of zero, and their observed values stay empty."
+            )
+        # Spelled as the declared requirements are, so eligibility compares rather than re-derives.
+        self._completed_evidence_pairs = frozenset(
+            (ScreeningChannel.TRANSCRIPTOME.value, species) for species in screened
+        ) | (
+            frozenset((ScreeningChannel.MIRNA_SEED.value, species) for species in requested_species | {query_species})
+            if mirna_channel_complete
+            else frozenset()
+        )
+
+        # The same pairs the gates read, so eligibility and gate evaluation cannot disagree about what
+        # completed. `unscreened_pairs` is what a candidate the query-species alignment missed loses.
+        self._screened_species_scope = requested_species | {query_species}
+        run_complete_pairs = self._completed_evidence_pairs or frozenset()
+        unscreened_pairs = frozenset(
+            {(ScreeningChannel.TRANSCRIPTOME.value, query_species)} if query_species_unscreened else ()
+        )
+
         classification_context = ClassificationContext(
             query_gene_ids=frozenset(self._query_gene_ids),
             query_gene_symbols=frozenset(self._query_gene_symbols),
@@ -2546,7 +3821,11 @@ class SiRNAWorkflow:
                 normalize_guide_sequence(c.guide_sequence) for c in candidates if c.repeat_flagged
             ),
             requested_species=requested_species,
+            ortholog_gene_ids=ortholog_gene_ids,
         )
+        # Per-row reference lookups, kept separate from the classification context: they answer
+        # "what gene did this land on, and did any reference exist" for every row, whatever its class.
+        annotator = HitAnnotator(index=self._transcript_index, query_species=query_species)
 
         # Fan out deduplicated results: each representative's results apply to all candidates sharing that sequence
         representative_results: dict[str, dict[str, Any]] = {}
@@ -2557,21 +3836,19 @@ class SiRNAWorkflow:
         # but produced no hits is distinguishable from one never requested (absent key). Species
         # seen on a hit but not requested (unexpected) still get a bucket via setdefault below.
         per_species: dict[str, dict[str, int]] = {
-            species: {
-                "on_target": 0,
-                "ortholog": 0,
-                "repeat": 0,
-                "off_target": 0,
-                "symbol_lookup_missing": 0,
-                "species_index_missing": 0,
-            }
-            for species in requested_species
+            species: dict.fromkeys(_PER_SPECIES_COUNTERS, 0) for species in requested_species
         }
 
         stats: dict[str, Any] = {
             "candidates_analyzed": len(candidates),
             "candidates_with_offtargets": 0,
-            "hit_classes": {"on_target": 0, "ortholog": 0, "repeat": 0, "off_target": 0},
+            # Two different quantities, named apart. hit_classes counts ALIGNMENTS, once each, and
+            # is filled in after the loop so it agrees with the published hit table and the console
+            # line. The candidate-weighted variant sums each candidate's counters over the fanned-out
+            # guide, which is what the gates act on: on the frozen baseline the two are 43,536 and
+            # ~632,000, and publishing the second as "hit_classes" made them look like one number.
+            "hit_classes": dict.fromkeys((member.value for member in HitClass), 0),
+            "hit_classes_candidate_weighted": dict.fromkeys((member.value for member in HitClass), 0),
             "query_gene_transcripts_recognised": len(self._gene_transcript_ids),
             "ortholog_symbol_lookup_misses": 0,
             "species_index_misses": 0,
@@ -2583,6 +3860,7 @@ class SiRNAWorkflow:
             "failed_mirna_seed": 0,
             "failed_high_risk_mirna": 0,
             "failed_excess_off_targets": 0,
+            "failed_isoform_coverage": 0,
             "human_transcriptome_hits": 0,
             "other_transcriptome_hits": 0,
             "human_mirna_hits": 0,
@@ -2610,6 +3888,12 @@ class SiRNAWorkflow:
             never_submitted = bool(self._candidate_id_to_representative) and (
                 candidate_id not in self._candidate_id_to_representative
             )
+            if candidate.screen_query_id is None and not never_submitted:
+                # A caller that bypassed _prepare_offtarget_input still gets the join key it
+                # screened under -- with an empty dedup map the candidate's own id IS the qname.
+                # Guarded on never_submitted because this assignment used to sit above that
+                # computation and so handed a join key to a candidate the aligner never saw.
+                candidate.screen_query_id = repr_id
             if never_submitted:
                 logger.error(
                     f"Candidate {candidate_id} was never submitted to off-target screening; "
@@ -2625,6 +3909,14 @@ class SiRNAWorkflow:
             unscreened_candidate = query_species_unscreened or never_submitted
             candidate.off_target_screened = not unscreened_candidate
 
+            # Which channel x SPECIES pairs THIS candidate holds evidence for. Pairs, not channels: a
+            # gate whose scope is every screened species -- max_off_target_count is the live one --
+            # passed on a lower bound whenever a secondary species failed, because completeness was
+            # decided query-species-only. A candidate the aligner never saw holds nothing.
+            complete_pairs: frozenset[tuple[str, str]] = (
+                frozenset() if never_submitted else run_complete_pairs - unscreened_pairs
+            )
+
             if not offtarget_entry or not offtarget_entry.get("hits"):
                 # No hits: compute post-screen score with zero off-targets. When nothing was
                 # aligned, that zero is an absence of evidence, and awarding
@@ -2633,9 +3925,22 @@ class SiRNAWorkflow:
                 if unscreened_candidate:
                     candidate.scored_after_screening = False
                     stats["candidates_not_scored_after_screening"] += 1
-                    continue
-                if not self._score_candidate_post_screen(candidate, HitClassCounts(), conservation_denominator):
-                    stats["candidates_not_scored_after_screening"] += 1
+                else:
+                    self._score_and_gate(
+                        candidate, HitClassCounts(), conservation_denominator, stats, unresolved_orthology
+                    )
+
+                # Then gate it, on the same footing as a candidate that had hits. This branch used to
+                # `continue`, so a completed screen that found nothing reached no gate at all and
+                # exported every one as `not_evaluated` (#106). The counts are zero and
+                # ``complete_pairs`` says whether that zero was measured.
+                self._gate_offtarget_counts(
+                    candidate,
+                    counts=_ZERO_OFFTARGET_COUNTS,
+                    filter_criteria=filter_criteria,
+                    complete_pairs=complete_pairs,
+                    stats=stats,
+                )
                 continue
 
             stats["candidates_with_offtargets"] += 1
@@ -2646,23 +3951,30 @@ class SiRNAWorkflow:
             # / transcriptome_human_total below (nm>=3 hits count toward the totals but land in
             # no bucket), so the two families never contradict each other.
             transcriptome_totals = {0: 0, 1: 0, 2: 0}
-            transcriptome_human = {0: 0, 1: 0, 2: 0}
+            transcriptome_query = {0: 0, 1: 0, 2: 0}
             transcriptome_off_target_total = 0
+            transcriptome_query_total = 0
             transcriptome_human_total = 0
             transcriptome_seed_0mm = 0
             mirna_total = 0
+            mirna_query_total = 0
             mirna_human_total = 0
             mirna_0mm_seed_total = 0
-            mirna_human_0mm_seed = 0
+            mirna_query_0mm_seed = 0
             mirna_1mm_seed = 0
             mirna_high_risk_total = 0
-            mirna_high_risk_human = 0
+            mirna_high_risk_query = 0
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
                 seed_mismatches = int(hit.get("seed_mismatches", 0))
                 offtarget_score = float(hit.get("offtarget_score", 0.0))
                 species_label = hit.get("species")
+                # The gates count the query species, not literally human. Testing `is_human_species`
+                # here meant that on any non-human query run the mismatch-stratified gates measured
+                # zero on real hits: four perfect-match mouse off-targets on a mouse-query run gave
+                # observed 0 / verdict pass while the exported column said 4.
+                species_is_query = (normalize_species_name(species_label) == query_species) if species_label else False
                 species_is_human = is_human_species(species_label)
 
                 is_mirna = "mirna_id" in hit or "database" in hit
@@ -2671,14 +3983,16 @@ class SiRNAWorkflow:
                     mirna_total += 1
                     if species_is_human:
                         mirna_human_total += 1
+                    if species_is_query:
+                        mirna_query_total += 1
                     if seed_mismatches == 0:
                         mirna_0mm_seed_total += 1
-                        if species_is_human:
-                            mirna_human_0mm_seed += 1
+                        if species_is_query:
+                            mirna_query_0mm_seed += 1
                         if offtarget_score < 5.0:
                             mirna_high_risk_total += 1
-                            if species_is_human:
-                                mirna_high_risk_human += 1
+                            if species_is_query:
+                                mirna_high_risk_query += 1
                     elif seed_mismatches == 1:
                         mirna_1mm_seed += 1
                 else:
@@ -2686,70 +4000,50 @@ class SiRNAWorkflow:
                     classification = classify_hit(hit, candidate.guide_sequence, classification_context)
                     # A blank/missing species label belongs to the query species (see classifier).
                     hit_species = normalize_species_name(species_label) if species_label else query_species
-                    species_bucket = per_species.setdefault(
-                        hit_species,
-                        {
-                            "on_target": 0,
-                            "ortholog": 0,
-                            "repeat": 0,
-                            "off_target": 0,
-                            "symbol_lookup_missing": 0,
-                            "species_index_missing": 0,
-                        },
-                    )
 
-                    # Aggregate by class
-                    if classification.hit_class == HitClass.ON_TARGET:
-                        hit_counts.on_target += 1
-                        species_bucket["on_target"] += 1
-                    elif classification.hit_class == HitClass.ORTHOLOG:
-                        hit_counts.ortholog += 1
-                        species_bucket["ortholog"] += 1
-                        if classification.matched_symbol:
-                            # Track which species had ortholog hits
-                            hit_counts.ortholog_species = frozenset(hit_counts.ortholog_species | {hit_species})
-                    elif classification.hit_class == HitClass.REPEAT:
-                        hit_counts.repeat += 1
-                        species_bucket["repeat"] += 1
-                    elif classification.hit_class == HitClass.OFF_TARGET:
-                        hit_counts.off_target += 1
-                        species_bucket["off_target"] += 1
+                    # Persist the verdict on the hit row, then count from the row that was
+                    # written. The class, both symbols and both shortfall flags reach the hit
+                    # table and the candidate counters from one place, so a counted hit is always
+                    # a published hit. _reconcile_persisted_hits checks that as a row total; it
+                    # does not check which candidate a row was attributed to.
+                    # No species bucket here: per_species counts alignments, and this loop visits a
+                    # deduplicated guide's rows once per candidate carrying it. See below.
+                    annotate_hit_row(hit, classification, annotator)
+                    hit_class = accumulate_hit_class(hit, hit_counts, None, hit_species)
 
-                    # Track shortfall counters
-                    if classification.symbol_lookup_missing:
-                        hit_counts.symbol_lookup_missing += 1
-                        species_bucket["symbol_lookup_missing"] += 1
-                    if classification.species_index_missing:
-                        hit_counts.no_species_index += 1
-                        species_bucket["species_index_missing"] += 1
-
-                    # Only genuine off-targets feed the mismatch-stratified counters. Letting
-                    # on-target isoform hits through here would fail every guide on a
-                    # multi-isoform gene against max_transcriptome_hits_0mm, which is the
-                    # near-total kill switch fixed in 0.5.2.
-                    if classification.hit_class is not HitClass.OFF_TARGET:
+                    # Only liabilities feed the mismatch-stratified counters. Letting on-target
+                    # isoform hits through here would fail every guide on a multi-isoform gene
+                    # against max_transcriptome_hits_0mm, which is the near-total kill switch
+                    # fixed in 0.5.2. UNDETERMINED is in LIABILITY_CLASSES, so a run with no
+                    # transcript index gates exactly as it did before the class existed.
+                    if hit_class not in LIABILITY_CLASSES:
                         continue
 
-                    # Every genuine off-target hit counts toward the totals regardless of nm, so
+                    # Every liability counts toward the totals regardless of nm, so
                     # transcriptome_hits_total agrees with off_target_count even when nm>=3 hits
                     # occur (the default exhaustive search no longer caps hits at nm<=2).
                     transcriptome_off_target_total += 1
-                    treated_as_human = species_is_human or not species_label
-                    if treated_as_human:
+                    treated_as_query = species_is_query or not species_label
+                    if treated_as_query:
+                        transcriptome_query_total += 1
+                    # Kept alongside the query-species counter: the published human/other
+                    # decomposition is a statement about human specifically, and stays true on a run
+                    # whose query species is something else.
+                    if species_is_human or not species_label:
                         transcriptome_human_total += 1
 
                     if nm == 0:
                         transcriptome_totals[0] += 1
-                        if treated_as_human:
-                            transcriptome_human[0] += 1
+                        if treated_as_query:
+                            transcriptome_query[0] += 1
                     elif nm == 1:
                         transcriptome_totals[1] += 1
-                        if treated_as_human:
-                            transcriptome_human[1] += 1
+                        if treated_as_query:
+                            transcriptome_query[1] += 1
                     elif nm == 2:
                         transcriptome_totals[2] += 1
-                        if treated_as_human:
-                            transcriptome_human[2] += 1
+                        if treated_as_query:
+                            transcriptome_query[2] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
@@ -2763,7 +4057,10 @@ class SiRNAWorkflow:
             candidate.on_target_hits = hit_counts.on_target
             candidate.ortholog_hits = hit_counts.ortholog
             candidate.repeat_hits = hit_counts.repeat
-            candidate.off_target_count = hit_counts.off_target  # Redefined: genuine off-targets only
+            # On-target, ortholog and repeat hits excluded; undecidable ones included and reported
+            # separately, so a missing reference cannot loosen the screen (see LIABILITY_CLASSES).
+            candidate.off_target_count = liabilities_counted(hit_counts)
+            candidate.undetermined_hits = hit_counts.undetermined
             candidate.ortholog_species = ",".join(sorted(hit_counts.ortholog_species))
 
             # Legacy fields (still needed for reporting and miRNA filters)
@@ -2772,6 +4069,15 @@ class SiRNAWorkflow:
             candidate.transcriptome_hits_1mm = transcriptome_totals[1]
             candidate.transcriptome_hits_2mm = transcriptome_totals[2]
             candidate.transcriptome_hits_seed_0mm = transcriptome_seed_0mm
+            # The gate inputs, written onto the row rather than left as locals: these are the numbers
+            # the six query-species-stratified gates compare, and without them a client re-applying a
+            # descriptor read the all-species column and disagreed with the run (#101).
+            candidate.transcriptome_hits_0mm_query = transcriptome_query[0]
+            candidate.transcriptome_hits_1mm_query = transcriptome_query[1]
+            candidate.transcriptome_hits_2mm_query = transcriptome_query[2]
+            candidate.mirna_hits_0mm_seed_query = mirna_query_0mm_seed
+            candidate.mirna_hits_high_risk_query = mirna_high_risk_query
+            candidate.total_offtarget_hits_query = transcriptome_query_total + mirna_query_total
             candidate.on_target_confirmed = hit_counts.on_target > 0
             candidate.mirna_hits_total = mirna_total
             candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total
@@ -2780,10 +4086,12 @@ class SiRNAWorkflow:
             candidate.off_target_penalty = offtarget_entry.get("off_target_score", 0.0)
 
             # Update global stats
-            stats["hit_classes"]["on_target"] += hit_counts.on_target
-            stats["hit_classes"]["ortholog"] += hit_counts.ortholog
-            stats["hit_classes"]["repeat"] += hit_counts.repeat
-            stats["hit_classes"]["off_target"] += hit_counts.off_target
+            candidate_weighted = stats["hit_classes_candidate_weighted"]
+            candidate_weighted["on_target"] += hit_counts.on_target
+            candidate_weighted["ortholog"] += hit_counts.ortholog
+            candidate_weighted["repeat"] += hit_counts.repeat
+            candidate_weighted["off_target"] += hit_counts.off_target
+            candidate_weighted["undetermined"] += hit_counts.undetermined
             stats["ortholog_symbol_lookup_misses"] += hit_counts.symbol_lookup_missing
             stats["species_index_misses"] += hit_counts.no_species_index
             stats["human_transcriptome_hits"] += human_transcriptome_hits
@@ -2798,55 +4106,188 @@ class SiRNAWorkflow:
             if unscreened_candidate:
                 candidate.scored_after_screening = False
                 stats["candidates_not_scored_after_screening"] += 1
-            elif not self._score_candidate_post_screen(candidate, hit_counts, conservation_denominator):
-                stats["candidates_not_scored_after_screening"] += 1
+            else:
+                self._score_and_gate(candidate, hit_counts, conservation_denominator, stats, unresolved_orthology)
 
             # Apply filtering criteria
-            human_total_hits_for_filters = human_transcriptome_hits + mirna_human_total
-            should_fail, fail_status = self._check_offtarget_filters(
-                transcriptome_human[0],
-                transcriptome_human[1],
-                transcriptome_human[2],
-                transcriptome_seed_0mm,
-                mirna_human_0mm_seed,
-                mirna_high_risk_human,
-                human_total_hits_for_filters,
-                hit_counts.off_target,
-                filter_criteria,
+            self._gate_offtarget_counts(
+                candidate,
+                counts=OffTargetGateCounts(
+                    transcriptome_0mm=transcriptome_query[0],
+                    transcriptome_1mm=transcriptome_query[1],
+                    transcriptome_2mm=transcriptome_query[2],
+                    transcriptome_seed_0mm=transcriptome_seed_0mm,
+                    mirna_0mm_seed=mirna_query_0mm_seed,
+                    mirna_high_risk=mirna_high_risk_query,
+                    total_hits=transcriptome_query_total + mirna_query_total,
+                    genuine_off_target_count=liabilities_counted(hit_counts),
+                ),
+                filter_criteria=filter_criteria,
+                complete_pairs=complete_pairs,
+                stats=stats,
             )
 
-            if should_fail and fail_status:
-                candidate.passes_filters = fail_status
-                logger.info(f"Candidate {candidate_id} failed off-target filter: {fail_status.value}")
+        stats["hits_classified_without_candidate"] = self._classify_orphan_hit_rows(
+            offtarget_data, classification_context, annotator
+        )
 
-                # Update stat counters
-                if fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH:
-                    stats["failed_perfect_match"] += 1
-                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM:
-                    stats["failed_transcriptome_1mm"] += 1
-                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM:
-                    stats["failed_transcriptome_2mm"] += 1
-                elif fail_status == SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT:
-                    stats["failed_transcriptome_seed_perfect"] += 1
-                elif fail_status == SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED:
-                    stats["failed_mirna_seed"] += 1
-                elif fail_status == SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA:
-                    stats["failed_high_risk_mirna"] += 1
-                elif fail_status == SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS:
-                    stats["failed_excess_off_targets"] += 1
+        # Counted here, after every row has a class, and over each alignment exactly once: the
+        # per-candidate loop above visits a deduplicated guide's rows once per candidate carrying it.
+        alignment_rows = self._alignment_rows(results)
+        stats["hit_classes"] = count_persisted_classes(alignment_rows)
+        # per_species is the same quantity decomposed by species, so it is counted the same way.
+        # Filled from the loop it read 2x on the frozen baseline's deduplicated guides, which put
+        # two contradicting decompositions of one number side by side in workflow_summary.json.
+        self._tally_per_species(alignment_rows, per_species, query_species)
 
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
 
+    @staticmethod
+    def _tally_per_species(
+        alignment_rows: Sequence[Mapping[str, Any]],
+        per_species: dict[str, dict[str, int]],
+        query_species: str,
+    ) -> None:
+        """Decompose the alignment-level class tally by species, in place.
+
+        Requested species keep their zero-filled bucket, so "screened and clean" stays
+        distinguishable from "never requested" (absent key). A blank species label belongs to the
+        query species, exactly as the classifier reads it.
+        """
+        discarded = HitClassCounts()
+        for hit in alignment_rows:
+            if not is_annotated(hit):
+                continue
+            species_label = hit.get("species")
+            hit_species = normalize_species_name(species_label) if species_label else query_species
+            bucket = per_species.setdefault(hit_species, dict.fromkeys(_PER_SPECIES_COUNTERS, 0))
+            accumulate_hit_class(hit, discarded, bucket, hit_species)
+
+    @staticmethod
+    def _alignment_rows(results: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """Every transcriptome alignment row the ingest read, once each.
+
+        Keyed by qname, so a row shared by many candidates through their representative appears
+        here once -- unlike the per-candidate loop, which sees it once per candidate. miRNA rows are
+        excluded: they carry no class.
+        """
+        rows: list[Mapping[str, Any]] = []
+        for entry in cast(dict[str, dict[str, Any]], results).values():
+            for hit in cast(list[Mapping[str, Any]], entry.get("hits") or []):
+                if "mirna_id" not in hit and "database" not in hit:
+                    rows.append(hit)
+        return rows
+
+    @staticmethod
+    def _classify_orphan_hit_rows(
+        offtarget_data: Mapping[str, Any],
+        classification_context: ClassificationContext,
+        annotator: HitAnnotator,
+    ) -> int:
+        """Classify hit rows whose qname matched no candidate in this run.
+
+        Normally there are none. A reused or stale results directory produces some, and a table
+        read back from disk can carry a blank ``hit_class`` cell, so both are classified from their
+        own query sequence and counted. Every table the parser read is covered, which is what lets
+        the writer publish unconditionally instead of guarding against blank verdicts.
+        """
+        tables = cast(list[dict[str, Any]], offtarget_data.get("transcriptome_hit_tables") or [])
+        orphans = [
+            row
+            for table in tables
+            for row in cast(list[dict[str, Any]], table.get("rows") or [])
+            if not is_annotated(row)
+        ]
+        for row in orphans:
+            annotate_hit_row(row, classify_hit(row, str(row.get("qseq") or ""), classification_context), annotator)
+        if orphans:
+            logger.warning(
+                f"{len(orphans)} aggregated off-target row(s) belong to no candidate in this run; "
+                "classified from their own query sequence and excluded from candidate counters."
+            )
+        return len(orphans)
+
+    def _score_and_gate(
+        self,
+        candidate: SiRNACandidate,
+        hit_counts: HitClassCounts,
+        conservation_denominator: frozenset[str],
+        stats: dict[str, Any],
+        unresolved_orthology_species: frozenset[str] = frozenset(),
+    ) -> None:
+        """Score one screened candidate, then apply the gates that need post-screen evidence.
+
+        Both the no-hits and the with-hits branches above go through here, so the isoform-coverage
+        gate cannot be wired into only one of them -- which it was, leaving the clean-screen case
+        (the common one) ungated.
+        """
+        if not self._score_candidate_post_screen(
+            candidate, hit_counts, conservation_denominator, unresolved_orthology_species
+        ):
+            stats["candidates_not_scored_after_screening"] += 1
+
+        # isoform_coverage is not a scoring term; when a floor is configured it is a gate, and this
+        # is the first point at which the coverage fraction exists.
+        if self._apply_isoform_coverage_gate(candidate):
+            stats["failed_isoform_coverage"] += 1
+
+    def _apply_isoform_coverage_gate(self, candidate: SiRNACandidate) -> bool:
+        """Record the protein-coding isoform coverage verdict, rejecting only if the action says to.
+
+        A gate, not a scoring term: isoform coverage is reported on every candidate and read by no
+        weight. The floor lives on FilterCriteria and defaults to None (off), so default behaviour
+        is unchanged.
+
+        Goes through the shared verdict recorder rather than assigning the rejection label by hand,
+        which made this the one gate that could not be configured: a run resolving it to ``warn`` still
+        threw the candidate out and left ``filter_verdicts`` empty (#105). The recorder also gives the
+        two non-rejecting outcomes somewhere to live -- PASS at or above the floor, and UNKNOWN when
+        coverage could not be computed, which never rejects because an annotation gap is not evidence of
+        poor coverage. Whether such a candidate can still *qualify* is decided in
+        :meth:`_apply_post_screen_ranking`, not here.
+
+        Returns True when this gate rejected the candidate, so the caller can count it.
+        """
+        floor = self.config.design_params.filters.min_isoform_coverage
+        coverage = candidate.isoform_coverage
+        action = self._filter_action_for("min_isoform_coverage", floor)
+        if floor is None or action is FilterAction.OFF:
+            # In force nowhere: still write a word, because the exported column is fixed and an empty
+            # cell there reads as a verdict rather than as "this gate was not applied".
+            candidate.filter_verdicts["min_isoform_coverage"] = FilterEvaluation.NOT_EVALUATED.value
+            candidate.filter_observed["min_isoform_coverage"] = coverage
+            return False
+
+        candidate.record_filter_verdict(
+            "min_isoform_coverage",
+            observed=coverage,
+            passed=coverage is not None and coverage >= floor,
+            action=action,
+            status=SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE,
+        )
+        if coverage is None or coverage >= floor:
+            return False
+        logger.info(f"Candidate {candidate.id} failed isoform coverage ({action.value}): {coverage:.3f} < {floor:.3f}")
+        return action is FilterAction.FAIL
+
     def _score_candidate_post_screen(
-        self, candidate: SiRNACandidate, hit_counts: HitClassCounts, conservation_denominator: frozenset[str]
+        self,
+        candidate: SiRNACandidate,
+        hit_counts: HitClassCounts,
+        conservation_denominator: frozenset[str],
+        unresolved_orthology_species: frozenset[str] = frozenset(),
     ) -> bool:
         """Compute post-screen composite score with the full term set.
 
         Args:
             candidate: Candidate to score
             hit_counts: Aggregated hit class counts
+            unresolved_orthology_species: Species whose orthologue lookup did not complete. Their
+                conservation is unknown rather than zero, so any overlap with the denominator leaves
+                ``conservation_score`` null. Empty is the honest default for a caller with no
+                orthology outcome to report.
             conservation_denominator: Non-query species handed to the aligner. A species whose
                 alignment failed stays in here, so a degraded run cannot outscore a complete one.
 
@@ -2859,13 +4300,23 @@ class SiRNAWorkflow:
         features: dict[str, float] = {}
         cs = candidate.component_scores or {}
 
-        # Design-time terms: reuse from component_scores, dropping any NaN
-        # target_accessibility is absent from component_scores when the design stage could not
-        # compute it, which is exactly the signal to leave the term inactive here too.
-        for term in ("asymmetry", "gc_content", "target_accessibility", "empirical"):
+        # Design-stage terms: reuse from component_scores, dropping any NaN. A term missing here
+        # makes the vector unsatisfiable and compute_composite raises -- weights are never
+        # renormalised, so the candidate keeps no post-screen score rather than a rescaled one.
+        for term in ("asymmetry", "gc_content", "target_accessibility"):
             value = cs.get(term)
             if value is not None and not math.isnan(value):
                 features[term] = value
+
+        # miRNA mode scores three more declared terms. They are re-derived from the sequences
+        # rather than read back off the row, so a candidate that never passed through
+        # MiRNADesigner (a dirty control is a deep copy of a *rejected* candidate) is scored on
+        # the same vector as everything else instead of landing on its own scale.
+        vector = self.config.design_params.scoring.vector_for(
+            post_screen=True, design_mode=self.config.design_params.design_mode
+        )
+        if self.config.design_params.design_mode == DesignMode.MIRNA:
+            features.update(biogenesis_features(candidate.guide_sequence, candidate.passenger_sequence))
 
         # The sub-score helpers raise on a numerator exceeding its denominator. Both numerators are
         # constructed as subsets of their denominators here, so neither is reachable -- but the
@@ -2873,7 +4324,7 @@ class SiRNAWorkflow:
         # later must not be an aborted run after screening has already been paid for. It must be
         # loud instead: see the ERROR log below and the caller's degraded-run counter.
         try:
-            features["off_target"] = off_target_sub_score(hit_counts.off_target)
+            features["off_target"] = off_target_sub_score(liabilities_counted(hit_counts))
 
             # Numerator is how many of the query gene's protein-coding transcripts contain THIS
             # guide (from step3's guide->source-transcripts map), not the single transcript the
@@ -2899,39 +4350,38 @@ class SiRNAWorkflow:
                     f"Ortholog hits for {candidate.id} in unrequested species {sorted(unexpected_species)}; "
                     "excluded from the conservation term."
                 )
-            conservation = conservation_sub_score(len(conserved_species), len(conservation_denominator))
-            if conservation is not None:
-                features["conservation"] = conservation
-                candidate.conservation_score = conservation
-
-            result = compute_composite(features, self.config.design_params.scoring)
-            # miRNA mode folds the biogenesis bonuses (ago-start, pos1 pairing, 3' supplementary)
-            # into composite_score rather than into the composite term set, so recomputing the
-            # composite here drops them unless they are reapplied -- which made --design-mode mirna
-            # have no effect at all on the final ranking of any screened run.
-            if self.config.design_params.design_mode == DesignMode.MIRNA:
-                # The normalising maximum falls back to the mode's own maximum rather than 0.0:
-                # a candidate that never went through MiRNADesigner._score_candidates carries no
-                # bonus keys (dirty controls are deep copies of rejected candidates, which are
-                # never scored), and dividing everyone else by 1 + max_bonus while leaving those
-                # rows undivided put them ~25% high in the same CSV.
-                candidate.composite_score = apply_mirna_biogenesis_bonus(
-                    result.score,
-                    float(cs.get(MIRNA_BONUS_KEY, 0.0)),
-                    float(cs.get(MIRNA_BONUS_MAX_KEY, mirna_max_biogenesis_bonus())),
+            # An unresolved lookup cannot populate the numerator, so the ratio would report
+            # "conserved in 0 of N" for a question nobody asked -- a 0.0 that reads as a measurement.
+            # Null instead. The denominator is NOT shrunk to the resolvable species: that let a degraded
+            # run outscore the complete run it degraded from (#80 F10).
+            unresolved_in_denominator = conservation_denominator & unresolved_orthology_species
+            if unresolved_in_denominator:
+                candidate.conservation_score = None
+                logger.debug(
+                    f"Conservation unavailable for {candidate.id}: orthology unresolved for "
+                    f"{sorted(unresolved_in_denominator)}."
                 )
             else:
-                candidate.composite_score = result.score
+                conservation = conservation_sub_score(len(conserved_species), len(conservation_denominator))
+                if conservation is not None:
+                    features["conservation"] = conservation
+                    candidate.conservation_score = conservation
+
+            # One vector, applied exactly as declared. The miRNA biogenesis terms are inside it,
+            # so there is no bonus to fold in afterwards and nothing to divide the result by.
+            result = compute_composite(features, vector)
+            candidate.composite_score = result.score
             candidate.weight_set_version = result.weight_set_version
+            candidate.weight_vector = result.vector_name
             candidate.scored_after_screening = True
             # Write per-term contributions
+            candidate.score_off_target = result.contributions.get("off_target")
+            candidate.score_target_accessibility = result.contributions.get("target_accessibility")
             candidate.score_asymmetry = result.contributions.get("asymmetry")
             candidate.score_gc_content = result.contributions.get("gc_content")
-            candidate.score_target_accessibility = result.contributions.get("target_accessibility")
-            candidate.score_empirical = result.contributions.get("empirical")
-            candidate.score_off_target = result.contributions.get("off_target")
-            candidate.score_isoform_coverage = result.contributions.get("isoform_coverage")
-            candidate.score_conservation = result.contributions.get("conservation")
+            candidate.score_ago_start = result.contributions.get("ago_start")
+            candidate.score_pos1_mismatch = result.contributions.get("pos1_mismatch")
+            candidate.score_supp_13_16 = result.contributions.get("supp_13_16")
             return True
         except (ScoringError, ValueError) as exc:
             # ERROR, not WARNING: the candidate now carries a design-time score that is not
@@ -3086,13 +4536,17 @@ class SiRNAWorkflow:
         total = design_results.total_candidates
         passed = design_results.filtered_candidates
         failed = max(0, total - passed)
-        repeat_excluded = sum(1 for c in design_results.candidates if c.repeat_flagged)
+        # Flagged, which is not the same as excluded once the repeat gate's action can be `warn`:
+        # naming it *_excluded_count put two contradicting numbers for one quantity in the same JSON,
+        # this one and selection_summary.repeat_excluded. This is the descriptive count; the selection
+        # summary owns what was actually held out.
+        repeat_flagged = sum(1 for c in design_results.candidates if c.repeat_flagged)
         base.update(
             {
                 "pass_count": passed,
                 "fail_count": failed,
-                "repeat_excluded_count": repeat_excluded,
-                "repeat_threshold_fraction": DEFAULT_REPEAT_TRANSCRIPT_FRACTION,
+                "repeat_flagged_count": repeat_flagged,
+                "repeat_threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
                 "top_n_requested": self.config.top_n,
                 "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,
@@ -3191,22 +4645,27 @@ async def run_sirna_workflow(
     database: str = "ensembl",
     design_mode: str = "sirna",
     top_n_candidates: int | None = None,
-    genome_species: list[str] | None = None,
+    screen_species: list[str] | None = None,
     query_species: str | None = None,
-    genome_indices_override: str | None = None,
+    transcriptome_indices: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
-    gc_min: float = 30.0,
-    gc_max: float = 52.0,
-    sirna_length: int = 21,
-    modification_pattern: str = "standard_2ome",
-    overhang: str = "dTdT",
+    ortholog_mapping_file: Path | str | None = None,
+    resolved_policy: ResolvedRunPolicy | None = None,
+    run_mode: str | None = None,
+    policy_config: Path | str | None = None,
+    filter_actions: Mapping[str, Any] | None = None,
+    gc_min: float | None = None,
+    gc_max: float | None = None,
+    sirna_length: int | None = None,
+    modification_pattern: str | None = None,
+    overhang: str | None = None,
     zfn_design_params: ZFNDesignParameters | None = None,
     zfn_annotation: GenomicAnnotationConfig | None = None,
-    check_off_targets: bool = True,
+    check_off_targets: bool | None = None,
     # Variant targeting parameters
     variant_ids: list[str] | None = None,
     variant_vcf_file: Path | None = None,
@@ -3226,9 +4685,11 @@ async def run_sirna_workflow(
     min_asymmetry_score: float | None = None,
     max_paired_fraction: float | None = None,
     min_empirical_score: float | None = None,
+    min_isoform_coverage: float | None = None,
     plfold_window: int | None = None,
     plfold_max_bp_span: int | None = None,
     accessibility_log_floor: float | None = None,
+    **renamed: Any,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
 
@@ -3240,24 +4701,40 @@ async def run_sirna_workflow(
         design_mode: Design mode (sirna, mirna, or zfn)
         top_n_candidates: Cap on how many top-ranked candidates are reported (None = no cap, the
             default). Enumeration and screening always cover every candidate.
-        genome_species: Species genomes for off-target analysis
+        screen_species: Species to screen against for off-target liabilities
         query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
             gene-query database serves (human), which is also the species of the default
             transcriptome; set it when designing against an input FASTA from another organism.
-        genome_indices_override: Comma-separated species:/index_prefix overrides for off-target analysis
+        transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
+            caller has already built. Resolved by the same resolver as the defaults, so an override
+            and a default differ only in provenance (#99).
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
         transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
-        gc_min: Minimum GC content percentage
-        gc_max: Maximum GC content percentage
-        sirna_length: siRNA length in nucleotides
-        modification_pattern: Chemical modification pattern
-        overhang: Overhang sequence (dTdT for DNA, UU for RNA)
+        ortholog_mapping_file: JSON mapping of query gene -> species -> orthologue gene IDs. Supply
+            it to resolve cross-species orthology offline instead of calling Ensembl Compara.
+        resolved_policy: A policy already resolved by ``config.run_policy.resolve_run_policy`` -- how
+            the CLI passes its resolution, so the command line and this function cannot diverge.
+            Supplying it together with any of the threshold arguments below is an error, because two
+            resolutions of the same run could disagree.
+        run_mode: design_only, exploratory or qualified. Defaults to qualified; ``check_off_targets``
+            set False maps to design_only, as the legacy skip flag does.
+        policy_config: JSON/TOML policy file; beats the built-in profile, loses to explicit values.
+        filter_actions: ``filter_id -> off|warn|fail``. A filter set to off is not evaluated.
+        gc_min: Minimum GC content percentage. None means unstated, so the profile applies.
+        gc_max: Maximum GC content percentage. None means unstated, so the profile applies -- which
+            for siRNA mode is 60.0. It used to default to 52.0 here, the miRNA ceiling, so this
+            function's default GC window disagreed with the CLI's.
+        sirna_length: siRNA length in nucleotides (None = profile default)
+        modification_pattern: Chemical modification pattern (None = profile default)
+        overhang: Overhang sequence, dTdT for DNA or UU for RNA (None = profile default, and UU in
+            miRNA design mode)
         zfn_design_params: Optional ZFN design parameters for ZFN mode workflow
         zfn_annotation: Optional genomic annotation config for ZFN off-target classification
-        check_off_targets: Perform off-target analysis stage (default: True)
+        check_off_targets: Perform off-target analysis stage. None means unstated (screening on);
+            False maps the run mode to design_only.
         variant_ids: List of variant identifiers (rsID, chr:pos:ref:alt, or HGVS) to target or avoid
         variant_vcf_file: Path to VCF file containing variants to target or avoid
         variant_mode: How to handle variants (avoid/target/both) - default is avoid
@@ -3286,65 +4763,78 @@ async def run_sirna_workflow(
             (None keeps FilterCriteria's default of 0.6).
         min_empirical_score: Override the empirical design-rule floor gating
             LOW_EMPIRICAL_SCORE (None keeps FilterCriteria's default).
+        min_isoform_coverage: Opt into the protein-coding isoform coverage gate
+            (LOW_ISOFORM_COVERAGE). None, the default, means no gate: coverage is reported on
+            every candidate either way, and no floor has been calibrated against truth data.
         plfold_window: Override the RNAplfold averaging window W used by the target_accessibility
             term (None keeps the default of 150).
         plfold_max_bp_span: Override the RNAplfold maximum base-pair span L (None keeps 100).
         accessibility_log_floor: Override the log10-probability floor the accessibility term is
             normalised against (None keeps -5.0). Changing any of these three changes the numeric
             scale of composite_score, so results are not comparable with a default run.
+        **renamed: Accepted only to refuse the ``genome_*`` names the #99 rename removed, quoting
+            the replacement instead of "unexpected keyword argument".
 
     Returns:
         Dictionary with complete workflow results
     """
-    # Parse design mode
-    try:
-        mode_enum = DesignMode(design_mode.lower())
-    except ValueError:
-        mode_enum = DesignMode.SIRNA
-
-    # Configure filter criteria. An unset threshold is omitted so the model default applies; passing
-    # them through the constructor (not model_copy) keeps Pydantic's range validation, so an
-    # out-of-range floor raises instead of silently taking effect. These three had no route in at all
-    # before: FilterCriteria was built with gc_min/gc_max only.
-    filter_kwargs: dict[str, Any] = {"gc_min": gc_min, "gc_max": gc_max}
-    for name, value in (
-        ("min_asymmetry_score", min_asymmetry_score),
-        ("max_paired_fraction", max_paired_fraction),
-        ("min_empirical_score", min_empirical_score),
-    ):
-        if value is not None:
-            filter_kwargs[name] = value
-    filter_criteria = FilterCriteria(**filter_kwargs)
-
-    # Same pattern for the RNAplfold settings behind target_accessibility: omit an unset value so
-    # the model default applies, and construct rather than model_copy so window/span bounds hold.
-    accessibility_kwargs: dict[str, Any] = {}
-    for name, value in (
-        ("window_size", plfold_window),
-        ("max_bp_span", plfold_max_bp_span),
-        ("log_floor", accessibility_log_floor),
-    ):
-        if value is not None:
-            accessibility_kwargs[name] = value
-    accessibility_config = TargetAccessibilityConfig(**accessibility_kwargs)
-
-    # Configure workflow with modification parameters
-    offtarget_filters = OffTargetFilterCriteria()
-    if max_off_targets is not None:
-        offtarget_filters = offtarget_filters.model_copy(update={"max_off_target_count": max_off_targets})
-
-    design_params = DesignParameters(
-        design_mode=mode_enum,
-        top_n=top_n_candidates,
-        sirna_length=sirna_length,
-        filters=filter_criteria,
-        offtarget_filters=offtarget_filters,
-        check_off_targets=check_off_targets,
-        apply_modifications=modification_pattern.lower() != "none",
-        modification_pattern=modification_pattern,
-        default_overhang=overhang,
-        target_accessibility=accessibility_config,
-    )
+    refuse_renamed_arguments(renamed)
+    # Resolve the policy exactly once, before anything creates a directory or fetches a reference.
+    # An unstated argument is None, so the profile applies to it; a stated one wins. This is the
+    # same call the CLI makes -- when the CLI has already made it, its result arrives as
+    # resolved_policy and is used verbatim rather than being rebuilt from values.
+    stated: dict[str, Any] = {
+        key: value
+        for key, value in (
+            ("gc_min", gc_min),
+            ("gc_max", gc_max),
+            ("sirna_length", sirna_length),
+            ("modification_pattern", modification_pattern),
+            ("default_overhang", overhang),
+            ("top_n", top_n_candidates),
+            ("check_off_targets", check_off_targets),
+            ("max_off_target_count", max_off_targets),
+            ("min_asymmetry_score", min_asymmetry_score),
+            ("max_paired_fraction", max_paired_fraction),
+            ("min_empirical_score", min_empirical_score),
+            ("min_isoform_coverage", min_isoform_coverage),
+            ("plfold_window", plfold_window),
+            ("plfold_max_bp_span", plfold_max_bp_span),
+            ("accessibility_log_floor", accessibility_log_floor),
+        )
+        if value is not None
+    }
+    if modification_pattern is not None:
+        stated["apply_modifications"] = modification_pattern.lower() != "none"
+    if resolved_policy is not None:
+        conflicting = sorted(set(stated) - {"apply_modifications"})
+        if conflicting or run_mode or policy_config or filter_actions:
+            raise RunPolicyError(
+                f"resolved_policy was supplied together with {conflicting or 'run_mode/policy_config/filter_actions'}; "
+                "a run must be resolved once, so pass either the policy or the individual settings"
+            )
+        policy = resolved_policy
+    else:
+        policy = resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW,
+            design_mode=design_mode,
+            run_mode=run_mode,
+            config_file=policy_config,
+            stated=stated,
+            filter_actions=filter_actions,
+            query_species=query_species,
+            screen_species=screen_species or (),
+            # The same fact the CLI reports, derived from the same inputs: an input FASTA with no
+            # transcriptome argument resolves no transcriptome reference, so this run cannot complete
+            # that channel. Without it the API and the CLI resolved the same inputs differently, and
+            # the API kept requiring evidence it could never obtain.
+            transcriptome_reference_available=(
+                False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
+            ),
+        )
+    mode_enum = policy.design_mode
+    design_params = policy.design_parameters
+    check_off_targets = design_params.check_off_targets
     database_enum = DatabaseType(database.lower())
 
     output_path = Path(output_dir)
@@ -3410,14 +4900,15 @@ async def run_sirna_workflow(
         input_fasta=input_path,
         database=database_enum,
         design_params=design_params,
-        genome_indices_override=genome_indices_override,
-        genome_species=genome_species or ["human", "rat", "rhesus"],
+        transcriptome_indices=transcriptome_indices,
+        screen_species=screen_species or ["human", "rat", "rhesus"],
         query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
+        ortholog_mapping_file=ortholog_mapping_file,
         log_file=log_file,
         write_json_summary=write_json_summary,
         num_threads=num_threads,
@@ -3426,6 +4917,7 @@ async def run_sirna_workflow(
         variant_config=variant_config_obj,
         nextflow_config=nextflow_config_overrides,
         zfn_config=zfn_workflow_config,
+        resolved_policy=policy,
     )
 
     # Run workflow
@@ -3447,16 +4939,22 @@ if __name__ == "__main__":
 async def run_offtarget_only_workflow(
     input_candidates_fasta: str,
     output_dir: str,
-    genome_species: list[str] | None = None,
+    screen_species: list[str] | None = None,
     query_species: str | None = None,
-    genome_indices_override: str | None = None,
+    transcriptome_indices: str | None = None,
     mirna_database: str = "mirgenedb",
     mirna_species: Sequence[str] | None = None,
     transcriptome_fasta: str | None = None,
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
+    ortholog_mapping_file: Path | str | None = None,
     log_file: str | None = None,
     nextflow_docker_image: str | None = None,
+    resolved_policy: ResolvedRunPolicy | None = None,
+    run_mode: str | None = None,
+    policy_config: Path | str | None = None,
+    filter_actions: Mapping[str, Any] | None = None,
+    **renamed: Any,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
 
@@ -3468,20 +4966,42 @@ async def run_offtarget_only_workflow(
     Args:
         input_candidates_fasta: Path to FASTA file with 21-nt siRNA guide sequences
         output_dir: Directory for output files
-        genome_species: Species genomes for off-target analysis
+        screen_species: Species to screen against for off-target liabilities
         query_species: Organism the input guides were designed against (defaults to human)
-        genome_indices_override: Comma-separated species:/index_prefix overrides
+        transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
+            caller has already built
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
         transcriptome_filter: Comma-separated filter names (protein_coding, canonical_only)
         transcriptome_selection: Pre-resolved transcriptome selection metadata
+        ortholog_mapping_file: JSON mapping of query gene -> species -> orthologue gene IDs, used
+            instead of Ensembl Compara for cross-species orthology
         log_file: Path to centralized log file
         nextflow_docker_image: Override Docker image used by the embedded Nextflow pipeline
+        resolved_policy: A policy already resolved by ``config.run_policy.resolve_run_policy``. This
+            path used to build a bare ``DesignParameters()``, so the off-target thresholds it gated
+            on came from nowhere the caller could see or set.
+        run_mode: design_only, exploratory or qualified (default: qualified).
+        policy_config: JSON/TOML policy file; beats the built-in profile, loses to explicit values.
+        filter_actions: ``filter_id -> off|warn|fail``.
+        **renamed: Accepted only to refuse the ``genome_*`` names the #99 rename removed, quoting
+            the replacement instead of "unexpected keyword argument".
 
     Returns:
         Dictionary with off-target analysis results
     """
+    refuse_renamed_arguments(renamed)
+    # Resolved before the output tree is created, exactly as the other two entry points do it.
+    policy = resolved_policy or resolve_run_policy(
+        entry_point=EntryPoint.OFFTARGET_ONLY,
+        run_mode=run_mode,
+        config_file=policy_config,
+        filter_actions=filter_actions,
+        query_species=query_species,
+        screen_species=screen_species or (),
+    )
+
     console.print("\n🎯 [bold cyan]Starting Off-Target Analysis (Pre-Designed siRNAs)[/bold cyan]")
     console.print(f"Input Candidates: [yellow]{input_candidates_fasta}[/yellow]")
     console.print(f"Output Directory: [blue]{output_dir}[/blue]")
@@ -3542,7 +5062,6 @@ async def run_offtarget_only_workflow(
                 off_target_penalty=0.0,
                 transcript_hit_count=0,
                 transcript_hit_fraction=0.0,
-                composite_score=0.0,
                 passes_filters=True,
             )
 
@@ -3574,7 +5093,8 @@ async def run_offtarget_only_workflow(
             off_target_penalty=0.0,  # Will be populated by off-target analysis
             transcript_hit_count=0,  # Will be populated by off-target analysis
             transcript_hit_fraction=0.0,  # Will be populated by off-target analysis
-            composite_score=0.0,  # Not computed for pre-designed guides
+            # design_score and composite_score stay None: a pre-designed guide has neither until
+            # screening scores it, and 0.0 would read as a computed worst-possible candidate.
             passes_filters=True,  # Assume valid since user provided them
         )
         candidates.append(candidate)
@@ -3588,8 +5108,6 @@ async def run_offtarget_only_workflow(
 
     # Set up Nextflow configuration
     nextflow_config: dict[str, Any] = {}
-    if genome_indices_override:
-        nextflow_config["genome_indices"] = genome_indices_override
     if nextflow_docker_image:
         nextflow_config["docker_image"] = nextflow_docker_image
 
@@ -3613,16 +5131,17 @@ async def run_offtarget_only_workflow(
         gene_query="offtarget_only",  # Placeholder name
         input_fasta=None,
         database=DatabaseType.ENSEMBL,  # Not used, but required
-        design_params=DesignParameters(),  # Minimal params
+        resolved_policy=policy,
         nextflow_config=nextflow_config,
-        genome_indices_override=genome_indices_override,
-        genome_species=genome_species or ["human", "rat", "rhesus"],
+        transcriptome_indices=transcriptome_indices,
+        screen_species=screen_species or ["human", "rat", "rhesus"],
         query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
+        ortholog_mapping_file=ortholog_mapping_file,
         log_file=log_file,
         write_json_summary=False,  # Skip JSON summary for off-target-only
     )
@@ -3651,6 +5170,9 @@ async def run_offtarget_only_workflow(
         "output_dir": str(output_path),
         "processing_time": total_time,
         "offtarget_summary": offtarget_results,
+        # Same reference record as the full workflow publishes: which references resolved, over which
+        # species, and what did not. This path used to report nothing about its own references.
+        "reference_summary": workflow._summarize_screening_references(),
     }
 
     console.print(f"\n✅ [bold green]Off-target analysis completed in {total_time:.2f}s[/bold green]")

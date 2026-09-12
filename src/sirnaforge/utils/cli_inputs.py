@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sirnaforge.config.reference_policy import parse_index_entries
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 
 
@@ -38,35 +39,33 @@ def parse_optional_csv(value: str | None, *, error_message: str) -> list[str] | 
     return tokens
 
 
-def extract_override_species_from_offtarget_indices(offtarget_indices: str | None) -> list[str] | None:
-    """Extract unique species tokens from an offtarget indices override string.
+def extract_declared_species_from_indices(transcriptome_indices: str | None) -> list[str] | None:
+    """Extract the species declared by ``--transcriptome-indices``, or None when none was passed.
 
-    Validates the expected ``species:/index_prefix`` format for each entry.
-    Returns None when no override is provided.
+    Parsing is delegated to the reference resolver, so the CLI and the workflow read one grammar:
+    the species a caller declares on an index entry is the authority for that reference's label.
     """
-    if not offtarget_indices:
+    if not transcriptome_indices:
         return None
 
-    entries = parse_csv(offtarget_indices)
-    bad_entries = [entry for entry in entries if ":" not in entry]
-    if bad_entries:
-        raise ValueError("--offtarget-indices entries must be in species:/index_prefix form")
-
-    override_species: list[str] = []
-    for entry in entries:
-        species_token = entry.split(":", 1)[0].strip() or entry
-        if species_token and species_token not in override_species:
-            override_species.append(species_token)
-    return override_species
+    requests = parse_index_entries(
+        transcriptome_indices, option="--transcriptome-indices", reason="explicit index override"
+    )
+    declared: list[str] = []
+    for request in requests:
+        species = request.declared_species
+        if species and species not in declared:
+            declared.append(species)
+    return declared
 
 
 @dataclass(frozen=True)
 class SpeciesResolution:
-    """Resolved species identifiers for genome, canonical, and miRNA scopes."""
+    """Resolved species identifiers for the screen, the canonical set, and miRNA lookups."""
 
     source_normalized: str
     canonical_species: list[str]
-    genome_species: list[str]
+    screen_species: list[str]
     mirna_species: list[str]
 
 
@@ -100,6 +99,8 @@ def resolve_species_inputs(*, species: str, mirna_db: str, mirna_species: str | 
     return SpeciesResolution(
         source_normalized=source_normalized,
         canonical_species=species_resolution["canonical"],
-        genome_species=species_resolution["genome"],
+        # MiRNADatabaseManager's "genome" key names each organism's miRNA annotation set; it is the
+        # list the transcriptome screen runs over, so it is mapped to screen_species here.
+        screen_species=species_resolution["genome"],
         mirna_species=species_resolution["mirna"],
     )

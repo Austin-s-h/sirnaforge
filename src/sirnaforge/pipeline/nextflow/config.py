@@ -245,7 +245,7 @@ class NextflowConfig:
         self,
         input_file: Path,
         output_dir: Path,
-        genome_species: list[str],
+        screen_species: list[str],
         additional_params: dict[str, Any] | None = None,
         include_test_profile: bool = False,
     ) -> list[str]:
@@ -254,7 +254,7 @@ class NextflowConfig:
         Args:
             input_file: Input FASTA file path
             output_dir: Output directory
-            genome_species: List of species for miRNA genome lookups (not genomic DNA)
+            screen_species: Species the screen covers, as resolved from its references
             additional_params: Additional parameters to pass
             include_test_profile: Whether to include 'test' profile for integration testing
 
@@ -265,13 +265,21 @@ class NextflowConfig:
         abs_input_file = input_file.resolve()
         abs_output_dir = output_dir.resolve()
         abs_work_dir = self.work_dir.resolve()
+        # The resolver may also state the species it resolved. Emitted once either way: two
+        # --transcriptome_species flags with different values leave the pipeline reporting whichever
+        # came last, which need not be the set actually handed to the aligner.
+        species_value = (
+            str(additional_params["transcriptome_species"])
+            if additional_params and "transcriptome_species" in additional_params
+            else ",".join(screen_species)
+        )
         args = [
             "--input",
             str(abs_input_file),
             "--outdir",
             str(abs_output_dir),
-            "--genome_species",
-            ",".join(genome_species),
+            "--transcriptome_species",
+            species_value,
             "-profile",
             self.profile,
             "-w",
@@ -310,6 +318,8 @@ class NextflowConfig:
         # Add additional runtime parameters
         if additional_params:
             for key, value in additional_params.items():
+                if key == "transcriptome_species":
+                    continue  # already emitted once above
                 if isinstance(value, bool):
                     if value:
                         args.append(f"--{key}")

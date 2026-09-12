@@ -172,6 +172,25 @@ def test_cli_transcriptome_fasta_still_enables_screening(tmp_path: Path, monkeyp
     assert [choice.value for choice in selection.choices] == ["ensembl_human_cdna"]
 
 
+@pytest.mark.unit
+def test_cli_transcriptome_fasta_accepts_multiple_named_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local design FASTA can explicitly screen against multiple Ensembl cDNA sources."""
+    references = ",".join(
+        (
+            "ensembl_human_cdna",
+            "ensembl_mouse_cdna",
+            "ensembl_macaque_cdna",
+            "ensembl_rat_cdna",
+        )
+    )
+    selection = _cli_resolved_selection(tmp_path, monkeypatch, "--transcriptome-fasta", references)
+
+    assert selection.enabled is True
+    assert [choice.value for choice in selection.choices] == references.split(",")
+
+
 def _candidate(candidate_id: str) -> SiRNACandidate:
     """Minimal candidate, enough for step 5 to accept it as screenable."""
     return SiRNACandidate(
@@ -195,7 +214,7 @@ async def test_skip_off_targets_materializes_no_reference_and_runs_no_repeat_sca
 ) -> None:
     """Even with an enabled selection, check_off_targets=False must do no reference work.
 
-    Pre-fix, step5 called _configure_transcriptome_inputs and _run_repeat_detection *above*
+    Pre-fix, step5 called _resolve_screening_references and _run_repeat_detection *above*
     the check_off_targets guard, so a run that asked to skip off-target analysis still
     downloaded, indexed and scanned before printing "skipped by user request".
     """
@@ -212,14 +231,14 @@ async def test_skip_off_targets_materializes_no_reference_and_runs_no_repeat_sca
 
     calls: list[str] = []
 
-    async def _no_materialize(self: SiRNAWorkflow, choice: object) -> None:
-        calls.append("materialize")
+    async def _no_resolve(self: SiRNAWorkflow, request: object) -> None:
+        calls.append("resolve_reference")
 
     def _no_repeat_scan(self: SiRNAWorkflow, candidates: object) -> dict[str, Any]:
         calls.append("repeat_scan")
         return {"status": "completed"}
 
-    monkeypatch.setattr(SiRNAWorkflow, "_materialize_transcriptome_reference", _no_materialize)
+    monkeypatch.setattr(SiRNAWorkflow, "_resolve_screening_reference", _no_resolve)
     monkeypatch.setattr(SiRNAWorkflow, "_run_repeat_detection", _no_repeat_scan)
 
     candidate = _candidate("cand_skip")
@@ -250,6 +269,12 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
     drives step 5 with the selection the real CLI hands down for the toy invocation rather
     than a hand-built one -- pre-fix that selection named four Ensembl cDNA sources and step 5
     materialized every one of them.
+
+    The screening launch itself is stubbed. Unstubbed, this unit test spawned a real
+    ``nextflow run -profile docker`` that pulled the published image and exited 1 after ~23s --
+    the whole failure swallowed by step 5's ``except Exception``, so the test passed either way
+    while costing more than the rest of the dev tier put together. Both assertions sit upstream of
+    the launch, and the real subprocess is exercised by the ``requires_nextflow`` tests.
     """
     config = WorkflowConfig(
         output_dir=tmp_path / "toy_out",
@@ -262,10 +287,18 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
 
     calls: list[str] = []
 
-    async def _no_materialize(self: SiRNAWorkflow, choice: object) -> None:
-        calls.append("materialize")
+    async def _no_resolve(self: SiRNAWorkflow, request: object) -> None:
+        calls.append("resolve_reference")
 
-    monkeypatch.setattr(SiRNAWorkflow, "_materialize_transcriptome_reference", _no_materialize)
+    monkeypatch.setattr(SiRNAWorkflow, "_resolve_screening_reference", _no_resolve)
+
+    screened: list[str] = []
+
+    async def _no_nextflow(self: SiRNAWorkflow, *_args: object, **_kwargs: object) -> dict[str, str]:
+        screened.append("nextflow")
+        return {"status": "completed"}
+
+    monkeypatch.setattr(SiRNAWorkflow, "_run_nextflow_offtarget_analysis", _no_nextflow)
 
     candidate = _candidate("cand_toy")
     design_result = DesignResult(
@@ -285,3 +318,4 @@ def test_input_fasta_step5_materializes_no_reference(tmp_path: Path, monkeypatch
 
     assert calls == [], f"an input-FASTA run must fetch no transcriptome reference, but ran: {calls}"
     assert workflow._repeat_summary["reason"] == "reference_unavailable"
+    assert screened == ["nextflow"], "step 5 must still reach screening, so the assertions above are not vacuous"

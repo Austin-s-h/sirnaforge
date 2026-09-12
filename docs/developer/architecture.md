@@ -111,6 +111,7 @@ graph TB
             J[orf_analysis.py<br/>ORF Analysis]
             K[base.py<br/>Base Classes]
             S[transcript_index.py<br/>Per-species Transcript-Gene Index]
+            T[orthology.py<br/>Ensembl Compara Orthologues]
         end
 
         subgraph "Pipeline Integration"
@@ -135,6 +136,7 @@ graph TB
     C --> R
     P --> S
     P --> Q
+    C --> T
 
     D --> G
     E --> G
@@ -158,6 +160,7 @@ graph TB
     style J fill:#f3e5f5
     style K fill:#f3e5f5
     style S fill:#f3e5f5
+    style T fill:#f3e5f5
 </div>
 ```
 
@@ -185,6 +188,7 @@ src/sirnaforge/
 │   ├── base.py        # Base classes for data providers
 │   ├── gene_search.py # Gene/transcript search functionality
 │   ├── orf_analysis.py # Open reading frame analysis
+│   ├── orthology.py   # Ensembl Compara orthologue gene IDs for cross-species hit classification
 │   └── transcript_index.py # Per-species transcript->gene index for hit classification
 │
 ├── pipeline/           # Pipeline and workflow integration
@@ -324,11 +328,18 @@ def classify_hit(hit, guide_sequence, context: ClassificationContext) -> HitClas
     """Pure function: no I/O, no alignment, no logging side effects."""
 ```
 
-Precedence order: `ON_TARGET` (query gene, query species), then `ORTHOLOG` (same gene symbol,
-case-insensitive, in another screened species), then `REPEAT` (guide is design-time
-repeat-flagged), then `OFF_TARGET` (everything else). Consumes a multi-species
-`TranscriptGeneIndex` (`data/transcript_index.py`), which holds one `SpeciesTranscriptIndex` per
-species so a hit's species is never confused with another species' index.
+Precedence order: `ON_TARGET` (query gene, query species), then `ORTHOLOG` (another screened
+species, resolved either by gene ID against `ClassificationContext.ortholog_gene_ids` or, failing
+that, by case-insensitive gene-symbol equality — `HitClassification.ortholog_evidence` says which),
+then `REPEAT` (guide is design-time repeat-flagged), then `OFF_TARGET` (everything else). Consumes a
+multi-species `TranscriptGeneIndex` (`data/transcript_index.py`), which holds one
+`SpeciesTranscriptIndex` per species so a hit's species is never confused with another species' index.
+
+The orthologue gene-ID set is resolved upstream by `data/orthology.py` (Ensembl Compara) and passed
+in, so `classify_hit` stays a pure function with no network I/O. That split is the reason the
+evidence tier is data on the row rather than an assumption in the reader: symbol equality cannot
+resolve human `TP53` against mouse `Trp53`, so a screen against mouse cDNA classified 3,746 conserved
+hits as unqualified off-targets before the mapping existed.
 
 ##### `repeat_detection.py` - Reference-relative Repeat Flagging
 
@@ -346,14 +357,17 @@ has on the order of 10^9 k-mer windows.
 ##### `scoring.py` - Composite Scorer
 
 ```python
-def compute_composite(features, weights, active_terms=None) -> CompositeScore:
-    """Pure function. Renormalises weights over the active term set."""
+def compute_composite(features, vector: WeightVector) -> CompositeScore:
+    """Pure function. Applies one named vector's weights exactly as declared -- no arithmetic."""
 ```
 
-The single place `composite_score` is computed, for both the design-time-only path (three
-post-screen terms inactive) and the post-screen path (all seven terms active). `workflow.py` and
-`core/design.py` both call into this one function rather than each computing their own weighted
-sum.
+The single place any score is computed, for both the design stage (`design_v4` -> `design_score`) and
+the post-screen stage (`postscreen_{sirna,mirna}_v4` -> `composite_score`). `workflow.py` and
+`core/design.py` both call into this one function rather than each computing their own weighted sum.
+
+It requires **every** term the vector declares and raises otherwise. There is no renormalisation and
+no `active_terms` argument: that argument was the hook through which four computable terms shared a
+0.50 budget and every design-stage weight doubled (issue #96).
 
 ### 4. Model Layer (`models/`)
 
@@ -434,6 +448,22 @@ class GencodeClient(AbstractDatabaseClient):
 class ORFAnalyzer:
     """Open reading frame validation"""
 ```
+
+##### `orthology.py` - Orthologue Resolution
+
+```python
+async def resolve_orthologues(query_gene_ids, query_species, target_species, *,
+                             query_gene_symbols=frozenset()) -> OrthologueMapping:
+    """Ensembl Compara orthologues, on stable gene IDs. Never raises for a lookup failure."""
+```
+
+Lives in the data layer because `classify_hit` is pure: the workflow resolves one
+`OrthologueMapping` per run and passes `all_gene_ids` into `ClassificationContext`. Only species that
+actually produced hits are looked up, so a single-species screen makes no request. The ID route is
+tried first and the symbol route second — an `--input-fasta` run supplies transcript IDs, which
+`/homology/id/...` answers with HTTP 200 and `{"data": []}`, indistinguishable from "no orthologue" —
+and a species that cannot be resolved lands in `unresolved_species`, whose hits degrade to the
+labelled symbol heuristic rather than failing the screen.
 
 ### 6. Validation Layer (`validation/`)
 
@@ -608,7 +638,7 @@ graph TD
     G --> H[Screen every distinct sequence: BWA-MEM2 + Nextflow]
     H --> I[Classify each hit: on-target / ortholog / repeat / off-target]
     I --> J[Aggregate hit counts per candidate, fan out to shared sequences]
-    J --> K[Score once: compute_composite over the active term set]
+    J --> K[Score once: compute_composite against the named post-screen vector]
     K --> L[Rank]
     L --> M[Output Generation]
 ```

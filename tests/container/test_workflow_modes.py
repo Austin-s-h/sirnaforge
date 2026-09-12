@@ -213,13 +213,15 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
-def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, realistic_transcripts_fasta: Path):
+def test_transcriptome_index_override(
+    tmp_path: Path, toy_transcriptome_index_prefix: Path, realistic_transcripts_fasta: Path
+):
     """Test workflow with --offtarget-indices override.
 
     Validates:
-    - --offtarget-indices replaces default genome references
+    - --offtarget-indices adds a caller-built index as a screening reference
     - Custom index paths used for off-target
-    - Species derived from override entries
+    - Species declared on the override entry reaches the screen
     """
     output_dir = _get_persistent_output_dir(tmp_path, "index_override")
 
@@ -233,7 +235,7 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, re
             "--input-fasta",
             str(input_fasta),
             "--offtarget-indices",
-            f"toy_genome:{toy_genome_index_prefix}",
+            f"human:{toy_transcriptome_index_prefix}",
             "--output-dir",
             str(output_dir),
         ],
@@ -255,7 +257,7 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, re
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
 
     # Primary verification: check the actual off-target analysis results
-    # This verifies that the toy_genome index was actually USED, not just passed as a parameter
+    # This verifies that the toy transcriptome index was actually USED, not just passed as a parameter
     offtarget_summary = summary.get("offtarget_summary", {})
 
     # Check aggregated results first (most reliable - these are the actual analysis outputs)
@@ -264,15 +266,15 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, re
 
     if transcriptome_summary:
         species_analyzed = transcriptome_summary.get("species_analyzed", [])
-        assert "toy_genome" in species_analyzed, (
+        assert "human" in species_analyzed, (
             f"Override species not found in transcriptome analysis results. "
-            f"Expected 'toy_genome' in species_analyzed, got: {species_analyzed}"
+            f"Expected 'human' in species_analyzed, got: {species_analyzed}"
         )
 
-        # Also verify hits were actually recorded for toy_genome
+        # Also verify hits were actually recorded for the overridden species
         hits_per_species = transcriptome_summary.get("hits_per_species", {})
-        assert "toy_genome" in hits_per_species, (
-            f"No hits recorded for toy_genome. Species with hits: {list(hits_per_species.keys())}"
+        assert "human" in hits_per_species, (
+            f"No hits recorded for human. Species with hits: {list(hits_per_species.keys())}"
         )
     else:
         # Fallback: check execution metadata if no aggregated results
@@ -286,9 +288,7 @@ def test_genome_index_override(tmp_path: Path, toy_genome_index_prefix: Path, re
             if combined_summary_path.exists():
                 combined_summary = json.loads(combined_summary_path.read_text())
                 species_analyzed = combined_summary.get("species_analyzed", [])
-                assert "toy_genome" in species_analyzed, (
-                    f"Override species not in combined summary. Got: {species_analyzed}"
-                )
+                assert "human" in species_analyzed, f"Override species not in combined summary. Got: {species_analyzed}"
             else:
                 pytest.fail(
                     f"Test inconclusive: combined_summary.json reported but not found at {combined_summary_path}"
@@ -535,7 +535,7 @@ def test_multi_species_offtarget(tmp_path: Path, realistic_transcripts_fasta: Pa
 
     Validates:
     - --species with multiple values
-    - Off-target analysis across genomes
+    - Off-target analysis across transcriptomes
     - miRNA seed checks across species
     """
     output_dir = _get_persistent_output_dir(tmp_path, "multi_species")

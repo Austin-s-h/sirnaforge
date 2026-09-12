@@ -75,18 +75,21 @@ class TestSiRNACandidateSchema:
             "ortholog_species",
             "repeat_flagged",
             "repeat_transcript_fraction",
-            # Post-screen sub-scores and per-term contributions (issue #80)
+            # Post-screen sub-scores and per-term contributions (issue #80, reworked in #96)
             "isoform_coverage",
             "conservation_score",
+            "empirical_score",
             "score_asymmetry",
             "score_gc_content",
             "score_target_accessibility",
-            "score_empirical",
             "score_off_target",
-            "score_isoform_coverage",
-            "score_conservation",
+            "score_ago_start",
+            "score_supp_13_16",
             "scored_after_screening",
             "weight_set_version",
+            # Named weight vectors and the two stage scores (issue #96)
+            "design_score",
+            "weight_vector",
             # Target-site accessibility (issue #95)
             "target_accessibility_p",
             "target_accessibility_p_17mer",

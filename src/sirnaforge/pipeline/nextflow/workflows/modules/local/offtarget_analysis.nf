@@ -1,7 +1,7 @@
 process OFFTARGET_ANALYSIS {
     tag "$species"
     label 'process_medium'
-    publishDir "${params.outdir}/genome", mode: params.publish_dir_mode
+    publishDir "${params.outdir}/transcriptome", mode: params.publish_dir_mode
 
     input:
     tuple val(species), val(index_path), path(candidates_fasta)
@@ -20,20 +20,21 @@ process OFFTARGET_ANALYSIS {
     task.ext.when == null || task.ext.when
 
     script:
-    def candidates_basename = candidates_fasta.baseName  // e.g., "input_candidates" from "input_candidates.fasta"
     """
-    # Run off-target analysis for ALL candidates against this genome in one session
-    # This is much more efficient: load index once, process all candidates sequentially
+    # Run off-target analysis for ALL candidates against this reference in one session
+    # This is much more efficient: load index once, process all candidates sequentially.
+    # The CLI also owns the "this prefix is not a usable index" case: it publishes an EMPTY
+    # analysis file plus a failed summary, which the aggregator reports as a per-species
+    # rejection instead of a completed screen with zero hits.
     python3 <<'PYEOF'
 import sys
 sys.path.insert(0, '${workflow.projectDir}/../src')
-from sirnaforge.core.off_target import run_bwa_alignment_analysis
+from sirnaforge.pipeline.nextflow_cli import offtarget_analysis_cli
 
-# Run batch analysis: one BWA session, all candidates
-output_path = run_bwa_alignment_analysis(
-    candidates_file='${candidates_fasta}',
-    index_prefix='${index_path}',
+result = offtarget_analysis_cli(
     species='${species}',
+    index_prefix='${index_path}',
+    candidates_file='${candidates_fasta}',
     output_dir='.',
     max_hits=${max_hits},
     bwa_k=${bwa_k},
@@ -42,14 +43,10 @@ output_path = run_bwa_alignment_analysis(
     seed_end=${seed_end}
 )
 
-print(f"Batch analysis completed for ${species}: all candidates processed")
+print(f"Batch analysis for ${species}: {result['status']}")
+if result.get('error'):
+    print(f"  reason: {result['error']}")
 PYEOF
-
-    # Rename output files to match expected names
-    # Function creates: {candidate_id}_{species}_analysis.tsv
-    # Process expects: {species}_analysis.tsv
-    mv ${candidates_basename}_${species}_analysis.tsv ${species}_analysis.tsv
-    mv ${candidates_basename}_${species}_summary.json ${species}_summary.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
@@ -60,8 +57,10 @@ PYEOF
 
     stub:
     """
+    # Deliberately empty, not a header: a stub aligned nothing, so the aggregator must report this
+    # species as unscreened rather than as screened and clean.
     touch ${species}_analysis.tsv
-    echo '{"species": "${species}", "total_candidates": 0, "total_hits": 0}' > ${species}_summary.json
+    echo '{"species": "${species}", "status": "stub", "total_candidates": 0, "total_hits": 0}' > ${species}_summary.json
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

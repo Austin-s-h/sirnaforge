@@ -1,4 +1,9 @@
-"""Unit tests for composite siRNA scoring with renormalized sub-score contributions."""
+"""Unit tests for scoring against named, hand-authored weight vectors (issue #96).
+
+The scorer applies no arithmetic to weights: no renormalisation, no rescaling, no division. The
+tests below are written so that reintroducing any of those fails, rather than merely exercising
+the current code path.
+"""
 
 import math
 
@@ -13,7 +18,14 @@ from sirnaforge.core.scoring import (
     isoform_coverage_sub_score,
     off_target_sub_score,
 )
-from sirnaforge.models.sirna import ScoringWeights
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignWeights,
+    PostScreenMiRNAWeights,
+    PostScreenSiRNAWeights,
+    ScoringWeights,
+    WeightVector,
+)
 
 
 @pytest.mark.unit
@@ -125,287 +137,250 @@ class TestConservationSubScore:
 
 @pytest.mark.unit
 class TestComputeComposite:
-    """Tests for the composite scorer with renormalization."""
+    """Tests for the scorer: one named vector, its exact term set, no arithmetic on weights."""
 
     def test_known_features_and_weights_yield_known_score(self) -> None:
-        """Known feature mapping and known weights should yield a hand-computed score.
+        """A hand-computed score, term by term, against postscreen_sirna_v4.
 
-        This is the anchor test: the arithmetic is written out by hand, not by
-        calling the function twice. If the function changes to return a constant,
-        this test will fail.
+        The anchor test: the arithmetic is written out by hand rather than by calling the function
+        twice, so a scorer that returned a constant would fail here.
         """
-        # Use default weights from ScoringWeights:
-        # asymmetry=0.12, gc_content=0.10, target_accessibility=0.13, empirical=0.15,
-        # off_target=0.25, isoform_coverage=0.15, conservation=0.10
-        # Sum = 1.00
-
         features = {
+            "off_target": 1.0,
+            "target_accessibility": 0.7,
             "asymmetry": 0.8,
             "gc_content": 0.9,
-            "target_accessibility": 0.7,
-            "empirical": 0.6,
-            "off_target": 1.0,
-            "isoform_coverage": 0.5,
-            "conservation": 0.4,
         }
-        weights = ScoringWeights()
+        vector = PostScreenSiRNAWeights()
 
-        # Hand-computed score: sum(weight * feature * 100) for all terms.
-        # asymmetry:        0.12 * 0.8 * 100 = 9.6
-        # gc_content:       0.10 * 0.9 * 100 = 9.0
-        # target_accessibility: 0.13 * 0.7 * 100 = 9.1
-        # empirical:        0.15 * 0.6 * 100 = 9.0
-        # off_target:       0.25 * 1.0 * 100 = 25.0
-        # isoform_coverage: 0.15 * 0.5 * 100 = 7.5
-        # conservation:     0.10 * 0.4 * 100 = 4.0
-        # Total = 73.2
-        expected_score = 73.2
+        # off_target:           0.25 * 1.0 * 100 = 25.0
+        # target_accessibility: 0.30 * 0.7 * 100 = 21.0
+        # asymmetry:            0.25 * 0.8 * 100 = 20.0
+        # gc_content:           0.20 * 0.9 * 100 = 18.0
+        # Total = 84.0
+        result = compute_composite(features, vector)
 
-        result = compute_composite(features, weights)
-
-        assert result.score == pytest.approx(expected_score, abs=1e-9)
+        assert result.score == pytest.approx(84.0, abs=1e-9)
         assert result.weight_set_version == SCORING_WEIGHT_SET_VERSION
-        assert result.active_terms == COMPOSITE_TERMS
-        assert len(result.contributions) == 7
+        assert result.vector_name == "postscreen_sirna_v4"
+        assert result.terms == ("off_target", "target_accessibility", "asymmetry", "gc_content")
+        assert len(result.contributions) == 4
 
-    def test_contributions_sum_to_score_full_active_set(self) -> None:
-        """Contributions should sum to the composite score for a full active set."""
-        features = {
-            "asymmetry": 0.8,
-            "gc_content": 0.9,
-            "target_accessibility": 0.7,
-            "empirical": 0.6,
-            "off_target": 1.0,
-            "isoform_coverage": 0.5,
-            "conservation": 0.4,
-        }
-        weights = ScoringWeights()
-        result = compute_composite(features, weights)
+    def test_design_vector_scores_its_own_three_terms(self) -> None:
+        """design_v4 is a different vector over a different term set, hand-computed too."""
+        features = {"target_accessibility": 0.5, "asymmetry": 1.0, "gc_content": 0.0}
 
-        contribution_sum = sum(result.contributions.values())
-        assert contribution_sum == pytest.approx(result.score, abs=1e-9)
+        # 0.35 * 0.5 * 100 + 0.40 * 1.0 * 100 + 0.25 * 0.0 * 100 = 17.5 + 40.0 + 0.0
+        result = compute_composite(features, DesignWeights())
 
-    def test_contributions_sum_to_score_partial_active_set(self) -> None:
-        """Contributions should sum to the composite score for a partial active set."""
-        # Only five of seven terms active (no isoform_coverage, no conservation).
-        features = {
-            "asymmetry": 0.8,
-            "gc_content": 0.9,
-            "target_accessibility": 0.7,
-            "empirical": 0.6,
-            "off_target": 1.0,
-        }
-        weights = ScoringWeights()
-        result = compute_composite(features, weights)
+        assert result.score == pytest.approx(57.5, abs=1e-9)
+        assert result.vector_name == "design_v4"
+        assert result.terms == ("target_accessibility", "asymmetry", "gc_content")
 
-        contribution_sum = sum(result.contributions.values())
-        assert contribution_sum == pytest.approx(result.score, abs=1e-9)
+    def test_extra_features_are_ignored_not_scored(self) -> None:
+        """component_scores carries diagnostics; only the vector's own terms may contribute."""
+        vector = DesignWeights()
+        lean = {"target_accessibility": 0.5, "asymmetry": 0.5, "gc_content": 0.5}
+        fat = {**lean, "empirical": 1.0, "conservation": 1.0, "isoform_coverage": 1.0, "off_target": 1.0}
 
-        # Only active terms should appear in contributions.
-        assert len(result.contributions) == 5
-        assert "isoform_coverage" not in result.contributions
-        assert "conservation" not in result.contributions
+        assert compute_composite(fat, vector).score == pytest.approx(compute_composite(lean, vector).score)
+        assert set(compute_composite(fat, vector).contributions) == set(vector.terms)
 
-    def test_inactive_terms_renormalize_to_preserve_scale(self) -> None:
-        """Dropping terms should not change the composite of a candidate with all equal sub-scores.
+    def test_contributions_sum_to_score(self) -> None:
+        """The score is exactly the sum of its declared contributions -- nothing is applied after."""
+        features = {"off_target": 1.0, "target_accessibility": 0.7, "asymmetry": 0.8, "gc_content": 0.9}
+        result = compute_composite(features, PostScreenSiRNAWeights())
 
-        When all active sub-scores are equal, renormalization ensures the composite
-        stays the same regardless of which terms are active. This is the "neither
-        rewarded nor penalised" property.
+        assert sum(result.contributions.values()) == pytest.approx(result.score, abs=1e-9)
+
+    def test_a_missing_term_raises_instead_of_renormalising(self) -> None:
+        """The defect this issue removes: a partial term set must not be scored at all.
+
+        Renormalising over whichever terms happened to be populated doubled every design-stage
+        weight, so the same nominal 0.30 was worth 0.30 or 0.60 depending on the run stage and
+        nothing on the row recorded which. There is now no score to report instead.
         """
-        # All sub-scores = 1.0, full active set -> should score 100.0.
-        features_full = dict.fromkeys(COMPOSITE_TERMS, 1.0)
-        weights = ScoringWeights()
-        result_full = compute_composite(features_full, weights)
-        assert result_full.score == pytest.approx(100.0, abs=1e-9)
+        vector = PostScreenSiRNAWeights()
+        features = {"target_accessibility": 0.7, "asymmetry": 0.8, "gc_content": 0.9}
 
-        # All sub-scores = 1.0, partial active set (drop two terms) -> should still score 100.0.
-        features_partial = {
-            "asymmetry": 1.0,
-            "gc_content": 1.0,
-            "target_accessibility": 1.0,
-            "empirical": 1.0,
-            "off_target": 1.0,
-            # isoform_coverage and conservation absent
-        }
-        result_partial = compute_composite(features_partial, weights)
-        assert result_partial.score == pytest.approx(100.0, abs=1e-9)
+        with pytest.raises(ScoringError, match="off_target"):
+            compute_composite(features, vector)
 
-        # All sub-scores = 0.5, full active set -> should score 50.0.
-        features_half_full = dict.fromkeys(COMPOSITE_TERMS, 0.5)
-        result_half_full = compute_composite(features_half_full, weights)
-        assert result_half_full.score == pytest.approx(50.0, abs=1e-9)
+    def test_dropping_a_term_cannot_leave_the_score_unchanged(self) -> None:
+        """The positive form of the same guarantee, stated as a value.
 
-        # All sub-scores = 0.5, partial active set -> should still score 50.0.
-        features_half_partial = {
-            "asymmetry": 0.5,
-            "gc_content": 0.5,
-            "target_accessibility": 0.5,
-            "empirical": 0.5,
-            "off_target": 0.5,
-        }
-        result_half_partial = compute_composite(features_half_partial, weights)
-        assert result_half_partial.score == pytest.approx(50.0, abs=1e-9)
+        Under renormalisation an all-equal candidate scored identically whichever terms were
+        active -- that property is exactly what made two candidates incomparable. Here the smaller
+        vector is a genuinely different number, and the larger one refuses the partial input.
+        """
+        equal = dict.fromkeys(("off_target", "target_accessibility", "asymmetry", "gc_content"), 0.5)
+        post_screen = compute_composite(equal, PostScreenSiRNAWeights())
+        design = compute_composite(equal, DesignWeights())
+
+        # Both vectors sum to 1.0, so an all-0.5 candidate scores 50 on either -- by construction,
+        # not by rescaling. What is refused is scoring one vector's terms with the other's weights.
+        assert post_screen.score == pytest.approx(50.0, abs=1e-9)
+        assert design.score == pytest.approx(50.0, abs=1e-9)
+        with pytest.raises(ScoringError):
+            compute_composite({"target_accessibility": 0.5}, DesignWeights())
 
     def test_empty_features_raises(self) -> None:
-        """Empty features mapping should raise ScoringError (no active terms)."""
-        features = {}
-        weights = ScoringWeights()
-        with pytest.raises(ScoringError, match="No active terms"):
-            compute_composite(features, weights)
-
-    def test_all_zero_active_weights_raises(self) -> None:
-        """All-zero active weight vector should raise ScoringError at call time."""
-        # Construct a weight set with one nonzero term to pass the ScoringWeights
-        # validator, then call compute_composite with features that exclude it.
-        weights = ScoringWeights(
-            asymmetry=0.0,
-            gc_content=0.0,
-            target_accessibility=0.0,
-            empirical=0.0,
-            off_target=1.0,  # Only this is nonzero, so the full vector sums to 1.0.
-            isoform_coverage=0.0,
-            conservation=0.0,
-        )
-        # Features that exclude off_target -> active weight sum is 0.
-        features = {
-            "asymmetry": 0.5,
-            "gc_content": 0.5,
-        }
-        with pytest.raises(ScoringError, match="non-positive, cannot normalize"):
-            compute_composite(features, weights)
+        """An empty feature mapping supplies no term, so every vector refuses it."""
+        with pytest.raises(ScoringError, match="requires"):
+            compute_composite({}, PostScreenSiRNAWeights())
 
     def test_feature_below_zero_raises(self) -> None:
         """Feature value below 0.0 should raise ScoringError."""
-        features = {
-            "asymmetry": -0.1,  # Invalid
-            "gc_content": 0.9,
-        }
-        weights = ScoringWeights()
+        features = {"target_accessibility": 0.5, "asymmetry": -0.1, "gc_content": 0.9}
         with pytest.raises(ScoringError, match="outside \\[0, 1\\]"):
-            compute_composite(features, weights)
+            compute_composite(features, DesignWeights())
 
     def test_feature_above_one_raises(self) -> None:
         """Feature value above 1.0 should raise ScoringError."""
-        features = {
-            "asymmetry": 0.8,
-            "gc_content": 1.1,  # Invalid
-        }
-        weights = ScoringWeights()
+        features = {"target_accessibility": 0.5, "asymmetry": 0.8, "gc_content": 1.1}
         with pytest.raises(ScoringError, match="outside \\[0, 1\\]"):
-            compute_composite(features, weights)
+            compute_composite(features, DesignWeights())
 
-    def test_explicit_active_terms_subset_is_respected(self) -> None:
-        """Explicitly passing active_terms should restrict the active set."""
-        features = {
-            "asymmetry": 0.8,
-            "gc_content": 0.9,
-            "target_accessibility": 0.7,
-            "empirical": 0.6,
-            "off_target": 1.0,
-        }
-        weights = ScoringWeights()
-
-        # Request only two terms be active.
-        result = compute_composite(features, weights, active_terms=["asymmetry", "gc_content"])
-
-        assert len(result.active_terms) == 2
-        assert result.active_terms == ("asymmetry", "gc_content")
-        assert len(result.contributions) == 2
-
-        # Renormalized weights: asymmetry=0.12, gc_content=0.10 -> sum=0.22
-        # Renorm: asymmetry=0.12/0.22, gc_content=0.10/0.22
-        # Score = (0.12/0.22)*0.8*100 + (0.10/0.22)*0.9*100
-        renorm_asym = 0.12 / 0.22
-        renorm_gc = 0.10 / 0.22
-        expected_score = renorm_asym * 0.8 * 100 + renorm_gc * 0.9 * 100
-        assert result.score == pytest.approx(expected_score, abs=1e-9)
-
-    def test_unknown_term_in_active_terms_is_silently_ignored(self) -> None:
-        """Unknown term names in active_terms should be silently ignored."""
-        features = {
-            "asymmetry": 0.8,
-            "gc_content": 0.9,
-        }
-        weights = ScoringWeights()
-
-        # Request a nonexistent term alongside valid ones.
-        result = compute_composite(features, weights, active_terms=["asymmetry", "unknown_term", "gc_content"])
-
-        # Only the known terms present in features should be active.
-        assert result.active_terms == ("asymmetry", "gc_content")
-        assert len(result.contributions) == 2
+    def test_scorer_takes_no_active_term_argument(self) -> None:
+        """There is no way to ask for a subset: that argument was the renormalisation hook."""
+        with pytest.raises(TypeError):
+            compute_composite(  # type: ignore[call-arg]
+                {"target_accessibility": 0.5, "asymmetry": 0.5, "gc_content": 0.5},
+                DesignWeights(),
+                active_terms=["asymmetry"],
+            )
 
 
 @pytest.mark.unit
-class TestScoringWeightsValidator:
-    """Tests for the ScoringWeights model validator."""
+class TestWeightVectors:
+    """Every vector is named, hand-authored, and sums to 1.0 -- enforced at construction."""
 
-    def test_default_weights_sum_to_one(self) -> None:
-        """Default weights should sum to exactly 1.0 as specified in the contract.
+    def test_declared_default_weights(self) -> None:
+        """Assert the defaults term by term so a silent retune fails the suite.
 
-        This test asserts the actual default values term by term so a silent retune
-        fails the suite. If you change the defaults, update this test AND bump
-        SCORING_WEIGHT_SET_VERSION.
+        If you change any of these, bump SCORING_WEIGHT_SET_VERSION: the numbers are declared
+        expert priors, and a run scored under different ones is not comparable.
         """
-        weights = ScoringWeights()
-        assert weights.asymmetry == 0.12
-        assert weights.gc_content == 0.10
-        assert weights.target_accessibility == 0.13
-        assert weights.empirical == 0.15
-        assert weights.off_target == 0.25
-        assert weights.isoform_coverage == 0.15
-        assert weights.conservation == 0.10
-
-        # Sum to 1.00 exactly.
-        total = sum(getattr(weights, term) for term in COMPOSITE_TERMS)
-        assert total == pytest.approx(1.0, abs=1e-9)
-
-    def test_unnormalizable_weight_set_raises_at_construction(self) -> None:
-        """A weight set summing far from 1.0 should raise ValueError at construction."""
-        with pytest.raises(ValueError, match="must sum to 1.0"):
-            ScoringWeights(
-                asymmetry=0.9,
-                gc_content=0.0,
-                target_accessibility=0.0,
-                empirical=0.0,
-                off_target=0.0,
-                isoform_coverage=0.0,
-                conservation=0.0,
+        assert DesignWeights().as_mapping() == {
+            "target_accessibility": 0.35,
+            "asymmetry": 0.40,
+            "gc_content": 0.25,
+        }
+        assert PostScreenSiRNAWeights().as_mapping() == {
+            "off_target": 0.25,
+            "target_accessibility": 0.30,
+            "asymmetry": 0.25,
+            "gc_content": 0.20,
+        }
+        # Six terms, not seven: issue #102 removed pos1_mismatch, which was exactly constant at
+        # 0.0, and restored the four shared terms to exactly 0.80 x postscreen_sirna_v4 rather than
+        # reassigning its 0.05 by judgement.
+        assert PostScreenMiRNAWeights().as_mapping() == {
+            "off_target": 0.20,
+            "target_accessibility": 0.24,
+            "asymmetry": 0.20,
+            "gc_content": 0.16,
+            "ago_start": 0.10,
+            "supp_13_16": 0.10,
+        }
+        shared = PostScreenSiRNAWeights().as_mapping()
+        mirna = PostScreenMiRNAWeights().as_mapping()
+        for term, weight in shared.items():
+            assert mirna[term] == pytest.approx(0.80 * weight, abs=1e-9), (
+                f"the miRNA vector's shared term '{term}' is no longer 0.80 x the siRNA vector's"
             )
 
+    def test_every_vector_sums_to_one_over_its_own_terms(self) -> None:
+        """Each vector validates against its own term set; there is no global term tuple."""
+        for vector in ScoringWeights().all_vectors():
+            assert sum(vector.as_mapping().values()) == pytest.approx(1.0, abs=1e-9)
+            assert set(vector.as_mapping()) == set(vector.terms)
+            assert set(vector.terms) <= set(COMPOSITE_TERMS)
+
+    def test_the_three_vectors_score_different_term_sets(self) -> None:
+        """The reason the single global COMPOSITE_TERM_NAMES tuple could no longer validate."""
+        sizes = {vector.name: len(vector.terms) for vector in ScoringWeights().all_vectors()}
+        assert sizes == {"design_v4": 3, "postscreen_sirna_v4": 4, "postscreen_mirna_v4": 6}
+
+    def test_a_mis_summed_vector_is_a_construction_error(self) -> None:
+        """Not a silent pass, and not renormalised at use: refused outright."""
+        with pytest.raises(ValueError, match="must sum to exactly 1.0"):
+            DesignWeights(target_accessibility=0.9, asymmetry=0.35, gc_content=0.25)
+        with pytest.raises(ValueError, match="must sum to exactly 1.0"):
+            PostScreenSiRNAWeights(off_target=0.25, target_accessibility=0.30, asymmetry=0.25, gc_content=0.10)
+
+    def test_the_old_wide_tolerance_is_gone(self) -> None:
+        """0.95-1.05 used to pass, i.e. up to 5% of undeclared rescaling per run."""
+        with pytest.raises(ValueError, match="must sum to exactly 1.0"):
+            DesignWeights(target_accessibility=0.42, asymmetry=0.35, gc_content=0.25)
+
+    def test_an_unnamed_vector_is_a_construction_error(self) -> None:
+        """A vector whose name cannot be recorded cannot be traced from a row, so it is refused."""
+
+        class UnnamedWeights(WeightVector):
+            """A subclass that forgot VECTOR_NAME."""
+
+            TERM_NAMES = ("asymmetry",)
+            asymmetry: float = 1.0
+
+        with pytest.raises(ValueError, match="no VECTOR_NAME"):
+            UnnamedWeights()
+
+    def test_a_vector_with_no_terms_is_a_construction_error(self) -> None:
+        """A vector must name what it scores."""
+
+        class TermlessWeights(WeightVector):
+            """A subclass that forgot TERM_NAMES."""
+
+            VECTOR_NAME = "termless"
+            asymmetry: float = 1.0
+
+        with pytest.raises(ValueError, match="no TERM_NAMES"):
+            TermlessWeights()
+
     def test_custom_weights_summing_to_one_are_accepted(self) -> None:
-        """Custom weights summing to 1.0 should pass validation."""
-        weights = ScoringWeights(
-            asymmetry=0.2,
-            gc_content=0.2,
-            target_accessibility=0.2,
-            empirical=0.2,
-            off_target=0.1,
-            isoform_coverage=0.05,
-            conservation=0.05,
-        )
-        assert weights.asymmetry == 0.2
+        """Hand-authoring your own vector is supported -- it just has to sum to 1.0."""
+        vector = DesignWeights(target_accessibility=0.5, asymmetry=0.3, gc_content=0.2)
+        assert vector.as_mapping() == {"target_accessibility": 0.5, "asymmetry": 0.3, "gc_content": 0.2}
+        assert vector.name == "design_v4"
+
+    def test_vector_selection_is_by_stage_and_mode(self) -> None:
+        """A vector is chosen, never combined."""
+        weights = ScoringWeights()
+
+        assert weights.vector_for(post_screen=False).name == "design_v4"
+        assert weights.vector_for(post_screen=False, design_mode=DesignMode.MIRNA).name == "design_v4"
+        assert weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA).name == "postscreen_sirna_v4"
+        assert weights.vector_for(post_screen=True, design_mode=DesignMode.MIRNA).name == "postscreen_mirna_v4"
+
+    def test_manifest_records_name_alongside_weights(self) -> None:
+        """A row's weight_vector column must resolve to the numbers that produced it."""
+        manifest = ScoringWeights().as_manifest()
+
+        assert set(manifest) == {"design_v4", "postscreen_sirna_v4", "postscreen_mirna_v4"}
+        assert manifest["postscreen_mirna_v4"]["ago_start"] == 0.10
 
 
 @pytest.mark.unit
 class TestVersionConstant:
     """Tests for the SCORING_WEIGHT_SET_VERSION constant."""
 
-    def test_version_is_3_0_0(self) -> None:
-        """SCORING_WEIGHT_SET_VERSION should be "3.0.0".
+    def test_version_is_4_0_0(self) -> None:
+        """SCORING_WEIGHT_SET_VERSION should be "4.0.0".
 
-        If you change the default weights in ScoringWeights, or which quantity a term computes,
-        you MUST bump this version. 3.0.0 marks issue #95: `accessibility` (guide self-structure
-        misreported as target accessibility) became `target_accessibility`, a real RNAplfold
-        opening probability on the transcript. Same 0.13 weight, different quantity, so 2.x scores
-        are not comparable.
+        Bump it whenever a default weight or a vector's term set changes. 4.0.0 marks issues #96
+        **and** #102, with one comparability break between them because 0.7.1 has not shipped. #96:
+        both hidden normalisations removed (the active-set renormalisation and the miRNA 1.25
+        divisor), one flat vector replaced by three named ones, and empirical / conservation /
+        isoform_coverage out of the composite. #102: `pos1_mismatch` out of `postscreen_mirna_v4`,
+        which is why that vector has six terms. No 3.x score is comparable with a 4.x one.
         """
-        assert SCORING_WEIGHT_SET_VERSION == "3.0.0"
+        assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
 
-    def test_composite_score_records_version(self) -> None:
-        """CompositeScore should record the weight set version."""
-        features = {"asymmetry": 0.8, "gc_content": 0.9}
-        weights = ScoringWeights()
-        result = compute_composite(features, weights)
-        assert result.weight_set_version == "3.0.0"
+    def test_composite_score_records_version_and_vector(self) -> None:
+        """CompositeScore records both, so a row is traceable to the weights that made it."""
+        features = {"target_accessibility": 0.5, "asymmetry": 0.8, "gc_content": 0.9}
+        result = compute_composite(features, DesignWeights())
+
+        assert result.weight_set_version == "4.0.0"
+        assert result.vector_name == "design_v4"

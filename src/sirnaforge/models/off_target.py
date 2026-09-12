@@ -288,7 +288,10 @@ class BaseAggregatedSummary(BaseModel):
 
     # Common file paths
     combined_tsv: Path | None = Field(default=None, description="Path to combined TSV file")
-    combined_json: Path | None = Field(default=None, description="Path to combined JSON file")
+    combined_json: Path | None = Field(
+        default=None,
+        description="Deprecated: no longer written. Kept so an archived run's summary still parses.",
+    )
     summary_file: Path | None = Field(default=None, description="Path to summary file")
 
     # Common metadata
@@ -320,15 +323,40 @@ class AggregatedOffTargetSummary(BaseAggregatedSummary):
     )
     species_file_counts: dict[str, int] = Field(
         default_factory=dict,
-        description="Count of *_analysis.tsv files discovered per requested species",
+        description="Count of *_analysis.tsv files DISCOVERED per requested species (not necessarily usable)",
+    )
+    usable_species_file_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of *_analysis.tsv files per species that were read and validated",
+    )
+    rejected_species_files: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per species, one 'filename: reason' entry for every discovered analysis file that could "
+            "not be read or validated. The field a per-species rejection is carried in"
+        ),
+    )
+    species_screened: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Species with at least one usable alignment file. The positive evidence that a search ran: "
+            "a species absent from this list has no hit count, not a hit count of zero"
+        ),
+    )
+    unscreened_species: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Species requested for analysis with no usable alignment evidence, whether because no file "
+            "was produced or because every file was rejected (superset of missing_species)"
+        ),
     )
     missing_species: list[str] = Field(
         default_factory=list,
-        description="Species requested for analysis that produced no transcriptome alignment files",
+        description="Species requested for analysis that produced no transcriptome alignment files at all",
     )
     status: str = Field(
         default="completed",
-        description="Aggregation status (completed, partial, or failed)",
+        description="Aggregation status: completed only when every requested species was screened",
     )
 
 

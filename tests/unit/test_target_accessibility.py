@@ -33,6 +33,7 @@ from Bio.Seq import Seq
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.core.scoring import (
     SCORING_WEIGHT_SET_VERSION,
+    ScoringError,
     compute_composite,
     target_accessibility_sub_score,
 )
@@ -213,6 +214,58 @@ def test_scored_window_is_the_eight_mer_ending_at_the_site_three_prime_end():
     assert site.whole_site <= site.seed_anchored_17mer <= site.seed_end_8mer
 
 
+@pytest.mark.unit
+def test_the_scored_window_is_the_end_the_guide_seed_pairs():
+    """Issue #102's geometry audit, stated as the relation between the guide and the window.
+
+    The target site is the guide's reverse complement, and the two are antiparallel, so guide
+    position i pairs target position L+1-i and the guide seed (positions 2-8) reads the target site's
+    **3'** end. `seed_end_8mer` must therefore be the 8-mer at the site's 3' end -- which is the same
+    8-mer as the reverse complement of the guide's first 8 bases.
+    """
+    sequence = next(iter(_read_fasta(DATA_DIR / "tp53_201.fa").values())).upper()
+    start, length = 500, 21
+    site = sequence[start : start + length]
+    guide = str(Seq(site).reverse_complement())
+
+    # The bases pairing guide positions 1-8, located in the transcript.
+    seed_paired_target = str(Seq(guide[:SEED_END_WINDOW_NT]).reverse_complement())
+    assert site.endswith(seed_paired_target), "the guide seed does not pair the site's 3' end"
+
+    profile = TargetAccessibilityProfile.fold(sequence, u_max=length)
+    scored = profile.site_accessibility(start, length).seed_end_8mer
+    at_seed_paired_bases = profile.site_accessibility(
+        sequence.index(seed_paired_target, start), SEED_END_WINDOW_NT
+    ).seed_end_8mer
+    assert scored == at_seed_paired_bases
+
+
+@pytest.mark.unit
+def test_accessibility_reads_full_transcript_context_not_the_site_alone():
+    """Issue #102's other geometry audit: the site's own bases do not determine its score.
+
+    Opening probability is a property of the whole folded molecule, so changing sequence **outside**
+    the site -- here, inserting a strong hairpin that can sequester it -- must move the site's value.
+    If it did not, the term would be folding the site in isolation, which is the class of defect
+    issue #95 removed when `accessibility` folded the guide against itself.
+    """
+    site = "ATGCATGCATGCATGCATGCA"
+    spacer = "AAAAAAAAAAAAAAAAAAAA"
+    unstructured = spacer + site + spacer
+    # A perfect reverse complement of the site placed downstream: the site can now pair with it.
+    sequestering = spacer + site + spacer + str(Seq(site).reverse_complement()) + spacer
+
+    start = len(spacer)
+    open_value = TargetAccessibilityProfile.fold(unstructured, u_max=len(site)).site_accessibility(start, len(site))
+    paired_value = TargetAccessibilityProfile.fold(sequestering, u_max=len(site)).site_accessibility(start, len(site))
+
+    assert open_value.seed_end_8mer is not None
+    assert paired_value.seed_end_8mer is not None
+    assert paired_value.seed_end_8mer < open_value.seed_end_8mer, (
+        "context outside the target site did not change its opening probability, so the fold is local"
+    )
+
+
 def _hairpin_and_loop_transcript() -> tuple[str, int, int]:
     """A transcript with one target site buried in a GC stem and one in an unpairable A run.
 
@@ -286,27 +339,26 @@ def test_missing_accessibility_is_none_not_a_default():
 
 
 @pytest.mark.unit
-def test_missing_accessibility_never_yields_the_maximum_score():
-    """The whole point of the None policy: a missing input must not score like a perfect one.
+def test_missing_accessibility_never_yields_a_score_at_all():
+    """The None policy, as issue #96 leaves it: a missing input yields no score, not a rescaled one.
 
-    Weights are renormalised over the terms that are present, so the composite of a candidate
-    without accessibility evidence must equal the three-term renormalised score -- not the
-    four-term score with the term pinned at 1.0.
+    Under #95 the term was dropped and the remaining weights renormalised. Issue #96 deleted every
+    runtime weight operation, so there is nothing left to renormalise onto: a candidate without
+    accessibility evidence has no design_score. That is stricter than the old behaviour and keeps
+    the guarantee this test was written for -- a missing input must never score like a good one.
     """
-    weights = ScoringWeights()
-    present = {"asymmetry": 0.8, "gc_content": 0.6, "empirical": 0.5}
+    vector = ScoringWeights().design
+    present = {"asymmetry": 0.8, "gc_content": 0.6}
 
-    without = compute_composite(dict(present), weights)
-    with_best = compute_composite({**present, "target_accessibility": 1.0}, weights)
-    with_worst = compute_composite({**present, "target_accessibility": 0.0}, weights)
+    with pytest.raises(ScoringError, match="target_accessibility"):
+        compute_composite(dict(present), vector)
 
-    assert "target_accessibility" not in without.active_terms
-    assert without.score < with_best.score, "omitting the term must not match a perfect one"
-    assert without.score > with_worst.score, "omitting it must not be punished like a closed site"
+    with_best = compute_composite({**present, "target_accessibility": 1.0}, vector)
+    with_worst = compute_composite({**present, "target_accessibility": 0.0}, vector)
+    assert with_worst.score < with_best.score
 
-    # Renormalisation, not zero-filling: the three remaining weights must sum back to 1, so a
-    # perfect three-term candidate still scores 100 rather than 100 minus the missing weight.
-    perfect = compute_composite(dict.fromkeys(present, 1.0), weights)
+    # The vector sums to 1.0, so a perfect candidate scores 100 by construction, not by rescaling.
+    perfect = compute_composite(dict.fromkeys(vector.terms, 1.0), vector)
     assert perfect.score == pytest.approx(100.0)
 
 
@@ -322,7 +374,6 @@ def test_scoring_without_transcript_context_leaves_the_term_inactive():
         gc_content=45.0,
         length=20,
         asymmetry_score=0.0,
-        composite_score=0.0,
     )
     SiRNADesigner(DesignParameters())._score_candidates([candidate])
 
@@ -331,6 +382,9 @@ def test_scoring_without_transcript_context_leaves_the_term_inactive():
     assert candidate.target_accessibility_p_site is None
     assert candidate.score_target_accessibility is None
     assert "target_accessibility" not in candidate.component_scores
+    # design_v4 declares the term, so with no evidence for it there is no design_score either.
+    assert candidate.design_score is None
+    assert candidate.composite_score is None
     # Guide self-structure is still recorded: it is the EXCESS_PAIRING gate input.
     assert candidate.structure is not None
     assert candidate.mfe is not None
@@ -402,12 +456,21 @@ def test_sub_score_rejects_impossible_inputs():
 
 @pytest.mark.unit
 def test_composite_term_set_names_the_quantity_it_computes():
-    """Issue #95 renamed the term; the weight-set version must record the break."""
+    """Issue #95 renamed the term; the weight-set version must record the break.
+
+    The weight and the version moved again in issue #96 (0.13 renormalised to 0.26 in practice ->
+    0.35 declared at the design stage, 0.30 post-screen; 3.0.0 -> 4.0.0). What #95 pinned and this
+    still pins is that the term is named for the quantity it computes and that `accessibility`,
+    which named the wrong molecule, is gone from every vector.
+    """
     assert "target_accessibility" in COMPOSITE_TERM_NAMES
     assert "accessibility" not in COMPOSITE_TERM_NAMES
-    assert ScoringWeights().target_accessibility == pytest.approx(0.13)
-    assert not hasattr(ScoringWeights(), "accessibility")
-    assert SCORING_WEIGHT_SET_VERSION == "3.0.0"
+    for vector in ScoringWeights().all_vectors():
+        assert "target_accessibility" in vector.terms
+        assert not hasattr(vector, "accessibility")
+    assert ScoringWeights().design.target_accessibility == pytest.approx(0.35)
+    assert ScoringWeights().postscreen_sirna.target_accessibility == pytest.approx(0.30)
+    assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
 
     candidate_fields = set(SiRNACandidate.model_fields)
     assert "score_target_accessibility" in candidate_fields

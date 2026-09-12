@@ -10,7 +10,7 @@ Use schemas: MySchema.validate(df) - validation errors provide detailed feedback
 """
 
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Any, Optional, TypeVar, cast
 
 import pandas as pd
 import pandera.pandas as pa
@@ -200,51 +200,42 @@ class SiRNACandidateSchema(DataFrameModel):
         ge=0.0, le=1.0, description="Fraction of input transcripts hit by this guide (1.0 = all transcripts)"
     )
 
-    # Post-screen sub-scores
+    # Reported, non-scoring evidence (both left the composite in issue #96)
     isoform_coverage: Series[float] = Field(
         ge=0.0,
         le=1.0,
-        description="Protein-coding isoform coverage sub-score (inactive if no protein-coding isoforms)",
+        description="Protein-coding isoform coverage, reported and the optional gate input (null if none)",
         nullable=True,
         coerce=True,
     )
     conservation_score: Series[float] = Field(
         ge=0.0,
         le=1.0,
-        description="Cross-species conservation sub-score (inactive in single-species)",
+        description="Cross-species conservation fraction, reported only (null in single-species runs)",
+        nullable=True,
+        coerce=True,
+    )
+    empirical_score: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="Empirical design-rule score, reported and the min_empirical_score gate input",
         nullable=True,
         coerce=True,
     )
 
-    # Scoring results
+    # Scoring results. design_score and composite_score are different vectors over different term
+    # sets and are not comparable; both are nullable because each exists only at its own stage.
+    design_score: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Design-stage score on design_v4 (null if a term could not be computed)",
+        nullable=True,
+        coerce=True,
+    )
     composite_score: Series[float] = Field(
-        ge=0.0, le=100.0, description="Overall siRNA quality score (higher is better)"
-    )
-    score_asymmetry: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of asymmetry term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_gc_content: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of GC content term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_target_accessibility: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of target-site accessibility term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_empirical: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of empirical term to composite score",
+        description="Post-screen score on postscreen_{sirna,mirna}_v4 (null before screening)",
         nullable=True,
         coerce=True,
     )
@@ -255,27 +246,53 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
-    score_isoform_coverage: Series[float] = Field(
+    score_target_accessibility: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of isoform coverage term to composite score",
+        description="Contribution of target-site accessibility term to the score",
         nullable=True,
         coerce=True,
     )
-    score_conservation: Series[float] = Field(
+    score_asymmetry: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of conservation term to composite score",
+        description="Contribution of asymmetry term to the score",
+        nullable=True,
+        coerce=True,
+    )
+    score_gc_content: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of GC content term to the score",
+        nullable=True,
+        coerce=True,
+    )
+    score_ago_start: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the Argonaute-start term (miRNA mode only)",
+        nullable=True,
+        coerce=True,
+    )
+    score_supp_13_16: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the 3' supplementary pairing term (miRNA mode only)",
         nullable=True,
         coerce=True,
     )
     scored_after_screening: Series[pd.BooleanDtype] = Field(
-        description="True if composite score includes post-screen terms",
+        description="True if composite_score was computed post-screening",
         nullable=True,
         coerce=True,
     )
     weight_set_version: Series[str] = Field(
         description="Scoring weight set version used for this candidate",
+        nullable=True,
+        coerce=True,
+    )
+    weight_vector: Series[str] = Field(
+        description="Name of the weight vector that produced the score (design_v4, postscreen_*_v4)",
         nullable=True,
         coerce=True,
     )
@@ -419,7 +436,7 @@ class OffTargetHitsSchema(DataFrameModel):
 
     **Migration Guide:**
     - For miRNA seed analysis → Use `MiRNAAlignmentSchema`
-    - For genome/transcriptome → Use `GenomeAlignmentSchema`
+    - For transcriptome alignments → Use `GenomeAlignmentSchema`
 
     Will be removed in v0.3.0.
     """
@@ -534,6 +551,12 @@ class GenomeAlignmentSchema(DataFrameModel):
     - Validating pandas DataFrames from transcriptome off-target analysis
     - Bulk operations on genome alignment results
 
+    ``strict=True`` over 12 columns, and ``transcriptome/*_analysis.tsv`` no longer has only one shape: the
+    workflow writes the seven classification columns back onto those files on any run whose aggregate
+    came back header-only, so that artifact appears with 12 and with 19 columns and this schema
+    rejects the wider one. Use :class:`AggregatedOffTargetSchema`, which accepts either, unless you
+    specifically mean to require the producer's shape.
+
     **Corresponding Pydantic model:** `models.off_target.OffTargetHit` (for single rows)
     """
 
@@ -592,3 +615,68 @@ class GenomeAlignmentSchema(DataFrameModel):
         if perfect_matches.any():
             return bool((~perfect_matches | (df["offtarget_score"] == 0.0)).all())
         return True
+
+
+HIT_CLASS_VALUES: tuple[str, ...] = ("on_target", "ortholog", "repeat", "off_target", "undetermined")
+BOOLEAN_CELL_VALUES: tuple[str, ...] = ("True", "False")
+#: How an ORTHOLOG verdict was evidenced. ``not_applicable`` is every non-ortholog row: a
+#: symbol-heuristic ortholog is not a validated one, so the tiers are published, not assumed (#101).
+ORTHOLOG_EVIDENCE_VALUES: tuple[str, ...] = ("gene_id", "symbol_heuristic", "not_applicable")
+#: What every classification column holds on a row the producer wrote and no classifier has decided.
+#: Mirrors ``core.hit_annotation.UNCLASSIFIED_CELL``; kept here rather than imported to avoid a
+#: models -> core dependency.
+UNCLASSIFIED_CELL_VALUE = "not_classified"
+
+
+class AggregatedOffTargetSchema(GenomeAlignmentSchema):
+    """Pandera schema for the *published* aggregated off-target table (`combined_offtargets.tsv`).
+
+    `aggregate_offtarget_results` -- the producer, whichever entry point invokes it -- writes all
+    seven classification columns, so the published column set no longer depends on how the run was
+    started. On a row nothing has classified yet every one of them holds
+    :data:`UNCLASSIFIED_CELL_VALUE`, which is why each column's vocabulary admits it: the verdicts
+    are filled in place by the Python workflow, not appended as new columns.
+
+    The columns stay **optional** so a table written by an earlier version, and the per-species
+    `transcriptome/*_analysis.tsv` files as the aligner writes them, still validate against this schema.
+
+    The flag columns are typed as strings over `("True", "False")` deliberately: these tables are
+    read as text, and coercing the string `"False"` to `bool` yields `True`.
+    """
+
+    class Config(SchemaConfig):
+        """Accept either published shape; reject columns from neither."""
+
+        description = "Published aggregated off-target table, with or without the classification columns"
+        title = "Aggregated Off-Target DataFrame"
+        strict = True
+        coerce = True
+
+    hit_class: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=[*HIT_CLASS_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="Persisted hit class; 'undetermined' means no reference existed to decide it",
+    )
+    matched_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        str_length={"min_value": 1},
+        description="Symbol that ESTABLISHED the class, or 'unknown'; not a per-hit gene name",
+    )
+    symbol_lookup_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="The hit species' index carries no symbol for this transcript",
+    )
+    hit_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        str_length={"min_value": 1},
+        description="Gene symbol resolved for rname, independent of class, or 'unknown'",
+    )
+    hit_symbol_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="hit_symbol could not be resolved for this row",
+    )
+    species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="No transcript index exists for this row's species at all",
+    )
+    ortholog_evidence: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        isin=[*ORTHOLOG_EVIDENCE_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="Evidence tier behind an ORTHOLOG verdict; 'not_applicable' for every other class",
+    )

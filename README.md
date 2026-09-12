@@ -25,7 +25,7 @@
 ### Why siRNAforge?
 
 - 🎯 **End-to-end workflow** — From gene symbol to ranked candidates in one command
-- 🔬 **Multi-species validation** — Off-target analysis of transcriptome and miRNA seed matches across human, rat, and rhesus macaque genomes
+- 🔬 **Multi-species validation** — Off-target analysis of transcriptome and miRNA seed matches across the human, rat, and rhesus macaque transcriptomes
 - 🐍 **Developer-friendly** — Modern Python API with full type hints and Pydantic models. Easily extend with your own scoring methods.
 
 ### Key Features
@@ -104,7 +104,7 @@ Need more control? Customize with parameters:
 
 ```bash
 sirnaforge workflow BRCA1 \
-  --genome-species "human,rat,rhesus" \
+  --species "human,rat,rhesus" \
   --gc-min 40 --gc-max 60 \
   --max-off-targets 20 \
   --design-mode mirna \
@@ -180,6 +180,8 @@ sirnaforge workflow BRCA1 \
 `--input-fasta` skips the gene search stage and designs directly from your sequences. When used alone, transcriptome off-target analysis is disabled (design-only mode). To enable transcriptome off-target with custom inputs, explicitly provide `--transcriptome-fasta`.
 
 When `--transcriptome-fasta` is omitted the workflow automatically indexes the bundled Ensembl cDNA transcriptomes for human, mouse, rat, and macaque so multi-species off-target analysis runs out of the box.
+
+Hits on the target gene's orthologue in another screened species are classified `ortholog`, not counted as off-target liabilities. Orthologues are resolved against Ensembl Compara on stable gene IDs, because symbols do not travel across nomenclature authorities — human `TP53`'s mouse orthologue is `Trp53`. Each row's `ortholog_evidence` column says which evidence was used (`gene_id`, or the `symbol_heuristic` fallback), so a validated conservation call is never confused with a symbol coincidence. A custom `--transcriptome-fasta` gets the same treatment when its Ensembl cDNA headers identify the species.
 
 Every workflow run now captures the resolved transcriptome decision in `logs/workflow_summary.json` under `reference_summary.transcriptome`, indicating whether the reference was auto-selected, explicitly supplied, or intentionally disabled. This makes it easier to audit production runs and confirm that default references were applied as expected.
 
@@ -275,7 +277,7 @@ Gene Symbol → Transcript Retrieval → siRNA Design → Off-target Analysis �
 **Core Components:**
 - **Gene Search** — Multi-database transcript retrieval (Ensembl, RefSeq, GENCODE)
 - **Design Engine** — Thermodynamic scoring with ViennaRNA integration
-- **Off-target Analysis** — BWA-MEM2 genome-wide alignment
+- **Off-target Analysis** — BWA-MEM2 transcriptome-wide alignment
 - **Nextflow Pipeline** — Scalable containerized execution
 
 📖 **[Architecture documentation →](docs/developer/architecture.md)**
