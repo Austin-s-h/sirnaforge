@@ -3330,6 +3330,7 @@ dependencies = [
 dev = [
     { name = "bandit", extra = ["toml"] },
     { name = "codespell" },
+    { name = "jsonschema" },
     { name = "jupyter" },
     { name = "jupyter-server" },
     { name = "linkify-it-py" },
@@ -3394,6 +3395,7 @@ requires-dist = [
 dev = [
     { name = "bandit", extras = ["toml"], specifier = ">=1.7.0" },
     { name = "codespell", specifier = ">=2.4.0" },
+    { name = "jsonschema", specifier = ">=4.0" },
     { name = "jupyter", specifier = ">=1.0.0" },
     { name = "jupyter-server", specifier = ">=2.14.1" },
     { name = "linkify-it-py", specifier = ">=2.0.3" },

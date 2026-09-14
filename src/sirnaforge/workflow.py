@@ -137,7 +137,7 @@ from sirnaforge.models.zfn import (
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
-from sirnaforge.reporting import build_payload, write_report
+from sirnaforge.reporting import build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
@@ -1458,7 +1458,16 @@ class SiRNAWorkflow:
             # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
             # the gates it actually applied, and a default panel would report other thresholds.
             payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
-            write_report(payload, base / "report.html")
+            report_path = write_report(payload, base / "report.html")
+            # At the run root, not beside the report: Quilt reads a summarize file only at the package
+            # root, and the run directory is what gets published. Without this the report exists and the
+            # package view shows nothing (#103).
+            write_quilt_summarize(
+                payload,
+                report_path,
+                self.config.output_dir,
+                out_path=Path(self.config.output_dir) / "quilt_summarize.json",
+            )
         except Exception as e:
             logger.warning(f"Failed to write self-contained HTML report: {e}")
 
@@ -1467,6 +1476,7 @@ class SiRNAWorkflow:
         console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
         console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
         console.print("   - Self-contained HTML report: sirnaforge/report.html")
+        console.print("   - Quilt package summary: quilt_summarize.json")
 
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
         """Write passing candidates to FASTA, each header naming its selection state.

@@ -98,7 +98,7 @@ class GuideEntry:
     def undeclared_run_rejection(self) -> bool:
         """The run rejected this guide everywhere, and no declared gate accounts for it.
 
-        ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, and the 16-filter registry
+        ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, and the 17-filter registry
         declares no repeat gate, so the report has no descriptor that can re-derive the rejection. It
         must not therefore call the guide clean -- on one MSH3 run that would have published 185
         guides as passing that the run threw out.

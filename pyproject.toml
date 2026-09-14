@@ -58,6 +58,10 @@ dev = [
   "pytest-mock>=3.15",
   "pytest-asyncio>=1.1.0",
   "pytest-xdist>=3.8",
+  # quilt_summarize.json is validated against quiltdata/quilt's own published schema (#103), so the
+  # validator is a direct dev dependency: it resolved only transitively through jupyter before, and a
+  # test that silently stops running when an unrelated dependency drops it is not a gate.
+  "jsonschema>=4.0",
   "ruff>=0.12.0",
   "mypy>=1.10",
   "pre-commit>=3.8",

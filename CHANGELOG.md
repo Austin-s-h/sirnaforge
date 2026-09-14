@@ -166,6 +166,75 @@ where the two defects removed here were first written down as outstanding.)
   and is now pinned by a test. Client-side re-thresholding, preset views and the Nextflow entry point
   are not in this slice.
 
+- **The report's thresholds move, and no threshold can move an `unknown` (#103).** The first slice
+  above shipped a frozen snapshot: a reader who thought a gate was too strict had no way to see what a
+  different threshold would have selected, and the entry above recorded that as outstanding. Every gate
+  **this run actually evaluated on this data** now carries a number box and a slider seeded from the
+  run's own resolved threshold, with `run <value>` beside them so "yours" and "the run's" can never be
+  confused; moving one re-derives that guide's gate triple, its status, the index counters, the gate
+  panel and the export from one recomputation, so the pill and the panel beneath it cannot disagree.
+  On the tracked `baseline_0_7_1` slice **7 of the 17 declared gates can be moved** and 10 are frozen
+  — 6 for a column the run does not export, 4 because the run has the filter off — each frozen row
+  stating the payload's own reason rather than a re-derived guess at it. Slider bounds come from the
+  values the run produced, never a per-filter display range invented in the template, and the number
+  box is unbounded, so the step limits the slider's resolution and not the reachable thresholds.
+  Freezing is decided **per row, keyed on that row's own reason code**, which is where the salvaged
+  draft of this feature was wrong: it froze per *filter*, so a filter that exported its column for most
+  guides and left one row `NOT_EVALUATED` carrying a real measured number let that row fall through to
+  a freshly manufactured pass or fail. Only `REASON_OK` re-decides; `REASON_EMPTY_VALUE` stays
+  `unknown` at every setting; every other reason returns the triple untouched. A warn-action gate that
+  is exceeded comes back `warn`, never `fail`, because folding it into `fail` would flip
+  `contradicted_run_pass` for every warn-flagged guide — the one number that exists to show the report
+  and the pipeline agree. `payload.reevaluate_gates` is the single Python statement of that contract
+  and the browser restates exactly one thing, the `FilterComparator.passes` comparator table, with no
+  per-gate branch; a test asserts none of the 17 declared `filter_id`s appears as a literal in the
+  template at all. Parity is a **gate, not a skip**: the fixture renders the report, slices the
+  substituted `<script>` out of it and runs the shipped evaluator under **Node** over every guide x
+  every filter at five threshold sets, comparing gate triples, all three counters and the derived
+  status against the Python function. Playwright was rejected for this — it is not a dependency and its
+  browser binary is a separate download, so the check would have skipped rather than gated — and
+  missing Node fails with the install hint.
+- **Five preset views, and `off_target_screened` so "clean" means screened (#103).** `all`, `passing`,
+  `near miss` (fails exactly one gate, unknown on none), `off-target clean` and
+  `register-deduplicated`, each a pure predicate over the live gate table. `passing` reads the derived
+  status alone, so it can never surface a guide the evaluator itself calls `unknown`, whatever
+  threshold produced it. `off-target clean` required a new field: `liability_count == 0` alone cannot
+  mean clean, because a guide never submitted to the aligner and a genuinely clean one are the same
+  `0` — `GuideEntry.off_target_screened` (with `screen_query_id` for provenance) is what tells them
+  apart, and a fixture pins the trap. `register-deduplicated` reads `register_cluster` and
+  `register_representative`, connected components over transcript positions within
+  `REGISTER_NEIGHBOUR_NT` computed once in Python across the whole candidate table and keyed on each
+  candidate's own score, rather than re-approximating them in the browser from neighbour positions with
+  no guide behind them. **Removed** with this: the six hand-written metric row-filter boxes above the
+  index (composite, isoforms, GC, asymmetry, off-target count, liabilities). Three of them duplicated
+  real gates the reader can now move directly; the rest are reachable through sorting, `Add top N` and
+  the off-target-clean preset. `PAYLOAD_SCHEMA_VERSION` 1.0.0 → **1.1.0** for the added per-filter and
+  per-guide keys.
+- **`quilt_summarize.json` is written beside the report (#103).** Quilt's package view renders exactly
+  what a package's own summarize file names and nothing else, so until now a run published as a package
+  showed **no report at all** in its package view. `sirnaforge report` writes it by default
+  (`--no-quilt-summarize` opts out) as the JSON **array** quiltdata/quilt's schema actually defines —
+  not the dict shape some tooling hands back — with `report.html` alone in the first row (which is how
+  a row spans the full width), expanded, and described from the run's own gene, guide count, verdict
+  tally, embedded off-target scope and report-vs-run agreement. Then the candidate CSVs, manifest and
+  workflow summary, the two aggregated hit tables, and the ORF report and FASTAs — every one of them
+  existence-checked against the run directory and **omitted when absent**, because a run built with
+  `--skip-off-targets` has no `off_target/` and `<GENE>_canonical.fasta` exists only on the gene-search
+  path, and a registered path the catalog cannot render reads as broken evidence rather than absent
+  evidence. The emitted document is validated against the published schema in the test suite, which is
+  why `jsonschema` is now a direct dev dependency instead of resolving transitively through `jupyter`.
+  The workflow's own step 6 writes it too, at the **run root** rather than beside the report: it writes
+  `sirnaforge/report.html` but publishes the run directory, and Quilt reads a summarize file only at the
+  package root. That is also why every registered path is relative to the summarize file's own directory
+  rather than the report's — the first cut computed them from the report's directory, which pointed
+  every row one level too deep the moment the two differed. Still not in the report: **score
+  decomposition** (deliberately deferred — the per-term contributions are exported on every row, but the
+  report does not break a composite down against its weight vector), and the **Nextflow entry point** —
+  no process in the `.nf` pipeline renders or registers anything, so only the Python workflow and
+  `sirnaforge report` produce these files. The gates reading query-stratified `*_query` counters stay
+  frozen for every reader, because 0.7.1 exports none of them; that is a pipeline gap, and no control in
+  the report can close it.
+
 - **`--transcriptome_species` is passed to Nextflow exactly once (#99).** The runner names the active
   species and the resolver names the resolved ones; emitting both left the pipeline reporting whichever
   flag came last, which need not be the set handed to the aligner.

@@ -234,6 +234,30 @@ def test_write_quilt_summarize_lands_beside_the_report(tmp_path: Path) -> None:
     jsonschema.validate(on_disk, QUILT_SUMMARIZE_SCHEMA)
 
 
+@pytest.mark.unit
+def test_paths_are_relative_to_the_summarize_file_not_the_report(tmp_path: Path) -> None:
+    """When the two directories differ, Quilt resolves against the summarize file. So must we.
+
+    The workflow writes ``sirnaforge/report.html`` but publishes the run directory, so its summarize
+    file belongs at the run root. Relativising against the report's directory instead put every row one
+    level too deep -- ``candidates_all.csv`` for a file that is really ``sirnaforge/candidates_all.csv``
+    -- which the catalog renders as a broken preview on every single row.
+    """
+    run = tmp_path / "run"
+    report_path = run / "sirnaforge" / "report.html"
+    _write(run, "sirnaforge/report.html", "sirnaforge/candidates_all.csv", "sirnaforge/manifest.json")
+
+    written = write_quilt_summarize(_payload(), report_path, run, out_path=run / "quilt_summarize.json")
+
+    assert written == run / "quilt_summarize.json"
+    paths = _all_paths(json.loads(written.read_text()))
+    assert "sirnaforge/report.html" in paths
+    assert "sirnaforge/candidates_all.csv" in paths
+    for rel in paths:
+        assert (run / rel).exists(), f"{rel} does not resolve from the summarize file's own directory"
+    jsonschema.validate(json.loads(written.read_text()), QUILT_SUMMARIZE_SCHEMA)
+
+
 def _all_paths(entries: list[Any]) -> list[str]:
     paths: list[str] = []
     for row in entries:

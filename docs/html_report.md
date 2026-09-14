@@ -9,7 +9,8 @@ sirnaforge report results/TP53 -o results/TP53/report.html
 It reads `candidates_all.csv`, the aggregated hit tables and `manifest.json`. It runs no alignment, no
 folding and no network access, and it classifies nothing: `hit_class` is read from the table the run
 published and every gate comes from the run's own resolved policy, so the report cannot disagree with
-the run it describes.
+the run it describes. A hit table without the classification columns is **refused** rather than
+rendered.
 
 The file works identically over `file://`, from a static web server, and inside the Quilt Catalog with
 permissive HTML rendering disabled -- which is the default, and which withholds the
@@ -59,38 +60,81 @@ only the first the pipeline happened to report.
 
 ## Moving the thresholds
 
-Each gate the run actually evaluated on this data gets a control seeded from the run's own resolved
-threshold. Both the reader's current value and the run's own value stay on screen, so the two can
-never be confused, and resetting returns every displayed verdict to exactly the payload's own.
+Every gate this run actually evaluated on this data gets a **number box and a slider**, both seeded
+from the run's own resolved threshold, with that threshold shown beside them as `run <value>` so
+"yours" and "the run's" can never be confused. `Reset` restores every one of them, and the displayed
+verdicts return to exactly the payload's own. Moving one re-derives that guide's gate triple, its
+status pill, its gate panel, the index counts and the export -- all of them read one recomputation
+(`recomputeLive`), so the pill and the panel underneath it cannot disagree.
+
+The slider's bounds come from **the values this run produced** for that gate, not from a per-filter
+display range invented in the template; the run's own threshold is always strictly inside the domain,
+so a control can always be moved back to where the run left it. The number box is not bounded by the
+slider, so the slider's step limits its resolution and never the reachable thresholds.
+
+### A gate the run could not evaluate stays unevaluable
 
 **No threshold a reader can choose makes an unanswerable gate answerable.** Re-thresholding only ever
-*selects among* candidates the run already judged; it does not re-judge them. Concretely: a gate's
-triple `[value, verdict, reason]` is re-evaluated in the browser only when its `reason` is `OK` (the
-run measured a value and compared it) or `EMPTY_VALUE` (the run measured nothing, which stays
-`unknown` at every setting a reader tries). Every other reason -- the gate is off, undeclared, reads a
-column the run never exported, or the run itself recorded `UNKNOWN`/`NOT_EVALUATED` for this row --
-returns the frozen triple untouched, whatever threshold is asked for. That is the exact property a
-reader cannot re-threshold their way out of an `unknown`, and it is derived entirely from data the
-report already ships: no new per-filter field, no second copy of the threshold table.
+*selects among* candidates the run already judged; it does not re-judge them. A gate gets a control
+only when all four of these hold:
+
+1. the run applied it (its action is not `off`),
+2. it has a declared threshold,
+3. the run exports the column the report reads for it (`<filter_id>_observed`, or the descriptor's own
+   column -- whichever `observed_column` resolved), and
+4. at least one guide in the run has a value in that column.
+
+Anything else is **frozen**: no control is rendered, the row states payload.py's own
+`unevaluable_reason` rather than a re-derived guess at it, the evaluator returns the run's verdict
+untouched whatever it is asked for, and a threshold arriving in the URL fragment for a frozen gate is
+refused with the refusal shown on screen. On the tracked `baseline_0_7_1` slice, **7 of the 17
+declared gates can be moved** (`gc_content_min`, `gc_content_max`, `max_repeat_transcript_fraction`,
+`max_paired_fraction`, `min_asymmetry_score`, `min_empirical_score`, `max_off_target_count`) and 10
+are frozen -- 6 for a column the run does not export and 4 because the run has the filter off.
+
+Freezing is decided **per row**, not per filter, and it is keyed on that row's own `reason` code. A
+gate's triple `[value, verdict, reason]` is re-evaluated only when its `reason` is `OK` (the run
+measured a value and compared it) or `EMPTY_VALUE` (the run measured nothing, which stays `unknown` at
+every setting a reader tries). Every other reason -- the gate is off, has no threshold, reads a column
+the run never exported, or the run itself recorded `UNKNOWN`/`NOT_EVALUATED` *for this guide* --
+returns the frozen triple untouched. The per-row granularity matters: a filter can export its column
+for most guides and still leave one row `NOT_EVALUATED` carrying a real measured number, and that
+number is not a reader's to re-judge. This is the property that a reader cannot re-threshold their way
+out of an `unknown`.
+
+### The evaluator is generic
 
 The client-side evaluator restates exactly one thing -- the comparator table behind
-`FilterComparator.passes` -- and contains no per-gate branch: it reads each gate from the `FILTERS`
-payload the report already carries. A note on the report's own filter-picker UI, since an earlier
-draft of this document claimed otherwise: the six reader-facing metric filters (`composite`,
-`isoforms`, `gc`, `asym`, `offt`, `liab`) are a **separate, hand-written** row-selection layer over
-plain candidate fields such as `gc_content`, `asymmetry_score` and `off_target_count` -- they narrow
-which rows are shown, and they are not gate thresholds. Those columns do appear in the template. What
-does not appear is a hand-written per-*gate* conditional: the gate panel and its re-thresholding read
-every gate generically from the emitted descriptors.
+`FilterComparator.passes` -- and contains **no per-gate branch**: every gate, its comparator, its
+action, its threshold and its control domain are read from the `FILTERS` payload the report already
+carries. A unit test asserts that none of the 17 declared `filter_id`s appears as a literal string in
+the template at all. (Column names such as `gc_content` do appear, in the cart's TSV header; the six
+hand-written metric row-filter boxes that used to sit above the index -- composite score, isoforms
+hit, GC, asymmetry, off-target count, liabilities -- were **removed** when the generic gate controls
+landed, because three of them duplicated real gates the reader can now move directly, and the other
+three are reachable through sorting the index, `Add top N`, and the off-target-clean preset.)
+
+The single Python implementation the browser has to agree with is
+`sirnaforge.reporting.payload.reevaluate_gates`, and "Running the client-side parity check" below is
+how that agreement is enforced.
 
 ## Preset views
 
-Alongside "all", the index offers views computed from fields the payload already carries, not
-re-derived logic: **passing** (`status == pass`), **near-miss** (fails exactly one gate and nothing is
-unknown), **off-target-clean** (zero liability hits *and* the guide was actually screened -- a guide
-never submitted to the aligner is not "clean", it is unscreened, which is why `off_target_screened`
-rides along with `liability_count`), and **register-deduplicated** (one representative per cluster of
-guides sharing a window, rather than every register neighbour shown as if independent).
+Alongside "all", the index offers four views computed from fields the payload already carries, not
+from logic re-derived in the browser:
+
+- **Passing** -- live status `pass` or `warn`. It can never surface a guide the evaluator itself calls
+  `unknown`, at any threshold.
+- **Near miss** -- fails exactly one gate and is unknown on none. An unknown guide is never a near
+  miss, because the distance to a pass is not known.
+- **Off-target clean** -- zero liability hits **and** the guide was actually screened. A guide never
+  submitted to the aligner is not clean, it is unscreened, and the two look like the same `0` unless
+  `off_target_screened` rides along with `liability_count`; it does.
+- **Register-deduplicated** -- one representative per cluster of guides sharing a window, rather than
+  every register neighbour listed as if independent. The clusters are connected components over
+  transcript positions within `REGISTER_NEIGHBOUR_NT`, computed once in Python over the whole
+  candidate table (`register_cluster`, `register_representative`), keyed on each candidate's own
+  score, so the keeper is the cluster's best-scoring member.
 
 ## Registering with Quilt
 
@@ -101,46 +145,60 @@ no report at all in its package view.
 
 The document is a JSON **array** of rows -- a `file` or an array of `file`, per
 [quiltdata/quilt's schema](https://github.com/quiltdata/quilt/blob/main/shared/schemas/quilt_summarize.json)
--- not the dict shape some tooling hands back. `report.html` is always first, full-width and expanded,
-titled and described from the run's own gene, guide count, verdict tally and embedded off-target
-scope. After it: the passing and full candidate CSVs, the run manifest and workflow summary, the two
-aggregated hit tables, and the ORF report and FASTAs -- each included only when it actually exists
-under the run directory. A run built with `--skip-off-targets` leaves `off_target/` empty, and
-`<GENE>_canonical.fasta` exists only on the gene-search path; either registered unconditionally would
-give the catalog a path it can never render, which shows as a broken preview rather than an absent
-one. `sirnaforge.reporting.quilt_summarize_entries(payload, report_path, run_dir)` builds the array
-without writing it; `write_quilt_summarize(payload, report_path, run_dir)` writes it.
+-- not the dict shape some tooling hands back. `report.html` is always first and **alone in its row**,
+which is how a summarize file spans the package view's full width, and it is `expand`ed, titled and
+described from the run's own gene, guide count, verdict tally, embedded off-target scope and
+report-vs-run agreement. After it: the passing and full candidate CSVs, the run manifest and workflow
+summary, the two aggregated hit tables, and the ORF report and FASTAs -- each included only when it
+actually exists under the run directory. A run built with `--skip-off-targets` leaves `off_target/`
+empty, and `<GENE>_canonical.fasta` exists only on the gene-search path; either registered
+unconditionally would give the catalog a path it can never render, which shows as a broken preview
+rather than an absent one. `sirnaforge.reporting.quilt_summarize_entries(payload, report_path, run_dir)`
+builds the array without writing it; `write_quilt_summarize(payload, report_path, run_dir)` writes it.
+
+A full `sirnaforge workflow` run writes both files itself, and puts the summarize file at the **run
+root** rather than beside the report: the report lands in `sirnaforge/report.html`, but the run
+directory is what gets published as a package, and Quilt reads a summarize file only at the package
+root. Every path in the document is therefore relative to the summarize file's own directory, not the
+report's -- `write_quilt_summarize(..., out_path=...)` is what tells the two apart. The `.nf` pipeline
+itself renders nothing; a Nextflow-only run still needs `sirnaforge report` afterwards.
 
 ## The URL fragment
 
-The fragment carries the selected guide and any moved thresholds:
+The fragment carries the selected guide, any moved thresholds, and the active preset:
 
 ```text
-report.html#g=UUAUAGGAUUCAACCGGAGGA&t=min_asymmetry_score:0.2,gc_content_max:58
+report.html#g=UUAUAGGAUUCAACCGGAGGA&t=min_asymmetry_score:0.2,gc_content_max:58&preset=near_miss
 ```
 
 A bare fragment (`report.html#UUAUAGGAUUCAACCGGAGGA`) is still read as a guide, which is what earlier
-reports wrote. Only re-thresholdable gates are honoured; anything else named in the fragment is listed
-as ignored rather than silently dropped.
+reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id` is **listed
+as refused** at the top of the threshold panel rather than silently dropped, and an unknown preset
+name leaves the view at "all".
 
 ## Exporting a selection
 
-`Download CSV` and `Download FASTA` write whatever is currently listed -- the search box, the status
-toggles and the active preset decide that. Both are generated in the page from the payload already
-loaded and handed to the browser as a `Blob`, so nothing is fetched and no sidecar is produced. A
-sandboxed frame may withhold downloads entirely, so the same bytes are available as text to copy under
-**Download blocked?**.
+The cart is an explicit pick list: click the `+` column in the index, or `Add top <n> to cart` to take
+the highest-scoring guides currently listed. `Export TSV` downloads exactly what the cart holds --
+guide, passenger, live status, both scores, isoform coverage, the metric columns the thresholds were
+applied to, the structure string and per-species conservation -- generated in the page from the
+payload already loaded and handed to the browser as a `Blob`, so nothing is fetched and no sidecar is
+produced. A sandboxed frame may withhold downloads entirely (a Quilt iframe without
+`allow-downloads` does), so the same bytes sit in a text box above the button, `Select all text`
+selects them, and a refused download says so rather than doing nothing.
 
 ## Size, and the one figure
 
-On an internal reference run -- 29,605 candidate rows, thousands of guides -- the report is about
-**14.8 MB**: candidate rows, embedded off-target evidence at `human, nm<=2`, miRNA seed hits and the
-count matrix, plus markup and script under 0.5 MB. Two decisions keep it that small: the filter
-descriptors are emitted **once** and each guide carries only `[value, verdict, reason]` codes against
-them, and row-level detail is embedded only for liability alignments within the embedded scope.
-Everything outside that scope is still counted completely, and a guide whose only hits lie outside it
-says so rather than rendering like a genuinely clean one. The index itself caps at `MAX_INDEX_GUIDES`
-(5,000) guides, reported in the header so the cap is never silent.
+The tracked `baseline_0_7_1` fixture slice -- 292 candidate rows, 28 guides, 2,173 classified
+alignments and 268 miRNA seed hits -- renders to **519,084 bytes** (507 KiB), of which markup, CSS and
+script are under 0.5 MB in total and effectively constant. A full internal reference run of tens of
+thousands of candidate rows lands near 15 MB; the growth is candidate rows, embedded off-target
+evidence at `human, nm<=2`, miRNA seed hits and the count matrix. Two decisions keep it that small:
+the filter descriptors are emitted **once** and each guide carries only `[value, verdict, reason]`
+codes against them, and row-level detail is embedded only for liability alignments within the embedded
+scope. Everything outside that scope is still counted completely, and a guide whose only hits lie
+outside it says so rather than rendering like a genuinely clean one. The index itself caps at
+`MAX_INDEX_GUIDES` (5,000) guides, reported in the header so the cap is never silent.
 
 The single figure is a hand-drawn inline SVG. `plotly` was adopted, implemented and then removed: its
 4.29 MB bundle carries external URLs and browser-storage references in map traces the report never
@@ -152,17 +210,23 @@ losing the zero-external-reach guarantee.
 The evaluator that ships inside the report is JavaScript, and the filter it must agree with is Python
 (`sirnaforge.reporting.payload.reevaluate_gates`). Rather than a browser -- Playwright is not a
 dependency of this repo, and its browser binary is a separate download that would make the test skip
-instead of gate -- the parity fixture runs the shipped evaluator directly under Node, which this
-project already requires (`.nvmrc` pins Node 20; Node 26 also works). The Jinja placeholder
-substitution happens first, in Python, exactly as `render_html` does it, so the harness hands Node the
-same JavaScript text a browser would receive rather than an unsubstituted template, and drives it
-through `subprocess` the same way the test suite already shells out to other native tools (`cargo`,
-`bwa`) rather than reimplementing them. Run it the same way as any other test in this repo:
+instead of gate -- the parity fixture runs the shipped evaluator directly under **Node**, which this
+project already expects (`.nvmrc` pins Node 20; Node 26 also works). The placeholder substitution
+happens first, in Python, by calling `render_html` itself, so Node is handed the same JavaScript text a
+browser would receive rather than an unsubstituted template, and it is driven through `subprocess` the
+same way the suite already shells out to other native tools. Every DOM-touching statement in the
+template lives inside a function or behind one `typeof document !== 'undefined'` guard, which is what
+makes that possible. Missing Node **fails** the test with the install hint; it does not skip.
 
 ```bash
-uv run pytest tests/unit -k rethreshold -q -n 0
+uv run pytest tests/unit/test_report_client_evaluator_parity.py tests/unit/test_reporting_rethreshold.py -q -n 0
 ```
 
-The fixture asserts the shipped evaluator and the Python filter agree at the run's own thresholds, and
-that no threshold a reader supplies flips a gate whose `reason` is anything other than `OK` or
-`EMPTY_VALUE` -- the property that a reader cannot re-threshold their way out of an `unknown`.
+Both files run in `make test-dev`. The Node harness compares the shipped evaluator against the Python
+filter over **every guide x every filter at five threshold sets** -- the run's own, every control at
+zero, one below each threshold, far above each threshold, and a set naming both a frozen filter and a
+filter id that does not exist -- and asserts the gate triples, all three counters and the derived
+status match on all of them. It also pins the three presets that are not a plain status filter to
+their trap cases, and asserts that a fragment naming a frozen or unknown filter is refused visibly. A
+companion assertion guards the fixture itself against going vacuous: every reason code in `payload.py`
+must still fire on at least one guide.

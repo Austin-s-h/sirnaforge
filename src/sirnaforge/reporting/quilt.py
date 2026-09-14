@@ -94,20 +94,29 @@ def _description(payload: ReportPayload) -> str:
     )
 
 
-def quilt_summarize_entries(payload: ReportPayload, report_path: Path | str, run_dir: Path | str) -> list[Any]:
+def quilt_summarize_entries(
+    payload: ReportPayload,
+    report_path: Path | str,
+    run_dir: Path | str,
+    summarize_dir: Path | str | None = None,
+) -> list[Any]:
     """Build the ``quilt_summarize.json`` array for one run, without writing it.
 
     Args:
         payload: The payload the report itself was rendered from.
-        report_path: Where ``report.html`` is (or will be) written. ``quilt_summarize.json`` is always
-            written beside it, so every path here is relative to ``report_path``'s directory.
+        report_path: Where ``report.html`` is (or will be) written.
         run_dir: The run directory the payload was built from -- may differ from ``report_path``'s
             directory when a reader points ``-o`` elsewhere.
+        summarize_dir: Directory the summarize file itself lands in. Every path in the document is
+            relative to **this**, not to the report: Quilt resolves a summarize row against the file's
+            own location, so a run whose report sits in a subdirectory of the package root (the
+            workflow writes ``sirnaforge/report.html``) needs the two told apart. Defaults to the
+            report's own directory, which is where the CLI puts both.
 
     Returns:
         A JSON-serialisable list matching quiltdata/quilt's ``quilt_summarize.json`` schema.
     """
-    out_dir = Path(report_path).parent
+    out_dir = Path(summarize_dir) if summarize_dir is not None else Path(report_path).parent
     run_dir = Path(run_dir)
     gene = str(payload.run.get("gene_query") or "run")
     sirnaforge_dir = run_dir / "sirnaforge"
@@ -180,9 +189,14 @@ def write_quilt_summarize(
 
     Defaults to ``report_path``'s own directory -- Quilt only reads a summarize file it finds at the
     package root, so co-locating it with ``report.html`` is not a convenience, it is the contract.
+    ``out_path`` is for the case where those two differ: the workflow writes ``sirnaforge/report.html``
+    but publishes the *run* directory, so its summarize file belongs at the run root. Every registered
+    path is then relative to ``out_path``'s directory rather than the report's, because that is what
+    Quilt resolves them against -- computing them from the report's directory instead pointed every row
+    one level too deep.
     """
-    entries = quilt_summarize_entries(payload, report_path, run_dir)
     out = Path(out_path) if out_path is not None else Path(report_path).parent / "quilt_summarize.json"
+    entries = quilt_summarize_entries(payload, report_path, run_dir, summarize_dir=out.parent)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
     return out

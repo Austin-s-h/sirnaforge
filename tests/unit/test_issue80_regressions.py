@@ -155,7 +155,12 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
 
 @pytest.mark.unit
 def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The completed workflow publishes its self-contained report with its candidate artifacts."""
+    """The completed workflow publishes its self-contained report, and registers it for Quilt.
+
+    The summarize file goes to the **run root**, not beside the report in ``sirnaforge/``: Quilt reads
+    one only at the package root, and the run directory is what gets published, so a report written
+    without this showed nothing at all in a package view (#103).
+    """
     workflow = _minimal_workflow(tmp_path, "report_out")
     candidate = _full_candidate("cand_report")
     design_result = DesignResult(
@@ -187,9 +192,24 @@ def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monke
 
     monkeypatch.setattr("sirnaforge.workflow.write_report", _write_report)
 
+    registered: dict[str, object] = {}
+
+    def _write_summarize(payload: object, report_path: Path, run_dir: Path, *, out_path: Path) -> Path:
+        registered.update(payload=payload, report_path=report_path, run_dir=run_dir, out_path=out_path)
+        out_path.write_text("[]")
+        return out_path
+
+    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize", _write_summarize)
+
     asyncio.run(workflow.step6_generate_reports(design_result))
 
     assert (workflow.config.output_dir / "sirnaforge" / "report.html").read_text() == "<html>report</html>"
+    assert registered["out_path"] == workflow.config.output_dir / "quilt_summarize.json", (
+        "the summarize file must land at the run root Quilt reads, not beside the report"
+    )
+    assert registered["report_path"] == workflow.config.output_dir / "sirnaforge" / "report.html"
+    assert registered["run_dir"] == workflow.config.output_dir
+    assert (workflow.config.output_dir / "quilt_summarize.json").exists()
 
 
 @pytest.mark.unit
