@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from sirnaforge import __version__
-from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
+from sirnaforge.config.run_policy import DEFAULT_PROFILE_NAME, EntryPoint, resolve_run_policy
 from sirnaforge.core.scoring import COMPOSITE_TERMS, SCORING_WEIGHT_SET_VERSION
 from sirnaforge.models.sirna import (
     DesignParameters,
@@ -129,7 +129,9 @@ def test_manifest_records_the_resolved_run_policy(tmp_path):
     assert manifest["run_mode"] == "qualified"
     assert manifest["design_mode"] == "mirna"
     # Profile identity and hash, so two runs are comparable only when the baseline was the same.
-    assert manifest["profile"]["name"] == "legacy"
+    # Read off the constant rather than spelled out: f4beab7 renamed the default profile
+    # `legacy` -> `preproduction`, and this assertion was the only thing still holding the old word.
+    assert manifest["profile"]["name"] == DEFAULT_PROFILE_NAME
     assert manifest["profile"]["content_hash"].startswith("sha256:")
     assert manifest["profile"]["experimental"] is True
 

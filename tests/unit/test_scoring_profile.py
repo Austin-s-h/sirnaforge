@@ -322,55 +322,64 @@ def test_every_registry_record_states_a_missing_value_policy_and_an_applicabilit
 
 # Probe vectors for the validator tests. They are deliberately invalid *as profiles*, not as
 # vectors: each sums to 1.0, so it is the profile's registry check that rejects them.
+#
+# Both the weight they pay and the term they take it from are derived from the base vector rather
+# than typed out. They were typed out, against `target_accessibility = 0.24`, and f4beab7's rebalance
+# to 0.08 silently turned every one of these probes into a vector summing to 1.16 -- so all three
+# tests started tripping the sum-to-1.0 validator instead of the registry rule each exists to check,
+# and each failed with "did not match" against a message about a completely different rule. Derived
+# here so the next rebalance cannot repeat it.
+_PROBE_WEIGHT = 0.05
+_PROBE_DONOR = "gc_content"
+_PROBE_DONOR_WEIGHT = float(PostScreenMiRNAWeights.model_fields[_PROBE_DONOR].default) - _PROBE_WEIGHT
+
+
 class _ConstantPayingWeights(PostScreenMiRNAWeights):
     """Pays weight to `pos1_mismatch`, exactly as 4.0.0 did before #102."""
 
     VECTOR_NAME: ClassVar[str] = "probe_constant_paying"
-    TERM_NAMES: ClassVar[tuple[str, ...]] = (
-        "off_target",
-        "target_accessibility",
-        "asymmetry",
-        "gc_content",
-        "ago_start",
-        "supp_13_16",
-        "pos1_mismatch",
-    )
+    TERM_NAMES: ClassVar[tuple[str, ...]] = (*PostScreenMiRNAWeights.TERM_NAMES, "pos1_mismatch")
 
-    pos1_mismatch: float = 0.05
-    target_accessibility: float = 0.19
+    pos1_mismatch: float = _PROBE_WEIGHT
+    gc_content: float = _PROBE_DONOR_WEIGHT
 
 
 class _DeprecatedPayingWeights(PostScreenMiRNAWeights):
     """Pays weight to `empirical`, which is deprecated but not constant."""
 
     VECTOR_NAME: ClassVar[str] = "probe_deprecated_paying"
-    TERM_NAMES: ClassVar[tuple[str, ...]] = (
-        "off_target",
-        "target_accessibility",
-        "asymmetry",
-        "gc_content",
-        "ago_start",
-        "supp_13_16",
-        "empirical",
-    )
+    TERM_NAMES: ClassVar[tuple[str, ...]] = (*PostScreenMiRNAWeights.TERM_NAMES, "empirical")
 
-    empirical: float = 0.05
-    target_accessibility: float = 0.19
+    empirical: float = _PROBE_WEIGHT
+    gc_content: float = _PROBE_DONOR_WEIGHT
 
 
 class _UnregisteredTermWeights(PostScreenMiRNAWeights):
     """Pays weight to a term the registry has never heard of."""
 
     VECTOR_NAME: ClassVar[str] = "probe_unregistered"
-    TERM_NAMES: ClassVar[tuple[str, ...]] = (
-        "off_target",
-        "target_accessibility",
-        "asymmetry",
-        "gc_content",
-        "ago_start",
-        "supp_13_16",
-        "vibes",
-    )
+    TERM_NAMES: ClassVar[tuple[str, ...]] = (*PostScreenMiRNAWeights.TERM_NAMES, "vibes")
 
-    vibes: float = 0.05
-    target_accessibility: float = 0.19
+    vibes: float = _PROBE_WEIGHT
+    gc_content: float = _PROBE_DONOR_WEIGHT
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "vector_type",
+    [_ConstantPayingWeights, _DeprecatedPayingWeights, _UnregisteredTermWeights],
+    ids=lambda t: t.VECTOR_NAME,
+)
+def test_each_probe_vector_still_sums_to_one(vector_type: type[PostScreenMiRNAWeights]) -> None:
+    """The guard the three validator tests were missing.
+
+    Each probe must reach the registry check it exists to exercise, which means it must be valid as a
+    *vector*. When a rebalance moved the donor term's default out from under them, all three instead
+    tripped the sum-to-1.0 validator and failed with an unrelated message -- three red tests pointing
+    at nothing. This asserts the precondition directly, so the next rebalance fails here, once, with
+    the arithmetic on screen.
+    """
+    weights = vector_type.model_construct()
+    total = sum(getattr(weights, field) for field in vector_type.model_fields)
+
+    assert total == pytest.approx(1.0), f"{vector_type.VECTOR_NAME} sums to {total}, not 1.0"
