@@ -215,6 +215,13 @@ class BaseSummary(BaseModel):
     # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Analysis timestamp")
     status: str = Field(default="completed", description="Analysis status")
+    # Kept separate from `status`, which `aggregate_offtarget_results` already reads as a free-text
+    # value ("completed"/"failed"/"partial"): this carries the #100 four-value ExecutionOutcome
+    # vocabulary (complete/failed/not_requested/censored) so a censored-but-technically-completed
+    # run is distinguishable from a clean one without repurposing a field another reader depends on.
+    evidence_status: str | None = Field(
+        default=None, description="ExecutionOutcome.status value (complete/failed/not_requested/censored), if known"
+    )
 
 
 class AnalysisSummary(BaseSummary):
@@ -380,3 +387,19 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
     )
 
     total_candidates: int = Field(ge=0, description="Total candidates analyzed")
+
+    # Mirrors AggregatedOffTargetSummary's positive-evidence pair, so a species with no rows in
+    # combined_mirna_hits.tsv is distinguishable from a species that was never actually screened.
+    # Unlike the transcriptome side, one candidate's *_mirna_analysis.tsv already spans every
+    # requested species, so file presence carries no per-species signal here -- the #100 evidence
+    # envelope is the only positive signal available, and a run that never wrote one (pre-#100, or
+    # run_mirna_seed_analysis called without evidence_dir) keeps every requested species reported
+    # screened, its historical default.
+    species_screened: list[str] = Field(
+        default_factory=list,
+        description="Species with a COMPLETE mirna_seed evidence envelope from at least one candidate",
+    )
+    unscreened_species: list[str] = Field(
+        default_factory=list,
+        description="Requested species with no COMPLETE mirna_seed evidence envelope from any candidate",
+    )
