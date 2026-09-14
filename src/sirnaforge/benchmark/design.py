@@ -326,6 +326,48 @@ def _empty_design_result(fasta_path: Path, policy: ResolvedRunPolicy) -> DesignR
     )
 
 
+def _prepared_inputs(artifact_path: Path) -> tuple[ManifestInputEntry, ...]:
+    """Checksum the two prepared files this design pass actually read.
+
+    Deliberately not a checksum of ``manifest.json``: this function overwrites that file moments
+    later, so a hash of it would name bytes the finished artifact no longer holds, and on a second
+    ``benchmark design`` over the same directory it would hash an *already designed* manifest under a
+    role called "prepared". ``observations.csv`` and ``design_inputs.fasta`` are written by ``prepare``
+    and never rewritten here, so hashing them is both stable across re-designs and the honest answer
+    to "which bytes did this run consume". Paths are the fixed inner filenames, per
+    :class:`~sirnaforge.benchmark.artifact.ManifestOutputEntry`'s own convention.
+    """
+    entries = []
+    for role, filename in (
+        ("prepared_observations_csv", OBSERVATIONS_FILENAME),
+        ("prepared_design_inputs_fasta", DESIGN_INPUTS_FASTA_FILENAME),
+    ):
+        path = artifact_path / filename
+        entries.append(
+            ManifestInputEntry(role=role, path=filename, sha256=_sha256_file(path), size_bytes=path.stat().st_size)
+        )
+    return tuple(entries)
+
+
+def _merge_inputs(
+    existing: Sequence[ManifestInputEntry], recorded: Sequence[ManifestInputEntry]
+) -> tuple[ManifestInputEntry, ...]:
+    """Replace, never append, an input entry whose role this run is re-recording.
+
+    ``role`` is a key within ``inputs`` (:class:`~sirnaforge.benchmark.artifact.ManifestInputEntry`).
+    Appending instead grew the provenance list by one entry per ``benchmark design`` re-run over the
+    same artifact, leaving a reader two same-role entries with different checksums and no rule for
+    which one describes the artifact as it now stands.
+    """
+    by_role = {entry.role: entry for entry in existing}
+    order = [entry.role for entry in existing]
+    for entry in recorded:
+        if entry.role not in by_role:
+            order.append(entry.role)
+        by_role[entry.role] = entry
+    return tuple(by_role[role] for role in order)
+
+
 def _write_empty_candidates_csv(path: Path) -> None:
     """Write a header-only ``candidates_all.csv`` when a run produced zero candidates.
 
@@ -495,17 +537,20 @@ def design_artifact(
         gc_max=_gc_widening_entry(benchmark_policy, "gc_max", default_for("gc_max")),
     )
 
+    # Paths are the fixed inner filenames, matching what `prepare` recorded for its own two outputs:
+    # a manifest that named an absolute path could not be compared against a second run of the same
+    # bytes under a different --out-dir (`ManifestOutputEntry.path`).
     updated_outputs = manifest.outputs.model_copy(
         update={
             "candidates_all_csv": ManifestOutputEntry(
-                path=str(candidates_all_path),
+                path=CANDIDATES_ALL_FILENAME,
                 exists=True,
                 size_bytes=candidates_all_path.stat().st_size,
                 sha256=_sha256_file(candidates_all_path),
                 rows=len(all_candidates),
             ),
             "accounting_csv": ManifestOutputEntry(
-                path=str(accounting_path),
+                path=ACCOUNTING_FILENAME,
                 exists=True,
                 size_bytes=accounting_path.stat().st_size,
                 sha256=_sha256_file(accounting_path),
@@ -514,19 +559,10 @@ def design_artifact(
         }
     )
 
-    # The manifest this run started from, checksummed before this function overwrites it -- the
-    # provenance trail's "prepared_artifact" input, the same role name `outputs`/`inputs` document.
-    prepared_artifact_input = ManifestInputEntry(
-        role="prepared_artifact",
-        path=str(manifest_path),
-        sha256=_sha256_file(manifest_path),
-        size_bytes=manifest_path.stat().st_size,
-    )
-
     updated_manifest = manifest.model_copy(
         update={
             "invoked_command": tuple(invoked_command if invoked_command is not None else sys.argv),
-            "inputs": (*manifest.inputs, prepared_artifact_input),
+            "inputs": _merge_inputs(manifest.inputs, _prepared_inputs(artifact_path)),
             "outputs": updated_outputs,
             "counts": updated_counts,
             "polynucleotide_run_requirement": polynucleotide_run_requirement,

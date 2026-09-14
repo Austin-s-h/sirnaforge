@@ -394,16 +394,19 @@ def prepare_artifact(
             )
         )
 
+    # Output paths are the fixed inner filenames, not `str(observations_path)`: the manifest must not
+    # depend on which --out-dir this run happened to use, or two prepares of the same bytes into two
+    # roots would not compare equal (ManifestOutputEntry.path).
     outputs = BenchmarkArtifactOutputs(
         observations_csv=ManifestOutputEntry(
-            path=str(observations_path),
+            path=OBSERVATIONS_FILENAME,
             exists=True,
             size_bytes=observations_path.stat().st_size,
             sha256=_file_sha256(observations_path),
             rows=_count_csv_rows(observations_path),
         ),
         design_inputs_fasta=ManifestOutputEntry(
-            path=str(fasta_path),
+            path=DESIGN_INPUTS_FASTA_FILENAME,
             exists=True,
             size_bytes=fasta_path.stat().st_size,
             sha256=_file_sha256(fasta_path),

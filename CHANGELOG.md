@@ -144,6 +144,13 @@ where the two defects removed here were first written down as outstanding.)
   vendored for #95/#102); the other panels #109/#110 name are declared but not vendored, and
   `manifest.json`'s `panel.data_present` says so per artifact so a passing CLI invocation is never
   mistaken for evidence over data this repository does not have.
+- **`docs/benchmark_artifacts.md`: the benchmark interface, with the vendoring stated up front**
+  (#109). The artifact's five fixed files, the two-verdict-sets-from-one-run argument and why a GC
+  narrowing is refused, the three places a polynucleotide exclusion is recorded, and what the surface
+  deliberately does not do. It opens with the same statement `tests/unit/data/README.md` establishes
+  for vendored data: exactly one panel's bytes are present, Ichihara/Martinelli/Shmushkovich/OligoGym
+  are named by the issues and absent, and the PRD #109 cites does not exist in this repository — so no
+  reader takes a green test run as a result over data nobody has.
 - **`selection_summary` in `logs/workflow_summary.json`: why the shortlist is the size it is** (#100).
   Success, "complete run, nothing eligible", "incomplete evidence" and "execution error" all leave
   `top_candidates` empty, so the distinguishing information has to be published rather than inferred.
@@ -495,6 +502,22 @@ where the two defects removed here were first written down as outstanding.)
   prevent. Every other invariant in those modules was already enforced by a `model_validator`.
 
 ### Fixed
+
+- **A benchmark manifest could not be compared against a second run of the same bytes** (#109) —
+  which is the entire content of the criterion it exists to satisfy. Three independent causes, all
+  found by running the same panel twice rather than by reading the code. `outputs.*.path` recorded the
+  absolute path it happened to write to, making the manifest a function of `--out-dir`; it now records
+  the fixed inner filename. `FilterScope.species`/`hit_classes` are `frozenset[str]` and dumped in
+  hash order, which varies with `PYTHONHASHSEED`, so two identical runs disagreed on the order of
+  `hit_classes` inside both policy blocks; both axes now serialise sorted (a set is still the right
+  in-memory type — membership, not order, is what a scope means). And `benchmark design` **appended** a
+  `prepared_artifact` input entry checksumming `manifest.json`, a file it overwrites moments later, so
+  re-running it grew `inputs` by one stale entry per run and hashed an already-designed manifest under
+  a role called "prepared"; `role` is now a key within `inputs`, replaced rather than appended, and the
+  two entries name the files the design pass actually reads. Two full `prepare` + `design` passes over
+  the vendored Huesken subset now produce byte-identical `observations.csv`, `design_inputs.fasta`,
+  `candidates_all.csv` and `accounting.csv`, and manifests differing only in `created_utc` — the one
+  field the schema declares nondeterministic, and the only one that lives outside every CSV.
 
 - **A run with no screening reference called itself `qualified`** — and therefore required evidence it
   could never obtain. `--input-fasta` deliberately does not auto-resolve the default transcriptomes, so

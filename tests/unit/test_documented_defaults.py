@@ -51,6 +51,11 @@ HELP_DEFAULTS: tuple[tuple[str, str, str], ...] = (
     ("design", "plfold_window", "plfold_window"),
     ("design", "plfold_max_bp_span", "plfold_max_bp_span"),
     ("design", "accessibility_log_floor", "accessibility_log_floor"),
+    # `benchmark design` widens these two per run (#109). Its help quotes the *shipped* default,
+    # which is the number a reader has to trust to know what "widened" means -- so it is covered
+    # here for the same reason every other quoted default is.
+    ("benchmark design", "gc_min", "gc_min"),
+    ("benchmark design", "gc_max", "gc_max"),
 )
 
 # Model classes the documentation quotes field defaults from, by the class name in the code block.
@@ -71,10 +76,15 @@ DEFAULT_IN_HELP = re.compile(r"default:\s*(-?[0-9]+(?:\.[0-9]+)?)")
 
 
 def _option_help(command_name: str, parameter: str) -> str:
-    """The help string of one option, taken from the Click command rather than rendered output."""
-    command = typer.main.get_command(app)
-    subcommand = command.commands[command_name]  # type: ignore[attr-defined]
-    for param in subcommand.params:
+    """The help string of one option, taken from the Click command rather than rendered output.
+
+    ``command_name`` may be space-separated to reach into a sub-app (``"benchmark design"``): an
+    option that quotes a default is no less bound by that number for living one level down.
+    """
+    node = typer.main.get_command(app)
+    for part in command_name.split():
+        node = node.commands[part]  # type: ignore[attr-defined]
+    for param in node.params:
         if param.name == parameter:
             return str(param.help or "")
     raise AssertionError(f"{command_name} has no parameter named {parameter!r}")

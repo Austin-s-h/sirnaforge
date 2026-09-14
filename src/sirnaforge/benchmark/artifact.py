@@ -210,9 +210,10 @@ class BenchmarkAccountingRow(BaseModel):
     observation -- ``observations.csv`` never omits the row, this file never omits its join.
 
     ``default_filter_status``/``benchmark_filter_status`` are re-derived, not two independently run
-    screens: see ``sirnaforge.benchmark.filter_accounting`` (a later slice) for why re-deriving the
-    default verdict from the benchmark run's own recorded evidence is exact rather than approximate,
-    which is the property that makes emitting both sets here meaningful.
+    screens: see :mod:`sirnaforge.benchmark.design`'s module docstring for why re-deriving the
+    default verdict from the benchmark run's own recorded evidence is exact rather than approximate
+    (widening is monotone, so a narrowing is refused), which is the property that makes emitting both
+    sets here meaningful.
     """
 
     observation_id: str = Field(min_length=1, description="Join key into observations.csv")
@@ -270,9 +271,14 @@ class ManifestPanelBlock(BaseModel):
 
 
 class ManifestInputEntry(BaseModel):
-    """One checksummed input the artifact was built from."""
+    """One checksummed input the artifact was built from, keyed by a role unique within ``inputs``.
 
-    role: str = Field(min_length=1, description="e.g. panel_csv, panel_transcripts_fasta, prepared_artifact")
+    ``role`` is a key, not a label: ``design_artifact`` *replaces* the entry carrying a role it is
+    re-recording rather than appending a second one, so re-running ``benchmark design`` over an
+    artifact leaves one entry per input instead of growing the provenance list on every run.
+    """
+
+    role: str = Field(min_length=1, description="Unique within `inputs`; e.g. panel_csv, prepared_observations_csv")
     path: str = Field(min_length=1)
     sha256: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
@@ -286,6 +292,12 @@ class ManifestOutputEntry(BaseModel):
     ``size_bytes``/``sha256`` and ``rows``/``sequences`` are ``None`` together with ``exists=False``:
     a file that does not exist has nothing to checksum or count, and a placeholder number would be
     read as a checksum of nothing.
+
+    ``path`` is the file's name *relative to the artifact directory* -- always one of the fixed inner
+    filenames this module declares, never an absolute path. Two prepares of the same panel bytes into
+    two different ``--out-dir`` roots must produce the same manifest apart from ``created_utc``, and
+    an absolute path would make the artifact's own reproducibility claim depend on where the run
+    happened to be writing (#109).
     """
 
     path: str = Field(min_length=1)
