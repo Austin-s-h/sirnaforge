@@ -1818,6 +1818,9 @@ class SiRNAWorkflow:
             except Exception as e:
                 console.print(f"⚠️  Nextflow execution failed: {e}")
                 logger.exception("Nextflow pipeline execution error")
+                # An aborted screen leaves the gates undecided, not unrun (#106). Only the candidates
+                # that reached no gate: the failure can be raised after integration already gated some.
+                self._gate_without_screening_evidence(candidates_for_offtarget)
                 return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
         finally:
             self._apply_post_screen_ranking(design_results)
@@ -2798,6 +2801,8 @@ class SiRNAWorkflow:
         runner, _ = self._setup_nextflow_runner(active_species, additional_params)
 
         if not self._validate_nextflow_environment(runner):
+            # No screen ran, so the gates report unknown rather than never having been reached (#106).
+            self._gate_without_screening_evidence(candidates)
             return {"status": "skipped", "reason": "nextflow_unavailable"}
 
         # Execute pipeline
@@ -3496,6 +3501,9 @@ class SiRNAWorkflow:
             ),
         )
         self._completed_evidence_pairs = self._completed_pairs_from_evidence(self._screening_evidence)
+        # Nothing was aligned, so every gate reading a screening channel is undecidable here rather
+        # than unrun (#106): this path reaches _integrate_offtarget_results on no route at all.
+        self._gate_without_screening_evidence(candidates)
 
         # `partial`, never `completed`: this path aligns nothing and never reaches
         # _integrate_offtarget_results, so no candidate gets a verdict at all. It is also reached after a
@@ -3714,6 +3722,8 @@ class SiRNAWorkflow:
 
         One entry point for both the no-hit and with-hit paths, so a gate cannot be wired into only one
         of them -- how the clean-screen case ended up ungated (#106).
+        :meth:`_gate_without_screening_evidence` is the third caller: the paths that publish no
+        evidence at all come through here too, with ``complete_pairs`` empty.
 
         ``passes_filters`` is set by the rejecting gate through ``record_filter_verdict``, which keeps
         the first failure. Not assigned here: overwriting it unconditionally let an off-target label mask
@@ -3731,6 +3741,76 @@ class SiRNAWorkflow:
         stat_key = _OFFTARGET_REJECTION_STATS.get(fail_status)
         if stat_key is not None:
             stats[stat_key] += 1
+
+    def _requested_species_scope(self) -> frozenset[str]:
+        """The species every post-screen gate's evidence is scoped over: what was asked for, plus the query.
+
+        ``_active_screen_species`` rather than ``config.screen_species`` because extra species can
+        arrive on ``transcriptome_indices``/``transcriptome_fastas``, and the query species is always in
+        scope even when it was never listed. Shared by the integration path and by
+        :meth:`_gate_without_screening_evidence` so a gate's evidence requirement is the same set
+        whether or not a screen ran -- a scope that shrank when the screen failed would leave the gate
+        with no pair to be incomplete about.
+        """
+        requested = frozenset(
+            normalize_species_name(species) for species in (self._active_screen_species or self.config.screen_species)
+        )
+        return requested | {self._query_species}
+
+    def _gate_without_screening_evidence(
+        self,
+        candidates: Sequence[SiRNACandidate],
+        *,
+        filter_criteria: OffTargetFilterCriteria | None = None,
+    ) -> None:
+        """Reach every off-target gate on a path that published no screening evidence at all (#106).
+
+        The residual half of #106. Its first half -- a *completed* screen that found nothing -- was
+        fixed by gating the no-hit branch on a measured zero. This is the mirror case: the basic
+        sequence-only fallback, ``nextflow_unavailable``, ``nextflow_failed`` and an output directory
+        that never appeared all return without reaching ``_integrate_offtarget_results``, so no
+        candidate reached ``_gate_offtarget_counts`` and every channel-reading gate exported
+        ``not_evaluated`` -- the same cell a run with no threshold configured writes. A screen that
+        never happened and a screen that came back clean must not export the same nine cells.
+
+        ``complete_pairs=frozenset()``: nothing completed, so no gate may report a pass, and each one
+        records ``UNKNOWN`` with an empty observed value rather than a fabricated zero. An undecidable
+        gate never rejects, so ``passes_filters`` is untouched and no rejection counter can move --
+        which is why no statistics are published from here. What it does do is withhold the candidate
+        from a QUALIFIED shortlist under the named reason ``unknown:<filter_id>``.
+
+        Only candidates that reached no off-target gate: the call that held the counts owns the
+        answer, and ``record_filter_verdict`` overwrites, so re-gating one would replace a decided
+        PASS/FAIL with ``UNKNOWN``. That matters on the ``nextflow_failed`` path, which can be reached
+        by an exception raised after integration already ran.
+
+        Deliberately not called from the ``user_disabled`` or ``no_candidates`` exits: a channel the
+        user switched off was never requested, and ``not_evaluated`` is the honest cell for it.
+        """
+        criteria = filter_criteria or getattr(self.config.design_params, "offtarget_filters", None)
+        criteria = criteria or OffTargetFilterCriteria()
+        # Set here as well as in _integrate_offtarget_results, which never ran on these paths.
+        self._screened_species_scope = self._screened_species_scope or self._requested_species_scope()
+        # Nothing here can reject, so this dict only exists to satisfy the shared entry point.
+        discarded_stats: dict[str, Any] = dict.fromkeys(_OFFTARGET_REJECTION_STATS.values(), 0)
+        gated = 0
+        for candidate in candidates:
+            verdicts = candidate.filter_verdicts or {}
+            if any(filter_id in verdicts for filter_id in POST_SCREEN_FILTER_CHANNELS):
+                continue
+            self._gate_offtarget_counts(
+                candidate,
+                counts=_ZERO_OFFTARGET_COUNTS,
+                filter_criteria=criteria,
+                complete_pairs=frozenset(),
+                stats=discarded_stats,
+            )
+            gated += 1
+        if gated:
+            logger.warning(
+                f"No screening evidence was published for this run: the off-target gates on {gated} candidate(s) "
+                "report unknown rather than a clean screen, and their observed values stay empty."
+            )
 
     def _gate_evidence_pairs(self, filter_id: str, channels: frozenset[ScreeningChannel]) -> frozenset[tuple[str, str]]:
         """The channel x species pairs one gate needs before it may report a pass.
@@ -4043,6 +4123,9 @@ class SiRNAWorkflow:
         """
         if not offtarget_data or offtarget_data.get("status") != "completed":
             logger.warning("No completed off-target data available; candidates keep design-time scores")
+            # Keeping the design-time score is not the whole answer: the gates still have to say they
+            # could not decide, or this exit publishes `not_evaluated` for every one of them (#106).
+            self._gate_without_screening_evidence(candidates, filter_criteria=filter_criteria)
             return candidates, {}
 
         if filter_criteria is None:
@@ -4127,7 +4210,7 @@ class SiRNAWorkflow:
 
         # The same pairs the gates read, so eligibility and gate evaluation cannot disagree about what
         # completed. `unscreened_pairs` is what a candidate the query-species alignment missed loses.
-        self._screened_species_scope = requested_species | {query_species}
+        self._screened_species_scope = self._requested_species_scope()
         run_complete_pairs = self._completed_evidence_pairs or frozenset()
         unscreened_pairs = frozenset(
             {(ScreeningChannel.TRANSCRIPTOME.value, query_species)} if query_species_unscreened else ()
