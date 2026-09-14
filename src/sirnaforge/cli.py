@@ -71,7 +71,7 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
-from sirnaforge.models.policy import RunMode
+from sirnaforge.models.policy import ExitCode, RunMode, RunStatus
 from sirnaforge.models.sirna import (
     DesignMode,
     ranking_score,
@@ -138,6 +138,31 @@ def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str
         reason = offtarget_summary.get("reason") or "not run"
         return f"   • Off-target results: [yellow]not produced ({reason})[/yellow]"
     return f"   • Off-target results: [blue]{results_path}[/blue]"
+
+
+#: How each run status reads in the summary table. One cell per outcome, because a single "Partial"
+#: for both an aborted pipeline and a run that merely lacked one species told the user nothing about
+#: which of the two had happened -- and "Complete" was printed for the sequence-only fallback (#100).
+_RUN_STATUS_CELLS: Mapping[RunStatus, str] = {
+    RunStatus.COMPLETED: "✅ Complete",
+    RunStatus.INCOMPLETE: "⚠️  Incomplete",
+    RunStatus.NOT_REQUESTED: "⏭️  Not requested",
+    RunStatus.NO_ELIGIBLE: "⚠️  No candidates to screen",
+    RunStatus.EXECUTION_ERROR: "❌ Did not run",
+}
+
+
+def _offtarget_status_cell(offtarget_summary: Mapping[str, Any]) -> str:
+    """The summary table's off-target status cell, from the run's own published ``run_status``.
+
+    Falls back to the pre-#100 two-way reading of ``status`` for a summary that carries no
+    ``run_status`` at all -- a result dictionary from an older version, or a caller that assembled
+    one by hand. An unrecognised value falls back the same way rather than printing an enum name.
+    """
+    try:
+        return _RUN_STATUS_CELLS[RunStatus(offtarget_summary.get("run_status"))]
+    except ValueError:
+        return "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial"
 
 
 def _autotune_zfn_sharding(
@@ -353,7 +378,7 @@ _SELECTION_COUNTERS = (
 def _fail_if_nothing_could_qualify(
     results: Mapping[str, Any], *, json_summary: bool, logger: logging.Logger | None = None
 ) -> None:
-    """Exit non-zero when a qualified run could not qualify a single candidate for want of evidence.
+    """Exit ``INCOMPLETE_EVIDENCE`` when a qualified run could qualify nobody for want of evidence.
 
     Deliberately narrow. A *complete* run that legitimately found nothing eligible exits 0 -- that is
     a result, not a failure -- so the check requires a named evidence shortfall, either per candidate
@@ -363,6 +388,11 @@ def _fail_if_nothing_could_qualify(
 
     Only ``qualified`` runs can fail here. design-only and exploratory claim less by construction, and
     ZFN mode publishes no selection summary, so both return early.
+
+    This is the one incomplete-evidence exit, and it is decided from *selection*, never from the
+    screen's own ``run_status`` (#100): an incomplete screen whose surviving candidates still
+    qualified produced a usable deliverable, and exiting non-zero on it would fail every run on a
+    machine with no Nextflow.
     """
     selection = results.get("selection_summary") or {}
     if selection.get("run_mode") != RunMode.QUALIFIED.value:
@@ -419,7 +449,39 @@ def _fail_if_nothing_could_qualify(
             f"   ↳ selection_summary in [blue]logs/workflow_summary.json[/blue] has the counts by "
             f"cause; the candidates are in candidates_all.csv with {state_hint}."
         )
-    raise typer.Exit(1)
+    console.print(f"   ↳ exit code {int(ExitCode.INCOMPLETE_EVIDENCE)}: incomplete required evidence.")
+    raise typer.Exit(int(ExitCode.INCOMPLETE_EVIDENCE))
+
+
+def _fail_if_nothing_was_eligible(
+    results: Mapping[str, Any], *, enabled: bool, logger: logging.Logger | None = None
+) -> None:
+    """Exit :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` for an empty shortlist, and only when asked to.
+
+    Off by default, and it must stay off by default: "nothing scored well enough" is a result, and a
+    complete run that legitimately qualified nobody has always exited 0, so making it non-zero would
+    break any caller already invoking this. ``--fail-on-no-eligible`` is for the caller who wants an
+    empty shortlist to stop a pipeline, and it is a separate code from
+    :attr:`ExitCode.INCOMPLETE_EVIDENCE` so the two are still distinguishable (#100).
+
+    Runs after the incomplete-evidence check, which therefore wins: a shortlist that is empty for want
+    of evidence is the more specific and more actionable answer.
+    """
+    selection = results.get("selection_summary") or {}
+    if not enabled or not selection:
+        return
+    if selection.get("eligible_candidates"):
+        return
+    considered = sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS)
+    if considered == 0:
+        return
+    if logger is not None:
+        logger.error("No candidate was eligible out of %s considered", considered)
+    console.print(
+        f"\n❌ [red]No eligible candidates:[/red] none of {considered} candidate(s) qualified, and "
+        f"--fail-on-no-eligible was requested (exit code {int(ExitCode.NO_ELIGIBLE_CANDIDATES)})."
+    )
+    raise typer.Exit(int(ExitCode.NO_ELIGIBLE_CANDIDATES))
 
 
 def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
@@ -1321,6 +1383,14 @@ def workflow(  # noqa: PLR0912
         "--json-summary/--no-json-summary",
         help="Write logs/workflow_summary.json (disable to skip JSON output)",
     ),
+    fail_on_no_eligible: bool = typer.Option(
+        False,
+        "--fail-on-no-eligible",
+        help=(
+            "Exit 3 when no candidate qualified, even on a complete run. Off by default: an empty "
+            "shortlist is a result, not a failure. Incomplete required evidence always exits 2."
+        ),
+    ),
 ) -> None:
     """Run the end-to-end workflow: transcripts → siRNA design → off-target.
 
@@ -1625,7 +1695,7 @@ def workflow(  # noqa: PLR0912
 
             summary_table.add_row(
                 "Off-target Analysis",
-                "Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
+                _offtarget_status_cell(offtarget_summary),
                 f"Method: {offtarget_summary.get('method', 'basic')}",
             )
 
@@ -1660,11 +1730,15 @@ def workflow(  # noqa: PLR0912
         console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
         if verbose:
             console.print_exception()
-        raise typer.Exit(1)
+        # An exception that reached here is the execution-error code, and the only one: the run
+        # produced no deliverable at all (#100).
+        raise typer.Exit(int(ExitCode.EXECUTION_ERROR))
 
     # Outside the try on purpose: typer.Exit subclasses RuntimeError, so raising it inside would be
     # caught by the handler above, logged as a crash, and reprinted as "Workflow error: 1".
+    # Order is the taxonomy: incomplete evidence (2) is more specific than an empty shortlist (3).
     _fail_if_nothing_could_qualify(results, json_summary=json_summary, logger=logger)
+    _fail_if_nothing_was_eligible(results, enabled=fail_on_no_eligible, logger=logger)
 
 
 @app_command()
@@ -1948,9 +2022,7 @@ def offtarget(  # noqa: PLR0912
         summary_table.add_column("Metric", style="cyan")
         summary_table.add_column("Value", style="white")
 
-        summary_table.add_row(
-            "Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial"
-        )
+        summary_table.add_row("Status", _offtarget_status_cell(offtarget_summary))
         summary_table.add_row("Method", offtarget_summary.get("method", "N/A"))
         summary_table.add_row("Candidates Analyzed", str(len(sequences)))
 

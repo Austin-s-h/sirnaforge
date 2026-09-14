@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
-from sirnaforge.models.policy import FilterAction, FilterEvaluation, RunMode, ScreeningChannel
+from sirnaforge.models.policy import FilterAction, FilterEvaluation, RunMode, RunStatus, ScreeningChannel
 from sirnaforge.models.sirna import (
     DesignResult,
     OffTargetFilterCriteria,
@@ -341,7 +341,13 @@ def test_a_screen_the_user_switched_off_makes_no_claim(tmp_path: Path) -> None:
 
     outcome = asyncio.run(workflow.step5_offtarget_analysis(_design_result(workflow, [candidate])))
 
-    assert outcome == {"status": "skipped", "reason": "user_disabled"}
+    # ``run_status`` is W4's addition beside these two, and it agrees with the non-call below: a
+    # channel nobody requested is NOT_REQUESTED, not an incomplete screen (#100).
+    assert outcome == {
+        "status": "skipped",
+        "reason": "user_disabled",
+        "run_status": RunStatus.NOT_REQUESTED.value,
+    }
     for filter_id in POST_SCREEN_FILTER_CHANNELS:
         assert filter_id not in candidate.filter_verdicts, filter_id
 

@@ -146,6 +146,7 @@ from sirnaforge.models.policy import (
     FilterAction,
     FilterEvaluation,
     RunMode,
+    RunStatus,
     ScreeningChannel,
 )
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
@@ -221,6 +222,48 @@ def describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
         else:  # pragma: no cover - defensive: an unrecognised reason is still reported verbatim
             parts.append(f"{count}x {reason}")
     return "; ".join(parts) if parts else "no reason recorded"
+
+
+#: Reason the route through result processing reports when the pipeline exited 0 and staged no output
+#: directory at all. Named here because that route publishes ``partial`` like any thin result, and
+#: writing nothing is a failure to execute rather than a partial answer.
+_EXECUTION_ERROR_REASON = "missing_output"
+
+#: What each ``reason`` a screening exit publishes means in :class:`RunStatus` terms. Keyed on the
+#: reason rather than on ``status`` because the exits that spell themselves ``skipped`` mean opposite
+#: things: a channel the user switched off was never requested, while an engine that could not be
+#: executed is an error the caller must act on. A reason absent from here does not fall back to a
+#: guess -- see :func:`screening_run_status`.
+_RUN_STATUS_BY_REASON: Mapping[str, RunStatus] = {
+    "user_disabled": RunStatus.NOT_REQUESTED,
+    "no_candidates": RunStatus.NO_ELIGIBLE,
+    "nextflow_failed": RunStatus.EXECUTION_ERROR,
+    "nextflow_unavailable": RunStatus.EXECUTION_ERROR,
+    _EXECUTION_ERROR_REASON: RunStatus.EXECUTION_ERROR,
+}
+
+
+def screening_run_status(*, status: str, reason: str = "", required_evidence_missing: bool = False) -> RunStatus:
+    """Translate one screening exit's ``{status, reason}`` pair into the one run-status vocabulary.
+
+    Pure and total, because it is the single definition of what those seven string pairs mean (#100)
+    and every exit is stamped through it. The result is published beside ``status``/``reason``, never
+    instead of them.
+
+    ``required_evidence_missing`` is what lets a step whose own word is ``completed`` report
+    ``INCOMPLETE``: ``status`` is decided from the aggregate's self-report, which says nothing was
+    missing whenever aggregation itself is what failed, while the reconciled evidence knows the unit
+    was planned and published nothing. An unrecognised status word claims no completeness rather
+    than inheriting one, so a new exit cannot arrive silently reading ``COMPLETED``.
+    """
+    known = _RUN_STATUS_BY_REASON.get(reason)
+    if known is not None:
+        return known
+    if status == "missing":
+        return RunStatus.EXECUTION_ERROR
+    if status == "completed":
+        return RunStatus.INCOMPLETE if required_evidence_missing else RunStatus.COMPLETED
+    return RunStatus.INCOMPLETE
 
 
 class OffTargetGateCounts(NamedTuple):
@@ -1873,7 +1916,7 @@ class SiRNAWorkflow:
             }
             # Nothing to rank, but every step5 exit still publishes a selection outcome.
             self._apply_post_screen_ranking(design_results)
-            return {"status": "skipped", "reason": "no_candidates"}
+            return self._publish_run_status({"status": "skipped", "reason": "no_candidates"})
 
         # Honour the skip request BEFORE touching any reference: materializing the default
         # transcriptomes downloads and indexes multi-gigabyte cDNA files, and repeat detection
@@ -1892,7 +1935,7 @@ class SiRNAWorkflow:
             # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
             # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
             self._apply_post_screen_ranking(design_results)
-            return {"status": "skipped", "reason": "user_disabled"}
+            return self._publish_run_status({"status": "skipped", "reason": "user_disabled"})
 
         # One `finally`, so selection runs on every exit: the returns, the caught Nextflow failure, and
         # an exception that propagates. Not a try/except, because `_prepare_offtarget_input`'s
@@ -1924,7 +1967,7 @@ class SiRNAWorkflow:
                 # An aborted screen leaves the gates undecided, not unrun (#106). Only the candidates
                 # that reached no gate: the failure can be raised after integration already gated some.
                 self._gate_without_screening_evidence(candidates_for_offtarget)
-                return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
+                return self._publish_run_status({"status": "skipped", "reason": "nextflow_failed", "error": str(e)})
         finally:
             self._apply_post_screen_ranking(design_results)
 
@@ -2924,7 +2967,7 @@ class SiRNAWorkflow:
         if not self._validate_nextflow_environment(runner):
             # No screen ran, so the gates report unknown rather than never having been reached (#106).
             self._gate_without_screening_evidence(candidates)
-            return {"status": "skipped", "reason": "nextflow_unavailable"}
+            return self._publish_run_status({"status": "skipped", "reason": "nextflow_unavailable"})
 
         # Execute pipeline
         console.print("🚀 Running embedded Nextflow off-target analysis...")
@@ -3016,20 +3059,20 @@ class SiRNAWorkflow:
         console.print("✅ Nextflow pipeline completed successfully")
         parsed = await self._parse_nextflow_results(output_dir)
         aggregated_views = self._load_offtarget_aggregates(output_dir)
-        run_status = "completed"
+        published_status = "completed"
         workflow_warnings: list[str] = []
 
         tx_summary = aggregated_views.get("transcriptome") if aggregated_views else None
         if tx_summary:
             for warning_msg in self._transcriptome_shortfall_warnings(tx_summary):
-                run_status = "partial"
+                published_status = "partial"
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
 
         # Shortfalls decided before Nextflow ran are reported on the same footing as ones the
         # aggregate found: a species dropped for want of a reference appeared in no artifact at all.
         for species, reason in sorted(self._species_screening_shortfalls.items()):
-            run_status = "partial"
+            published_status = "partial"
             warning_msg = f"⚠️  '{species}' was not screened: {reason}"
             console.print(warning_msg)
             workflow_warnings.append(warning_msg)
@@ -3042,7 +3085,7 @@ class SiRNAWorkflow:
         # reading "no hits here means clean".
         screened_species = self._species_with_alignment_evidence(tx_summary)
         if not screened_species:
-            run_status = "partial"
+            published_status = "partial"
             warning_msg = (
                 "⚠️  No transcriptome alignment evidence for any species (no aggregated summary, or "
                 "miRNA-only mode): off-target counts are unknown, so candidates keep their design-time scores."
@@ -3060,7 +3103,7 @@ class SiRNAWorkflow:
         ortholog_mapping = await self._resolve_ortholog_mapping(screened_species, parsed)
         mirna_screened = self._mirna_channel_completed(aggregated_views.get("mirna") if aggregated_views else None)
         if not mirna_screened:
-            # Warned, but not a status downgrade: ``run_status`` speaks for the evidence the run
+            # Warned, but not a status downgrade: ``published_status`` speaks for the evidence the run
             # *requires*, and every miRNA pair is exploratory in 0.7.1. The consequence is carried as
             # UNKNOWN on the miRNA gates and as a flag in filtering_stats.
             warning_msg = (
@@ -3122,17 +3165,23 @@ class SiRNAWorkflow:
                 "off_target_score": entry.get("off_target_score", 0.0) if entry else 0.0,
             }
 
-        return {
-            "status": run_status,
-            "method": "embedded_nextflow",
-            "output_dir": str(output_dir),
-            "results": mapped,
-            "detail_files": self._offtarget_detail_files(parsed, output_dir),
-            "execution_metadata": results,
-            "filtering_stats": stats,
-            "aggregated": aggregated_views,
-            "warnings": workflow_warnings,
-        }
+        return self._publish_run_status(
+            {
+                "status": published_status,
+                "method": "embedded_nextflow",
+                "output_dir": str(output_dir),
+                "results": mapped,
+                "detail_files": self._offtarget_detail_files(parsed, output_dir),
+                "execution_metadata": results,
+                "filtering_stats": stats,
+                "aggregated": aggregated_views,
+                "warnings": workflow_warnings,
+            },
+            # An output directory that does not exist is a failure to execute, not a thin result: the
+            # runner reported exit 0 and staged nothing, so there is no partial answer to read. The
+            # published `status` stays whatever this method decided, per #100's beside-not-instead rule.
+            reason=_EXECUTION_ERROR_REASON if parsed.get("status") == "missing" else None,
+        )
 
     @staticmethod
     def _offtarget_detail_files(parsed: Mapping[str, Any], output_dir: Path) -> dict[str, list[str]]:
@@ -3429,6 +3478,48 @@ class SiRNAWorkflow:
             reconciliation.evidence, strict=qualified and envelope_backed, sources=reconciliation.sources
         )
 
+    def _missing_required_evidence_units(self) -> tuple[tuple[str, str], ...]:
+        """Required channel/species pairs this run reconciled no complete evidence for (#100).
+
+        Asked of the reconciliation, not of the aggregate's own word: only a run that recorded a plan
+        can know a unit was expected, and only ``EvidenceRequirements`` may say a unit was required.
+        A run that reconciled nothing (a direct call into result processing, or an exit that returns
+        before any producer runs) returns nothing here rather than claiming a shortfall it cannot
+        substantiate -- that exit's ``reason`` already says what happened.
+
+        Completeness comes from :meth:`_completed_pairs_from_evidence`, the same rule that fills
+        :attr:`_completed_evidence_pairs` for eligibility, so the run status and the shortlist can
+        never disagree about which unit was complete -- and a censored unit counts as missing in
+        both, because a lower bound cannot show a ceiling was respected. Recomputed rather than read
+        off that attribute because integration returns before assigning it on exactly the exit this
+        question matters most for: the one where the pipeline published no results at all.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if self._screening_evidence is None or policy is None:
+            return ()
+        completed = self._completed_pairs_from_evidence(self._screening_evidence)
+        return tuple(sorted(policy.evidence_requirements.required_pairs - completed))
+
+    def _publish_run_status(self, summary: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
+        """Stamp one screening summary with its :class:`RunStatus`, beside the keys it already has.
+
+        Every exit out of screening goes through here, which is what makes the vocabulary one
+        vocabulary rather than a seventh string. ``status``, ``reason`` and ``method`` are left
+        exactly as they were: consumers compare ``status == "completed"`` (the CLI table, #103's
+        report, existing result directories) and this slice publishes an additional key rather than
+        redefining theirs.
+
+        ``reason`` overrides the summary's own for an exit that carries no reason key but is still a
+        named outcome -- the missing-output route reports ``partial`` because that is what its caller
+        published, while what actually happened is that the pipeline wrote no output directory.
+        """
+        summary["run_status"] = screening_run_status(
+            status=str(summary.get("status") or ""),
+            reason=reason if reason is not None else str(summary.get("reason") or ""),
+            required_evidence_missing=bool(self._missing_required_evidence_units()),
+        ).value
+        return summary
+
     @staticmethod
     def _transcriptome_shortfall_warnings(tx_summary: Mapping[str, Any]) -> list[str]:
         """Every way the aggregate says a requested species was not screened, as run warnings.
@@ -3633,13 +3724,15 @@ class SiRNAWorkflow:
             f"📊 Basic sequence-only off-target analysis for {len(candidates)} candidates "
             "(no reference alignment: this is not a completed screen)"
         )
-        return {
-            "status": "partial",
-            "method": "basic",
-            "results": results,
-            "aggregated": {},
-            "screening_evidence": reconciliation_payload(self._screening_evidence),
-        }
+        return self._publish_run_status(
+            {
+                "status": "partial",
+                "method": "basic",
+                "results": results,
+                "aggregated": {},
+                "screening_evidence": reconciliation_payload(self._screening_evidence),
+            }
+        )
 
     async def _parse_nextflow_results(self, output_dir: Path) -> dict[str, Any]:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis.
