@@ -81,7 +81,9 @@ class SelectionInputs:
             evidence, so an incomplete channel never excuses it.
         repeat_rejects: Whether a repeat-flagged candidate is rejected outright, decided by the
             ``max_repeat_transcript_fraction`` gate's own action.
-        top_n: How many eligible candidates the shortlist keeps.
+        top_n: How many eligible candidates the shortlist keeps. ``None`` means every one of them --
+            the same convention ``DesignParameters.top_n`` carries, because that is where the value
+            comes from and ``list[:None]`` needs no special-casing.
         design_input_shortfalls: Transcript ids a design-stage batch failure dropped, mapped to why.
             Additive: empty by default so a caller that has not wired #100's design-input tracking
             (W5) gets today's behaviour unchanged.
@@ -93,7 +95,7 @@ class SelectionInputs:
     query_species: str
     filter_channels: Mapping[str, frozenset[ScreeningChannel]]
     repeat_rejects: bool
-    top_n: int
+    top_n: int | None
     design_input_shortfalls: Mapping[str, str] = MappingProxyType({})
 
 
@@ -165,6 +167,14 @@ def evidence_shortfall(view: CandidateView, inputs: SelectionInputs, *, required
     pair and every undecided gate whatever its requiredness, and it is what **orders** candidates --
     a separate question, because nothing is required in ``exploratory`` mode, so the required set is
     always empty there and could not put an incomplete candidate below a complete one.
+
+    The unknown rule is scoped to gates *all* of whose channels are required: a subset, and
+    deliberately not an intersection. ``max_total_offtarget_hits`` counts the transcriptome and miRNA
+    channels together, so an absent miRNA aggregate alone makes it ``UNKNOWN``, and an intersection put
+    it in scope -- emptying the shortlist of a complete screen over a channel the policy calls
+    exploratory, the mirror of the defect this scoping exists to prevent (#101). A gate reading no
+    channel at all (``min_isoform_coverage``, the design-stage gates) is always in scope: its unknown
+    is the run's.
     """
     if inputs.requirements is None:
         return ()
