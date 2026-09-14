@@ -1900,6 +1900,9 @@ class SiRNAWorkflow:
         gets -- they still rank (below complete evidence) and still enter ``top_candidates``.
         """
         candidates = design_results.candidates
+        # Before the views are built, because eligibility reads this gate's verdict off the candidate
+        # and a gate that never ran has none to read (#105).
+        self._complete_isoform_coverage_verdicts(candidates)
         views = tuple(self._candidate_view(candidate, ordinal) for ordinal, candidate in enumerate(candidates))
         result = select(views, self._selection_inputs())
 
@@ -1957,6 +1960,34 @@ class SiRNAWorkflow:
                 "screening; they keep design-time scores and are excluded from top_candidates because the two "
                 "scores are not comparable."
             )
+
+    def _complete_isoform_coverage_verdicts(self, candidates: Sequence[SiRNACandidate]) -> None:
+        """Apply the coverage gate to any candidate that never reached it, so its verdict exists (#105).
+
+        ``_apply_isoform_coverage_gate`` is reached from :meth:`_score_and_gate`, which only the
+        integration path calls -- and only for a candidate whose query species was actually screened. So
+        on every other route out of screening (``nextflow_unavailable``, ``nextflow_failed``, the basic
+        sequence-only fallback, a missing output directory, and any unscreened candidate on the
+        integration path itself) a configured floor reached no candidate at all: ``filter_verdicts``
+        held no ``min_isoform_coverage`` key and ``build_candidate_row`` exported ``not_evaluated``,
+        which reads as "no floor was configured" rather than "the floor could not be checked". That is
+        the residual half of #105 -- the WARN half was fixed by routing the gate through the verdict
+        recorder; this is a gate that never ran.
+
+        Selection is the one point every one of those paths passes through, so the gate is completed
+        here. Only where no verdict was recorded yet: the call that held the measurement owns the
+        answer, and re-deciding would log the same rejection twice and re-offer the rejection label.
+
+        Coverage is only computed during post-screen scoring, so on those paths there is nothing to
+        compare and the verdict is ``UNKNOWN`` -- which never rejects, but does withhold a candidate
+        from a QUALIFIED shortlist, because a run that cannot check a floor it was given has not met
+        it. With no floor configured the gate still makes no claim and the verdict stays
+        ``NOT_EVALUATED``, so a default run is unaffected.
+        """
+        for candidate in candidates:
+            if "min_isoform_coverage" in (candidate.filter_verdicts or {}):
+                continue
+            self._apply_isoform_coverage_gate(candidate)
 
     def _candidate_view(self, candidate: SiRNACandidate, ordinal: int) -> CandidateView:
         """One candidate as the facts selection reads, and nothing else.
@@ -4537,7 +4568,9 @@ class SiRNAWorkflow:
         two non-rejecting outcomes somewhere to live -- PASS at or above the floor, and UNKNOWN when
         coverage could not be computed, which never rejects because an annotation gap is not evidence of
         poor coverage. Whether such a candidate can still *qualify* is decided in
-        :meth:`_apply_post_screen_ranking`, not here.
+        :meth:`_apply_post_screen_ranking`, not here -- which is also where
+        :meth:`_complete_isoform_coverage_verdicts` calls this gate for a candidate that reached no
+        scoring at all, so the verdict exists on every path and not only the one that integrated hits.
 
         A floor, so it declares ``Comparator.AT_LEAST`` and no evidence pairs: coverage comes from the
         transcript annotation rather than from a screening channel, which is why an incomplete channel
