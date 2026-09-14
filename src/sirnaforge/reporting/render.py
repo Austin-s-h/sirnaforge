@@ -171,7 +171,7 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
   <table id="idx"><thead><tr>
     <th class="pick" title="in cart"></th>
     <th data-k="status">Status</th><th data-k="guide">Guide</th><th data-k="composite">Score</th>
-    <th data-k="failed" title="gates failed / gates not evaluated">Gates</th>
+    <th data-k="failed" title="gates failed / gates undecided">Gates</th>
     <th data-k="liab" title="off-target liabilities">Liab.</th>
     <th data-k="rows" title="distinct isoforms carrying this guide, of all in the run">Isoforms</th>
   </tr></thead><tbody></tbody></table>
@@ -295,8 +295,9 @@ function drawMatrix(id, matrix){
 }
 const VERDICT=['pass','fail','unknown','not_evaluated','warn'];
 const V_PASS=0, V_FAIL=1, V_UNKNOWN=2, V_NOT_EVALUATED=3, V_WARN=4;
-//: payload.py's reason codes (payload.py:187-196), restated so the client evaluator can read them --
-//: only REASON_OK is ever re-thresholded; every other reason means the run itself never decided.
+//: payload.py's seven reason codes, restated so the client evaluator can read them -- only REASON_OK is
+//: ever re-thresholded; every other reason means the run itself never decided. The two the evaluator
+//: names are the two it branches on; gateReason below spells out all seven for the reader.
 const REASON_OK=0, REASON_EMPTY_VALUE=2;
 // The threshold a verdict shown beside this gate was ACTUALLY decided against: the reader's, once they
 // have moved it, and the run's otherwise. Every part of the gate panel reads this one function, because
@@ -318,6 +319,16 @@ function gateReason(f,value,verdict,reason,threshold){
                                  : 'filter is off, and the run exports no value for '+f.column;
   if(reason===4) return measured ? 'no threshold declared; value measured, nothing acts on it'
                                  : 'no threshold declared, and no value exported';
+  // The run's own two non-decisions on a gate it DID hold in force. Both ship under the unknown verdict
+  // code, because "applied, evidence unavailable" is not "not applied" (payload.py:_evaluate, #103), and
+  // only the reason code tells them apart -- so only this column can. Reasons 5 and 6 used to fall
+  // through to the comparison line below, which printed a comparison that was never made and, for
+  // reason 6, one whose arithmetic contradicts the pill beside it: the run records a real measured value
+  // with no verdict, so `5 not ge 1` appeared next to `unknown` on a gate 5 does satisfy. A row that
+  // states a comparison the run did not make is the fabricated-evidence direction, in words.
+  if(reason===5) return 'the run recorded unknown for this gate; no value to re-compare';
+  if(reason===6) return measured ? 'the run did not evaluate this gate; value measured, no verdict applied'
+                                 : 'the run did not evaluate this gate';
   // States the comparison that produced `verdict`, against the threshold that produced it -- and names
   // the run's own value whenever that is not the same number, so the reader's threshold is never
   // silently substituted for the run's in a sentence the reader will quote.
@@ -339,6 +350,10 @@ function gatesCard(g){
     <td>${fmt(value)}</td><td class="mono">${esc(f.comparator)} ${fmt(t)}${
       moved?` <span class="empty">(yours; run ${fmt(f.threshold)})</span>`:''}</td>
     <td>${esc(f.scope_label)}</td><td>${esc(f.stage)}</td><td>${esc(gateReason(f,value,verdict,reason,t))}</td></tr>`;}).join('');
+  // The banner below counts UNKNOWN verdicts, and after #103 that set includes an in-force gate the run
+  // itself recorded `not_evaluated`. It said "N gates not evaluated" over rows whose pills read `unknown`,
+  // while the rows whose pills literally read `not evaluated` -- off, or no declared threshold -- are the
+  // ones it does NOT count. "Undecided" is the one word for the set the number is actually over.
   const nu=live.n_gates_unknown;
   // Whose thresholds these verdicts came from, said once at the top of the panel: a reader quoting a
   // pill has to be able to see that it is theirs and not the run's without reading every row.
@@ -347,8 +362,8 @@ function gatesCard(g){
     ${nm?`<div class="warn"><b>${nm} threshold${nm===1?'':'s'} moved from the run's.</b> Every verdict
       below is re-derived at your value; the run's own threshold is shown beside it and named again in
       the Why column, so nothing here is the run's verdict unless it says so.</div>`:''}
-    ${nu?`<div class="warn"><b>${nu} of ${live.gates.length} gates not evaluated.</b> An unevaluated gate is
-      not a pass. See the Why column for the missing input.</div>`:''}
+    ${nu?`<div class="warn"><b>${nu} of ${live.gates.length} gates undecided.</b> An undecided gate is
+      not a pass. See the Why column for which non-decision it was.</div>`:''}
     ${(!nu&&live.status==='unknown')?`<div class="warn"><b>Run verdict: ${esc(g.run_verdict)}.</b>
       No declared filter covers this rejection, so it cannot be re-derived from the ${live.gates.length}
       gates below, all of which are satisfied. Reported as not established.</div>`:''}

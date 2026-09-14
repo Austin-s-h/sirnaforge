@@ -35,13 +35,21 @@ than letting them look like unrelated duplicate rows.
 
 Each **gate** the report evaluates against one guide's best-scoring row reaches one of five codes:
 
-| Verdict         | Meaning                                                                                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pass`          | the value was available and met the threshold                                                                                                           |
-| `fail`          | the value was available, the gate's action is not `warn`, and it did not meet the threshold                                                             |
-| `warn`          | the value was available, the gate's action is `warn`, and it did not meet the threshold -- a real finding, not a rejection                              |
-| `unknown`       | the gate was in force but the run exports no value to compare, or the run itself recorded `UNKNOWN` for this row                                        |
-| `not evaluated` | the gate was not applied at all (its action is `off`, it has no threshold, or the run itself recorded `NOT_EVALUATED`), so it makes no claim either way |
+| Verdict         | Meaning                                                                                                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pass`          | the value was available and met the threshold                                                                                                                |
+| `fail`          | the value was available, the gate's action is not `warn`, and it did not meet the threshold                                                                  |
+| `warn`          | the value was available, the gate's action is `warn`, and it did not meet the threshold -- a real finding, not a rejection                                   |
+| `unknown`       | the gate **was in force** and reached no decision: the run exports no value to compare, or the run itself recorded `UNKNOWN` or `NOT_EVALUATED` for this row |
+| `not evaluated` | the gate was never in force -- its action is `off`, or it declares no threshold -- so it makes no claim either way                                           |
+
+"Not applied" and "applied, evidence unavailable" are different claims, and only the second one bears
+on whether a guide is clean, so they get different codes. A gate that is in force with a threshold and
+that the **run itself** left undecided is therefore `unknown`, not `not evaluated`; the per-row reason
+code is what keeps the two non-decisions apart, and the gate panel's Why column is what prints it
+("the run recorded unknown for this gate; no value to re-compare" against "the run did not evaluate
+this gate; value measured, no verdict applied"). `unknown` still nulls the value; the run's own
+`not_evaluated` keeps the number the run recorded and applies no verdict to it.
 
 Each **guide** then gets one of four statuses, derived from its gates: `fail` if it fails any gate,
 else `unknown` if any gate is unknown (or the run rejected the guide by a name no declared gate
@@ -50,6 +58,15 @@ gate, else `pass`. `warn` is kept apart from `fail` because folding a warn-actio
 would make the report contradict a run `PASS` it actually agrees with; `unknown` is kept apart from
 `pass` because a guide that fails nothing is only clean when every gate could actually be evaluated.
 The report may report **less** than the run decided. It may never report more.
+
+Because an in-force gate the run left undecided is `unknown`, **a guide carrying one is no longer
+published as `pass`** -- it is `unknown`, and its panel carries the undecided-gate banner. Earlier
+builds counted only the run's `UNKNOWN` towards the guide's unknown tally, so a gate the run recorded
+`not_evaluated` was neither failed nor unknown and the status fell through to `pass`: a run whose
+repeat scan never executed leaves `repeat_transcript_fraction` at its `0.0` default with a
+`not_evaluated` verdict, from which the report published a confident `PASS` for a gate nobody had
+evaluated. Runs missing evidence will therefore show **more `unknown` guides and fewer passes** than
+they did before, on the same input.
 
 The header publishes the agreement between the report's own verdicts and the run's own
 `passes_filters` column: how many run-`PASS` guides the report contradicts (should read 0), how many
@@ -72,6 +89,41 @@ display range invented in the template; the run's own threshold is always strict
 so a control can always be moved back to where the run left it. The number box is not bounded by the
 slider, so the slider's step limits its resolution and never the reachable thresholds.
 
+### Whose threshold produced the verdict you are reading
+
+A verdict re-derived at a reader's threshold is not the run's verdict, and the report says so in three
+places at once rather than leaving the reader to infer it:
+
+- the gate panel opens with `N thresholds moved from the run's` whenever any control has been touched,
+  so a reader quoting a pill can see whose it is without reading every row;
+- the row's Threshold cell reads `le 20 (yours; run 10)`; and
+- the Why sentence states the comparison **that produced the verdict beside it**, then names the run's
+  own: `29 le 30 at your threshold; the run used le 15`.
+
+All three read one function (`liveThreshold`), which is the point: the Why column used to build its
+sentence from the run's threshold while the pill beside it came from the live re-thresholded table, so
+any reader move made the sentence arithmetically false in both directions -- `10 not le 10 so FAIL`
+next to a `pass` pill, or a satisfied comparison next to a `fail`. A row whose stated arithmetic does
+not produce its own verdict is publishing a verdict the pipeline would not reproduce.
+
+The panel also carries `N of M gates undecided` when a guide has any -- the count is over gates the
+report calls `unknown`, which after the vocabulary above includes the run's own `not_evaluated` on an
+in-force gate, and deliberately excludes the rows whose pills read `not evaluated`.
+
+### A number box refuses a non-number, visibly
+
+Both kinds of box -- gate thresholds and reader-filter bounds -- are `type="number" step="any"` and go
+through one boundary, `parseControlValue`: blank is _unset_, and anything non-finite (`abc`, `5px`,
+`Infinity`, `1e999`, `NaN`) is **refused**. A refusal paints the control (`aria-invalid`, a red box) and
+names it in a banner, so nothing is silently ignored. There is no `min`/`max` on the box on purpose:
+the slider's domain bounds the slider, and the box is what keeps every threshold reachable, so what is
+refused is not an unusual number but a non-number.
+
+This matters because `Number('abc')` is `NaN` and every comparison against `NaN` is false: one junk
+keystroke used to fail every re-decidable gate on every guide. `encodeHash` also filters on
+`Number.isFinite`, so the fragment can never carry a value `applyHashFragment` would itself refuse --
+including an empty one (`t=some_gate:`), which `Number('')` had been reading as a real threshold of `0`.
+
 ### A gate the run could not evaluate stays unevaluable
 
 **No threshold a reader can choose makes an unanswerable gate answerable.** Re-thresholding only ever
@@ -82,7 +134,15 @@ only when all four of these hold:
 2. it has a declared threshold,
 3. the run exports the column the report reads for it (`<filter_id>_observed`, or the descriptor's own
    column -- whichever `observed_column` resolved), and
-4. at least one guide in the run has a value in that column.
+4. the run **decided** it for at least one guide in this run.
+
+The fourth condition used to read "at least one guide has a value in that column", which is a weaker
+thing. A gate every row of which the run recorded `not_evaluated` still exports the number it measured,
+so that test called it evaluable and the report shipped a live slider that could not change anything: a
+reader moves it, every row stays frozen on its own reason code, nothing happens and nothing says why.
+`evaluable` now means exactly one thing -- **moving this control can change a verdict** -- and such a
+gate is published frozen with the honest reason instead. `n_values` still counts the measurements,
+because they were measured.
 
 Anything else is **frozen**: no control is rendered, the row states payload.py's own
 `unevaluable_reason` rather than a re-derived guess at it, the evaluator returns the run's verdict
@@ -188,6 +248,17 @@ root. Every path in the document is therefore relative to the summarize file's o
 report's -- `write_quilt_summarize(..., out_path=...)` is what tells the two apart. The `.nf` pipeline
 itself renders nothing; a Nextflow-only run still needs `sirnaforge report` afterwards.
 
+The workflow **re-issues** the registration once `logs/workflow_summary.json` has landed. Step 6 runs
+before the summary is written, and `write_quilt_summarize` omits any artifact that does not exist yet, so
+the run's own summary could never be registered by the step-6 write -- the one row a reader would go
+looking for was the one row missing. Re-issued rather than reordered, because the summary's
+`processing_time` has to keep measuring the whole run, and gated on the summary existing and the report
+having rendered, so a `write_json_summary=False` run or a failed summary write registers nothing
+dangling. Rendering the report and registering it are also separate `try`/`except` regions with separate
+log messages now: one failure used to be reported as the other, and the step's console artifact list
+announced files it had not written -- `candidates_pass.fasta` is deliberately deleted when nothing
+passes, and was listed anyway. Every line in that list is existence-checked.
+
 ## The URL fragment
 
 The fragment carries the selected guide, any moved thresholds (`t=`), any reader filters (`r=`), and
@@ -215,11 +286,32 @@ produced. A sandboxed frame may withhold downloads entirely (a Quilt iframe with
 `allow-downloads` does), so the same bytes sit in a text box above the button, `Select all text`
 selects them, and a refused download says so rather than doing nothing.
 
+The `status` column is the reader's **live** status, so the file opens with `#`-prefixed, tab-delimited
+`key=value` comment lines saying which thresholds produced it. Without them the export was a table of
+verdicts with no way to tell whose they were once it left the page:
+
+```text
+#sirnaforge_cart	schema=1	gene=TP53	guides=2	preset=near_miss
+#status_basis=reader_rethresholded	moved_gates=1
+#moved_gate=max_off_target_count	comparator=le	run_threshold=15	reader_threshold=30
+#reader_filter=composite	direction=min	bound=30
+```
+
+`status_basis` is `run_thresholds` when nothing has been moved and `reader_rethresholded` otherwise,
+with one `#moved_gate=` line per moved gate. The `#reader_filter=` lines are recorded for a different
+reason: a reader filter can never touch the `status` column, but `Add top <n> to cart` picks from the
+_filtered_ view, so the bounds decide which guides are in the file. The comment says exactly that, so
+the two kinds of provenance are not confused. The columns and their order are unchanged, and are frozen
+in the parity harness.
+
 ## Size, and the one figure
 
 The tracked `baseline_0_7_1` fixture slice -- 292 candidate rows, 28 guides, 2,173 classified
-alignments and 268 miRNA seed hits -- renders to **519,084 bytes** (507 KiB), of which markup, CSS and
-script are under 0.5 MB in total and effectively constant. A full internal reference run of tens of
+alignments and 268 miRNA seed hits -- renders to **554,923 bytes** (542 KiB), of which markup, CSS and
+script are under 0.5 MB in total and effectively constant. That figure moves with the template rather
+than with the run: it was 519,084 bytes before the reader filters, the threshold-provenance banner, the
+refusal painting and the cart's comment header were added, none of which scale with the number of
+candidates. A full internal reference run of tens of
 thousands of candidate rows lands near 15 MB; the growth is candidate rows, embedded off-target
 evidence at `human, nm<=2`, miRNA seed hits and the count matrix. Two decisions keep it that small:
 the filter descriptors are emitted **once** and each guide carries only `[value, verdict, reason]`
@@ -266,3 +358,23 @@ guide with **no** composite score is asserted to be excluded by a composite floo
 to narrow together with a preset and the status set (each cutting rows the other two keep), and the
 fragment is round-tripped and then reset. The fixture carries a guide with 4 liabilities and one with 2
 so that "at most 3" has a real answer, and one guide with no composite score at all.
+
+Four more drivers cover the parts of the report that are text rather than arithmetic, because a report
+whose words disagree with its own numbers is wrong in the way that matters:
+
+- **the gate panel.** `gatesCard` touches no DOM -- it returns HTML as a string -- so the harness builds
+  the real panel at the run's thresholds and again with one gate moved, parses every row out of it, and
+  asserts as a property that the threshold each Why sentence cites is the one in force, that the
+  sentence's polarity is arithmetically true, and that it agrees with the pill in the same row. Two rows
+  cover the run's own non-decisions: reason 5 and reason 6 must each state _which_ non-decision it was
+  and never a comparison, and the panel's banner must name the set it counts.
+- **the cart export.** The TSV is generated twice, and the `#` provenance lines, the `status_basis` and
+  the frozen column order are all asserted against the payload's own thresholds.
+- **the numeric boundary.** `parseControlValue` is driven over thirteen strings, and `encodeHash` is
+  shown to omit a poisoned `T`/`R` rather than write a fragment `applyHashFragment` refuses. The DOM
+  half -- `type="number"`, `validity.badInput`, the refusal banner -- is asserted structurally, because
+  only a browser sets that flag.
+- **the slice itself.** `_slice_script` ends where a browser ends a script (the **first** `</script>`)
+  and refuses a document that closes its own script twice, and a companion test renders a payload
+  spelling `</script>` to prove the escape in `render._embed` holds. Without both, a truncated document
+  could pass parity.

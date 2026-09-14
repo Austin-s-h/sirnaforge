@@ -1042,6 +1042,68 @@ def test_the_gate_panel_states_the_comparison_that_produced_the_verdict_beside_i
     assert "moved from the run's" not in panel["atRun"]["html"]
 
 
+def _run_panels_driver(script: str, guides: list[str]) -> dict[str, Any]:
+    """Build the gate panel for several guides, all at the run's own thresholds."""
+    driver = f"""
+const __GUIDES = {json.dumps(guides)};
+process.stdout.write(JSON.stringify(Object.fromEntries(
+  __GUIDES.map(k => [k, gatesCard(G.find(x => x.guide === k))]))));
+"""
+    return _node_run(script, driver)
+
+
+#: The two fixture guides whose rows the RUN itself left undecided on a gate it held in force: one
+#: recorded ``unknown`` (reason 5, no value), one recorded ``not_evaluated`` (reason 6, value 5 present).
+_UNDECIDED = {"RUN_UNKNOWN_GATE": ("run_unknown_gate", 5), "RUN_NOTEVAL_GATE": ("run_not_evaluated_gate", 6)}
+
+
+@pytest.mark.unit
+def test_a_gate_the_run_left_undecided_states_its_non_decision_not_a_comparison(
+    payload,  # noqa: ANN001
+    rendered_script: str,
+) -> None:
+    """Reasons 5 and 6 must say which non-decision they were, never invent a comparison (#103).
+
+    ``gateReason`` special-cased reasons 1-4 and let 5 and 6 fall through to the comparison line, so a
+    gate the run held in force and then declined to decide got a sentence describing a comparison
+    nobody made. Reason 6 is the sharp case: payload.py keeps the value the run recorded and applies no
+    verdict to it, so the fallthrough printed ``5 not ge 1`` -- arithmetically false, and beside an
+    ``unknown`` pill -- which is the fabricated-evidence direction stated in words.
+
+    The two states must also stay distinguishable in the panel. Both now ship under the UNKNOWN verdict
+    code (payload.py ``_evaluate``, #103), because an in-force gate the run could not decide is
+    "applied, evidence unavailable" and not "not applied", so the pill alone can no longer tell a
+    reader which of the two happened; only the reason, and therefore only this column, can.
+    """
+    reasons = {
+        f["filter_id"]: reason
+        for g in payload.guides
+        if g.guide == _guide_of("RUN_NOTEVAL_GATE")
+        for f, (_v, _verdict, reason) in zip(payload.filters, g.gates, strict=True)
+    }
+    assert reasons["run_not_evaluated_gate"] == 6, "the fixture stopped exercising reason 6 on this guide"
+
+    panels = _run_panels_driver(rendered_script, [_guide_of(label) for label in _UNDECIDED])
+    for label, (filter_id, reason) in _UNDECIDED.items():
+        html = panels[_guide_of(label)]
+        row = _panel_rows(html)[filter_id]
+        assert row["verdict"] == "unknown", (label, row)
+        assert _WHY_COMPARISON.match(row["why"]) is None, (
+            f"{label}: {filter_id} states a comparison the run never made: {row['why']}"
+        )
+        if reason == 5:
+            assert row["why"] == "the run recorded unknown for this gate; no value to re-compare", row
+            assert row["value"] == "—", f"reason 5 nulls the value; the panel showed {row['value']!r}"
+        else:
+            assert row["why"] == ("the run did not evaluate this gate; value measured, no verdict applied"), row
+            assert _num(row["value"]) == 5, "reason 6 keeps the number the run recorded"
+        # The banner over these rows names the set it counts. It counts UNKNOWN verdicts, which after #103
+        # include this row, while the pills that literally read "not evaluated" are the ones excluded --
+        # so calling the count "gates not evaluated" named the wrong set.
+        assert re.search(r"<b>\d+ of \d+ gates undecided\.</b>", html), label
+        assert "gates not evaluated" not in html, label
+
+
 def _run_cart_driver(script: str, guides: list[str]) -> dict[str, Any]:
     """Export the cart as TSV twice: at the run's thresholds, and with one gate and one bound moved."""
     driver = f"""
