@@ -1,0 +1,27 @@
+{
+  "description": "Trace links from siRNAforge design candidates to native OligoGym observations",
+  "candidate_source": "candidates_all.csv",
+  "workflow_root": "/workspace/workflow_results/oligogym_native_design",
+  "mapping_source": "/workspace/tests/data/benchmarks/oligogym_native_design/mappings.csv",
+  "coordinate_join": "candidate position is matched as 1-based first, with a 0-based fallback",
+  "offtarget_note": "No off-target result is inferred; all workflow runs were design_only.",
+  "candidate_benchmark_link_rows": 10060,
+  "candidate_native_transcript_rows": 450,
+  "datasets": {
+    "ichihara_2007_1": {
+      "workflow_run": "ichihara_2007_1_len19",
+      "candidate_benchmark_link_rows": 5205,
+      "candidate_native_transcript_rows": 64
+    },
+    "ichihara_2007_2": {
+      "workflow_run": "ichihara_2007_2_len19",
+      "candidate_benchmark_link_rows": 3270,
+      "candidate_native_transcript_rows": 141
+    },
+    "martinelli_2023_1": {
+      "workflow_run": "martinelli_2023_1_len21",
+      "candidate_benchmark_link_rows": 1585,
+      "candidate_native_transcript_rows": 245
+    }
+  }
+}

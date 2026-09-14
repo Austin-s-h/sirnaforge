@@ -219,27 +219,27 @@ def test_the_shipped_profile_is_the_actual_default_vectors() -> None:
     `ScoringWeights` both default-construct the same three classes, so comparing the two to each
     other is an identity that no weight change can break -- the first draft of this test did exactly
     that and stayed green under a mutated `PostScreenSiRNAWeights`. Both sides are now compared
-    against 4.0.0's shipped numbers instead.
+    against the active pre-production numbers instead.
     """
-    shipped_4_0_0 = {
-        "design_v4": {"target_accessibility": 0.35, "asymmetry": 0.40, "gc_content": 0.25},
-        "postscreen_sirna_v4": {
+    preproduction_v1 = {
+        "design_preproduction_v1": {"target_accessibility": 0.35, "asymmetry": 0.40, "gc_content": 0.25},
+        "postscreen_sirna_preproduction_v1": {
             "off_target": 0.25,
-            "target_accessibility": 0.30,
-            "asymmetry": 0.25,
-            "gc_content": 0.20,
+            "target_accessibility": 0.10,
+            "asymmetry": 0.30,
+            "gc_content": 0.35,
         },
-        "postscreen_mirna_v4": {
+        "postscreen_mirna_preproduction_v1": {
             "off_target": 0.20,
-            "target_accessibility": 0.24,
-            "asymmetry": 0.20,
-            "gc_content": 0.16,
+            "target_accessibility": 0.08,
+            "asymmetry": 0.24,
+            "gc_content": 0.28,
             "ago_start": 0.10,
             "supp_13_16": 0.10,
         },
     }
-    assert {vector.name: vector.as_mapping() for vector in SHIPPED_PROFILE.vectors} == shipped_4_0_0
-    assert ScoringWeights().as_manifest() == shipped_4_0_0
+    assert {vector.name: vector.as_mapping() for vector in SHIPPED_PROFILE.vectors} == preproduction_v1
+    assert ScoringWeights().as_manifest() == preproduction_v1
 
 
 @pytest.mark.unit

@@ -1,0 +1,28 @@
+{
+  "description": "Runnable synthetic-context design inputs derived from OligoGym siRNA rows",
+  "source_directory": "tests/data/external/oligogym",
+  "output_directory": "tests/data/benchmarks/oligogym",
+  "flank_nt": 70,
+  "site_start_1based": 71,
+  "context_warning": "Synthetic neutral flanks make design enumeration and parameter benchmarking runnable; they do not validate native transcript accessibility.",
+  "guide_convention": "second dot-separated fasta strand / HELM RNA2 antisense strand",
+  "datasets": {
+    "ichihara_2007_1": 2431,
+    "ichihara_2007_2": 419,
+    "martinelli_2023_1": 907,
+    "shmushkovich_2018_1": 356
+  },
+  "total_records": 4113,
+  "input_files": {
+    "ichihara_2007_1_len21": 2431,
+    "ichihara_2007_2_len21": 419,
+    "martinelli_2023_1_len21": 907,
+    "shmushkovich_2018_1_len20": 356
+  },
+  "commands": {
+    "ichihara_2007_1_len21": "uv run sirnaforge design tests/data/benchmarks/oligogym/inputs/ichihara_2007_1_len21.fasta --length 21 --output benchmark_results/ichihara_2007_1_len21.csv",
+    "ichihara_2007_2_len21": "uv run sirnaforge design tests/data/benchmarks/oligogym/inputs/ichihara_2007_2_len21.fasta --length 21 --output benchmark_results/ichihara_2007_2_len21.csv",
+    "martinelli_2023_1_len21": "uv run sirnaforge design tests/data/benchmarks/oligogym/inputs/martinelli_2023_1_len21.fasta --length 21 --output benchmark_results/martinelli_2023_1_len21.csv",
+    "shmushkovich_2018_1_len20": "uv run sirnaforge design tests/data/benchmarks/oligogym/inputs/shmushkovich_2018_1_len20.fasta --length 20 --output benchmark_results/shmushkovich_2018_1_len20.csv"
+  }
+}

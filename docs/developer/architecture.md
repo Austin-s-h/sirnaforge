@@ -361,8 +361,8 @@ def compute_composite(features, vector: WeightVector) -> CompositeScore:
     """Pure function. Applies one named vector's weights exactly as declared -- no arithmetic."""
 ```
 
-The single place any score is computed, for both the design stage (`design_v4` -> `design_score`) and
-the post-screen stage (`postscreen_{sirna,mirna}_v4` -> `composite_score`). `workflow.py` and
+The single place any score is computed, for both the design stage (the active pre-production vector -> `design_score`) and
+the post-screen stage (the active pre-production siRNA/miRNA vectors -> `composite_score`). `workflow.py` and
 `core/design.py` both call into this one function rather than each computing their own weighted sum.
 
 It requires **every** term the vector declares and raises otherwise. There is no renormalisation and

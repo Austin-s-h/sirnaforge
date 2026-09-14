@@ -1,0 +1,12 @@
+{
+  "input_fasta": "/ref/0154d607d1bf.fa",
+  "output_fasta": "tests/data/benchmarks/oligogym_native_design/references/representative/mouse_protein_coding_gene_representatives.fa",
+  "input_records": 319954,
+  "input_protein_coding_records": 305534,
+  "selected_records": 21818,
+  "selected_genes": 21818,
+  "preserved_mapping_genes": 15,
+  "preserved_mapping_transcripts_seen": 0,
+  "profile": "all protein-coding transcripts for mapped genes; longest protein-coding transcript per other gene",
+  "sha256": "77b950457a95d3c7772ff5b81a72147bad41124863eddf304d9d98afa73df64d"
+}
