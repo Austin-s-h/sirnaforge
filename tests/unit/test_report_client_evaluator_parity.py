@@ -23,7 +23,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -102,6 +104,8 @@ def _manifest_filters() -> list[dict[str, object]]:
 #: reason code in payload.py's _evaluate (187-303) fires on at least one guide, and so near-miss,
 #: off-target-clean and register-deduplicated each have a genuine positive and a genuine trap case.
 _GUIDES: dict[str, dict[str, object]] = {
+    # ALL_PASS and WARN_ONLY are the two guides _HITS gives real liabilities to (4 and 2), so they are
+    # marked screened: a guide with alignments in the hit table was plainly submitted to the aligner.
     "ALL_PASS": {
         "metric_a": 1,
         "metric_b": 8,
@@ -113,6 +117,7 @@ _GUIDES: dict[str, dict[str, object]] = {
         "metric_d": 50,
         "metric_e": 5,
         "passes_filters": "PASS",
+        "off_target_screened": True,
     },
     "WARN_ONLY": {
         "metric_a": 1,
@@ -125,6 +130,7 @@ _GUIDES: dict[str, dict[str, object]] = {
         "metric_d": 50,
         "metric_e": 5,
         "passes_filters": "PASS",
+        "off_target_screened": True,
     },
     "FAIL_ONE": {
         "metric_a": 15,
@@ -238,6 +244,22 @@ _GUIDES: dict[str, dict[str, object]] = {
         "passes_filters": "PASS",
         "off_target_screened": False,
     },
+    # Every gate decides normally; only the composite score is absent. This is the guide a composite
+    # floor must EXCLUDE rather than admit -- the reader-filter half of "an absent value cannot
+    # satisfy a threshold". design_score is kept, so the guide still sorts and still renders.
+    "NO_COMPOSITE": {
+        "metric_a": 1,
+        "metric_b": 8,
+        "metric_f": 1,
+        "metric_g": 10,
+        "metric_c": 1,
+        "metric_off": 5,
+        "metric_nothresh": 5,
+        "metric_d": 50,
+        "metric_e": 5,
+        "passes_filters": "PASS",
+        "composite_score": "",
+    },
 }
 
 #: id -> (transcript, position, composite_score). REGISTER_PAIR_A/B share a transcript 1 nt apart, so
@@ -255,7 +277,18 @@ _PLACEMENT = {
     "REGISTER_PAIR_B": ("ENST00000000008", 201, 20.0),
     "OFFTARGET_CLEAN": ("ENST00000000009", 100, 65.0),
     "NEVER_SCREENED": ("ENST00000000010", 100, 10.0),
+    "NO_COMPOSITE": ("ENST00000000011", 100, 5.0),
 }
+
+#: (guide label, hit_class, symbol), one aggregated alignment each. ``off_target`` is a liability class
+#: and ``on_target`` is not, so these decide each guide's ``liability_count``: ALL_PASS carries 4 and
+#: WARN_ONLY 2, which is what makes "at most 3 liabilities" a request with a real answer -- and one the
+#: off-target-clean preset, which covers exactly zero, cannot express. Every other guide stays at 0.
+_HITS = (
+    ("OFFTARGET_CLEAN", "on_target", "TP53"),
+    *(("ALL_PASS", "off_target", "SOMEGENE") for _ in range(4)),
+    *(("WARN_ONLY", "off_target", "OTHERGENE") for _ in range(2)),
+)
 
 _EXTRA_COLUMNS = (
     "metric_a",
@@ -280,12 +313,22 @@ def _seq(label: str) -> str:
     return "".join(letters[(digest // 4**k) % 4] for k in range(21))
 
 
+def _guide_of(label: str) -> str:
+    """The payload's key for a fixture guide.
+
+    ``payload._normalise_guide`` upper-cases and spells the guide in RNA (T -> U); the fixture's CSV
+    rows store the DNA spelling, like every other ``candidates_all.csv``, so a lookup key must too.
+    """
+    return _seq(label).replace("T", "U")
+
+
 def _write_fixture_run(tmp_path: Path) -> Path:
-    """A run directory exercising every reason code, every comparator and three presets' edge cases.
+    """A run exercising every reason code, every comparator, and the presets' and filters' edge cases.
 
     ``empty_value_le`` is blank on exactly one guide's row (REASON_EMPTY_VALUE); every other filter's
     column is real for every row, so the difference between the two is a fact about one guide, not
-    about the run.
+    about the run. The same discipline gives the reader filters their edge cases: one guide with no
+    composite score at all, and two guides carrying 4 and 2 real liabilities (``_HITS``).
     """
     run = tmp_path / "run"
     (run / "sirnaforge").mkdir(parents=True)
@@ -306,7 +349,8 @@ def _write_fixture_run(tmp_path: Path) -> Path:
             "composite_score": score,
             "weight_vector": "postscreen_sirna_v4",
         }
-        for column in _EXTRA_COLUMNS + ("passes_filters",):
+        # composite_score is overridable so one guide can have none at all (NO_COMPOSITE).
+        for column in _EXTRA_COLUMNS + ("passes_filters", "composite_score"):
             if column in overrides:
                 cells[column] = overrides[column]
         lines.append(",".join(str(cells.get(c, "")) for c in columns))
@@ -333,26 +377,30 @@ def _write_fixture_run(tmp_path: Path) -> Path:
         "seed_mismatches",
         "offtarget_score",
     ]
-    cells = unclassified_cells()
-    cells.update(hit_class="on_target", hit_symbol="TP53", matched_symbol="TP53")
-    hit_columns = [*base_columns, *cells]
-    hit_row = [
-        "screen_0",
-        _seq("OFFTARGET_CLEAN"),
-        "human",
-        "ENST00000000009",
-        "100",
-        "+",
-        "21M",
-        "60",
-        "42",
-        "0",
-        "0",
-        "1.0",
-        *cells.values(),
-    ]
+    hit_columns = [*base_columns, *unclassified_cells()]
+    rows = []
+    for index, (label, hit_class, symbol) in enumerate(_HITS):
+        cells = unclassified_cells()
+        cells.update(hit_class=hit_class, hit_symbol=symbol, matched_symbol=symbol)
+        rows.append(
+            [
+                f"screen_{index}",
+                _seq(label),
+                "human",
+                f"ENST0000009{index:04d}",
+                str(100 + index),
+                "+",
+                "21M",
+                "60",
+                "42",
+                "0",
+                "0",
+                "1.0",
+                *(str(v) for v in cells.values()),
+            ]
+        )
     table = run / "off_target" / "results" / "aggregated" / "combined_offtargets.tsv"
-    table.write_text("\t".join(hit_columns) + "\n" + "\t".join(hit_row) + "\n")
+    table.write_text("\n".join("\t".join(row) for row in [hit_columns, *rows]) + "\n")
     return run
 
 
@@ -442,7 +490,6 @@ def _run_node_driver(
     The driver only ever calls functions the report ships (``reevaluateGates``, ``PRESETS``,
     ``applyHashFragment``); it adds no logic of its own that the parity check could be fooled by.
     """
-    node = _node_or_fail()
     driver = f"""
 const __OVERRIDE_SETS = {json.dumps(override_sets)};
 const __RESULTS = [];
@@ -462,9 +509,17 @@ const __PRESETS = G.map(g => ({{
 const __REFUSAL = applyHashFragment('t=' + {json.dumps(frozen_filter_id)} + ':999999,no_such_filter_id:1');
 process.stdout.write(JSON.stringify({{results: __RESULTS, presets: __PRESETS, refusal: __REFUSAL}}));
 """
-    # A temp .mjs, not `node -e`: the substituted script is ~60 KB and this is the shape the issue's
-    # own instructions ask for -- the placeholder substitution happens for real, in Python, before
-    # node ever sees a byte of it.
+    return _node_run(script, driver)
+
+
+def _node_run(script: str, driver: str) -> dict[str, object]:
+    """Run the shipped script plus a driver under node and return its parsed stdout.
+
+    A temp ``.mjs``, not ``node -e``: the substituted script is ~60 KB and this is the shape the issue's
+    own instructions ask for -- the placeholder substitution happens for real, in Python, before node
+    ever sees a byte of it.
+    """
+    node = _node_or_fail()
     with tempfile.TemporaryDirectory() as tmp:
         driver_path = Path(tmp) / "evaluator.mjs"
         driver_path.write_text(script + driver, encoding="utf-8")
@@ -490,9 +545,11 @@ def test_the_fixture_covers_every_reason_code_the_evaluator_must_freeze_on(paylo
 def test_no_declared_filter_id_or_column_is_a_branch_in_the_template() -> None:
     """The evaluator is generic (#103): it reads FILTERS, it never branches on a specific filter.
 
-    A static grep over the six real, hand-written FILTERS_UI boxes this replaced is what the issue's
-    own review caught -- ``gc_content``, ``asymmetry_score`` and ``off_target_count`` were literal
-    strings in the old template. None of the real registry's 17 ids may appear as a literal here.
+    A static grep over the six hand-written v1 metric boxes is what the issue's own review caught --
+    ``gc_content``, ``asymmetry_score`` and ``off_target_count`` were literal strings in the old
+    template, and those three are gates a reader now moves generically. None of the real registry's 17
+    ids may appear as a literal here. The three restored reader filters are not a counterexample: they
+    read guide fields no gate covers, under their own keys, and no `filter_id` among them.
     """
     for filter_id in DECLARED_FILTER_IDS:
         assert f"'{filter_id}'" not in _TEMPLATE and f'"{filter_id}"' not in _TEMPLATE, (
@@ -552,9 +609,7 @@ def test_near_miss_off_target_clean_and_register_dedup_presets(payload, rendered
     """
     output = _run_node_driver(rendered_script, {"the run's own": {}}, DECLARED_FILTER_IDS[0])
     by_guide = {row["guide"]: row for row in output["presets"]}
-    # payload._normalise_guide upper-cases and spells the guide in RNA (T -> U); the fixture's CSV
-    # rows store the DNA spelling, like every other candidates_all.csv, so the lookup key must too.
-    guide_of = {label: _seq(label).replace("T", "U") for label in _GUIDES}
+    guide_of = {label: _guide_of(label) for label in _GUIDES}
 
     assert by_guide[guide_of["FAIL_ONE"]]["near_miss"] is True
     assert by_guide[guide_of["ALL_PASS"]]["near_miss"] is False
@@ -577,6 +632,237 @@ def test_a_frozen_filter_named_in_the_url_fragment_is_refused_visibly(payload, r
     refused = output["refusal"]["refused"]
     assert frozen["filter_id"] in refused
     assert "no_such_filter_id" in refused
+
+
+# --- reader filters: composite score, isoforms hit, liabilities (#103 remainder) --------------------
+# Three of the v1 report's six metric boxes are restored beside the gate controls, because no gate
+# covers them: composite_score and transcript_hits are gated by nothing, and liability_count is
+# reachable only as "exactly zero" through the off-target-clean preset. They select rows; they never
+# move a verdict. The bounds below are chosen against _PLACEMENT's composite scores (5..95).
+_READER_BOUND_SETS = {
+    "nothing set": {},
+    "composite at least 60": {"composite": 60},
+    "isoforms at least 1": {"isoforms": 1},
+    "at most 0 liabilities": {"liab": 0},
+    "at most 3 liabilities": {"liab": 3},
+    "composite floor and liability ceiling together": {"composite": 30, "liab": 3},
+}
+
+#: reader filter key -> (direction, how to read the value off a payload guide). The Python side of the
+#: reader-filter contract, stated once; the JS reads its own READER_FILTERS table.
+_READER_ACCESS: dict[str, tuple[str, Callable[[Any], float | None]]] = {
+    "composite": ("min", lambda g: g.composite_score),
+    "isoforms": ("min", lambda g: g.transcript_hits),
+    "liab": ("max", lambda g: g.liability_count),
+}
+
+
+def _python_reader_selection(payload, bounds: dict[str, float]) -> list[str]:  # noqa: ANN001
+    """The guides a reader filter set admits, by the same rule: an absent value satisfies nothing."""
+    kept = []
+    for guide in payload.guides:
+        ok = True
+        for key, bound in bounds.items():
+            direction, read = _READER_ACCESS[key]
+            value = read(guide)
+            if value is None or (value < bound if direction == "min" else value > bound):
+                ok = False
+                break
+        if ok:
+            kept.append(guide.guide)
+    return kept
+
+
+def _run_reader_filter_driver(script: str, bound_sets: dict[str, dict[str, float]]) -> dict[str, object]:
+    """Drive the shipped reader filters, their composition, and a fragment round-trip, under node.
+
+    Every call is to a function or a binding the report itself ships -- ``passesReaderFilters``,
+    ``passesFilters``, ``PRESETS``, ``encodeHash``, ``applyHashFragment``, ``resetControls``, ``R``,
+    ``T``, ``activePreset`` and ``F``. The only logic here is the bookkeeping that records what they
+    returned; the reset below is the same ``resetControls`` the ``#freset`` button calls, not a
+    restatement of it.
+    """
+    driver = f"""
+const __BOUND_SETS = {json.dumps(bound_sets)};
+const __SELECTION = Object.entries(__BOUND_SETS).map(([label, bounds]) => ({{
+  label, bounds, guides: G.filter(g => passesReaderFilters(g, bounds)).map(g => g.guide),
+}}));
+
+// Composition: a reader bound, a preset and the status checkboxes at once must be exactly the
+// intersection of the three taken separately -- driven through passesFilters itself, not re-derived.
+const __COMPOSE = (() => {{
+  const bounds = {{composite: 30}}, preset = 'register_dedup', statuses = ['pass'];
+  const readerOnly = G.filter(g => passesReaderFilters(g, bounds)).map(g => g.guide);
+  const presetOnly = G.filter(g => PRESETS[preset].test(g, g._live)).map(g => g.guide);
+  const statusOnly = G.filter(g => statuses.includes(g._live.status)).map(g => g.guide);
+  Object.assign(R, bounds); activePreset = preset; F.status = new Set(statuses);
+  const combined = G.filter(passesFilters).map(g => g.guide);
+  resetControls();
+  return {{readerOnly, presetOnly, statusOnly, combined}};
+}})();
+
+// Fragment round-trip and reset. The reset is the #freset button's own resetControls; the reload is
+// the fragment alone, as a fresh load of the copied URL would be.
+const __TRIP = (() => {{
+  const gate = FILTERS.find(f => evaluable(f));
+  const moved = gate.threshold + 1;
+  T[gate.filter_id] = moved; R.composite = 30; R.liab = 3; activePreset = 'near_miss';
+  recomputeLive();
+  const before = {{
+    hash: encodeHash(), T: {{...T}}, R: {{...R}}, preset: activePreset,
+    rows: G.filter(passesFilters).map(g => g.guide),
+  }};
+  resetControls();
+  recomputeLive();
+  const reset = {{
+    hash: encodeHash(), T: {{...T}}, R: {{...R}}, preset: activePreset,
+    rows: G.filter(passesFilters).map(g => g.guide),
+  }};
+  const applied = applyHashFragment(before.hash);
+  recomputeLive();
+  const reloaded = {{
+    hash: encodeHash(), T: {{...T}}, R: {{...R}}, preset: activePreset, refused: applied.refused,
+    rows: G.filter(passesFilters).map(g => g.guide),
+  }};
+  resetControls(); recomputeLive();
+  return {{gate: gate.filter_id, moved, before, reset, reloaded}};
+}})();
+
+// An unknown reader-filter name in the fragment is refused, exactly as an unknown gate id is.
+const __UNKNOWN = (() => {{
+  const applied = applyHashFragment('r=no_such_reader_filter:7');
+  return {{refused: applied.refused, R: {{...R}}}};
+}})();
+
+process.stdout.write(JSON.stringify(
+  {{selection: __SELECTION, compose: __COMPOSE, trip: __TRIP, unknown: __UNKNOWN}}));
+"""
+    return _node_run(script, driver)
+
+
+@pytest.fixture(scope="module")
+def reader_filter_output(rendered_script: str) -> dict[str, object]:
+    """One node invocation shared by the reader-filter assertions below."""
+    return _run_reader_filter_driver(rendered_script, _READER_BOUND_SETS)
+
+
+@pytest.mark.unit
+def test_each_reader_filter_selects_the_rows_the_python_side_would(payload, reader_filter_output) -> None:  # noqa: ANN001
+    """Composite floor, isoform floor and liability ceiling, each against the payload's own numbers.
+
+    ``at most 3 liabilities`` is the request the off-target-clean preset cannot express: that preset
+    covers exactly zero, so without this box a reader has no way to ask for a small, tolerable number.
+    """
+    by_label = {entry["label"]: entry for entry in reader_filter_output["selection"]}
+    assert set(by_label) == set(_READER_BOUND_SETS), "the driver dropped a bound set"
+
+    for label, bounds in _READER_BOUND_SETS.items():
+        expected = _python_reader_selection(payload, bounds)
+        assert by_label[label]["guides"] == expected, label
+
+    # Guard against a vacuous comparison: each bound set must actually cut something, or nothing above
+    # would notice a filter that had stopped being applied at all.
+    everything = by_label["nothing set"]["guides"]
+    assert everything == [g.guide for g in payload.guides]
+    for label in ("composite at least 60", "at most 0 liabilities", "at most 3 liabilities"):
+        assert 0 < len(by_label[label]["guides"]) < len(everything), label
+
+    # And the ceiling is a real ceiling, not just "zero or everything": ALL_PASS carries 4 liabilities
+    # and WARN_ONLY 2, so 3 admits one of them and refuses the other.
+    at_most_3 = by_label["at most 3 liabilities"]["guides"]
+    assert _guide_of("WARN_ONLY") in at_most_3 and _guide_of("ALL_PASS") not in at_most_3
+    at_most_0 = by_label["at most 0 liabilities"]["guides"]
+    assert _guide_of("WARN_ONLY") not in at_most_0 and _guide_of("ALL_PASS") not in at_most_0
+
+
+@pytest.mark.unit
+def test_a_guide_with_no_composite_score_is_excluded_by_a_composite_floor(payload, reader_filter_output) -> None:  # noqa: ANN001
+    """An absent value cannot satisfy a threshold -- the rule the gate evaluator already holds to.
+
+    Admitting ``NO_COMPOSITE`` under a floor it was never measured against would publish it as having
+    cleared a bar nobody applied to it, which is the fabricated-evidence direction.
+    """
+    no_composite = _guide_of("NO_COMPOSITE")
+    absent = next(g for g in payload.guides if g.guide == no_composite)
+    assert absent.composite_score is None, "the fixture stopped exercising an absent composite score"
+
+    by_label = {entry["label"]: entry for entry in reader_filter_output["selection"]}
+    assert no_composite in by_label["nothing set"]["guides"], "it is a real row when nothing is asked"
+    assert no_composite not in by_label["composite at least 60"]["guides"]
+    assert no_composite not in by_label["composite floor and liability ceiling together"]["guides"]
+    # Its liability count is a real 0, so a ceiling that says nothing about the composite keeps it.
+    assert no_composite in by_label["at most 0 liabilities"]["guides"]
+
+
+@pytest.mark.unit
+def test_a_reader_filter_composes_with_the_presets_and_the_status_checkboxes(reader_filter_output) -> None:  # noqa: ANN001
+    """All three narrow together through ``passesFilters``; none of them overrides another.
+
+    A composite floor, the register-deduplicated preset and a ``pass``-only status set, chosen so each
+    of the three cuts rows the other two keep -- so ``combined`` being strictly smaller than every one
+    of them is evidence that all three were actually applied, not just the last one wired in.
+    """
+    compose = reader_filter_output["compose"]
+    intersection = [
+        guide
+        for guide in compose["readerOnly"]
+        if guide in set(compose["presetOnly"]) and guide in set(compose["statusOnly"])
+    ]
+    assert compose["combined"] == intersection
+    assert compose["combined"], "the fixture must leave at least one row, or this proves nothing"
+    for key in ("readerOnly", "presetOnly", "statusOnly"):
+        assert len(compose["combined"]) < len(compose[key]), f"{key} alone already decided the view"
+
+
+@pytest.mark.unit
+def test_the_reader_filters_survive_the_url_fragment_and_the_reset_clears_them(reader_filter_output) -> None:  # noqa: ANN001
+    """A copied URL restores the same rows; ``Reset`` puts every control back, gates and filters alike."""
+    trip = reader_filter_output["trip"]
+    assert "r=composite:30,liab:3" in trip["before"]["hash"], trip["before"]["hash"]
+    assert f"t={trip['gate']}:{trip['moved']}" in trip["before"]["hash"]
+    assert "preset=near_miss" in trip["before"]["hash"]
+
+    # Reset: no r=, no t=, no preset= left, and the rows genuinely change -- a reset that cleared
+    # nothing would satisfy every assertion below it.
+    assert trip["reset"]["hash"] == ""
+    assert all(bound is None for bound in trip["reset"]["R"].values())
+    assert trip["reset"]["preset"] == "all"
+    assert trip["reset"]["rows"] != trip["before"]["rows"]
+
+    # Reload from the fragment alone: same bounds, same thresholds, same preset, same rows.
+    assert trip["reloaded"]["refused"] == []
+    assert trip["reloaded"]["R"] == {"composite": 30, "isoforms": None, "liab": 3}
+    assert trip["reloaded"]["T"][trip["gate"]] == trip["moved"]
+    assert trip["reloaded"]["preset"] == "near_miss"
+    assert trip["reloaded"]["rows"] == trip["before"]["rows"]
+    assert trip["reloaded"]["hash"] == trip["before"]["hash"], "the fragment must round-trip byte for byte"
+
+
+@pytest.mark.unit
+def test_an_unknown_reader_filter_name_in_the_fragment_is_refused_not_invented(reader_filter_output) -> None:  # noqa: ANN001
+    """The same treatment a frozen gate id gets: listed as refused, and nothing set behind the reader."""
+    unknown = reader_filter_output["unknown"]
+    assert unknown["refused"] == ["no_such_reader_filter"]
+    assert all(bound is None for bound in unknown["R"].values())
+
+
+@pytest.mark.unit
+def test_the_panel_separates_gate_controls_from_reader_filters(payload) -> None:  # noqa: ANN001
+    """A gate control changes a verdict; a reader filter only selects rows. The UI must say which.
+
+    Structural, because the distinction is what the removal of these boxes cost and what restoring them
+    has to preserve: two labelled groups, three reader inputs in the second one, and the search box
+    still applied on top of ``passesFilters`` rather than beside it.
+    """
+    html = render_html(payload)
+
+    assert 'id="frows"' in html and 'id="rrows"' in html, "the two groups are separate containers"
+    assert "Gate thresholds" in html and "re-derives the verdict this run computed" in html
+    assert "Reader filters" in html and "only select among rows; no verdict changes" in html
+    for key in ("composite", "isoforms", "liab"):
+        assert f"{{k:'{key}'," in html, f"the {key} reader filter is missing"
+    assert "if(!passesReaderFilters(g)) return false;" in html, "they must compose inside passesFilters"
+    assert "view = matching().filter(" in html, "and the search box applies on top of that, not beside it"
 
 
 @pytest.mark.unit

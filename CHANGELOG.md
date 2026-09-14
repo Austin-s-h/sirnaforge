@@ -179,7 +179,7 @@ where the two defects removed here were first written down as outstanding.)
   values the run produced, never a per-filter display range invented in the template, and the number
   box is unbounded, so the step limits the slider's resolution and not the reachable thresholds.
   Freezing is decided **per row, keyed on that row's own reason code**, which is where the salvaged
-  draft of this feature was wrong: it froze per *filter*, so a filter that exported its column for most
+  draft of this feature was wrong: it froze per _filter_, so a filter that exported its column for most
   guides and left one row `NOT_EVALUATED` carrying a real measured number let that row fall through to
   a freshly manufactured pass or fail. Only `REASON_OK` re-decides; `REASON_EMPTY_VALUE` stays
   `unknown` at every setting; every other reason returns the triple untouched. A warn-action gate that
@@ -205,11 +205,26 @@ where the two defects removed here were first written down as outstanding.)
   `register_representative`, connected components over transcript positions within
   `REGISTER_NEIGHBOUR_NT` computed once in Python across the whole candidate table and keyed on each
   candidate's own score, rather than re-approximating them in the browser from neighbour positions with
-  no guide behind them. **Removed** with this: the six hand-written metric row-filter boxes above the
-  index (composite, isoforms, GC, asymmetry, off-target count, liabilities). Three of them duplicated
-  real gates the reader can now move directly; the rest are reachable through sorting, `Add top N` and
-  the off-target-clean preset. `PAYLOAD_SCHEMA_VERSION` 1.0.0 → **1.1.0** for the added per-filter and
+  no guide behind them. `PAYLOAD_SCHEMA_VERSION` 1.0.0 → **1.1.0** for the added per-filter and
   per-guide keys.
+- **Reader filters are kept, and are labelled as not being gates (#103).** The generic gate controls
+  replaced the v1 report's six hand-written metric boxes, and three of those six were a real loss, not a
+  duplication: nothing else in the report filters on **composite score** or **isoforms hit**
+  (`min_isoform_coverage` is a fraction of the run's transcripts, a different quantity), and
+  **liability count** was expressible only as _exactly zero_, through the off-target-clean preset — so
+  "show me guides with at most 3 liabilities" had no control at all. All three are back, in their own
+  labelled group **beside** the gate controls, and the panel now states the difference on both groups: a
+  gate control changes a verdict the run computed, a reader filter only selects among rows. Neither is
+  relabelled as the other, and moving a reader filter recomputes no verdict, no counter and no pill. The
+  other three v1 boxes — GC, asymmetry, off-target count — stay gone deliberately: each is a real movable
+  gate now, and a second control over the same number obeying a different rule is how a reader ends up
+  believing the report says two things. The restored boxes obey the rules the rest of the panel does: a
+  blank box is unset and never `0`, an **absent value cannot satisfy a threshold** (a guide with no
+  composite score is excluded by a composite floor, not admitted because there was nothing to compare),
+  they compose with the presets, the status and conservation checkboxes, the search and the sort, `Reset`
+  clears them with everything else, and they ride in the URL fragment as `r=` on the same footing as
+  `t=`, so a copied link restores the same rows. The Node harness drives all of it through the functions
+  the report ships — including the same `resetControls` the button calls, rather than a restatement of it.
 - **`quilt_summarize.json` is written beside the report (#103).** Quilt's package view renders exactly
   what a package's own summarize file names and nothing else, so until now a run published as a package
   showed **no report at all** in its package view. `sirnaforge report` writes it by default

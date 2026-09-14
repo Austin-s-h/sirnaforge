@@ -50,6 +50,11 @@ color:var(--mut);font-weight:600;padding:8px 0}
 .frow{display:grid;grid-template-columns:1fr auto auto;gap:6px 8px;align-items:center;font-size:12px;
 margin-bottom:5px}
 .frow input{width:62px;padding:2px 5px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px}
+/* A gate control changes a verdict; a reader filter only selects rows. The two groups are separated
+   and each says which it is, because mistaking one for the other misreads what the report claims. */
+.fsec{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);font-weight:600;
+margin:9px 0 5px;padding-top:7px;border-top:1px solid var(--line)}
+.fsec i{text-transform:none;letter-spacing:0;font-weight:400;font-style:normal}
 .fstat label{margin-right:9px;font-size:12px;white-space:nowrap}
 .cartbtn{cursor:pointer;border:1px solid var(--line);background:var(--card);border-radius:5px;
 padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
@@ -126,11 +131,14 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
  <div id="left">
   <div class="searchbar"><input id="q" placeholder="Search guide sequence, candidate id or transcript…" autocomplete="off"></div>
   <details class="filters" id="filters">
-    <summary>Thresholds — <span id="fcount"></span></summary>
+    <summary>Thresholds and filters — <span id="fcount"></span></summary>
     <div id="presets" style="margin-bottom:8px"></div>
     <div id="refused" class="warn" style="display:none"></div>
     <div class="fstat" id="fstat"></div>
+    <div class="fsec">Gate thresholds <i>— moving one re-derives the verdict this run computed</i></div>
     <div id="frows"></div>
+    <div class="fsec">Reader filters <i>— these only select among rows; no verdict changes</i></div>
+    <div id="rrows"></div>
     <div class="fstat" id="fcons" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
     </div>
     <div style="margin-top:8px">
@@ -670,6 +678,43 @@ const PRESETS = {
   register_dedup:   {label:'Register-deduplicated',  test:(g,live)=>isRegisterRepresentative(g)},
 };
 
+// ---- reader filters: select among rows, and never touch a verdict --------------------------------
+// Beside the gate controls, deliberately not inside them. A gate control moves a threshold this run
+// applied and re-derives that guide's verdict; these three are no gate's quantity, so a bound over one
+// can only narrow the list. All three were reader boxes in the first report and are restored as such:
+// composite_score and transcript_hits are gated by nothing (min_isoform_coverage is a *fraction of the
+// run's transcripts*, a different quantity), and liability_count is otherwise reachable only as
+// "exactly zero", through the off-target-clean preset. The other three v1 boxes are gone for good --
+// GC, asymmetry and off-target count are real movable gates now, and a second control over the same
+// number, obeying a different rule, is how a reader ends up believing the report says two things.
+const READER_FILTERS = [
+  {k:'composite', label:'composite score', dir:'min', get:g=>g.composite_score},
+  {k:'isoforms',  label:'isoforms hit',    dir:'min', get:g=>g.transcript_hits},
+  //: Read off the guide, like the index's own Liab. column: moving a gate re-decides verdicts and the
+  //: counters over them, never this count, so _live carries no copy of it to prefer instead.
+  {k:'liab',      label:'liabilities',     dir:'max', get:g=>g.liability_count},
+];
+
+//: reader filter key -> the bound a reader typed, or null for "not set". A blank box is null and never
+//: 0 (fnum's rule), because a 0 floor on liabilities is a real and very different request.
+const R = {};
+READER_FILTERS.forEach(f => { R[f.k] = null; });
+
+// The same rule the gate evaluator holds to: an absent value cannot satisfy a threshold. A guide with
+// no composite score is EXCLUDED by a composite floor rather than admitted because there was nothing
+// to compare -- silently keeping it would let a floor report guides that never cleared it.
+function passesReaderFilters(g, bounds){
+  const b = bounds || R;
+  for(const f of READER_FILTERS){
+    const t = b[f.k];
+    if(t===null||t===undefined) continue;
+    const v = f.get(g);
+    if(v===null||v===undefined) return false;
+    if(f.dir==='min' ? v<t : v>t) return false;
+  }
+  return true;
+}
+
 // Conservation is a selection criterion, not a verdict: requiring mouse and macaque is one
 // programme's requirement and would be wrong baked into the tool, so it lives here as a threshold.
 function passesConservation(g){
@@ -690,6 +735,7 @@ function passesFilters(g){
   const live = g._live;
   if(F.status.size && !F.status.has(live.status)) return false;
   if(!passesConservation(g)) return false;
+  if(!passesReaderFilters(g)) return false;
   if(!PRESETS[activePreset].test(g, live)) return false;
   return true;
 }
@@ -730,12 +776,30 @@ function buildGateControls(){
   });
 }
 
+// One box per reader filter, reusing the gate rows' own layout so the two groups read as siblings --
+// but with no slider and no "run <value>", because there is no run threshold over these to be seeded
+// from or reset to. Moving one deliberately does NOT call onThresholdsChanged: nothing is re-derived,
+// so recomputing every guide's gate table would be a claim that something changed when nothing did.
+function buildReaderFilters(){
+  document.getElementById('rrows').innerHTML = READER_FILTERS.map(f=>
+    `<div class="frow" data-reader="${esc(f.k)}"><span>${esc(f.label)}</span>
+      <input id="rf_${esc(f.k)}" placeholder="${f.dir}" inputmode="decimal"
+        value="${R[f.k]===null||R[f.k]===undefined?'':R[f.k]}"
+        aria-label="${esc(f.label)}, ${f.dir==='min'?'at least':'at most'}">
+      <span class="empty">${f.dir==='min'?'at least':'at most'}</span></div>`).join('');
+  document.querySelectorAll('#rrows input').forEach(el=>el.oninput=()=>{
+    R[el.id.slice(3)] = fnum(el.id);       // blank clears the bound; it does not set it to 0
+    applyFilters(); syncHash();
+  });
+}
+
 function buildFilterUI(){
   document.getElementById('fstat').innerHTML = STATUS_KEYS.map(k=>
     `<label><input type="checkbox" data-status="${k}"${F.status.has(k)?' checked':''}> ${k}</label>`).join('');
   document.querySelectorAll('#fstat input').forEach(cb=>cb.onchange=()=>{
     cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status); applyFilters(); });
   buildGateControls();
+  buildReaderFilters();
   document.getElementById('fcons').innerHTML =
     '<span style="color:var(--mut)">conserved in</span> ' +
     CONS_SPECIES.map(sp=>`<label><input type="checkbox" data-cons="${sp}"${F.cons.has(sp)?' checked':''}> ${sp}</label>`).join('') +
@@ -746,6 +810,16 @@ function buildFilterUI(){
   document.getElementById('consseed').onchange = e => { F.consSeedIntact=e.target.checked; applyFilters(); };
   buildPresetButtons();
   renderRefused();
+}
+
+// Everything #freset does, as a function rather than inline in its handler: "Reset" has to mean every
+// control -- the status and conservation checkboxes, every gate threshold, every reader filter and the
+// preset -- and the parity harness drives this same function rather than a restatement of it.
+function resetControls(){
+  F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
+  FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
+  READER_FILTERS.forEach(f => { R[f.k] = null; });
+  activePreset = 'all'; refusedFilters = [];
 }
 
 function matching(){ return G.filter(passesFilters); }
@@ -796,9 +870,10 @@ function renderCart(){
     ].join('\t'))].join('\n');
 }
 
-// ---- URL fragment: selected guide, moved thresholds, active preset --------------------------------
+// ---- URL fragment: selected guide, moved thresholds, reader filters, active preset ----------------
 // A bare fragment with none of the '=' syntax below is still read as a guide -- what every earlier
-// report in this run wrote.
+// report in this run wrote. Reader filters ride in their own `r=` list, on the same footing as `t=`:
+// a reader who sends the URL sends the rows they were looking at, not just the verdicts.
 function encodeHash(){
   const parts=[];
   if(selected) parts.push('g='+encodeURIComponent(selected));
@@ -806,6 +881,8 @@ function encodeHash(){
     const f=FILTERS.find(x=>x.filter_id===id); return f && T[id]!==f.threshold;
   });
   if(moved.length) parts.push('t='+moved.map(id=>id+':'+T[id]).join(','));
+  const bounded=READER_FILTERS.filter(f=>R[f.k]!==null&&R[f.k]!==undefined);
+  if(bounded.length) parts.push('r='+bounded.map(f=>f.k+':'+R[f.k]).join(','));
   if(activePreset!=='all') parts.push('preset='+activePreset);
   return parts.join('&');
 }
@@ -831,6 +908,14 @@ function applyHashFragment(raw){
         if(f && evaluable(f) && Number.isFinite(num)) T[id]=num;
         else refused.push(id);
       }
+    } else if(k==='r'){
+      for(const pair of v.split(',')){
+        if(!pair) continue;
+        const ci=pair.indexOf(':'); if(ci<0) continue;
+        const key=pair.slice(0,ci), num=Number(pair.slice(ci+1));
+        if(READER_FILTERS.some(f=>f.k===key) && Number.isFinite(num)) R[key]=num;
+        else refused.push(key);
+      }
     } else if(k==='preset'){ if(PRESETS[v]) activePreset=v; }
   }
   return {guide, refused};
@@ -839,8 +924,9 @@ function renderRefused(){
   const el=document.getElementById('refused');
   if(!refusedFilters.length){ el.style.display='none'; return; }
   el.style.display='';
-  el.innerHTML=`<b>Refused.</b> The URL asked to move ${refusedFilters.map(esc).join(', ')} -- ${
-    refusedFilters.length===1?'it has':'they have'} no control here (frozen), so nothing moved.`;
+  el.innerHTML=`<b>Refused.</b> The URL asked to set ${refusedFilters.map(esc).join(', ')} -- ${
+    refusedFilters.length===1?'that name has':'those names have'} no control here (a frozen gate, or no
+    such control at all), so nothing moved.`;
 }
 
 function renderDetail(g){
@@ -918,12 +1004,7 @@ function wireUI(){
       const t=document.getElementById('carttsv'); t.focus(); t.select();
     }
   };
-  document.getElementById('freset').onclick = () => {
-    F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
-    FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
-    activePreset = 'all'; refusedFilters = [];
-    buildFilterUI(); onThresholdsChanged();
-  };
+  document.getElementById('freset').onclick = () => { resetControls(); buildFilterUI(); onThresholdsChanged(); };
 
   const {guide, refused} = applyHashFragment(location.hash.slice(1));
   refusedFilters = refused;

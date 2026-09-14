@@ -35,12 +35,12 @@ than letting them look like unrelated duplicate rows.
 
 Each **gate** the report evaluates against one guide's best-scoring row reaches one of five codes:
 
-| Verdict         | Meaning                                                                    |
-| --------------- | --------------------------------------------------------------------------- |
-| `pass`          | the value was available and met the threshold                              |
-| `fail`          | the value was available, the gate's action is not `warn`, and it did not meet the threshold |
-| `warn`          | the value was available, the gate's action is `warn`, and it did not meet the threshold -- a real finding, not a rejection |
-| `unknown`       | the gate was in force but the run exports no value to compare, or the run itself recorded `UNKNOWN` for this row |
+| Verdict         | Meaning                                                                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pass`          | the value was available and met the threshold                                                                                                           |
+| `fail`          | the value was available, the gate's action is not `warn`, and it did not meet the threshold                                                             |
+| `warn`          | the value was available, the gate's action is `warn`, and it did not meet the threshold -- a real finding, not a rejection                              |
+| `unknown`       | the gate was in force but the run exports no value to compare, or the run itself recorded `UNKNOWN` for this row                                        |
 | `not evaluated` | the gate was not applied at all (its action is `off`, it has no threshold, or the run itself recorded `NOT_EVALUATED`), so it makes no claim either way |
 
 Each **guide** then gets one of four statuses, derived from its gates: `fail` if it fails any gate,
@@ -75,7 +75,7 @@ slider, so the slider's step limits its resolution and never the reachable thres
 ### A gate the run could not evaluate stays unevaluable
 
 **No threshold a reader can choose makes an unanswerable gate answerable.** Re-thresholding only ever
-*selects among* candidates the run already judged; it does not re-judge them. A gate gets a control
+_selects among_ candidates the run already judged; it does not re-judge them. A gate gets a control
 only when all four of these hold:
 
 1. the run applied it (its action is not `off`),
@@ -96,7 +96,7 @@ Freezing is decided **per row**, not per filter, and it is keyed on that row's o
 gate's triple `[value, verdict, reason]` is re-evaluated only when its `reason` is `OK` (the run
 measured a value and compared it) or `EMPTY_VALUE` (the run measured nothing, which stays `unknown` at
 every setting a reader tries). Every other reason -- the gate is off, has no threshold, reads a column
-the run never exported, or the run itself recorded `UNKNOWN`/`NOT_EVALUATED` *for this guide* --
+the run never exported, or the run itself recorded `UNKNOWN`/`NOT_EVALUATED` _for this guide_ --
 returns the frozen triple untouched. The per-row granularity matters: a filter can export its column
 for most guides and still leave one row `NOT_EVALUATED` carrying a real measured number, and that
 number is not a reader's to re-judge. This is the property that a reader cannot re-threshold their way
@@ -108,15 +108,40 @@ The client-side evaluator restates exactly one thing -- the comparator table beh
 `FilterComparator.passes` -- and contains **no per-gate branch**: every gate, its comparator, its
 action, its threshold and its control domain are read from the `FILTERS` payload the report already
 carries. A unit test asserts that none of the 17 declared `filter_id`s appears as a literal string in
-the template at all. (Column names such as `gc_content` do appear, in the cart's TSV header; the six
-hand-written metric row-filter boxes that used to sit above the index -- composite score, isoforms
-hit, GC, asymmetry, off-target count, liabilities -- were **removed** when the generic gate controls
-landed, because three of them duplicated real gates the reader can now move directly, and the other
-three are reachable through sorting the index, `Add top N`, and the off-target-clean preset.)
+the template at all. (Column names such as `gc_content` do appear, in the cart's TSV header.)
 
 The single Python implementation the browser has to agree with is
 `sirnaforge.reporting.payload.reevaluate_gates`, and "Running the client-side parity check" below is
 how that agreement is enforced.
+
+## Reader filters, which are not gates
+
+Below the gate controls, in its own labelled group, sit three plain boxes over quantities **no gate
+covers**:
+
+| Filter            | Reads             | Direction |
+| ----------------- | ----------------- | --------- |
+| `composite score` | `composite_score` | at least  |
+| `isoforms hit`    | `transcript_hits` | at least  |
+| `liabilities`     | `liability_count` | at most   |
+
+The distinction is the point, and the panel states it on both groups: **a gate control changes a
+verdict the run computed; a reader filter only selects among rows.** Moving a reader filter recomputes
+nothing -- no gate triple, no status pill, no counter -- it just narrows the list. None of the three is
+relabelled as a gate, and none of them is reachable any other way: `composite_score` and
+`transcript_hits` are gated by nothing at all (`min_isoform_coverage` is a _fraction of the run's
+transcripts_, a different quantity), and `liability_count` is otherwise only expressible as _exactly
+zero_, through the off-target-clean preset -- so "at most 3 liabilities" had no control until these
+came back. The other three boxes the v1 report carried -- GC, asymmetry and off-target count -- are
+deliberately **not** restored: all three are real movable gates now, and a second control over the same
+number obeying a different rule is how a reader ends up believing the report says two things.
+
+They obey the same rules as everything else in the panel. A blank box is _unset_, never `0`. **An
+absent value cannot satisfy a threshold**: a guide with no composite score is excluded by a composite
+floor rather than admitted because there was nothing to compare, exactly as an unevaluable gate is
+never a pass. They compose (AND) with the presets, the status and conservation checkboxes, the search
+box and the sort; `Reset` clears them along with every gate threshold and the preset; and they ride in
+the URL fragment on the same footing as the thresholds, so a copied link restores the same rows.
 
 ## Preset views
 
@@ -165,16 +190,19 @@ itself renders nothing; a Nextflow-only run still needs `sirnaforge report` afte
 
 ## The URL fragment
 
-The fragment carries the selected guide, any moved thresholds, and the active preset:
+The fragment carries the selected guide, any moved thresholds (`t=`), any reader filters (`r=`), and
+the active preset:
 
 ```text
-report.html#g=UUAUAGGAUUCAACCGGAGGA&t=min_asymmetry_score:0.2,gc_content_max:58&preset=near_miss
+report.html#g=UUAUAGGAUUCAACCGGAGGA&t=min_asymmetry_score:0.2,gc_content_max:58&r=composite:60,liab:3&preset=near_miss
 ```
 
 A bare fragment (`report.html#UUAUAGGAUUCAACCGGAGGA`) is still read as a guide, which is what earlier
-reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id` is **listed
-as refused** at the top of the threshold panel rather than silently dropped, and an unknown preset
-name leaves the view at "all".
+reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id`, or an `r=`
+name that is not one of the three reader filters, is **listed as refused** at the top of the panel
+rather than silently dropped, and an unknown preset name leaves the view at "all". A reader who reloads
+the URL sees the same rows: `encodeHash` and `applyHashFragment` round-trip byte for byte, which the
+parity harness drives directly.
 
 ## Exporting a selection
 
@@ -230,3 +258,11 @@ status match on all of them. It also pins the three presets that are not a plain
 their trap cases, and asserts that a fragment naming a frozen or unknown filter is refused visibly. A
 companion assertion guards the fixture itself against going vacuous: every reason code in `payload.py`
 must still fire on at least one guide.
+
+The same harness drives the three reader filters through the functions the report ships --
+`passesReaderFilters`, `passesFilters`, `encodeHash`, `applyHashFragment` and the `resetControls` the
+`Reset` button itself calls: each filter's selection is compared against the payload's own numbers, a
+guide with **no** composite score is asserted to be excluded by a composite floor, the three are shown
+to narrow together with a preset and the status set (each cutting rows the other two keep), and the
+fragment is round-tripped and then reset. The fixture carries a guide with 4 liabilities and one with 2
+so that "at most 3" has a real answer, and one guide with no composite score at all.
