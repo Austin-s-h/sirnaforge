@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter, defaultdict
-from collections.abc import Container, Mapping
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,8 +37,10 @@ from sirnaforge.reporting.structure import layouts_for
 from sirnaforge.reporting.tracks import transcript_regions, uncovered_stretches
 
 #: Bump when the payload's shape changes, so a report and the run it describes can never be
-#: silently mismatched.
-PAYLOAD_SCHEMA_VERSION = "1.0.0"
+#: silently mismatched. 1.1.0 (#103): per-filter ``evaluable``/``control``/``n_values`` for
+#: client-side re-thresholding and preset views, ``off_target_screened``/``screen_query_id`` on
+#: ``GuideEntry``, and ``register_cluster``/``register_representative`` on isoform rows.
+PAYLOAD_SCHEMA_VERSION = "1.1.0"
 
 #: Hit rows embedded per guide. Everything outside this scope is carried as counts only, which is a
 #: deliberate scope decision (#103), not a limitation -- and a guide with hits only outside it must
@@ -83,6 +85,14 @@ class GuideEntry:
     run_verdict: str | None = None
     structure: str | None = None
     transcript_hits: int | None = None
+    #: Whether screening actually reached the aligner for this guide (candidates_all.csv's own
+    #: ``off_target_screened``, models/sirna.py). An off-target-clean *preset* built on
+    #: ``liability_count == 0`` alone would publish a never-screened guide as clean -- 0 hits and no
+    #: screen look identical unless this rides along.
+    off_target_screened: bool = False
+    #: The query id this guide's rows were screened under (``screen_query_id``, #103's join key).
+    #: Carried for provenance; None when the candidate was never submitted to the aligner.
+    screen_query_id: str | None = None
 
     @property
     def undeclared_run_rejection(self) -> bool:
@@ -173,12 +183,18 @@ def _num(value: object) -> float | int | None:
     return int(number) if number.is_integer() else round(number, 6)
 
 
-_COMPARE = {
-    FilterComparator.LE: lambda v, t: v <= t,
-    FilterComparator.GE: lambda v, t: v >= t,
-    FilterComparator.LT: lambda v, t: v < t,
-    FilterComparator.GT: lambda v, t: v > t,
-}
+def _flag(value: object) -> bool:
+    """A boolean read from a CSV cell, which may already be a bool or the string it was printed as.
+
+    ``pandas.read_csv`` infers a bool dtype only when a column is *exclusively* ``True``/``False``
+    tokens; one blank cell downgrades the whole column to ``object`` and hands this the literal
+    string ``"False"``, which is truthy under a bare ``bool()``.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    return str(value).strip().lower() == "true"
 
 
 #: Why a gate reached its verdict, as a code. The descriptor is emitted once for the whole report, so
@@ -293,7 +309,10 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     if value is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_EMPTY_VALUE
 
-    passed = _COMPARE[descriptor.comparator](value, descriptor.threshold)
+    # The one implementation of the comparator table in Python -- collapsed onto
+    # ``FilterComparator.passes`` (#103) so :func:`reevaluate_gates` and the report's JS restate
+    # exactly this table, not a second copy that could drift from it.
+    passed = descriptor.comparator.passes(value, descriptor.threshold)
     if passed:
         code = _VERDICT_CODE[FilterEvaluation.PASS.value]
     elif descriptor.action.value == FilterAction.WARN.value:
@@ -301,6 +320,130 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     else:
         code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
     return value, code, REASON_OK
+
+
+def reevaluate_gates(
+    filters: Sequence[Mapping[str, Any]],
+    gates: Sequence[Sequence[Any]],
+    thresholds: Mapping[str, float] | None = None,
+) -> list[list[Any]]:
+    """Re-apply one guide's gates at reader-chosen thresholds.
+
+    This is the contract the report's client-side evaluator implements, kept here so it can be
+    asserted without a browser and so the browser can be checked against it (#103). Two rules carry
+    the weight:
+
+    * A gate this guide's own row did not decide is returned **untouched**. Freezing is keyed on the
+      row's ``reason`` code, not on whether the *filter* is globally evaluable: a filter can export a
+      column for most guides and still leave one row at :data:`REASON_RUN_NOT_EVALUATED` with a real
+      measured value (the run applied no verdict, but still recorded a number), and moving a
+      threshold cannot conjure the decision the run declined to make. Every reason except
+      :data:`REASON_OK` and :data:`REASON_EMPTY_VALUE` -- off, no threshold, a missing column, or the
+      run's own recorded ``unknown``/``not_evaluated`` -- freezes the triple exactly as the run
+      produced it.
+    * :data:`REASON_EMPTY_VALUE` stays ``unknown``. Its value is already ``None``, so nothing is
+      re-compared; the branch exists so a reader can never re-threshold their way out of a
+      non-decision by supplying a value the run never observed.
+
+    A ``warn``-action gate the guide exceeds comes back as :data:`VERDICT_WARN`, never the ``fail``
+    code -- folding it into fail would flip ``contradicted_run_pass`` for every warn-flagged guide,
+    the one metric that exists to prove the report and the pipeline agree. Comparisons go through
+    :meth:`FilterComparator.passes`, the single Python implementation of the comparator table, so a
+    client-side evaluator restating it in JavaScript has exactly one table to restate.
+
+    Args:
+        filters: Filter entries as emitted in the payload, in payload order.
+        gates: That guide's ``[value, verdict, reason]`` triples, positionally matching ``filters``.
+        thresholds: ``filter_id`` -> threshold. Absent ids keep the run's own threshold.
+
+    Returns:
+        Fresh triples in the same order.
+    """
+    chosen = thresholds or {}
+    out: list[list[Any]] = []
+    for f, gate in zip(filters, gates, strict=True):
+        value, _verdict, reason = gate
+        if reason == REASON_EMPTY_VALUE:
+            out.append([value, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_EMPTY_VALUE])
+            continue
+        if reason != REASON_OK:
+            out.append(list(gate))
+            continue
+        threshold = chosen.get(f["filter_id"], f["threshold"])
+        passed = FilterComparator(f["comparator"]).passes(value, threshold)
+        if passed:
+            code = _VERDICT_CODE[FilterEvaluation.PASS.value]
+        elif f["action"] == FilterAction.WARN.value:
+            code = VERDICT_WARN
+        else:
+            code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
+        out.append([value, code, REASON_OK])
+    return out
+
+
+#: Slider granularity: a continuous domain is cut into roughly this many steps, then snapped to a
+#: power of ten so the readout is legible. Every control also carries a number box, so the step
+#: bounds the slider's resolution, never the reachable thresholds.
+CONTROL_STEPS = 50
+
+
+def _control_domain(threshold: float, values: Sequence[float]) -> dict[str, float]:
+    """Slider bounds for one filter, from the values this run actually produced.
+
+    Derived from data rather than from the field's declared bound, because the descriptors carry no
+    display range and inventing one per filter is exactly the per-gate special-casing this report
+    avoids. The run's own threshold is always inside the domain and never on its edge, so a reader
+    can always move a control back to where the run left it.
+    """
+    lo, hi = min([*values, threshold]), max([*values, threshold])
+    integral = all(float(v).is_integer() for v in [*values, threshold])
+    span = hi - lo
+    pad = max(span * 0.05, 1e-6) if span else (1.0 if integral else max(abs(hi) * 0.1, 0.1))
+    lo, hi = lo - pad, hi + pad
+    if integral:
+        return {"min": math.floor(lo), "max": math.ceil(hi), "step": 1}
+    step = 10 ** math.floor(math.log10((hi - lo) / CONTROL_STEPS))
+    return {"min": round(lo, 6), "max": round(hi, 6), "step": step}
+
+
+def _filter_view(
+    descriptor: Any,
+    *,
+    column: str | None,
+    observed: list[float | int],
+    setting_key: str,
+    definition: str,
+) -> dict[str, Any]:
+    """One filter as the report carries it: the descriptor, plus whether a reader may re-threshold it.
+
+    ``evaluable`` is decided from THIS run's own output, and from ``column`` -- the
+    ``<filter_id>_observed``-or-descriptor column :func:`observed_column` already resolved for every
+    gate in the report -- never the descriptor's bare column. Reading the descriptor's column instead
+    would freeze every human-stratified gate that ``observed_column`` can in fact answer. A gate is
+    re-thresholdable only when it was applied, has a threshold, and this run produced at least one
+    value the report itself read for it. Anything else keeps its verdict frozen at whatever the run
+    reached, because no slider position can answer a question the run has no evidence for.
+    """
+    reason: str | None = None
+    if descriptor.action.value == FilterAction.OFF.value:
+        reason = "this run has the filter off, so it reached no verdict to re-threshold"
+    elif descriptor.threshold is None:
+        reason = "no threshold is declared for this filter"
+    elif column is None:
+        reason = f"the run exports neither {descriptor.filter_id}_observed nor {descriptor.column}"
+    elif not observed:
+        reason = f"{column} is exported but empty for every guide in this run"
+    return {
+        **descriptor.model_dump(mode="json"),
+        "setting_key": setting_key,
+        "definition": definition,
+        "scope_label": _scope_label(descriptor),
+        "read_column": column,
+        "evaluable": reason is None,
+        "unevaluable_reason": reason,
+        "control": None if reason is not None else _control_domain(descriptor.threshold, observed),
+        "n_values": len(observed),
+    }
 
 
 def _transcript_hits(rows: pd.DataFrame) -> int | None:
@@ -505,6 +648,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
     populated = {c for c in candidates.columns if candidates[c].notna().any()}
     gate_columns = [observed_column(d, populated) for d in descriptors]
     register = _register_index(candidates)
+    clusters = _register_clusters(candidates)
     guides: list[GuideEntry] = []
 
     # Sorted so `best` is the guide's best-scoring enumeration rather than whichever row the CSV
@@ -522,6 +666,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
                 hits=hits_by_guide.get(guide, pd.DataFrame()),
                 mirna=mirna_by_guide.get(guide, pd.DataFrame()),
                 register=register,
+                clusters=clusters,
             )
         )
 
@@ -563,14 +708,14 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         schema_version=PAYLOAD_SCHEMA_VERSION,
         run=run,
         filters=[
-            {
-                **f.descriptor.model_dump(mode="json"),
-                "setting_key": f.setting_key,
-                "definition": f.definition,
-                "scope_label": _scope_label(f.descriptor),
-                "read_column": column,
-            }
-            for f, column in zip(panel.filters, gate_columns, strict=True)
+            _filter_view(
+                f.descriptor,
+                column=column,
+                observed=[g.gates[i][0] for g in guides if g.gates[i][0] is not None],
+                setting_key=f.setting_key,
+                definition=f.definition,
+            )
+            for i, (f, column) in enumerate(zip(panel.filters, gate_columns, strict=True))
         ],
         guides=guides,
         provenance={
@@ -676,16 +821,19 @@ def _build_guide(
     hits: pd.DataFrame,
     mirna: pd.DataFrame,
     register: dict[str, list[int]],
+    clusters: dict[str, dict[str, Any]],
 ) -> GuideEntry:
     gates = [list(_evaluate(d, best, c)) for d, c in zip(descriptors, gate_columns, strict=True)]
 
-    isoforms = _isoform_table(rows, register)
+    isoforms = _isoform_table(rows, register, clusters)
     by_symbol, matrix, embedded, liability = _offtarget_views(hits)
 
     counts_exist = bool(len(hits)) and not embedded
     return GuideEntry(
         run_verdict=_run_verdict(rows),
         transcript_hits=_transcript_hits(rows),
+        off_target_screened=_flag(best.get("off_target_screened")),
+        screen_query_id=(str(best.get("screen_query_id")) if pd.notna(best.get("screen_query_id")) else None),
         structure=(str(best.get("structure")) if pd.notna(best.get("structure")) else None),
         guide=guide,
         passenger=(str(best.get("passenger_sequence")) if pd.notna(best.get("passenger_sequence")) else None),
@@ -745,7 +893,56 @@ def _register_index(candidates: pd.DataFrame) -> dict[str, list[int]]:
     return index
 
 
-def _isoform_table(rows: pd.DataFrame, register: dict[str, list[int]]) -> list[dict[str, Any]]:
+def _register_clusters(candidates: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    """Cross-guide register clusters: candidate id -> its cluster and whether it is the representative.
+
+    ``register_neighbours`` (below) names positions, not designs, so a reader cannot map a neighbour
+    back to the guide that owns it and cannot pick which member of a near-duplicate cluster to keep
+    for a register-deduplicated view. This computes the same "positions within
+    :data:`REGISTER_NEIGHBOUR_NT`" runs on one transcript, over the whole candidate table rather than
+    one guide's rows, and names each run's best-scoring member as the representative -- the one a
+    dedup view should keep. A candidate the run never enumerated a position for gets no entry.
+    """
+    score_column = next((c for c in _MAP_VALUE_COLUMNS if c in candidates.columns), None)
+    n = len(candidates)
+    ids = candidates["id"] if "id" in candidates.columns else pd.Series([""] * n, index=candidates.index)
+    txs = candidates["transcript_id"] if "transcript_id" in candidates.columns else pd.Series([""] * n)
+    positions = candidates["position"] if "position" in candidates.columns else pd.Series([None] * n)
+    scores = candidates[score_column] if score_column else pd.Series([None] * n)
+
+    by_tx: dict[str, list[tuple[int, str, float]]] = defaultdict(list)
+    for cid, tx, pos, score in zip(ids, txs, positions, scores, strict=True):
+        p = _num(pos)
+        if p is None:
+            continue
+        s = _num(score)
+        by_tx[str(tx or "")].append((int(p), str(cid or ""), s if s is not None else float("-inf")))
+
+    out: dict[str, dict[str, Any]] = {}
+    for tx, entries in by_tx.items():
+        entries.sort(key=lambda e: e[0])
+        window: list[tuple[int, str, float]] = []
+        for entry in entries:
+            if window and entry[0] - window[-1][0] > REGISTER_NEIGHBOUR_NT:
+                _flush_cluster(tx, window, out)
+                window = []
+            window.append(entry)
+        if window:
+            _flush_cluster(tx, window, out)
+    return out
+
+
+def _flush_cluster(tx: str, members: list[tuple[int, str, float]], out: dict[str, dict[str, Any]]) -> None:
+    """One connected run of within-window positions on one transcript; its best scorer is the keeper."""
+    cluster_id = f"{tx}:{members[0][0]}"
+    representative = max(members, key=lambda m: m[2])[1]
+    for _pos, cid, _score in members:
+        out[cid] = {"register_cluster": cluster_id, "register_representative": cid == representative}
+
+
+def _isoform_table(
+    rows: pd.DataFrame, register: dict[str, list[int]], clusters: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     """One entry per transcript the guide was enumerated on, flagging register neighbours.
 
     A shorter guide starting at *s* sits inside the longer window at *s-1*, so two designs one
@@ -764,17 +961,23 @@ def _isoform_table(rows: pd.DataFrame, register: dict[str, list[int]]) -> list[d
     for _, r in rows.iterrows():
         tx = str(r.get("transcript_id") or "")
         pos = _num(r.get("position"))
+        cid = str(r.get("id") or "")
         neighbours = [
             p
             for p in register.get(tx, [])
             if pos is not None and p != int(pos) and abs(p - int(pos)) <= REGISTER_NEIGHBOUR_NT
         ]
+        # A candidate absent from `clusters` (no numeric position) is trivially its own cluster: never
+        # dropped from a register-deduplicated view for want of a flag.
+        cluster = clusters.get(cid, {"register_cluster": None, "register_representative": True})
         out.append(
             {
-                "candidate_id": str(r.get("id") or ""),
+                "candidate_id": cid,
                 "transcript": tx,
                 "position": pos,
                 "register_neighbours": sorted(neighbours),
+                "register_cluster": cluster["register_cluster"],
+                "register_representative": cluster["register_representative"],
             }
         )
     out.sort(key=lambda d: (d["transcript"], d["position"] if d["position"] is not None else -1))
