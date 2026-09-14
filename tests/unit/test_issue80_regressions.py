@@ -6,6 +6,8 @@ merely to exercise the fixed code path.
 """
 
 import asyncio
+import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -19,7 +21,9 @@ from sirnaforge.models.sirna import (
     OffTargetFilterCriteria,
     SiRNACandidate,
 )
+from sirnaforge.reporting import ReportPayload
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
+from sirnaforge.workflow import console as workflow_console
 
 
 def _full_candidate(
@@ -155,7 +159,12 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
 
 @pytest.mark.unit
 def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The completed workflow publishes its self-contained report with its candidate artifacts."""
+    """The completed workflow publishes its self-contained report, and registers it for Quilt.
+
+    The summarize file goes to the **run root**, not beside the report in ``sirnaforge/``: Quilt reads
+    one only at the package root, and the run directory is what gets published, so a report written
+    without this showed nothing at all in a package view (#103).
+    """
     workflow = _minimal_workflow(tmp_path, "report_out")
     candidate = _full_candidate("cand_report")
     design_result = DesignResult(
@@ -187,9 +196,246 @@ def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monke
 
     monkeypatch.setattr("sirnaforge.workflow.write_report", _write_report)
 
+    registered: dict[str, object] = {}
+
+    def _write_summarize(payload: object, report_path: Path, run_dir: Path, *, out_path: Path) -> Path:
+        registered.update(payload=payload, report_path=report_path, run_dir=run_dir, out_path=out_path)
+        out_path.write_text("[]")
+        return out_path
+
+    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize", _write_summarize)
+
     asyncio.run(workflow.step6_generate_reports(design_result))
 
     assert (workflow.config.output_dir / "sirnaforge" / "report.html").read_text() == "<html>report</html>"
+    assert registered["out_path"] == workflow.config.output_dir / "quilt_summarize.json", (
+        "the summarize file must land at the run root Quilt reads, not beside the report"
+    )
+    assert registered["report_path"] == workflow.config.output_dir / "sirnaforge" / "report.html"
+    assert registered["run_dir"] == workflow.config.output_dir
+    assert (workflow.config.output_dir / "quilt_summarize.json").exists()
+
+
+def _report_payload() -> ReportPayload:
+    """A minimal real payload, so the real Quilt registration writer can run over it.
+
+    Only ``run`` reaches that writer (it builds the report row's title and description); the guide and
+    filter tables belong to the renderer.
+    """
+    return ReportPayload(
+        schema_version="1.0.0",
+        run={
+            "gene_query": "TP53",
+            "guides": 1,
+            "status_counts": {"pass": 1, "warn": 0, "unknown": 0, "fail": 0},
+            "embed_scope": "human, nm<=2",
+            "agreement": {"comparable": True, "contradicted_run_pass": 0, "overruled_run_fail": 0},
+        },
+        filters=[],
+        guides=[],
+        provenance={},
+    )
+
+
+def _write_html_report(payload: object, output: Path) -> Path:
+    """Stand-in for ``write_report``: writes the one file it promises and nothing else."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("<html>report</html>")
+    return output
+
+
+def _registered_paths(summarize_path: Path) -> list[str]:
+    """Every path named by a ``quilt_summarize.json`` document, rows flattened."""
+    paths: list[str] = []
+    for row in json.loads(summarize_path.read_text()):
+        for entry in row if isinstance(row, list) else [row]:
+            paths.append(entry["path"] if isinstance(entry, dict) else entry)
+    return paths
+
+
+def _single_candidate_design_result(workflow: SiRNAWorkflow, candidate_id: str) -> DesignResult:
+    """One fully populated candidate, wrapped as the design step's return value."""
+    candidate = _full_candidate(candidate_id)
+    return DesignResult(
+        input_file="<test>",
+        parameters=workflow.config.design_params,
+        candidates=[candidate],
+        top_candidates=[candidate],
+        total_sequences=1,
+        total_candidates=1,
+        filtered_candidates=1,
+        processing_time=0.1,
+    )
+
+
+@pytest.mark.unit
+def test_completed_workflow_registers_its_own_run_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The run's own ``logs/workflow_summary.json`` must reach ``quilt_summarize.json`` (#103).
+
+    The summarize writer omits an artifact that is not on disk, and step 6 runs *before*
+    run_complete_workflow writes the summary -- so the summary was tested for existence before it was
+    written and could never be registered. The "Run manifest / Workflow summary" row collapsed to
+    manifest.json alone on every run, permanently, purely because of the call order, while the file sat
+    in the published run directory. The registration is therefore re-issued once the summary lands, and
+    only then: a run that writes no summary must not name one.
+    """
+    workflow = _minimal_workflow(tmp_path, "summary_out")
+    design_result = _single_candidate_design_result(workflow, "cand_summary")
+
+    async def _no_transcripts(self: SiRNAWorkflow, progress: object) -> list[object]:
+        return []
+
+    async def _no_orfs(self: SiRNAWorkflow, transcripts: object, progress: object) -> dict[str, object]:
+        return {}
+
+    async def _design(self: SiRNAWorkflow, transcripts: object, progress: object) -> DesignResult:
+        return design_result
+
+    async def _skip_screening(self: SiRNAWorkflow, design_results: DesignResult) -> dict[str, object]:
+        return {"status": "skipped", "reason": "test"}
+
+    monkeypatch.setattr(SiRNAWorkflow, "step1_retrieve_transcripts", _no_transcripts)
+    monkeypatch.setattr(SiRNAWorkflow, "step2_validate_orfs", _no_orfs)
+    monkeypatch.setattr(SiRNAWorkflow, "step3_design_sirnas", _design)
+    monkeypatch.setattr(SiRNAWorkflow, "step5_offtarget_analysis", _skip_screening)
+    # The real write_quilt_summarize runs: its existence check is the behaviour under test.
+    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
+    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+
+    asyncio.run(workflow.run_complete_workflow())
+
+    run_dir = workflow.config.output_dir
+    assert (run_dir / "logs" / "workflow_summary.json").exists(), "the run must have written a summary at all"
+    registered = _registered_paths(run_dir / "quilt_summarize.json")
+    assert "logs/workflow_summary.json" in registered, (
+        "the completed run's own summary must be registered, not omitted because step 6 ran first"
+    )
+    assert "sirnaforge/manifest.json" in registered, "re-issuing must not drop what was already registered"
+    for rel in registered:
+        assert (run_dir / rel).exists(), f"{rel} is registered but does not exist under the run directory"
+
+
+@pytest.mark.unit
+def test_workflow_without_a_json_summary_registers_no_summary_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``write_json_summary=False`` must leave the summary unregistered, not dangling (#103).
+
+    The counterpart to re-issuing the registration: the fix must key off the file landing, never off
+    the path the workflow *would* have written, or an opted-out run would hand the catalog a path it
+    can never render -- which reads as broken evidence rather than absent evidence.
+    """
+    config = WorkflowConfig(
+        output_dir=tmp_path / "no_summary_out",
+        gene_query="TP53",
+        design_params=DesignParameters(),
+        write_json_summary=False,
+    )
+    workflow = SiRNAWorkflow(config)
+    workflow._gene_transcript_ids = {"ENST00000000001"}
+    design_result = _single_candidate_design_result(workflow, "cand_no_summary")
+
+    async def _no_transcripts(self: SiRNAWorkflow, progress: object) -> list[object]:
+        return []
+
+    async def _no_orfs(self: SiRNAWorkflow, transcripts: object, progress: object) -> dict[str, object]:
+        return {}
+
+    async def _design(self: SiRNAWorkflow, transcripts: object, progress: object) -> DesignResult:
+        return design_result
+
+    async def _skip_screening(self: SiRNAWorkflow, design_results: DesignResult) -> dict[str, object]:
+        return {"status": "skipped", "reason": "test"}
+
+    monkeypatch.setattr(SiRNAWorkflow, "step1_retrieve_transcripts", _no_transcripts)
+    monkeypatch.setattr(SiRNAWorkflow, "step2_validate_orfs", _no_orfs)
+    monkeypatch.setattr(SiRNAWorkflow, "step3_design_sirnas", _design)
+    monkeypatch.setattr(SiRNAWorkflow, "step5_offtarget_analysis", _skip_screening)
+    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
+    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+
+    asyncio.run(workflow.run_complete_workflow())
+
+    run_dir = config.output_dir
+    assert not (run_dir / "logs" / "workflow_summary.json").exists()
+    registered = _registered_paths(run_dir / "quilt_summarize.json")
+    assert "logs/workflow_summary.json" not in registered
+    for rel in registered:
+        assert (run_dir / rel).exists(), f"{rel} is registered but does not exist under the run directory"
+
+
+@pytest.mark.unit
+def test_a_failed_quilt_registration_neither_blames_the_report_nor_claims_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The report and its registration are two writes, and are reported as two (#103).
+
+    Sharing one handler and one unconditional console block made a read-only run root -- where
+    report.html *is* written and quilt_summarize.json is not -- log "Failed to write self-contained
+    HTML report" for a report that had succeeded, and then print both artifacts as delivered. An
+    operator is entitled to be told which of the two failed, and to be told about no file that is not
+    on disk.
+    """
+    workflow = _minimal_workflow(tmp_path, "split_handlers_out")
+    design_result = _single_candidate_design_result(workflow, "cand_split")
+
+    def _registration_fails(*args: object, **kwargs: object) -> Path:
+        raise OSError("Read-only file system: run root")
+
+    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
+    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize", _registration_fails)
+
+    workflow_console.export_text(clear=True)  # drop anything printed before this test
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(workflow.step6_generate_reports(design_result))
+    printed = workflow_console.export_text(clear=True)
+
+    run_dir = workflow.config.output_dir
+    assert (run_dir / "sirnaforge" / "report.html").exists(), "the report itself succeeded"
+    assert not (run_dir / "quilt_summarize.json").exists()
+
+    assert "Self-contained HTML report" in printed
+    assert "Quilt package summary" not in printed, "a file that was never written must not be announced"
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Quilt package summary" in message for message in messages), "the failure that happened must be named"
+    assert not any("Failed to write self-contained HTML report" in message for message in messages), (
+        "the report succeeded, so nothing may say it failed"
+    )
+
+
+@pytest.mark.unit
+def test_an_absent_pass_fasta_is_not_announced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run whose shortlist is empty deletes candidates_pass.fasta, so it must not be printed (#103).
+
+    Same rule as the report and its registration: the console block lists artifacts, and every line is
+    a claim that a file exists.
+    """
+    workflow = _minimal_workflow(tmp_path, "no_pass_fasta_out")
+    candidate = _full_candidate("cand_failing")
+    candidate.passes_filters = False
+    design_result = DesignResult(
+        input_file="<test>",
+        parameters=workflow.config.design_params,
+        candidates=[candidate],
+        top_candidates=[],
+        total_sequences=1,
+        total_candidates=1,
+        filtered_candidates=0,
+        processing_time=0.1,
+    )
+
+    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
+    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+
+    workflow_console.export_text(clear=True)
+    asyncio.run(workflow.step6_generate_reports(design_result))
+    printed = workflow_console.export_text(clear=True)
+
+    assert not (workflow.config.output_dir / "sirnaforge" / "candidates_pass.fasta").exists()
+    assert "candidates_pass.fasta" not in printed
+    assert "candidates_all.csv" in printed, "the CSVs were written, and are still announced"
 
 
 @pytest.mark.unit
