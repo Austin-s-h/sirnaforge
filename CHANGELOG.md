@@ -496,23 +496,24 @@ where the two defects removed here were first written down as outstanding.)
   mouse Trp53 run through Docker/Nextflow — 4,858 candidates, no transcriptome argument — the
   exploratory run finds **13,458 aggregated miRNA seed hits** that the design-only version would have
   discarded, while the transcriptome channel is correctly reported unscreened and its gates unknown.
+
 - **One non-zero exit code for a run that could not qualify anything** (#100). `sirnaforge workflow`
   exited 0 whatever happened, so "no candidate holds the required evidence" was indistinguishable from
   success without parsing JSON. It now exits **1** — 1, not 2, because Click already returns 2 for a
   usage error — with a message naming the cause from `evidence_shortfall_reasons`, the remedy, and
-  where the withheld candidates are. Deliberately narrow: a *complete* run that legitimately found
+  where the withheld candidates are. Deliberately narrow: a _complete_ run that legitimately found
   nothing eligible still exits 0, since otherwise every over-tight threshold would read as a tool
   failure. `design_only`, `exploratory` and ZFN runs never fail here. The check sits outside the
   command's `try`, because `typer.Exit` subclasses `RuntimeError` and would otherwise be caught by the
   crash handler and reprinted as "Workflow error: 1"; the success banner is now "Workflow finished",
   since the evidence verdict is decided after it. `selection_summary` gains
   `required_evidence_missing`, a run-level key, because selection skips a gate-failing candidate before
-  it reaches the evidence check — so a run that screened nothing *and* designed nothing acceptable
+  it reaches the evidence check — so a run that screened nothing _and_ designed nothing acceptable
   reports no per-candidate reason at all.
 - **Four more gates accepted `warn` and rejected anyway** — the #105 defect class in every remaining
   place. `gc_content_min`, `gc_content_max` and `max_poly_runs` are decided during enumeration, which
   re-derived the rejection label from the thresholds and dropped the candidate unconditionally, right
-  after `_record_enumeration_verdicts` had recorded the verdict *with* the resolved action. The
+  after `_record_enumeration_verdicts` had recorded the verdict _with_ the resolved action. The
   recorder is now the only authority on both. `_apply_filters`, which reset `passes_filters = True` and
   `quality_issues = []` on every candidate, is now a pass-through: the reset was invisible only because
   a rejected candidate never reached it, and it erased exactly the verdict a warned candidate carries.
@@ -524,13 +525,14 @@ where the two defects removed here were first written down as outstanding.)
   their pool only from enumeration rejections, so under `warn` there were none and the observability
   controls disappeared silently; the pool now holds every gate failure whatever its action (measured:
   5,057 either way, 2 controls injected either way). And `max_repeat_transcript_fraction=warn` was
-  *worse* than useless: `_apply_post_screen_ranking` excluded `repeat_flagged` candidates ahead of the
+  _worse_ than useless: `_apply_post_screen_ranking` excluded `repeat_flagged` candidates ahead of the
   `passes_filters` test and independently of it, so flipping the action only flipped the CSV cell to
   PASS — moving the guide into the order list while it stayed out of the shortlist. That exclusion now
   consults the action too. The repeat verdict is deliberately **not** routed through
   `record_filter_verdict`: that writes `UNKNOWN` whenever there is no observed value, which is exactly
   an unscanned guide's shape, and this gate reads no screening channel — so in qualified mode it would
   have disqualified every candidate of a run whose repeat detection was skipped.
+
 - **`design_summary.repeat_excluded_count` counted flags, not exclusions**, so once the repeat gate
   could resolve to `warn` it contradicted `selection_summary.repeat_excluded` in the same JSON. Renamed
   `repeat_flagged_count`, which is what it always measured; the selection summary owns what was
@@ -559,8 +561,8 @@ where the two defects removed here were first written down as outstanding.)
   five sites now read the resolved value, verified end to end: a run configured at 0.05 reports 0.05 in
   all three fields.
 - **Seven gates declared a column the candidate row did not carry** (#101 filter scope), so they
-  shipped `evidence_exported: false` and a client re-applying the descriptor read a *same-named
-  all-species* column instead and got a different answer from the run. The six query-species-stratified
+  shipped `evidence_exported: false` and a client re-applying the descriptor read a _same-named
+  all-species_ column instead and got a different answer from the run. The six query-species-stratified
   gates now export their own counter — `transcriptome_hits_{0,1,2}mm_query`,
   `mirna_hits_0mm_seed_query`, `mirna_hits_high_risk_query`, `total_offtarget_hits_query` — and
   `max_poly_runs` exports `max_poly_run_length`. Both numbers are on the row deliberately: the
@@ -572,6 +574,7 @@ where the two defects removed here were first written down as outstanding.)
   `candidates_all.csv`: **63,148 verdicts re-derived across 13 deciding gates, 0 disagreements.**
   `evidence_exported` is now `true` for all 17 and a test pins it against the row builder, so a renamed
   column cannot turn it into a false claim.
+
 - **Six gates measured zero on any non-human query species.** The mismatch- and miRNA-stratified gates
   counted hits with a literal `is_human_species` test, and their declared `scope.species` was fixed at
   `["human"]`, so on a mouse-query run they saw nothing while the exported column showed the hits.
@@ -723,6 +726,17 @@ where the two defects removed here were first written down as outstanding.)
   (`ReferenceRequest`, `ScreeningReference`, `SpeciesAuthority`, `OrthologueMapping`,
   `TargetSiteAccessibility` and the rest) keep their prose — including the 3 `TargetSiteAccessibility`
   warnings that pre-dated this branch.
+- **…and then failed it again on four inventories a proxy would not serve** (#107). With the duplicate
+  objects gone, `make docs` still exited 1 behind a corporate proxy, because `-W` makes an unreachable
+  intersphinx inventory an error like any other warning — so #107's own acceptance criterion, "`make
+docs` exits 0 with warnings still treated as errors", could not be demonstrated on a restricted
+  network at all, and `make test-release` stayed blocked for a reason that is not a documentation
+  defect. The `intersphinx_timeout` comment claimed this already failed gracefully; it never did,
+  because a timeout still warns. `docs/conf.py` now probes each inventory once and drops what it cannot
+  reach, announcing each drop on stderr. **No warning class is suppressed** and `-W` stays fully armed
+  over everything that is ours: a real duplicate-object or broken-reference warning still fails the
+  build. The cost, stated because it is real: cross-project links degrade to plain text on a restricted
+  network. `SIRNAFORGE_DOCS_OFFLINE=1` skips the probe for a deliberately hermetic build.
 - **A species whose alignment file was rejected still reported as screened and clean.** With two
   species valid and one species' `*_analysis.tsv` unreadable — a 0-byte file, which is exactly what
   `offtarget_analysis.nf`'s stub emits and what an aligner that died mid-write leaves — the file was
