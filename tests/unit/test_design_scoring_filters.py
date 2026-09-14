@@ -274,7 +274,7 @@ def test_mirna_mode_does_not_alter_the_design_score(realistic_transcripts_fasta)
     assert len(mirna.candidates) == len(base.candidates)
     for candidate in mirna.candidates:
         assert candidate.design_score == pytest.approx(base_scores[candidate.id])
-        assert candidate.weight_vector == "design_v4"
+        assert candidate.weight_vector == "design_preproduction_v1"
         # The biogenesis evidence is still recorded -- it is just not scored yet.
         assert candidate.supp_13_16_score is not None
         assert candidate.component_scores["ago_start"] in (0.0, 1.0)

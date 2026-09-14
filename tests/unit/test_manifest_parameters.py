@@ -70,9 +70,13 @@ def test_manifest_records_the_weight_set_version(tmp_path):
     assert scoring["scored_terms"] == list(COMPOSITE_TERMS)
     # Issue #96: each vector is recorded under its own NAME, because that name is stamped on every
     # candidate row -- a score without its vector cannot be traced to the weights that made it.
-    assert set(scoring["vectors"]) == {"design_v4", "postscreen_sirna_v4", "postscreen_mirna_v4"}
+    assert set(scoring["vectors"]) == {
+        "design_preproduction_v1",
+        "postscreen_sirna_preproduction_v1",
+        "postscreen_mirna_preproduction_v1",
+    }
     assert scoring["vectors"] == DesignParameters().scoring.as_manifest()
-    assert scoring["vector_terms"]["design_v4"] == ["target_accessibility", "asymmetry", "gc_content"]
+    assert scoring["vector_terms"]["design_preproduction_v1"] == ["target_accessibility", "asymmetry", "gc_content"]
     # Terms that are computed and reported but score nothing must be named as such, or their
     # absence from the weights reads as an omission.
     assert "empirical" in scoring["reported_not_scored"]
@@ -99,10 +103,10 @@ def test_manifest_weights_track_a_custom_weight_set(tmp_path):
         orf_report=tmp_path / "orf.tsv",
     )
 
-    assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["off_target"] == 0.40
-    assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["gc_content"] == 0.10
-    # The untouched vectors still record their own declared numbers.
-    assert manifest["scoring"]["vectors"]["design_v4"]["target_accessibility"] == 0.35
+    assert manifest["scoring"]["vectors"]["postscreen_sirna_preproduction_v1"]["off_target"] == 0.40
+    assert manifest["scoring"]["vectors"]["postscreen_sirna_preproduction_v1"]["gc_content"] == 0.10
+    # The untouched design vector still records its own declared numbers.
+    assert manifest["scoring"]["vectors"]["design_preproduction_v1"]["target_accessibility"] == 0.35
 
 
 @pytest.mark.unit

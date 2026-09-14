@@ -18,8 +18,8 @@ Two properties are the point of the module:
 
 What this module deliberately does **not** do: resolve the screening *reference* (that is the
 transcriptome resolver, tracked separately), decide candidate eligibility from evidence (#100), or
-promote any number. Every threshold below is the one 0.7.1 already applied; the ``legacy`` profile
-carries them verbatim so a resolved run reproduces an unresolved one.
+promote any number. Every threshold below is the pre-production 0.7.1 policy baseline. The old
+``legacy`` name remains only as a compatibility alias for previously recorded runs.
 """
 
 from __future__ import annotations
@@ -64,8 +64,9 @@ from sirnaforge.models.sirna import (
     TargetAccessibilityConfig,
 )
 
-LEGACY_PROFILE_NAME = "legacy"
-DEFAULT_PROFILE_NAME = LEGACY_PROFILE_NAME
+PREPRODUCTION_PROFILE_NAME = "preproduction"
+LEGACY_PROFILE_NAME = "legacy"  # compatibility alias for old manifests and API callers
+DEFAULT_PROFILE_NAME = PREPRODUCTION_PROFILE_NAME
 POLICY_SCHEMA_VERSION = "0.7.1"
 
 
@@ -154,7 +155,7 @@ _MODEL_FOR_TARGET: Mapping[str, type[BaseModel]] = {
     "design": DesignParameters,
 }
 
-# The one place the ``legacy`` profile knowingly differs from a model field default. The CLI has
+# The one place the pre-production policy baseline knowingly differs from a model field default. The CLI has
 # always sent 30.0, so 30.0 is what "today's numbers verbatim" means for a resolved run; the
 # FilterCriteria field default of 35.0 applies only to code that constructs the model directly.
 # Which of the two is biologically right is a filter-default decision and is not settled here.
@@ -195,10 +196,12 @@ def _model_default(spec: SettingSpec) -> Any:
 
 @dataclass(frozen=True)
 class RunPolicyProfile:
-    """A named, versioned baseline for every declared setting.
+    """A named, versioned baseline for run settings, thresholds and filter actions.
 
     Baselines are *derived* from the model field defaults rather than retyped, with the exceptions
-    above declared explicitly, so a profile and the models it validates against cannot drift.
+    above declared explicitly, so a policy baseline and the models it validates against cannot drift.
+    This is separate from ``sirnaforge.models.scoring_profile.ScoringProfile``, which describes
+    scoring weight vectors.
     """
 
     name: str
@@ -209,23 +212,39 @@ class RunPolicyProfile:
     exceptions: Mapping[str, str]
 
     @staticmethod
-    def legacy() -> RunPolicyProfile:
-        """0.7.1's shipped numbers, exactly as an unresolved run applied them."""
+    def preproduction() -> RunPolicyProfile:
+        """The active pre-production 0.7.1 policy baseline."""
         baseline = {spec.key: _model_default(spec) for spec in SETTING_SPECS}
         exceptions: dict[str, str] = {}
         for key, (value, reason) in LEGACY_DEFAULT_EXCEPTIONS.items():
             baseline[key] = value
             exceptions[key] = reason
         return RunPolicyProfile(
-            name=LEGACY_PROFILE_NAME,
+            name=PREPRODUCTION_PROFILE_NAME,
             version=POLICY_SCHEMA_VERSION,
             description=(
-                "0.7.1's shipped thresholds, carried verbatim. Not calibrated: most numbers are "
-                "expert priors, and the two that were measured were measured on one target."
+                "The active 0.7.1 pre-production thresholds, carried verbatim. Not calibrated: most "
+                "numbers are expert priors, and the two that were measured were measured on one target."
             ),
             experimental=True,
             baseline=baseline,
             exceptions=exceptions,
+        )
+
+    @staticmethod
+    def legacy() -> RunPolicyProfile:
+        """Compatibility alias for the former ``legacy`` policy name."""
+        baseline = RunPolicyProfile.preproduction()
+        return RunPolicyProfile(
+            name=LEGACY_PROFILE_NAME,
+            version=baseline.version,
+            description=(
+                "Compatibility alias for the pre-production 0.7.1 policy baseline. New runs should "
+                "use the preproduction name."
+            ),
+            experimental=baseline.experimental,
+            baseline=baseline.baseline,
+            exceptions=baseline.exceptions,
         )
 
     def identity(self) -> ProfileIdentity:
@@ -258,7 +277,10 @@ class RunPolicyProfile:
         )
 
 
-BUILTIN_PROFILES: Mapping[str, RunPolicyProfile] = {LEGACY_PROFILE_NAME: RunPolicyProfile.legacy()}
+BUILTIN_PROFILES: Mapping[str, RunPolicyProfile] = {
+    PREPRODUCTION_PROFILE_NAME: RunPolicyProfile.preproduction(),
+    LEGACY_PROFILE_NAME: RunPolicyProfile.legacy(),
+}
 
 
 def _mirna_preset() -> Mapping[str, Any]:
@@ -1364,7 +1386,7 @@ def describe_parameters(
 
 
 def default_for(key: str) -> Any:
-    """The ``legacy`` profile's value for one setting, for CLI help and documentation tables.
+    """The active pre-production policy value for one setting, for CLI help and tables.
 
     Help text and parameter tables read this instead of restating a number, which is what stopped
     the documented off-target cap (3) and the documented design weights (0.40/0.35) from drifting
@@ -1410,6 +1432,7 @@ def switchable_filter_ids() -> tuple[str, ...]:
 __all__ = [
     "BUILTIN_PROFILES",
     "DEFAULT_PROFILE_NAME",
+    "PREPRODUCTION_PROFILE_NAME",
     "EntryPoint",
     "FILTER_SPECS",
     "LEGACY_PROFILE_NAME",

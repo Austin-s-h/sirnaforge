@@ -1,0 +1,9 @@
+{
+  "dataset": "martinelli_2023_1",
+  "query_key": "benchmark_oligogym_martinelli_2023_1",
+  "query_species": "human",
+  "target_species": ["macaque", "mouse", "rat"],
+  "source_gene_ids": [],
+  "merged_mapping": {"mouse": [], "rat": [], "macaque": []},
+  "provenance": "Explicit empty mapping: source panel target identity is unavailable; no orthology claims are made."
+}

@@ -304,16 +304,17 @@ class WeightVector(BaseModel):
 
 
 class DesignWeights(WeightVector):
-    """``design_v4``: the design-stage vector, over the three terms computable before screening.
+    """The pre-production design-stage vector over the three terms computable before screening.
 
     ``design_score`` is NOT comparable with ``composite_score``: it is a different vector over a
     different term set. It is **not** systematically the larger of the two, and issue #102 deleted
     that claim -- the two vectors weight their shared terms differently, so which is higher depends
-    on the candidate. All features at 0.5 with ``off_target = 1.0`` gives ``design_v4`` 50.0 against
-    ``postscreen_sirna_v4``'s 62.5. Compare neither to the other; compare each within its stage.
+    on the candidate. All features at 0.5 with ``off_target = 1.0`` gives the design vector 50.0
+    against the siRNA post-screen vector's 62.5. Compare neither to the other; compare each within
+    its stage.
     """
 
-    VECTOR_NAME: ClassVar[str] = "design_v4"
+    VECTOR_NAME: ClassVar[str] = "design_preproduction_v1"
     TERM_NAMES: ClassVar[tuple[str, ...]] = ("target_accessibility", "asymmetry", "gc_content")
 
     # asymmetry takes the top slot rather than target_accessibility. On 900 benchmark siRNAs with
@@ -341,22 +342,19 @@ class DesignWeights(WeightVector):
 
 
 class PostScreenSiRNAWeights(WeightVector):
-    """``postscreen_sirna_v4``: ``design_v4``'s terms plus ``off_target``, one extra term.
+    """The pre-production siRNA post-screen vector: design terms plus ``off_target``.
 
-    ``off_target`` holds its nominal 0.25 while the scored budget shrank from six terms to four, so
-    its share of the scored budget rises from 0.25/0.60 to 0.25/1.00.
+    This is the active pre-production default selected after the OligoGym panel investigation.
+    ``off_target`` remains fixed at 0.25 as a specificity policy term while the efficacy allocation
+    gives more weight to asymmetry and GC content. It is still experimental: the panel fit is small,
+    Martinelli is not target-identity-qualified, and no held-out replication has promoted it.
 
-    Issue #102 corrected the justification that used to sit here. It read "the term measured 2.24x
-    its nominal share of composite variance on the reference run"; that 2.24x is from an internal
-    run under weight set 2.0.0 and has never been re-derived, and the frozen public baseline
-    measures the opposite -- **0.39x nominal, the least influential of the four scored terms** on a
-    human-only screen, its contribution compressed against the 25.0 ceiling. Screening one more
-    species doubles the share to 0.19, so that number describes the screening scope, not the term.
-    Whether 0.25 is the right weight is therefore open, and the honest statement is that it is a
-    declared prior awaiting a full-reference run.
+    The vector name is intentionally no longer ``legacy`` or ``current``. A vector name identifies
+    the exact terms and numbers stamped onto candidate rows; the enclosing scoring profile explains
+    which set of vectors is active for this pre-production build.
     """
 
-    VECTOR_NAME: ClassVar[str] = "postscreen_sirna_v4"
+    VECTOR_NAME: ClassVar[str] = "postscreen_sirna_preproduction_v1"
     TERM_NAMES: ClassVar[tuple[str, ...]] = ("off_target", "target_accessibility", "asymmetry", "gc_content")
 
     off_target: float = Field(
@@ -366,20 +364,20 @@ class PostScreenSiRNAWeights(WeightVector):
         description="Post-screen genuine off-target specificity weight (on-target, ortholog and repeat excluded)",
     )
     target_accessibility: float = Field(
-        default=0.30, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
+        default=0.10, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
     )
     asymmetry: float = Field(
-        default=0.25, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
+        default=0.30, ge=0, le=1, description="Thermodynamic asymmetry weight (guide strand selection)"
     )
     gc_content: float = Field(
-        default=0.20, ge=0, le=1, description="GC content optimization weight (stability balance)"
+        default=0.35, ge=0, le=1, description="GC content optimization weight (stability balance)"
     )
 
 
 class PostScreenMiRNAWeights(WeightVector):
-    """``postscreen_mirna_v4``: the miRNA-biogenesis-aware post-screen vector, 6 declared terms.
+    """The pre-production miRNA-biogenesis-aware post-screen vector, with 6 declared terms.
 
-    Hand-authored, not derived from ``postscreen_sirna_v4``: deriving it by scaling would be the
+    Hand-authored, not derived from the siRNA pre-production vector: deriving it by scaling would be the
     1.25 divisor in a new costume. The biogenesis terms replaced an undeclared bonus that was folded
     into the score and then divided out of it, so ``--design-mode mirna`` used to move every weight
     by a factor absent from the manifest.
@@ -395,18 +393,15 @@ class PostScreenMiRNAWeights(WeightVector):
     ``score_pos1_mismatch`` is now always null, because no vector scores it; see
     ``models/scoring_profile.py``.
 
-    The 0.05 it released was **not** reassigned by judgement. The four shared terms are now exactly
-    ``0.80 x postscreen_sirna_v4`` -- 0.20 / 0.24 / 0.20 / 0.16 -- which is the proportional-scaling
-    rule this docstring already declared, now reachable at 2 dp without rounding and therefore
-    without the off_target/asymmetry tie-break the rounding used to force (the source vector ties
-    those two at 0.25 apiece; this one ties them at 0.20). ``ago_start`` and ``supp_13_16`` keep
-    their declared 0.10 each, so the biogenesis budget is 0.20 and the shared budget 0.80.
+    The shared terms remain exactly ``0.80 x postscreen_sirna_preproduction_v1`` -- 0.20 / 0.08 /
+    0.24 / 0.28. ``ago_start`` and ``supp_13_16`` keep their declared 0.10 each, so the biogenesis
+    budget is 0.20 and the shared budget is 0.80.
 
     Declared expert priors, reviewed and accepted, and **not fitted to any dataset**; a run scored
     under different numbers is not comparable, so bump SCORING_WEIGHT_SET_VERSION if they change.
     """
 
-    VECTOR_NAME: ClassVar[str] = "postscreen_mirna_v4"
+    VECTOR_NAME: ClassVar[str] = "postscreen_mirna_preproduction_v1"
     TERM_NAMES: ClassVar[tuple[str, ...]] = (
         "off_target",
         "target_accessibility",
@@ -418,10 +413,10 @@ class PostScreenMiRNAWeights(WeightVector):
 
     off_target: float = Field(default=0.20, ge=0, le=1, description="Post-screen genuine off-target specificity weight")
     target_accessibility: float = Field(
-        default=0.24, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
+        default=0.08, ge=0, le=1, description="Target-site accessibility weight (RNAplfold opening probability)"
     )
-    asymmetry: float = Field(default=0.20, ge=0, le=1, description="Thermodynamic asymmetry weight")
-    gc_content: float = Field(default=0.16, ge=0, le=1, description="GC content optimization weight")
+    asymmetry: float = Field(default=0.24, ge=0, le=1, description="Thermodynamic asymmetry weight")
+    gc_content: float = Field(default=0.28, ge=0, le=1, description="GC content optimization weight")
     ago_start: float = Field(
         default=0.10, ge=0, le=1, description="Argonaute loading preference weight (A/U at guide position 1)"
     )
@@ -431,7 +426,7 @@ class PostScreenMiRNAWeights(WeightVector):
 
 
 class ScoringWeights(BaseModel):
-    """The named weight vectors this run may score with, one per (stage, design mode).
+    """The named pre-production weight vectors this run may score with, one per stage and mode.
 
     A vector is chosen, never combined: ``vector_for`` returns exactly one, its name is stamped on
     the candidate and written to the manifest, and the scorer requires every term it declares. There
@@ -442,15 +437,15 @@ class ScoringWeights(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     design: DesignWeights = Field(
-        default_factory=DesignWeights, description="Design-stage vector (design_v4), scores design_score"
+        default_factory=DesignWeights, description="Pre-production design-stage vector, scores design_score"
     )
     postscreen_sirna: PostScreenSiRNAWeights = Field(
         default_factory=PostScreenSiRNAWeights,
-        description="Post-screen siRNA vector (postscreen_sirna_v4), scores composite_score",
+        description="Pre-production post-screen siRNA vector, scores composite_score",
     )
     postscreen_mirna: PostScreenMiRNAWeights = Field(
         default_factory=PostScreenMiRNAWeights,
-        description="Post-screen miRNA-biogenesis-aware vector (postscreen_mirna_v4), scores composite_score",
+        description="Pre-production post-screen miRNA-biogenesis-aware vector, scores composite_score",
     )
 
     def vector_for(self, *, post_screen: bool, design_mode: "DesignMode | None" = None) -> WeightVector:
@@ -933,19 +928,19 @@ class SiRNACandidate(BaseModel):
     )
 
     # Composite scoring. Two scores on two declared vectors, deliberately not one field:
-    #   design_score    -- design_v4, 3 terms, available before screening
-    #   composite_score -- postscreen_{sirna,mirna}_v4, available only after screening
+    #   design_score    -- active pre-production design vector, 3 terms, available before screening
+    #   composite_score -- active pre-production post-screen vector, available only after screening
     # They are NOT comparable: different term sets, and the two vectors also weight their *shared*
     # terms differently, so neither score is systematically the larger. Issue #102 deleted the claim
     # that design_score is the more optimistic number -- 0.5 features with off_target = 1.0 give
-    # design_v4 50.0 against postscreen_sirna_v4's 62.5.
+    # the design vector 50.0 against the siRNA post-screen vector's 62.5.
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
     design_score: float | None = Field(
         default=None,
         ge=0,
         le=100,
         description=(
-            "Design-stage score on the design_v4 vector (target_accessibility, asymmetry, "
+            "Design-stage score on the active pre-production vector (target_accessibility, asymmetry, "
             "gc_content). None when a term could not be computed. Not comparable with composite_score."
         ),
     )
@@ -997,8 +992,8 @@ class SiRNACandidate(BaseModel):
     weight_vector: str = Field(
         default="",
         description=(
-            "Name of the hand-authored weight vector that produced the score (design_v4, "
-            "postscreen_sirna_v4 or postscreen_mirna_v4), so a row traces to the exact weights used"
+            "Name of the hand-authored weight vector that produced the score, so a row traces to "
+            "the exact pre-production weights used"
         ),
     )
 

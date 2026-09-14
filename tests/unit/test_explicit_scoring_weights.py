@@ -281,7 +281,7 @@ def test_design_score_and_composite_score_are_separate_stages() -> None:
     assert candidate.design_score is not None
     assert candidate.composite_score is None, "composite_score must be null before screening"
     assert candidate.scored_after_screening is False
-    assert candidate.weight_vector == "design_v4"
+    assert candidate.weight_vector == "design_preproduction_v1"
     assert candidate.score_off_target is None
 
     # design_score is exactly its three declared contributions -- nothing else is folded in.

@@ -20,7 +20,9 @@ from sirnaforge.config.run_policy import (
     BUILTIN_PROFILES,
     DEFAULT_PROFILE_NAME,
     LEGACY_DEFAULT_EXCEPTIONS,
+    LEGACY_PROFILE_NAME,
     PASSTHROUGH_FIELDS,
+    PREPRODUCTION_PROFILE_NAME,
     SELECTABLE_ACTIONS,
     SETTING_SPECS,
     EntryPoint,
@@ -964,6 +966,15 @@ def test_the_legacy_profile_is_derived_from_the_model_defaults_with_one_declared
     assert profile.baseline["gc_min"] == 30.0
     assert profile.exceptions["gc_min"]
     assert profile.experimental is True
+
+
+@pytest.mark.unit
+def test_new_runs_use_the_preproduction_policy_name_and_legacy_is_only_an_alias():
+    """Run-policy baselines and scoring profiles must not be conflated by the old name."""
+    assert DEFAULT_PROFILE_NAME == PREPRODUCTION_PROFILE_NAME == "preproduction"
+    assert BUILTIN_PROFILES[LEGACY_PROFILE_NAME].name == LEGACY_PROFILE_NAME
+    assert BUILTIN_PROFILES[PREPRODUCTION_PROFILE_NAME].name == PREPRODUCTION_PROFILE_NAME
+    assert BUILTIN_PROFILES[LEGACY_PROFILE_NAME].baseline == BUILTIN_PROFILES[PREPRODUCTION_PROFILE_NAME].baseline
 
 
 @pytest.mark.unit

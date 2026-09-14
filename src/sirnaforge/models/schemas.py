@@ -228,7 +228,7 @@ class SiRNACandidateSchema(DataFrameModel):
     design_score: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Design-stage score on design_v4 (null if a term could not be computed)",
+        description="Design-stage score on the active pre-production design vector (null if a term could not be computed)",
         nullable=True,
         coerce=True,
     )
@@ -292,7 +292,7 @@ class SiRNACandidateSchema(DataFrameModel):
         coerce=True,
     )
     weight_vector: Series[str] = Field(
-        description="Name of the weight vector that produced the score (design_v4, postscreen_*_v4)",
+        description="Name of the exact weight vector that produced the score (recorded in the run manifest)",
         nullable=True,
         coerce=True,
     )
