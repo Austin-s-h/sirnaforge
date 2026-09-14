@@ -128,6 +128,22 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Added
 
+- **`sirnaforge benchmark prepare`/`design`: fixed-length benchmark artifacts (#109, bm-cli).** A
+  `benchmark` sub-app, matching the established `sequences`/`internal` one-noun-two-verbs shape.
+  `prepare --panel <panel_id>` writes `<out-dir>/<panel_id>__len<paired_length>/` (`observations.csv`,
+  `design_inputs.fasta`, `manifest.json`); `design --artifact <dir>` runs the existing fixed-length
+  designer over it and extends the same manifest with `candidates_all.csv`, `accounting.csv` and both
+  a benchmark and a re-derived default filter-verdict set per candidate. `--gc-min`/`--gc-max` widen
+  the shipped GC bounds for that run only, resolved through `resolve_run_policy`'s new
+  `EntryPoint.BENCHMARK_COMMAND` exactly as `sirnaforge design` resolves its own options -- a
+  narrower value is refused before any design work, because the default-verdict set is re-derived
+  from what the benchmark run observed and that is only exact if the benchmark run enumerated a
+  superset of what a default run would. The polynucleotide-run requirement (`max_poly_runs <= 3`)
+  cannot be widened through this surface and is recorded in the manifest regardless. Only one panel,
+  `huesken_subset`, ships real bytes in this repository (a 180-row Huesken redistribution already
+  vendored for #95/#102); the other panels #109/#110 name are declared but not vendored, and
+  `manifest.json`'s `panel.data_present` says so per artifact so a passing CLI invocation is never
+  mistaken for evidence over data this repository does not have.
 - **`selection_summary` in `logs/workflow_summary.json`: why the shortlist is the size it is** (#100).
   Success, "complete run, nothing eligible", "incomplete evidence" and "execution error" all leave
   `top_candidates` empty, so the distinguishing information has to be published rather than inferred.
