@@ -127,6 +127,8 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
   <div class="searchbar"><input id="q" placeholder="Search guide sequence, candidate id or transcript…" autocomplete="off"></div>
   <details class="filters" id="filters">
     <summary>Thresholds — <span id="fcount"></span></summary>
+    <div id="presets" style="margin-bottom:8px"></div>
+    <div id="refused" class="warn" style="display:none"></div>
     <div class="fstat" id="fstat"></div>
     <div id="frows"></div>
     <div class="fstat" id="fcons" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
@@ -186,10 +188,15 @@ const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;',
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
 
 const STATUS_RANK={pass:0,warn:1,unknown:2,fail:3};
+// Every key reads g._live -- the client-recomputed gate table -- not the frozen payload snapshot.
+// Sorting or painting the index off the run's own g.status/g.n_gates_failed would let the pill and the
+// gate panel disagree the moment a threshold moves (render.py:751-755 injects those as a display
+// convenience for the render's own defaults, not as the live truth once a control exists to move it).
 function rowKey(g,k){
   if(k==='guide')return g.guide; if(k==='composite')return g.composite_score??-1;
-  if(k==='design')return g.design_score??-1; if(k==='failed')return g.n_gates_failed*100+g.n_gates_unknown;
-  if(k==='status')return -STATUS_RANK[g.status];
+  if(k==='design')return g.design_score??-1;
+  if(k==='failed')return g._live.n_gates_failed*100+g._live.n_gates_unknown;
+  if(k==='status')return -STATUS_RANK[g._live.status];
   if(k==='liab')return g.liability_count; if(k==='rows')return g.n_rows; return 0;
 }
 function renderIndex(){
@@ -200,9 +207,9 @@ function renderIndex(){
   tb.innerHTML = view.map(g=>`<tr data-i="${G.indexOf(g)}" class="${g.guide===selected?'sel':''}">
     <td class="pick" data-pick="${esc(g.guide)}" title="add to / remove from cart"
       >${CART.has(g.guide)?'<span class="picked">\u2713</span>':'<span style="color:#d1d5db">+</span>'}</td>
-    <td><span class="pill ${V[g.status]}">${g.status}</span></td>
+    <td><span class="pill ${V[g._live.status]}">${g._live.status}</span></td>
     <td class="mono">${esc(g.guide)}</td><td>${fmt(g.composite_score)}</td>
-    <td>${g.n_gates_failed} / ${g.n_gates_unknown}</td>
+    <td>${g._live.n_gates_failed} / ${g._live.n_gates_unknown}</td>
     <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td>
     <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('');
   tb.querySelectorAll('tr').forEach(tr=>tr.onclick=e=>{
@@ -211,9 +218,9 @@ function renderIndex(){
     show(G[+tr.dataset.i]);
   });
 }
-document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
-  const k=th.dataset.k; if(k===sortK) sortAsc=!sortAsc; else {sortK=k;sortAsc=(k==='guide');} renderIndex();});
-document.getElementById('q').oninput = () => applyFilters();
+// Both wired in wireUI(), at the bottom: every DOM-touching statement in this file is either inside a
+// function or behind that one guard, so the substituted script also loads under node with nothing
+// stubbed but `document` itself (tests/unit/test_report_client_evaluator_parity.py).
 
 // Hand-drawn inline SVG, deliberately: plotly.min.js is 4.29 MB and its map traces carry external
 // URLs and browser-storage/network API references this report never invokes, which no static check
@@ -254,6 +261,10 @@ function drawMatrix(id, matrix){
   host.innerHTML=s;
 }
 const VERDICT=['pass','fail','unknown','not_evaluated','warn'];
+const V_PASS=0, V_FAIL=1, V_UNKNOWN=2, V_NOT_EVALUATED=3, V_WARN=4;
+//: payload.py's reason codes (payload.py:187-196), restated so the client evaluator can read them --
+//: only REASON_OK is ever re-thresholded; every other reason means the run itself never decided.
+const REASON_OK=0, REASON_EMPTY_VALUE=2;
 function gateReason(f,value,verdict,reason){
   const measured = (value!==null&&value!==undefined);
   if(reason===1) return 'the run exports neither '+f.filter_id+'_observed nor '+f.column;
@@ -267,20 +278,25 @@ function gateReason(f,value,verdict,reason){
   const cmp=fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(f.threshold);
   return verdict===4 ? cmp+'; action=warn, not a rejection' : cmp;
 }
+// Reads the guide's LIVE gate table (g._live, kept current by recomputeLive()), not the frozen
+// payload snapshot -- otherwise this panel would go stale the moment a reader moves a threshold and
+// contradict the status pill sitting right above it.
 function gatesCard(g){
-  const order=[3,0,1,4,2];  // fail, unknown, warn, pass, not_evaluated -- worst news first
-  const idx=g.gates.map((t,i)=>i).sort((a,b)=>order[g.gates[a][1]]-order[g.gates[b][1]]);
-  const rows=idx.map(i=>{const [value,verdict,reason]=g.gates[i], f=FILTERS[i], v=VERDICT[verdict];
+  const live=g._live, order=[3,0,1,4,2];  // fail, unknown, warn, pass, not_evaluated -- worst news first
+  const idx=live.gates.map((t,i)=>i).sort((a,b)=>order[live.gates[a][1]]-order[live.gates[b][1]]);
+  const rows=idx.map(i=>{const [value,verdict,reason]=live.gates[i], f=FILTERS[i], v=VERDICT[verdict];
+    const moved=evaluable(f) && T[f.filter_id]!==f.threshold;
     return `<tr><td class="mono">${esc(f.filter_id)}</td>
     <td><span class="pill v-${v}">${v.replace('_',' ')}</span></td>
-    <td>${fmt(value)}</td><td class="mono">${esc(f.comparator)} ${fmt(f.threshold)}</td>
+    <td>${fmt(value)}</td><td class="mono">${esc(f.comparator)} ${fmt(moved?T[f.filter_id]:f.threshold)}${
+      moved?` <span class="empty">(run ${fmt(f.threshold)})</span>`:''}</td>
     <td>${esc(f.scope_label)}</td><td>${esc(f.stage)}</td><td>${esc(gateReason(f,value,verdict,reason))}</td></tr>`;}).join('');
-  const nu=g.n_gates_unknown;
-  return `<div class="card"><h2>Gates — all ${g.gates.length}, independently evaluated</h2>
-    ${nu?`<div class="warn"><b>${nu} of ${g.gates.length} gates not evaluated.</b> An unevaluated gate is
+  const nu=live.n_gates_unknown;
+  return `<div class="card"><h2>Gates — all ${live.gates.length}, independently evaluated</h2>
+    ${nu?`<div class="warn"><b>${nu} of ${live.gates.length} gates not evaluated.</b> An unevaluated gate is
       not a pass. See the Why column for the missing input.</div>`:''}
-    ${(!nu&&g.status==='unknown')?`<div class="warn"><b>Run verdict: ${esc(g.run_verdict)}.</b>
-      No declared filter covers this rejection, so it cannot be re-derived from the ${g.gates.length}
+    ${(!nu&&live.status==='unknown')?`<div class="warn"><b>Run verdict: ${esc(g.run_verdict)}.</b>
+      No declared filter covers this rejection, so it cannot be re-derived from the ${live.gates.length}
       gates below, all of which are satisfied. Reported as not established.</div>`:''}
     <table><thead><tr><th>Filter</th><th>Verdict</th><th>Value</th><th>Threshold</th>
     <th>Scope</th><th>Stage</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -541,7 +557,7 @@ function structureCard(g){
     </div></div>`;
 }
 
-document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
+// Wired in wireUI(), at the bottom, with every other DOM-touching statement in this file.
 
 // One card raising must cost that card, not the pane. Every panel below is independent evidence, so
 // losing the off-target table because a structure string was malformed is never the right trade.
@@ -552,22 +568,107 @@ function card(render, g){
 }
 
 // ---- thresholds and cart -------------------------------------------------------------------------
-// Client-side only: the run's verdicts are fixed and are never recomputed here. A threshold below
-// *selects among* candidates the run already judged; it does not re-judge them, and the pill on each
-// row still shows what the run and the gate panel concluded.
+// Every evaluable filter (#103 follow-up) gets a live control: moving it re-derives that guide's
+// gate, its status, and the counts the index and gate panel show. There is no frozen "selects among
+// the run's own verdicts" reading left -- a filter with no control (action=off, or no declared
+// threshold) cannot be asked to move at all, and the evaluator below refuses it whatever a URL
+// fragment names, with the refusal shown rather than swallowed.
 const CART = new Set();
 const STATUS_KEYS = ['pass','warn','unknown','fail'];
-
-//: label, how to read the value off a guide, direction, and the bound the field starts at.
-const FILTERS_UI = [
-  {k:'composite', label:'composite score', get:g=>g.composite_score, dir:'min'},
-  {k:'isoforms',  label:'isoforms hit',    get:g=>g.transcript_hits,  dir:'min'},
-  {k:'gc',        label:'GC %',            get:g=>g.metrics.gc_content, dir:'range'},
-  {k:'asym',      label:'asymmetry',       get:g=>g.metrics.asymmetry_score, dir:'min'},
-  {k:'offt',      label:'off-target count',get:g=>g.metrics.off_target_count, dir:'max'},
-  {k:'liab',      label:'liabilities',     get:g=>g.liability_count, dir:'max'},
-];
 const F = {status:new Set(['pass','warn']), cons:new Set(), consSeedIntact:true};
+
+// A filter a reader may move: payload.py's own `evaluable` (payload.py's _filter_view), decided from
+// this run's output -- applied, thresholded, and this run measured at least one value for it. Read
+// as data rather than re-derived, so a filter whose column is exported but empty for every guide
+// freezes here exactly as it does server-side, with no second copy of that rule to drift from it.
+function evaluable(f){ return !!f.evaluable; }
+
+// The ONE comparator table, restated once: FilterComparator.passes (models/policy.py:216-227). Every
+// gate here is one lookup into this, never a per-filter branch.
+function CMP(comparator, v, t){
+  if(comparator==='le') return v<=t;
+  if(comparator==='lt') return v<t;
+  if(comparator==='ge') return v>=t;
+  if(comparator==='gt') return v>t;
+  return false;
+}
+
+//: filter_id -> the threshold a reader has moved it to. Seeded from the run's own threshold for
+//: every evaluable filter, so "yours" and "run" start identical and a reset is just restoring this.
+const T = {};
+FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
+let refusedFilters = [];
+let activePreset = 'all';
+
+// Re-thresholds ONE gate triple -- the same two rules as payload.py's own `reevaluate_gates`, restated
+// here because a client-side evaluator has to restate it, not re-derived some other way. `reason`
+// (payload.py:187-196) already recorded *why* this guide's row landed where it did:
+// REASON_EMPTY_VALUE has nothing to compare and stays unknown; every other non-OK reason -- an off
+// filter, an undeclared threshold, a missing column, or the run's own recorded UNKNOWN/NOT_EVALUATED
+// -- is returned byte-for-byte untouched, because a row the run itself did not decide is not this
+// evaluator's to decide either. REASON_OK is the one case a comparison actually runs.
+function reevaluateGate(f, triple, t){
+  const [value, verdict, reason] = triple;
+  if(reason === REASON_EMPTY_VALUE) return [value, V_UNKNOWN, REASON_EMPTY_VALUE];
+  if(reason !== REASON_OK) return triple;
+  const passed = CMP(f.comparator, value, t===undefined?f.threshold:t);
+  const code = passed ? V_PASS : (f.action==='warn' ? V_WARN : V_FAIL);
+  return [value, code, REASON_OK];
+}
+
+// Re-derives one guide's whole gate table plus the counters and status render.py:751-755 otherwise
+// freezes at the run's own thresholds. Mirrors GuideEntry.status and .undeclared_run_rejection
+// (payload.py:87-134) exactly: a rejection the run made that no gate here expresses stays `unknown`
+// no matter how every movable gate is set, because the evaluable gates all being satisfied says
+// nothing about the one the run used that this report cannot re-derive.
+function reevaluateGates(g, overrides){
+  const ov = overrides || {};
+  const gates = FILTERS.map((f,i) => reevaluateGate(f, g.gates[i],
+    Object.prototype.hasOwnProperty.call(ov, f.filter_id) ? ov[f.filter_id] : f.threshold));
+  const n_gates_failed = gates.reduce((n,t)=>n+(t[1]===V_FAIL?1:0), 0);
+  const n_gates_unknown = gates.reduce((n,t)=>n+(t[1]===V_UNKNOWN?1:0), 0);
+  const n_gates_warned = gates.reduce((n,t)=>n+(t[1]===V_WARN?1:0), 0);
+  const undeclared = g.run_verdict!=null && g.run_verdict!=='PASS' && !(n_gates_failed || n_gates_unknown);
+  let status;
+  if(n_gates_failed) status='fail';
+  else if(n_gates_unknown || undeclared) status='unknown';
+  else status = n_gates_warned ? 'warn' : 'pass';
+  return {gates, n_gates_failed, n_gates_unknown, n_gates_warned, status};
+}
+
+// Kept current on every guide after a threshold moves, so the index, the sort, the gate panel and the
+// status pill all read the same recomputation and none of them can disagree.
+function recomputeLive(){ for(const g of G) g._live = reevaluateGates(g, T); }
+recomputeLive();
+
+// ---- off-target-clean: liability_count===0 alone cannot mean "clean" ------------------------------
+// `off_target_screened` rides along on every guide (payload.py's GuideEntry, from candidates_all.csv's
+// own column) precisely so a never-screened guide and a genuinely clean one are never the same 0.
+// liability_count already sums off_target + undetermined hits (payload.py:51), so once screening is
+// confirmed, liability_count===0 is the whole answer -- no second copy of that sum needed here.
+function offTargetClean(g){ return g.off_target_screened===true && g.liability_count===0; }
+
+// ---- register-deduplicated: read the cluster payload.py already computed cross-guide ---------------
+// register_cluster/register_representative (payload.py's _register_clusters) are Python-computed
+// once over the whole candidate table, keyed on each candidate row's own score -- not approximated
+// again here from register_neighbours, which names positions with no guide behind them. A candidate
+// with no numeric position is trivially its own cluster and always carries register_representative
+// true, so a guide is a cluster's keeper if any of its isoform rows says so.
+function isRegisterRepresentative(g){
+  return g.isoforms.length===0 || g.isoforms.some(i=>i.register_representative);
+}
+
+// ---- five preset views, each a pure predicate over (g, live) --------------------------------------
+// 'passing' filters on live.status alone -- derived fail > unknown > warn > pass, mirroring
+// GuideEntry.status -- so it can never surface a `live.status==='unknown'` guide, whatever threshold
+// produced it: the property a reader cannot re-threshold their way out of.
+const PRESETS = {
+  all:              {label:'All',                  test:(g,live)=>true},
+  passing:          {label:'Passing',               test:(g,live)=>live.status==='pass'||live.status==='warn'},
+  near_miss:        {label:'Near miss',             test:(g,live)=>live.n_gates_failed===1 && live.n_gates_unknown===0},
+  off_target_clean: {label:'Off-target clean',      test:(g,live)=>offTargetClean(g)},
+  register_dedup:   {label:'Register-deduplicated',  test:(g,live)=>isRegisterRepresentative(g)},
+};
 
 // Conservation is a selection criterion, not a verdict: requiring mouse and macaque is one
 // programme's requirement and would be wrong baked into the tool, so it lives here as a threshold.
@@ -586,31 +687,55 @@ function fnum(id){ const el=document.getElementById(id); if(!el) return null;
   const v=el.value.trim(); return v===''?null:Number(v); }
 
 function passesFilters(g){
-  if(F.status.size && !F.status.has(g.status)) return false;
+  const live = g._live;
+  if(F.status.size && !F.status.has(live.status)) return false;
   if(!passesConservation(g)) return false;
-  for(const f of FILTERS_UI){
-    const v=f.get(g);
-    const lo=fnum('f_'+f.k+'_lo'), hi=fnum('f_'+f.k+'_hi');
-    if(lo!==null || hi!==null){
-      if(v===null||v===undefined) return false;   // an absent value cannot satisfy a threshold
-      if(lo!==null && v<lo) return false;
-      if(hi!==null && v>hi) return false;
-    }
-  }
+  if(!PRESETS[activePreset].test(g, live)) return false;
   return true;
+}
+
+function buildPresetButtons(){
+  document.getElementById('presets').innerHTML = Object.entries(PRESETS).map(([k,p])=>
+    `<button class="cartbtn" data-preset="${k}"${k===activePreset?' style="border-color:var(--acc);color:var(--acc)"':''}>${esc(p.label)}</button>`).join('');
+  document.querySelectorAll('#presets button').forEach(b=>b.onclick=()=>{
+    activePreset=b.dataset.preset; buildPresetButtons(); applyFilters(); syncHash();
+  });
+}
+
+// One generic control per evaluable filter -- no filter_id and no filter column is ever a branch in
+// this function, only data read off FILTERS. A frozen filter gets a read-only row, no input, and
+// payload.py's own `unevaluable_reason` (not a re-derived guess at why): the evaluator above already
+// refuses to move it, and this is where that refusal is visible rather than a control nobody could use.
+function buildGateControls(){
+  document.getElementById('frows').innerHTML = FILTERS.map(f=>{
+    if(!evaluable(f)) return `<div class="frow" data-filter="${esc(f.filter_id)}">
+      <span class="mono">${esc(f.filter_id)}</span>
+      <span class="empty" style="grid-column:span 2">frozen — ${esc(f.unevaluable_reason||'not re-thresholdable')}</span></div>`;
+    const c = f.control || {};
+    return `<div class="frow" data-filter="${esc(f.filter_id)}">
+      <span title="${esc(f.definition||'')}"><span class="mono">${esc(f.filter_id)}</span> ${esc(f.comparator)}</span>
+      <input id="ctl_${esc(f.filter_id)}" value="${T[f.filter_id]}" inputmode="decimal">
+      <span class="empty">run ${fmt(f.threshold)}</span></div>
+      <input type="range" id="rng_${esc(f.filter_id)}" min="${c.min}" max="${c.max}" step="${c.step}"
+        value="${T[f.filter_id]}" style="grid-column:1/-1;width:100%" aria-label="${esc(f.filter_id)} slider">`;
+  }).join('');
+  // The number box and the slider are the same threshold; typing in one moves the other, so "yours"
+  // never has two disagreeing readouts.
+  document.querySelectorAll('#frows input[id^="ctl_"], #frows input[id^="rng_"]').forEach(el=>el.oninput=()=>{
+    const id=el.id.slice(el.id.indexOf('_')+1), f=FILTERS.find(x=>x.filter_id===id), v=fnum(el.id);
+    T[id] = v===null ? f.threshold : v;
+    const other=document.getElementById((el.id.startsWith('ctl_')?'rng_':'ctl_')+id);
+    if(other) other.value = T[id];
+    onThresholdsChanged();
+  });
 }
 
 function buildFilterUI(){
   document.getElementById('fstat').innerHTML = STATUS_KEYS.map(k=>
     `<label><input type="checkbox" data-status="${k}"${F.status.has(k)?' checked':''}> ${k}</label>`).join('');
-  document.getElementById('frows').innerHTML = FILTERS_UI.map(f=>{
-    const lo = f.dir==='max' ? '' : `<input id="f_${f.k}_lo" placeholder="min" inputmode="decimal">`;
-    const hi = f.dir==='min' ? '' : `<input id="f_${f.k}_hi" placeholder="max" inputmode="decimal">`;
-    return `<div class="frow"><span>${esc(f.label)}</span>${lo||'<span></span>'}${hi||'<span></span>'}</div>`;
-  }).join('');
   document.querySelectorAll('#fstat input').forEach(cb=>cb.onchange=()=>{
     cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status); applyFilters(); });
-  document.querySelectorAll('#frows input').forEach(el=>el.oninput=applyFilters);
+  buildGateControls();
   document.getElementById('fcons').innerHTML =
     '<span style="color:var(--mut)">conserved in</span> ' +
     CONS_SPECIES.map(sp=>`<label><input type="checkbox" data-cons="${sp}"${F.cons.has(sp)?' checked':''}> ${sp}</label>`).join('') +
@@ -619,6 +744,8 @@ function buildFilterUI(){
   document.querySelectorAll('#fcons input[data-cons]').forEach(cb=>cb.onchange=()=>{
     cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); });
   document.getElementById('consseed').onchange = e => { F.consSeedIntact=e.target.checked; applyFilters(); };
+  buildPresetButtons();
+  renderRefused();
 }
 
 function matching(){ return G.filter(passesFilters); }
@@ -653,7 +780,7 @@ function renderCart(){
       <th>Liab.</th></tr></thead><tbody>${rows.map(g=>
       `<tr data-cart="${esc(g.guide)}"><td class="pick"><span class="picked">×</span></td>
        <td class="mono">${esc(g.guide)}</td>
-       <td><span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[g.status]}">${g.status}</span></td>
+       <td><span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[g._live.status]}">${g._live.status}</span></td>
        <td>${fmt(g.composite_score)}</td><td>${isoformFrac(g)}</td>
        <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td></tr>`).join('')}</tbody></table>`;
   document.querySelectorAll('#cartlist tr[data-cart]').forEach(tr=>
@@ -662,55 +789,65 @@ function renderCart(){
               'gc_content','asymmetry_score','off_target_count','liabilities','structure',
               ...CONS_SPECIES.flatMap(sp=>[sp+'_nm', sp+'_seed_mm'])];
   document.getElementById('carttsv').value = [cols.join('\t'), ...rows.map(g=>[
-    g.guide, g.passenger??'', g.status, g.composite_score??'', g.design_score??'',
+    g.guide, g.passenger??'', g._live.status, g.composite_score??'', g.design_score??'',
     g.transcript_hits??'', TX_IDS.length, g.metrics.gc_content??'', g.metrics.asymmetry_score??'',
     g.metrics.off_target_count??'', g.liability_count, g.structure??'',
     ...CONS_SPECIES.flatMap(sp=>{const d=consOf(g,sp); return [d?.nm??'', d?.seed_mismatches??''];})
     ].join('\t'))].join('\n');
 }
 
-document.getElementById('addtop').onclick = e => {
-  if(e.target.id==='topn') return;                       // typing in the field is not a click on the button
-  const n=Math.max(0, parseInt(document.getElementById('topn').value,10)||0);
-  matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1))
-    .slice(0,n).forEach(g=>CART.add(g.guide));
-  renderIndex(); renderCart(); drawOverlay();
-};
-document.getElementById('cartclear').onclick = () => { CART.clear(); renderIndex(); renderCart(); drawOverlay(); };
-document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
+// ---- URL fragment: selected guide, moved thresholds, active preset --------------------------------
+// A bare fragment with none of the '=' syntax below is still read as a guide -- what every earlier
+// report in this run wrote.
+function encodeHash(){
+  const parts=[];
+  if(selected) parts.push('g='+encodeURIComponent(selected));
+  const moved=Object.keys(T).filter(id=>{
+    const f=FILTERS.find(x=>x.filter_id===id); return f && T[id]!==f.threshold;
+  });
+  if(moved.length) parts.push('t='+moved.map(id=>id+':'+T[id]).join(','));
+  if(activePreset!=='all') parts.push('preset='+activePreset);
+  return parts.join('&');
+}
+function syncHash(){ location.hash = encodeHash(); }
 
-// A Blob download, because that is what "export" means, with the textarea as the declared fallback:
-// the report's own sandbox may withhold allow-downloads, and a button that silently does nothing is
-// worse than one that says why.
-document.getElementById('cartdl').onclick = () => {
-  const note=document.getElementById('dlnote'), n=CART.size;
-  const stamp=new Date().toISOString().slice(0,10).replace(/-/g,'');
-  const name=`${GENE.replace(/[^A-Za-z0-9_.-]/g,'_')}_cart_${n}guides_${stamp}.tsv`;
-  try{
-    const url=URL.createObjectURL(new Blob([document.getElementById('carttsv').value],
-      {type:'text/tab-separated-values'}));
-    const a=document.createElement('a');
-    a.href=url; a.download=name; a.style.display='none';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 0);
-    note.textContent=` ${name}`;
-  }catch(e){
-    note.textContent=' download refused by this viewer — copy the box below instead';
-    const t=document.getElementById('carttsv'); t.focus(); t.select();
+// Reads a fragment written by encodeHash (or a bare guide sequence from an earlier report) and
+// returns the filter ids it had to refuse -- an unknown id, or one with no control -- so the caller
+// can show that refusal rather than silently drop it.
+function applyHashFragment(raw){
+  const refused=[];
+  if(raw.indexOf('=')<0) return {guide: raw ? decodeURIComponent(raw) : null, refused};
+  let guide=null;
+  for(const part of raw.split('&')){
+    const eq=part.indexOf('='); if(eq<0) continue;
+    const k=part.slice(0,eq), v=part.slice(eq+1);
+    if(k==='g') guide=decodeURIComponent(v);
+    else if(k==='t'){
+      for(const pair of v.split(',')){
+        if(!pair) continue;
+        const ci=pair.indexOf(':'); if(ci<0) continue;
+        const id=pair.slice(0,ci), num=Number(pair.slice(ci+1));
+        const f=FILTERS.find(x=>x.filter_id===id);
+        if(f && evaluable(f) && Number.isFinite(num)) T[id]=num;
+        else refused.push(id);
+      }
+    } else if(k==='preset'){ if(PRESETS[v]) activePreset=v; }
   }
-};
-document.getElementById('freset').onclick = () => {
-  F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
-  document.querySelectorAll('#frows input').forEach(el=>{ el.value=''; });
-  buildFilterUI(); applyFilters();
-};
+  return {guide, refused};
+}
+function renderRefused(){
+  const el=document.getElementById('refused');
+  if(!refusedFilters.length){ el.style.display='none'; return; }
+  el.style.display='';
+  el.innerHTML=`<b>Refused.</b> The URL asked to move ${refusedFilters.map(esc).join(', ')} -- ${
+    refusedFilters.length===1?'it has':'they have'} no control here (frozen), so nothing moved.`;
+}
 
-function show(g){
-  selected=g.guide; renderIndex();
-  const i=G.indexOf(g);
+function renderDetail(g){
+  const i=G.indexOf(g), live=g._live;
   document.getElementById('detail').innerHTML = `
    <div class="card"><h2>Guide</h2>
-     <div class="mono big">${esc(g.guide)} <span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[g.status]}" style="font-size:12px;vertical-align:middle">${g.status==='unknown'?'not established':g.status}</span></div>
+     <div class="mono big">${esc(g.guide)} <span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[live.status]}" style="font-size:12px;vertical-align:middle">${live.status==='unknown'?'not established':live.status}</span></div>
      <div class="kv" style="margin-top:12px">
        <div><b>Passenger</b><span class="mono">${esc(g.passenger||'—')}</span></div>
        <div><b>Overhang</b>${esc(g.overhang||'—')}</div>
@@ -721,18 +858,84 @@ function show(g){
      </div></div>
    ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(conservationCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
-  showOn(g);
-  location.hash = encodeURIComponent(g.guide);
 }
-// One bootstrap block, at the end: renderMap reaches CART through drawOverlay, and a `const` is
-// hoisted but not initialised, so calling it from the map section threw a TDZ ReferenceError.
-buildFilterUI();
-applyFilters();
-renderCart();
-renderMap();
-const initial = decodeURIComponent(location.hash.slice(1));
-const start = G.find(g=>g.guide===initial) || G[0];
-if(start) show(start);
+
+function show(g){
+  selected=g.guide; renderIndex();
+  renderDetail(g);
+  showOn(g);
+  syncHash();
+}
+
+// Fired by every gate-threshold input. Deliberately does not rebuild the controls (that would steal
+// focus mid-keystroke) -- only the derived state: live gates, the view, the cart, the map markers,
+// the open detail pane and the fragment.
+function onThresholdsChanged(){
+  recomputeLive();
+  applyFilters();
+  renderCart();
+  drawOverlay();
+  if(selected){ const g=G.find(x=>x.guide===selected); if(g) renderDetail(g); }
+  syncHash();
+}
+
+// One bootstrap block, guarded: the substituted <script> body is also handed directly to node for the
+// parity harness (tests/unit/test_report_client_evaluator_parity.py), which has no `document` and no
+// `location`. Every DOM-touching statement in the file lives inside a function or behind this guard,
+// so the pure evaluator above (CMP, reevaluateGate, reevaluateGates, the presets, the register
+// clustering) loads and runs there with nothing stubbed beyond the check itself.
+function wireUI(){
+  document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
+    const k=th.dataset.k; if(k===sortK) sortAsc=!sortAsc; else {sortK=k;sortAsc=(k==='guide');} renderIndex();});
+  document.getElementById('q').oninput = () => applyFilters();
+  document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
+  document.getElementById('addtop').onclick = e => {
+    if(e.target.id==='topn') return;                     // typing in the field is not a click on the button
+    const n=Math.max(0, parseInt(document.getElementById('topn').value,10)||0);
+    matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1))
+      .slice(0,n).forEach(g=>CART.add(g.guide));
+    renderIndex(); renderCart(); drawOverlay();
+  };
+  document.getElementById('cartclear').onclick = () => { CART.clear(); renderIndex(); renderCart(); drawOverlay(); };
+  document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
+  // A Blob download, because that is what "export" means, with the textarea as the declared fallback:
+  // the report's own sandbox may withhold allow-downloads, and a button that silently does nothing is
+  // worse than one that says why.
+  document.getElementById('cartdl').onclick = () => {
+    const note=document.getElementById('dlnote'), n=CART.size;
+    const stamp=new Date().toISOString().slice(0,10).replace(/-/g,'');
+    const name=`${GENE.replace(/[^A-Za-z0-9_.-]/g,'_')}_cart_${n}guides_${stamp}.tsv`;
+    try{
+      const url=URL.createObjectURL(new Blob([document.getElementById('carttsv').value],
+        {type:'text/tab-separated-values'}));
+      const a=document.createElement('a');
+      a.href=url; a.download=name; a.style.display='none';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 0);
+      note.textContent=` ${name}`;
+    }catch(e){
+      note.textContent=' download refused by this viewer — copy the box below instead';
+      const t=document.getElementById('carttsv'); t.focus(); t.select();
+    }
+  };
+  document.getElementById('freset').onclick = () => {
+    F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
+    FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
+    activePreset = 'all'; refusedFilters = [];
+    buildFilterUI(); onThresholdsChanged();
+  };
+
+  const {guide, refused} = applyHashFragment(location.hash.slice(1));
+  refusedFilters = refused;
+  recomputeLive();       // thresholds named in the fragment must be live before anything paints
+  buildFilterUI();        // gate controls reflect T, including any fragment overrides
+  applyFilters();
+  renderCart();
+  renderMap();
+  const start = G.find(g=>g.guide===guide) || G[0];
+  if(start) show(start);
+}
+if (typeof document !== 'undefined') { wireUI(); }
 </script></body></html>
 """
 
