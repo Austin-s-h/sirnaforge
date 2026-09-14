@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from sirnaforge import __version__
-from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
+from sirnaforge.config.run_policy import DEFAULT_PROFILE_NAME, EntryPoint, resolve_run_policy
 from sirnaforge.core.scoring import COMPOSITE_TERMS, SCORING_WEIGHT_SET_VERSION
 from sirnaforge.models.sirna import (
     DesignParameters,
@@ -70,9 +70,13 @@ def test_manifest_records_the_weight_set_version(tmp_path):
     assert scoring["scored_terms"] == list(COMPOSITE_TERMS)
     # Issue #96: each vector is recorded under its own NAME, because that name is stamped on every
     # candidate row -- a score without its vector cannot be traced to the weights that made it.
-    assert set(scoring["vectors"]) == {"design_v4", "postscreen_sirna_v4", "postscreen_mirna_v4"}
+    assert set(scoring["vectors"]) == {
+        "design_preproduction_v1",
+        "postscreen_sirna_preproduction_v1",
+        "postscreen_mirna_preproduction_v1",
+    }
     assert scoring["vectors"] == DesignParameters().scoring.as_manifest()
-    assert scoring["vector_terms"]["design_v4"] == ["target_accessibility", "asymmetry", "gc_content"]
+    assert scoring["vector_terms"]["design_preproduction_v1"] == ["target_accessibility", "asymmetry", "gc_content"]
     # Terms that are computed and reported but score nothing must be named as such, or their
     # absence from the weights reads as an omission.
     assert "empirical" in scoring["reported_not_scored"]
@@ -99,10 +103,10 @@ def test_manifest_weights_track_a_custom_weight_set(tmp_path):
         orf_report=tmp_path / "orf.tsv",
     )
 
-    assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["off_target"] == 0.40
-    assert manifest["scoring"]["vectors"]["postscreen_sirna_v4"]["gc_content"] == 0.10
-    # The untouched vectors still record their own declared numbers.
-    assert manifest["scoring"]["vectors"]["design_v4"]["target_accessibility"] == 0.35
+    assert manifest["scoring"]["vectors"]["postscreen_sirna_preproduction_v1"]["off_target"] == 0.40
+    assert manifest["scoring"]["vectors"]["postscreen_sirna_preproduction_v1"]["gc_content"] == 0.10
+    # The untouched design vector still records its own declared numbers.
+    assert manifest["scoring"]["vectors"]["design_preproduction_v1"]["target_accessibility"] == 0.35
 
 
 @pytest.mark.unit
@@ -125,7 +129,9 @@ def test_manifest_records_the_resolved_run_policy(tmp_path):
     assert manifest["run_mode"] == "qualified"
     assert manifest["design_mode"] == "mirna"
     # Profile identity and hash, so two runs are comparable only when the baseline was the same.
-    assert manifest["profile"]["name"] == "legacy"
+    # Read off the constant rather than spelled out: f4beab7 renamed the default profile
+    # `legacy` -> `preproduction`, and this assertion was the only thing still holding the old word.
+    assert manifest["profile"]["name"] == DEFAULT_PROFILE_NAME
     assert manifest["profile"]["content_hash"].startswith("sha256:")
     assert manifest["profile"]["experimental"] is True
 

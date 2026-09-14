@@ -473,7 +473,7 @@ class SiRNADesigner:
         gc_score: float,
         access_score: float | None,
     ) -> None:
-        """Write ``design_score`` on the ``design_v4`` vector, and its per-term contributions.
+        """Write ``design_score`` on the active pre-production design vector, and contributions.
 
         ``composite_score`` stays None: it needs ``off_target``, which does not exist until
         screening has run. A NaN sub-score (a ViennaRNA failure) or a None accessibility means "no
@@ -505,7 +505,7 @@ class SiRNADesigner:
         candidate.score_asymmetry = result.contributions.get("asymmetry")
         candidate.score_gc_content = result.contributions.get("gc_content")
         candidate.score_target_accessibility = result.contributions.get("target_accessibility")
-        # Terms outside design_v4 stay None at design time
+        # Terms outside the design-stage vector stay None at design time
         candidate.score_off_target = None
         candidate.score_ago_start = None
         candidate.score_pos1_mismatch = None
@@ -745,7 +745,7 @@ class SiRNADesigner:
 # The three miRNA biogenesis features `biogenesis_features` produces. All three are pure functions
 # of the guide and passenger sequences, so they are computable for every candidate -- including
 # dirty controls, which never pass through MiRNADesigner. Two of them are scored terms of
-# postscreen_mirna_v4; `pos1_mismatch` is computed and reported only, because issue #102 measured it
+# the active pre-production miRNA vector; `pos1_mismatch` is computed and reported only, because issue #102 measured it
 # exactly constant. Read a vector's own TERM_NAMES for what is scored -- this tuple is what is
 # *computed*, and the two are deliberately not the same list.
 MIRNA_TERM_NAMES = ("ago_start", "pos1_mismatch", "supp_13_16")
@@ -815,7 +815,7 @@ def biogenesis_features(guide: str, passenger: str) -> dict[str, float]:
     """The three miRNA biogenesis sub-scores, from sequence alone.
 
     Computed here rather than read back off the candidate so post-screen scoring cannot be handed a
-    partially-populated row: every term in postscreen_mirna_v4 must be present, and re-deriving them
+        partially-populated row: every term in the active post-screen vector must be present, and re-deriving them
     from the sequences means they always are. Each is in [0, 1] like every other term -- they are
     features now, not bonuses added to a finished score.
     """
@@ -855,9 +855,9 @@ class MiRNADesigner(SiRNADesigner):
     ) -> list[SiRNACandidate]:
         """Record the miRNA biogenesis evidence, then score exactly as siRNA mode does.
 
-        The design stage uses one vector (``design_v4``) in both modes, so this method no longer
+        The design stage uses one vector in both modes, so this method no longer
         touches any score: two of the three biogenesis quantities -- ``ago_start`` and
-        ``supp_13_16`` -- are terms of ``postscreen_mirna_v4`` and only enter once ``off_target``
+        ``supp_13_16`` -- are terms of the active miRNA post-screen vector and only enter once ``off_target``
         exists, and ``pos1_mismatch`` is scored by no vector at all since #102. What this method does
         do is record all three -- as reported fields and as ``component_scores`` entries -- so the CSV
         shows why a miRNA run ranks as it does.

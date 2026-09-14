@@ -140,7 +140,7 @@ class TestComputeComposite:
     """Tests for the scorer: one named vector, its exact term set, no arithmetic on weights."""
 
     def test_known_features_and_weights_yield_known_score(self) -> None:
-        """A hand-computed score, term by term, against postscreen_sirna_v4.
+        """A hand-computed score, term by term, against the pre-production siRNA vector.
 
         The anchor test: the arithmetic is written out by hand rather than by calling the function
         twice, so a scorer that returned a constant would fail here.
@@ -154,27 +154,27 @@ class TestComputeComposite:
         vector = PostScreenSiRNAWeights()
 
         # off_target:           0.25 * 1.0 * 100 = 25.0
-        # target_accessibility: 0.30 * 0.7 * 100 = 21.0
-        # asymmetry:            0.25 * 0.8 * 100 = 20.0
-        # gc_content:           0.20 * 0.9 * 100 = 18.0
-        # Total = 84.0
+        # target_accessibility: 0.10 * 0.7 * 100 = 7.0
+        # asymmetry:            0.30 * 0.8 * 100 = 24.0
+        # gc_content:           0.35 * 0.9 * 100 = 31.5
+        # Total = 87.5
         result = compute_composite(features, vector)
 
-        assert result.score == pytest.approx(84.0, abs=1e-9)
+        assert result.score == pytest.approx(87.5, abs=1e-9)
         assert result.weight_set_version == SCORING_WEIGHT_SET_VERSION
-        assert result.vector_name == "postscreen_sirna_v4"
+        assert result.vector_name == "postscreen_sirna_preproduction_v1"
         assert result.terms == ("off_target", "target_accessibility", "asymmetry", "gc_content")
         assert len(result.contributions) == 4
 
     def test_design_vector_scores_its_own_three_terms(self) -> None:
-        """design_v4 is a different vector over a different term set, hand-computed too."""
+        """The design vector is separate from the post-screen vector, and is hand-computed too."""
         features = {"target_accessibility": 0.5, "asymmetry": 1.0, "gc_content": 0.0}
 
         # 0.35 * 0.5 * 100 + 0.40 * 1.0 * 100 + 0.25 * 0.0 * 100 = 17.5 + 40.0 + 0.0
         result = compute_composite(features, DesignWeights())
 
         assert result.score == pytest.approx(57.5, abs=1e-9)
-        assert result.vector_name == "design_v4"
+        assert result.vector_name == "design_preproduction_v1"
         assert result.terms == ("target_accessibility", "asymmetry", "gc_content")
 
     def test_extra_features_are_ignored_not_scored(self) -> None:
@@ -268,18 +268,18 @@ class TestWeightVectors:
         }
         assert PostScreenSiRNAWeights().as_mapping() == {
             "off_target": 0.25,
-            "target_accessibility": 0.30,
-            "asymmetry": 0.25,
-            "gc_content": 0.20,
+            "target_accessibility": 0.10,
+            "asymmetry": 0.30,
+            "gc_content": 0.35,
         }
         # Six terms, not seven: issue #102 removed pos1_mismatch, which was exactly constant at
         # 0.0, and restored the four shared terms to exactly 0.80 x postscreen_sirna_v4 rather than
         # reassigning its 0.05 by judgement.
         assert PostScreenMiRNAWeights().as_mapping() == {
             "off_target": 0.20,
-            "target_accessibility": 0.24,
-            "asymmetry": 0.20,
-            "gc_content": 0.16,
+            "target_accessibility": 0.08,
+            "asymmetry": 0.24,
+            "gc_content": 0.28,
             "ago_start": 0.10,
             "supp_13_16": 0.10,
         }
@@ -300,14 +300,18 @@ class TestWeightVectors:
     def test_the_three_vectors_score_different_term_sets(self) -> None:
         """The reason the single global COMPOSITE_TERM_NAMES tuple could no longer validate."""
         sizes = {vector.name: len(vector.terms) for vector in ScoringWeights().all_vectors()}
-        assert sizes == {"design_v4": 3, "postscreen_sirna_v4": 4, "postscreen_mirna_v4": 6}
+        assert sizes == {
+            "design_preproduction_v1": 3,
+            "postscreen_sirna_preproduction_v1": 4,
+            "postscreen_mirna_preproduction_v1": 6,
+        }
 
     def test_a_mis_summed_vector_is_a_construction_error(self) -> None:
         """Not a silent pass, and not renormalised at use: refused outright."""
         with pytest.raises(ValueError, match="must sum to exactly 1.0"):
             DesignWeights(target_accessibility=0.9, asymmetry=0.35, gc_content=0.25)
         with pytest.raises(ValueError, match="must sum to exactly 1.0"):
-            PostScreenSiRNAWeights(off_target=0.25, target_accessibility=0.30, asymmetry=0.25, gc_content=0.10)
+            PostScreenSiRNAWeights(off_target=0.25, target_accessibility=0.10, asymmetry=0.30, gc_content=0.10)
 
     def test_the_old_wide_tolerance_is_gone(self) -> None:
         """0.95-1.05 used to pass, i.e. up to 5% of undeclared rescaling per run."""
@@ -342,31 +346,41 @@ class TestWeightVectors:
         """Hand-authoring your own vector is supported -- it just has to sum to 1.0."""
         vector = DesignWeights(target_accessibility=0.5, asymmetry=0.3, gc_content=0.2)
         assert vector.as_mapping() == {"target_accessibility": 0.5, "asymmetry": 0.3, "gc_content": 0.2}
-        assert vector.name == "design_v4"
+        assert vector.name == "design_preproduction_v1"
 
     def test_vector_selection_is_by_stage_and_mode(self) -> None:
         """A vector is chosen, never combined."""
         weights = ScoringWeights()
 
-        assert weights.vector_for(post_screen=False).name == "design_v4"
-        assert weights.vector_for(post_screen=False, design_mode=DesignMode.MIRNA).name == "design_v4"
-        assert weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA).name == "postscreen_sirna_v4"
-        assert weights.vector_for(post_screen=True, design_mode=DesignMode.MIRNA).name == "postscreen_mirna_v4"
+        assert weights.vector_for(post_screen=False).name == "design_preproduction_v1"
+        assert weights.vector_for(post_screen=False, design_mode=DesignMode.MIRNA).name == "design_preproduction_v1"
+        assert (
+            weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA).name
+            == "postscreen_sirna_preproduction_v1"
+        )
+        assert (
+            weights.vector_for(post_screen=True, design_mode=DesignMode.MIRNA).name
+            == "postscreen_mirna_preproduction_v1"
+        )
 
     def test_manifest_records_name_alongside_weights(self) -> None:
         """A row's weight_vector column must resolve to the numbers that produced it."""
         manifest = ScoringWeights().as_manifest()
 
-        assert set(manifest) == {"design_v4", "postscreen_sirna_v4", "postscreen_mirna_v4"}
-        assert manifest["postscreen_mirna_v4"]["ago_start"] == 0.10
+        assert set(manifest) == {
+            "design_preproduction_v1",
+            "postscreen_sirna_preproduction_v1",
+            "postscreen_mirna_preproduction_v1",
+        }
+        assert manifest["postscreen_mirna_preproduction_v1"]["ago_start"] == 0.10
 
 
 @pytest.mark.unit
 class TestVersionConstant:
     """Tests for the SCORING_WEIGHT_SET_VERSION constant."""
 
-    def test_version_is_4_0_0(self) -> None:
-        """SCORING_WEIGHT_SET_VERSION should be "4.0.0".
+    def test_version_is_4_1_0(self) -> None:
+        """SCORING_WEIGHT_SET_VERSION should be "4.1.0".
 
         Bump it whenever a default weight or a vector's term set changes. 4.0.0 marks issues #96
         **and** #102, with one comparability break between them because 0.7.1 has not shipped. #96:
@@ -375,12 +389,12 @@ class TestVersionConstant:
         isoform_coverage out of the composite. #102: `pos1_mismatch` out of `postscreen_mirna_v4`,
         which is why that vector has six terms. No 3.x score is comparable with a 4.x one.
         """
-        assert SCORING_WEIGHT_SET_VERSION == "4.0.0"
+        assert SCORING_WEIGHT_SET_VERSION == "4.1.0"
 
     def test_composite_score_records_version_and_vector(self) -> None:
         """CompositeScore records both, so a row is traceable to the weights that made it."""
         features = {"target_accessibility": 0.5, "asymmetry": 0.8, "gc_content": 0.9}
         result = compute_composite(features, DesignWeights())
 
-        assert result.weight_set_version == "4.0.0"
-        assert result.vector_name == "design_v4"
+        assert result.weight_set_version == "4.1.0"
+        assert result.vector_name == "design_preproduction_v1"

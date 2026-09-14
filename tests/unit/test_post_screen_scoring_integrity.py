@@ -145,7 +145,7 @@ def test_mirna_biogenesis_terms_reach_the_post_screen_composite(tmp_path: Path) 
     Pre-fix, MiRNADesigner wrote the ago-start / pos1 / supplementary bonuses into composite_score
     only, never into the term set, so _score_candidate_post_screen rebuilt the composite from that
     term set and dropped them: every screened miRNA run was ranked by the plain siRNA composite.
-    Since issue #96 the three are declared terms of postscreen_mirna_v4, which is what makes them
+    Since issue #96 the three are declared terms of the active miRNA post-screen vector, which makes them
     survive by construction rather than by being reapplied afterwards.
     """
     mirna_params = DesignParameters(design_mode=DesignMode.MIRNA)
@@ -172,8 +172,8 @@ def test_mirna_biogenesis_terms_reach_the_post_screen_composite(tmp_path: Path) 
 
     assert bonus.scored_after_screening is True
     assert high_base.scored_after_screening is True
-    assert bonus.weight_vector == "postscreen_mirna_v4"
-    assert sirna_bonus.weight_vector == "postscreen_sirna_v4"
+    assert bonus.weight_vector == "postscreen_mirna_preproduction_v1"
+    assert sirna_bonus.weight_vector == "postscreen_sirna_preproduction_v1"
     assert sirna_high_base.composite_score > sirna_bonus.composite_score, (
         "without the biogenesis terms the higher base score wins; otherwise this pair proves nothing"
     )
@@ -595,7 +595,7 @@ def test_dirty_controls_are_scored_on_the_same_mirna_vector(tmp_path: Path) -> N
         )
         if value is not None
     )
-    assert control.weight_vector == "postscreen_mirna_v4"
+    assert control.weight_vector == "postscreen_mirna_preproduction_v1"
     # No divisor, no bonus added afterwards: the score IS the sum of its declared contributions.
     assert control.composite_score == pytest.approx(contributions)
     assert control.composite_score == pytest.approx(real.composite_score), (
