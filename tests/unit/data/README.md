@@ -4,6 +4,12 @@ Provenance, citations and regeneration notes for the files backing
 `tests/unit/test_target_accessibility.py`. Issue #95. Issue #102 added the dataset checksums and the
 predeclared splits below. The offline orthologue mapping is documented at the bottom.
 
+Benchmark-panel-registry fixtures (issue #109) are documented separately in
+[`benchmark/README.md`](benchmark/README.md), not here: they are synthetic (with one exception, the
+`sirna_efficacy_subset.csv` this file already documents, reused rather than duplicated), and that
+file states explicitly which of the five panels #109/#110 name are not vendored anywhere in this
+repository.
+
 ## Citations
 
 **Measured siRNA efficacy** — every efficacy value in `sirna_efficacy_subset.csv` comes from:
@@ -92,10 +98,10 @@ windows. It sits at the 93rd percentile.
 SHA-256 of every file any scoring measurement was taken from, so a number quoted in a docstring, an
 issue or the CHANGELOG can be traced to the exact bytes that produced it.
 
-| File                                              |  Bytes | SHA-256                                                            |
-| ------------------------------------------------- | -----: | ------------------------------------------------------------------ |
-| `sirna_efficacy_subset.csv` (tracked)             |  7,586 | `6e0a2efea505a1df7110136a8818e5bbbb28243dc12becdfbc73402fa8a5e10d` |
-| `sirna_efficacy_subset_transcripts.fa` (tracked)  |  9,293 | `261ea9615878b6138e29f34ab099aa070a33db8dbfa36f8a5b4fe8b95a8588e8` |
+| File                                              |   Bytes | SHA-256                                                            |
+| ------------------------------------------------- | ------: | ------------------------------------------------------------------ |
+| `sirna_efficacy_subset.csv` (tracked)             |   7,586 | `6e0a2efea505a1df7110136a8818e5bbbb28243dc12becdfbc73402fa8a5e10d` |
+| `sirna_efficacy_subset_transcripts.fa` (tracked)  |   9,293 | `261ea9615878b6138e29f34ab099aa070a33db8dbfa36f8a5b4fe8b95a8588e8` |
 | `work/sirna_bench.csv` (**untracked** full panel) | 334,475 | `a53caa3b1deb8fd9d2c9496a68c1e709af5a836f264e540361fb9dbdb1ff1523` |
 | `work/bench_tx.fa` (**untracked** transcripts)    | 127,390 | `0f63be5fe04086da7c595996442cf89a1f70d8adc05d70ff3fd4633c978ba5a2` |
 
@@ -129,14 +135,14 @@ computed.
 **Overlapping-study de-duplication.** The redistributed dataset carries two source labels, `Huesken`
 (2,431 rows / 30 accessions) and `Other` (385 rows / 11 accessions, provenance unestablished). They
 partition cleanly **by accession**, so no accession — and therefore no sequence — appears under both
-labels or in both splits. The split therefore never places two rows from the same study *and* the
+labels or in both splits. The split therefore never places two rows from the same study _and_ the
 same transcript on opposite sides. `--huesken-only` drops the `Other` rows if a measurement should
 cite one paper.
 
 ⚠️ **What these splits do and do not buy.** They control transcript-level overfitting **by this
 branch**: a number reported on `held_out` was not available to the term-set comparison run here. They
 do **not** insulate the choice of term or window — A/U(1-5) and its window were pre-declared from
-published analyses of the *whole* 2,816-guide panel (ρ +0.378 at n = 2,816), which includes all 20
+published analyses of the _whole_ 2,816-guide panel (ρ +0.378 at n = 2,816), which includes all 20
 held-out accessions, so the held-out rows were fully available to whoever chose them. They do **not**
 constitute validation. Both halves are the **same study, the same assay, the same laboratory and the
 same chemistry**, so a held-out transcript says nothing about cross-lab replication — issue #97's
