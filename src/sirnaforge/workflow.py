@@ -137,7 +137,7 @@ from sirnaforge.models.zfn import (
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
-from sirnaforge.reporting import build_payload, write_quilt_summarize, write_report
+from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.logging_utils import get_logger
@@ -579,6 +579,10 @@ class SiRNAWorkflow:
         except Exception:
             self._annotation_client = None
         self._dirty_controls_added: int = 0
+        # The payload and report path step 6 registered with Quilt, kept so the registration can be
+        # re-issued once logs/workflow_summary.json exists. None until a report has been written, which
+        # is what stops the re-issue from naming a summary no run produced.
+        self._report_registration: tuple[ReportPayload, Path] | None = None
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete design workflow (siRNA/miRNA or ZFN)."""
@@ -695,6 +699,15 @@ class SiRNAWorkflow:
             summary_file = self.config.output_dir / "logs" / "workflow_summary.json"
             with summary_file.open("w") as f:
                 json.dump(final_results, f, indent=2, default=str)
+            # Re-issue the Quilt registration now the summary is on disk. write_quilt_summarize omits
+            # an artifact that does not exist, and step 6 runs before this write, so the run's own
+            # summary was checked for existence before it was written and could never be registered:
+            # the "Run manifest / Workflow summary" row collapsed to manifest.json alone on every run
+            # (#103). Re-issuing rather than reordering keeps the summary's processing_time measuring
+            # the whole run, and gating on the write means a write_json_summary=False or failed run
+            # never registers a path it does not have.
+            if summary_file.exists() and self._report_registration is not None:
+                self._write_quilt_summarize(*self._report_registration)
 
         console.print(f"\n✅ [bold green]Workflow completed in {total_time:.2f}s[/bold green]")
         console.print(f"📊 Results saved to: [blue]{self.config.output_dir}[/blue]")
@@ -1454,29 +1467,54 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.warning(f"Failed to write FAIR manifest: {e}")
 
+        # Rendering the report and registering it are two writes with two failure modes, so they get
+        # two handlers: a read-only run root left report.html written and quilt_summarize.json not,
+        # and one shared handler then logged "Failed to write self-contained HTML report" for a report
+        # that had in fact succeeded (#103).
+        payload: ReportPayload | None = None
+        report_path: Path | None = None
         try:
             # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
             # the gates it actually applied, and a default panel would report other thresholds.
             payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
             report_path = write_report(payload, base / "report.html")
-            # At the run root, not beside the report: Quilt reads a summarize file only at the package
-            # root, and the run directory is what gets published. Without this the report exists and the
-            # package view shows nothing (#103).
-            write_quilt_summarize(
-                payload,
-                report_path,
-                self.config.output_dir,
-                out_path=Path(self.config.output_dir) / "quilt_summarize.json",
-            )
         except Exception as e:
             logger.warning(f"Failed to write self-contained HTML report: {e}")
 
+        summarize_path: Path | None = None
+        if payload is not None and report_path is not None:
+            self._report_registration = (payload, report_path)
+            summarize_path = self._write_quilt_summarize(payload, report_path)
+
         console.print("📋 Generated comprehensive reports and FAIR metadata")
-        console.print("   - ORF validation report: orf_reports/")
-        console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
-        console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
-        console.print("   - Self-contained HTML report: sirnaforge/report.html")
-        console.print("   - Quilt package summary: quilt_summarize.json")
+        # Each line only for an artifact that is really there. An operator told a file exists when it
+        # does not has to discover the gap from the catalog instead (#103), and candidates_pass.fasta
+        # is deliberately absent when no candidate passed.
+        if report_file.exists():
+            console.print("   - ORF validation report: orf_reports/")
+        if all_csv.exists() or pass_csv.exists():
+            console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
+        if pass_fasta.exists():
+            console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
+        if report_path is not None and report_path.exists():
+            console.print("   - Self-contained HTML report: sirnaforge/report.html")
+        if summarize_path is not None and summarize_path.exists():
+            console.print("   - Quilt package summary: quilt_summarize.json")
+
+    def _write_quilt_summarize(self, payload: ReportPayload, report_path: Path) -> Path | None:
+        """Register the run's artifacts where Quilt reads them; return the path, or ``None`` if it failed.
+
+        At the run root, not beside the report: Quilt reads a summarize file only at the package root,
+        and the run directory is what gets published, so a report written without this shows nothing at
+        all in a package view (#103). Called again after ``logs/workflow_summary.json`` lands, because
+        the writer registers only artifacts that exist by the time it runs.
+        """
+        out_path = Path(self.config.output_dir) / "quilt_summarize.json"
+        try:
+            return write_quilt_summarize(payload, report_path, self.config.output_dir, out_path=out_path)
+        except Exception as e:
+            logger.warning(f"Failed to write Quilt package summary: {e}")
+            return None
 
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
         """Write passing candidates to FASTA, each header naming its selection state.
