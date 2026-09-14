@@ -42,6 +42,7 @@ workflow SIRNAFORGE_OFFTARGET {
         transcriptome_fastas : ${params.transcriptome_fastas ?: 'Not provided'}
         transcriptome_indices: ${params.transcriptome_indices ?: 'Not provided'}
         transcriptome_species: ${params.transcriptome_species ?: 'N/A'}
+        evidence_plan        : ${params.evidence_plan ?: 'Not provided'}
 
         ANALYSIS PARAMETERS
         max_hits             : ${params.max_hits}
@@ -77,6 +78,9 @@ workflow SIRNAFORGE_OFFTARGET {
         genome_fastas : 'transcriptome_fastas',
         genome_indices: 'transcriptome_indices',
         genome_species: 'transcriptome_species',
+        // #100's expected-plan file is screening_plan.json on disk, so a caller reaching for the
+        // parameter by that name would otherwise be silently ignored rather than refused.
+        screening_plan: 'evidence_plan',
     ]
     params.keySet().each { supplied ->
         def folded = supplied.toString().replaceAll('-', '_').replaceAll(/([a-z0-9])([A-Z])/, '$1_$2').toLowerCase()
@@ -115,6 +119,14 @@ workflow SIRNAFORGE_OFFTARGET {
                 }
         )
     }
+
+    //
+    // #100: the expected-plan file, threaded through independently of the reference-indices
+    // channel below. 'NO_EVIDENCE_PLAN' is the same optional-file sentinel zfn_genome_fasta uses:
+    // a symlink Nextflow can stage even when nothing was supplied, so AGGREGATE_RESULTS's input
+    // stays a plain `path` regardless of whether workflow.py passed a real plan.
+    //
+    def ch_evidence_plan = params.evidence_plan ? file(params.evidence_plan, checkIfExists: true) : file('NO_EVIDENCE_PLAN')
 
     // Check if ANY transcriptome off-target analysis is enabled
     def has_offtarget_data = params.transcriptome_fastas || params.transcriptome_indices
@@ -169,7 +181,12 @@ workflow SIRNAFORGE_OFFTARGET {
             params.bwa_k,
             params.bwa_T,
             params.seed_start,
-            params.seed_end
+            params.seed_end,
+            // #100: what this run expects to screen, independent of ch_references above -- a
+            // species whose BUILD_BWA_INDEX later fails must still be able to reconcile as failed
+            // rather than vanish from the expected list.
+            params.transcriptome_species ?: '',
+            ch_evidence_plan
         )
     }
 

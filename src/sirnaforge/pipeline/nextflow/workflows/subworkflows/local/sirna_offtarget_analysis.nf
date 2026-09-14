@@ -18,20 +18,50 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     bwa_T              // val: BWA minimum score threshold
     seed_start         // val: seed region start
     seed_end           // val: seed region end
+    expected_species   // val: comma-separated species this run expects to screen (#100). Carried
+                        // independently of `references`/the built-index channel below: deriving
+                        // "expected" from which indices actually built loses a species whose
+                        // BUILD_BWA_INDEX crashed instead of letting it reconcile as failed.
+    evidence_plan       // path: serialized #100 ScreeningPlan JSON, or the NO_EVIDENCE_PLAN sentinel
 
     main:
     ch_versions = channel.empty()
 
     //
-    // MODULE: ALWAYS run miRNA seed match analysis (lightweight, <4GB RAM)
-    // Efficient batch mode: one process for all candidates
+    // #100: gate the miRNA channel on a non-empty *resolved* species list rather than running it
+    // unconditionally. Default behaviour is unchanged (the elvis fallback below still fires when
+    // params.mirna_species is null or unset -- Nextflow's own CLI parsing collapses a
+    // whitespace-only value to the same falsy empty string, so blank does not defeat it either).
+    // A caller that wants the channel off must supply a value that is non-empty (so elvis leaves
+    // it alone) but resolves to zero species after splitting -- e.g. a bare comma.
     //
-    MIRNA_SEED_ANALYSIS(
-        candidates_fasta,
-        params.mirna_db ?: 'mirgenedb',
-        params.mirna_species ?: 'chicken,pig,rat,mouse,human,macaque'
-    )
-    ch_versions = ch_versions.mix(MIRNA_SEED_ANALYSIS.out.versions)
+    def ch_mirna_species_list = (params.mirna_species ?: 'chicken,pig,rat,mouse,human,macaque')
+        .split(',')
+        .collect { it.trim() }
+        .findAll { it }
+
+    ch_mirna_analysis = channel.empty()
+    ch_mirna_summary = channel.empty()
+    // MIRNA_SEED_ANALYSIS.out.evidence is a glob ("mirna_seed_*_evidence.json") emitted as one
+    // List<Path> per batch invocation; flatten() so it mixes with OFFTARGET_ANALYSIS's one-file-
+    // per-species evidence emission as individual paths, not a list nested inside a list.
+    ch_mirna_evidence = channel.empty()
+
+    if (ch_mirna_species_list) {
+        //
+        // MODULE: miRNA seed match analysis (lightweight, <4GB RAM), only when species were
+        // actually requested. Efficient batch mode: one process for all candidates.
+        //
+        MIRNA_SEED_ANALYSIS(
+            candidates_fasta,
+            params.mirna_db ?: 'mirgenedb',
+            ch_mirna_species_list.join(',')
+        )
+        ch_versions = ch_versions.mix(MIRNA_SEED_ANALYSIS.out.versions)
+        ch_mirna_analysis = MIRNA_SEED_ANALYSIS.out.analysis
+        ch_mirna_summary = MIRNA_SEED_ANALYSIS.out.summary
+        ch_mirna_evidence = MIRNA_SEED_ANALYSIS.out.evidence.flatten()
+    }
 
     //
     // CONDITIONAL: transcriptome off-target analysis
@@ -97,28 +127,35 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Aggregate once after all upstream analyses complete.
     // mix(...).collect() keeps the shape simple for miRNA-only and transcriptome+miRNA runs alike.
     ch_all_analysis = OFFTARGET_ANALYSIS.out.analysis
-        .mix(MIRNA_SEED_ANALYSIS.out.analysis)
+        .mix(ch_mirna_analysis)
         .collect()
 
     ch_all_summary = OFFTARGET_ANALYSIS.out.summary
-        .mix(MIRNA_SEED_ANALYSIS.out.summary)
+        .mix(ch_mirna_summary)
         .collect()
 
-    // Extract species list for aggregation
-    ch_screened_species = ch_reference_indices
-        .map { species, _index_path -> species }
-        .unique()
-        .toList()
-        .map { species_list -> species_list.join(',') }
-        .ifEmpty { '' }
+    // Every per-unit #100 evidence envelope, from both channels. Staged as a `path` input (not
+    // `val`, unlike analysis/summary above) so AGGREGATE_RESULTS's own reconciliation -- which
+    // globs its OWN task working directory -- actually finds them, rather than reconciling
+    // against an empty local directory and marking every species failed regardless of outcome.
+    ch_all_evidence = OFFTARGET_ANALYSIS.out.evidence
+        .mix(ch_mirna_evidence)
+        .collect()
 
     //
     // MODULE: Aggregate all results
     //
+    // transcriptome_species is `expected_species` (#100), not something derived from
+    // ch_reference_indices: the aggregator must reconcile every species this run intended to
+    // screen, including one whose BUILD_BWA_INDEX crashed and therefore never reached
+    // ch_reference_indices at all.
+    //
     AGGREGATE_RESULTS(
         ch_all_analysis,
         ch_all_summary,
-        ch_screened_species
+        expected_species,
+        evidence_plan,
+        ch_all_evidence
     )
     ch_versions = ch_versions.mix(AGGREGATE_RESULTS.out.versions)
 
