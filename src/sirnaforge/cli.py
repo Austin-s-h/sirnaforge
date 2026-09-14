@@ -94,7 +94,7 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
-from sirnaforge.reporting import ReportInputError, build_payload, write_report
+from sirnaforge.reporting import ReportInputError, build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.typed_decorators import command_decorator_typed
@@ -3121,6 +3121,12 @@ def internal_zfn_aggregate_shards(
 def report(
     run_dir: Path = typer.Argument(..., help="A completed run output directory"),
     output: Path = typer.Option(Path("report.html"), "--output", "-o", help="Where to write the report"),
+    quilt_summarize: bool = typer.Option(
+        True,
+        "--quilt-summarize/--no-quilt-summarize",
+        help="Also write quilt_summarize.json beside the report, registering it and its evidence "
+        "files so a published package renders the report in its package view",
+    ),
 ) -> None:
     """Build a single self-contained HTML report over a finished run.
 
@@ -3136,10 +3142,16 @@ def report(
         raise typer.Exit(1) from exc
 
     written = write_report(payload, output)
+    summarize_line = ""
+    if quilt_summarize:
+        summarize_path = write_quilt_summarize(payload, written, run_dir)
+        summarize_line = f"🧵 [bold blue]{summarize_path}[/bold blue]\n"
+
     counts = payload.run["status_counts"]
     console.print(
         Panel.fit(
             f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, self-contained)\n"
+            f"{summarize_line}"
             f"{payload.run['guides']:,} guides from {payload.run['candidate_rows']:,} candidate rows\n"
             f"[green]{counts['pass']} pass[/green] · "
             f"[yellow]{counts['warn']} pass with a warning[/yellow] · "
