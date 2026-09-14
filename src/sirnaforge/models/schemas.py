@@ -17,6 +17,8 @@ import pandera.pandas as pa
 from pandera.pandas import DataFrameModel, Field
 from pandera.typing.pandas import Series
 
+from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterEvaluation
+
 # Typed alias for pandera's dataframe_check decorator to satisfy mypy
 F = TypeVar("F", bound=Callable[..., Any])
 # Pandera's dataframe_check has a complex decorator signature; cast for mypy.
@@ -300,6 +302,100 @@ class SiRNACandidateSchema(DataFrameModel):
     # Quality control: allow legacy booleans or new status strings
     passes_filters: Series[Any] = Field(description="Filter result: PASS or failure reason (GC_OUT_OF_RANGE, etc.)")
 
+    # What the resolved selection was willing to claim about the row -- distinct from
+    # passes_filters, which only answers whether a gate rejected the candidate (#100). ``Optional``
+    # (not just ``nullable``) so an older run's CSV that predates this column stays absent rather
+    # than being materialised as a value by ``add_missing_columns``; check_selection_state_values
+    # enforces the SelectionState vocabulary only on rows that actually carry it.
+    selection_state: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        description="SelectionState value: eligible | provisional_incomplete_evidence | "
+        "withheld_incomplete_evidence | not_eligible | not_selected",
+        nullable=True,
+        coerce=True,
+    )
+
+    # The remaining columns build_candidate_row emits that this schema did not declare (#100): a
+    # column absent here was never rejected (Config.strict=False), but also never validated, and
+    # the empty-frame fallback that builds a zero-row CSV's header from to_schema().columns.keys()
+    # dropped every one of them. Declared ``Optional`` throughout so an older CSV without them is
+    # still valid, and so the empty-frame fallback can find them.
+    screen_query_id: Optional[Series[str]] = Field(  # noqa: UP045
+        description="Query id this candidate was screened under (qname on its hit rows)",
+        nullable=True,
+        coerce=True,
+    )
+    quality_issues: Optional[Series[str]] = Field(  # noqa: UP045
+        description="Semicolon-joined list of detected quality concerns",
+        nullable=True,
+        coerce=True,
+    )
+    max_poly_run_length: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Longest run of identical adjacent bases in the guide; gate input", nullable=True
+    )
+    off_target_penalty: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        description="SUPERSEDED by score_off_target; kept for continuity, do not gate or rank on it",
+        nullable=True,
+        coerce=True,
+    )
+    on_target_confirmed: Optional[Series[bool]] = Field(  # noqa: UP045
+        description="Whether any hit was recognised as the query gene",
+        nullable=True,
+        coerce=True,
+    )
+    undetermined_hits: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0,
+        description="Hits whose class could not be decided because the hit species has no transcript index",
+        nullable=True,
+    )
+    transcriptome_hits_total: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Total genuine off-target transcriptome hits (any mismatch count)", nullable=True
+    )
+    transcriptome_hits_0mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect-match subset of transcriptome_hits_total (0 mismatches)", nullable=True
+    )
+    transcriptome_hits_1mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="1-mismatch subset of transcriptome_hits_total", nullable=True
+    )
+    transcriptome_hits_2mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="2-mismatch subset of transcriptome_hits_total", nullable=True
+    )
+    transcriptome_hits_seed_0mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species", nullable=True
+    )
+    transcriptome_hits_0mm_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect-match liabilities in the query species (or unlabelled); gate input", nullable=True
+    )
+    transcriptome_hits_1mm_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="1-mismatch liabilities in the query species (or unlabelled); gate input", nullable=True
+    )
+    transcriptome_hits_2mm_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="2-mismatch liabilities in the query species (or unlabelled); gate input", nullable=True
+    )
+    mirna_hits_total: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Total miRNA seed match hits", nullable=True
+    )
+    mirna_hits_0mm_seed: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect miRNA seed matches (positions 2-8)", nullable=True
+    )
+    mirna_hits_1mm_seed: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="miRNA seed matches with 1 mismatch in seed", nullable=True
+    )
+    mirna_hits_high_risk: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="High-risk miRNA hits (perfect seed + low offtarget_score)", nullable=True
+    )
+    mirna_hits_0mm_seed_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect miRNA seed matches labelled with the query species; gate input", nullable=True
+    )
+    mirna_hits_high_risk_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="High-risk miRNA hits labelled with the query species; gate input", nullable=True
+    )
+    total_offtarget_hits_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0,
+        description="Query-species transcriptome liabilities plus query-species miRNA hits; gate input",
+        nullable=True,
+    )
+
     # Chemical modification columns (optional, nullable)
     # Using add_missing_columns to auto-add with null values
     guide_overhang: Series[str] = Field(
@@ -345,6 +441,63 @@ class SiRNACandidateSchema(DataFrameModel):
         coerce=True,
     )
 
+    # One observed-value column per declared filter (#100/#101): a client re-applying a gate's own
+    # descriptor needs the value the gate actually compared, not only its verdict. Left as plain
+    # nullable floats -- unlike the verdict columns below, an observed value has no fixed
+    # vocabulary to check against, only a type. ``Optional`` so an older CSV without a given
+    # filter's observed column is still valid rather than gaining a materialised null column.
+    gc_content_min_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value gc_content_min was compared against", nullable=True, coerce=True
+    )
+    gc_content_max_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value gc_content_max was compared against", nullable=True, coerce=True
+    )
+    max_poly_runs_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_poly_runs was compared against", nullable=True, coerce=True
+    )
+    max_repeat_transcript_fraction_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_repeat_transcript_fraction was compared against", nullable=True, coerce=True
+    )
+    max_paired_fraction_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_paired_fraction was compared against", nullable=True, coerce=True
+    )
+    min_asymmetry_score_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value min_asymmetry_score was compared against", nullable=True, coerce=True
+    )
+    min_empirical_score_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value min_empirical_score was compared against", nullable=True, coerce=True
+    )
+    min_isoform_coverage_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value min_isoform_coverage was compared against", nullable=True, coerce=True
+    )
+    max_off_target_count_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_off_target_count was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_hits_0mm_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_hits_0mm was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_hits_1mm_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_hits_1mm was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_hits_2mm_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_hits_2mm was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_seed_perfect_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_seed_perfect was compared against", nullable=True, coerce=True
+    )
+    max_mirna_perfect_seed_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_mirna_perfect_seed was compared against", nullable=True, coerce=True
+    )
+    max_mirna_1mm_seed_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_mirna_1mm_seed was compared against", nullable=True, coerce=True
+    )
+    fail_on_high_risk_mirna_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value fail_on_high_risk_mirna was compared against", nullable=True, coerce=True
+    )
+    max_total_offtarget_hits_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_total_offtarget_hits was compared against", nullable=True, coerce=True
+    )
+
     @dataframe_check_typed
     def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
         """Ensure passes_filters contains allowed filter status values.
@@ -366,6 +519,39 @@ class SiRNACandidateSchema(DataFrameModel):
             return v in allowed_prefixes or any(v.startswith(prefix) for prefix in allowed_prefixes)
 
         return bool(series.map(_ok).all())
+
+    @dataframe_check_typed
+    def check_selection_state_values(cls, df: pd.DataFrame) -> bool:
+        """Ensure a present selection_state column only holds SelectionState values.
+
+        Derives the allow-list from SelectionState to prevent drift. The column is declared
+        ``Optional`` (see above), so an older CSV that predates it is not checked at all -- only a
+        selection_state column that is actually present must spell one of the five known states.
+        """
+        if "selection_state" not in df.columns:
+            return True
+        # Import here to avoid circular dependency: sirna.py imports this module for
+        # SiRNACandidateSchema.
+        from sirnaforge.models.sirna import SelectionState  # noqa: PLC0415
+
+        allowed = {s.value for s in SelectionState}
+        series = df["selection_state"]
+        return bool(series.map(lambda v: v is None or v in allowed).all())
+
+    @dataframe_check_typed
+    def check_filter_verdict_values(cls, df: pd.DataFrame) -> bool:
+        """Ensure every present ``{filter_id}_verdict`` column holds a FilterEvaluation value.
+
+        Derives the allow-list from FilterEvaluation to prevent drift, mirroring
+        check_passes_filters_values. The verdict columns are not declared as schema fields at all
+        (#100): declaring them would let ``add_missing_columns`` materialise a column an older
+        run's CSV never had, so only columns actually present in the frame are checked here.
+        """
+        allowed = {v.value for v in FilterEvaluation}
+        verdict_columns = [
+            column for filter_id in DECLARED_FILTER_IDS if (column := f"{filter_id}_verdict") in df.columns
+        ]
+        return all(bool(df[column].map(lambda v: v in allowed).all()) for column in verdict_columns)
 
     @dataframe_check_typed
     def check_sequence_lengths(cls, df: pd.DataFrame) -> bool:
