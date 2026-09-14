@@ -224,6 +224,17 @@ def describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
     return "; ".join(parts) if parts else "no reason recorded"
 
 
+def _describe_design_failure(error: BaseException) -> str:
+    """Why a transcript was dropped, in one line that is never blank.
+
+    ``str(exc)`` is empty for a bare ``RuntimeError()`` and for most cancellations, and a shortfall
+    recorded with no reason is indistinguishable from one recorded by mistake -- the same rule
+    ``models/evidence.py``'s ``failure_carries_a_reason`` validator enforces on screening evidence.
+    """
+    detail = str(error).strip()
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
 #: Reason the route through result processing reports when the pipeline exited 0 and staged no output
 #: directory at all. Named here because that route publishes ``partial`` like any thin result, and
 #: writing nothing is a failure to execute rather than a partial answer.
@@ -617,6 +628,11 @@ class SiRNAWorkflow:
         # so it appeared in no artifact at all: the run reported on the species it managed to screen
         # and said nothing about the one it dropped.
         self._species_screening_shortfalls: dict[str, str] = {}
+        # Transcripts a design failure dropped, and why -- the design-stage twin of the record above
+        # (#100). The parallel design path catches a failed batch and carries on, so the batch's
+        # transcripts vanished from the candidate pool while DesignResult.total_sequences kept
+        # counting them: the target set read as complete and nothing said which ids were lost.
+        self._design_input_shortfalls: dict[str, str] = {}
         self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         self._candidate_id_to_representative: dict[str, str] = {}
         # Channel/species pairs with completed evidence, spelled as ``ChannelRequirement.key`` so they
@@ -1148,6 +1164,14 @@ class SiRNAWorkflow:
         Parallelizes per-transcript design when not running from a user-provided input FASTA,
         to preserve backward-compatibility with tests and monkeypatching of design_from_file.
         Set env SIRNAFORGE_PARALLEL_DESIGN=1 to force parallel mode.
+
+        The two branches have inverse failure modes, and only the parallel one needs a record
+        (#100). The single-call branch has no try/except at all: a design failure propagates and the
+        run stops, so no result can claim a target set the designer never covered. The parallel
+        branch catches a failed batch (and, inside the batch, a failed transcript) and carries on,
+        which is the right call for a 40-transcript gene -- but the loss has to be written down, so
+        every dropped transcript id goes to ``_design_input_shortfalls`` and from there into
+        ``design_summary`` and ``SelectionInputs.design_input_shortfalls``.
         """
         # Create temporary FASTA file for siRNA design (preserves original behavior)
         temp_fasta = self.config.output_dir / "transcripts" / "temp_for_design.fasta"
@@ -1192,11 +1216,14 @@ class SiRNAWorkflow:
 
             for fut in as_completed(futures):
                 try:
-                    batch_results, batch_guide_mapping = fut.result()
+                    batch_results, batch_guide_mapping, batch_shortfalls = fut.result()
                     results.extend(batch_results)
                     # Merge guide-to-transcript mappings
                     for guide_seq, transcript_set in batch_guide_mapping.items():
                         guide_to_transcripts.setdefault(guide_seq, set()).update(transcript_set)
+                    # Transcripts the batch itself lost, recorded here rather than inside the worker so
+                    # only this thread ever writes the run's shortfall record.
+                    self._record_design_input_shortfalls(batch_shortfalls)
                     # Advance progress by the number of transcripts in this batch
                     batch = futures[fut]
                     progress.advance(task, len(batch))
@@ -1204,9 +1231,25 @@ class SiRNAWorkflow:
                     batch = futures[fut]
                     batch_transcript_ids = [t.transcript_id for t in batch]
                     logger.exception(f"Design failed for transcript batch {batch_transcript_ids}: {e}")
+                    # The whole batch's results are discarded with the exception, so every transcript
+                    # in it is unrepresented -- including any that had already been designed.
+                    self._record_design_input_shortfalls(
+                        dict.fromkeys(batch_transcript_ids, _describe_design_failure(e))
+                    )
                     progress.advance(task, len(batch))
 
         self._store_guide_to_transcripts(guide_to_transcripts)
+
+        if self._design_input_shortfalls:
+            # Said out loud at the step that lost them, not only in the JSON: the candidate counts
+            # printed two lines below are over the transcripts that survived, and nothing else on the
+            # console distinguishes a gene designed whole from one designed in part.
+            dropped = sorted(self._design_input_shortfalls)
+            console.print(
+                f"⚠️  {len(dropped)} of {total} transcript(s) were dropped by a design failure and are "
+                f"covered by no candidate: {', '.join(dropped)}"
+            )
+            logger.error(f"Design input shortfalls: {self._design_input_shortfalls}")
 
         # Merge candidates
         all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
@@ -1317,17 +1360,25 @@ class SiRNAWorkflow:
 
         return batches
 
-    def _process_transcript_batch(self, batch: list[TranscriptInfo]) -> tuple[list[DesignResult], dict[str, set[str]]]:
-        """Process a batch of transcripts and return results plus guide-to-transcript mapping.
+    def _process_transcript_batch(
+        self, batch: list[TranscriptInfo]
+    ) -> tuple[list[DesignResult], dict[str, set[str]], dict[str, str]]:
+        """Process a batch of transcripts and return results, guide mapping and what it lost.
+
+        Runs in a worker thread, so it *returns* its shortfalls rather than writing them onto the
+        workflow: the caller merges them, and only the collecting thread mutates run state. A
+        transcript whose design raised here is dropped exactly as a whole failed batch is, so it is
+        the same loss and gets the same record (#100).
 
         Args:
             batch: List of transcripts to process
 
         Returns:
-            Tuple of (design_results, guide_to_transcripts_mapping)
+            Tuple of (design_results, guide_to_transcripts_mapping, dropped_transcript_id -> reason)
         """
         results: list[DesignResult] = []
         guide_to_transcripts: dict[str, set[str]] = {}
+        shortfalls: dict[str, str] = {}
 
         for transcript in batch:
             if not transcript.sequence:
@@ -1344,9 +1395,20 @@ class SiRNAWorkflow:
 
             except Exception as e:
                 logger.exception(f"Design failed for transcript {transcript.transcript_id}: {e}")
+                shortfalls[transcript.transcript_id] = _describe_design_failure(e)
                 continue
 
-        return results, guide_to_transcripts
+        return results, guide_to_transcripts, shortfalls
+
+    def _record_design_input_shortfalls(self, shortfalls: Mapping[str, str]) -> None:
+        """Record transcripts a design failure dropped, so a lost target cannot read as a designed one.
+
+        First reason wins per transcript, matching ``record_filter_verdict``'s rule: the per-transcript
+        reason a surviving batch reports is more specific than any later re-statement, and a transcript
+        belongs to exactly one batch, so the two records here cannot describe the same loss twice.
+        """
+        for transcript_id, reason in shortfalls.items():
+            self._design_input_shortfalls.setdefault(transcript_id, reason)
 
     def _apply_modifications_to_results(self, design_results: DesignResult) -> None:
         """Apply chemical modification patterns to all candidates in design results.
@@ -2186,6 +2248,12 @@ class SiRNAWorkflow:
         ``passes_filters`` test and independently of it, so ``max_repeat_transcript_fraction=warn`` was
         worse than useless: the row flipped to PASS -- putting the guide into the order list -- while
         the guide stayed out of the shortlist anyway, and nothing on the row explained why.
+
+        ``design_input_shortfalls`` is snapshotted, not aliased: :class:`SelectionInputs` is frozen and
+        must describe the run as it was when the decision was made. It reaches the summary as
+        run-level ``required_evidence_missing`` entries only -- a batch failure disqualifies no
+        individual candidate, because the guides that *were* designed are as well evidenced as before;
+        what it denies is the claim that the target set was covered (#100).
         """
         policy = getattr(self.config, "resolved_policy", None)
         repeat_action = self._filter_action_for(
@@ -2199,6 +2267,7 @@ class SiRNAWorkflow:
             filter_channels=POST_SCREEN_FILTER_CHANNELS,
             repeat_rejects=repeat_action is FilterAction.FAIL,
             top_n=self.config.top_n,
+            design_input_shortfalls=dict(self._design_input_shortfalls),
         )
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
@@ -5183,7 +5252,14 @@ class SiRNAWorkflow:
         }
 
     def _summarize_design_results(self, design_results: DesignResult) -> dict[str, Any]:
-        """Summarize siRNA design results."""
+        """Summarize siRNA design results, including the inputs design never covered.
+
+        ``design_input_shortfalls`` is the only place a dropped transcript appears: ``base`` is
+        derived from the DesignResults that were produced, and ``input_sequences`` still counts every
+        transcript handed to design, so on its own it reports a target set the run never covered
+        (#100). The count sits beside the map for the same reason ``repeat_flagged_count`` does --
+        a reader comparing it against ``input_sequences`` sees the divergence without parsing reasons.
+        """
         base = design_results.get_summary()
         total = design_results.total_candidates
         passed = design_results.filtered_candidates
@@ -5202,6 +5278,8 @@ class SiRNAWorkflow:
                 "top_n_requested": self.config.top_n,
                 "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,
+                "design_input_shortfalls": dict(self._design_input_shortfalls),
+                "design_input_dropped_count": len(self._design_input_shortfalls),
             }
         )
         return base
