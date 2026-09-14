@@ -27,6 +27,19 @@ from sirnaforge.reporting.tracks import PointSeries, TranscriptRegions, legend_h
 MAX_INDEX_GUIDES = 5000
 
 
+def _embed(value: Any) -> str:
+    r"""JSON for a ``<script>`` body: no payload string can close the block or open a tag.
+
+    An HTML parser ends a script at the first literal ``</script>`` inside it, whatever the JavaScript
+    means -- so a gene query, transcript id or gene symbol spelling that would truncate the document at
+    that point and take every panel below it with it. ``json.dumps`` does not escape ``<``, and there is
+    no sanitising layer between the payload and this file, so the escape belongs here. ``\\u003c`` is
+    ordinary JSON and parses back to the same string, so nothing downstream sees a difference.
+    """
+    text = json.dumps(value, separators=(",", ":"))
+    return text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
 _TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>siRNAforge report — {{ p.run.gene_query }}</title>
@@ -50,6 +63,14 @@ color:var(--mut);font-weight:600;padding:8px 0}
 .frow{display:grid;grid-template-columns:1fr auto auto;gap:6px 8px;align-items:center;font-size:12px;
 margin-bottom:5px}
 .frow input{width:62px;padding:2px 5px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px}
+/* Every threshold box is type=number, so the browser itself refuses text that is not a number and
+   leaves the only trace of it in validity.badInput -- which fnum() reads. The spinner is hidden
+   because a threshold is typed here and stepped on the slider, and aria-invalid is painted red so a
+   refused keystroke is visible at the control rather than silently ignored. */
+.frow input[type=number]{appearance:textfield;-moz-appearance:textfield}
+.frow input[type=number]::-webkit-outer-spin-button,
+.frow input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.frow input[aria-invalid="true"]{border-color:var(--fail);background:#fee2e2}
 /* A gate control changes a verdict; a reader filter only selects rows. The two groups are separated
    and each says which it is, because mistaking one for the other misreads what the report claims. */
 .fsec{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);font-weight:600;
@@ -134,6 +155,7 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
     <summary>Thresholds and filters — <span id="fcount"></span></summary>
     <div id="presets" style="margin-bottom:8px"></div>
     <div id="refused" class="warn" style="display:none"></div>
+    <div id="badnum" class="warn" style="display:none"></div>
     <div class="fstat" id="fstat"></div>
     <div class="fsec">Gate thresholds <i>— moving one re-derives the verdict this run computed</i></div>
     <div id="frows"></div>
@@ -166,7 +188,10 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      </div>
      <textarea id="carttsv" readonly aria-label="cart as TSV"></textarea>
      <p class="empty" style="margin:6px 0 0">Tab-separated, one row per guide, with the values the
-     thresholds above were applied to. <b>Export TSV</b> downloads it. Some viewers -- including a
+     thresholds above were applied to. The <code>#</code> lines above the header name the thresholds the
+     <code>status</code> column was decided at, and say whether they are the run's own or yours: a
+     status pasted into a ticket has to carry what produced it.
+     <b>Export TSV</b> downloads it. Some viewers -- including a
      Quilt iframe without <code>allow-downloads</code> -- block that; the box above is then the way
      out, and says so if the download is refused.</p>
    </div>
@@ -273,7 +298,17 @@ const V_PASS=0, V_FAIL=1, V_UNKNOWN=2, V_NOT_EVALUATED=3, V_WARN=4;
 //: payload.py's reason codes (payload.py:187-196), restated so the client evaluator can read them --
 //: only REASON_OK is ever re-thresholded; every other reason means the run itself never decided.
 const REASON_OK=0, REASON_EMPTY_VALUE=2;
-function gateReason(f,value,verdict,reason){
+// The threshold a verdict shown beside this gate was ACTUALLY decided against: the reader's, once they
+// have moved it, and the run's otherwise. Every part of the gate panel reads this one function, because
+// the panel's Why sentence read `f.threshold` -- the run's -- while the verdict beside it came from the
+// live re-thresholded table, so any reader move made the sentence arithmetically false in both
+// directions: "10 > 10 so FAIL" next to a PASS pill, or a passing comparison next to a FAIL (#103).
+// A report that states a comparison its own verdict did not come from is publishing a verdict the
+// pipeline would not reproduce, which is the one failure this report exists to prevent.
+function liveThreshold(f){
+  return (evaluable(f) && Object.prototype.hasOwnProperty.call(T, f.filter_id)) ? T[f.filter_id] : f.threshold;
+}
+function gateReason(f,value,verdict,reason,threshold){
   const measured = (value!==null&&value!==undefined);
   if(reason===1) return 'the run exports neither '+f.filter_id+'_observed nor '+f.column;
   if(reason===2) return (f.read_column||f.column)+' is empty';
@@ -283,7 +318,12 @@ function gateReason(f,value,verdict,reason){
                                  : 'filter is off, and the run exports no value for '+f.column;
   if(reason===4) return measured ? 'no threshold declared; value measured, nothing acts on it'
                                  : 'no threshold declared, and no value exported';
-  const cmp=fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(f.threshold);
+  // States the comparison that produced `verdict`, against the threshold that produced it -- and names
+  // the run's own value whenever that is not the same number, so the reader's threshold is never
+  // silently substituted for the run's in a sentence the reader will quote.
+  const t = threshold===undefined ? liveThreshold(f) : threshold;
+  const cmp=fmt(value)+(verdict===0?' ':' not ')+f.comparator+' '+fmt(t)
+    +(t!==f.threshold ? ' at your threshold; the run used '+f.comparator+' '+fmt(f.threshold) : '');
   return verdict===4 ? cmp+'; action=warn, not a rejection' : cmp;
 }
 // Reads the guide's LIVE gate table (g._live, kept current by recomputeLive()), not the frozen
@@ -293,14 +333,20 @@ function gatesCard(g){
   const live=g._live, order=[3,0,1,4,2];  // fail, unknown, warn, pass, not_evaluated -- worst news first
   const idx=live.gates.map((t,i)=>i).sort((a,b)=>order[live.gates[a][1]]-order[live.gates[b][1]]);
   const rows=idx.map(i=>{const [value,verdict,reason]=live.gates[i], f=FILTERS[i], v=VERDICT[verdict];
-    const moved=evaluable(f) && T[f.filter_id]!==f.threshold;
+    const t=liveThreshold(f), moved=t!==f.threshold;
     return `<tr><td class="mono">${esc(f.filter_id)}</td>
     <td><span class="pill v-${v}">${v.replace('_',' ')}</span></td>
-    <td>${fmt(value)}</td><td class="mono">${esc(f.comparator)} ${fmt(moved?T[f.filter_id]:f.threshold)}${
-      moved?` <span class="empty">(run ${fmt(f.threshold)})</span>`:''}</td>
-    <td>${esc(f.scope_label)}</td><td>${esc(f.stage)}</td><td>${esc(gateReason(f,value,verdict,reason))}</td></tr>`;}).join('');
+    <td>${fmt(value)}</td><td class="mono">${esc(f.comparator)} ${fmt(t)}${
+      moved?` <span class="empty">(yours; run ${fmt(f.threshold)})</span>`:''}</td>
+    <td>${esc(f.scope_label)}</td><td>${esc(f.stage)}</td><td>${esc(gateReason(f,value,verdict,reason,t))}</td></tr>`;}).join('');
   const nu=live.n_gates_unknown;
+  // Whose thresholds these verdicts came from, said once at the top of the panel: a reader quoting a
+  // pill has to be able to see that it is theirs and not the run's without reading every row.
+  const nm=FILTERS.filter(f=>liveThreshold(f)!==f.threshold).length;
   return `<div class="card"><h2>Gates — all ${live.gates.length}, independently evaluated</h2>
+    ${nm?`<div class="warn"><b>${nm} threshold${nm===1?'':'s'} moved from the run's.</b> Every verdict
+      below is re-derived at your value; the run's own threshold is shown beside it and named again in
+      the Why column, so nothing here is the run's verdict unless it says so.</div>`:''}
     ${nu?`<div class="warn"><b>${nu} of ${live.gates.length} gates not evaluated.</b> An unevaluated gate is
       not a pass. See the Why column for the missing input.</div>`:''}
     ${(!nu&&live.status==='unknown')?`<div class="warn"><b>Run verdict: ${esc(g.run_verdict)}.</b>
@@ -728,8 +774,36 @@ function passesConservation(g){
   return true;
 }
 
+// The ONE numeric boundary for every control in the panel, and for the URL fragment (#103). Blank is
+// `null` -- "no bound", the reader's own way of clearing one. Anything that is not a finite number --
+// `abc`, `Infinity`, `1e999` -- returns `undefined`, and every caller REFUSES it rather than passing it
+// on: `Number('abc')` is NaN and every comparison against NaN is false, so one junk keystroke would
+// fail every re-decidable gate on every guide, and encodeHash would then write a fragment
+// applyHashFragment itself refuses -- the reader's own reload could not reproduce what they were
+// looking at. The old boxes carried only a soft-keyboard hint, which constrains nothing at all.
+function parseControlValue(text){
+  const v=String(text===null||text===undefined?'':text).trim();
+  if(v==='') return null;
+  const n=Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
 function fnum(id){ const el=document.getElementById(id); if(!el) return null;
-  const v=el.value.trim(); return v===''?null:Number(v); }
+  // type=number blanks `value` for text it cannot parse, so validity.badInput is the only trace left
+  // of a reader having typed something; without this branch that junk reads as an empty box.
+  if(el.validity && el.validity.badInput) return undefined;
+  return parseControlValue(el.value); }
+
+// A refused keystroke has to be visible at the control. Silently keeping the last good value would
+// leave the reader looking at a threshold they did not type and believing they had moved it.
+function markControl(el, ok){
+  el.setAttribute('aria-invalid', ok?'false':'true');
+  const note=document.getElementById('badnum'); if(!note) return;
+  const bad=[...document.querySelectorAll('#frows input[aria-invalid="true"], #rrows input[aria-invalid="true"]')];
+  note.style.display = bad.length ? '' : 'none';
+  note.innerHTML = bad.length ? `<b>Ignored.</b> ${bad.map(b=>esc(b.getAttribute('aria-label')||b.id)).join(', ')}
+    ${bad.length===1?'is':'are'} not a finite number, so nothing moved: no verdict here was decided
+    against it, and the URL still describes the thresholds actually in force.` : '';
+}
 
 function passesFilters(g){
   const live = g._live;
@@ -760,15 +834,21 @@ function buildGateControls(){
     const c = f.control || {};
     return `<div class="frow" data-filter="${esc(f.filter_id)}">
       <span title="${esc(f.definition||'')}"><span class="mono">${esc(f.filter_id)}</span> ${esc(f.comparator)}</span>
-      <input id="ctl_${esc(f.filter_id)}" value="${T[f.filter_id]}" inputmode="decimal">
+      <input id="ctl_${esc(f.filter_id)}" type="number" step="any" value="${T[f.filter_id]}"
+        aria-label="${esc(f.filter_id)} threshold">
       <span class="empty">run ${fmt(f.threshold)}</span></div>
       <input type="range" id="rng_${esc(f.filter_id)}" min="${c.min}" max="${c.max}" step="${c.step}"
         value="${T[f.filter_id]}" style="grid-column:1/-1;width:100%" aria-label="${esc(f.filter_id)} slider">`;
   }).join('');
   // The number box and the slider are the same threshold; typing in one moves the other, so "yours"
-  // never has two disagreeing readouts.
+  // never has two disagreeing readouts. The box carries `type=number` and `step=any` but deliberately
+  // no min/max: the slider's domain bounds the slider, and payload.py's own contract is that the number
+  // box can still reach any threshold (payload._control_domain). What is rejected is not an unusual
+  // number, it is a value that is not a number at all.
   document.querySelectorAll('#frows input[id^="ctl_"], #frows input[id^="rng_"]').forEach(el=>el.oninput=()=>{
     const id=el.id.slice(el.id.indexOf('_')+1), f=FILTERS.find(x=>x.filter_id===id), v=fnum(el.id);
+    if(v===undefined){ markControl(el,false); return; }   // refused here, so T can never hold a NaN
+    markControl(el,true);
     T[id] = v===null ? f.threshold : v;
     const other=document.getElementById((el.id.startsWith('ctl_')?'rng_':'ctl_')+id);
     if(other) other.value = T[id];
@@ -783,12 +863,15 @@ function buildGateControls(){
 function buildReaderFilters(){
   document.getElementById('rrows').innerHTML = READER_FILTERS.map(f=>
     `<div class="frow" data-reader="${esc(f.k)}"><span>${esc(f.label)}</span>
-      <input id="rf_${esc(f.k)}" placeholder="${f.dir}" inputmode="decimal"
+      <input id="rf_${esc(f.k)}" type="number" step="any" placeholder="${f.dir}"
         value="${R[f.k]===null||R[f.k]===undefined?'':R[f.k]}"
         aria-label="${esc(f.label)}, ${f.dir==='min'?'at least':'at most'}">
       <span class="empty">${f.dir==='min'?'at least':'at most'}</span></div>`).join('');
   document.querySelectorAll('#rrows input').forEach(el=>el.oninput=()=>{
-    R[el.id.slice(3)] = fnum(el.id);       // blank clears the bound; it does not set it to 0
+    const v=fnum(el.id);
+    if(v===undefined){ markControl(el,false); return; }   // a bound is a number or it is not a bound
+    markControl(el,true);
+    R[el.id.slice(3)] = v;                 // blank clears the bound; it does not set it to 0
     applyFilters(); syncHash();
   });
 }
@@ -810,6 +893,10 @@ function buildFilterUI(){
   document.getElementById('consseed').onchange = e => { F.consSeedIntact=e.target.checked; applyFilters(); };
   buildPresetButtons();
   renderRefused();
+  // Rebuilding the boxes discards every aria-invalid with them, so the refusal banner would otherwise
+  // outlive the input it was about -- most visibly after Reset, which replaces all of them.
+  const badnum=document.getElementById('badnum');
+  if(badnum){ badnum.style.display='none'; badnum.innerHTML=''; }
 }
 
 // Everything #freset does, as a function rather than inline in its handler: "Reset" has to mean every
@@ -844,6 +931,44 @@ function cartRows(){
     .sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1));
 }
 
+// ---- the cart as TSV, with the thresholds its `status` column came from -------------------------
+// The columns and their order are the export's contract and are unchanged. What was missing is above
+// them: the `status` column carries the reader's LIVE, possibly re-thresholded status, and the file
+// recorded nothing about the thresholds that produced it -- so a TSV pasted into a ticket claimed a
+// verdict nobody could reproduce from the run (#103). The provenance rides as `#`-prefixed,
+// tab-delimited `key=value` comment lines, the one shape that is both readable in a ticket and
+// skippable by every TSV reader, so a consumer that ignores comments still gets exactly the old file.
+const CART_COLUMNS=['guide','passenger','status','composite_score','design_score','isoforms_hit',
+  'isoforms_in_run','gc_content','asymmetry_score','off_target_count','liabilities','structure',
+  ...CONS_SPECIES.flatMap(sp=>[sp+'_nm', sp+'_seed_mm'])];
+
+// A comment field is one tab-delimited cell, so a gene query carrying a tab or a newline would split
+// it into a line the reader would mis-parse. Filter ids and numbers cannot; free text can.
+function tsvField(s){ return String(s===null||s===undefined?'':s).replace(/[\t\r\n]+/g,' '); }
+
+// Also records the reader filters and the preset, not because they touch `status` -- they cannot -- but
+// because `Add top n to cart` picks from the filtered view, so they decide which guides are in the file.
+function cartProvenance(rows){
+  const moved=FILTERS.filter(f=>evaluable(f) && liveThreshold(f)!==f.threshold);
+  const lines=['#sirnaforge_cart\tschema=1\tgene='+tsvField(GENE)+'\tguides='+rows.length
+    +'\tpreset='+activePreset,
+    '#status_basis='+(moved.length?'reader_rethresholded':'run_thresholds')+'\tmoved_gates='+moved.length];
+  for(const f of moved) lines.push('#moved_gate='+f.filter_id+'\tcomparator='+f.comparator
+    +'\trun_threshold='+f.threshold+'\treader_threshold='+liveThreshold(f));
+  for(const f of READER_FILTERS) if(Number.isFinite(R[f.k]))
+    lines.push('#reader_filter='+f.k+'\tdirection='+f.dir+'\tbound='+R[f.k]);
+  return lines;
+}
+
+function cartTsv(rows){
+  return [...cartProvenance(rows), CART_COLUMNS.join('\t'), ...rows.map(g=>[
+    g.guide, g.passenger??'', g._live.status, g.composite_score??'', g.design_score??'',
+    g.transcript_hits??'', TX_IDS.length, g.metrics.gc_content??'', g.metrics.asymmetry_score??'',
+    g.metrics.off_target_count??'', g.liability_count, g.structure??'',
+    ...CONS_SPECIES.flatMap(sp=>{const d=consOf(g,sp); return [d?.nm??'', d?.seed_mismatches??''];})
+    ].join('\t'))].join('\n');
+}
+
 function renderCart(){
   const rows=cartRows(), card=document.getElementById('cartcard');
   card.style.display = rows.length ? '' : 'none';
@@ -859,15 +984,7 @@ function renderCart(){
        <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td></tr>`).join('')}</tbody></table>`;
   document.querySelectorAll('#cartlist tr[data-cart]').forEach(tr=>
     tr.querySelector('td.pick').onclick=()=>togglePick(tr.dataset.cart));
-  const cols=['guide','passenger','status','composite_score','design_score','isoforms_hit','isoforms_in_run',
-              'gc_content','asymmetry_score','off_target_count','liabilities','structure',
-              ...CONS_SPECIES.flatMap(sp=>[sp+'_nm', sp+'_seed_mm'])];
-  document.getElementById('carttsv').value = [cols.join('\t'), ...rows.map(g=>[
-    g.guide, g.passenger??'', g._live.status, g.composite_score??'', g.design_score??'',
-    g.transcript_hits??'', TX_IDS.length, g.metrics.gc_content??'', g.metrics.asymmetry_score??'',
-    g.metrics.off_target_count??'', g.liability_count, g.structure??'',
-    ...CONS_SPECIES.flatMap(sp=>{const d=consOf(g,sp); return [d?.nm??'', d?.seed_mismatches??''];})
-    ].join('\t'))].join('\n');
+  document.getElementById('carttsv').value = cartTsv(rows);
 }
 
 // ---- URL fragment: selected guide, moved thresholds, reader filters, active preset ----------------
@@ -877,11 +994,15 @@ function renderCart(){
 function encodeHash(){
   const parts=[];
   if(selected) parts.push('g='+encodeURIComponent(selected));
+  // Number.isFinite, not merely "different from the run's": the fragment must never carry a value
+  // applyHashFragment would itself refuse, or the reader's own reload cannot reproduce the page the URL
+  // was copied from. The controls reject non-finite input before it reaches T or R (fnum), so this is
+  // the second half of one rule rather than a new one.
   const moved=Object.keys(T).filter(id=>{
-    const f=FILTERS.find(x=>x.filter_id===id); return f && T[id]!==f.threshold;
+    const f=FILTERS.find(x=>x.filter_id===id); return f && Number.isFinite(T[id]) && T[id]!==f.threshold;
   });
   if(moved.length) parts.push('t='+moved.map(id=>id+':'+T[id]).join(','));
-  const bounded=READER_FILTERS.filter(f=>R[f.k]!==null&&R[f.k]!==undefined);
+  const bounded=READER_FILTERS.filter(f=>Number.isFinite(R[f.k]));
   if(bounded.length) parts.push('r='+bounded.map(f=>f.k+':'+R[f.k]).join(','));
   if(activePreset!=='all') parts.push('preset='+activePreset);
   return parts.join('&');
@@ -903,17 +1024,20 @@ function applyHashFragment(raw){
       for(const pair of v.split(',')){
         if(!pair) continue;
         const ci=pair.indexOf(':'); if(ci<0) continue;
-        const id=pair.slice(0,ci), num=Number(pair.slice(ci+1));
+        // parseControlValue, the same boundary the controls use: a non-finite value, and an empty one
+        // (`t=some_gate:`, which Number() reads as 0 and would silently set a real threshold), are
+        // refused rather than applied.
+        const id=pair.slice(0,ci), num=parseControlValue(pair.slice(ci+1));
         const f=FILTERS.find(x=>x.filter_id===id);
-        if(f && evaluable(f) && Number.isFinite(num)) T[id]=num;
+        if(f && evaluable(f) && typeof num==='number') T[id]=num;
         else refused.push(id);
       }
     } else if(k==='r'){
       for(const pair of v.split(',')){
         if(!pair) continue;
         const ci=pair.indexOf(':'); if(ci<0) continue;
-        const key=pair.slice(0,ci), num=Number(pair.slice(ci+1));
-        if(READER_FILTERS.some(f=>f.k===key) && Number.isFinite(num)) R[key]=num;
+        const key=pair.slice(0,ci), num=parseControlValue(pair.slice(ci+1));
+        if(READER_FILTERS.some(f=>f.k===key) && typeof num==='number') R[key]=num;
         else refused.push(key);
       }
     } else if(k==='preset'){ if(PRESETS[v]) activePreset=v; }
@@ -1050,7 +1174,7 @@ def render_html(payload: ReportPayload) -> str:
         ("GENE_JSON_PLACEHOLDER", str(payload.run.get("gene_query") or "run")),
         ("REGISTER_NT_PLACEHOLDER", REGISTER_NEIGHBOUR_NT),
     ):
-        html = html.replace(placeholder, json.dumps(value, separators=(",", ":")))
+        html = html.replace(placeholder, _embed(value))
     return html
 
 
