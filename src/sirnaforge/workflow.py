@@ -1406,65 +1406,9 @@ class SiRNAWorkflow:
         qualified_fasta = base / "candidates_qualified.fasta"
         provisional_csv = base / "candidates_provisional.csv"
         report_file = self.config.output_dir / "orf_reports" / "orf_validation.txt"
-        is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
 
         try:
-            # Single shared row-builder (models/sirna.py) so this CSV and DesignResult.save_csv
-            # can never drift on which columns they emit (issue #80 F2).
-            rows: list[dict[str, Any]] = [build_candidate_row(candidate) for candidate in design_results.candidates]
-
-            if rows:
-                all_df = pd.DataFrame(rows)
-            else:
-                template_cols = list(SiRNACandidateSchema.to_schema().columns.keys())
-                all_df = pd.DataFrame(columns=template_cols)
-
-            for col in ("seed_7mer_hits", "seed_8mer_hits"):
-                if col in all_df.columns:
-                    all_df[col] = all_df[col].astype("Int64")
-
-            if "passes_filters" not in all_df.columns:
-                all_df["passes_filters"] = pd.Series(dtype="object")
-
-            validated_all = SiRNACandidateSchema.validate(all_df)
-
-            if not is_mirna_mode:
-                mirna_cols = [
-                    "guide_pos1_base",
-                    "pos1_pairing_state",
-                    "seed_class",
-                    "supp_13_16_score",
-                    "seed_7mer_hits",
-                    "seed_8mer_hits",
-                    "seed_hits_weighted",
-                    "off_target_seed_risk_class",
-                ]
-                existing = [col for col in mirna_cols if col in validated_all.columns]
-                if existing:
-                    validated_all = validated_all.drop(columns=existing)
-
-            def _normalize_pass(value: Any) -> str:
-                normalized = "FAIL"
-                try:
-                    if value is True or (isinstance(value, int | float) and value == 1):
-                        normalized = "PASS"
-                    elif value is False or (isinstance(value, int | float) and value == 0):
-                        normalized = "FAIL"
-                    elif isinstance(value, str):
-                        cleaned = value.strip().upper()
-                        if cleaned in {"PASS", "TRUE", "YES"}:
-                            normalized = "PASS"
-                        elif cleaned in {"FAIL", "FALSE", "NO"}:
-                            normalized = "FAIL"
-                        else:
-                            normalized = cleaned
-                    else:
-                        normalized = "PASS" if bool(value) else "FAIL"
-                except Exception:
-                    normalized = "FAIL"
-                return normalized
-
-            validated_all["passes_filters"] = [_normalize_pass(value) for value in validated_all["passes_filters"]]
+            validated_all = self._build_candidate_frame(design_results.candidates)
             pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
 
             validated_all.to_csv(all_csv, index=False)
@@ -1526,6 +1470,90 @@ class SiRNAWorkflow:
             "   - Selection exports: sirnaforge/ (candidates_qualified.csv/.fasta, candidates_provisional.csv)"
         )
         console.print("   - Self-contained HTML report: sirnaforge/report.html")
+
+    def _build_candidate_frame(self, candidates: Sequence[SiRNACandidate]) -> pd.DataFrame:
+        """The validated candidate table every export slices, from the one shared row builder.
+
+        Shared by step6 and by #100's off-target-only exports, so the two entry points cannot drift on
+        which columns they publish or on how ``passes_filters`` is spelled -- the reason the off-target
+        entry point could not simply grow its own writer.
+
+        Two dtype repairs before validation, both cases of a column that is *entirely* null:
+        ``seed_7mer_hits``/``seed_8mer_hits`` become ``Int64``, and a float-typed column arrives as
+        ``object`` because pandas has no float to infer from. The schema's class-level ``coerce`` never
+        reaches those fields, so an all-null ``mfe`` failed validation outright -- which is why a run of
+        pre-designed guides, none of which carries a folding energy, could produce no candidate table at
+        all. A column with even one value present already infers ``float64``, so this repair can only
+        ever fire on a column the run measured nowhere.
+
+        Raises:
+            pandera.errors.SchemaError: The rows do not satisfy ``SiRNACandidateSchema``. Callers that
+                treat a missing table as a reporting extra catch this themselves.
+        """
+        # Single shared row-builder (models/sirna.py) so this CSV and DesignResult.save_csv
+        # can never drift on which columns they emit (issue #80 F2).
+        rows: list[dict[str, Any]] = [build_candidate_row(candidate) for candidate in candidates]
+
+        if rows:
+            all_df = pd.DataFrame(rows)
+        else:
+            template_cols = list(SiRNACandidateSchema.to_schema().columns.keys())
+            all_df = pd.DataFrame(columns=template_cols)
+
+        for col in ("seed_7mer_hits", "seed_8mer_hits"):
+            if col in all_df.columns:
+                all_df[col] = all_df[col].astype("Int64")
+
+        for name, column in SiRNACandidateSchema.to_schema().columns.items():
+            dtype = str(column.dtype)
+            if not dtype.startswith("float") or name not in all_df.columns:
+                continue
+            if all_df[name].dtype == object and all_df[name].isna().all():
+                all_df[name] = all_df[name].astype(dtype)
+
+        if "passes_filters" not in all_df.columns:
+            all_df["passes_filters"] = pd.Series(dtype="object")
+
+        validated_all = SiRNACandidateSchema.validate(all_df)
+
+        if self.config.design_params.design_mode != DesignMode.MIRNA:
+            mirna_cols = [
+                "guide_pos1_base",
+                "pos1_pairing_state",
+                "seed_class",
+                "supp_13_16_score",
+                "seed_7mer_hits",
+                "seed_8mer_hits",
+                "seed_hits_weighted",
+                "off_target_seed_risk_class",
+            ]
+            existing = [col for col in mirna_cols if col in validated_all.columns]
+            if existing:
+                validated_all = validated_all.drop(columns=existing)
+
+        def _normalize_pass(value: Any) -> str:
+            normalized = "FAIL"
+            try:
+                if value is True or (isinstance(value, int | float) and value == 1):
+                    normalized = "PASS"
+                elif value is False or (isinstance(value, int | float) and value == 0):
+                    normalized = "FAIL"
+                elif isinstance(value, str):
+                    cleaned = value.strip().upper()
+                    if cleaned in {"PASS", "TRUE", "YES"}:
+                        normalized = "PASS"
+                    elif cleaned in {"FAIL", "FALSE", "NO"}:
+                        normalized = "FAIL"
+                    else:
+                        normalized = cleaned
+                else:
+                    normalized = "PASS" if bool(value) else "FAIL"
+            except Exception:
+                normalized = "FAIL"
+            return normalized
+
+        validated_all["passes_filters"] = [_normalize_pass(value) for value in validated_all["passes_filters"]]
+        return cast(pd.DataFrame, validated_all)
 
     def _write_selection_exports(
         self,
@@ -1667,7 +1695,7 @@ class SiRNAWorkflow:
         all_csv: Path,
         pass_csv: Path,
         pass_fasta: Path,
-        orf_report: Path,
+        orf_report: Path | None = None,
         qualified_csv: Path | None = None,
         qualified_fasta: Path | None = None,
         provisional_csv: Path | None = None,
@@ -1676,7 +1704,8 @@ class SiRNAWorkflow:
 
         The three selection exports (#100) default to ``None`` and are then absent from ``files``
         entirely, which is the honest record for a caller that published no selection: an
-        ``exists: false`` entry would claim the run tried to write one.
+        ``exists: false`` entry would claim the run tried to write one. ``orf_report`` follows the same
+        rule for the off-target-only entry point, which validates no ORF and so never asks for one.
         """
         now = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
         files: dict[str, dict[str, Any]] = {}
@@ -1720,7 +1749,8 @@ class SiRNAWorkflow:
             )
         if provisional_csv is not None:
             add_file("candidates_provisional_csv", provisional_csv, "csv", {"rows": csv_rows(provisional_csv)})
-        add_file("orf_validation_report", orf_report, "tsv")
+        if orf_report is not None:
+            add_file("orf_validation_report", orf_report, "tsv")
 
         # Scoring metadata: every named vector with its weights, so a row's weight_vector column
         # resolves to the exact numbers that produced it. Weights are never altered at runtime, so
@@ -1747,6 +1777,79 @@ class SiRNAWorkflow:
             },
             "files": files,
         }
+
+    def write_offtarget_only_exports(self, candidates: Sequence[SiRNACandidate]) -> dict[str, str]:
+        """Publish the candidate tables and the manifest for a run of pre-designed guides (#100).
+
+        ``run_offtarget_only_workflow`` bypasses step5 and step6 entirely, so it used to write no
+        candidate table at all: its whole answer was a count of candidates and an off-target status,
+        and ``sirnaforge report <output_dir>`` -- which the command itself tells the user to run next --
+        failed with "no candidates_all.csv". The same four tables step6 writes are written here, into
+        the same ``sirnaforge/`` sub-directory and from the same
+        :meth:`_build_candidate_frame`, so one column set and one directory shape serve both entry
+        points and the report reader needs no special case.
+
+        What is *not* published is as deliberate. A pre-designed guide arrives with no design score and
+        no transcript context, so ``design_score``, ``composite_score`` and every accessibility column
+        stay null and ``scored_after_screening`` stays False: score-unavailable is the honest cell.
+        Deriving accessibility from the guide alone would be a fabricated target measurement, and
+        falling back to a design score would invent a potency claim for a guide this tool did not
+        design. Nothing here writes an ORF report either, because no ORF was validated.
+
+        Returns:
+            Written file name -> path, for the caller's own result dictionary. Only files that exist:
+            the qualified FASTA is absent when nothing qualified.
+        """
+        base = self.config.output_dir / "sirnaforge"
+        base.mkdir(parents=True, exist_ok=True)
+        all_csv = base / "candidates_all.csv"
+        pass_csv = base / "candidates_pass.csv"
+        pass_fasta = base / "candidates_pass.fasta"
+        qualified_csv = base / "candidates_qualified.csv"
+        qualified_fasta = base / "candidates_qualified.fasta"
+        provisional_csv = base / "candidates_provisional.csv"
+        manifest_path = base / "manifest.json"
+
+        validated_all = self._build_candidate_frame(candidates)
+        pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
+        validated_all.to_csv(all_csv, index=False)
+        pass_df.to_csv(pass_csv, index=False)
+        if pass_df.empty:
+            pass_fasta.unlink(missing_ok=True)
+        else:
+            try:
+                self._write_pass_candidates_fasta(pass_df, pass_fasta)
+            except Exception as e:
+                logger.warning(f"Failed to write PASS candidates FASTA: {e}")
+
+        self._write_selection_exports(
+            validated_all,
+            qualified_csv=qualified_csv,
+            qualified_fasta=qualified_fasta,
+            provisional_csv=provisional_csv,
+        )
+
+        manifest = self._build_fair_manifest(
+            all_csv=all_csv,
+            pass_csv=pass_csv,
+            pass_fasta=pass_fasta,
+            qualified_csv=qualified_csv,
+            qualified_fasta=qualified_fasta,
+            provisional_csv=provisional_csv,
+        )
+        with manifest_path.open("w") as mf:
+            json.dump(manifest, mf, indent=2)
+
+        written = {
+            "candidates_all_csv": all_csv,
+            "candidates_pass_csv": pass_csv,
+            "candidates_pass_fasta": pass_fasta,
+            "candidates_qualified_csv": qualified_csv,
+            "candidates_qualified_fasta": qualified_fasta,
+            "candidates_provisional_csv": provisional_csv,
+            "manifest_json": manifest_path,
+        }
+        return {name: str(path) for name, path in written.items() if path.exists()}
 
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict[str, Any]:
         """Step 5: Detect repeat elements, then run off-target analysis via the Nextflow pipeline.
@@ -1901,8 +2004,25 @@ class SiRNAWorkflow:
         are the user-facing half of the contract. ``EXPLORATORY``'s retained-but-incomplete candidates
         now carry ``SelectionState.PROVISIONAL`` instead of the same ``eligible`` a fully evidenced one
         gets -- they still rank (below complete evidence) and still enter ``top_candidates``.
+
+        The decision itself lives in :meth:`_apply_selection`, which knows nothing about
+        ``DesignResult``: the off-target-only entry point has no design result at all and must still
+        reach the same answer through the same code rather than a second copy of it (#100).
         """
-        candidates = design_results.candidates
+        design_results.top_candidates = self._apply_selection(design_results.candidates)
+
+    def _apply_selection(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+        """Decide the selection over ``candidates``, apply it to them in place, and return the shortlist.
+
+        Everything :meth:`_apply_post_screen_ranking` does except naming the object that holds the
+        shortlist, so ``run_offtarget_only_workflow`` -- which bypasses step5 and therefore holds no
+        ``DesignResult`` -- publishes a selection under the same rules, the same states and the same
+        console messages (#100). Before this split that entry point never selected at all: every
+        candidate it screened kept ``SelectionState.NOT_SELECTED``, the model default.
+
+        Re-sorts ``candidates`` in place (the CSV writers emit them in this order) and returns the
+        first ``top_n`` eligible candidates.
+        """
         # Before the views are built, because eligibility reads this gate's verdict off the candidate
         # and a gate that never ran has none to read (#105).
         self._complete_isoform_coverage_verdicts(candidates)
@@ -1914,7 +2034,7 @@ class SiRNAWorkflow:
         by_ordinal = list(candidates)
         # Re-sorted in place, because step6 writes the CSVs in this list's order.
         candidates[:] = [by_ordinal[ordinal] for ordinal in result.order]
-        design_results.top_candidates = [by_ordinal[ordinal] for ordinal in result.top_ordinals]
+        top_candidates = [by_ordinal[ordinal] for ordinal in result.top_ordinals]
         # On the candidate, not bolted onto a dataframe later, so both CSV writers emit one column set
         # from build_candidate_row and the FASTA header can read it.
         for selected in result.per_candidate:
@@ -1963,6 +2083,7 @@ class SiRNAWorkflow:
                 "screening; they keep design-time scores and are excluded from top_candidates because the two "
                 "scores are not comparable."
             )
+        return top_candidates
 
     def _complete_isoform_coverage_verdicts(self, candidates: Sequence[SiRNACandidate]) -> None:
         """Apply the coverage gate to any candidate that never reached it, so its verdict exists (#105).
@@ -5427,7 +5548,10 @@ async def run_offtarget_only_workflow(
             the replacement instead of "unexpected keyword argument".
 
     Returns:
-        Dictionary with off-target analysis results
+        Dictionary with off-target analysis results: the seven long-standing keys, plus (#100)
+        ``selection_summary`` -- the resolved selection, counted by exclusion reason -- and
+        ``written_files``. A run that could qualify nobody is a result, not a failure: it reports an
+        empty shortlist and still returns normally.
     """
     refuse_renamed_arguments(renamed)
     # Resolved before the output tree is created, exactly as the other two entry points do it.
@@ -5598,9 +5722,25 @@ async def run_offtarget_only_workflow(
 
         progress.remove_task(task)
 
+    # The same evidence -> gates -> selection -> exports contract the design entry point gets (#100).
+    # Bypassing step5 used to mean bypassing all four: every guide this command screened kept
+    # selection_state=not_selected, no gate reading a screening channel was reached on a screen that
+    # published nothing, and no candidate table was written at all.
+    # A no-op when the screen integrated hits: each of these skips a candidate that already holds the
+    # verdict it would write.
+    workflow._gate_without_screening_evidence(candidates)
+    workflow._apply_selection(candidates)
+
+    written_files: dict[str, str] = {}
+    try:
+        written_files = workflow.write_offtarget_only_exports(candidates)
+    except Exception as e:  # Do not fail the run for reporting extras, exactly as step6 does not
+        logger.warning(f"Failed to write off-target-only candidate exports: {e}")
+
     total_time = max(0.0, time.perf_counter() - start_time)
 
-    # Compile results
+    # Compile results. The seven original keys are unchanged; selection_summary and written_files are
+    # additive, because a caller that only reads offtarget_summary must keep working.
     final_results: dict[str, Any] = {
         "workflow_type": "offtarget_only",
         "input_candidates": str(input_candidates_fasta),
@@ -5611,9 +5751,18 @@ async def run_offtarget_only_workflow(
         # Same reference record as the full workflow publishes: which references resolved, over which
         # species, and what did not. This path used to report nothing about its own references.
         "reference_summary": workflow._summarize_screening_references(),
+        # Why the shortlist is the size it is -- including "nothing qualified", which for pre-designed
+        # guides is a legitimate answer this command must be able to state without failing.
+        "selection_summary": workflow._selection_summary,
+        "written_files": written_files,
     }
 
     console.print(f"\n✅ [bold green]Off-target analysis completed in {total_time:.2f}s[/bold green]")
     console.print(f"📊 Results saved to: [blue]{output_path}[/blue]")
+    if written_files:
+        console.print(
+            "   - Candidate tables: sirnaforge/ (candidates_all.csv, candidates_pass.csv, "
+            "candidates_qualified.csv, candidates_provisional.csv, manifest.json)"
+        )
 
     return final_results

@@ -452,6 +452,30 @@ def _gate_panel(policy: ResolvedRunPolicy | None, manifest: Mapping[str, Any], c
     return _GatePanel(tuple(fallback.filters), fallback.profile.name, fallback.run_mode.value, "library defaults")
 
 
+def _has_transcript_context(manifest: Mapping[str, Any], caveats: list[str]) -> bool:
+    """Whether this run's candidate rows sit on real transcripts, per the run's own declared entry point.
+
+    ``sirnaforge offtarget`` screens guides someone else designed, so it enumerates nothing: every row
+    carries a placeholder transcript id and position 1 (#100). Read as an enumeration, that drew an
+    isoform table claiming each guide targets a transcript that does not exist, and a design map of one
+    fabricated transcript -- inventing exactly the target context the entry point does not have. So the
+    isoform table, the design map and the coverage denominator are all withheld for such a run.
+
+    Decided from the manifest's declared entry point rather than by sniffing the placeholder value,
+    because a sentinel string is a coincidence a reader cannot verify and the entry point is a fact the
+    run published about itself. A run with no readable manifest declares nothing, and is read as a
+    design run -- the same assumption every other provenance field already makes.
+    """
+    entry_point = str((manifest.get("run_policy") or {}).get("entry_point") or "")
+    if entry_point != EntryPoint.OFFTARGET_ONLY.value:
+        return True
+    caveats.append(
+        "this run screened pre-designed guides, which carry no transcript context: no isoform table, "
+        "no design map and no coverage denominator are reported"
+    )
+    return False
+
+
 def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = None) -> ReportPayload:
     """Build the payload for a finished run directory.
 
@@ -489,6 +513,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
             caveats.append(f"manifest.json could not be read ({exc}); the header shows less provenance")
 
     panel = _gate_panel(policy, manifest, caveats)
+    transcript_context = _has_transcript_context(manifest, caveats)
 
     candidates["_guide"] = candidates["guide_sequence"].map(_normalise_guide)
     if not hits.empty:
@@ -522,6 +547,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
                 hits=hits_by_guide.get(guide, pd.DataFrame()),
                 mirna=mirna_by_guide.get(guide, pd.DataFrame()),
                 register=register,
+                transcript_context=transcript_context,
             )
         )
 
@@ -552,9 +578,9 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         # not the same as the transcripts the map can plot -- a transcript can be present with no
         # scoreable row and still be an isoform this guide either does or does not reach.
         "transcript_ids": sorted(candidates["transcript_id"].dropna().astype(str).unique())
-        if "transcript_id" in candidates.columns
+        if transcript_context and "transcript_id" in candidates.columns
         else [],
-        "transcripts": _transcript_maps(candidates, guides, run_dir, caveats),
+        "transcripts": _transcript_maps(candidates, guides, run_dir, caveats) if transcript_context else [],
         # Keyed by dot-bracket and computed once per distinct structure, which is what makes the
         # layouts small enough to embed: 40,079 candidates carry 1,333 distinct structures.
         "structure_layouts": layouts_for(g.structure for g in guides),
@@ -676,10 +702,12 @@ def _build_guide(
     hits: pd.DataFrame,
     mirna: pd.DataFrame,
     register: dict[str, list[int]],
+    transcript_context: bool = True,
 ) -> GuideEntry:
     gates = [list(_evaluate(d, best, c)) for d, c in zip(descriptors, gate_columns, strict=True)]
 
-    isoforms = _isoform_table(rows, register)
+    # No transcript context means no enumeration to report; see _has_transcript_context.
+    isoforms = _isoform_table(rows, register) if transcript_context else []
     by_symbol, matrix, embedded, liability = _offtarget_views(hits)
 
     counts_exist = bool(len(hits)) and not embedded
