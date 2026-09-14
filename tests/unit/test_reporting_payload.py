@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,13 @@ import pytest
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, unclassified_cells
 from sirnaforge.reporting import ReportInputError, build_payload, render_html
-from sirnaforge.reporting.payload import EMBED_MAX_NM, MIN_UNCOVERED_NT, REASON_FILTER_OFF, REASON_OK
+from sirnaforge.reporting.payload import (
+    EMBED_MAX_NM,
+    MIN_UNCOVERED_NT,
+    REASON_FILTER_OFF,
+    REASON_OK,
+    REASON_RUN_NOT_EVALUATED,
+)
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
 OTHER = "UUUUCCCCAAAAGGGGUUUUC"
@@ -108,13 +115,32 @@ _PASSING_OBSERVED = {
 }
 
 
-def _write_fully_evidenced_run(tmp_path: Path, *, run_label: str = "PASS") -> Path:
-    """A run that records what every declared gate observed, as the fixed design path now does."""
+def _write_fully_evidenced_run(
+    tmp_path: Path,
+    *,
+    run_label: str = "PASS",
+    recorded: Mapping[str, str] | None = None,
+    guides: Sequence[str] = (GUIDE,),
+) -> Path:
+    """A run that records what every declared gate observed, as the fixed design path now does.
+
+    ``recorded`` adds ``<filter_id>_verdict`` columns, which is the only way a fixture can express the
+    verdict the *run* reached for one gate -- "in force, evidence unavailable" is a state no threshold
+    comparison over the observed columns reconstructs. Every guide in ``guides`` carries the same
+    observed values and the same recorded verdicts, so a gate recorded ``not_evaluated`` here is
+    not evaluated for the whole run rather than for one row.
+    """
+    recorded = recorded or {}
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
     columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
-    row = _candidate_row("c1", GUIDE, "ENST00000000001", 10).rsplit(",", 1)[0] + f",{run_label}"
-    row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
-    (run / "sirnaforge" / "candidates_all.csv").write_text(f"{columns}\n{row}\n")
+    columns += "".join(f",{k}_verdict" for k in recorded)
+    rows = []
+    for n, guide in enumerate(guides, start=1):
+        row = _candidate_row(f"c{n}", guide, "ENST00000000001", 10 * n).rsplit(",", 1)[0] + f",{run_label}"
+        row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
+        row += "".join(f",{v}" for v in recorded.values())
+        rows.append(row)
+    (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
     return run
 
 
@@ -648,6 +674,75 @@ def test_a_gate_that_is_off_still_reports_what_it_measured(tmp_path: Path) -> No
     assert value == 4, "the number the gate would have compared"
     assert verdict == 3, "and it is still not_evaluated, not a pass"
     assert reason == REASON_FILTER_OFF
+
+
+@pytest.mark.unit
+def test_an_in_force_gate_the_run_did_not_evaluate_is_unknown_rather_than_a_pass(tmp_path: Path) -> None:
+    """A gate that is in force and undecided is not evidence of cleanliness (#103).
+
+    ``n_gates_unknown`` counted only the UNKNOWN code, so a gate the run recorded ``not_evaluated``
+    landed on verdict code 3 and was neither failed nor unknown: ``status`` fell through to ``pass``,
+    the not-evaluated banner was suppressed, and the guide entered the Passing preset -- against
+    #103's own rule that a guide failing no gate is clean only when every gate could be evaluated.
+    ``max_repeat_transcript_fraction`` reaches this state on any run whose repeat scan did not happen:
+    the gate stays in force, and ``repeat_transcript_fraction`` is exported unconditionally from a
+    0.0-default field, so a confident PASS was re-derived for a gate nobody evaluated.
+
+    Verdict code 3 is therefore reserved for a gate that was never in force at all -- off, or with no
+    declared threshold -- and the run's own ``not_evaluated`` on an in-force gate is published as
+    UNKNOWN with :data:`REASON_RUN_NOT_EVALUATED` naming which non-decision it was.
+    """
+    payload = build_payload(
+        _write_fully_evidenced_run(tmp_path, recorded={"max_repeat_transcript_fraction": "not_evaluated"})
+    )
+    entry = payload.guides[0]
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "max_repeat_transcript_fraction")
+    descriptor = payload.filters[index]
+
+    assert (descriptor["action"], descriptor["threshold"]) == ("fail", 0.001), "the gate is in force on this run"
+    assert tuple(entry.gates[index]) == (0, 2, REASON_RUN_NOT_EVALUATED), "in force and undecided is unknown"
+    assert entry.n_gates_unknown == 1, "the tally must see it, or the status below cannot"
+    assert entry.n_gates_failed == 0
+    assert entry.run_verdict == "PASS"
+    assert entry.undeclared_run_rejection is False, "the run passed the guide; only the gate is undecided"
+    assert entry.status == "unknown", "an unevaluated in-force gate cannot make a guide clean"
+    assert payload.run["status_counts"]["pass"] == 0
+
+    # The browser agrees by construction rather than by a second tally rule it would have to be taught:
+    # the shipped counter counts the UNKNOWN code, which is the code this state is now published under.
+    assert "t[1]===V_UNKNOWN" in render_html(payload), "the client's unknown tally reads the UNKNOWN code"
+
+
+@pytest.mark.unit
+def test_a_gate_no_guide_was_evaluated_for_is_frozen_rather_than_given_a_dead_slider(tmp_path: Path) -> None:
+    """``evaluable`` means one thing: moving this control can change a verdict (#103).
+
+    A gate every one of whose rows the run recorded ``not_evaluated`` still exports the number it
+    measured, so "this run produced at least one value" called it evaluable and the report shipped a
+    live slider that cannot decide anything: a reader moves it, every row stays frozen on its reason
+    code, nothing changes, and nothing says why. It is published frozen with its own reason instead --
+    the reason the panel already prints beside the control it withholds.
+    """
+    payload = build_payload(
+        _write_fully_evidenced_run(
+            tmp_path, guides=(GUIDE, OTHER), recorded={"max_repeat_transcript_fraction": "not_evaluated"}
+        )
+    )
+    frozen = next(f for f in payload.filters if f["filter_id"] == "max_repeat_transcript_fraction")
+    index = payload.filters.index(frozen)
+
+    assert len(payload.guides) == 2
+    assert {tuple(g.gates[index]) for g in payload.guides} == {(0, 2, REASON_RUN_NOT_EVALUATED)}
+    assert frozen["evaluable"] is False, "no slider position can change a verdict this run never reached"
+    assert frozen["control"] is None
+    assert frozen["n_values"] == 2, "the values were measured; the run simply applied no verdict to them"
+    assert frozen["unevaluable_reason"] in render_html(payload), "and the panel says why it is frozen"
+
+    # A gate the run decided for at least one guide stays movable, or `evaluable` would mean
+    # "sometimes decidable" here and "decidable" everywhere else.
+    live = next(f for f in payload.filters if f["filter_id"] == "gc_content_max")
+    assert live["evaluable"] is True
+    assert live["control"] is not None
 
 
 @pytest.mark.unit

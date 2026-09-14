@@ -112,7 +112,14 @@ class GuideEntry:
 
     @property
     def n_gates_unknown(self) -> int:
-        """Gates that could not be evaluated. An unknown is never folded into a pass."""
+        """Gates in force that reached no verdict. An unknown is never folded into a pass.
+
+        One code, deliberately: every in-force non-decision -- a missing column, an empty value, the
+        run's own ``unknown``, and the run's own ``not_evaluated`` -- is emitted as the UNKNOWN verdict
+        by :func:`_evaluate`, with the reason code saying which. Counting a second verdict code here
+        instead would leave the report's tally and the browser's (which counts UNKNOWN alone) free to
+        disagree about the same guide (#103).
+        """
         return sum(1 for g in self.gates if g[1] == _VERDICT_CODE[FilterEvaluation.UNKNOWN.value])
 
     @property
@@ -209,8 +216,14 @@ REASON_NO_THRESHOLD = 4
 #: because the run measured nothing on purpose and said so, rather than the report failing to find it.
 REASON_RUN_UNKNOWN = 5
 #: The run recorded NOT_EVALUATED for this gate, so it made no claim and the report makes none either.
+#: A *reason*, not a verdict. A gate that is in force and undecided is published under the UNKNOWN
+#: verdict code and this reason (#103); see :func:`_evaluate`.
 REASON_RUN_NOT_EVALUATED = 6
 
+#: Verdict codes, keyed by the run's own vocabulary. ``not_evaluated`` (3) means the gate was never in
+#: force for this run -- off, or with no declared threshold -- and nothing else: an in-force gate the
+#: run declined to decide is UNKNOWN (2), because "not applied" and "applied, evidence unavailable" are
+#: different claims and only the second one bears on whether a guide is clean (#103).
 _VERDICT_CODE = {
     FilterEvaluation.PASS.value: 0,
     FilterEvaluation.FAIL.value: 1,
@@ -266,9 +279,9 @@ def _recorded_verdict(row: pd.Series, filter_id: str) -> str | None:
 def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[float | int | None, int, int]:
     """Evaluate one descriptor against one candidate row, independently of every other gate.
 
-    Returns ``unknown`` rather than a pass when the run exports no column the threshold can read.
-    Reporting those as passes would be the fabricated-evidence failure this report exists to make
-    visible.
+    Returns ``unknown`` rather than a pass when the run exports no column the threshold can read, and
+    equally when the run kept the gate in force but recorded no verdict for it. Reporting either as a
+    pass would be the fabricated-evidence failure this report exists to make visible.
 
     Args:
         descriptor: The gate as configured for this run.
@@ -288,22 +301,30 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
         return value, not_evaluated, REASON_FILTER_OFF
     if descriptor.threshold is None:
         return value, not_evaluated, REASON_NO_THRESHOLD
-    # The run's own UNKNOWN wins, before any comparison: re-thresholding moves a ceiling, it cannot
-    # conjure the measurement. Load-bearing, not defensive -- the gate writes UNKNOWN with an empty
-    # observed value so nothing re-derives a pass, but `observed_column` falls back to the descriptor's
-    # own column when the observed one is empty for every row, and three of those fallbacks are exported
-    # and default to 0. Without this an unscreened guide's `max_off_target_count` read as a pass at 0.
-    # The run's own non-decision wins, whichever it was: the report may report less than the run, never
-    # more. UNKNOWN because re-thresholding moves a ceiling and cannot conjure the measurement;
-    # NOT_EVALUATED because a gate the run did not apply is not the report's to apply.
-    # `max_repeat_transcript_fraction` is the live NOT_EVALUATED case -- a run whose repeat scan never
-    # ran leaves `repeat_transcript_fraction` at its 0.0 default, from which the report re-derived a
-    # confident PASS for a gate nobody evaluated.
+    # The run's own non-decision wins, before any comparison: the report may report less than the run,
+    # never more. Load-bearing, not defensive -- the gate writes its non-verdict with an empty observed
+    # value so nothing re-derives a pass, but `observed_column` falls back to the descriptor's own column
+    # when the observed one is empty for every row, and three of those fallbacks are exported and default
+    # to 0. Without this an unscreened guide's `max_off_target_count` read as a pass at 0.
+    #
+    # Both non-decisions land on UNKNOWN, because a gate reaching this line is in force with a threshold
+    # -- off and threshold-less gates returned above -- and an in-force gate is not evidence of anything
+    # the run declined to measure. Emitting NOT_EVALUATED here instead put the row on a verdict code the
+    # unknown tally does not count, so `status` fell through to `pass` and the guide entered the Passing
+    # preset with the not-evaluated banner suppressed (#103). `max_repeat_transcript_fraction` is the
+    # live case: a run whose repeat scan never ran leaves `repeat_transcript_fraction` at its 0.0 default
+    # and its verdict at `not_evaluated`, from which the report published a confident PASS for a gate
+    # nobody evaluated. The reason code is what keeps the two non-decisions apart, and the value with
+    # them: UNKNOWN has no measurement to show, while `not_evaluated` keeps the number the run recorded
+    # and still applies no verdict to it.
     recorded = _recorded_verdict(row, descriptor.filter_id)
     if recorded in (FilterEvaluation.UNKNOWN.value, FilterEvaluation.NOT_EVALUATED.value):
-        undecided = _VERDICT_CODE[recorded]
-        reason = REASON_RUN_UNKNOWN if recorded == FilterEvaluation.UNKNOWN.value else REASON_RUN_NOT_EVALUATED
-        return (None if recorded == FilterEvaluation.UNKNOWN.value else value), undecided, reason
+        run_unknown = recorded == FilterEvaluation.UNKNOWN.value
+        return (
+            None if run_unknown else value,
+            _VERDICT_CODE[FilterEvaluation.UNKNOWN.value],
+            REASON_RUN_UNKNOWN if run_unknown else REASON_RUN_NOT_EVALUATED,
+        )
     if column is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_MISSING_COLUMN
     if value is None:
@@ -410,20 +431,29 @@ def _filter_view(
     descriptor: Any,
     *,
     column: str | None,
-    observed: list[float | int],
+    gates: Sequence[Sequence[Any]],
     setting_key: str,
     definition: str,
 ) -> dict[str, Any]:
     """One filter as the report carries it: the descriptor, plus whether a reader may re-threshold it.
 
-    ``evaluable`` is decided from THIS run's own output, and from ``column`` -- the
-    ``<filter_id>_observed``-or-descriptor column :func:`observed_column` already resolved for every
-    gate in the report -- never the descriptor's bare column. Reading the descriptor's column instead
-    would freeze every human-stratified gate that ``observed_column`` can in fact answer. A gate is
-    re-thresholdable only when it was applied, has a threshold, and this run produced at least one
-    value the report itself read for it. Anything else keeps its verdict frozen at whatever the run
-    reached, because no slider position can answer a question the run has no evidence for.
+    ``evaluable`` is decided from THIS run's own output -- the gate triples the report already built for
+    every guide -- and from ``column``, the ``<filter_id>_observed``-or-descriptor column
+    :func:`observed_column` resolved, never the descriptor's bare column. Reading the descriptor's
+    column instead would freeze every human-stratified gate that ``observed_column`` can in fact
+    answer. A gate is re-thresholdable only when it was applied, has a threshold, and this run left at
+    least one guide's row on :data:`REASON_OK` -- the one reason :func:`reevaluate_gates` and the
+    report's JS will re-compare. Anything else keeps its verdict frozen at whatever the run reached,
+    because no slider position can answer a question the run has no evidence for.
+
+    ``evaluable`` therefore means exactly one thing: moving this control can change a verdict. Testing
+    "at least one value" instead published a live slider for a gate every row of which the run recorded
+    ``not_evaluated`` -- the values are real, so the test passed, while every row freezes on its reason
+    code and nothing a reader does to that control can decide anything (#103). ``n_values`` still counts
+    the measurements, because they were measured; it is the deciding that never happened.
     """
+    observed = [value for value, _verdict, _reason in gates if value is not None]
+    decided = sum(1 for _value, _verdict, reason in gates if reason == REASON_OK)
     reason: str | None = None
     if descriptor.action.value == FilterAction.OFF.value:
         reason = "this run has the filter off, so it reached no verdict to re-threshold"
@@ -433,6 +463,11 @@ def _filter_view(
         reason = f"the run exports neither {descriptor.filter_id}_observed nor {descriptor.column}"
     elif not observed:
         reason = f"{column} is exported but empty for every guide in this run"
+    elif not decided:
+        reason = (
+            f"{column} is exported, but the run evaluated this gate for none of the {len(gates)} guides "
+            "in this run, so no threshold can decide it"
+        )
     return {
         **descriptor.model_dump(mode="json"),
         "setting_key": setting_key,
@@ -711,7 +746,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
             _filter_view(
                 f.descriptor,
                 column=column,
-                observed=[g.gates[i][0] for g in guides if g.gates[i][0] is not None],
+                gates=[g.gates[i] for g in guides],
                 setting_key=f.setting_key,
                 definition=f.definition,
             )
