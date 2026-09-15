@@ -970,7 +970,7 @@ class GencodeClient(AbstractDatabaseClient):
     async def search_gene(
         self,
         query: str,
-        include_sequence: bool = True,  # noqa: ARG002
+        include_sequence: bool = True,
     ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Search for a gene and return gene info and transcripts."""
         # GENCODE doesn't have a simple REST API like Ensembl

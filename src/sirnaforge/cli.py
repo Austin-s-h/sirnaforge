@@ -764,7 +764,7 @@ def _parse_zfn_mutation_constraints(
     return per_subfinger, default_subfinger, overall_constraints
 
 
-def _build_zfn_design_configuration(  # noqa: PLR0912
+def _build_zfn_design_configuration(
     *,
     zfn_subfinger_mutation: list[str],
     zfn_max_mismatches_per_subfinger: int | None,
@@ -1835,7 +1835,7 @@ def workflow(  # noqa: PLR0912
 
 
 @app_command()
-def offtarget(  # noqa: PLR0912
+def offtarget(
     run_mode: str | None = typer.Option(
         None,
         "--run-mode",
@@ -2269,7 +2269,7 @@ def zfn(
 
 
 @app_command()
-def design(  # noqa: PLR0912
+def design(
     ctx: typer.Context,
     input_file: Path = typer.Argument(
         ...,

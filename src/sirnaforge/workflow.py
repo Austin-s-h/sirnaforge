@@ -1550,7 +1550,7 @@ class SiRNAWorkflow:
             "repeat_sequences": list(scan_result.repeat_sequences),
         }
 
-    async def step6_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
+    async def step6_generate_reports(self, design_results: DesignResult) -> None:  # noqa: PLR0912
         """Step 6: Generate comprehensive reports.
 
         Four candidate tables, and the difference between them is the point (#100). ``candidates_all``
@@ -5249,7 +5249,7 @@ class SiRNAWorkflow:
             )
         return mapping
 
-    def _integrate_offtarget_results(  # noqa: PLR0912, C901
+    def _integrate_offtarget_results(  # noqa: PLR0912
         self,
         candidates: list[SiRNACandidate],
         offtarget_data: dict[str, Any],

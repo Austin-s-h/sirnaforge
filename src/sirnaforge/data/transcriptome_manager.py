@@ -457,7 +457,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             meta.extra.pop(self.UNREMOVABLE_INDEX_KEY, None)
         return False
 
-    def get_transcriptome(  # noqa: PLR0911
+    def get_transcriptome(
         self, source_name: str, force_refresh: bool = False, build_index: bool = True
     ) -> dict[str, Any] | None:
         """Get transcriptome database, downloading and building index if needed.
