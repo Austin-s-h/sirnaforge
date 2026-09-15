@@ -4,10 +4,11 @@
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
 
-include { BUILD_BWA_INDEX     } from '../../modules/local/build_bwa_index'
-include { MIRNA_SEED_ANALYSIS } from '../../modules/local/mirna_seed_analysis'
-include { OFFTARGET_ANALYSIS  } from '../../modules/local/offtarget_analysis'
-include { AGGREGATE_RESULTS   } from '../../modules/local/aggregate_results'
+include { BUILD_BWA_INDEX          } from '../../modules/local/build_bwa_index'
+include { MIRNA_SEED_ANALYSIS      } from '../../modules/local/mirna_seed_analysis'
+include { OFFTARGET_ANALYSIS       } from '../../modules/local/offtarget_analysis'
+include { TRANSCRIPT_SEED_ANALYSIS } from '../../modules/local/transcript_seed_analysis'
+include { AGGREGATE_RESULTS        } from '../../modules/local/aggregate_results'
 
 workflow SIRNA_OFFTARGET_ANALYSIS {
     take:
@@ -97,6 +98,68 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     )
 
     //
+    // #101: transcript-seed liability, the third screening channel, OPT-IN and off by default.
+    //
+    // Off by default because it is not calibrated and it is enormous: a 7mer occurs roughly once per
+    // 16 kb, so an uncapped full-cDNA scan publishes orders of magnitude more rows than the alignment
+    // table. A caller asks for it with --transcript_seed_enabled.
+    //
+    // The value is compared against a literal allow-list rather than tested for truthiness, because
+    // Nextflow hands `--transcript_seed_enabled false` to Groovy as the non-empty String "false" --
+    // which is truthy. A truthiness test would therefore turn the documented way of asking for the
+    // channel OFF into the way of switching it ON, which is precisely the silent-on failure a
+    // default-off channel exists to avoid.
+    //
+    def transcript_seed_enabled = "${params.transcript_seed_enabled ?: ''}".trim().toLowerCase() in ['true', '1', 'yes', 'on']
+
+    // Which species to scan. Defaults to `expected_species` -- the run's own declared screen list --
+    // so asking for the channel does not also require restating the species. Resolved to a list here
+    // and gated on it being non-empty, exactly as the miRNA channel is: a request that resolves to
+    // zero species must run nothing rather than run everything.
+    def ch_transcript_seed_species_list = "${params.transcript_seed_species ?: expected_species ?: ''}"
+        .split(',')
+        .collect { it.trim() }
+        .findAll { it }
+
+    ch_transcript_seed_sites = channel.empty()
+    ch_transcript_seed_summary = channel.empty()
+    ch_transcript_seed_evidence = channel.empty()
+
+    if (transcript_seed_enabled && ch_transcript_seed_species_list) {
+        //
+        // MODULE: transcript-seed site scan, one process per species, all candidates in batch.
+        //
+        // Takes `ch_reference_fastas` -- the SAME already-materialised cDNA FASTAs BUILD_BWA_INDEX
+        // indexes -- and `candidates_fasta`, the SAME deduplicated guide set the alignment channel
+        // screens. Nothing is downloaded and nothing is re-indexed: the scan is a substring search
+        // over a file that is already staged. DSL2 forks a channel for each consumer, so reading
+        // ch_reference_fastas here does not take those entries away from BUILD_BWA_INDEX.
+        //
+        // A species supplied as `transcriptome_indices` (a prebuilt prefix, no FASTA) is absent from
+        // this channel and is therefore NOT scanned -- there is no sequence to scan. That species
+        // publishes no envelope, so its plan entry reconciles FAILED and the transcript-seed gates
+        // report UNKNOWN for it. An index is not a reference the scan can read, and saying so is the
+        // whole point of the evidence contract.
+        //
+        ch_transcript_seed_input = ch_reference_fastas
+            .filter { species, _path -> ch_transcript_seed_species_list.contains(species) }
+            .combine(candidates_fasta)
+
+        TRANSCRIPT_SEED_ANALYSIS(
+            ch_transcript_seed_input,
+            params.transcript_seed_scope ?: 'full_cdna',
+            // Interpolated straight into Python, so it must always be an integer: `null` would
+            // template as a syntax error. 0 or below means uncapped (see the CLI), because a
+            // Nextflow `val` cannot carry Python's None.
+            params.transcript_seed_max_sites_per_guide ?: 200
+        )
+        ch_versions = ch_versions.mix(TRANSCRIPT_SEED_ANALYSIS.out.versions)
+        ch_transcript_seed_sites = TRANSCRIPT_SEED_ANALYSIS.out.sites
+        ch_transcript_seed_summary = TRANSCRIPT_SEED_ANALYSIS.out.summary
+        ch_transcript_seed_evidence = TRANSCRIPT_SEED_ANALYSIS.out.evidence
+    }
+
+    //
     // EFFICIENT PATTERN: One analysis session per reference with all candidates
     // Instead of candidate × reference combinations (e.g., 100 × 3 = 300 processes),
     // we run 3 processes (one per reference), each processing all 100 candidates sequentially
@@ -181,8 +244,20 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // `val`, unlike analysis/summary above) so AGGREGATE_RESULTS's own reconciliation -- which
     // globs its OWN task working directory -- actually finds them, rather than reconciling
     // against an empty local directory and marking every species failed regardless of outcome.
+    //
+    // #101: the transcript-seed envelopes mix in HERE and nowhere else. Their evidence has to reach
+    // the aggregate's reconciliation, but their sites/summary tables must NOT join ch_all_analysis
+    // or ch_all_summary above: those two feed aggregate_offtarget_results, which sums transcriptome
+    // and known-miRNA hits. A `<species>_transcript_seed_summary.json` staged there would be picked
+    // up by that aggregate's own `*_summary.json` glob and folded into the miRNA counters, turning a
+    // separate channel's site count into miRNA hits. The seed tables reach their reader through the
+    // module's publishDir instead, where workflow.py's `**/*_transcript_seed_sites.tsv` parser finds
+    // them on their own key. `aggregate_results_cli` additionally refuses them by name, so the two
+    // channels' counters cannot be conflated from either side.
+    //
     ch_all_evidence = OFFTARGET_ANALYSIS.out.evidence
         .mix(ch_mirna_evidence)
+        .mix(ch_transcript_seed_evidence)
         .collect()
         .ifEmpty([])
 
@@ -207,5 +282,10 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     combined_analyses    = AGGREGATE_RESULTS.out.combined_analyses
     combined_summary     = AGGREGATE_RESULTS.out.combined_summary
     final_summary        = AGGREGATE_RESULTS.out.final_summary
+    // #101: emitted as their own outputs, never merged into combined_analyses. The transcript-seed
+    // table has no cigar, no mapq, no nm and 1-based transcript coordinates, so it is a different
+    // artifact rather than more rows of the alignment one. Empty channels when the channel is off.
+    transcript_seed_sites   = ch_transcript_seed_sites
+    transcript_seed_summary = ch_transcript_seed_summary
     versions            = ch_versions
 }
