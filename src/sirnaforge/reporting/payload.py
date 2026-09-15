@@ -11,8 +11,7 @@ candidates falsely reading as having zero off-targets, so the guide sequence is 
 per-transcript rows collapse into an isoform sub-table.
 
 This module also owns **how many guides the report contains**, and every count it publishes is a
-count of those guides: see :data:`DEFAULT_MAX_EMBEDDED_GUIDES` and :func:`_select_embedded`. The cap
-used to live downstream of the counts, so a report advertised a run's totals over a subset of it.
+count of those guides: see :data:`DEFAULT_MAX_EMBEDDED_GUIDES` and :func:`_select_embedded`.
 """
 
 from __future__ import annotations
@@ -63,13 +62,8 @@ LIABILITY = frozenset({HitClass.OFF_TARGET, HitClass.UNDETERMINED})
 
 #: Guides one report embeds. A cap is kept because the file is read in a browser and one internal run
 #: of 5,706 guides already renders to 31 MB, but it is applied **here**, above every count the report
-#: prints, and never below them: it used to live in the renderer, so a report headlined 5,706 guides,
-#: pill-counted 5,706 and embedded 5,000 -- and the 706 it silently dropped included 41 guides a reader
-#: could have shipped. Set ``max_guides=None`` to embed the run whole.
-#:
-#: This is the only cap on how many guides a report holds. The renderer's own slice over this list is
-#: gone: while it stood, ``max_guides=None`` was silently truncated again downstream and the counts
-#: published here would over-count the guides the file holds -- the very defect this cap moved to fix.
+#: prints, and never below them. This is the only cap on how many guides a report holds; set
+#: ``max_guides=None`` to embed the run whole.
 DEFAULT_MAX_EMBEDDED_GUIDES = 5000
 
 #: Statuses the cap drops last, in the order it drops them: a ``fail`` guide is one the run and the
@@ -347,7 +341,7 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     # Read the value first, and report it whatever the verdict turns out to be. A gate that is off or
     # has no threshold still *measured* something the reader wants: three of the four off gates on the
     # reference run carry a real per-guide number, and `max_mirna_1mm_seed`'s own policy definition says
-    # "the number is reported and nothing acts on it" -- which returning None made untrue.
+    # "the number is reported and nothing acts on it".
     value = _num(row.get(column)) if column is not None else None
     not_evaluated = _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value]
     if descriptor.action.value == FilterAction.OFF.value:
@@ -355,21 +349,18 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     if descriptor.threshold is None:
         return value, not_evaluated, REASON_NO_THRESHOLD
     # The run's own non-decision wins, before any comparison: the report may report less than the run,
-    # never more. Load-bearing, not defensive -- the gate writes its non-verdict with an empty observed
-    # value so nothing re-derives a pass, but `observed_column` falls back to the descriptor's own column
-    # when the observed one is empty for every row, and three of those fallbacks are exported and default
-    # to 0. Without this an unscreened guide's `max_off_target_count` read as a pass at 0.
+    # never more. Load-bearing, not defensive -- `observed_column` falls back to the descriptor's own
+    # column when the observed one is empty for every row, and three of those fallbacks default to 0,
+    # so without this an unscreened guide's `max_off_target_count` reads as a pass at 0.
     #
     # Both non-decisions land on UNKNOWN, because a gate reaching this line is in force with a threshold
     # -- off and threshold-less gates returned above -- and an in-force gate is not evidence of anything
-    # the run declined to measure. Emitting NOT_EVALUATED here instead put the row on a verdict code the
-    # unknown tally does not count, so `status` fell through to `pass` and the guide entered the Passing
-    # preset with the not-evaluated banner suppressed (#103). `max_repeat_transcript_fraction` is the
-    # live case: a run whose repeat scan never ran leaves `repeat_transcript_fraction` at its 0.0 default
-    # and its verdict at `not_evaluated`, from which the report published a confident PASS for a gate
-    # nobody evaluated. The reason code is what keeps the two non-decisions apart, and the value with
-    # them: UNKNOWN has no measurement to show, while `not_evaluated` keeps the number the run recorded
-    # and still applies no verdict to it.
+    # the run declined to measure. NOT_EVALUATED here would sit on a verdict code the unknown tally does
+    # not count, so `status` falls through to `pass` and the guide enters the Passing preset with the
+    # banner suppressed (#103). `max_repeat_transcript_fraction` is the live case: a repeat scan that
+    # never ran leaves `repeat_transcript_fraction` at its 0.0 default with verdict `not_evaluated`. The
+    # reason code is what keeps the two non-decisions apart, and the value with them: UNKNOWN has no
+    # measurement to show, while `not_evaluated` keeps the number the run recorded.
     recorded = _recorded_verdict(row, descriptor.filter_id)
     if recorded in (FilterEvaluation.UNKNOWN.value, FilterEvaluation.NOT_EVALUATED.value):
         run_unknown = recorded == FilterEvaluation.UNKNOWN.value
@@ -643,11 +634,9 @@ def _filter_view(
     report's JS will re-compare. Anything else keeps its verdict frozen at whatever the run reached,
     because no slider position can answer a question the run has no evidence for.
 
-    ``evaluable`` therefore means exactly one thing: moving this control can change a verdict. Testing
-    "at least one value" instead published a live slider for a gate every row of which the run recorded
-    ``not_evaluated`` -- the values are real, so the test passed, while every row freezes on its reason
-    code and nothing a reader does to that control can decide anything (#103). ``n_values`` still counts
-    the measurements, because they were measured; it is the deciding that never happened.
+    ``evaluable`` therefore means exactly one thing: moving this control can change a verdict (#103).
+    ``n_values`` still counts the measurements, because they were measured; it is the deciding that
+    never happened.
 
     ``rejects``/``sole_rejects``/``warns``/``unknowns`` say what the gate *did* at the run's own
     threshold, and ``inert`` says it decided nothing, so a panel of seventeen equal-looking sliders can

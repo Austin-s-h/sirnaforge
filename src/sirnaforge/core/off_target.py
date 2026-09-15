@@ -336,11 +336,10 @@ def _read_species_analysis_file(analysis_file: Path) -> tuple[pd.DataFrame | Non
 def _with_classification_columns(frame: pd.DataFrame, *, add_missing: bool = True) -> pd.DataFrame:
     """Add the classification columns to the published table, explicitly undecided where unfilled.
 
-    The producer writes them so the published column set is the same whichever entry point ran:
-    they used to be appended by a post-hoc read-modify-write in the Python workflow, so a direct
-    ``nextflow run`` published 12 columns and ``sirnaforge workflow`` published 19. A per-species
-    file that a previous workflow run already annotated keeps its verdicts; everything else says
-    ``not_classified`` until a classifier decides it.
+    The producer writes them so the published column set is the same whichever entry point ran --
+    a direct ``nextflow run`` and ``sirnaforge workflow`` must not publish 12 columns and 19. A
+    per-species file that a previous workflow run already annotated keeps its verdicts; everything
+    else says ``not_classified`` until a classifier decides it.
 
     ``add_missing=False`` repairs only the columns a frame already has, for callers reading a
     narrow file that must stay narrow.
@@ -2069,9 +2068,8 @@ def aggregate_offtarget_results(  # noqa: PLR0912
 
     Rejecting a file is a fact about a species, not a log line. A per-species ``*_analysis.tsv``
     that cannot be read (the 0-byte file ``offtarget_analysis.nf``'s stub emits, or one the schema
-    rejects) used to be dropped with a ``logger.warning`` while the species still counted in
-    ``species_file_counts`` and stayed out of ``missing_species`` -- so the species read as screened
-    and clean. ``species_screened`` and ``rejected_species_files`` carry that verdict now.
+    rejects) must not leave the species reading as screened and clean: ``species_screened`` and
+    ``rejected_species_files`` carry that verdict.
 
     Args:
         results_dir: Directory containing individual analysis results
@@ -2295,8 +2293,8 @@ def aggregate_offtarget_results(  # noqa: PLR0912
 class _SpeciesEvidence:
     """What one species' mirna_seed envelope will say, decided inside the guarded block below.
 
-    Deciding and writing are separated because the write used to sit *inside* the ``try`` whose
-    handler exists for Pandera rejections: a ``ValidationError`` raised by the envelope itself was
+    Deciding and writing are separated so the write cannot sit inside the ``try`` whose handler
+    exists for Pandera rejections: a ``ValidationError`` raised by the envelope itself would be
     caught there and recorded as bad data, zeroing ``hits_per_species`` while the hits stayed in the
     combined table (#100). The loop carries one of these out of the ``try`` and writes it afterwards,
     so an evidence-writer bug surfaces as itself instead of as a species failure.
@@ -2387,12 +2385,10 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
 
     One species failing must not discard every other species' already-computed results: the
     per-species loop below records a failure and moves on rather than aborting, and only re-raises
-    if *every* requested species hit the same unavailable-backend error (#100) -- the historical
-    all-or-nothing signal a solely-affected run still needs.
+    if *every* requested species hit the same unavailable-backend error (#100).
 
     Every exit from that loop writes an envelope when ``evidence_dir`` is given, including the
-    species whose database could not be resolved: that branch used to skip silently, which both let
-    the batch roll-up claim ``complete`` and left the module's non-optional evidence glob unmatched.
+    species whose database could not be resolved.
 
     Args:
         candidates_file: Path to FASTA file with candidate sequences

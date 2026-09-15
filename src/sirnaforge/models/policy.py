@@ -5,14 +5,10 @@ defaults and applies nothing: the resolver lives in ``config/run_policy.py`` (#9
 producers in ``core``/Nextflow (#100), and intent evaluation in the classification path (#101).
 Its only job is to give those packages one spelling for each concept.
 
-Owned by #99; extended in place by #100 (verdict records) and #101 (intent fields, scope). A branch
-needing a field this module lacks adds it here rather than building a parallel object elsewhere.
-
-Two things are deliberately expressed as data rather than as field names. A filter's *direction*
-lived only in the ``max_*``/``min_*`` prefix and in the body of ``_check_offtarget_filters``, so
-:class:`FilterComparator` names it; a filter's *scope* lived only in which counter a gate happened
-to read, so :class:`FilterScope` names the species set, mismatch ceiling and hit classes it counts.
-Together they let a consumer regenerate a gate from the model instead of restating it.
+Two things are deliberately expressed as data rather than as field names:
+:class:`FilterComparator` names a filter's *direction* and :class:`FilterScope` names the species
+set, mismatch ceiling and hit classes it counts. Together they let a consumer regenerate a gate
+from the model instead of restating it.
 """
 
 from enum import Enum
@@ -41,12 +37,9 @@ class RunMode(str, Enum):
 class RunStatus(str, Enum):
     """What one step of a run actually achieved, in one vocabulary (#100).
 
-    Beside :class:`RunMode`, which says what a run *claims*; this says what it *got*. Screening
-    published seven uncoordinated ``{status, reason}`` string pairs invented at each exit, so
-    "the pipeline aborted", "the engine was not installed", "the user switched the channel off"
-    and "one species produced no evidence" all read as ``skipped`` or ``partial`` and a consumer
-    had to pattern-match prose to tell an error from a gap. This enum is published *beside* those
-    strings and never replaces them: ``status == "completed"`` must keep working.
+    Beside :class:`RunMode`, which says what a run *claims*; this says what it *got*. This enum is
+    published *beside* screening's own ``{status, reason}`` strings and never replaces them:
+    ``status == "completed"`` must keep working.
 
     ``COMPLETED`` is a statement about *required* evidence, not about work attempted: a run whose
     exploratory channels published nothing is still complete, and a step whose own word is
@@ -138,10 +131,8 @@ DECLARED_FILTER_IDS: tuple[str, ...] = (
 class FilterEvaluation(str, Enum):
     """The verdict itself, which is distinct from the action taken on it.
 
-    Four outcomes, because three different things were previously spelled as a blank or a
-    borrowed ``PASS``: the filter did not run, the filter ran but its evidence was missing, and
-    the filter ran and decided. ``NOT_EVALUATED`` exists because #100 emits fixed columns -- an
-    off filter must write a word, not an empty cell that a reader mistakes for a verdict.
+    ``NOT_EVALUATED`` exists because #100 emits fixed columns -- an off filter must write a word,
+    not an empty cell that a reader mistakes for a verdict.
 
     Attributes:
         PASS: Evidence was available and the candidate met the threshold.
@@ -273,10 +264,7 @@ class FilterComparator(str, Enum):
     GT = "gt"
 
     def passes(self, observed: float, threshold: float) -> bool:
-        """Apply this comparator, so its meaning has exactly one implementation in Python.
-
-        A client-side evaluator has to restate the table in its own language; nothing else does.
-        """
+        """Apply this comparator, so its meaning has exactly one implementation in Python."""
         if self is FilterComparator.LE:
             return observed <= threshold
         if self is FilterComparator.LT:
@@ -322,12 +310,9 @@ class FilterScope(BaseModel):
     def _sorted_axis(self, values: frozenset[str]) -> list[str]:
         """Serialise both set-valued axes sorted, so a manifest carrying a scope is byte-stable.
 
-        A ``frozenset[str]`` dumps in hash order, which for strings varies with ``PYTHONHASHSEED`` and
-        therefore between processes. Two identical runs then wrote manifests differing only in the
-        order of ``hit_classes`` -- enough to defeat the "reproduce the artifact from checksummed
-        inputs" comparison #109 rests on, and to make any manifest diff across runs unreadable. A set
-        is still the right in-memory type (membership, not order, is what a scope means); only its
-        serialisation needed pinning.
+        A ``frozenset[str]`` dumps in hash order, which for strings varies with ``PYTHONHASHSEED``
+        and therefore between processes -- enough to defeat the "reproduce the artifact from
+        checksummed inputs" comparison #109 rests on.
         """
         return sorted(values)
 
@@ -369,9 +354,7 @@ class FilterVerdict(BaseModel):
     The descriptor and the outcome travel together so a reported verdict can never be read
     against a threshold other than the one it was decided under, and a decided verdict must be the
     one its own descriptor produces. That is what lets a client re-apply a gate and get the
-    pipeline's answer back: a descriptor that cannot reproduce its verdict is rejected here rather
-    than discovered as a disagreement in a report. A gate that is not one comparison against one
-    threshold does not get to publish a descriptor claiming it is.
+    pipeline's answer back: a descriptor that cannot reproduce its verdict is rejected here.
 
     Whether an ``UNKNOWN`` rejects a candidate is deliberately not answered here: that needs
     :attr:`EvidenceRequirements.unknown_evidence_action`, which the caller holds.
@@ -505,8 +488,7 @@ class TargetIntent(BaseModel):
     ``enumeration_inputs`` is what guides were actually enumerated on.
 
     ``selectivity`` has no default: pan-isoform and isoform-selective runs disagree on exactly
-    the transcripts neither the required nor the excluded set names, and inferring one is how
-    "all retrieved same-gene transcripts are intended" became an unexamined assumption.
+    the transcripts neither the required nor the excluded set names.
 
     Attributes:
         selectivity: Whether same-gene transcripts outside the required set are intended.

@@ -319,9 +319,7 @@ class SiRNADesigner:
             # The recorder is the authority on both questions, so neither is re-derived here. It has
             # already stamped `passes_filters` for any gate whose resolved action is FAIL, and left it
             # alone for a gate that only warns -- which is what makes `warn` mean anything on these
-            # three gates. Re-deriving the label from the thresholds and rejecting unconditionally is
-            # what made the action unreachable: `warn` behaved exactly like `fail` (#105's defect
-            # class, in three more places).
+            # three gates.
             failed_a_gate = any(
                 verdict == FilterEvaluation.FAIL.value for verdict in candidate.filter_verdicts.values()
             )
@@ -347,11 +345,10 @@ class SiRNADesigner:
     def _record_enumeration_verdicts(self, candidate: SiRNACandidate, gc_content: float, poly_run: int) -> None:
         """Record what the three enumeration-time gates observed on this candidate.
 
-        These gates decide during enumeration, and used to set ``passes_filters`` directly without
-        recording a verdict. That left ``gc_content_min``, ``gc_content_max`` and ``max_poly_runs``
-        exporting ``not_evaluated`` and an empty observed value on every row of every run -- so a
-        consumer could not tell a gate that passed from one that never ran, and no candidate could be
-        shown as clean. ``passes_filters`` is still set by the caller, which owns the first-label rule.
+        These gates decide during enumeration; each records its verdict as well as setting
+        ``passes_filters``, so ``gc_content_min``, ``gc_content_max`` and ``max_poly_runs`` do not
+        export ``not_evaluated`` and an empty observed value on every row. ``passes_filters`` is
+        still set by the caller, which owns the first-label rule.
 
         The three comparisons go through :func:`~sirnaforge.core.filtering.evaluate_gates` (#100), so a
         floor and a ceiling are one declared ``Comparator`` rather than two hand-written inequalities.
@@ -706,11 +703,8 @@ class SiRNADesigner:
         gates the thermodynamic asymmetry score, min_empirical_score gates the
         empirical design-rule score.
 
-        Both verdicts are recorded unconditionally. The old ``passes_filters is not True`` early
-        return meant a candidate already rejected by GC or pairing was never *measured* against these
-        thresholds, so the two gates' reported counts were a function of gate ordering rather than of
-        the candidates -- which is how LOW_ASYMMETRY came to report 6,464 rejections on a run where
-        it independently rejected 26,431. ``passes_filters`` still keeps the first label.
+        Both verdicts are recorded unconditionally, so the two gates' reported counts are a property
+        of the candidates and not of gate ordering; ``passes_filters`` still keeps the first label.
 
         Both are floors, so both declare ``Comparator.AT_LEAST`` and are evaluated by the shared
         evaluator (#100). ``meets_asymmetry_threshold`` is that same ``>=`` comparison and is not
@@ -906,14 +900,11 @@ class MiRNADesigner(SiRNADesigner):
         """Record the miRNA biogenesis evidence, then score exactly as siRNA mode does.
 
         The design stage uses one vector in both modes, so this method no longer
-        touches any score: two of the three biogenesis quantities -- ``ago_start`` and
+        touches any score (#96): two of the three biogenesis quantities -- ``ago_start`` and
         ``supp_13_16`` -- are terms of the active miRNA post-screen vector and only enter once ``off_target``
         exists, and ``pos1_mismatch`` is scored by no vector at all since #102. What this method does
         do is record all three -- as reported fields and as ``component_scores`` entries -- so the CSV
         shows why a miRNA run ranks as it does.
-
-        Before issue #96 this method folded the bonuses into ``composite_score`` and divided the
-        result by ``1 + max_bonus``, which scaled every declared weight by 0.80 in miRNA mode.
 
         Args:
             candidates: Candidates to score in place.

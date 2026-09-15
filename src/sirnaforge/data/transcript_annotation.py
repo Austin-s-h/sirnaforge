@@ -10,23 +10,14 @@ This module provides clients for fetching genomic transcript annotations
 
 **Caching Strategy:**
 
-Uses in-memory LRU cache with TTL rather than ReferenceManager's persistent file cache.
-This design choice is intentional because:
-
-1. **Data Size**: Annotation JSON responses are small (KB) vs. sequence files (GB)
-2. **Volatility**: Annotations may update with new releases; TTL provides freshness
-3. **Access Pattern**: High frequency, low latency requirements during workflow execution
-4. **Scope**: Transient metadata enrichment vs. permanent reference datasets
-
-The cache automatically evicts oldest entries when reaching max_cache_entries,
-and entries expire after cache_ttl seconds.
+In-memory LRU cache with TTL rather than ReferenceManager's persistent file cache: annotation JSON
+is KB and versioned by release, unlike GB sequence files. The cache evicts oldest entries when
+reaching max_cache_entries, and entries expire after cache_ttl seconds.
 
 **Relationship to GeneSearcher:**
 
-- GeneSearcher: Discovers transcripts by gene name, fetches cDNA/protein sequences
-- This module: Enriches known transcript IDs with genomic structural metadata
-- Both can use Ensembl, but query different API endpoints for different purposes
-- No redundancy: complementary data types that don't overlap
+GeneSearcher discovers transcripts and fetches sequences; this module enriches known transcript IDs
+with genomic structure -- different Ensembl endpoints, no overlap.
 """
 
 import asyncio
@@ -71,16 +62,12 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
     **Caching Implementation:**
 
     - Cache key format: "id:{species}:{identifier}:{reference}" or "region:{species}:{region}:{reference}"
-    - TTL: Configurable, default 1 hour (3600 seconds)
-    - Eviction: LRU when max_cache_entries reached (default 1000)
-    - Thread-safe: Single-process use only (workflow orchestration context)
+    - Single-process use only (workflow orchestration context); not thread-safe
 
     **Error Handling:**
 
-    - 404: ID not found → added to unresolved list, no exception raised
-    - 403/503: Server unavailable → DatabaseAccessError raised
-    - Network errors: Wrapped in DatabaseAccessError with context
-    - Timeout: Configurable via timeout parameter
+    - 404 is not an error: the ID joins the unresolved list, no exception raised
+    - Everything else becomes a DatabaseAccessError carrying its context
 
     **Example Usage:**
 
@@ -123,9 +110,6 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
         Returns:
             Cached value if present and not expired, None otherwise
-
-        Side Effects:
-            Removes expired entries from cache during lookup
         """
         if key not in self._cache:
             return None
@@ -146,9 +130,6 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         Args:
             key: Cache key (format: "type:species:identifier:reference")
             value: Value to cache (TranscriptAnnotation, dict, or None for unresolved)
-
-        Side Effects:
-            May evict up to 10% of oldest cache entries if at capacity
         """
         # Simple LRU eviction: remove oldest entries when cache is full
         if len(self._cache) >= self.max_cache_entries:
@@ -841,31 +822,12 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 class VepConsequenceClient:
     """Optional VEP (Variant Effect Predictor) consequence enrichment client.
 
-    Provides additional functional annotation for transcript variants.
-    This is an optional enhancement and not required for base functionality.
+    **Current Status: PLACEHOLDER** -- `enrich_annotations` returns the input bundle unchanged. When
+    activated it would query the Ensembl VEP REST API for consequence predictions and enrich each
+    TranscriptAnnotation with them.
 
-    **Current Status: PLACEHOLDER**
-
-    This client exists as a stub for future VEP integration. The `enrich_annotations`
-    method currently returns the input bundle unchanged.
-
-    **Future Implementation:**
-
-    When activated (via config flag), this client will:
-
-    1. Query Ensembl VEP REST API for consequence predictions
-    2. Enrich TranscriptAnnotation objects with variant consequence types (missense, nonsense, etc.),
-       conservation scores, regulatory feature overlaps, and population frequency data
-    3. Maintain consistent caching strategy with EnsemblTranscriptModelClient
-
-    **Design Rationale:**
-
-    Separated from EnsemblTranscriptModelClient because:
-
-    - VEP queries are expensive (rate-limited, slower)
-    - Not all workflows need consequence predictions
-    - Allows independent caching strategies
-    - Can be enabled/disabled via configuration
+    Separate from EnsemblTranscriptModelClient because VEP queries are rate-limited and slower, not
+    every workflow needs them, and the two can then cache and be switched on independently.
     """
 
     def __init__(self, timeout: int = 30, base_url: str = "https://rest.ensembl.org"):

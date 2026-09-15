@@ -10,43 +10,36 @@ re-derive a slice or a compatibility verdict itself, so the rule lives in exactl
 Two verified facts this module works around rather than papering over (full accounting in
 ``tests/data/benchmarks/README.md``, which is the authority for the vendored bytes):
 
-1. The issue's cited source, ``docs/prd_benchmark_artifacts_and_variable_length.md``, does not exist
-   in this repository -- not in the working tree, not in any branch's history. The issue body is the
-   entire specification; nothing below claims to summarise a document that was read.
-2. Four of the panels #109 named are now vendored, and every descriptor below is re-derived from
-   those bytes rather than from the issue's prose. ``tests/data/benchmarks/oligogym/records.csv``
-   (4,113 rows, 22 columns, written by ``scripts/prepare_oligo_benchmarks.py``) carries the measured
-   guide/passenger sequences and labels for ``ichihara`` (2,850 rows over two OligoGym datasets),
-   ``martinelli`` (907) and ``shmushkovich`` (356), each row naming its own DOI in ``source_url``.
-   What is *not* vendored is the upstream OligoGym extract those rows were derived from
-   (``tests/data/external/oligogym/*.csv.gz``, named in every row's ``source_file``, absent from this
-   tree) and any primary-source PDF; so a DOI, a per-dataset row count and the sequences themselves
-   are the whole of what this repository can show, and the citations below say exactly that.
+1. #109's cited PRD, ``docs/prd_benchmark_artifacts_and_variable_length.md``, does not exist in this
+   repository; the issue body is the entire specification.
+2. Every descriptor below is re-derived from vendored bytes rather than from the issue's prose.
+   ``tests/data/benchmarks/oligogym/records.csv`` (4,113 rows, 22 columns, written by
+   ``scripts/prepare_oligo_benchmarks.py``) carries the measured guide/passenger sequences and labels
+   for ``ichihara`` (2,850 rows over two OligoGym datasets), ``martinelli`` (907) and
+   ``shmushkovich`` (356), each row naming its own DOI in ``source_url``. The upstream OligoGym
+   extract those rows were derived from (``tests/data/external/oligogym/*.csv.gz``, named in every
+   row's ``source_file``) is **not** vendored, nor is any primary-source PDF.
 
 Every ``oligogym/records.csv`` row is ``context_type="synthetic_neutral_flanks"``: the transcript it
 was written against is ``70 x A + reverse-complement(guide) + 70 x A``, so its ``site_start``/
-``site_end`` (1-based 71..) are positions in a *fabricated* context. That is a real coordinate in a
-real file and a useless one for accessibility, which is why it is recorded under its own target
-identity value, :attr:`TargetIdentityStatus.SYNTHETIC_CONTEXT_LOCAL`, rather than being pushed into
-``panel_local`` (which claims a coordinate in the panel's own measured target) or ``confirmed``
-(a native transcript, which #110 owns and which ``tests/data/benchmarks/oligogym_native_design/``
--- not read here -- is the mapped counterpart of).
+``site_end`` (1-based 71..) are positions in a *fabricated* context -- a real coordinate in a real
+file and a useless one for accessibility. Hence its own target identity value,
+:attr:`TargetIdentityStatus.SYNTHETIC_CONTEXT_LOCAL`, rather than ``panel_local`` (a coordinate in
+the panel's own measured target) or ``confirmed`` (a native transcript, which #110 owns).
 
 Architectures (:class:`PanelArchitecture`) are the three duplex geometries #109's fixed-length
 design surface can consume. ``ASYMMETRIC`` is excluded from every compatibility verdict by
-construction, not merely under-supported: #109's scope excludes variable-length/asymmetric design
-entirely (#110 owns giving it a real, native path), and silently truncating or padding a 15/20
-duplex into a 19-23 nt paired core would misrepresent a measured sequence, which the parent issue
-also forbids. :func:`derive_observation` therefore never slices an asymmetric record -- it returns
-the verbatim guide with ``compatibility_status="incompatible"``. All 356 vendored Shmushkovich rows
-take that path, as does every row of a caller's own table prepared under
+construction: #109's scope excludes variable-length/asymmetric design entirely (#110 owns giving it
+a real, native path), and truncating or padding a 15/20 duplex into a 19-23 nt paired core would
+misrepresent a measured sequence. :func:`derive_observation` therefore never slices an asymmetric
+record -- it returns the verbatim guide with ``compatibility_status="incompatible"``. All 356
+vendored Shmushkovich rows take that path, as does every row prepared under
 ``user_supplied_asymmetric``.
 
 The last three descriptors in the registry are architecture-level rather than panel-level:
 ``user_supplied_paired_core_with_overhang``, ``user_supplied_fully_complementary`` and
 ``user_supplied_asymmetric`` name a geometry, ship no bytes, and read the table a caller passes with
-``--panel-csv``. Their citations say this repository vouches for nothing about those rows, so an
-artifact built under one of them cannot be read as a published panel's.
+``--panel-csv``. Their citations say this repository vouches for nothing about those rows.
 """
 
 from __future__ import annotations
@@ -137,9 +130,8 @@ def predeclared_split(accession: str) -> str:
 
     Reuses -- rather than reimplements from scratch -- the exact rule
     ``scripts/validate_scoring_profiles.py::split_of`` pinned for the Huesken panel (issues #97,
-    #102): ``sha256(accession)[0] % 2 == 0 -> development``. That script is a standalone entry point,
-    not an importable package member, so the rule is duplicated here under its own id,
-    :data:`PREDECLARED_SPLIT_RULE_ID`, rather than imported.
+    #102): ``sha256(accession)[0] % 2 == 0 -> development``. The rule is duplicated here under its own
+    id, :data:`PREDECLARED_SPLIT_RULE_ID`, rather than imported.
     ``tests/unit/test_benchmark_panels.py`` pins this function against the exact accession lists
     published in ``tests/unit/data/README.md`` so the duplication cannot silently drift from its
     named authority.
@@ -181,16 +173,13 @@ class PanelColumnMapping(BaseModel):
     row selection               ``dataset`` -- see :class:`PanelRowSelector`; one file holds all four
     ==========================  =================================================================
 
-    Some columns are deliberately read by nothing. ``benchmark_id``/``transcript_id`` are ids the
-    adapter minted (``bench_<dataset>_row<n>``); ``input_fasta`` names the synthetic FASTA rather than
-    a transcript; ``source_row`` is 1-based where ``BenchmarkObservation.source_row_index`` is 0-based
-    within the *selected* rows, so equating them would silently mislabel provenance; and
-    ``source_file``/``source_url``/``guide_source``/``label_semantics`` are provenance the descriptor
-    states once for the panel rather than re-reading per row.
-    ``target`` (a gene symbol, empty on all 1,263 Martinelli/Shmushkovich rows and some Ichihara ones)
-    is *not* mapped to ``accession_column``: it is neither an accession nor unique per site, and
-    ``predeclared_split`` is pinned to accessions (see :func:`predeclared_split`), so splitting on it
-    would be a new, unaudited rule wearing an audited rule's id.
+    Some columns are deliberately read by nothing, and two of those are traps. ``source_row`` is
+    1-based where ``BenchmarkObservation.source_row_index`` is 0-based within the *selected* rows, so
+    equating them would silently mislabel provenance. ``target`` (a gene symbol, empty on all 1,263
+    Martinelli/Shmushkovich rows and some Ichihara ones) is *not* mapped to ``accession_column``: it is
+    neither an accession nor unique per site, and ``predeclared_split`` is pinned to accessions (see
+    :func:`predeclared_split`), so splitting on it would be a new, unaudited rule wearing an audited
+    rule's id.
     """
 
     guide_column: str = Field(min_length=1)
@@ -419,9 +408,8 @@ class PanelDescriptor(BaseModel):
         Covers everything this descriptor decides -- citation, redistribution, architecture, paired
         length, column mapping, assay label source, split rule and ``data_present`` -- so an edit to
         any one of them (including flipping ``data_present`` the day real bytes are vendored) changes
-        the hash a manifest records. The same guarantee ``config/run_policy.py::RunPolicyProfile
-        .identity`` gives a resolved policy, and for the same reason: two artifacts sharing this hash
-        must have been built from the same declared contract, not merely the same panel name.
+        the hash a manifest records: two artifacts sharing this hash must have been built from the same
+        declared contract, not merely the same panel name.
         """
         payload = json.dumps(self.model_dump(mode="json"), sort_keys=True, default=str)
         digest = hashlib.sha256(payload.encode()).hexdigest()
@@ -676,9 +664,7 @@ def derive_observation(
 # from tests/unit/data/README.md and Ichihara's from docs/models_and_scoring.md, both vetted here
 # before #109. For Martinelli and Shmushkovich the whole of what this repository holds is a DOI --
 # recorded per row in tests/data/benchmarks/oligogym/records.csv's source_url column -- so the DOI is
-# what is recorded, with no author list, title or journal inferred from it. That replaces the
-# placeholder strings #109 shipped when no bytes were vendored; it is not a claim that anyone here
-# has read the papers.
+# what is recorded, with no author list, title or journal inferred from it.
 #
 # Row counts, the guide convention and the synthetic-flank rule are read out of
 # tests/data/benchmarks/oligogym/manifest.json and that directory's README.md, and the duplex
@@ -827,15 +813,13 @@ MARTINELLI = PanelDescriptor(
         "publication year."
     ),
     redistribution=(_OLIGOGYM_REDISTRIBUTION_PREFIX + "This panel is OligoGym's martinelli_2023_1 dataset (907 rows)."),
-    # Re-declared against the vendored bytes, which contradict the fully-complementary 21-mer #109
-    # assumed from the issue text alone: of the 907 rows, 858 have passenger[:19] ==
+    # Re-declared against the vendored bytes: of the 907 rows, 858 have passenger[:19] ==
     # reverse-complement(guide[:19]) with both strands 21 nt -- a 19 nt paired core with a measured
     # 2 nt 3' overhang on each strand -- 18 are blunt-complementary over the full 21 nt, and 31 match
     # neither exactly (6 with 1-3 mismatches inside that 19 nt window, 25 in another register).
-    # Declaring FULLY_COMPLEMENTARY/21 would have recorded guide_3p_overhang="" ("measured and blunt")
-    # for 889 rows whose bytes say otherwise, which is the misrepresentation #109 forbids; the
-    # paired-core declaration is the geometry 94.6% of the rows show and understates the rest rather
-    # than inventing pairing for them.
+    # Declaring FULLY_COMPLEMENTARY/21 would record guide_3p_overhang="" ("measured and blunt") for
+    # 889 rows whose bytes say otherwise; the paired-core declaration is the geometry 94.6% of the rows
+    # show and understates the rest rather than inventing pairing for them.
     architecture=PanelArchitecture.PAIRED_CORE_WITH_OVERHANG,
     declared_paired_length=19,
     columns=_oligogym_columns("efficacy_higher_is_better"),
@@ -901,8 +885,7 @@ OLIGOGYM = PanelDescriptor(
     # Recorded because the schema requires an architecture, and never read: derive_observation
     # refuses an aggregate descriptor before it looks at one. It is the majority geometry (3,708 of
     # the 4,113 rows), not a description of the table -- the other 405 rows are Martinelli's 49
-    # non-core-19 rows and all 356 asymmetric Shmushkovich rows, which is exactly why a single
-    # architecture cannot stand for this file and why the members are the ingestible unit.
+    # non-core-19 rows and all 356 asymmetric Shmushkovich rows.
     architecture=PanelArchitecture.PAIRED_CORE_WITH_OVERHANG,
     declared_paired_length=19,
     columns=_oligogym_columns("efficacy_higher_is_better"),
@@ -919,12 +902,9 @@ OLIGOGYM = PanelDescriptor(
 # --------------------------------------------------------------------------------------------------
 # User-supplied tables: one descriptor per declared architecture
 #
-# A caller holding their own efficacy table had no descriptor to prepare it against. Every panel above
-# is either vendored -- so `--panel-csv` is refused for it, correctly, since a run must not read
-# different bytes than the ones its manifest names -- or, in `huesken_full`'s case, one specific
-# published panel with one specific column mapping. The three below are the geometry with no panel
-# attached, which is what `--panel-csv` was always for: `fully_complementary` and `ASYMMETRIC` in
-# particular had no reachable descriptor at all once the OligoGym bytes landed.
+# The three below are the geometry with no panel attached, which is what `--panel-csv` is for; every
+# panel above is either vendored (so `--panel-csv` is refused for it, since a run must not read
+# different bytes than the ones its manifest names) or one specific published panel.
 #
 # They vouch for nothing, and that is the load-bearing part. `data_present=False`, so `--panel-csv` is
 # required and the "no vendored bytes" refusal fires without it; no citation and no redistribution,
@@ -936,9 +916,8 @@ OLIGOGYM = PanelDescriptor(
 
 #: The columns a ``--panel-csv`` handed to a ``user_supplied_*`` id must use. The smallest honest
 #: mechanism available: one fixed set, declared here and documented in ``docs/benchmark_artifacts.md``,
-#: so the caller renames their columns. The alternative -- a per-run ``--panel-column`` mapping option
-#: -- would be a second way to state what a descriptor already states, and the mapping a run used would
-#: then not be part of the ``descriptor_hash`` the manifest records. ``guide_sequence`` is the only
+#: so the caller renames their columns. A per-run column-mapping option would mean the mapping a run
+#: used was not part of the ``descriptor_hash`` the manifest records. ``guide_sequence`` is the only
 #: mandatory one; see :meth:`PanelDescriptor.required_source_columns` for what the rest costs when
 #: absent (a ``None`` field, not an error).
 USER_TABLE_COLUMNS = PanelColumnMapping(
