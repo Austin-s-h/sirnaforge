@@ -3,8 +3,11 @@ name: siRNA Design Toolkit CI/CD
 on:
   push:
     branches: [ master, dev ]
+  # `dev` is where feature and release branches land, so a PR that only targets `master` means most
+  # changes are never checked: PR #104 (0.7.1 -> dev, 184 commits, 57 src files) had zero status
+  # checks because nothing here fired on it.
   pull_request:
-    branches: [ master ]
+    branches: [ master, dev ]
   workflow_call:
     outputs:
       ci-success:
@@ -49,6 +52,13 @@ jobs:
     - name: Security checks (Make target)
       run: make security
 
+    # #107 broke the docs build (3 -> 39 warnings-as-errors) and blocked `make test-release` at its
+    # first step for most of 0.7.1, because nothing before the release target builds them: docs.yml
+    # runs only on master, and with its own `sphinx-build -W` rather than this target's
+    # `-W --keep-going`. Warm build is 8-14s.
+    - name: Docs build (Make target)
+      run: make docs
+
     - name: Upload security reports
       uses: actions/upload-artifact@v4
       if: always()
@@ -56,7 +66,7 @@ jobs:
         name: security-reports-${{ github.sha }}
         path: |
           bandit-report.json
-          safety-report.json
+          pip-audit-report.json
         retention-days: 30
         if-no-files-found: warn
 
@@ -90,6 +100,18 @@ jobs:
 
     - name: Run tests (Make target)
       run: make test-ci
+
+    # `make test-ci` selects 40 tests from hand-written `ci`/`smoke` decorations, the newest of which
+    # predates 0.7.1: none of this release's ~950 new tests carry those markers, so every regression
+    # test for the report, evidence, selection, orthology and benchmark work was first executed by
+    # `make test-release` after merge. The dev tier is where they live (1,786 tests, hermetic - no
+    # network test is in it and conftest gates the rest behind capability probes).
+    #
+    # 3.12 only for now: this tier has never run on 3.10/3.11 in CI, and a first run there may surface
+    # version-specific failures unrelated to the change under review. Widen once it has been green.
+    - name: Run dev tier (Make target)
+      if: matrix.python-version == '3.12'
+      run: make test-dev
 
     - name: Upload test results
       uses: actions/upload-artifact@v4

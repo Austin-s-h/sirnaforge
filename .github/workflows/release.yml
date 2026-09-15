@@ -286,7 +286,8 @@ jobs:
         path: |
           coverage.xml
           htmlcov/
-          pytest-report.xml
+          pytest-host-report.xml
+          pytest-container-report.xml
         retention-days: 30
 
     - name: Coverage summary
@@ -370,6 +371,15 @@ jobs:
           org.opencontainers.image.url=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
           org.opencontainers.image.source=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
 
+    # Without these build-args the image carries the Dockerfile defaults BUILD_VERSION=0.0.0+local
+    # and BUILD_SRC_FINGERPRINT=unknown, so `docker-ensure` in the test job rebuilds from scratch:
+    # `make test-release` then validates a locally rebuilt image while a different one gets pushed,
+    # and pays 15-20 minutes for the rebuild inside its own timeout. The fingerprint comes from the
+    # Makefile so there is one copy of the recipe.
+    - name: Compute image build args
+      id: buildargs
+      run: echo "src-fingerprint=$(make -s print-src-fingerprint)" >> "$GITHUB_OUTPUT"
+
     - name: Build Docker image (don't push yet)
       id: build
       uses: docker/build-push-action@v5
@@ -377,6 +387,9 @@ jobs:
         context: .
         file: ./docker/Dockerfile
         push: false
+        build-args: |
+          VERSION=${{ needs.validate-release.outputs.version }}
+          SRC_FINGERPRINT=${{ steps.buildargs.outputs.src-fingerprint }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         outputs: type=docker,dest=/tmp/sirnaforge-image.tar

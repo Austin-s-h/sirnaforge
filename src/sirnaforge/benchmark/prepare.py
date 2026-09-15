@@ -76,6 +76,27 @@ from sirnaforge.models.policy import FilterAction, FilterComparator, SettingSour
 #: ``prepare.py`` -> ``benchmark`` -> ``sirnaforge`` -> ``src`` -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
+
+def _checkout_root() -> Path | None:
+    """The source checkout the vendored panel tables live in, or ``None`` when there is not one.
+
+    Every vendored panel names a path under ``tests/`` (``panels.py``), and ``pyproject.toml`` ships
+    only ``src/sirnaforge`` in the wheel and excludes ``/tests`` from the sdist. So an installed
+    sirnaforge -- a wheel, or the release image -- has no vendored bytes at all, and ``_REPO_ROOT``
+    resolves to whatever sits four levels above ``site-packages/sirnaforge/benchmark``.
+
+    Left as a checkout-only developer tool deliberately: the tables are third-party redistributions
+    whose provenance is documented in ``tests/data/benchmarks/README.md``, and moving 1.8 MB of them
+    into the wheel is a redistribution decision, not a packaging tidy-up. What is fixed here is the
+    message. ``sirnaforge benchmark prepare --panel huesken_subset`` used to exit 1 with
+    ``panel csv not found: /opt/conda/lib/python3.12/tests/unit/data/sirna_efficacy_subset.csv`` --
+    a path that reads as a corrupt build rather than as "this panel needs a checkout".
+    """
+    if (_REPO_ROOT / "pyproject.toml").is_file() and (_REPO_ROOT / "tests").is_dir():
+        return _REPO_ROOT
+    return None
+
+
 DEFAULT_ARTIFACT_ROOT = Path("benchmark_artifacts")
 
 #: The one gate #109 requires to stay active and auditable in every artifact, even one no design has
@@ -120,7 +141,15 @@ def _resolve_source_csv(descriptor: PanelDescriptor, panel_csv: Path | None) -> 
                 f"panel {descriptor.panel_id!r} is registered data_present=True but names no "
                 "vendored_csv; that is a bug in the panel registry, not in your invocation"
             )
-        return _REPO_ROOT / relative, relative
+        checkout = _checkout_root()
+        if checkout is None:
+            raise BenchmarkPrepareError(
+                f"panel {descriptor.panel_id!r} reads bytes vendored at {relative}, which ship with the "
+                "source repository and not with the installed package (pyproject.toml puts only "
+                "src/sirnaforge in the wheel and excludes /tests from the sdist). Run this command "
+                "from a git checkout of sirnaforge, or use a panel that takes --panel-csv"
+            )
+        return checkout / relative, relative
     if panel_csv is None:
         # The required columns are named here rather than left to the header check further in: the
         # ``user_supplied_*`` ids read a table this repository has never seen, so "which columns" is

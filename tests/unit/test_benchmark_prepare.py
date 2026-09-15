@@ -200,6 +200,31 @@ def test_vendored_panel_refuses_an_explicit_panel_csv_override(panel_id: str, tm
 
 
 @pytest.mark.unit
+def test_vendored_panel_outside_a_checkout_names_the_checkout_requirement(tmp_path: Path, monkeypatch) -> None:
+    """An installed sirnaforge refuses a vendored panel by saying so, not by printing a wrong path.
+
+    Measured before this guard existed:
+    ``docker run --rm sirnaforge:latest sirnaforge benchmark prepare --panel huesken_subset`` exited 1
+    with ``panel csv not found: /opt/conda/lib/python3.12/tests/unit/data/sirna_efficacy_subset.csv``.
+    All five data-bearing panels are unreachable from a wheel or the image, because the vendored
+    tables live under ``tests/`` and pyproject ships only ``src/sirnaforge``. That is a decision
+    (they are third-party redistributions), so the fix is the message.
+
+    ``_REPO_ROOT`` is patched to an empty directory to stand in for ``site-packages/../../..``, which
+    is the one thing a checkout-based test cannot reproduce by running from the checkout.
+    """
+    monkeypatch.setattr("sirnaforge.benchmark.prepare._REPO_ROOT", tmp_path / "not_a_checkout")
+
+    with pytest.raises(BenchmarkPrepareError) as excinfo:
+        prepare_artifact(panel_id="huesken_subset", paired_length=19, out_dir=tmp_path / "out")
+
+    message = str(excinfo.value)
+    assert "git checkout" in message, message
+    assert "not found" not in message, f"the old nonsense-path message is back: {message}"
+    assert not (tmp_path / "out").exists(), "refused before creating an artifact directory"
+
+
+@pytest.mark.unit
 def test_user_supplied_fully_complementary_via_panel_csv(tmp_path: Path) -> None:
     """A fully-complementary table: guide and passenger pair blunt over their full, equal length.
 

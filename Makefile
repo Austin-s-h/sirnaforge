@@ -65,12 +65,14 @@ help: ## Show available commands
 	@echo "  make dev              Quick dev setup (install + pre-commit)"
 	@echo ""
 	@echo "Testing - By Tier (matches marker structure)"
-	@echo "  make test-dev         Fast unit tests for dev iteration (~15s)"
-	@echo "  make test-ci          Smoke tests for CI/CD"
-	@echo "  make test-release     Complete release validation (host + container tests with combined coverage)"
-	@echo "  make test-release-host      Host-only release suite (generates coverage base)"
-	@echo "  make test-release-container Container release suite (expects host coverage)"
+	@echo "  make test-dev         Fast unit tests for dev iteration (1,786 tests, ~35s)"
+	@echo "                        Whole suite is 1,866 tests: 1,786 dev + 46 container + release/ci."
+	@echo "  make test-ci          Smoke tests for CI/CD (40 tests, ~13s, writes coverage.xml)"
+	@echo "  make test-release     Complete release validation, host + container, combined coverage (~5min)"
+	@echo "  make test-release-host      Host-only release suite (1,820 tests serial, ~90s, coverage base)"
+	@echo "  make test-release-container Container release suite (~3.5min, expects host coverage)"
 	@echo "  make test             All tests (may have skips/failures)"
+	@echo "                        Add 15-20min to test-release when the image needs rebuilding."
 	@echo ""
 	@echo "Docker Testing"
 	@echo "  make docker-build-test Clean + build + test Docker image (all-in-one)"
@@ -107,7 +109,7 @@ dev: ## Quick dev setup (install + pre-commit)
 # TESTING - BY TIER (Matches marker structure)
 #==============================================================================
 
-test-dev: ## Development tier - fast unit tests (~15s)
+test-dev: ## Development tier - fast unit tests (1,786 tests, ~35s)
 	$(PYTEST_V) -m "dev"
 
 test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow suites)
@@ -116,7 +118,12 @@ test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow sui
 
 test-release: docs test-release-host test-release-container test-release-report ## Release tier - comprehensive validation (host + container tests with combined coverage)
 
-test-release-host: ## Host-only release suite (produces base coverage database)
+# `-n 0` is deliberate: it overrides the repo-wide `-n 2` in pyproject.toml so this stage runs serial.
+# The reason is one wall-clock assertion, not coverage (pytest-cov combines xdist workers fine, and the
+# container stage already proves cross-process merging works here). Keeping it serial also keeps the
+# release log readable. Retained after `test_performance_guard_2mb_reference` moved to CPU time,
+# because serial is what makes stage timings comparable between runs.
+test-release-host: ## Host-only release suite, serial (1,820 tests, ~90s, produces base coverage database)
 	@echo "Step 1/3: Running host-based tests with coverage..."
 	@rm -f .coverage coverage*.xml pytest-*.xml 2>/dev/null || true
 	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container" \
@@ -125,14 +132,18 @@ test-release-host: ## Host-only release suite (produces base coverage database)
 		--junitxml=pytest-host-report.xml
 	@echo ""
 
-test-release-container: cache-ensure docker-ensure ## Container release suite (expects .coverage from host stage)
+# PYTHONDONTWRITEBYTECODE stops the container writing tests/__pycache__ into the bind-mounted repo.
+# The host runs the same pytest version, so it reused that bytecode and reported its own skip
+# locations as `../../../../../workspace/tests/conftest.py` - cosmetic, but it made host output look
+# like container output while debugging a release run.
+test-release-container: cache-ensure docker-ensure ## Container release suite, ~3.5min (expects .coverage from host stage)
 	@if [ ! -f ".coverage" ]; then \
 		echo "Missing .coverage from host tests. Run 'make test-release-host' first or provide the artifact before running container tests."; \
 		exit 1; \
 	fi
 	@echo "Step 2/3: Running container tests (appending coverage)..."
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTHONDONTWRITEBYTECODE=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
 		pip install --quiet pytest pytest-cov --target /workspace/.pip; \
 		set +e; \
@@ -167,18 +178,24 @@ test: ## Run all tests (shows what passes/skips/fails)
 # TESTING - SPECIAL CATEGORIES
 #==============================================================================
 
-test-requires-docker: ## Tests requiring Docker daemon (run on host)
-	$(PYTEST_V) -m "requires_docker"
+# There is no `test-requires-docker` target. `-m requires_docker` selects 0 of 1,864 tests and pytest
+# exits 0 on a fully deselected run, so the target was a green gate over an empty set - advertised in
+# docs/developer/testing_guide.md as a ~45s subset, and read as evidence during release triage. The
+# marker itself stays declared in pyproject.toml and filtered out of `test-ci`, so the day a
+# host-side Docker test is written it lands in a tier that already excludes it from CI.
 
-test-requires-network: ## Tests requiring network access
+test-requires-network: ## Tests requiring network access (15 tests; all skip without a verified TLS route)
 	$(PYTEST_V) -m "requires_network"
 
-test-requires-nextflow: ## Tests requiring Nextflow
+test-requires-nextflow: ## Tests requiring Nextflow (2 tests, both container-tier)
 	$(PYTEST_V) -m "requires_nextflow"
 
 #==============================================================================
 # DOCKER
 #==============================================================================
+
+print-src-fingerprint: ## Print the source fingerprint an image must carry to be considered current
+	@echo "$(SRC_FINGERPRINT)"
 
 docker-build: ## Build Docker image
 	docker build -f docker/Dockerfile --build-arg VERSION=$(VERSION) \
@@ -219,7 +236,7 @@ cache-ensure: ## Ensure the host cache directory exists
 
 docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (validates image)
 	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
+	docker run --rm $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTHONDONTWRITEBYTECODE=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
 		"shopt -s nullglob; \
 		pip install --quiet pytest --target /workspace/.pip; \
 		set +e; \
@@ -325,12 +342,26 @@ pre-commit: ## Run pre-commit hooks
 nextflow-check: ## Check Nextflow installation
 	@uv run nextflow -version || echo "Nextflow not available"
 
-security: ## Run security checks
+# Advisory, not a gate: both legs end in `|| true` on purpose, because bandit's 8 pre-existing HIGH
+# findings are all B324 weak-MD5 on cache-key derivation (not security decisions) and pip-audit needs
+# a network route CI has and a laptop behind an interception proxy may not.
+#
+# The dependency leg was `safety check`, pinned <3.0.0, which needs pkg_resources and so has emitted
+# `Unhandled exception ... No module named 'pkg_resources'` into safety-report.json on Python 3.12 --
+# not JSON, no result -- while CI uploaded the file as `security-reports-<sha>`. A green target with
+# an empty scan reads as "scanned, clean". pip-audit replaces it, and the summary below states
+# outright whether a dependency scan actually happened.
+security: ## Run security checks (advisory: reports findings, does not fail the build)
 	@echo "Running security scans..."
 	@uv run bandit -r src/ -f json -o bandit-report.json || true
 	@uv run bandit -r src/ -q || true
-	@(uv run safety check --output json 2>&1 | grep -v "UserWarning" > safety-report.json) || echo '{"vulnerabilities": [], "scan_failed": true}' > safety-report.json
-	@echo "Security scan complete (reports: bandit-report.json, safety-report.json)"
+	@uv run --with pip-audit pip-audit --progress-spinner=off --format=json --output=pip-audit-report.json || true
+	@if [ -s pip-audit-report.json ]; then \
+		echo "Dependency scan: pip-audit wrote pip-audit-report.json"; \
+	else \
+		echo "Dependency scan: NO RESULT - pip-audit produced nothing (offline, or proxy TLS). Treat as unscanned."; \
+	fi
+	@echo "Security scan complete (advisory reports: bandit-report.json, pip-audit-report.json)"
 
 cache-info: ## Show data cache locations and status
 	@echo "SiRNAforge Data Cache Information"

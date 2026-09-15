@@ -4,6 +4,7 @@ Tests that verify Nextflow workflows work correctly in Docker environments
 with proper resource constraints and Docker-in-Docker functionality.
 """
 
+import json
 import re
 import subprocess
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import sirnaforge.pipeline.nextflow.config
+from sirnaforge.models.evidence import EVIDENCE_SCHEMA_VERSION, EvidenceStatus
 from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 
 
@@ -120,86 +122,80 @@ def test_sirnaforge_nextflow_workflow_syntax():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
-def test_sirnaforge_nextflow_minimal_execution():
-    """Test that siRNAforge can execute Nextflow workflows with minimal resources."""
+@pytest.mark.requires_nextflow
+def test_stub_run_emits_evidence_and_cannot_look_like_a_screen():
+    """A real `-stub-run` materialises #100's evidence files, and they admit nothing was aligned.
+
+    This replaces `test_sirnaforge_nextflow_minimal_execution`, which ran
+    `sirnaforge workflow TEST --input <fasta> ...`. There is no `--input` option on that command --
+    there never has been -- so every run of it got a Typer usage error, and the test passed anyway:
+    its only failure paths were substring matches on stderr, and "no such option" matched none of
+    them. It asserted nothing about Nextflow while claiming to be the minimal-execution test. The
+    embedded-Nextflow path it meant to cover is exercised with assertions by
+    `test_workflow_modes.py::test_minimal_toy_workflow`.
+
+    What is covered here that nothing else covers: the `.nf` side of #100 is otherwise asserted by
+    regex over the workflow text (`tests/unit/test_evidence_plan_threading.py`, whose docstring says
+    no test there invokes a real nextflow binary). Regex cannot see a renamed emit glob or a stub
+    block that stops satisfying its declared outputs -- an execution can. Measured at ~4s: no
+    aligner, no reference data, no network.
+
+    The second half of the name is the contract that matters. A stub run must be *legible* as a
+    non-result: `producer: stub`, `source: synthesized`, and a FAILED unit whose detail says no
+    aligner executed. If a stub ever emitted `complete`, every consumer that trusts the evidence
+    contract would read a screen that never happened.
+    """
+    runner = NextflowRunner()
+    main_workflow = runner.get_main_workflow()
+    assert main_workflow.is_file(), f"embedded workflow missing from the image: {main_workflow}"
+
     with tempfile.TemporaryDirectory() as tmpdir:
         work_dir = Path(tmpdir)
+        candidates = work_dir / "candidates.fasta"
+        candidates.write_text(">candidate_1\nAUGAAAGUGAACUACAACUGU\n>candidate_2\nAUGCCAGUGAACUACAACUGU\n")
+        outdir = work_dir / "out"
 
-        # Create minimal test data
-        test_fasta = work_dir / "test_candidates.fasta"
-        test_fasta.write_text(">candidate_1\nAUGAAAGUGAACUACAACUGU\n>candidate_2\nAUGCCAGUGAACUACAACUGU\n")
+        result = subprocess.run(
+            [
+                "nextflow",
+                "run",
+                str(main_workflow),
+                "-stub-run",
+                "--input",
+                str(candidates),
+                "--outdir",
+                str(outdir),
+                "--mirna_species",
+                "human",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=work_dir,
+            timeout=300,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"stub run failed:\nSTDOUT: {result.stdout[-2000:]}\nSTDERR: {result.stderr[-2000:]}"
+        )
 
-        output_dir = work_dir / "output"
-        output_dir.mkdir()
+        # The aggregate emits the plan/evidence envelope even with no plan supplied. Its shape is the
+        # thing every 0.7.1 reader joins on.
+        envelope = json.loads((outdir / "aggregated" / "evidence.json").read_text())
+        assert envelope["schema_version"] == EVIDENCE_SCHEMA_VERSION
+        assert set(envelope) >= {"plan", "evidence", "sources", "unplanned"}, sorted(envelope)
 
-        try:
-            # Test the workflow execution with minimal resources
-            result = subprocess.run(
-                [
-                    "sirnaforge",
-                    "workflow",
-                    "TEST",
-                    "--input",
-                    str(test_fasta),
-                    "--output-dir",
-                    str(output_dir),
-                    "--species",
-                    "human",
-                    "--top-n",
-                    "2",
-                    "--offtarget-n",
-                    "2",
-                    "--verbose",
-                ],
-                capture_output=True,
-                text=True,
-                cwd=work_dir,
-                timeout=300,  # 5 minutes max
-                check=False,
-            )
+        # The per-unit evidence the stub block declares as an output must actually materialise.
+        stub_files = sorted((outdir / "mirna").glob("mirna_seed_*_evidence.json"))
+        assert stub_files, f"stub emitted no per-unit evidence: {sorted((outdir / 'mirna').glob('*'))}"
 
-            # Check for specific memory/resource errors vs other issues
-            if result.returncode != 0:
-                error_text = result.stderr.lower()
-
-                # Memory issues are expected on constrained systems
-                memory_indicators = ["memory", "ram", "resource", "exceeds available"]
-
-                if any(indicator in error_text for indicator in memory_indicators):
-                    pytest.skip(f"Insufficient resources for full workflow test: {result.stderr}")
-
-                # Channel/syntax issues indicate our fixes didn't work
-                syntax_indicators = [
-                    "channel.fromlist",
-                    "missing process or function",
-                    "compilation failed",
-                    "groovy.lang",
-                ]
-
-                if any(indicator in error_text for indicator in syntax_indicators):
-                    pytest.fail(f"Nextflow syntax/compatibility issue: {result.stderr}")
-
-                # Docker issues
-                docker_indicators = ["docker daemon", "docker not found", "container failed"]
-
-                if any(indicator in error_text for indicator in docker_indicators):
-                    pytest.skip(f"Docker environment issue: {result.stderr}")
-
-                # Import/environment issues
-                env_indicators = ["import", "no module", "command not found"]
-
-                if any(indicator in error_text for indicator in env_indicators):
-                    pytest.fail(f"Environment setup issue: {result.stderr}")
-
-                # Other issues are logged but don't fail the test
-                print(f"Workflow execution issue (may be expected): {result.stderr}")
-
-        except ImportError:
-            pytest.skip("siRNAforge not available for import")
-        except FileNotFoundError:
-            pytest.skip("siRNAforge CLI not available")
-        except subprocess.TimeoutExpired:
-            pytest.skip("Workflow execution timed out (expected on resource-constrained systems)")
+        stub_evidence = json.loads(stub_files[0].read_text())
+        assert stub_evidence["producer"] == "stub"
+        assert stub_evidence["source"] == "synthesized"
+        entry = stub_evidence["entry"]
+        assert entry["status"] == EvidenceStatus.FAILED.value, (
+            f"a stub run must not publish a completed unit: {entry['status']}"
+        )
+        assert entry["detail"], "a stub unit must say why it is not a result"
 
 
 @pytest.mark.integration

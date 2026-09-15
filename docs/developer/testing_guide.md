@@ -7,12 +7,16 @@ Tiered testing approach for different development phases and resources.
 ### Development (Python-only)
 
 ```bash
-make test-dev           # Fast marker-based tests (~15s) for iteration
-make test               # Full pytest run on host (may include skips)
-make lint               # Ruff + mypy checks (~5s)
+make test-dev           # Fast marker-based tests (1,786 tests, ~35s) for iteration
+make test               # Full pytest run on host (~2min, may include skips)
+make lint               # Ruff + mypy checks (~5s warm, ~30s cold mypy cache)
 make format             # Auto-format & autofix style issues
 make check              # format + test-dev (mutating quick gate)
 ```
+
+> **Timings below are measured on a 10-core arm64 laptop with warm caches** (uv, mypy, `docs/_build`,
+> and a current `sirnaforge:latest`). They were previously inherited from a 30-test suite and were
+> wrong by up to 9x; if you change a tier's population, re-measure rather than editing the number.
 
 > **Note:** `make check` runs `make format` first, so it will modify files to enforce style before executing tests.
 
@@ -26,16 +30,24 @@ make docker-shell       # Interactive debugging
 
 ### Test Categories by Tier
 
-| Target                   | Purpose                                            | Time | Scope                           | Resources |
-| ------------------------ | -------------------------------------------------- | ---- | ------------------------------- | --------- |
-| `test-dev`               | Fast development iteration (pytest `-m dev`)       | ~15s | Fastest unit-style set          | Minimal   |
-| `test-ci`                | CI/CD smoke with coverage                          | ~40s | `ci` markers + coverage XML     | Low       |
-| `test-release`           | Host + container validation with combined coverage | ~60s | dev+ci+release markers          | Medium    |
-| `test`                   | Full pytest run (allows skips/failures)            | 60s+ | Entire suite on host            | Medium    |
-| `test-requires-docker`   | Host tests needing Docker daemon                   | ~45s | `requires_docker` marker subset | Medium    |
-| `test-requires-network`  | Network-access-required subset                     | ~30s | `requires_network` marker       | Low       |
-| `test-requires-nextflow` | Nextflow-specific subset                           | ~45s | `requires_nextflow` marker      | Medium    |
-| `docker-test`            | Container-only tests (`runs_in_container`)         | ~60s | tests/container suite           | High      |
+| Target                   | Purpose                                            | Time     | Scope                                      | Resources |
+| ------------------------ | -------------------------------------------------- | -------- | ------------------------------------------ | --------- |
+| `test-dev`               | Fast development iteration (pytest `-m dev`)       | ~35s     | 1,786 tests — unit-style, hermetic         | Minimal   |
+| `test-ci`                | CI/CD smoke with coverage                          | ~13s     | 40 `ci`-marked tests + coverage XML        | Low       |
+| `test-release`           | Host + container validation with combined coverage | ~5min    | 1,820 host + 46 container, merged coverage | Medium    |
+| `test`                   | Full pytest run (allows skips/failures)            | ~2min    | Entire 1,866-test suite on host            | Medium    |
+| `test-requires-network`  | Network-access-required subset                     | 15 tests | `requires_network` marker                  | Low       |
+| `test-requires-nextflow` | Nextflow-specific subset                           | 2 tests  | `requires_nextflow` marker                 | Medium    |
+| `docker-test`            | Container-only tests (`runs_in_container`)         | ~3.5min  | tests/container suite                      | High      |
+
+`test-release` adds **15-20 minutes** whenever the image is stale, because `docker-ensure` rebuilds
+when `sirnaforge:latest` was built from a different version _or_ a different source fingerprint. The
+two `requires_*` subsets are sized in tests rather than seconds because both skip entirely without
+the capability, and neither is a meaningful timing.
+
+There is no `test-requires-docker` target. `-m requires_docker` matches nothing, and pytest exits 0
+on a fully deselected run, so the target was green over an empty set — the worst possible thing to
+read during release triage. The marker stays declared for the day a host-side Docker test exists.
 
 ### Environment Requirement Markers
 
@@ -59,6 +71,28 @@ executable on `PATH` both lie.
   a TCP socket, because interception proxies accept the connection and then fail verification
   on every request.
 
+### What each `test-release` stage is actually for
+
+`test-release` is `docs`, then the host suite, then the container suite, then a coverage rollup.
+The two test stages answer different questions and are not interchangeable:
+
+- **Host stage** — every `dev`/`ci`/`release` test that is not `runs_in_container`, serial, with
+  coverage. This is where line coverage comes from: 84% overall, and 90-100% on everything 0.7.1
+  added. It reaches that number with the screen stubbed and Nextflow monkeypatched.
+- **Container stage** — 46 tests that drive the installed CLI with `subprocess.run` inside the
+  image. It answers "does the artifact work", which coverage cannot measure: coverage does not
+  follow a subprocess, so these tests contribute **0% of the new modules** to the rollup while
+  genuinely executing them. That is expected. Do not plumb `COVERAGE_PROCESS_START` into the
+  container to raise the number — it would tell you nothing the host stage has not already said.
+  Assert the artifacts instead (`tests/container/release_artifacts.py`), which is how the tier
+  distinguishes "screened clean" from "never screened".
+
+The container stage is the only place the report (#103), the `.nf` evidence emission (#100) and the
+installed `benchmark`/`report` commands run for real, so it is the only place a packaging or
+integration defect in them can be caught. `workflow.py` turns a failed render and a failed manifest
+write into `logger.warning`, so the CLI exits 0 either way: the assertions in
+`release_artifacts.py` are what make those failures visible.
+
 ### A `dev` test must never reach the network
 
 An unmarked test that calls out is worse than a slow test: it passes or fails on the environment.
@@ -75,7 +109,15 @@ The two ways it has happened here, both fixed, both cheap to reintroduce:
   failure step 5 swallows — so the test still passes, 23s later. Monkeypatch
   `SiRNAWorkflow._run_nextflow_offtarget_analysis` unless the test is marked `requires_nextflow`.
 
-`make test-dev` should stay under ~30s with no test above ~2s; `-m dev --durations=10` is the check.
+`make test-dev` should stay under ~45s with no test above ~3s; `-m dev --durations=10` is the check.
+
+The old wording said 30s and 2s, and both clauses had quietly gone false — the tier grew from 30
+tests to 1,786 while the numbers stayed. A tripwire that is already tripped is one nobody reads, so
+these are re-baselined against measurement: 1,786 tests in ~35s on an idle 10-core laptop, slowest
+item 2.1s. Expect roughly 2-3x those figures on a contended machine (the same tests have been
+measured at 54s and 6.1s under load), which is why the ceilings are stated with headroom rather than
+at the measured value. If a change pushes either past its ceiling, the question to ask is whether a
+test acquired a dependency — those two failure modes are documented above and both have happened.
 
 ### Running network tests behind a TLS-intercepting proxy
 
@@ -110,8 +152,8 @@ make dev
 ```bash
 # Fastest validation (recommended for active development)
 make test-dev
-# Expected: ~15 seconds, 30 tests
-# ✅ Success: All tests pass, no Docker required
+# Expected: ~35 seconds, 1,786 tests
+# ✅ Success: All tests pass, no Docker and no network required
 ```
 
 ### 3. Code Quality Checks
@@ -128,7 +170,7 @@ make format
 
 # Combined quality + fast tests
 make check
-# Expected: ~40 seconds, runs format + lint + test-dev
+# Expected: ~45 seconds, runs format + lint + test-dev
 ```
 
 ### 4. Pre-Commit Validation
@@ -136,18 +178,22 @@ make check
 ```bash
 # Run CI-tier tests (quick smoke tests for CI/CD)
 make test-ci
-# Expected: ~40 seconds
+# Expected: ~13 seconds, 40 tests
 # Includes smoke tests with coverage reports
+# Note: this is the historical PR gate and it selects no test added in 0.7.1;
+#       `make test-dev` now runs alongside it in CI for exactly that reason.
 
 # Full release validation
 make test-release
-# Expected: ~60 seconds, includes all tests with coverage
-# Note: Some tests may require Docker or network access
+# Expected: ~5 minutes -- docs (~10s), host suite serial (~90s), container suite (~3.5min),
+#           coverage rollup (~4s). Add 15-20 minutes if the Docker image needs rebuilding.
+# Note: 13-15 tests skip without a verified TLS route (Ensembl, miRBase); that is honest,
+#       and the whole gene-name -> Ensembl -> off-target path is what goes untested with them.
 
 # Full local test suite (all tests, may have skips/failures)
 make test
-# Expected: 60+ seconds, includes all test categories
-# Note: Some Docker integration tests may skip without Docker setup
+# Expected: ~2 minutes, 1,866 tests, includes all test categories
+# Note: the 46 container tests skip on the host by design (`runs_in_container`)
 ```
 
 ## Docker Testing (Comprehensive Validation)
@@ -172,7 +218,7 @@ make docker-build
 ```bash
 # Run tests INSIDE Docker container (validates image setup)
 make docker-test
-# Expected: ~60 seconds
+# Expected: ~3.5 minutes (46 tests; rebuilds the image first if it is stale)
 # Tests all container-based functionality
 # ✅ Success: All tests pass, verifying Docker environment
 
@@ -281,10 +327,12 @@ Treat the default backend as rollout-ready only when all of the following hold:
 ### Timeouts and Expectations
 
 - **Never cancel** `uv sync --dev` (can take 60-120s first time)
-- **Docker builds** take ~15-20 minutes first time, much faster subsequently
-- **Unit tests** should complete in ~30 seconds
-- **Fast tests** should complete in ~15 seconds
-- **CI tests** may take 40+ seconds but generate proper artifacts
+- **Docker builds** take ~15-20 minutes first time, much faster subsequently. `docker-ensure`
+  triggers one whenever `src/`, `pyproject.toml`, `uv.lock` or the Dockerfile has changed since the
+  image was built, so `make test-release` after a source edit pays that cost once.
+- **`make test-dev`** should complete in ~35s (1,786 tests) — see the ceiling above
+- **`make test-ci`** completes in ~13s (40 tests) and writes coverage.xml
+- **`make test-release`** completes in ~5 minutes when the image is current
 
 ## Quick Health Checks
 

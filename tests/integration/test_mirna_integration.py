@@ -129,12 +129,15 @@ class TestMiRNAManagerSmoke:
             assert isinstance(dry_result, dict)
 
     def test_get_database_basic_smoke(self):
-        """Smoke test: get_database method exists and handles gracefully."""
+        """An unknown source resolves to nothing, and leaves nothing behind.
+
+        The assertion used to be `result is None or isinstance(result, Path)`, which no
+        implementation can fail -- in the 40-test selection that gates every pull request. Naming the
+        expected answer costs the same and can actually fail.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_dir = Path(temp_dir) / "test_cache"
             manager = MiRNADatabaseManager(cache_dir=cache_dir)
 
-            # Should handle invalid requests gracefully
-            result = manager.get_database("nonexistent", "species")
-            # Should return None or raise appropriate exception
-            assert result is None or isinstance(result, Path)
+            assert manager.get_database("nonexistent", "species") is None
+            assert not any(cache_dir.glob("*.fa")), "an unresolvable source must not write a cache file"

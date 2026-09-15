@@ -14,6 +14,7 @@ NOTE: Design-only mode (--input-fasta without transcriptome) is already tested
 in test_container_integration.py::test_docker_full_tp53_workflow, so not duplicated here.
 """
 
+import csv
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from release_artifacts import assert_evidence_reconciled, assert_report_rendered, offtarget_status
 
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
 from sirnaforge.models.schemas import MiRNAAlignmentSchema
@@ -222,6 +224,7 @@ def test_transcriptome_index_override(
     - --offtarget-indices adds a caller-built index as a screening reference
     - Custom index paths used for off-target
     - Species declared on the override entry reaches the screen
+    - the transcriptome really was screened (#100 evidence) and the report rendered (#103)
     """
     output_dir = _get_persistent_output_dir(tmp_path, "index_override")
 
@@ -252,6 +255,19 @@ def test_transcriptome_index_override(
     # Verify workflow completed
     assert (output_dir / "sirnaforge" / "candidates_all.csv").exists()
     assert (output_dir / "logs" / "workflow_summary.json").exists()
+
+    # This is the one container run that hands the screen a real transcriptome index, so it is the
+    # one place where "screened clean" is distinguishable from "never screened" end to end. Assert
+    # the run's own verdicts rather than re-deriving them.
+    assert offtarget_status(output_dir) == "completed", (
+        "a run given a transcriptome index must report a completed off-target stage, not partial"
+    )
+    evidence = assert_evidence_reconciled(output_dir, expect_channels={"transcriptome", "mirna_seed"})
+    transcriptome = [e for e in evidence["evidence"]["entries"] if e["channel"] == "transcriptome"]
+    assert [e["status"] for e in transcriptome] == ["complete"], (
+        f"the overridden transcriptome unit did not complete: {transcriptome}"
+    )
+    assert_report_rendered(output_dir)
 
     # Verify summary reflects override
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
@@ -545,8 +561,14 @@ def test_multi_species_offtarget(tmp_path: Path, realistic_transcripts_fasta: Pa
 
     Validates:
     - --species with multiple values
-    - Off-target analysis across transcriptomes
-    - miRNA seed checks across species
+    - miRNA seed checks across species, reconciled unit by unit
+    - a transcriptome arm whose references are unavailable here reports itself as such
+
+    The docstring used to claim "off-target analysis across transcriptomes". It never was: no
+    transcriptome is available to this run, and the two existence assertions below it passed on a
+    run whose own summary said `partial` and warned that no alignment was generated for any of the
+    three species. What this test can honestly check is that the run refuses to call that a
+    completed screen -- which is the #100/#106 property, and is now asserted rather than assumed.
     """
     output_dir = _get_persistent_output_dir(tmp_path, "multi_species")
 
@@ -584,6 +606,25 @@ def test_multi_species_offtarget(tmp_path: Path, realistic_transcripts_fasta: Pa
     workflow_config = summary.get("workflow_config", {})
     mirna_ref = workflow_config.get("mirna_reference", {})
     assert len(mirna_ref.get("species", [])) >= 2, "Should have multiple miRNA species"
+
+    # Both requested miRNA species must come back as reconciled units, not just be configured.
+    evidence = assert_evidence_reconciled(output_dir, expect_channels={"mirna_seed"})
+    seed_species = {e["species"] for e in evidence["evidence"]["entries"] if e["channel"] == "mirna_seed"}
+    assert {"human", "mouse"} <= seed_species, (
+        f"miRNA seed evidence missing a requested species: {sorted(seed_species)}"
+    )
+
+    # And the transcriptome arm must not be dressed up as done. If no transcriptome unit reconciled,
+    # the run has to say so: not "completed", and the unscreened species named in warnings.
+    offtarget = summary.get("offtarget_summary", {})
+    if not any(e["channel"] == "transcriptome" for e in evidence["evidence"]["entries"]):
+        assert offtarget.get("status") != "completed", (
+            "no transcriptome unit was screened, so the stage must not report completed"
+        )
+        warnings = " ".join(offtarget.get("warnings", []))
+        assert "human" in warnings, f"unscreened transcriptome species not named in warnings: {warnings[:300]}"
+
+    assert_report_rendered(output_dir)
 
 
 @pytest.mark.integration
@@ -659,8 +700,13 @@ def test_minimal_toy_workflow(tmp_path: Path):
 
     Validates:
     - Toy database integration
-    - Fast off-target analysis
     - Basic pipeline flow
+    - that an unscreened gate reports `unknown`, never `pass` (#106)
+
+    "Fast off-target analysis" was the old third claim, and this run does not do one: no
+    transcriptome reference reaches it. That makes it the right place to pin the converse property,
+    which is the one #106 fixed -- a guide nobody screened must be labelled as such all the way out
+    to the CSV, rather than inheriting a pass from the gates that *were* evaluated.
     """
     output_dir = _get_persistent_output_dir(tmp_path, "toy_minimal")
     toy_fasta = Path(__file__).parent.parent / "unit" / "data" / "toy_transcriptome_db.fasta"
@@ -697,5 +743,25 @@ def test_minimal_toy_workflow(tmp_path: Path):
         pytest.fail(f"Toy workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
     # Verify basic outputs
-    assert (output_dir / "sirnaforge" / "candidates_all.csv").exists()
+    candidates_csv = output_dir / "sirnaforge" / "candidates_all.csv"
+    assert candidates_csv.exists()
     assert (output_dir / "logs" / "workflow_summary.json").exists()
+
+    # #106: an unscreened transcriptome gate exports `unknown`, and the selection says it is
+    # provisional -- while a gate that really was evaluated (GC) still exports its verdict. Both
+    # halves matter: the first is the defect, the second is the check that the first is not just
+    # "everything is unknown".
+    with candidates_csv.open() as handle:
+        first_row = next(iter(csv.DictReader(handle)))
+    assert first_row["off_target_screened"] == "False", "this run screens no transcriptome"
+    assert first_row["max_transcriptome_hits_0mm_verdict"] == "unknown", (
+        f"unscreened off-target gate must not claim a verdict: {first_row['max_transcriptome_hits_0mm_verdict']}"
+    )
+    assert first_row["selection_state"] == "provisional_incomplete_evidence"
+    assert first_row["gc_content_min_verdict"] in {"pass", "fail", "warn"}, (
+        "an evaluated gate must still export a real verdict"
+    )
+
+    # #100/#103 execute here too, and nothing else in the suite watches them end to end.
+    assert_evidence_reconciled(output_dir, expect_channels={"mirna_seed"})
+    assert_report_rendered(output_dir)
