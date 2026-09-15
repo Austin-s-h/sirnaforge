@@ -192,6 +192,7 @@ from sirnaforge.provenance import (
 from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
+from sirnaforge.utils.ensembl_ids import strip_version
 from sirnaforge.utils.hashing import file_sha256
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
@@ -725,17 +726,15 @@ class SiRNAWorkflow:
 
             # All isoforms of the queried gene are "on-target" - a guide hitting a sibling
             # isoform (shared exon) perfectly is not an off-target, it's the intended gene.
-            self._gene_transcript_ids = {
-                self._normalize_transcript_id(t.transcript_id) for t in transcripts if t.transcript_id
-            }
-            self._query_gene_ids = {self._normalize_transcript_id(t.gene_id) for t in transcripts if t.gene_id}
+            self._gene_transcript_ids = {strip_version(t.transcript_id) for t in transcripts if t.transcript_id}
+            self._query_gene_ids = {strip_version(t.gene_id) for t in transcripts if t.gene_id}
             self._query_gene_symbols = {t.gene_name.strip().upper() for t in transcripts if t.gene_name}
             if not self._query_gene_symbols and self.config.gene_query:
                 self._query_gene_symbols = {self.config.gene_query.strip().upper()}
 
             # Record protein-coding transcript set for isoform coverage scoring
             protein_coding_transcripts = {
-                self._normalize_transcript_id(t.transcript_id)
+                strip_version(t.transcript_id)
                 for t in transcripts
                 if t.transcript_id and t.transcript_type == "protein_coding"
             }
@@ -1352,7 +1351,7 @@ class SiRNAWorkflow:
         if not guide_to_transcripts:
             return
         self._guide_to_transcripts = {
-            normalize_guide_sequence(guide): frozenset(self._normalize_transcript_id(tid) for tid in tids)
+            normalize_guide_sequence(guide): frozenset(strip_version(tid) for tid in tids)
             for guide, tids in guide_to_transcripts.items()
         }
 
@@ -5169,11 +5168,6 @@ class SiRNAWorkflow:
         if spec.default_action is FilterAction.OFF and threshold is not None:
             return FilterAction.FAIL
         return spec.default_action
-
-    @staticmethod
-    def _normalize_transcript_id(transcript_id: str) -> str:
-        """Strip Ensembl-style version suffixes (e.g. ``.9``) for identity comparisons."""
-        return re.sub(r"\.\d+$", "", transcript_id.strip())
 
     @staticmethod
     def _species_present_on_hits(offtarget_data: dict[str, Any]) -> frozenset[str]:

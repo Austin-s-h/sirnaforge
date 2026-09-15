@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import socket
 import ssl
 import time
@@ -41,6 +40,7 @@ import aiohttp
 
 from sirnaforge.data.base import ENSEMBL_MAX_ATTEMPTS, ensembl_request_json, ensembl_session
 from sirnaforge.data.species_registry import ensembl_species_slug, normalize_species_name
+from sirnaforge.utils.ensembl_ids import strip_version
 
 logger = logging.getLogger(__name__)
 
@@ -63,22 +63,15 @@ SOURCE_MAPPING_FILE = "ortholog_mapping_file"
 #: A user-supplied mapping, keyed on the uppercased version-stripped query gene ID or symbol.
 OrthologTable = dict[str, dict[str, frozenset[str]]]
 
-_VERSION_SUFFIX = re.compile(r"\.\d+$")
-
 #: Transport failures a retry cannot fix: no route, no DNS, or a TLS chain this host will never
 #: trust. ``ensembl_request_json`` wraps them in ``DatabaseAccessError``, so the cause chain is
 #: what gets inspected.
 _UNREACHABLE_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ClientSSLError, ssl.SSLError, socket.gaierror)
 
 
-def _strip_version(identifier: str) -> str:
-    """Drop an Ensembl version suffix so IDs compare equal across releases."""
-    return _VERSION_SUFFIX.sub("", identifier.strip())
-
-
 def _query_key(identifier: str) -> str:
     """Normalise a mapping-file query key so gene IDs and symbols both match case-insensitively."""
-    return _strip_version(identifier).upper()
+    return strip_version(identifier).upper()
 
 
 def _budget_spent(deadline: float | None) -> bool:
@@ -229,7 +222,7 @@ def load_ortholog_table(path: Path | str) -> OrthologTable:
                     f"Ortholog mapping file {mapping_path}: {query_key!r}/{species!r} must be a list of gene IDs"
                 )
             canonical = normalize_species_name(str(species))
-            resolved = frozenset(_strip_version(str(gene_id)) for gene_id in gene_ids if gene_id)
+            resolved = frozenset(strip_version(str(gene_id)) for gene_id in gene_ids if gene_id)
             entry[canonical] = entry.get(canonical, frozenset()) | resolved
     return table
 
@@ -250,7 +243,7 @@ def mapping_from_table(
     """
     canonical_query = normalize_species_name(query_species)
     wanted = {normalize_species_name(s) for s in target_species} - {canonical_query}
-    genes = {_strip_version(g) for g in query_gene_ids if g}
+    genes = {strip_version(g) for g in query_gene_ids if g}
     symbols = {s.strip() for s in query_gene_symbols if s and s.strip()}
     if (not genes and not symbols) or not wanted:
         return OrthologueMapping.empty()
@@ -328,7 +321,7 @@ async def resolve_orthologues(
     """
     canonical_query = normalize_species_name(query_species)
     wanted = {normalize_species_name(s) for s in target_species} - {canonical_query}
-    genes = {_strip_version(g) for g in query_gene_ids if g}
+    genes = {strip_version(g) for g in query_gene_ids if g}
     symbols = {s.strip() for s in query_gene_symbols if s and s.strip()}
     if (not genes and not symbols) or not wanted:
         return OrthologueMapping.empty()
@@ -524,5 +517,5 @@ def _orthologue_ids(payload: Any) -> set[str]:
                 continue
             gene_id = homology.get("id")
             if gene_id:
-                ids.add(_strip_version(str(gene_id)))
+                ids.add(strip_version(str(gene_id)))
     return ids

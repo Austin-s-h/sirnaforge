@@ -26,7 +26,6 @@ class could not be decided needs the reference inventory, which lives in the ann
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -35,6 +34,7 @@ from typing import Any
 from sirnaforge.core.repeat_detection import normalize_guide_sequence
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
+from sirnaforge.utils.ensembl_ids import strip_version
 
 
 class HitClass(str, Enum):
@@ -225,7 +225,7 @@ def classify_hit(
         )
 
     # Strip version suffixes for comparison (e.g., "ENST00000123456.9" -> "ENST00000123456")
-    hit_transcript_id = _strip_version(hit_transcript_raw)
+    hit_transcript_id = strip_version(hit_transcript_raw)
 
     hit_species_raw = hit.get("species")
     if hit_species_raw is None or str(hit_species_raw).strip() == "":
@@ -331,19 +331,3 @@ def _classify_other_species(
         )
         return verdict, False, False
     return None, False, False
-
-
-def _strip_version(identifier: str) -> str:
-    """Strip Ensembl version suffixes (e.g., .9) for comparison.
-
-    Args:
-        identifier: Ensembl ID with optional version suffix.
-
-    Returns:
-        ID without version suffix.
-
-    Note:
-        This duplicates the function in transcript_index.py to avoid circular
-        imports and keep this module dependency-light.
-    """
-    return re.sub(r"\.\d+$", "", identifier.strip())
