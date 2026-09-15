@@ -129,6 +129,171 @@ DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
 
 
+# ---------------------------------------------------------------------------
+# Option declarations more than one command shares.
+#
+# Typer reads an OptionInfo as read-only metadata when it builds each command, so one
+# declaration can back several commands. Declared once here because the copies had already
+# started to drift, and a --help difference between two commands that take the same option is
+# a documentation defect a reader cannot tell from a deliberate distinction.
+# ---------------------------------------------------------------------------
+
+#: ``bool`` for: benchmark_design, benchmark_prepare, design, offtarget, search, sequences_annotate, workflow, zfn.
+_VERBOSE_OPTION = typer.Option(
+    False,
+    "--verbose",
+    "-v",
+    help="Enable verbose output",
+)
+
+#: ``Path | None`` for: offtarget, workflow, zfn.
+_LOG_FILE_OPTION = typer.Option(
+    None,
+    "--log-file",
+    help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_CORES_OPTION = typer.Option(
+    None,
+    "--cores",
+    min=1,
+    envvar="SIRNAFORGE_CORES",
+    help=("Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."),
+)
+
+#: ``bool`` for: workflow, zfn.
+_JSON_SUMMARY_OPTION = typer.Option(
+    True,
+    "--json-summary/--no-json-summary",
+    help="Write logs/workflow_summary.json (disable to skip JSON output)",
+)
+
+#: ``str | None`` for: workflow, zfn.
+_NEXTFLOW_DOCKER_IMAGE_OPTION = typer.Option(
+    None,
+    "--nextflow-docker-image",
+    envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
+    help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
+)
+
+#: ``list[str]`` for: workflow, zfn.
+_ZFN_SUBFINGER_MUTATION_OPTION = typer.Option(
+    [],
+    "--zfn-subfinger-mutation",
+    help=(
+        "ZFN sub-finger mutation allowance. "
+        "Repeatable format: scope:max_mutations:type1,type2. "
+        "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
+        "or 'overall' for global budgets. "
+        "Use 'mismatch' as a shorthand alias for 'substitution'."
+    ),
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_MAX_MISMATCHES_PER_SUBFINGER_OPTION = typer.Option(
+    None,
+    "--zfn-max-mismatches-per-subfinger",
+    min=0,
+    help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_MAX_SUBSTITUTIONS_OVERALL_OPTION = typer.Option(
+    None,
+    "--zfn-max-substitutions-overall",
+    min=0,
+    help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
+)
+
+#: ``str | None`` for: workflow, zfn.
+_ZFN_SEARCH_SPACE_INDEX_OPTION = typer.Option(
+    None,
+    "--zfn-search-space-index",
+    help=(
+        "Optional persisted search-space index bundle path for indexed ZFN backends "
+        "(currently fm_index; fm_index is experimental on large references)."
+    ),
+)
+
+#: ``ZFNSearchBackend`` for: workflow, zfn.
+_ZFN_SEARCH_BACKEND_OPTION = typer.Option(
+    ZFNSearchBackend.PYAHOCORASICK,
+    "--zfn-search-backend",
+    help=(
+        "Half-site search backend: pyahocorasick (default), exhaustive_python (baseline), or fm_index (experimental)."
+    ),
+)
+
+#: ``ZFNAlgorithm`` for: workflow, zfn.
+_ZFN_ALGORITHM_OPTION = typer.Option(
+    ZFNAlgorithm.ZFN_V2,
+    "--zfn-algorithm",
+    help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
+)
+
+#: ``DimerMode`` for: workflow, zfn.
+_ZFN_DIMER_MODE_OPTION = typer.Option(
+    DimerMode.HETERODIMER_ONLY,
+    "--zfn-dimer-mode",
+    help="Dimer mode: heterodimer_only (default) or include_homodimers.",
+)
+
+#: ``str`` for: workflow, zfn.
+_ZFN_SPACER_LENGTHS_OPTION = typer.Option(
+    "5,6,7",
+    "--zfn-spacer-lengths",
+    help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
+)
+
+#: ``int`` for: workflow, zfn.
+_ZFN_MAX_MISMATCHES_OPTION = typer.Option(
+    2,
+    "--zfn-max-mismatches",
+    min=0,
+    max=6,
+    help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_WINDOW_STRIDE_OPTION = typer.Option(
+    None,
+    "--zfn-window-stride",
+    envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
+    min=1,
+    max=50,
+    hidden=True,
+    help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_TOP_N_SITES_OPTION = typer.Option(
+    None,
+    "--zfn-top-n-sites",
+    envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
+    min=1,
+    hidden=True,
+    help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_REPORT_N_SITES_OPTION = typer.Option(
+    None,
+    "--zfn-report-n-sites",
+    envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
+    min=1,
+    hidden=True,
+    help="Internal tuning: number of top ranked sites included in report outputs.",
+)
+
+#: ``str | None`` for: workflow, zfn.
+_ZFN_ANNOTATION_OPTION = typer.Option(
+    None,
+    "--zfn-annotation",
+    help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
+)
+
+
 def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str) -> str:
     """Describe where off-target results landed, or why there are none.
 
@@ -739,12 +904,7 @@ def search(  # noqa: PLR0912
         "--exclude-types",
         help="Comma-separated list of transcript types to exclude",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Search transcript references and optionally fetch sequences.
 
@@ -983,29 +1143,9 @@ def workflow(  # noqa: PLR0912
         "--design-mode",
         help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn (EXPERIMENTAL)",
     ),
-    zfn_subfinger_mutation: list[str] = typer.Option(
-        [],
-        "--zfn-subfinger-mutation",
-        help=(
-            "ZFN sub-finger mutation allowance. "
-            "Repeatable format: scope:max_mutations:type1,type2. "
-            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
-            "or 'overall' for global budgets. "
-            "Use 'mismatch' as a shorthand alias for 'substitution'."
-        ),
-    ),
-    zfn_max_mismatches_per_subfinger: int | None = typer.Option(
-        None,
-        "--zfn-max-mismatches-per-subfinger",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
-    ),
-    zfn_max_substitutions_overall: int | None = typer.Option(
-        None,
-        "--zfn-max-substitutions-overall",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
-    ),
+    zfn_subfinger_mutation: list[str] = _ZFN_SUBFINGER_MUTATION_OPTION,
+    zfn_max_mismatches_per_subfinger: int | None = _ZFN_MAX_MISMATCHES_PER_SUBFINGER_OPTION,
+    zfn_max_substitutions_overall: int | None = _ZFN_MAX_SUBSTITUTIONS_OVERALL_OPTION,
     # ── ZFN half-site and search-space inputs (required when --design-mode zfn) ──
     zfn_left_half_site: str | None = typer.Option(
         None,
@@ -1027,83 +1167,17 @@ def workflow(  # noqa: PLR0912
             "Default: ensembl_human_hg38_primary when --design-mode zfn."
         ),
     ),
-    zfn_search_space_index: str | None = typer.Option(
-        None,
-        "--zfn-search-space-index",
-        help=(
-            "Optional persisted search-space index bundle path for indexed ZFN backends "
-            "(currently fm_index; fm_index is experimental on large references)."
-        ),
-    ),
-    zfn_search_backend: ZFNSearchBackend = typer.Option(
-        ZFNSearchBackend.PYAHOCORASICK,
-        "--zfn-search-backend",
-        help=(
-            "Half-site search backend: pyahocorasick (default), "
-            "exhaustive_python (baseline), or fm_index (experimental)."
-        ),
-    ),
-    zfn_algorithm: ZFNAlgorithm = typer.Option(
-        ZFNAlgorithm.ZFN_V2,
-        "--zfn-algorithm",
-        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
-    ),
-    zfn_dimer_mode: DimerMode = typer.Option(
-        DimerMode.HETERODIMER_ONLY,
-        "--zfn-dimer-mode",
-        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
-    ),
-    zfn_spacer_lengths: str = typer.Option(
-        "5,6,7",
-        "--zfn-spacer-lengths",
-        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
-    ),
-    zfn_max_mismatches: int = typer.Option(
-        2,
-        "--zfn-max-mismatches",
-        min=0,
-        max=6,
-        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
-    ),
-    zfn_window_stride: int | None = typer.Option(
-        None,
-        "--zfn-window-stride",
-        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
-        min=1,
-        max=50,
-        hidden=True,
-        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
-    ),
-    zfn_top_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-top-n-sites",
-        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
-    ),
-    zfn_report_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-report-n-sites",
-        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: number of top ranked sites included in report outputs.",
-    ),
-    cores: int | None = typer.Option(
-        None,
-        "--cores",
-        min=1,
-        envvar="SIRNAFORGE_CORES",
-        help=(
-            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
-        ),
-    ),
-    zfn_annotation: str | None = typer.Option(
-        None,
-        "--zfn-annotation",
-        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
-    ),
+    zfn_search_space_index: str | None = _ZFN_SEARCH_SPACE_INDEX_OPTION,
+    zfn_search_backend: ZFNSearchBackend = _ZFN_SEARCH_BACKEND_OPTION,
+    zfn_algorithm: ZFNAlgorithm = _ZFN_ALGORITHM_OPTION,
+    zfn_dimer_mode: DimerMode = _ZFN_DIMER_MODE_OPTION,
+    zfn_spacer_lengths: str = _ZFN_SPACER_LENGTHS_OPTION,
+    zfn_max_mismatches: int = _ZFN_MAX_MISMATCHES_OPTION,
+    zfn_window_stride: int | None = _ZFN_WINDOW_STRIDE_OPTION,
+    zfn_top_n_sites: int | None = _ZFN_TOP_N_SITES_OPTION,
+    zfn_report_n_sites: int | None = _ZFN_REPORT_N_SITES_OPTION,
+    cores: int | None = _CORES_OPTION,
+    zfn_annotation: str | None = _ZFN_ANNOTATION_OPTION,
     top_n_candidates: int | None = typer.Option(
         None,
         "--top-n",
@@ -1305,23 +1379,9 @@ def workflow(  # noqa: PLR0912
         "--variant-assembly",
         help="Reference genome assembly for variants (only GRCh38 supported)",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
-    ),
-    nextflow_docker_image: str | None = typer.Option(
-        None,
-        "--nextflow-docker-image",
-        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
-        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
-    ),
+    verbose: bool = _VERBOSE_OPTION,
+    log_file: Path | None = _LOG_FILE_OPTION,
+    nextflow_docker_image: str | None = _NEXTFLOW_DOCKER_IMAGE_OPTION,
     max_hits: int | None = typer.Option(
         None,
         "--max-hits",
@@ -1415,11 +1475,7 @@ def workflow(  # noqa: PLR0912
             "per-transcript, so scores stay comparable between targets."
         ),
     ),
-    json_summary: bool = typer.Option(
-        True,
-        "--json-summary/--no-json-summary",
-        help="Write logs/workflow_summary.json (disable to skip JSON output)",
-    ),
+    json_summary: bool = _JSON_SUMMARY_OPTION,
     fail_on_no_eligible: bool = typer.Option(
         False,
         "--fail-on-no-eligible",
@@ -1891,17 +1947,8 @@ def offtarget(  # noqa: PLR0912
             "cross-species hits offline instead of calling Ensembl Compara."
         ),
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
+    log_file: Path | None = _LOG_FILE_OPTION,
     nextflow_docker_image: str | None = typer.Option(
         None,
         "--nextflow-docker-image",
@@ -2091,29 +2138,9 @@ def zfn(
         "-o",
         help="Output directory for ZFN activity evaluation results",
     ),
-    zfn_subfinger_mutation: list[str] = typer.Option(
-        [],
-        "--zfn-subfinger-mutation",
-        help=(
-            "ZFN sub-finger mutation allowance. "
-            "Repeatable format: scope:max_mutations:type1,type2. "
-            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
-            "or 'overall' for global budgets. "
-            "Use 'mismatch' as a shorthand alias for 'substitution'."
-        ),
-    ),
-    zfn_max_mismatches_per_subfinger: int | None = typer.Option(
-        None,
-        "--zfn-max-mismatches-per-subfinger",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
-    ),
-    zfn_max_substitutions_overall: int | None = typer.Option(
-        None,
-        "--zfn-max-substitutions-overall",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
-    ),
+    zfn_subfinger_mutation: list[str] = _ZFN_SUBFINGER_MUTATION_OPTION,
+    zfn_max_mismatches_per_subfinger: int | None = _ZFN_MAX_MISMATCHES_PER_SUBFINGER_OPTION,
+    zfn_max_substitutions_overall: int | None = _ZFN_MAX_SUBSTITUTIONS_OVERALL_OPTION,
     zfn_left_half_site: str = typer.Option(
         ...,
         "--zfn-left-half-site",
@@ -2134,105 +2161,21 @@ def zfn(
             "Default: ensembl_human_hg38_primary."
         ),
     ),
-    zfn_search_space_index: str | None = typer.Option(
-        None,
-        "--zfn-search-space-index",
-        help=(
-            "Optional persisted search-space index bundle path for indexed ZFN backends "
-            "(currently fm_index; fm_index is experimental on large references)."
-        ),
-    ),
-    zfn_search_backend: ZFNSearchBackend = typer.Option(
-        ZFNSearchBackend.PYAHOCORASICK,
-        "--zfn-search-backend",
-        help=(
-            "Half-site search backend: pyahocorasick (default), "
-            "exhaustive_python (baseline), or fm_index (experimental)."
-        ),
-    ),
-    zfn_algorithm: ZFNAlgorithm = typer.Option(
-        ZFNAlgorithm.ZFN_V2,
-        "--zfn-algorithm",
-        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
-    ),
-    zfn_dimer_mode: DimerMode = typer.Option(
-        DimerMode.HETERODIMER_ONLY,
-        "--zfn-dimer-mode",
-        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
-    ),
-    zfn_spacer_lengths: str = typer.Option(
-        "5,6,7",
-        "--zfn-spacer-lengths",
-        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
-    ),
-    zfn_max_mismatches: int = typer.Option(
-        2,
-        "--zfn-max-mismatches",
-        min=0,
-        max=6,
-        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
-    ),
-    zfn_window_stride: int | None = typer.Option(
-        None,
-        "--zfn-window-stride",
-        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
-        min=1,
-        max=50,
-        hidden=True,
-        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
-    ),
-    zfn_top_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-top-n-sites",
-        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
-    ),
-    zfn_report_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-report-n-sites",
-        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: number of top ranked sites included in report outputs.",
-    ),
-    cores: int | None = typer.Option(
-        None,
-        "--cores",
-        min=1,
-        envvar="SIRNAFORGE_CORES",
-        help=(
-            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
-        ),
-    ),
-    zfn_annotation: str | None = typer.Option(
-        None,
-        "--zfn-annotation",
-        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
-    ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
-    ),
-    nextflow_docker_image: str | None = typer.Option(
-        None,
-        "--nextflow-docker-image",
-        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
-        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
-    ),
-    json_summary: bool = typer.Option(
-        True,
-        "--json-summary/--no-json-summary",
-        help="Write logs/workflow_summary.json (disable to skip JSON output)",
-    ),
+    zfn_search_space_index: str | None = _ZFN_SEARCH_SPACE_INDEX_OPTION,
+    zfn_search_backend: ZFNSearchBackend = _ZFN_SEARCH_BACKEND_OPTION,
+    zfn_algorithm: ZFNAlgorithm = _ZFN_ALGORITHM_OPTION,
+    zfn_dimer_mode: DimerMode = _ZFN_DIMER_MODE_OPTION,
+    zfn_spacer_lengths: str = _ZFN_SPACER_LENGTHS_OPTION,
+    zfn_max_mismatches: int = _ZFN_MAX_MISMATCHES_OPTION,
+    zfn_window_stride: int | None = _ZFN_WINDOW_STRIDE_OPTION,
+    zfn_top_n_sites: int | None = _ZFN_TOP_N_SITES_OPTION,
+    zfn_report_n_sites: int | None = _ZFN_REPORT_N_SITES_OPTION,
+    cores: int | None = _CORES_OPTION,
+    zfn_annotation: str | None = _ZFN_ANNOTATION_OPTION,
+    verbose: bool = _VERBOSE_OPTION,
+    log_file: Path | None = _LOG_FILE_OPTION,
+    nextflow_docker_image: str | None = _NEXTFLOW_DOCKER_IMAGE_OPTION,
+    json_summary: bool = _JSON_SUMMARY_OPTION,
 ) -> None:
     """Evaluate a ZFN pair and run exhaustive genome-wide off-target search (EXPERIMENTAL)."""
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
@@ -2497,12 +2440,7 @@ def design(  # noqa: PLR0912
             f"--design-mode mirna defaults to {mirna_preset_default_for('default_overhang')})"
         ),
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Design siRNA candidates from a transcript FASTA file.
 
@@ -2981,12 +2919,7 @@ def benchmark_prepare(
         "--overwrite/--no-overwrite",
         help="Overwrite an existing artifact directory instead of refusing it.",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Prepare one fixed-length benchmark artifact for a compatible panel and paired length (#109).
 
@@ -3078,12 +3011,7 @@ def benchmark_design(
             "polynucleotide-run gate resolve exactly as 'sirnaforge design' would."
         ),
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Run the fixed-length design path over a prepared benchmark artifact, twice-policied (#109).
 
@@ -3323,12 +3251,7 @@ def sequences_annotate(
         "-o",
         help="Output FASTA file (default: <input>_annotated.fasta)",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Merge metadata from a JSON file into FASTA headers.
 
