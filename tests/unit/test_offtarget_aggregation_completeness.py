@@ -26,7 +26,11 @@ from sirnaforge.data.transcriptome_manager import (
     TranscriptomeSource,
 )
 from sirnaforge.models.off_target import MiRNAHit, OffTargetHit
-from sirnaforge.models.schemas import AggregatedOffTargetSchema
+from sirnaforge.models.schemas import (
+    AggregatedOffTargetSchema,
+    GenomeAlignmentSchema,
+    MiRNAAlignmentSchema,
+)
 from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
 from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli, offtarget_analysis_cli
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
@@ -138,6 +142,32 @@ def _aggregate(root: Path) -> dict:
     output_dir = root / "aggregated"
     aggregate_offtarget_results(results_dir=staged, output_dir=output_dir, transcriptome_species="human,mouse,rat")
     return json.loads((output_dir / "combined_summary.json").read_text())
+
+
+# ---------------------------------------------------------------------------
+# One column order per alignment table
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("hit", "schema"),
+    [
+        (OffTargetHit(**_genome_row("human", "ENST00000000009")), GenomeAlignmentSchema),
+        (MiRNAHit(**_mirna_row()), MiRNAAlignmentSchema),
+    ],
+)
+def test_the_tsv_header_and_the_row_beneath_it_declare_the_same_columns(hit, schema):
+    """``tsv_header`` and ``to_dict`` are written to the same file, so they must not drift.
+
+    Both now derive from ``TSV_COLUMNS``; this also pins the pandera schema, which declares the same
+    columns a third time because it is deliberately kept declarative and statically typed.
+    """
+    columns = list(type(hit).TSV_COLUMNS)
+
+    assert type(hit).tsv_header().split("\t") == columns
+    assert list(hit.to_dict()) == columns
+    assert list(schema.to_schema().columns) == columns
 
 
 # ---------------------------------------------------------------------------

@@ -323,6 +323,20 @@ def _recorded_verdict(row: pd.Series, filter_id: str) -> str | None:
     return str(value)
 
 
+def _verdict_code(passed: bool, action: str) -> int:
+    """The verdict code one comparison earns, given the gate's action.
+
+    Both :func:`_evaluate` and :func:`reevaluate_gates` decide this, so they decide it here: a
+    ``warn`` gate the guide exceeds must come back as :data:`VERDICT_WARN` and never the fail code
+    (see :func:`reevaluate_gates` for what folding the two together would cost).
+    """
+    if passed:
+        return _VERDICT_CODE[FilterEvaluation.PASS.value]
+    if action == FilterAction.WARN.value:
+        return VERDICT_WARN
+    return _VERDICT_CODE[FilterEvaluation.FAIL.value]
+
+
 def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[float | int | None, int, int]:
     """Evaluate one descriptor against one candidate row, independently of every other gate.
 
@@ -378,13 +392,7 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     # ``FilterComparator.passes`` (#103) so :func:`reevaluate_gates` and the report's JS restate
     # exactly this table, not a second copy that could drift from it.
     passed = descriptor.comparator.passes(value, descriptor.threshold)
-    if passed:
-        code = _VERDICT_CODE[FilterEvaluation.PASS.value]
-    elif descriptor.action.value == FilterAction.WARN.value:
-        code = VERDICT_WARN
-    else:
-        code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
-    return value, code, REASON_OK
+    return value, _verdict_code(passed, descriptor.action.value), REASON_OK
 
 
 def reevaluate_gates(
@@ -436,13 +444,7 @@ def reevaluate_gates(
             continue
         threshold = chosen.get(f["filter_id"], f["threshold"])
         passed = FilterComparator(f["comparator"]).passes(value, threshold)
-        if passed:
-            code = _VERDICT_CODE[FilterEvaluation.PASS.value]
-        elif f["action"] == FilterAction.WARN.value:
-            code = VERDICT_WARN
-        else:
-            code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
-        out.append([value, code, REASON_OK])
+        out.append([value, _verdict_code(passed, f["action"]), REASON_OK])
     return out
 
 

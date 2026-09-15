@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -108,10 +108,19 @@ class BaseAlignmentHit(BaseModel, ABC):
             raise ValueError(f"Invalid CIGAR string format: {v}")
         return v
 
+    #: The TSV column order, declared once per subclass. ``to_dict`` is keyed on it and
+    #: :meth:`tsv_header` is joined from it, so a header cannot drift from the row beneath it --
+    #: both are written to the same file by ``core/off_target.py``.
+    TSV_COLUMNS: ClassVar[tuple[str, ...]]
+
     @abstractmethod
+    def _tsv_values(self) -> dict[str, Any]:
+        """Serialised value per column name; ordering is :attr:`TSV_COLUMNS`'s job, not this one's."""
+
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for TSV/JSON serialization."""
-        pass
+        """Convert to dictionary for TSV/JSON serialization, in :attr:`TSV_COLUMNS` order."""
+        values = self._tsv_values()
+        return {column: values[column] for column in self.TSV_COLUMNS}
 
     def to_tsv_row(self) -> str:
         """Convert to TSV row format."""
@@ -119,10 +128,9 @@ class BaseAlignmentHit(BaseModel, ABC):
         return "\t".join(str(d[k]) for k in d)
 
     @classmethod
-    @abstractmethod
     def tsv_header(cls) -> str:
         """Get TSV header line."""
-        pass
+        return "\t".join(cls.TSV_COLUMNS)
 
 
 class OffTargetHit(BaseAlignmentHit):
@@ -136,8 +144,23 @@ class OffTargetHit(BaseAlignmentHit):
     species: str = Field(description="Reference species identifier for this hit")
     rname: str = Field(description="Reference sequence identifier (chromosome, transcript, etc.)")
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for TSV/JSON serialization."""
+    TSV_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "qname",
+        "qseq",
+        "species",
+        "rname",
+        "coord",
+        "strand",
+        "cigar",
+        "mapq",
+        "as_score",
+        "nm",
+        "seed_mismatches",
+        "offtarget_score",
+    )
+
+    def _tsv_values(self) -> dict[str, Any]:
+        """Serialised value per column name."""
         return {
             "qname": self.qname,
             "qseq": self.qseq,
@@ -152,11 +175,6 @@ class OffTargetHit(BaseAlignmentHit):
             "seed_mismatches": self.seed_mismatches,
             "offtarget_score": self.offtarget_score,
         }
-
-    @classmethod
-    def tsv_header(cls) -> str:
-        """Get TSV header line."""
-        return "qname\tqseq\tspecies\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
 
 
 class MiRNAHit(BaseAlignmentHit):
@@ -173,8 +191,24 @@ class MiRNAHit(BaseAlignmentHit):
     )
     mirna_id: str = Field(description="miRNA identifier (e.g., hsa-miR-21-5p)")
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for TSV/JSON serialization."""
+    TSV_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "qname",
+        "qseq",
+        "species",
+        "database",
+        "mirna_id",
+        "coord",
+        "strand",
+        "cigar",
+        "mapq",
+        "as_score",
+        "nm",
+        "seed_mismatches",
+        "offtarget_score",
+    )
+
+    def _tsv_values(self) -> dict[str, Any]:
+        """Serialised value per column name."""
         return {
             "qname": self.qname,
             "qseq": self.qseq,
@@ -190,14 +224,6 @@ class MiRNAHit(BaseAlignmentHit):
             "seed_mismatches": self.seed_mismatches,
             "offtarget_score": self.offtarget_score,
         }
-
-    @classmethod
-    def tsv_header(cls) -> str:
-        """Get TSV header line."""
-        return (
-            "qname\tqseq\tspecies\tdatabase\tmirna_id\tcoord\tstrand\tcigar\tmapq\tas_score\t"
-            "nm\tseed_mismatches\tofftarget_score"
-        )
 
 
 class BaseSummary(BaseModel):
