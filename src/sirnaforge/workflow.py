@@ -20,7 +20,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, NamedTuple, cast
@@ -85,6 +85,7 @@ from sirnaforge.core.hit_classification import (
     ClassificationContext,
     HitClass,
     HitClassCounts,
+    HitClassification,
     classify_hit,
 )
 from sirnaforge.core.off_target import OffTargetAnalysisManager
@@ -115,13 +116,29 @@ from sirnaforge.core.screening_evidence import (
     parse_reconciliation_payload,
     reconcile,
     reconciliation_payload,
+    write_evidence,
 )
 from sirnaforge.core.selection import (
     CandidateView,
     SelectionInputs,
     select,
 )
+from sirnaforge.core.target_intent import (
+    CoverageObservation,
+    CoverageStatus,
+    IntentVerdict,
+    evaluate_intent,
+    observe_coverage,
+    resolve_target_intent,
+)
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
+from sirnaforge.core.transcript_seed import (
+    ALL_SEED_CLASSES,
+    SiteRegion,
+    TranscriptSeedScanResult,
+    scan_transcript_seed_sites,
+    transcript_seed_evidence_entry,
+)
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
 from sirnaforge.data.gene_search import GeneSearcher
@@ -143,11 +160,14 @@ from sirnaforge.models.evidence import (
     ScreeningPlan,
 )
 from sirnaforge.models.policy import (
+    CoverageMatch,
     FilterAction,
     FilterEvaluation,
     RunMode,
     RunStatus,
     ScreeningChannel,
+    TargetIntent,
+    TargetSelectivity,
 )
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -280,10 +300,21 @@ def screening_run_status(*, status: str, reason: str = "", required_evidence_mis
 class OffTargetGateCounts(NamedTuple):
     """The counts the off-target gates compare, in the order ``_check_offtarget_filters`` reads them.
 
-    Named so the no-hit and with-hit paths can hand the same eight numbers to the same gate call.
+    Named so the no-hit and with-hit paths can hand the same numbers to the same gate call.
     Every field defaults to zero and :data:`_ZERO_OFFTARGET_COUNTS` is that all-zero instance: a
     completed screen that found nothing is a *measurement* of zero, and giving it a name is what
     stopped the clean-screen path from skipping the gates entirely (issue #106).
+
+    The three ``transcript_seed_*`` fields default to ``None``, not to zero, and that asymmetry is
+    deliberate (#101). The alignment and miRNA channels run on every screened run, so a zero from
+    them is a measurement; the transcript-seed channel is opt-in, so a zero from a run that never
+    requested it would be a claim about a scan that never happened. ``None`` reaches
+    :func:`~sirnaforge.core.filtering.evaluate_gate` as an unobserved value and becomes ``UNKNOWN``
+    the moment a ceiling is stated, which is the honest cell.
+
+    The two ``*_isoform_hits`` fields default to zero because they are counted from the alignment
+    rows this run already holds: with nothing declared excluded and no selectivity in force, zero is
+    a measurement of the run's own hit table and not an absence of evidence.
     """
 
     transcriptome_0mm: int = 0
@@ -294,12 +325,33 @@ class OffTargetGateCounts(NamedTuple):
     mirna_high_risk: int = 0
     total_hits: int = 0
     genuine_off_target_count: int = 0
+    transcript_seed_sites: int | None = None
+    transcript_seed_transcripts: int | None = None
+    transcript_seed_genes: int | None = None
+    excluded_isoform_hits: int = 0
+    unintended_isoform_hits: int = 0
 
 
 _ZERO_OFFTARGET_COUNTS = OffTargetGateCounts()
 
+
+class TranscriptSeedGateCounts(NamedTuple):
+    """The three transcript-seed aggregation units, reported and gated separately (#101).
+
+    Three fields rather than one number because one transcript carries many sites and one gene many
+    transcripts, so no two of them are derivable from each other and collapsing them would silently
+    pick one. Every field defaults to ``None``, and the all-``None`` instance is what a run that never
+    requested the channel produces: not a zero, which would claim a scan that never happened.
+    """
+
+    sites: int | None = None
+    distinct_transcripts: int | None = None
+    distinct_genes: int | None = None
+
+
 _TRANSCRIPTOME_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPTOME})
 _MIRNA_SEED_CHANNEL = frozenset({ScreeningChannel.MIRNA_SEED})
+_TRANSCRIPT_SEED_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPT_SEED})
 
 #: Which screening channel supplies each post-screen gate's count. One mapping, because
 #: ``_check_offtarget_filters`` and ``_apply_post_screen_ranking`` both need this answer and must not
@@ -316,6 +368,16 @@ POST_SCREEN_FILTER_CHANNELS: Mapping[str, frozenset[ScreeningChannel]] = {
     "fail_on_high_risk_mirna": _MIRNA_SEED_CHANNEL,
     # Counts two channels at once, so it is decided by neither alone.
     "max_total_offtarget_hits": _TRANSCRIPTOME_CHANNEL | _MIRNA_SEED_CHANNEL,
+    # #101's third liability channel. Its own channel, so a run that never requested the opt-in
+    # transcript-seed scan leaves these three UNKNOWN rather than passing on a scan-shaped zero.
+    "max_transcript_seed_sites": _TRANSCRIPT_SEED_CHANNEL,
+    "max_transcript_seed_transcripts": _TRANSCRIPT_SEED_CHANNEL,
+    "max_transcript_seed_genes": _TRANSCRIPT_SEED_CHANNEL,
+    # The intent gates read the ALIGNMENT rows -- an excluded-isoform hit is a transcriptome hit
+    # whose intent verdict disagrees with its hit class -- so they depend on the transcriptome
+    # channel and on nothing the seed scan produces.
+    "max_excluded_isoform_hits": _TRANSCRIPTOME_CHANNEL,
+    "max_unintended_isoform_hits": _TRANSCRIPTOME_CHANNEL,
 }
 
 #: Which run statistic each off-target rejection increments. Shared by the no-hit and with-hit paths.
@@ -327,6 +389,11 @@ _OFFTARGET_REJECTION_STATS: Mapping[SiRNACandidate.FilterStatus, str] = {
     SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED: "failed_mirna_seed",
     SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA: "failed_high_risk_mirna",
     SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS: "failed_excess_off_targets",
+    SiRNACandidate.FilterStatus.TRANSCRIPT_SEED_SITES: "failed_transcript_seed_sites",
+    SiRNACandidate.FilterStatus.TRANSCRIPT_SEED_TRANSCRIPTS: "failed_transcript_seed_transcripts",
+    SiRNACandidate.FilterStatus.TRANSCRIPT_SEED_GENES: "failed_transcript_seed_genes",
+    SiRNACandidate.FilterStatus.EXCLUDED_ISOFORM: "failed_excluded_isoform",
+    SiRNACandidate.FilterStatus.UNINTENDED_ISOFORM: "failed_unintended_isoform",
 }
 
 
@@ -359,6 +426,106 @@ def _policy_filter_actions(policy: ResolvedRunPolicy | None) -> dict[str, Filter
     if policy is None:
         return None
     return {resolved.filter_id: resolved.descriptor.action for resolved in policy.filters}
+
+
+#: Columns of ``<species>_transcript_seed_sites.tsv``, in ``TranscriptSeedSiteSchema``'s order.
+#: Named here because the writer below and the parser in ``_parse_nextflow_results`` must agree, and
+#: because the schema is ``strict=True``: an extra column would mean a producer published a site
+#: property the contract never declared. ``channel`` is deliberately absent -- it is a discriminator
+#: the parser stamps on the in-memory row, not a property of a site.
+_TRANSCRIPT_SEED_COLUMNS: tuple[str, ...] = (
+    "guide_id",
+    "guide_sequence",
+    "queried_strand",
+    "species",
+    "transcript_id",
+    "transcript_version",
+    "gene_id",
+    "site_start",
+    "site_end",
+    "anchor_position",
+    "site_class",
+    "site_strand",
+    "region",
+    "coordinate_system",
+    "annotation_provenance",
+)
+
+#: The value every transcript-seed row carries in its ``channel`` cell. A POSITIVE discriminator, so
+#: the integration loop never has to decide what a row is from the *absence* of ``mirna_id`` and
+#: ``database`` -- that test is how a third channel's rows would silently be counted as alignments.
+_TRANSCRIPT_SEED_ROW_CHANNEL = ScreeningChannel.TRANSCRIPT_SEED.value
+
+#: Default retention cap per guide for the transcript-seed scan. A 7mer occurs roughly once per
+#: 16 kb, so an uncapped full-cDNA scan publishes thousands of rows per guide -- orders of magnitude
+#: more than the alignment table. When the cap truncates, the scan reports ``CENSORED`` and its counts
+#: are declared lower bounds, so a ceiling read against them cannot claim to have been respected.
+_TRANSCRIPT_SEED_SITE_CAP = 200
+
+
+def _transcript_seed_row(site: Any) -> dict[str, Any]:
+    """One :class:`~sirnaforge.core.transcript_seed.TranscriptSeedSite` as a published row."""
+    return {
+        "guide_id": site.guide_id,
+        "guide_sequence": site.guide_sequence,
+        "queried_strand": site.queried_strand.value,
+        "species": site.species,
+        "transcript_id": site.transcript_id,
+        "transcript_version": site.transcript_version,
+        "gene_id": site.gene_id,
+        "site_start": site.site_start,
+        "site_end": site.site_end,
+        "anchor_position": site.anchor_position,
+        "site_class": site.site_class.value,
+        "site_strand": site.site_strand.value,
+        "region": site.region.value,
+        "coordinate_system": site.coordinate_system,
+        "annotation_provenance": site.annotation_provenance,
+    }
+
+
+def _transcript_seed_rows_by_guide(result: TranscriptSeedScanResult) -> dict[str, list[dict[str, Any]]]:
+    """A scan's sites keyed by guide id, in the shape the published TSV parses back into.
+
+    One consumer shape whichever producer ran -- an in-process scan or a pipeline module's TSV -- so
+    the counters cannot depend on which. Every row carries the ``channel`` discriminator.
+    """
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for site in result.sites:
+        row = _transcript_seed_row(site)
+        row["channel"] = _TRANSCRIPT_SEED_ROW_CHANNEL
+        rows.setdefault(site.guide_id, []).append(row)
+    return rows
+
+
+def _split_declared_ids(declared: str | Sequence[str] | None) -> tuple[str, ...]:
+    """Accept a comma-separated string or a sequence of transcript IDs, and return a sequence.
+
+    Both spellings exist because the CLI can only type one string while a Python caller naturally
+    holds a list, and refusing either would make one of the two entry points awkward for no gain.
+    Version stripping and de-duplication happen in ``WorkflowConfig``, so this only splits.
+    """
+    if declared is None:
+        return ()
+    if isinstance(declared, str):
+        return tuple(part.strip() for part in declared.split(",") if part.strip())
+    return tuple(declared)
+
+
+def _normalize_declared_ids(declared: Sequence[str] | None) -> tuple[str, ...]:
+    """Version-stripped, de-duplicated, order-preserving transcript ids as the caller typed them.
+
+    Delegates the stripping to :meth:`SiRNAWorkflow._normalize_transcript_id` rather than adding a
+    fourth version-stripping implementation to this repository (#101): the declared ids have to
+    compare equal to the annotation universe's keys, and the only way to guarantee that is for both
+    to go through the same function. Order is preserved so the published ``target_intent`` block
+    lists the ids in the order they were declared even though every set on
+    :class:`~sirnaforge.models.policy.TargetIntent` is a frozenset.
+    """
+    if not declared:
+        return ()
+    stripped = (SiRNAWorkflow._normalize_transcript_id(value) for value in declared if value and value.strip())
+    return tuple(dict.fromkeys(stripped))
 
 
 def refuse_renamed_arguments(supplied: Mapping[str, Any]) -> None:
@@ -412,6 +579,10 @@ class WorkflowConfig:
         variant_config: VariantWorkflowConfig | None = None,
         zfn_config: ZFNWorkflowConfig | None = None,
         resolved_policy: ResolvedRunPolicy | None = None,
+        selectivity: TargetSelectivity | str | None = None,
+        required_transcripts: Sequence[str] | None = None,
+        excluded_transcripts: Sequence[str] | None = None,
+        transcript_seed_scope: SiteRegion | str | None = None,
         **renamed: Any,
     ):
         """Initialize workflow configuration.
@@ -421,6 +592,19 @@ class WorkflowConfig:
         so every path -- CLI, Python API, off-target-only, direct WorkflowConfig -- carries a policy
         and none of them re-derives a threshold. Resolution happens before the output directories
         below are created, so an invalid configuration costs nothing.
+
+        ``selectivity``, ``required_transcripts`` and ``excluded_transcripts`` are #101's target
+        intent as the caller declared it, held here and resolved once by
+        :meth:`SiRNAWorkflow._freeze_target_intent` after retrieval. ``selectivity`` defaults to
+        ``PAN_ISOFORM`` only when nothing is required, which preserves the pre-#101 behaviour of a
+        run that declares nothing; naming required transcripts implies selectivity, because
+        measuring a declared subset against every isoform is the reading #101 removed. They describe
+        which *transcripts* are wanted and take no part in ``variant_config``, which owns which
+        *alleles* are wanted -- two axes that cannot disagree because neither reads the other.
+
+        ``transcript_seed_scope`` opts into the transcript-seed liability channel and names its
+        region. ``None`` means the channel was not requested at all, which is why the three
+        transcript-seed ceilings then report ``UNKNOWN`` rather than a zero.
 
         ``screen_species`` are the species this run asks to screen; ``transcriptome_indices`` are
         ``species:index_prefix`` references the caller has already built. Both feed one resolver
@@ -530,6 +714,24 @@ class WorkflowConfig:
         # instead of calling Ensembl Compara, so an air-gapped run -- and every fixture -- is
         # deterministic and never waits on REST.
         self.ortholog_mapping_file = Path(ortholog_mapping_file) if ortholog_mapping_file else None
+        # Target intent (#101), declared here and frozen after retrieval. Version-stripped now
+        # rather than at use: the annotation universe is keyed on stripped ids, and a declared
+        # ENST00000269305.9 that never matched the universe's ENST00000269305 would be recorded as
+        # unresolved -- a typo's spelling for a version suffix the caller was entitled to type.
+        self.required_transcripts: tuple[str, ...] = _normalize_declared_ids(required_transcripts)
+        self.excluded_transcripts: tuple[str, ...] = _normalize_declared_ids(excluded_transcripts)
+        # Naming required transcripts is what selectivity means, so it is inferred when unstated
+        # rather than left to default to pan-isoform and silently measure a selective design against
+        # every isoform of the gene.
+        if selectivity is not None:
+            self.selectivity = TargetSelectivity(selectivity)
+        elif self.required_transcripts:
+            self.selectivity = TargetSelectivity.ISOFORM_SELECTIVE
+        else:
+            self.selectivity = TargetSelectivity.PAN_ISOFORM
+        self.transcript_seed_scope: SiteRegion | None = (
+            SiteRegion(transcript_seed_scope) if transcript_seed_scope else None
+        )
         self.validation_config = validation_config or ValidationConfig()
         self.log_file = log_file
         self.write_json_summary = write_json_summary
@@ -605,8 +807,20 @@ class SiRNAWorkflow:
         self._gene_transcript_ids: set[str] = set()
         self._query_gene_ids: set[str] = set()
         self._query_gene_symbols: set[str] = set()
-        self._protein_coding_transcript_ids: set[str] = set()
-        self._protein_coding_transcript_count: int = 0
+        # Every transcript the annotation source offered, BEFORE step1's protein-coding/sequence
+        # filter and before ORF validation, keyed on the version-stripped id. Recorded as a side
+        # effect of retrieval because step1's return value is the filtered survivor set and #101
+        # requires the coverage denominator be frozen over the wider one (see
+        # :meth:`_freeze_target_intent`). Maps id -> declared biotype, with None for "the source
+        # declared none".
+        self._retrieved_annotation_universe: dict[str, str | None] = {}
+        # Target sequences this run holds, again keyed on the version-stripped id. The coverage
+        # numerator is a complementarity test against sequence, so a denominator member absent from
+        # here makes coverage unknown rather than smaller.
+        self._target_sequences: dict[str, str] = {}
+        # The one frozen intent, assigned exactly once by _freeze_target_intent. None means intent
+        # has not been resolved yet, which is not the same as an intent that declares nothing.
+        self._target_intent: TargetIntent | None = None
         self._transcript_index = TranscriptGeneIndex()
         self._species_explicitly_requested: bool = False
         # Species actually handed to Nextflow, which is a superset of config.screen_species when
@@ -674,6 +888,19 @@ class SiRNAWorkflow:
         self._species_cdna_fasta: dict[str, Path] = {}
         self._guide_to_transcripts: dict[str, frozenset[str]] = {}
         self._repeat_summary: dict[str, Any] = {"status": "not_run"}
+        self._transcript_seed_summary: dict[str, Any] = {"status": "not_run"}
+        # The opt-in transcript-seed scan's result per species (#101). Absent means the channel was
+        # not requested; present-and-FAILED means it was requested and could not answer, which is a
+        # different cell and reaches the gates as UNKNOWN either way.
+        self._transcript_seed_results: dict[str, TranscriptSeedScanResult] = {}
+        # Seed rows keyed by the screen qname, in the same shape the parser produces from a
+        # published ``<species>_transcript_seed_sites.tsv``, so the integration loop has one
+        # consumer whichever producer ran. Sibling to the alignment rows, never inside them.
+        self._transcript_seed_rows: dict[str, list[dict[str, Any]]] = {}
+        # Whether a transcript-seed scan of the query species ANSWERED. False is not "no sites": it
+        # is "no scan", and it is what keeps the three seed columns None and their gates UNKNOWN
+        # rather than passing on a zero nothing measured.
+        self._transcript_seed_observed: bool = False
 
         # Optional: Initialize transcript annotation client (not used by default yet)
         # This can be enabled via environment variable or config flag in the future
@@ -686,6 +913,162 @@ class SiRNAWorkflow:
         # re-issued once logs/workflow_summary.json exists. None until a report has been written, which
         # is what stops the re-issue from naming a summary no run produced.
         self._report_registration: tuple[ReportPayload, Path] | None = None
+
+    @property
+    def _protein_coding_transcript_ids(self) -> frozenset[str]:
+        """The frozen coverage denominator, read-only on purpose (#101).
+
+        This was a mutable ``set`` attribute assigned in ``run_complete_workflow`` from step1's
+        *filtered* return value, which is the defect #101 names: an isoform dropped by the
+        protein-coding/sequence filter or by ORF validation silently left the denominator, and
+        coverage rose for a guide that covered no more transcripts than before. It is now derived
+        from :attr:`TargetIntent.coverage_denominator` on one frozen pydantic instance, so a later
+        step shrinking it is not a convention to be maintained but an ``AttributeError``.
+
+        Empty before :meth:`_freeze_target_intent` runs, and an empty denominator makes coverage
+        *unknown* rather than complete -- see :func:`~sirnaforge.core.target_intent.observe_coverage`.
+        """
+        return self._target_intent.coverage_denominator if self._target_intent is not None else frozenset()
+
+    @property
+    def _protein_coding_transcript_count(self) -> int:
+        """Size of the frozen denominator. Derived, so it cannot disagree with the set it counts."""
+        return len(self._protein_coding_transcript_ids)
+
+    def _freeze_target_intent(self, transcripts: Sequence[TranscriptInfo]) -> TargetIntent:
+        """Resolve this run's intent once, after retrieval and before any design-side filtering (#101).
+
+        Called from ``run_complete_workflow`` between ``step1_retrieve_transcripts`` and
+        ``step2_validate_orfs``. That position is the whole point: ORF validation and design both
+        shrink the transcript set, and the coverage denominator must be the set the *annotation
+        source* offered, not the set that survived to carry a guide.
+
+        There is a code contradiction to work around, and it is worth stating rather than hiding.
+        ``step1_retrieve_transcripts`` returns only transcripts that are protein-coding *and* carry a
+        sequence, so ``run_complete_workflow`` never sees the wider set and cannot freeze anything
+        over it. Step 1 therefore records the unfiltered universe as a side effect
+        (:attr:`_retrieved_annotation_universe`), keeping its return type unchanged because a great
+        many tests patch it. ``transcripts`` is the fallback for exactly those patched callers: when
+        no universe was recorded the survivors are the best universe available, and building from
+        them reproduces the pre-#101 denominator rather than an empty one. A recorded universe always
+        wins -- that is the fix.
+
+        Raises:
+            RuntimeError: Intent was already frozen. A second resolution would produce a second
+                denominator, and the point of freezing is that there is only ever one.
+        """
+        if self._target_intent is not None:
+            raise RuntimeError(
+                "target intent is already frozen for this run; resolving it twice would produce two "
+                "coverage denominators, which is the drift #101 exists to prevent"
+            )
+
+        universe: dict[str, str | None] = dict(self._retrieved_annotation_universe)
+        if not universe:
+            universe = {
+                self._normalize_transcript_id(t.transcript_id): t.transcript_type
+                for t in transcripts
+                if t.transcript_id
+            }
+        sequences = dict(self._target_sequences) or {
+            self._normalize_transcript_id(t.transcript_id): t.sequence
+            for t in transcripts
+            if t.transcript_id and t.sequence
+        }
+        self._target_sequences = {tid: seq for tid, seq in sequences.items() if seq}
+
+        # An input FASTA declares no biotype, so every record reads "unknown" and a pan-isoform
+        # denominator restricted to protein_coding would be empty -- coverage unknown for a run whose
+        # targets the user supplied by hand and plainly meant. Counting them as coding is the honest
+        # reading there and nowhere else, which is why the switch is keyed on the input form.
+        from_input_fasta = self.config.input_fasta is not None
+        intent = resolve_target_intent(
+            selectivity=self.config.selectivity,
+            annotation_universe=universe,
+            required_transcript_ids=self.config.required_transcripts,
+            excluded_transcript_ids=self.config.excluded_transcripts,
+            # The enumeration map is published as a diagnostic from here on, never as the coverage
+            # numerator. It is empty at freeze time (design has not run), so the ids recorded are the
+            # transcripts design is about to be given -- which is what "enumeration inputs" means.
+            enumeration_inputs=[self._normalize_transcript_id(t.transcript_id) for t in transcripts if t.transcript_id],
+            sequence_available=self._target_sequences,
+            target_species=(self._query_species,),
+            offtarget_screen_species=self.config.screen_species,
+            annotation_provenance="input_fasta" if from_input_fasta else f"{self.config.database.value}_gene_query",
+            coverage_match=CoverageMatch.EXACT_FULL_SITE,
+            unknown_biotype_counts_as_coding=from_input_fasta,
+        )
+        self._target_intent = intent
+        if intent.unresolved_target_ids:
+            # Loud, because absence from every other set is indistinguishable from compliance: a
+            # typo'd required id would otherwise read as a satisfied requirement.
+            logger.error(
+                f"Declared target transcript(s) {sorted(intent.unresolved_target_ids)} appear in no retrieved "
+                "annotation; they constrain nothing and are recorded as unresolved."
+            )
+            console.print(
+                f"⚠️  {len(intent.unresolved_target_ids)} declared transcript id(s) matched no retrieved "
+                "transcript: " + ", ".join(sorted(intent.unresolved_target_ids))
+            )
+        console.print(
+            f"🎯 Target intent: {intent.selectivity.value}, coverage denominator "
+            f"{len(intent.coverage_denominator)} transcript(s) frozen before ORF validation"
+        )
+        return intent
+
+    def _target_intent_payload(self) -> dict[str, Any]:
+        """The published ``target_intent`` block: the frozen id lists and how coverage was decided.
+
+        Never a fabricated fraction. #101 requires the numerator/denominator ids, the annotation
+        provenance, the unit and whether enumeration was filtered all be reported, and requires a
+        missing annotation to read as *unknown*; ``coverage_status`` is that word, in the three
+        spellings :class:`~sirnaforge.core.target_intent.CoverageStatus` distinguishes, so an absent
+        denominator and an absent sequence do not collapse into one cell.
+        """
+        intent = self._target_intent
+        if intent is None:
+            return {"resolved": False}
+        missing_sequence = intent.coverage_denominator - intent.coverage_sequence_available
+        if not intent.coverage_denominator:
+            status = CoverageStatus.UNKNOWN_NO_DENOMINATOR
+        elif missing_sequence:
+            status = CoverageStatus.UNKNOWN_MISSING_SEQUENCE
+        else:
+            status = CoverageStatus.KNOWN
+        enumerated: frozenset[str] = (
+            frozenset().union(*self._guide_to_transcripts.values()) if (self._guide_to_transcripts) else frozenset()
+        )
+        return {
+            "resolved": True,
+            "selectivity": intent.selectivity.value,
+            "target_species": sorted(intent.target_species),
+            "offtarget_screen_species": sorted(intent.offtarget_screen_species),
+            "annotation_universe": sorted(intent.annotation_universe),
+            "required_transcript_ids": sorted(intent.required_transcript_ids),
+            "excluded_transcript_ids": sorted(intent.excluded_transcript_ids),
+            "coverage_denominator": sorted(intent.coverage_denominator),
+            "coverage_sequence_available": sorted(intent.coverage_sequence_available),
+            "coverage_missing_sequence": sorted(missing_sequence),
+            "unresolved_target_ids": sorted(intent.unresolved_target_ids),
+            "coverage_status": status.value,
+            "coverage_unit": "transcript",
+            "coverage_match": intent.coverage_match.value,
+            "annotation_provenance": intent.annotation_provenance,
+            # The enumeration map, demoted: which transcripts guides were enumerated on, published as
+            # a diagnostic and no longer as the coverage numerator. Two spellings, because they were
+            # recorded at different times. ``enumeration_inputs`` is what intent was told design
+            # would be offered, frozen with everything else; ``enumeration_transcripts_observed`` is
+            # what ``_store_guide_to_transcripts`` actually recorded, after ORF validation and any
+            # design failure had removed transcripts intent could not know about. The published
+            # ``enumeration_was_filtered`` is derived from the observed set whenever there is one, so
+            # it cannot claim completeness that a later stage broke; tri-state throughout, because
+            # an unrecorded enumeration is not an enumeration that covered everything.
+            "enumeration_inputs": sorted(intent.enumeration_inputs),
+            "enumeration_transcripts_observed": sorted(enumerated),
+            "enumeration_was_filtered": (
+                bool(intent.coverage_denominator - enumerated) if enumerated else intent.enumeration_was_filtered
+            ),
+        }
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete design workflow (siRNA/miRNA or ZFN)."""
@@ -720,14 +1103,12 @@ class SiRNAWorkflow:
             if not self._query_gene_symbols and self.config.gene_query:
                 self._query_gene_symbols = {self.config.gene_query.strip().upper()}
 
-            # Record protein-coding transcript set for isoform coverage scoring
-            protein_coding_transcripts = {
-                self._normalize_transcript_id(t.transcript_id)
-                for t in transcripts
-                if t.transcript_id and t.transcript_type == "protein_coding"
-            }
-            self._protein_coding_transcript_ids = protein_coding_transcripts
-            self._protein_coding_transcript_count = len(protein_coding_transcripts)
+            # Resolve intent, and with it freeze the coverage denominator -- HERE, before ORF
+            # validation and design, because both of those shrink the transcript set and #101
+            # requires the denominator survive them. Everything downstream reads
+            # _protein_coding_transcript_ids, which is now a read-only property over this one frozen
+            # instance rather than a set a later step could reassign.
+            self._freeze_target_intent(transcripts)
 
             # Track species request: if config shows explicit request, use it; otherwise default was applied
             self._species_explicitly_requested = self.config.species_explicitly_requested
@@ -785,6 +1166,10 @@ class SiRNAWorkflow:
             },
             "transcript_summary": self._summarize_transcripts(transcripts),
             "transcript_annotation_summary": self._annotation_summary or {"enabled": False},
+            # What was MEANT, beside what was found (#101). Its own block rather than a few keys
+            # inside transcript_summary, because the frozen denominator is the thing a reader has to
+            # be able to check the coverage column against.
+            "target_intent": self._target_intent_payload(),
             "orf_summary": self._summarize_orf_results(orf_results),
             "design_summary": self._summarize_design_results(design_results),
             # Why the shortlist is the size it is. Beside design_summary, not inside it: this is a
@@ -793,6 +1178,10 @@ class SiRNAWorkflow:
             "selection_summary": self._selection_summary,
             "design_parameters": design_parameters,
             "repeat_summary": self._repeat_summary,
+            # #101's third liability channel, reported apart from the miRNA counters it must never be
+            # confused with: this is complementary seed sites in transcript sequence, not resemblance
+            # to a known miRNA.
+            "transcript_seed_summary": self._transcript_seed_summary,
             "offtarget_summary": offtarget_results,
             "reference_summary": self._summarize_screening_references(),
         }
@@ -970,7 +1359,15 @@ class SiRNAWorkflow:
         return summary
 
     async def step1_retrieve_transcripts(self, progress: Progress) -> list[TranscriptInfo]:
-        """Step 1: Retrieve and validate transcript sequences."""
+        """Step 1: Retrieve and validate transcript sequences.
+
+        Returns the protein-coding, sequence-carrying survivors, exactly as it always has. The
+        *unfiltered* set is recorded as a side effect on :attr:`_retrieved_annotation_universe` and
+        :attr:`_target_sequences` (#101): the coverage denominator has to be frozen over what the
+        annotation source offered, and the return value has already lost the transcripts that would
+        make that a different number. The signature is unchanged deliberately -- a great many tests
+        patch this method, and a patched caller falls back to the survivors rather than to nothing.
+        """
         task = progress.add_task("[yellow]Fetching transcripts...", total=3)
         # If an input FASTA was provided, read sequences directly and create TranscriptInfo objects
         if self.config.input_fasta:
@@ -1009,6 +1406,10 @@ class SiRNAWorkflow:
             # Quiet transcript validation (no verbose console warnings)
             _ = self.validation.validate_transcripts(transcripts)
 
+            # An input FASTA IS the annotation universe: nothing was filtered out of it, and it
+            # declares no biotype, so every record is recorded with None and
+            # _freeze_target_intent counts unknown biotypes as coding for this input form only.
+            self._record_annotation_universe(transcripts, biotypes=False)
             return transcripts
 
         # Otherwise perform a gene search
@@ -1023,6 +1424,12 @@ class SiRNAWorkflow:
         # Get transcripts
         transcripts = gene_result.transcripts
         progress.advance(task)
+
+        # Recorded BEFORE the filter on the next line, which is the only place the wider set exists
+        # (#101). Coverage is measured against these ids, including the ones the filter is about to
+        # remove: an isoform dropped for want of a sequence is still an isoform the guide has to
+        # cover, and letting it leave the denominator is what made coverage rise for free.
+        self._record_annotation_universe(transcripts, biotypes=True)
 
         # Filter for protein-coding transcripts
         protein_transcripts = [t for t in transcripts if t.transcript_type == "protein_coding" and t.sequence]
@@ -1065,6 +1472,27 @@ class SiRNAWorkflow:
         await self._enrich_transcript_annotations(protein_transcripts)
 
         return protein_transcripts
+
+    def _record_annotation_universe(self, transcripts: Sequence[TranscriptInfo], *, biotypes: bool) -> None:
+        """Record the unfiltered retrieved set as the annotation universe and its sequences (#101).
+
+        Args:
+            transcripts: Everything the annotation source offered, before any filtering.
+            biotypes: Whether the source declared biotypes worth believing. False for an input
+                FASTA, whose records all carry the literal ``"unknown"`` this method writes as
+                ``None`` -- "the source declared none", which is a different claim from
+                "declared, and not protein-coding", and only the second may shrink a denominator.
+        """
+        self._retrieved_annotation_universe = {
+            self._normalize_transcript_id(t.transcript_id): (t.transcript_type if biotypes else None)
+            for t in transcripts
+            if t.transcript_id
+        }
+        self._target_sequences = {
+            self._normalize_transcript_id(t.transcript_id): t.sequence
+            for t in transcripts
+            if t.transcript_id and t.sequence
+        }
 
     async def _enrich_transcript_annotations(self, transcripts: list[TranscriptInfo]) -> None:
         """Optionally enrich transcripts with genomic annotations.
@@ -1507,6 +1935,172 @@ class SiRNAWorkflow:
             "repeat_flagged_count": repeat_flagged_count,
             "repeat_sequences": list(scan_result.repeat_sequences),
         }
+
+    # ──────────────────────────────────────────────────────
+    #  Transcript-seed liability channel (#101)
+    # ──────────────────────────────────────────────────────
+
+    def _run_transcript_seed_scan(self, candidates: Sequence[SiRNACandidate]) -> dict[str, Any]:
+        """Scan the query species' cDNA for complementary seed sites, if the channel was requested.
+
+        The third liability channel, and it is opt-in: ``--transcript-seed-scope`` is what asks for
+        it. A 7mer is expected roughly once per 16 kb, so a full human cDNA scan yields thousands of
+        sites per guide -- orders of magnitude more rows than the alignment table -- which is why the
+        channel ships off, why a per-guide cap is applied, and why the three ceilings ship with no
+        threshold (see ``config/run_policy.py``).
+
+        Runs beside :meth:`_run_repeat_detection` and for the same reason: both scan the query
+        species' cDNA, and this method reads the copy screening already materialised
+        (:attr:`_species_cdna_fasta`) rather than fetching or indexing a second one. Nothing is
+        downloaded here.
+
+        The scan is a *separate* channel from known-miRNA resemblance and shares no code path with
+        it: :mod:`sirnaforge.core.transcript_seed` searches for the guide's reverse-complemented seed
+        window, which is what a guide actually pairs with, whereas the miRNA scanner searches
+        forward against a miRNA database, which is correct for its own question and would find
+        passenger-orientation sites at the same rate if pointed at cDNA (#101).
+        """
+        scope = self.config.transcript_seed_scope
+        if scope is None:
+            return {"status": "not_requested"}
+
+        species = self._query_species
+        cdna_fasta = self._species_cdna_fasta.get(species)
+        if not cdna_fasta:
+            # No reference, so no scan and no counts. Deliberately NOT a zero: the three ceilings
+            # then read an unobserved value and report UNKNOWN once a caller states one.
+            console.print("⚠️  Query species cDNA reference not available; skipping transcript-seed scan")
+            return {"status": "skipped", "reason": "reference_unavailable", "species": species}
+
+        guides = {
+            candidate.screen_query_id or candidate.id: candidate.guide_sequence
+            for candidate in candidates
+            if candidate.guide_sequence
+        }
+        # The resolved reference's own identity, so a site's provenance names the cDNA set it was
+        # found in. Site counts scale with reference size, so a count without it is unreadable.
+        reference_id = next(
+            (ref.identity for ref in self._screening_references.references if ref.species == species), None
+        )
+        console.print(f"🌱 Scanning {len(guides)} guides for transcript-seed sites in {species} cDNA...")
+        result = scan_transcript_seed_sites(
+            guides,
+            cdna_fasta,
+            species=species,
+            region_scope=scope,
+            classes=ALL_SEED_CLASSES,
+            max_sites_per_guide=_TRANSCRIPT_SEED_SITE_CAP,
+            gene_index=self._transcript_index,
+            reference_id=reference_id,
+        )
+        self._transcript_seed_results[species] = result
+        self._transcript_seed_rows = _transcript_seed_rows_by_guide(result)
+        self._transcript_seed_observed = result.status is not EvidenceStatus.FAILED
+
+        sites_file = self._write_transcript_seed_sites(result)
+        evidence_file = self._write_transcript_seed_evidence(result)
+        if result.status is EvidenceStatus.FAILED:
+            logger.error(f"Transcript-seed scan for '{species}' could not answer as scoped: {result.detail}")
+        return {
+            "status": result.status.value,
+            "species": species,
+            "region": result.scope.region.value,
+            "seed_classes": sorted(cls.value for cls in result.scope.classes),
+            "max_sites_per_guide": result.scope.max_sites_per_guide,
+            "detail": result.detail,
+            "sites": len(result.sites),
+            "submitted_guides": result.submitted_guides,
+            "processed_guides": result.processed_guides,
+            "counts": result.counts.model_dump(mode="json"),
+            "detail_files": {
+                "sites": str(sites_file) if sites_file else None,
+                "evidence": str(evidence_file) if evidence_file else None,
+            },
+        }
+
+    def _transcript_seed_dir(self) -> Path:
+        """Where this channel's artifacts live: beside the off-target results, not inside them.
+
+        Its own directory because the Nextflow results tree is the pipeline's to write and clean, and
+        the evidence envelope written here has to survive being read back by
+        :func:`~sirnaforge.core.screening_evidence.collect_evidence`.
+        """
+        directory = self.config.output_dir / "off_target" / "transcript_seed"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _write_transcript_seed_sites(self, result: TranscriptSeedScanResult) -> Path | None:
+        """Write ``<species>_transcript_seed_sites.tsv`` in ``TranscriptSeedSiteSchema``'s shape.
+
+        Written even when there are no sites, header only: a run that scanned and found nothing is a
+        measurement, and an absent file is indistinguishable from a scan that never happened. A
+        ``FAILED`` scan writes nothing at all, because it has nothing to report -- see the detail on
+        the evidence envelope for why.
+        """
+        if result.status is EvidenceStatus.FAILED:
+            return None
+        path = self._transcript_seed_dir() / f"{result.scope.species}_transcript_seed_sites.tsv"
+        try:
+            with path.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=_TRANSCRIPT_SEED_COLUMNS, delimiter="\t")
+                writer.writeheader()
+                for site in result.sites:
+                    writer.writerow(_transcript_seed_row(site))
+        except OSError as exc:  # pragma: no cover - defensive logging path
+            logger.warning(f"Could not write transcript-seed sites to {path}: {exc}")
+            return None
+        return path
+
+    def _write_transcript_seed_evidence(self, result: TranscriptSeedScanResult) -> Path | None:
+        """Publish this scan through #100's evidence contract, unchanged.
+
+        The ``(channel, species, digest)`` join already generalises, so the channel needs no new
+        reconciliation rule: a ``FAILED`` scan keeps its pair out of ``completed_pairs``, which is
+        precisely how a transcript-seed ceiling reports UNKNOWN rather than passing on a zero it
+        never observed.
+        """
+        digest = self._guide_set_digest
+        if digest is None:
+            # No guide-set digest means no join key, and an envelope keyed on nothing would attribute
+            # this scan's counts to whatever guide set reconciled next.
+            logger.warning("No guide-set digest recorded; the transcript-seed scan publishes no evidence envelope")
+            return None
+        return write_evidence(
+            self._transcript_seed_dir(),
+            producer=EvidenceProducer.TRANSCRIPT_SEED_ANALYSIS,
+            entry=transcript_seed_evidence_entry(result, guide_set_digest=digest),
+        )
+
+    def _transcript_seed_gate_counts(self, candidate: SiRNACandidate) -> TranscriptSeedGateCounts:
+        """Stamp one candidate's transcript-seed columns and return the three gate inputs.
+
+        Sites, distinct transcripts and distinct genes are reported SEPARATELY, because one
+        transcript can carry many sites and one gene many transcripts, so no two of the three are
+        derivable from each other and a single number would have to pick one silently.
+        ``transcript_seed_unresolved_gene_sites`` is published beside them rather than dropped: a site
+        whose transcript resolved to no gene is a site the gene-level count could not see, which makes
+        that count a declared lower bound instead of a quiet undercount (#101).
+
+        Every column is ``None`` when the channel published nothing for the query species -- not
+        requested, no reference, or a scope it could not answer. ``None`` reaches the gate as an
+        unobserved value and becomes UNKNOWN the moment a ceiling is stated.
+        """
+        query_species = self._query_species
+        if not self._transcript_seed_observed:
+            return TranscriptSeedGateCounts()
+
+        rows = self._transcript_seed_rows.get(candidate.screen_query_id or candidate.id, [])
+        query_rows = [row for row in rows if row.get("species") == query_species]
+        transcripts = {str(row.get("transcript_id") or "") for row in query_rows} - {""}
+        genes = {str(row.get("gene_id") or "") for row in query_rows} - {""}
+        unresolved = sum(1 for row in query_rows if not row.get("gene_id"))
+
+        candidate.transcript_seed_sites_query = len(query_rows)
+        candidate.transcript_seed_transcripts_query = len(transcripts)
+        candidate.transcript_seed_genes_query = len(genes)
+        candidate.transcript_seed_unresolved_gene_sites = unresolved
+        candidate.transcript_seed_sites_total = len(rows)
+        return TranscriptSeedGateCounts(len(query_rows), len(transcripts), len(genes))
 
     async def step6_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
         """Step 6: Generate comprehensive reports.
@@ -2075,6 +2669,9 @@ class SiRNAWorkflow:
             self._record_screening_plan(input_fasta, additional_params)
             has_transcriptome = await self._resolve_screening_references(additional_params)
             self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
+            # Beside repeat detection, and for the same reason: both scan the query species' cDNA, and
+            # both read the copy screening just materialised rather than fetching a second one (#101).
+            self._transcript_seed_summary = self._run_transcript_seed_scan(candidates_for_offtarget)
 
             # Try Nextflow pipeline first. We do NOT run the simplistic sequence-based fallback
             # (it produces low-value results) when Nextflow is unavailable. Instead mark as skipped
@@ -2961,6 +3558,22 @@ class SiRNAWorkflow:
             settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
         return settings
 
+    def _requested_transcript_seed_units(self) -> tuple[tuple[str, str | None], ...]:
+        """The transcript-seed ``(species, reference_id)`` pairs this run asked for, or nothing (#101).
+
+        The query species only: the scan reads the cDNA reference screening already materialised, and
+        the counts are stratified by query species exactly as #101's transcriptome counters are. An
+        empty tuple is what keeps a run that did not request the channel byte-identical to one from
+        before the channel existed -- ``NOT_REQUESTED`` rather than ``FAILED``.
+
+        ``reference_id`` is left ``None`` here for the same reason the transcriptome units leave it
+        unset for a defaulted species: the plan is recorded *before* references resolve, so the
+        identity is not known yet and the reconciler adopts the envelope's.
+        """
+        if self.config.transcript_seed_scope is None:
+            return ()
+        return ((self._query_species, None),)
+
     def _requested_screening_units(self) -> tuple[tuple[tuple[str, str | None], ...], tuple[str, ...]]:
         """What this run asked to screen: transcriptome ``(species, reference_id)`` pairs, then miRNA species.
 
@@ -3010,6 +3623,9 @@ class SiRNAWorkflow:
             transcriptome=transcriptome,
             mirna_species=mirna_species,
             search_settings=self._plan_search_settings(additional_params),
+            # Empty unless the opt-in channel was requested, and appended last, so a run that did not
+            # ask for it produces the plan it produced before the channel existed (#101).
+            transcript_seed=self._requested_transcript_seed_units(),
         )
 
         plan_file = self.config.output_dir / "screening_plan.json"
@@ -3587,6 +4203,11 @@ class SiRNAWorkflow:
         envelopes = list(observed) or list(
             self._legacy_evidence_envelopes(digest, screened_species=screened_species, mirna_screened=mirna_screened)
         )
+        # Added AFTER the legacy fallback has been chosen, never before it (#101). The
+        # transcript-seed envelope lives outside the pipeline's results tree, so folding it into
+        # ``observed`` would make a run whose Nextflow screen published nothing look like a run that
+        # published something -- and the legacy transcriptome/miRNA entries would be skipped for it.
+        envelopes.extend(collect_evidence(self._transcript_seed_dir()) if self._transcript_seed_results else ())
         envelopes.extend(self._not_requested_envelopes(digest, plan=plan, observed=envelopes))
         return reconcile(plan, envelopes)
 
@@ -4045,6 +4666,8 @@ class SiRNAWorkflow:
                     _record_mirna_file(path)
                     mirna_hits_found = True
 
+        transcript_seed, transcript_seed_files = self._parse_transcript_seed_sites(output_dir)
+
         return {
             "status": "completed",
             "method": "nextflow",
@@ -4052,7 +4675,46 @@ class SiRNAWorkflow:
             "results": results,
             "transcriptome_hit_tables": transcriptome_tables,
             "mirna_hit_files": mirna_hit_files,
+            # A SIBLING key, never inside results[qname]["hits"] (#101). Those rows are alignments and
+            # every alignment counter -- off_target_count, the mismatch strata, the four-way class
+            # tally, the published hit table -- reads them positionally by that path. A seed site has
+            # no nm, no cigar and no mapq, so an ingested seed row would arrive as a perfect-match
+            # alignment with nm defaulting to 0 and inflate the very gates it is meant to sit beside.
+            "transcript_seed": transcript_seed,
+            "transcript_seed_files": transcript_seed_files,
         }
+
+    def _parse_transcript_seed_sites(self, output_dir: Path) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+        """Read every ``<species>_transcript_seed_sites.tsv`` this run produced, keyed by guide id.
+
+        Two producers, one shape (#101). A pipeline module that publishes the table into the results
+        tree is read here; the in-process scan in :meth:`_run_transcript_seed_scan` already holds its
+        rows and they are used when no published table is found. Never both: merging two records of
+        one scan would double every count.
+
+        Every row is stamped with a positive ``channel`` discriminator rather than being recognised by
+        the *absence* of ``mirna_id``/``database``. That absence test is what already separates
+        alignment rows from miRNA rows, and it would have silently claimed a third channel's rows as
+        alignments.
+        """
+        files: list[str] = []
+        rows: dict[str, list[dict[str, Any]]] = {}
+        for path in sorted(output_dir.glob("**/*_transcript_seed_sites.tsv")):
+            if path.stat().st_size == 0:
+                continue
+            with path.open() as handle:
+                for row in csv.DictReader(handle, delimiter="\t"):
+                    guide_id = str(row.get("guide_id") or "").strip()
+                    if not guide_id:
+                        continue
+                    row["channel"] = _TRANSCRIPT_SEED_ROW_CHANNEL
+                    rows.setdefault(guide_id, []).append(row)
+            files.append(str(path))
+        if not files and self._transcript_seed_rows:
+            return self._transcript_seed_rows, [
+                str(path) for path in sorted(self._transcript_seed_dir().glob("*_transcript_seed_sites.tsv"))
+            ]
+        return rows, files
 
     def _gate_offtarget_counts(
         self,
@@ -4075,9 +4737,21 @@ class SiRNAWorkflow:
         a design verdict already on the row.
         """
         should_fail, fail_status = self._check_offtarget_filters(
-            *counts,
+            counts.transcriptome_0mm,
+            counts.transcriptome_1mm,
+            counts.transcriptome_2mm,
+            counts.transcriptome_seed_0mm,
+            counts.mirna_0mm_seed,
+            counts.mirna_high_risk,
+            counts.total_hits,
+            counts.genuine_off_target_count,
             filter_criteria,
             candidate,
+            transcript_seed_sites=counts.transcript_seed_sites,
+            transcript_seed_transcripts=counts.transcript_seed_transcripts,
+            transcript_seed_genes=counts.transcript_seed_genes,
+            excluded_isoform_hits=counts.excluded_isoform_hits,
+            unintended_isoform_hits=counts.unintended_isoform_hits,
             complete_pairs=complete_pairs,
         )
         if not should_fail or fail_status is None:
@@ -4188,6 +4862,11 @@ class SiRNAWorkflow:
         filter_criteria: OffTargetFilterCriteria,
         candidate: SiRNACandidate,
         *,
+        transcript_seed_sites: int | None = None,
+        transcript_seed_transcripts: int | None = None,
+        transcript_seed_genes: int | None = None,
+        excluded_isoform_hits: int = 0,
+        unintended_isoform_hits: int = 0,
         complete_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> tuple[bool, SiRNACandidate.FilterStatus | None]:
         """Record every off-target gate's verdict, and report the first that rejects.
@@ -4212,6 +4891,14 @@ class SiRNAWorkflow:
         A gate whose incomplete count already exceeds its ceiling still FAILs: a lower bound above the
         threshold is proof enough. Only the pass direction needs completeness.
 
+        #101's five new inputs are KEYWORD-ONLY with unobserved/zero defaults, unlike the eight
+        positional ones. Not a style choice: the eight are what every caller predating the intent and
+        transcript-seed channels passes positionally, and giving the new five defaults after them is
+        impossible while ``filter_criteria`` and ``candidate`` stay positional. Their defaults are the
+        honest ones -- ``None`` for the three seed counts, because a caller with no seed scan has not
+        measured a zero, and ``0`` for the two intent counters, because a caller that declared no
+        intent cannot have hit an excluded isoform.
+
         ``transcriptome_seed_0mm`` is the only input that sees a *partial* hit whose seed paired
         perfectly. ``nm`` is a guide-level distance, so a clipped or gapped hit carries nm > 2 and
         lands in none of the ``transcriptome_{0,1,2}mm`` strata even when its seed is intact; the
@@ -4228,7 +4915,7 @@ class SiRNAWorkflow:
         # declared filter whose action decides whether exceeding the threshold rejects the candidate
         # or is merely recorded, the key the verdict is published under, and the lookup into
         # POST_SCREEN_FILTER_CHANNELS for the channels its count depends on.
-        checks: list[tuple[str, int | None, int, SiRNACandidate.FilterStatus]] = [
+        checks: list[tuple[str, int | None, int | None, SiRNACandidate.FilterStatus]] = [
             (
                 "max_transcriptome_hits_0mm",
                 filter_criteria.max_transcriptome_hits_0mm,
@@ -4280,6 +4967,55 @@ class SiRNAWorkflow:
                 0 if filter_criteria.fail_on_high_risk_mirna else None,
                 mirna_high_risk,
                 SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA,
+            ),
+            # #101's transcript-seed ceilings. Three separate aggregation units, because one
+            # transcript carries many sites and one gene many transcripts, so no two of the three are
+            # derivable from each other. All three ship with no threshold and resolve to `off`: there
+            # is no calibration relating a 6/7/8mer site count to knockdown, and the numbers scale
+            # with the reference's size, so any fixed integer would encode the cDNA set rather than
+            # the biology. A caller who states a ceiling gets a real limit (see _filter_action_for);
+            # a caller who does not gets three new reported columns and no new rejections.
+            #
+            # ``None`` observed means the channel published nothing for the query species, which
+            # becomes UNKNOWN rather than a pass the moment a ceiling exists.
+            (
+                "max_transcript_seed_sites",
+                filter_criteria.max_transcript_seed_sites,
+                transcript_seed_sites,
+                SiRNACandidate.FilterStatus.TRANSCRIPT_SEED_SITES,
+            ),
+            (
+                "max_transcript_seed_transcripts",
+                filter_criteria.max_transcript_seed_transcripts,
+                transcript_seed_transcripts,
+                SiRNACandidate.FilterStatus.TRANSCRIPT_SEED_TRANSCRIPTS,
+            ),
+            (
+                "max_transcript_seed_genes",
+                filter_criteria.max_transcript_seed_genes,
+                transcript_seed_genes,
+                SiRNACandidate.FilterStatus.TRANSCRIPT_SEED_GENES,
+            ),
+            # #101's intent gates. Their counts come from the ALIGNMENT rows' intent verdicts, not
+            # from their hit class: on-target by gene taxonomy does not imply acceptable once an
+            # intent is in force, so the four-way class stays descriptive and this decides. An UNKNOWN
+            # verdict feeds neither counter, which is why a thin annotation cannot manufacture a
+            # rejection here.
+            #
+            # max_excluded_isoform_hits ships FAIL at 0 -- not an uncalibrated prior but a restatement
+            # of something the caller declared, and #101's rule is that a required limit uses fail.
+            # With nothing excluded the observed count is 0 on every candidate and it passes trivially.
+            (
+                "max_excluded_isoform_hits",
+                filter_criteria.max_excluded_isoform_hits,
+                excluded_isoform_hits,
+                SiRNACandidate.FilterStatus.EXCLUDED_ISOFORM,
+            ),
+            (
+                "max_unintended_isoform_hits",
+                filter_criteria.max_unintended_isoform_hits,
+                unintended_isoform_hits,
+                SiRNACandidate.FilterStatus.UNINTENDED_ISOFORM,
             ),
         ]
 
@@ -4478,6 +5214,15 @@ class SiRNAWorkflow:
 
         results = offtarget_data.get("results", {})
 
+        # The seed channel's rows arrive on their own key and are adopted here, so the per-candidate
+        # counters have one source whichever producer ran. A published table -- even a header-only one
+        # -- is positive evidence that a scan answered, which is what a measured zero requires (#101).
+        if offtarget_data.get("transcript_seed_files"):
+            self._transcript_seed_rows = cast(
+                dict[str, list[dict[str, Any]]], offtarget_data.get("transcript_seed") or {}
+            )
+            self._transcript_seed_observed = True
+
         # Single authoritative query species, set once in __init__ (see comment there).
         query_species = self._query_species
 
@@ -4611,6 +5356,13 @@ class SiRNAWorkflow:
             "failed_high_risk_mirna": 0,
             "failed_excess_off_targets": 0,
             "failed_isoform_coverage": 0,
+            # #101's five new rejection counters, pre-seeded like the seven above so
+            # _gate_offtarget_counts can increment without asking whether the key exists.
+            "failed_transcript_seed_sites": 0,
+            "failed_transcript_seed_transcripts": 0,
+            "failed_transcript_seed_genes": 0,
+            "failed_excluded_isoform": 0,
+            "failed_unintended_isoform": 0,
             "human_transcriptome_hits": 0,
             "other_transcriptome_hits": 0,
             "human_mirna_hits": 0,
@@ -4684,9 +5436,17 @@ class SiRNAWorkflow:
                 # `continue`, so a completed screen that found nothing reached no gate at all and
                 # exported every one as `not_evaluated` (#106). The counts are zero and
                 # ``complete_pairs`` says whether that zero was measured.
+                # Zero ALIGNMENT hits does not mean zero seed sites: the two channels scan for
+                # different things, and a guide with no full-length liability can carry thousands of
+                # seed sites. So the seed counts come from the seed scan even here (#101).
+                seed_counts = self._transcript_seed_gate_counts(candidate)
                 self._gate_offtarget_counts(
                     candidate,
-                    counts=_ZERO_OFFTARGET_COUNTS,
+                    counts=OffTargetGateCounts(
+                        transcript_seed_sites=seed_counts.sites,
+                        transcript_seed_transcripts=seed_counts.distinct_transcripts,
+                        transcript_seed_genes=seed_counts.distinct_genes,
+                    ),
                     filter_criteria=filter_criteria,
                     complete_pairs=complete_pairs,
                     stats=stats,
@@ -4714,6 +5474,11 @@ class SiRNAWorkflow:
             mirna_1mm_seed = 0
             mirna_high_risk_total = 0
             mirna_high_risk_query = 0
+            # Intent counters (#101). Separate from every hit-class counter above, because they count
+            # the same rows under a different question: an excluded-isoform hit IS an on_target hit,
+            # and both numbers are published side by side.
+            excluded_isoform_hits = 0
+            unintended_isoform_hits = 0
 
             for hit in offtarget_entry.get("hits", []):
                 nm = int(hit.get("nm", 0))
@@ -4759,6 +5524,17 @@ class SiRNAWorkflow:
                     # No species bucket here: per_species counts alignments, and this loop visits a
                     # deduplicated guide's rows once per candidate carrying it. See below.
                     annotate_hit_row(hit, classification, annotator)
+                    # Acceptability, decided from intent and written BESIDE hit_class rather than
+                    # into it (#101). The four-way taxonomy is a statement about the gene and stays
+                    # exactly as the classifier made it; "on_target + excluded_isoform" is a readable
+                    # pair, whereas folding the second into the first would need a fifth hit class
+                    # that lies about the gene. UNKNOWN feeds neither counter -- that is what makes
+                    # the intent gates report UNKNOWN instead of a fabricated zero.
+                    verdict = self._record_intent_verdict(hit, classification, hit_species, query_species)
+                    if verdict is IntentVerdict.EXCLUDED_ISOFORM:
+                        excluded_isoform_hits += 1
+                    elif verdict is IntentVerdict.UNINTENDED_ISOFORM:
+                        unintended_isoform_hits += 1
                     hit_class = accumulate_hit_class(hit, hit_counts, None, hit_species)
 
                     # Only liabilities feed the mismatch-stratified counters. Letting on-target
@@ -4828,6 +5604,12 @@ class SiRNAWorkflow:
             candidate.mirna_hits_0mm_seed_query = mirna_query_0mm_seed
             candidate.mirna_hits_high_risk_query = mirna_high_risk_query
             candidate.total_offtarget_hits_query = transcriptome_query_total + mirna_query_total
+            # Intent counters, published beside the hit-class ones rather than folded into them, and
+            # deliberately without a `_query` suffix: `evaluate_intent` returns UNKNOWN for an
+            # on-target row in a non-query species, so neither counter can hold a non-query row and
+            # there is no all-species twin for a reader to confuse them with (#101).
+            candidate.excluded_isoform_hits = excluded_isoform_hits
+            candidate.unintended_isoform_hits = unintended_isoform_hits
             candidate.on_target_confirmed = hit_counts.on_target > 0
             candidate.mirna_hits_total = mirna_total
             candidate.mirna_hits_0mm_seed = mirna_0mm_seed_total
@@ -4860,6 +5642,7 @@ class SiRNAWorkflow:
                 self._score_and_gate(candidate, hit_counts, conservation_denominator, stats, unresolved_orthology)
 
             # Apply filtering criteria
+            seed_counts = self._transcript_seed_gate_counts(candidate)
             self._gate_offtarget_counts(
                 candidate,
                 counts=OffTargetGateCounts(
@@ -4871,6 +5654,11 @@ class SiRNAWorkflow:
                     mirna_high_risk=mirna_high_risk_query,
                     total_hits=transcriptome_query_total + mirna_query_total,
                     genuine_off_target_count=liabilities_counted(hit_counts),
+                    transcript_seed_sites=seed_counts.sites,
+                    transcript_seed_transcripts=seed_counts.distinct_transcripts,
+                    transcript_seed_genes=seed_counts.distinct_genes,
+                    excluded_isoform_hits=excluded_isoform_hits,
+                    unintended_isoform_hits=unintended_isoform_hits,
                 ),
                 filter_criteria=filter_criteria,
                 complete_pairs=complete_pairs,
@@ -4893,6 +5681,36 @@ class SiRNAWorkflow:
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
         # where design_results is in scope to receive the reordered candidates/top_candidates.
         return candidates, stats
+
+    def _record_intent_verdict(
+        self,
+        hit: MutableMapping[str, Any],
+        classification: HitClassification,
+        hit_species: str,
+        query_species: str,
+    ) -> IntentVerdict | None:
+        """Write one row's ``intent_verdict`` column and return the verdict, or ``None`` with no intent.
+
+        The row's transcript identity comes from ``rname``, version-stripped through the same
+        function the annotation universe was keyed with, because an excluded-isoform rule can only
+        work if the two spellings compare equal. ``None`` means no intent was resolved for this run:
+        the column is then left alone rather than filled with a word, since a run that declared no
+        intent has no verdict to report and ``unknown`` would read as an annotation gap.
+        """
+        intent = self._target_intent
+        if intent is None:
+            return None
+        rname = str(hit.get("rname") or "").strip()
+        assessment = evaluate_intent(
+            classification,
+            transcript_id=self._normalize_transcript_id(rname) if rname else None,
+            species=hit_species,
+            intent=intent,
+            query_species=query_species,
+        )
+        hit["intent_verdict"] = assessment.verdict.value
+        hit["intent_reason"] = assessment.reason
+        return assessment.verdict
 
     @staticmethod
     def _tally_per_species(
@@ -5026,6 +5844,18 @@ class SiRNAWorkflow:
         )
         return outcome.rejects
 
+    def _observe_candidate_coverage(self, candidate: SiRNACandidate) -> CoverageObservation | None:
+        """One guide's coverage of the frozen denominator, or ``None`` when no intent was resolved.
+
+        ``None`` is not zero coverage: a direct caller that never ran ``run_complete_workflow``
+        froze no intent, so there is no denominator to measure against and the coverage term stays
+        inactive exactly as it did before #101. Every path that did resolve an intent gets a real
+        observation, including the three ways it can be unknown.
+        """
+        if self._target_intent is None:
+            return None
+        return observe_coverage(candidate.guide_sequence, self._target_intent, self._target_sequences)
+
     def _score_candidate_post_screen(
         self,
         candidate: SiRNACandidate,
@@ -5081,19 +5911,24 @@ class SiRNAWorkflow:
         try:
             features["off_target"] = off_target_sub_score(liabilities_counted(hit_counts))
 
-            # Numerator is how many of the query gene's protein-coding transcripts contain THIS
-            # guide (from step3's guide->source-transcripts map), not the single transcript the
-            # candidate happened to be enumerated from. Absent for design_from_sequence/miRNA
-            # paths, in which case the term stays inactive rather than computing a wrong number.
-            guide_transcripts = self._guide_to_transcripts.get(normalize_guide_sequence(candidate.guide_sequence))
-            if guide_transcripts is not None:
-                isoform_cov = isoform_coverage_sub_score(
-                    len(self._protein_coding_transcript_ids & guide_transcripts),
-                    self._protein_coding_transcript_count,
-                )
-                if isoform_cov is not None:
-                    features["isoform_coverage"] = isoform_cov
-                    candidate.isoform_coverage = isoform_cov
+            # Numerator is a COMPLEMENTARITY TEST against the frozen denominator's sequences, not the
+            # enumeration map intersected with the protein-coding set (#101). The two differ on
+            # exactly the transcripts enumeration never saw -- which is the set an isoform-selective
+            # design cares most about -- and "was this guide generated from that isoform" was never
+            # the same question as "does this guide silence that isoform". ``_guide_to_transcripts``
+            # survives as a published diagnostic and reaches no score.
+            #
+            # ``fraction`` is None whenever the denominator is empty or a member's sequence is
+            # missing, and the term then stays inactive: min_isoform_coverage is a greater-or-equal
+            # floor, so an under-counted numerator can only wrongly reject.
+            observation = self._observe_candidate_coverage(candidate)
+            if observation is not None:
+                candidate.intent_coverage_status = observation.status.value
+                if observation.fraction is not None:
+                    isoform_cov = isoform_coverage_sub_score(len(observation.covered), len(observation.denominator))
+                    if isoform_cov is not None:
+                        features["isoform_coverage"] = isoform_cov
+                        candidate.isoform_coverage = isoform_cov
 
             # Numerator is intersected with the denominator on purpose: an ortholog hit in a species
             # this run never asked the aligner for (a stale cached result, a hand-edited hit table)
@@ -5446,6 +6281,10 @@ async def run_sirna_workflow(
     transcriptome_filter: str | None = None,
     transcriptome_selection: ReferenceSelection | None = None,
     ortholog_mapping_file: Path | str | None = None,
+    selectivity: str | None = None,
+    required_transcripts: str | Sequence[str] | None = None,
+    excluded_transcripts: str | Sequence[str] | None = None,
+    transcript_seed_scope: str | None = None,
     resolved_policy: ResolvedRunPolicy | None = None,
     run_mode: str | None = None,
     policy_config: Path | str | None = None,
@@ -5507,6 +6346,17 @@ async def run_sirna_workflow(
         transcriptome_selection: Pre-resolved transcriptome selection metadata
         ortholog_mapping_file: JSON mapping of query gene -> species -> orthologue gene IDs. Supply
             it to resolve cross-species orthology offline instead of calling Ensembl Compara.
+        selectivity: ``pan_isoform`` or ``isoform_selective``. None means unstated, and naming
+            required transcripts then implies selectivity -- measuring a declared subset against
+            every isoform of the gene is the assumption #101 removed.
+        required_transcripts: Transcript IDs a guide is required to cover, as a sequence or one
+            comma-separated string. Version suffixes are stripped.
+        excluded_transcripts: Transcript IDs a guide must not cover. An exclusion beats a
+            requirement, because the conservative reading of a contradictory declaration is the
+            safety one.
+        transcript_seed_scope: Region for the opt-in transcript-seed liability channel
+            (``full_cdna``). None leaves the channel unrequested, which is what keeps its three
+            ceilings reporting unknown rather than a zero no scan measured.
         resolved_policy: A policy already resolved by ``config.run_policy.resolve_run_policy`` -- how
             the CLI passes its resolution, so the command line and this function cannot diverge.
             Supplying it together with any of the threshold arguments below is an error, because two
@@ -5623,6 +6473,8 @@ async def run_sirna_workflow(
             transcriptome_reference_available=(
                 False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
             ),
+            # Declared only when asked for, so an unrequested channel resolves byte-identically (#101).
+            transcript_seed_requested=transcript_seed_scope is not None,
         )
     mode_enum = policy.design_mode
     design_params = policy.design_parameters
@@ -5710,6 +6562,10 @@ async def run_sirna_workflow(
         nextflow_config=nextflow_config_overrides,
         zfn_config=zfn_workflow_config,
         resolved_policy=policy,
+        selectivity=selectivity,
+        required_transcripts=_split_declared_ids(required_transcripts),
+        excluded_transcripts=_split_declared_ids(excluded_transcripts),
+        transcript_seed_scope=transcript_seed_scope,
     )
 
     # Run workflow

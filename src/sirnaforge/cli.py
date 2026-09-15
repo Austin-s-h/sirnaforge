@@ -1384,6 +1384,84 @@ def workflow(  # noqa: PLR0912
             "calibrated against truth data. Not a scoring term."
         ),
     ),
+    required_transcripts: str | None = typer.Option(
+        None,
+        "--required-transcripts",
+        help=(
+            "Comma-separated transcript IDs a guide is required to cover, e.g. "
+            "ENST00000269305,ENST00000445888. Naming any implies --selectivity isoform_selective, "
+            "because measuring a declared subset against every isoform of the gene would reject the "
+            "very design you asked for. Version suffixes are accepted and stripped. An ID the "
+            "annotation never offered is reported in target_intent.unresolved_target_ids rather "
+            "than read as satisfied."
+        ),
+    ),
+    excluded_transcripts: str | None = typer.Option(
+        None,
+        "--excluded-transcripts",
+        help=(
+            "Comma-separated transcript IDs a guide must NOT cover. A hit on one is reported as "
+            "on_target (it is the target gene) AND excluded_isoform (it is forbidden), and rejects "
+            "through max_excluded_isoform_hits, which ships fail at 0 because this restates "
+            "something you declared. An exclusion beats a requirement if an ID is in both."
+        ),
+    ),
+    selectivity: str | None = typer.Option(
+        None,
+        "--selectivity",
+        help=(
+            "pan_isoform (any transcript of the gene is wanted) or isoform_selective (only the "
+            "required ones are). Inferred from --required-transcripts when unstated. Coverage is "
+            "measured against the whole protein-coding annotation in the first case and against the "
+            "required set in the second, which is what makes one unchanged --min-isoform-coverage "
+            "floor mean the right thing in both."
+        ),
+    ),
+    transcript_seed_scope: str | None = typer.Option(
+        None,
+        "--transcript-seed-scope",
+        help=(
+            "Opt into the transcript-seed liability channel and name its region: full_cdna. This is "
+            "complementary seed sites in transcript sequence -- a DIFFERENT question from "
+            "resemblance to a known miRNA, which has its own columns and its own thresholds. Off by "
+            "default because a 7mer occurs roughly once per 16 kb, so a full cDNA scan yields "
+            "thousands of sites per guide. utr3/utr5/cds are refused rather than approximated: "
+            "nothing here carries UTR intervals in transcript coordinates, and a request that "
+            "cannot be answered is reported as unanswered, never as a clean screen."
+        ),
+    ),
+    max_transcript_seed_sites: int | None = typer.Option(
+        None,
+        "--max-transcript-seed-sites",
+        min=0,
+        help=(
+            "Ceiling on deduplicated query-species transcript-seed sites per guide. No default: "
+            "there is no calibration relating a 6/7/8mer site count to knockdown, and the number "
+            "scales with the size of the cDNA set, so any shipped integer would encode the "
+            "reference rather than the biology. Stating one turns the gate on."
+        ),
+    ),
+    max_transcript_seed_transcripts: int | None = typer.Option(
+        None,
+        "--max-transcript-seed-transcripts",
+        min=0,
+        help=(
+            "Ceiling on DISTINCT query-species transcripts carrying a seed site. Reported apart "
+            "from the site count because one transcript can carry many sites, so neither number is "
+            "derivable from the other. No default, for the same reason as above."
+        ),
+    ),
+    max_transcript_seed_genes: int | None = typer.Option(
+        None,
+        "--max-transcript-seed-genes",
+        min=0,
+        help=(
+            "Ceiling on DISTINCT query-species genes carrying a seed site, over RESOLVED gene IDs "
+            "only. Sites whose transcript resolved to no gene are counted in "
+            "transcript_seed_unresolved_gene_sites, so this count is a declared lower bound "
+            "whenever that column is above 0. No default."
+        ),
+    ),
     plfold_window: int | None = typer.Option(
         None,
         "--plfold-window",
@@ -1454,6 +1532,15 @@ def workflow(  # noqa: PLR0912
             "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
             "min_empirical_score": ("min_empirical", min_empirical),
             "min_isoform_coverage": ("min_isoform_coverage", min_isoform_coverage),
+            # The three transcript-seed ceilings go through the same plumbing as every other
+            # threshold, so a stated one is promoted from off to fail by the resolver rather than by
+            # a branch here (#101).
+            "max_transcript_seed_sites": ("max_transcript_seed_sites", max_transcript_seed_sites),
+            "max_transcript_seed_transcripts": (
+                "max_transcript_seed_transcripts",
+                max_transcript_seed_transcripts,
+            ),
+            "max_transcript_seed_genes": ("max_transcript_seed_genes", max_transcript_seed_genes),
             "plfold_window": ("plfold_window", plfold_window),
             "plfold_max_bp_span": ("plfold_max_bp_span", plfold_max_bp_span),
             "accessibility_log_floor": ("accessibility_log_floor", accessibility_log_floor),
@@ -1472,6 +1559,9 @@ def workflow(  # noqa: PLR0912
         legacy_skip_screening=skip_off_targets or None,
         query_species=query_species,
         screen_species=[value.strip() for value in species.split(",") if value.strip()],
+        # Declared only when the channel was asked for, so a run without --transcript-seed-scope
+        # resolves byte-identically to one from before the channel existed (#101).
+        transcript_seed_requested=transcript_seed_scope is not None,
         # `--input-fasta` does not auto-resolve the default transcriptomes (see the reference-policy
         # comment below), so with neither `--transcriptome-fasta` nor `--offtarget-indices` this run has
         # no transcriptome reference. Calling itself `qualified` meant it required evidence it could
@@ -1667,6 +1757,12 @@ def workflow(  # noqa: PLR0912
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     ortholog_mapping_file=ortholog_mapping,
+                    # Target intent (#101). Passed as the caller typed it; the workflow strips
+                    # versions and infers selectivity, so the CLI states no policy of its own.
+                    selectivity=selectivity,
+                    required_transcripts=required_transcripts,
+                    excluded_transcripts=excluded_transcripts,
+                    transcript_seed_scope=transcript_seed_scope,
                     zfn_design_params=zfn_design_params,
                     zfn_annotation=annotation if mode_enum == DesignMode.ZFN else None,
                     # Variant parameters
