@@ -254,9 +254,11 @@ def _write_mirna_batch(directory: Path) -> tuple[Path, Path]:
 def test_aggregate_results_cli_stages_mirna_evidence_so_screened_species_reflect_it(tmp_path, monkeypatch):
     """A COMPLETE envelope for one requested species must not report the other one screened (#100).
 
-    ``aggregate_mirna_results`` reads envelopes from the results directory it is handed, and with
-    none found it keeps its historical answer: every requested species reported screened. Staging
-    the analysis files without their envelopes therefore made that fallback fire on every real run.
+    ``aggregate_mirna_results`` reads envelopes from the search root it is given, and before #100 a
+    root with none in it kept the permissive answer: every requested species reported screened.
+    Staging the analysis files without their envelopes made that fallback fire on every real run.
+    Both halves of the repair are exercised here -- the envelopes are staged, and the search root is
+    named -- so the reported species come from what the run actually did.
     """
     monkeypatch.chdir(tmp_path)
     analysis, summary = _write_mirna_batch(tmp_path)
@@ -280,6 +282,54 @@ def test_aggregate_results_cli_stages_mirna_evidence_so_screened_species_reflect
         summary_files=[str(summary)],
     )
 
+    mirna_summary = json.loads((tmp_path / "aggregated" / "combined_mirna_summary.json").read_text())
+    assert mirna_summary["species_screened"] == ["human"]
+    assert mirna_summary["unscreened_species"] == ["mouse"]
+
+
+@pytest.mark.unit
+def test_a_failed_mirna_species_reaches_the_aggregate_instead_of_being_masked(tmp_path, monkeypatch):
+    """The FAILED envelope for an unresolvable database survives staging and is reported (#100).
+
+    This is the end-to-end statement of defects 5/7 together with the backend's unresolvable-database
+    repair: ``run_mirna_seed_analysis`` publishes a FAILED envelope naming the species whose database
+    could not be resolved, ``aggregate_results_cli`` stages it beside the tables, and the aggregate
+    reads it from the search root it was handed. All three have to hold. If any one of them does not,
+    the mouse envelope is invisible here and the pre-#100 fallback would have reported *both* species
+    screened -- turning the one species that demonstrably failed into a completed screen.
+
+    The COMPLETE human envelope in the same directory is what makes the assertion discriminating
+    rather than vacuous: the aggregate is distinguishing the two outcomes, not refusing everything.
+    """
+    monkeypatch.chdir(tmp_path)
+    analysis, summary = _write_mirna_batch(tmp_path)
+    for species, status, detail in (
+        ("human", EvidenceStatus.COMPLETE, None),
+        ("mouse", EvidenceStatus.FAILED, "no miRNA database entry for mouse in toy_db"),
+    ):
+        write_evidence(
+            tmp_path,
+            producer=EvidenceProducer.MIRNA_SEED_ANALYSIS,
+            entry=ScreeningEvidenceEntry(
+                channel=ScreeningChannel.MIRNA_SEED,
+                species=species,
+                guide_set_digest="a" * 16,
+                status=status,
+                detail=detail,
+            ),
+        )
+
+    aggregate_results_cli(
+        transcriptome_species="human",
+        output_dir=str(tmp_path / "aggregated"),
+        mirna_db="toy_db",
+        mirna_species="human,mouse",
+        analysis_files=[str(analysis)],
+        summary_files=[str(summary)],
+    )
+
+    staged = sorted(path.name for path in (tmp_path / "temp_results" / "mirna").glob("*_evidence.json"))
+    assert staged == ["mirna_seed_human_evidence.json", "mirna_seed_mouse_evidence.json"]
     mirna_summary = json.loads((tmp_path / "aggregated" / "combined_mirna_summary.json").read_text())
     assert mirna_summary["species_screened"] == ["human"]
     assert mirna_summary["unscreened_species"] == ["mouse"]

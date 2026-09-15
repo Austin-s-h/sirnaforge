@@ -392,9 +392,11 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
     # combined_mirna_hits.tsv is distinguishable from a species that was never actually screened.
     # Unlike the transcriptome side, one candidate's *_mirna_analysis.tsv already spans every
     # requested species, so file presence carries no per-species signal here -- the #100 evidence
-    # envelope is the only positive signal available, and a run that never wrote one (pre-#100, or
-    # run_mirna_seed_analysis called without evidence_dir) keeps every requested species reported
-    # screened, its historical default.
+    # envelope is the only positive signal available. No envelope is therefore no signal: a run that
+    # never wrote one (pre-#100, or run_mirna_seed_analysis called without evidence_dir) claims
+    # nothing screened rather than everything. The permissive reading was removed with #100 because
+    # it was reached on every real pipeline run -- the envelopes were never staged where this
+    # aggregate searched -- so absence of evidence was being reported as a complete screen.
     species_screened: list[str] = Field(
         default_factory=list,
         description="Species with a COMPLETE mirna_seed evidence envelope from at least one candidate",
