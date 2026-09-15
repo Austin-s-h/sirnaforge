@@ -815,9 +815,9 @@ def biogenesis_features(guide: str, passenger: str) -> dict[str, float]:
     """The three miRNA biogenesis sub-scores, from sequence alone.
 
     Computed here rather than read back off the candidate so post-screen scoring cannot be handed a
-        partially-populated row: every term in the active post-screen vector must be present, and re-deriving them
-    from the sequences means they always are. Each is in [0, 1] like every other term -- they are
-    features now, not bonuses added to a finished score.
+    partially-populated row: every term in the active post-screen vector must be present, and
+    re-deriving them from the sequences means they always are. Each is in [0, 1] like every other
+    term -- they are features now, not bonuses added to a finished score.
     """
     pos1_state = classify_pos1_pairing(guide[0] if guide else "", passenger[-1] if passenger else "")
     return {
