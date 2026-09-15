@@ -165,7 +165,7 @@ where the two defects removed here were first written down as outstanding.)
   themselves are unchanged and no better calibrated than before. The contract governs which claims a
   run may publish; it does not make the screen more sensitive, and a required unit that no reference
   exists for still cannot be screened, only reported honestly as unscreened. It is also not a
-  guarantee about the *legacy* `candidates_pass.csv`/`.fasta` pair, which by design still lists every
+  guarantee about the _legacy_ `candidates_pass.csv`/`.fasta` pair, which by design still lists every
   gate-passing guide and labels its selection state rather than narrowing to it (see the entry under
   **Fixed**). Per-species miRNA completion, and a batch roll-up that distinguishes `censored` from
   `complete`, remain outstanding — both under **Known limitations**.
@@ -307,12 +307,9 @@ where the two defects removed here were first written down as outstanding.)
   and the pipeline agree. `payload.reevaluate_gates` is the single Python statement of that contract
   and the browser restates exactly one thing, the `FilterComparator.passes` comparator table, with no
   per-gate branch; a test asserts none of the 17 declared `filter_id`s appears as a literal in the
-  template at all. Parity is a **gate, not a skip**: the fixture renders the report, slices the
-  substituted `<script>` out of it and runs the shipped evaluator under **Node** over every guide x
-  every filter at five threshold sets, comparing gate triples, all three counters and the derived
-  status against the Python function. Playwright was rejected for this — it is not a dependency and its
-  browser binary is a separate download, so the check would have skipped rather than gated — and
-  missing Node fails with the install hint.
+  template at all. The agreement between the two is **not** under test in this release: the parity
+  harness that ran the shipped evaluator under Node was deleted before release (see _Changed_), so the
+  Python rule is tested and the browser's restatement of it is reviewed.
 - **Five preset views, and `off_target_screened` so "clean" means screened (#103).** `all`, `passing`,
   `near miss` (fails exactly one gate, unknown on none), `off-target clean` and
   `register-deduplicated`, each a pure predicate over the live gate table. `passing` reads the derived
@@ -342,8 +339,9 @@ where the two defects removed here were first written down as outstanding.)
   composite score is excluded by a composite floor, not admitted because there was nothing to compare),
   they compose with the presets, the status and conservation checkboxes, the search and the sort, `Reset`
   clears them with everything else, and they ride in the URL fragment as `r=` on the same footing as
-  `t=`, so a copied link restores the same rows. The Node harness drives all of it through the functions
-  the report ships — including the same `resetControls` the button calls, rather than a restatement of it.
+  `t=`, so a copied link restores the same rows. All of that behaviour lives in the shipped JavaScript and
+  is reviewed rather than tested; the harness that drove it under Node was deleted before release (see
+  _Changed_).
 - **`quilt_summarize.json` is written beside the report (#103).** Quilt's package view renders exactly
   what a package's own summarize file names and nothing else, so until now a run published as a package
   showed **no report at all** in its package view. `sirnaforge report` writes it by default
@@ -419,14 +417,19 @@ where the two defects removed here were first written down as outstanding.)
   gate naming the comparator and both thresholds, and one `#reader_filter=` line per bound. The reader
   bounds are recorded for a different reason and the comment says so: they can never touch `status`, but
   `Add top <n> to cart` picks from the filtered view, so they decide which guides are in the file. Columns
-  and their order are unchanged and are now frozen in the parity harness.
+  and their order are unchanged — the provenance rides above the header, not through it — but no test holds
+  them there any more: the eighteen-name literal that froze them lived in the deleted parity harness (see
+  _Changed_), so a reorder or a rename would now reach a reader's spreadsheet without failing CI. That
+  column contract is kept by review from here.
 - **A payload string spelling `</script>` can no longer truncate the report (#103).** An HTML parser ends
   a script at the first literal `</script>` inside it whatever the JavaScript means, and `json.dumps` does
   not escape `<`, so a gene query, transcript id or gene symbol containing that text produced a dead
   document with every panel below the cut missing. All seven embedded JSON blobs now escape `<`, `>` and
-  `&`. The parity harness had the mirror of the same bug — a greedy `<script>(.*)</script>` regex sliced
-  past a truncation instead of failing on it — and now ends where a browser ends a script and refuses a
-  document that closes its own script more than once.
+  `&`. The test-side `<script>` slice had the mirror of the same bug — a greedy `<script>(.*)</script>`
+  regex ran past a truncation instead of failing on it — and that fix outlived the harness it was written
+  in: `tests/unit/test_reporting_document_structure.py` cuts the slice at the **first** `</script>`, refuses
+  a document that closes its own script more than once, and holds a forged double-close document against the
+  greedy regex, so the difference between the two rules is under test rather than merely described.
 - **The workflow registers the run's own summary, and tells its two writes apart (#103).** Step 6 built
   `quilt_summarize.json` before `run_complete_workflow` wrote `logs/workflow_summary.json`, and the writer
   omits any artifact that does not exist, so the row a reader would go looking for was the one row that
@@ -750,6 +753,30 @@ where the two defects removed here were first written down as outstanding.)
   `FAILED`/`CENSORED` evidence must carry a `detail`, and a `NOT_REQUESTED` entry may not carry an
   observed count — a zero on a search nobody ran is the fabricated zero the counts model exists to
   prevent. Every other invariant in those modules was already enforced by a `model_validator`.
+- **The report's client-side parity harness is deleted, and with it `node` as a test dependency.** The
+  harness rendered the report, sliced the substituted `<script>` out of it and ran the shipped evaluator
+  under Node — every guide x every filter at five threshold sets, plus the presets, the reader filters,
+  `gatesCard`'s Why column, the `cartTsv` provenance lines and column order, and `parseControlValue`'s
+  numeric boundary. It required a `node` binary on `PATH` to gate rather than skip, which made a Python
+  test suite depend on a JavaScript runtime for one file. That was judged not worth it; an in-process JS
+  engine (`mini-racer`) and a static table-equality substitute were both considered and both declined,
+  because the point was **less machinery, not the same coverage by another route**.
+  `tests/unit/test_report_client_evaluator_parity.py` is renamed to
+  `tests/unit/test_reporting_document_structure.py` — after the deletion it proves no parity — and keeps
+  the 6 assertions that never needed an interpreter: every reason code still fires on the fixture, no
+  declared `filter_id` appears **quoted** in the template, the panel keeps its two labelled groups, every
+  threshold box is a real `type="number"`, the `<script>` slice ends where a browser ends a script, and
+  a payload spelling `</script>` is escaped reversibly (proved now with `json.loads` over the embedded
+  literal rather than by echoing it through Node). `.nvmrc` is deleted; nothing else consumed it.
+  **The loss is real and is not made up elsewhere: no test executes the report's JavaScript any more.**
+  A divergence between `payload.reevaluate_gates` and the template's `reevaluateGates` would not fail
+  the suite, so the report could publish a verdict the pipeline would not reproduce and CI would stay
+  green. `tests/unit/test_reporting_rethreshold.py` still holds the **Python** side of the rule in 10
+  tests; what is gone is "and the browser does the same". The shipped evaluator, the presets, the reader
+  filters, the panel's Why column, the cart's provenance and the fragment round-trip are covered by
+  **review** from here. `docs/html_report.md` says so in the section a reader would consult, and lists
+  what each of the 13 deleted tests held, property by property, so the trade can be audited rather than
+  taken on trust.
 
 ### Fixed
 
@@ -1224,12 +1251,12 @@ docs` exits 0 with warnings still treated as errors", could not be demonstrated 
 
 ### Known limitations
 
-- **miRNA *hit counts* are run-level, even though miRNA *completion* is now per species** (#100). The
+- **miRNA _hit counts_ are run-level, even though miRNA _completion_ is now per species** (#100). The
   earlier version of this note said there was no per-species miRNA evidence to have; that is no longer
   true. `run_mirna_seed_analysis` resolves one database per species and now publishes a
   `mirna_seed_<species>_evidence.json` envelope for each, so a species whose database cannot be
   resolved is reported `failed` by name and `combined_mirna_summary.json` separates
-  `species_screened` from `unscreened_species`. What stays run-level is the *table*: the scan is one
+  `species_screened` from `unscreened_species`. What stays run-level is the _table_: the scan is one
   batch over every submitted guide and `total_hits`/`filtered_hits_per_species` are counted over the
   batch, so a per-candidate miRNA count for one species is not something the summary can be asked for.
 - **The miRNA batch roll-up cannot say `censored`** (#100). `MiRNASummary.evidence_status` is derived

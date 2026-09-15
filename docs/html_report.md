@@ -167,12 +167,14 @@ out of an `unknown`.
 The client-side evaluator restates exactly one thing -- the comparator table behind
 `FilterComparator.passes` -- and contains **no per-gate branch**: every gate, its comparator, its
 action, its threshold and its control domain are read from the `FILTERS` payload the report already
-carries. A unit test asserts that none of the 17 declared `filter_id`s appears as a literal string in
-the template at all. (Column names such as `gc_content` do appear, in the cart's TSV header.)
+carries. That is a property of the code as written and read, not a tested one: the unit test behind it
+asserts only that no declared `filter_id` appears in the template _single- or double-quoted_, which leaves
+every other way of naming a gate open. See "What is verified, and what is only reviewed" below.
+(Column names such as `gc_content` do appear, in the cart's TSV header.)
 
 The single Python implementation the browser has to agree with is
-`sirnaforge.reporting.payload.reevaluate_gates`, and "Running the client-side parity check" below is
-how that agreement is enforced.
+`sirnaforge.reporting.payload.reevaluate_gates`. That agreement is **not** enforced by a test; see
+"What is verified, and what is only reviewed" below before you trust a threshold you moved.
 
 ## Reader filters, which are not gates
 
@@ -272,8 +274,8 @@ A bare fragment (`report.html#UUAUAGGAUUCAACCGGAGGA`) is still read as a guide, 
 reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id`, or an `r=`
 name that is not one of the three reader filters, is **listed as refused** at the top of the panel
 rather than silently dropped, and an unknown preset name leaves the view at "all". A reader who reloads
-the URL sees the same rows: `encodeHash` and `applyHashFragment` round-trip byte for byte, which the
-parity harness drives directly.
+the URL sees the same rows: `encodeHash` and `applyHashFragment` round-trip byte for byte. That
+round-trip is a property of the shipped JavaScript, so it is reviewed rather than tested.
 
 ## Exporting a selection
 
@@ -301,8 +303,8 @@ verdicts with no way to tell whose they were once it left the page:
 with one `#moved_gate=` line per moved gate. The `#reader_filter=` lines are recorded for a different
 reason: a reader filter can never touch the `status` column, but `Add top <n> to cart` picks from the
 _filtered_ view, so the bounds decide which guides are in the file. The comment says exactly that, so
-the two kinds of provenance are not confused. The columns and their order are unchanged, and are frozen
-in the parity harness.
+the two kinds of provenance are not confused. The columns and their order are unchanged; they used to be
+frozen by a test that generated the TSV, and are now held by review alone.
 
 ## Size, and the one figure
 
@@ -325,56 +327,176 @@ The single figure is a hand-drawn inline SVG. `plotly` was adopted, implemented 
 invokes, and no static check can tell an inert string from a live call. One stacked bar did not justify
 losing the zero-external-reach guarantee.
 
-## Running the client-side parity check
+## What is verified, and what is only reviewed
 
-The evaluator that ships inside the report is JavaScript, and the filter it must agree with is Python
-(`sirnaforge.reporting.payload.reevaluate_gates`). Rather than a browser -- Playwright is not a
-dependency of this repo, and its browser binary is a separate download that would make the test skip
-instead of gate -- the parity fixture runs the shipped evaluator directly under **Node**, which this
-project already expects (`.nvmrc` pins Node 20; Node 26 also works). The placeholder substitution
-happens first, in Python, by calling `render_html` itself, so Node is handed the same JavaScript text a
-browser would receive rather than an unsubstituted template, and it is driven through `subprocess` the
-same way the suite already shells out to other native tools. Every DOM-touching statement in the
-template lives inside a function or behind one `typeof document !== 'undefined'` guard, which is what
-makes that possible. Missing Node **fails** the test with the install hint; it does not skip.
+The re-threshold rule is written twice -- once in Python (`payload.reevaluate_gates`), once in the
+JavaScript that ships inside the report. **Only the Python half is under test.** If you have moved a
+threshold and are about to trust the verdict the page now shows you, that is the sentence to read
+twice.
 
 ```bash
-uv run pytest tests/unit/test_report_client_evaluator_parity.py tests/unit/test_reporting_rethreshold.py -q -n 0
+uv run pytest tests/unit/test_reporting_rethreshold.py tests/unit/test_reporting_document_structure.py -q -n 0
 ```
 
-Both files run in `make test-dev`. The Node harness compares the shipped evaluator against the Python
-filter over **every guide x every filter at five threshold sets** -- the run's own, every control at
-zero, one below each threshold, far above each threshold, and a set naming both a frozen filter and a
-filter id that does not exist -- and asserts the gate triples, all three counters and the derived
-status match on all of them. It also pins the three presets that are not a plain status filter to
-their trap cases, and asserts that a fragment naming a frozen or unknown filter is refused visibly. A
-companion assertion guards the fixture itself against going vacuous: every reason code in `payload.py`
-must still fire on at least one guide.
+Both files run in `make test-dev`.
 
-The same harness drives the three reader filters through the functions the report ships --
-`passesReaderFilters`, `passesFilters`, `encodeHash`, `applyHashFragment` and the `resetControls` the
-`Reset` button itself calls: each filter's selection is compared against the payload's own numbers, a
-guide with **no** composite score is asserted to be excluded by a composite floor, the three are shown
-to narrow together with a preset and the status set (each cutting rows the other two keep), and the
-fragment is round-tripped and then reset. The fixture carries a guide with 4 liabilities and one with 2
-so that "at most 3" has a real answer, and one guide with no composite score at all.
+**Verified by tests.** `tests/unit/test_reporting_rethreshold.py` covers the Python rule in 10 tests: a
+`not_evaluated` gate carrying a measured value cannot be decided by any threshold, a warn gate moved
+past its floor stays `warn`, an empty value stays `unknown`, a run-`unknown` gate and an `off` gate are
+both frozen untouched, a passing gate can still be re-thresholded into a fail, and an `off` filter
+carries no control at all. `tests/unit/test_reporting_document_structure.py` covers the rendered
+document as **text**. Read the first of its assertions narrowly, because it is easy to over-read: for each
+of the 17 declared `filter_id`s, neither `'the_id'` nor `"the_id"` occurs anywhere in the template string.
+That is a grep for two quoted spellings and nothing else. It does **not** exclude a per-gate branch reached
+any other way -- on `FILTERS[3].filter_id`, on `f.comparator` or `f.action`, on a backtick template literal,
+on an unquoted occurrence, or on the metric **column** a gate reads -- and column names are genuinely in
+the template, as the cart's TSV header cells and as `g.metrics.gc_content`-style reads. It would not even
+have caught the shape it is named after: the v1 template's six hand-written metric boxes branched per
+metric as `k:'gc', get:g=>g.metrics.gc_content`, and that template contained **no** quoted declared
+`filter_id` either, so this assertion passes on it. "The evaluator reads `FILTERS` and never branches per
+gate" is a design property (see above) held by review; what the test rules out is one spelling of one way
+to break it. The rest of the file is stronger: the panel keeps its two labelled group containers and their
+labels, all three reader-filter descriptors and the call that composes them inside `passesFilters`; both
+threshold-box lines emit a real `type="number" step="any"`, both control handlers carry the same refusal
+branch for a value the parser rejected (asserted as a count of two, so a fix applied to one handler and not
+the other fails), `inputmode` appears nowhere and `validity.badInput` is read where a browser would set it;
+and the document closes its own `<script>` exactly once, while a payload string spelling `</script>` is
+escaped, reversibly (the embedded literal parses back to the original), and appears nowhere unescaped. A
+companion assertion keeps the fixture from going vacuous: every reason code in `payload.py` must still fire
+on at least one guide. `tests/unit/test_reporting_payload.py` separately scans the document for external reach.
 
-Four more drivers cover the parts of the report that are text rather than arithmetic, because a report
-whose words disagree with its own numbers is wrong in the way that matters:
+**Reviewed, not verified.** Nothing executes the shipped JavaScript. There used to be a harness that
+rendered the report, sliced the substituted `<script>` out of it and ran the evaluator under Node; it has
+been deleted, with the Node dependency it needed. **Thirteen tests went with it.** What follows is what
+each of them held and nothing now holds -- stated per property rather than per test, so that a property two
+tests happened to share is listed once. Every deleted test is accounted for; the originals are readable at
+`git show integration/0.7.1:tests/unit/test_report_client_evaluator_parity.py` if you would rather check
+this list than trust it. One caveat that applies throughout: the harness drove a nine-gate synthetic
+fixture, so even when it ran it never exercised the real 17-gate registry.
 
-- **the gate panel.** `gatesCard` touches no DOM -- it returns HTML as a string -- so the harness builds
-  the real panel at the run's thresholds and again with one gate moved, parses every row out of it, and
-  asserts as a property that the threshold each Why sentence cites is the one in force, that the
-  sentence's polarity is arithmetically true, and that it agrees with the pill in the same row. Two rows
-  cover the run's own non-decisions: reason 5 and reason 6 must each state _which_ non-decision it was
-  and never a comparison, and the panel's banner must name the set it counts.
-- **the cart export.** The TSV is generated twice, and the `#` provenance lines, the `status_basis` and
-  the frozen column order are all asserted against the payload's own thresholds.
-- **the numeric boundary.** `parseControlValue` is driven over thirteen strings, and `encodeHash` is
-  shown to omit a poisoned `T`/`R` rather than write a fragment `applyHashFragment` refuses. The DOM
-  half -- `type="number"`, `validity.badInput`, the refusal banner -- is asserted structurally, because
-  only a browser sets that flag.
-- **the slice itself.** `_slice_script` ends where a browser ends a script (the **first** `</script>`)
-  and refuses a document that closes its own script twice, and a companion test renders a payload
-  spelling `</script>` to prove the escape in `render._embed` holds. Without both, a truncated document
-  could pass parity.
+_From `test_the_shipped_evaluator_agrees_with_the_python_filter_on_every_gate`:_
+
+- **`reevaluateGates` agrees with `payload.reevaluate_gates` gate by gate.** Every guide x every one of the
+  fixture's nine gates at five threshold sets -- the run's own, every movable control at `0`, each one
+  below its own threshold, each 1,000 above it, and a set that also names a frozen gate and a nonexistent
+  id -- plus the guide roll-up (`n_gates_failed`, `n_gates_unknown`, `n_gates_warned`, and the `status`
+  that follows from them, including the rule that a run-rejected guide with no failed and no unknown gate
+  reads `unknown` rather than `pass`). Nothing now compares the two implementations at all, at any
+  threshold, on any guide.
+- **A frozen gate cannot be re-decided in the browser.** Every gate whose reason was anything but
+  `REASON_OK` -- anything but a real comparison -- came back as the identical `[value, verdict, reason]`
+  triple at all five threshold sets, so no reader move could decide an `off` gate, a no-threshold gate, a
+  run-`unknown` gate or a run-`not_evaluated` one. Python's half of this rule
+  is still tested (`test_reporting_rethreshold.py`); the browser's is not, so the page could now
+  re-threshold its way out of an `unknown` and only the page would know.
+- **The `passing` view cannot contain a guide the evaluator itself calls `unknown`** -- asserted at all
+  five threshold sets, not only at the run's own.
+
+_From `test_near_miss_off_target_clean_and_register_dedup_presets`:_
+
+- **`near_miss` cannot be shown to reject a guide with an undecided gate.** It admitted the guide failing
+  exactly one gate and rejected both the all-pass guide and the guide carrying an `unknown`, so "one gate
+  away" cannot quietly start counting gates nobody decided.
+- **`off_target_clean` cannot be shown to exclude a never-screened guide whose liability count is zero.**
+  The fixture carries two guides at `liability_count == 0`, one `off_target_screened=True` and one
+  `False`, and only the screened one was admitted. That distinction is the preset's whole reason to exist,
+  and reading an unscreened guide as clean is the fabricated-evidence direction.
+- **`register_dedup` cannot be shown to pick the representative of a register** -- on the one register the
+  fixture builds, two guides 1 nt apart on one transcript, it admitted the higher-scoring guide and refused
+  its neighbour. One pair, so this was never the general "exactly one per cluster" property either.
+
+_From the four reader-filter tests
+(`test_each_reader_filter_selects_the_rows_the_python_side_would`,
+`..._no_composite_score_is_excluded_by_a_composite_floor`,
+`..._composes_with_the_presets_and_the_status_checkboxes`,
+`..._survive_the_url_fragment_and_the_reset_clears_them`):_
+
+- **The three reader bounds select the rows the Python rule selects.** Six bound sets -- nothing set,
+  composite >= 60, isoforms >= 1, liabilities <= 0, liabilities <= 3, and a floor and a ceiling together --
+  compared guide list for guide list against the payload's own numbers, with a non-vacuity check that each
+  bound really cuts rows and a demonstration that the ceiling is a ceiling and not a zero-or-everything
+  switch: at 3 it admits the guide carrying 2 liabilities and refuses the one carrying 4.
+- **A reader bound cannot be shown to refuse a guide whose value is absent.** The guide with no composite
+  score at all was a row when nothing was asked, was excluded by a floor it had never been measured
+  against, and was kept by a liability ceiling its real `0` satisfies. Admitting it under the floor would
+  publish it as having cleared a bar nobody applied to it.
+- **The reader bounds, the active preset and the status checkboxes compose rather than override.**
+  `passesFilters` was shown to return exactly the intersection of the three taken separately, on a case
+  where each of them cuts rows the other two keep. The surviving structural test asserts that the string
+  `if(!passesReaderFilters(g)) return false;` is in the document: that the call is wired, not that the
+  intersection is right, and not that the preset and the status set survive it.
+- **A copied URL reproduces the page it was copied from.** A moved gate, two reader bounds and a preset
+  were encoded by `encodeHash`, the controls reset, and the fragment then applied alone as a fresh load of
+  the copied URL would apply it: same `T`, same `R`, same preset, the same visible rows, and the same
+  fragment byte for byte.
+- **`resetControls` empties every control.** After Reset the fragment was `""`, every reader bound was
+  `null`, the preset was back to `all`, and the visible rows had genuinely changed. Nothing now catches a
+  Reset that clears the gate thresholds and leaves a reader bound or a preset in force -- which would show
+  a reader a filtered table the panel presents as unfiltered.
+
+_From `test_a_frozen_filter_named_in_the_url_fragment_is_refused_visibly` and
+`test_an_unknown_reader_filter_name_in_the_fragment_is_refused_not_invented`:_
+
+- **A frozen gate id and an unknown gate id in `t=` are refused visibly** -- both were listed in
+  `applyHashFragment`'s `refused` rather than silently dropped, so a URL asking for something the report
+  will not do says so instead of rendering as if it had been obeyed.
+- **An unknown name in `r=` is refused the same way**, with no bound set behind the reader. A second table
+  and a second lookup, so the entry above does not cover it.
+
+_From `test_the_gate_panel_states_the_comparison_that_produced_the_verdict_beside_it` and
+`test_a_gate_the_run_left_undecided_states_its_non_decision_not_a_comparison`:_
+
+- **The Why sentence and the pill beside it come from one threshold.** Over every compared row of two
+  panels -- the same guide at the run's thresholds and with one gate loosened -- the threshold the sentence
+  cited was the one in force, the comparator was the registry's, the sentence's `not` agreed with its own
+  arithmetic, and that arithmetic agreed with the pill. This is #103's finding 1 itself, held as a property
+  over at least eight stated comparisons rather than on the one row that was moved.
+- **The panel says whose thresholds produced its verdicts.** The moved row named both values (`le 20` in
+  the threshold cell beside `run 10`, and `the run used le 10` in the sentence), the unmoved panel named
+  neither, and `1 threshold moved from the run's` appeared only when one had moved. A reader quoting a pill
+  could now be given no way to tell whose verdict it is.
+- **A gate the run left undecided states its non-decision instead of a comparison.** Reason 5 rendered
+  "the run recorded unknown for this gate; no value to re-compare" with the value nulled to an em dash;
+  reason 6 rendered "the run did not evaluate this gate; value measured, no verdict applied" and kept the
+  number the run had recorded. Both ship under one `unknown` pill, so the Why column is the only thing that
+  tells the two apart, and a fallthrough to the comparison line prints arithmetic nobody performed --
+  `5 not ge 1` -- beside an `unknown` pill.
+- **The banner over those rows counts the set it names** -- `N of M gates undecided`, never the earlier
+  "gates not evaluated", which named the one set the count excludes.
+
+_From `test_the_cart_export_records_the_thresholds_its_status_column_came_from`:_
+
+- **The export's 18 column names and their order.** Frozen as a literal tuple, with the header shown to be
+  undisturbed by the comment lines added above it. Those columns are the file's contract with every ticket
+  and script that has ever read one; a reorder or a rename now surfaces in a spreadsheet, not in CI.
+- **The provenance lines say which thresholds the `status` column came from.** At the run's own thresholds:
+  `#status_basis=run_thresholds moved_gates=0`, no `#moved_gate=` line at all, and every row's `status`
+  equal to the run's own status for that guide. With one gate and one bound moved: the basis flipped to
+  `reader_rethresholded`, `#moved_gate=` named the comparator and both thresholds, `#reader_filter=` named
+  the direction and the bound, the `#sirnaforge_cart` line carried the preset, and one guide's `status`
+  genuinely differed between the two files -- the fact that makes the provenance necessary rather than
+  decorative.
+
+_From `test_a_value_that_is_not_a_number_is_refused_rather_than_poisoning_every_verdict`:_
+
+- **`parseControlValue`'s boundary, on thirteen inputs.** `''` and `'   '` are _no bound_ and never `0`;
+  `'0'`, `'12'`, `' 12.5 '` (trimmed), `'-3'` and `'1e3'` are numbers; `abc`, `5px`, `Infinity`,
+  `-Infinity`, `NaN` and `1e999`
+  are refused. The surviving test asserts that the boxes are `type="number"` and that both handlers refuse
+  whatever the parser refuses; what it cannot assert is what the parser returns.
+- **Nothing non-finite leaves in the fragment, and nothing non-finite enters through one.** With a `NaN`
+  forced into `T` -- and separately into `R` -- by another route, `encodeHash` emitted no `t=` and no `r=`,
+  which made it a property of the writer rather than of the control; and `applyHashFragment` refused
+  `t=<gate>:abc`, `t=<gate>:Infinity`, `t=<gate>:` (empty, which `Number('')` reads as a real threshold of
+  `0`) and the two `r=` equivalents, leaving the run's threshold in place each time.
+- **And why that matters:** one `NaN` threshold was shown to fail every guide in the fixture, because every
+  comparison against `NaN` is false.
+
+The thirteenth deleted test, `test_node_absent_fails_loudly_rather_than_skipping`, asserted that a missing
+`node` binary failed with an install hint instead of skipping. It was a property of the harness, not of the
+report, and nothing about the document is less covered for its going.
+
+This is a deliberate trade, not an oversight: an in-process JavaScript engine and a static
+table-equality substitute were both considered and both declined in favour of less machinery. The cost
+is stated here so it is not discovered by a reader who trusted the page. Change any of the JavaScript
+above and someone has to read it, because nothing will run it.
