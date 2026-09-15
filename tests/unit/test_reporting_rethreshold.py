@@ -606,3 +606,293 @@ def test_the_phase_two_markup_still_reaches_nothing_outside_itself(tmp_path: Pat
     assert external == [], f"the report links a non-inline resource: {external}"
     for forbidden in ("fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "document.cookie"):
         assert forbidden not in html, f"{forbidden} cannot work in Quilt's default sandbox"
+
+
+# ---------------------------------------------------------------------------
+# The controls, and the state a reader can send (#103, phase 3)
+# ---------------------------------------------------------------------------
+# Four defects the maintainer reproduced by driving the rendered page in a browser: both refusal
+# banners shipped inside a `<details>` that is closed, so `checkVisibility()` was false and
+# `elementFromPoint` at the banner's own box returned the table header behind it; a threshold box and
+# its slider could show different numbers, after which one touch of the slider silently dropped the
+# real threshold to its own maximum; the fragment was read once at load with no `hashchange` listener,
+# while `syncHash` pushed a history entry per keystroke; and half the visible state -- the search box,
+# the status set, the conservation controls and the cart -- was never in the URL at all.
+#
+# Asserted against the rendered document, and against the payload that feeds it, rather than through a
+# JavaScript engine. What that cannot see is stated in the report for this phase: the behaviours below
+# are pinned as wiring -- which function calls which -- and the browser run that confirmed them is not
+# reproducible here.
+
+
+def _js_body(html: str, signature: str) -> str:
+    """One JavaScript function body out of the rendered document, matched on its braces.
+
+    Where a call sits is the whole claim in this section: `openFilters()` in the refusal path and the
+    same call somewhere harmless are indistinguishable to a substring search, and "the search box calls
+    syncHash" is a statement about one handler rather than about the file.
+    """
+    start = html.index(signature)
+    open_at = html.index("{", start)
+    depth = 0
+    for i in range(open_at, len(html)):
+        if html[i] == "{":
+            depth += 1
+        elif html[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[open_at : i + 1]
+    raise AssertionError(f"{signature} has no balanced body in the rendered document")
+
+
+@pytest.mark.unit
+def test_a_refusal_opens_the_container_that_was_swallowing_it(tmp_path: Path) -> None:
+    """Both refusal banners were unreachable, and both exist only to be seen.
+
+    Loading `#t=<gate>:<value>,<unknown gate>:<value>` set `refusedFilters`, cleared the banner's
+    `display` -- and `checkVisibility()` still returned false, because the banner lives inside the
+    thresholds `<details>` and that element ships closed. The two banners were written so that a refused
+    filter or a refused keystroke "is visible rather than swallowed"; the container was doing the
+    swallowing. So anything that has to be seen opens it: a refused name, a refused number, or a
+    fragment that set any control at all.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    assert 'id="refused"' in html and 'id="badnum"' in html
+    assert 'class="filters" id="filters"' in html and "<details open" not in html, (
+        "the panel still ships closed, which is the point: it is opened when there is something to see"
+    )
+    assert "d.open=true" in _js_body(html, "function openFilters()")
+    assert "openFilters();" in _js_body(html, "function renderRefused()"), "the URL-refusal banner"
+    assert "openFilters();" in _js_body(html, "function markControl("), "the refused-keystroke banner"
+
+    # And a fragment that moved anything opens the panel even when nothing was refused: the reader has
+    # to be able to see the control it moved.
+    fragment = _js_body(html, "function applyFragmentState(")
+    assert "if(applied.controls || applied.refused.length) openFilters();" in fragment
+    # `controls` is a property of the fragment, set by every key that reaches a control and false for the
+    # bare-guide form an earlier report wrote.
+    parse = _js_body(html, "function applyHashFragment(")
+    assert "refused, controls:false}" in parse, "a bare guide sequence sets no control"
+    assert parse.count("controls=true;") == 8, "every control-bearing key must say so"
+
+
+@pytest.mark.unit
+def test_a_threshold_the_slider_cannot_show_is_kept_and_labelled_not_pinned(tmp_path: Path) -> None:
+    """The box and the slider are one threshold, and the code asserted they could never disagree.
+
+    They could. The slider's domain is this run's own values, snapped and clamped to the setting's
+    declared range, so a threshold the pipeline would accept can sit outside it -- and a range input
+    cannot represent that: it pins at its own maximum. Typing 90 into a gate whose domain ends at
+    76.104348 left the box at 90 and the slider at the pin, and one touch of the slider then dropped the
+    real threshold to 76.104348 without the reader asking.
+
+    The domain is deliberately NOT widened to make the disagreement go away -- the clamping is what
+    stopped this report publishing "at most -59 off-targets" on a count-valued gate -- so the threshold
+    stays where it was typed, the slider says it cannot show it, and it is disabled so it cannot answer
+    for a number it does not hold.
+    """
+    payload = build_payload(_graded_run(tmp_path))
+    html = render_html(payload)
+
+    # The state is reachable, not hypothetical: at least one gate's slider stops short of a value its own
+    # declared range allows, so a legal threshold exists that the slider cannot show.
+    narrow = [
+        f
+        for f in payload.filters
+        if f["evaluable"] and f["bound_max"] is not None and f["control"]["max"] < f["bound_max"]
+    ]
+    assert narrow, "the fixture must contain a gate whose slider domain is narrower than its own limits"
+
+    assert "v<c.min || v>c.max" in _js_body(html, "function offScale("), "off-scale is a domain question"
+    assert "f.control" in _js_body(html, "function offScale("), "and the domain is the payload's, not re-derived"
+    row = _js_body(html, "function gateRow(")
+    assert 'min="${c.min}" max="${c.max}" step="${c.step}"' in row, "the published domain, unchanged"
+    assert "${offScale(f)?' disabled':''}" in row, "an off-scale slider cannot be dragged"
+    assert 'id="os_${esc(f.filter_id)}">${offScaleNote(f)}' in row, "and says so where the reader is looking"
+    note = _js_body(html, "function offScaleNote(")
+    assert "Off this slider's scale." in note
+    assert "the box above is\n    the threshold in force" in note, "which of the two controls is in force"
+
+    # Nothing writes the pin back: the box always follows, the slider only while it can show T, and an
+    # input arriving from a disabled slider is ignored rather than allowed to drop the threshold.
+    paint = _js_body(html, "function paintControl(")
+    assert "if(box && box!==moved) box.value = T[id];" in paint
+    assert "rng.disabled = off; if(!off && rng!==moved) rng.value = T[id];" in paint
+    assert "if(el.id.startsWith('rng_') && offScale(f)){ paintControl(f, null); return; }" in html
+
+
+@pytest.mark.unit
+def test_the_fragment_is_re_read_when_it_changes_and_costs_no_history(tmp_path: Path) -> None:
+    """The URL claimed one state while the page showed another, and Back could not escape the report.
+
+    `location.hash = encodeHash()` is a navigation: it pushed one entry per keystroke on every
+    threshold, so `history.length` climbed during light use and Back then changed the URL without
+    changing the view -- while nothing anywhere listened for `hashchange`, so the fragment was read
+    exactly once, at load. `replaceState` keeps the URL current without owning the reader's Back button,
+    and the listener makes Back, Forward, an edited address bar and a pasted link all reach the same
+    code a fresh load does.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    assert "location.hash = encodeHash();" not in html, "the per-keystroke history push"
+    sync = _js_body(html, "function syncHash()")
+    assert "history.replaceState(null, '', '#'+h);" in sync
+    # pushState and replaceState throw on an opaque origin, which is the sandbox this report is read in,
+    # so the fallback is the old behaviour rather than losing the URL.
+    assert "catch(e){ if(location.hash.slice(1)!==h) location.hash = h; }" in sync
+
+    wire = _js_body(html, "function wireUI()")
+    assert "window.addEventListener('hashchange'" in wire
+    assert "if(location.hash.slice(1) === encodeHash()) return;" in wire, (
+        "the report must ignore its own writes, or the fallback path would fight the reader's typing"
+    )
+    assert "applyFragmentState(location.hash.slice(1));" in wire
+    # One path for the first load and for every later change, so the two can never drift.
+    assert wire.count("applyFragmentState(") == 2
+    fragment = _js_body(html, "function applyFragmentState(")
+    assert fragment.index("resetControls();") < fragment.index("applyHashFragment(raw)"), (
+        "a fragment describes the whole state, so what it omits is a default and not what was on screen"
+    )
+
+
+@pytest.mark.unit
+def test_every_control_a_reader_can_see_travels_in_the_url(tmp_path: Path) -> None:
+    """The promise that a reader who sends the URL sends the rows they saw was false as shipped.
+
+    `t=`, `r=`, `sp=`, `preset=` and `g=` were encoded; the search box, the four status checkboxes, the
+    conservation species and the seed-tolerance toggle were not, and `applyFilters()` from the search
+    box never called `syncHash()` at all. The status set alone hides every fail and unknown row by
+    default -- 3,617 of them on one internal run -- so the URL was carrying the verdicts without the
+    rows. Each key is omitted when its control holds the default, which is what keeps `Reset` on an
+    empty fragment.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    encode = _js_body(html, "function encodeHash()")
+    parse = _js_body(html, "function applyHashFragment(")
+
+    for key in ("g=", "t=", "r=", "sp=", "preset=", "q=", "s=", "c=", "k="):
+        assert f"'{key}'" in encode, f"{key} is not written into the fragment"
+        assert f"k==='{key[:-1]}'" in parse, f"{key} is written but never read back"
+
+    # Omitted at the default, so a reset URL is empty and a shared one carries only reader choices.
+    assert "if(F.q) parts.push('q='" in encode
+    assert "if(!statusIsDefault()) parts.push('s='" in encode
+    assert "if(cons.length || !F.consSeedIntact)" in encode
+    assert "F.status = new Set(DEFAULT_STATUS)" in _js_body(html, "function resetControls()")
+    assert "F.q = ''" in _js_body(html, "function resetControls()")
+    # A set key REPLACES its set rather than adding to it, or a re-applied fragment would union with
+    # whatever was on screen.
+    assert "F.status=new Set();" in parse and "F.cons=new Set(); F.consSeedIntact=true;" in parse
+
+    # The search text lives in F, not in the input, so the box is a view of it: a fragment can restore
+    # it and Reset can clear it.
+    assert "const raw=(F.q||'').trim();" in _js_body(html, "function applyFilters()")
+    assert "if(qbox) qbox.value = F.q;" in _js_body(html, "function buildFilterUI()")
+
+    # And every control that changes any of them writes the URL.
+    assert "F.q = e.target.value; applyFilters(); syncHash();" in _js_body(html, "function wireUI()")
+    build = _js_body(html, "function buildFilterUI()")
+    assert build.count("syncHash();") == 3, "the status set, the conservation species and the seed toggle"
+    assert "syncHash();" in _js_body(html, "function togglePick(")
+
+
+@pytest.mark.unit
+def test_the_cart_persists_in_the_fragment_because_it_has_nowhere_else_to_live(tmp_path: Path) -> None:
+    """The audit's own suggestion for the cart was browser storage, which this report may not use.
+
+    It reaches nothing outside itself, and the sandbox it is read in withholds same-origin, so no
+    storage API is reachable there in the first place. The URL is the only in-page place a pick list can
+    persist -- and it has the property storage does not: a reader can send it. The cost is a cap, and
+    the card states on screen both that the address is the cart and when it is carrying fewer guides
+    than the cart holds.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    for forbidden in ("localStorage", "sessionStorage", "document.cookie", "indexedDB"):
+        assert forbidden not in html, f"{forbidden} is not available to this report at all"
+
+    # Sequences, never indices: an index would resolve to a different guide in a differently built
+    # report, where a sequence this file does not hold can be refused like any other invented name.
+    assert "function cartInUrl(){ return G.filter(g=>CART.has(g.guide)).map(g=>g.guide)" in html
+    assert ".slice(0, CART_IN_URL_MAX); }" in html
+    assert "if(carted.length) parts.push('k='+carted.join(','));" in _js_body(html, "function encodeHash()")
+    parse = _js_body(html, "function applyHashFragment(")
+    assert "if(G.some(g=>g.guide===key)) CART.add(key); else refused.push(key);" in parse
+
+    # Said on screen, in both directions.
+    assert 'id="carturl"' in html
+    cart = _js_body(html, "function renderCart()")
+    assert "The cart is in this page's URL" in cart and "Nothing is stored in\n       this browser" in cart
+    assert "This page's URL carries ${carried} of these ${rows.length} guides" in cart
+
+    # A fragment is the whole state, so it owns the cart; the Reset button beside the thresholds does
+    # not, because it must never destroy a pick list nothing else on this page can rebuild.
+    assert "CART.clear();" in _js_body(html, "function applyFragmentState(")
+    assert "CART" not in _js_body(html, "function resetControls()")
+
+
+def _details_span(html: str, marker: str) -> tuple[int, int]:
+    """Offsets of one `<details>` element's own content, nesting counted.
+
+    Containment is the whole mechanism of the banner defect, so it is measured rather than inferred
+    from an id appearing somewhere in the same document.
+    """
+    start = html.index(marker)
+    depth = 0
+    i = start
+    while i < len(html):
+        if html.startswith("<details", i):
+            depth += 1
+            i += 8
+        elif html.startswith("</details>", i):
+            depth -= 1
+            if depth == 0:
+                return start, i
+            i += 10
+        else:
+            i += 1
+    raise AssertionError(f"{marker} is never closed")
+
+
+@pytest.mark.unit
+def test_both_banners_sit_inside_the_container_that_has_to_be_opened(tmp_path: Path) -> None:
+    """The defect was containment, so containment is what this asserts.
+
+    `#refused` and `#badnum` were reachable in the DOM with `display` cleared and still failed
+    `checkVisibility()`, because both live inside the thresholds `<details>` and it ships closed --
+    `elementFromPoint` at the banner's own box returned the index's table header behind it. A test that
+    only checks the two ids exist and that `openFilters` is called would stay green if a later edit
+    moved either banner out of the panel, which would make the call pointless, or moved a third thing
+    that must be seen in without wiring one. Both offsets are inside the element's own span, and the
+    element still ships closed, which is why opening it has to be someone's job.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    open_at, close_at = _details_span(html, '<details class="filters" id="filters">')
+    for banner in ('id="refused"', 'id="badnum"'):
+        at = html.index(banner)
+        assert open_at < at < close_at, f"{banner} is no longer inside #filters; openFilters() cannot reveal it"
+    assert " open>" not in html[open_at : open_at + 60], "the panel ships closed"
+    # And the lever names that element, so it is the same one measured above.
+    assert "getElementById('filters')" in _js_body(html, "function openFilters()")
+
+
+@pytest.mark.unit
+def test_no_fragment_key_is_written_without_being_read_back(tmp_path: Path) -> None:
+    """Every key the URL carries has to survive the round trip, derived rather than listed.
+
+    The shareable-state defect was asymmetry: the encoder wrote five keys and the page held nine
+    controls. A hardcoded list of the nine cannot catch the next one -- a tenth control encoded and
+    never parsed would ship a URL that silently restores less than it carries, which is the same defect
+    with a different name. So the two halves are read out of the rendered source and compared as sets.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    written = set(re.findall(r"parts\.push\('([a-z]+)='", _js_body(html, "function encodeHash()")))
+    read = set(re.findall(r"k==='([a-z]+)'", _js_body(html, "function applyHashFragment(")))
+
+    assert written, "encodeHash writes no keys at all, so the regex no longer matches the source"
+    assert written == read, (
+        f"written but never read back: {sorted(written - read)}; read but never written: {sorted(read - written)}"
+    )

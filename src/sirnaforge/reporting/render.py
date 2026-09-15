@@ -126,6 +126,12 @@ margin:9px 0 5px;padding-top:7px;border-top:1px solid var(--line)}
 /* What each gate did to the guides in this file, under its own control: the panel is a ranked list,
    and a slider that decided nothing has to say so where the reader is about to reach for it. */
 .geffect{font-size:11.5px;color:var(--mut);margin:-1px 0 8px}
+/* A threshold the slider's domain cannot represent. Painted in the refusal colour and sitting between
+   the two controls, because the whole point is that the box and the slider no longer agree and the box
+   is the one in force. Empty when they do agree, so the row keeps its height. */
+.offscale{font-size:11.5px;color:var(--fail);margin:-1px 0 7px}
+.offscale:empty{display:none}
+input[type=range]:disabled{opacity:.45}
 .fstat label{margin-right:9px;font-size:12px;white-space:nowrap}
 .cartbtn{cursor:pointer;border:1px solid var(--line);background:var(--card);border-radius:5px;
 padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
@@ -305,6 +311,10 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      <b>Export TSV</b> downloads it. Some viewers -- including a
      Quilt iframe without <code>allow-downloads</code> -- block that; the box above is then the way
      out, and says so if the download is refused.</p>
+     {# Where the cart lives between reloads, said on screen. It cannot be browser storage: this file
+        reaches nothing outside itself, and the sandbox it is read in withholds storage anyway. The URL
+        is the only place left, so the reader is told that the address IS the cart. #}
+     <div id="carturl" class="empty" style="margin:6px 0 0"></div>
    </div>
    <div class="card" id="mapcard">
      <h2>Candidate positions</h2>
@@ -888,7 +898,15 @@ function card(render, g){
 // fragment names, with the refusal shown rather than swallowed.
 const CART = new Set();
 const STATUS_KEYS = ['pass','warn','unknown','fail'];
-const F = {status:new Set(['pass','warn']), cons:new Set(), consSeedIntact:true};
+//: The status set a report opens on. Named rather than spelled twice, because encodeHash has to know
+//: what the default IS: it omits the status set when it is this one, so a URL carries a status filter
+//: only when the reader chose it -- and `Reset` therefore leaves an empty fragment.
+const DEFAULT_STATUS = ['pass','warn'];
+// Every reader-side selection that is not a threshold: the search text, the status set, the
+// conservation species and the seed tolerance. `q` lives here rather than being read off the input on
+// demand, so there is one source of truth for it and the fragment can restore it -- reading the DOM
+// meant a URL could carry a search the box did not show, or a box the URL did not carry.
+const F = {status:new Set(DEFAULT_STATUS), cons:new Set(), consSeedIntact:true, q:''};
 
 // A filter a reader may move: payload.py's own `evaluable` (payload.py's _filter_view), decided from
 // this run's output -- applied, thresholded, and this run measured at least one value for it. Read
@@ -1056,6 +1074,14 @@ function fnum(id){ const el=document.getElementById(id); if(!el) return null;
   if(el.validity && el.validity.badInput) return undefined;
   return parseControlValue(el.value); }
 
+// Both refusal banners live inside the thresholds `<details>`, and that element ships closed. On a real
+// load of `#t=<gate>:<value>` the banner was in the DOM with `display` cleared and `checkVisibility()`
+// still returned false: `elementFromPoint` at its own box returned the index's table header behind it.
+// Both banners exist so that a refusal is visible rather than swallowed, and the container was doing the
+// swallowing. Anything the reader has to see opens it -- a refused filter, a refused keystroke, or a
+// fragment that set any control at all.
+function openFilters(){ const d=document.getElementById('filters'); if(d) d.open=true; }
+
 // A refused keystroke has to be visible at the control. Silently keeping the last good value would
 // leave the reader looking at a threshold they did not type and believing they had moved it.
 function markControl(el, ok){
@@ -1063,6 +1089,7 @@ function markControl(el, ok){
   const note=document.getElementById('badnum'); if(!note) return;
   const bad=[...document.querySelectorAll('#frows input[aria-invalid="true"], #rrows input[aria-invalid="true"]')];
   note.style.display = bad.length ? '' : 'none';
+  if(bad.length) openFilters();
   note.innerHTML = bad.length ? `<b>Ignored.</b> ${bad.map(b=>esc(b.getAttribute('aria-label')||b.id)).join(', ')}
     ${bad.length===1?'is':'are'} not a finite number, so nothing moved: no verdict here was decided
     against it, and the URL still describes the thresholds actually in force.` : '';
@@ -1118,6 +1145,45 @@ function gateOrder(){
     || (a[1]-b[1]));
 }
 
+// ---- the box and the slider are ONE threshold ----------------------------------------------------
+// The slider's domain is this run's own observed values, snapped to the step and clamped to the
+// setting's declared range (payload._control_domain) -- deliberately narrower than what the number box
+// can reach, because a domain wider than the run's values spends its travel where no verdict changes.
+// A range input cannot represent a value outside its own min/max: it pins silently at the edge. So
+// typing 90 into a gate whose domain ends at 76.104348 left the box reading 90, T at 90, and the slider
+// sitting at 76.104348 -- and one touch of that slider then dropped the real threshold to the pin
+// without the reader asking for it. The code asserted the two could not disagree by keeping them in
+// sync on every keystroke; the pin is the case where the sync silently fails.
+//
+// The domain is NOT re-derived here to make the disagreement go away: widening it would undo the
+// clamping that stopped this report publishing "at most -59 off-targets" on a count-valued gate. The
+// threshold stays where the reader typed it, the slider says it cannot show it, and it is disabled so it
+// cannot answer for a number it does not hold.
+function offScale(f){
+  const c=f.control||{}, v=T[f.filter_id];
+  return Number.isFinite(v) && Number.isFinite(c.min) && Number.isFinite(c.max) && (v<c.min || v>c.max);
+}
+function offScaleNote(f){
+  if(!offScale(f)) return '';
+  const c=f.control||{};
+  return `<b>Off this slider's scale.</b> ${fmt(T[f.filter_id])} is outside ${fmt(c.min)} to ${fmt(c.max)},
+    the span of the values this run measured for this gate, so the slider cannot show it: the box above is
+    the threshold in force and every verdict here is decided at <span class="mono">${esc(f.comparator)}
+    ${fmt(T[f.filter_id])}</span>. The slider is disabled until the threshold is back inside its scale.`;
+}
+
+// Keeps one gate row's two controls telling the same story after a move: whichever the reader touched
+// stays as they left it, the other follows, and the slider goes disabled-and-labelled the moment it
+// cannot represent T rather than pinning at its own edge.
+function paintControl(f, moved){
+  const id=f.filter_id, off=offScale(f);
+  const box=document.getElementById('ctl_'+id), rng=document.getElementById('rng_'+id);
+  if(box && box!==moved) box.value = T[id];
+  if(rng){ rng.disabled = off; if(!off && rng!==moved) rng.value = T[id]; }
+  const note=document.getElementById('os_'+id);
+  if(note) note.innerHTML = offScaleNote(f);
+}
+
 // One generic control per filter -- no filter_id and no filter column is ever a branch in this function,
 // only data read off FILTERS. A frozen filter gets a read-only row, no input, and payload.py's own
 // `unevaluable_reason` (not a re-derived guess at why): the evaluator above already refuses to move it,
@@ -1135,7 +1201,9 @@ function gateRow(f){
         aria-label="${esc(f.filter_id)} threshold">
       <span class="empty">run ${fmt(f.threshold)}</span></div>
       <input type="range" id="rng_${esc(f.filter_id)}" min="${c.min}" max="${c.max}" step="${c.step}"
-        value="${T[f.filter_id]}" style="grid-column:1/-1;width:100%" aria-label="${esc(f.filter_id)} slider">
+        value="${T[f.filter_id]}"${offScale(f)?' disabled':''} style="grid-column:1/-1;width:100%"
+        aria-label="${esc(f.filter_id)} slider">
+      <div class="offscale" id="os_${esc(f.filter_id)}">${offScaleNote(f)}</div>
       <div class="geffect">${gateEffect(f)}</div>`;
 }
 
@@ -1152,14 +1220,18 @@ function buildGateControls(){
   // never has two disagreeing readouts. The box carries `type=number` and `step=any` but deliberately
   // no min/max: the slider's domain bounds the slider, and payload.py's own contract is that the number
   // box can still reach any threshold (payload._control_domain). What is rejected is not an unusual
-  // number, it is a value that is not a number at all.
+  // number, it is a value that is not a number at all -- and a number the slider's domain cannot hold is
+  // kept, with the slider disabled and saying so, rather than quietly pinned (paintControl).
   document.querySelectorAll('#frows input[id^="ctl_"], #frows input[id^="rng_"]').forEach(el=>el.oninput=()=>{
     const id=el.id.slice(el.id.indexOf('_')+1), f=FILTERS.find(x=>x.filter_id===id), v=fnum(el.id);
     if(v===undefined){ markControl(el,false); return; }   // refused here, so T can never hold a NaN
     markControl(el,true);
+    // While the threshold is off the slider's scale the slider's value is a pin, not a reading, and it
+    // is disabled so a reader cannot touch it. `disabled` alone is the browser's promise; this is the
+    // report's: an input arriving from that control anyway cannot drop the threshold to the pin.
+    if(el.id.startsWith('rng_') && offScale(f)){ paintControl(f, null); return; }
     T[id] = v===null ? f.threshold : v;
-    const other=document.getElementById((el.id.startsWith('ctl_')?'rng_':'ctl_')+id);
-    if(other) other.value = T[id];
+    paintControl(f, el);
     onThresholdsChanged();
   });
 }
@@ -1222,10 +1294,19 @@ function labelLiabColumn(){
 }
 
 function buildFilterUI(){
+  // The search box is a control like any other, so it is restored from F here rather than left holding
+  // whatever the reader last typed: a fragment that carries `q=` has to put the text back in the box, and
+  // Reset has to clear it.
+  const qbox=document.getElementById('q');
+  if(qbox) qbox.value = F.q;
   document.getElementById('fstat').innerHTML = STATUS_KEYS.map(k=>
     `<label><input type="checkbox" data-status="${k}"${F.status.has(k)?' checked':''}> ${k}</label>`).join('');
+  // syncHash, because this is the single biggest thing the URL used to leave out: the default set hides
+  // every fail and unknown row -- 3,617 of them on one internal run -- so a URL that did not carry it did
+  // not carry the rows the reader was looking at.
   document.querySelectorAll('#fstat input').forEach(cb=>cb.onchange=()=>{
-    cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status); applyFilters(); });
+    cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status);
+    applyFilters(); syncHash(); });
   buildGateControls();
   buildReaderFilters();
   labelLiabColumn();
@@ -1235,8 +1316,9 @@ function buildFilterUI(){
     `<label title="accept one mismatch outside guide positions 2-8">
       <input type="checkbox" id="consseed"${F.consSeedIntact?' checked':''}> allow 1 mm outside the seed</label>`;
   document.querySelectorAll('#fcons input[data-cons]').forEach(cb=>cb.onchange=()=>{
-    cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); });
-  document.getElementById('consseed').onchange = e => { F.consSeedIntact=e.target.checked; applyFilters(); };
+    cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); syncHash(); });
+  document.getElementById('consseed').onchange = e => {
+    F.consSeedIntact=e.target.checked; applyFilters(); syncHash(); };
   buildPresetButtons();
   renderRefused();
   // Rebuilding the boxes discards every aria-invalid with them, so the refusal banner would otherwise
@@ -1248,8 +1330,11 @@ function buildFilterUI(){
 // Everything #freset does, as a function rather than inline in its handler: "Reset" has to mean every
 // control -- the status and conservation checkboxes, every gate threshold, every reader filter and the
 // preset -- and the parity harness drives this same function rather than a restatement of it.
+// The cart is deliberately NOT cleared here: it is a pick list a reader built, not a filter setting, and
+// wiping it from a Reset button inside the thresholds panel would destroy work nothing else on this page
+// can rebuild. A fragment is a different matter -- see applyFragmentState.
 function resetControls(){
-  F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
+  F.status = new Set(DEFAULT_STATUS); F.cons = new Set(); F.consSeedIntact = true; F.q = '';
   FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
   READER_FILTERS.forEach(f => { R[f.k] = null; });
   liabScope = null;                        // back to the gate's own all-species scope
@@ -1281,8 +1366,10 @@ function renderStatusPills(){
 
 function matching(){ return G.filter(passesFilters); }
 
+// Reads F.q, not the input: the search text is reader state that the fragment carries and Reset clears,
+// so the box is a view of it rather than its home.
 function applyFilters(){
-  const raw=(document.getElementById('q').value||'').trim();
+  const raw=(F.q||'').trim();
   const seq=raw.toUpperCase().replace(/T/g,'U'), id=raw.toLowerCase();
   view = matching().filter(g => !raw || g.guide.includes(seq)
     || g.isoforms.some(i=>String(i.candidate_id).toLowerCase().includes(id)
@@ -1293,8 +1380,21 @@ function applyFilters(){
 
 function togglePick(guide){
   CART.has(guide) ? CART.delete(guide) : CART.add(guide);
-  renderIndex(); renderCart(); drawOverlay();
+  renderIndex(); renderCart(); drawOverlay(); syncHash();
 }
+
+// ---- where the cart lives between reloads ---------------------------------------------------------
+// Not browser storage -- the obvious answer, and the one this report may not use: it reaches nothing
+// outside itself, and the sandbox it is read in withholds same-origin, so no storage API is even
+// reachable there. The URL fragment is the only in-page place a pick list can persist, and it has the
+// property storage does not: a reader can send it. So the cart rides in `k=`, as guide sequences and
+// never as indices into G -- a sequence not in this file is refused, where an index would silently
+// resolve to a different guide in a differently built
+// report. The cap is the cost of that choice: 5,706 guides at 22 characters is a 125 KB address that no
+// mail client keeps intact, so the fragment carries the first CART_IN_URL_MAX in the index's own order
+// and the cart card says on screen when it is carrying fewer than the cart holds.
+const CART_IN_URL_MAX = 500;
+function cartInUrl(){ return G.filter(g=>CART.has(g.guide)).map(g=>g.guide).slice(0, CART_IN_URL_MAX); }
 
 function cartRows(){
   return [...CART].map(k=>G.find(g=>g.guide===k)).filter(Boolean)
@@ -1355,12 +1455,35 @@ function renderCart(){
   document.querySelectorAll('#cartlist tr[data-cart]').forEach(tr=>
     tr.querySelector('td.pick').onclick=()=>togglePick(tr.dataset.cart));
   document.getElementById('carttsv').value = cartTsv(rows);
+  const carried=cartInUrl().length, note=document.getElementById('carturl');
+  if(note) note.textContent = carried < rows.length
+    ? `This page's URL carries ${carried} of these ${rows.length} guides. The cart is kept in the address —
+       nothing is stored in this browser — and ${rows.length-carried} of them do not fit, so a copied URL
+       restores ${carried}. Export the TSV to keep all ${rows.length}.`
+    : `The cart is in this page's URL: copy the address and these ${rows.length}
+       guide${rows.length===1?'':'s'} travel with your thresholds, filters and search. Nothing is stored in
+       this browser, so closing the page without the URL loses the cart.`;
 }
 
-// ---- URL fragment: selected guide, moved thresholds, reader filters, active preset ----------------
+// ---- URL fragment: the whole reader state, and the only place it lives -----------------------------
 // A bare fragment with none of the '=' syntax below is still read as a guide -- what every earlier
 // report in this run wrote. Reader filters ride in their own `r=` list, on the same footing as `t=`:
 // a reader who sends the URL sends the rows they were looking at, not just the verdicts.
+//
+// "The rows they were looking at" was false as shipped: `t=`, `r=`, `sp=`, `preset=` and `g=` were
+// encoded, and the search box, the four status checkboxes, the conservation species, the seed tolerance
+// and the cart were not -- and the status set alone hides every fail and unknown row by default, 3,617
+// of them on one internal run. So `q=`, `s=`, `c=` and `k=` are here too, and every control that changes
+// any of them calls syncHash. Each is omitted when it holds its default, which is what keeps `Reset` on
+// an empty fragment and keeps a URL down to what the reader actually chose.
+//
+// The token for "1 mismatch outside the seed is NOT acceptable". It rides inside `c=` because it is part
+// of one conservation question, and it is spelled out rather than a bare flag so an unknown token in that
+// list can be refused like any other name the URL invents.
+const SEED_STRICT = 'no1mm';
+function statusIsDefault(){
+  return F.status.size===DEFAULT_STATUS.length && DEFAULT_STATUS.every(k=>F.status.has(k));
+}
 function encodeHash(){
   const parts=[];
   if(selected) parts.push('g='+encodeURIComponent(selected));
@@ -1378,22 +1501,48 @@ function encodeHash(){
   // would restore the bound and not the question it was asked about.
   if(liabScope!==null) parts.push('sp='+encodeURIComponent(liabScope));
   if(activePreset!=='all') parts.push('preset='+activePreset);
+  // Canonical order for each set -- the status keys' own order, the species' own order, the index's own
+  // order -- so two readers looking at the same view copy the same URL, and a fragment round-trips.
+  if(F.q) parts.push('q='+encodeURIComponent(F.q));
+  if(!statusIsDefault()) parts.push('s='+STATUS_KEYS.filter(k=>F.status.has(k)).join(','));
+  const cons=CONS_SPECIES.filter(sp=>F.cons.has(sp));
+  if(cons.length || !F.consSeedIntact)
+    parts.push('c='+cons.concat(F.consSeedIntact?[]:[SEED_STRICT]).join(','));
+  const carted=cartInUrl();
+  if(carted.length) parts.push('k='+carted.join(','));
   return parts.join('&');
 }
-function syncHash(){ location.hash = encodeHash(); }
+
+// `location.hash = ...` is a navigation: it pushed one history entry per keystroke on every threshold, so
+// `history.length` climbed 5 -> 7 during light use, Back then changed the URL without changing the view --
+// the page showing one state while its URL claimed another -- and escaping the report took dozens of
+// presses. replaceState keeps the URL current without owning the reader's Back button, and does not fire
+// `hashchange`, so the listener below only ever sees changes the reader made.
+// The catch is not defensive noise: pushState and replaceState throw a SecurityError on an opaque origin,
+// and the sandbox this report is read in withholds allow-same-origin. Self-navigation to a fragment is
+// still allowed there, so the fallback is the old behaviour rather than losing the URL altogether.
+function syncHash(){
+  if(typeof location==='undefined') return;
+  const h=encodeHash();
+  try { history.replaceState(null, '', '#'+h); }
+  catch(e){ if(location.hash.slice(1)!==h) location.hash = h; }
+}
 
 // Reads a fragment written by encodeHash (or a bare guide sequence from an earlier report) and
-// returns the filter ids it had to refuse -- an unknown id, or one with no control -- so the caller
-// can show that refusal rather than silently drop it.
+// returns the names it had to refuse -- an unknown filter id, one with no control, a species this run
+// never screened, a guide sequence this file does not hold -- so the caller can show that refusal rather
+// than silently drop it. `controls` says whether the fragment set any control at all, which is what tells
+// the caller to open the panel those controls and their refusal banners live in.
 function applyHashFragment(raw){
   const refused=[];
-  if(raw.indexOf('=')<0) return {guide: raw ? decodeURIComponent(raw) : null, refused};
-  let guide=null;
+  if(raw.indexOf('=')<0) return {guide: raw ? decodeURIComponent(raw) : null, refused, controls:false};
+  let guide=null, controls=false;
   for(const part of raw.split('&')){
     const eq=part.indexOf('='); if(eq<0) continue;
     const k=part.slice(0,eq), v=part.slice(eq+1);
-    if(k==='g') guide=decodeURIComponent(v);
+    if(k==='g'){ guide=decodeURIComponent(v); }
     else if(k==='t'){
+      controls=true;
       for(const pair of v.split(',')){
         if(!pair) continue;
         const ci=pair.indexOf(':'); if(ci<0) continue;
@@ -1406,6 +1555,7 @@ function applyHashFragment(raw){
         else refused.push(id);
       }
     } else if(k==='r'){
+      controls=true;
       for(const pair of v.split(',')){
         if(!pair) continue;
         const ci=pair.indexOf(':'); if(ci<0) continue;
@@ -1416,19 +1566,54 @@ function applyHashFragment(raw){
     } else if(k==='sp'){
       // A species this run did not screen is refused, not adopted: scoping the column to a name with no
       // alignments behind it would read as "no liabilities here" for every guide in the file.
+      controls=true;
       const sp=decodeURIComponent(v);
       if(SCREENED_SPECIES.includes(sp)) liabScope=sp; else refused.push(sp);
-    } else if(k==='preset'){ if(PRESETS[v]) activePreset=v; }
+    } else if(k==='preset'){ controls=true; if(PRESETS[v]) activePreset=v; }
+    else if(k==='q'){ controls=true; F.q=decodeURIComponent(v); }
+    else if(k==='s'){
+      // A set, so the key REPLACES it rather than adding to it -- and `s=` with nothing after it is a
+      // reader who unchecked all four, which is a real view (every guide) and not a missing key.
+      controls=true;
+      F.status=new Set();
+      for(const key of v.split(',')){
+        if(!key) continue;
+        if(STATUS_KEYS.includes(key)) F.status.add(key); else refused.push(key);
+      }
+    } else if(k==='c'){
+      // Conservation is one question -- which species, and whether a mismatch outside the seed is
+      // acceptable -- so both halves ride in one key and both are reset by it.
+      controls=true;
+      F.cons=new Set(); F.consSeedIntact=true;
+      for(const token of v.split(',')){
+        if(!token) continue;
+        if(CONS_SPECIES.includes(token)) F.cons.add(token);
+        else if(token===SEED_STRICT) F.consSeedIntact=false;
+        else refused.push(token);
+      }
+    } else if(k==='k'){
+      // Cart members as sequences, resolved against this file. A sequence this report does not hold is
+      // refused rather than dropped: a URL from a differently built report names guides that are not
+      // here, and a cart quietly missing them would read as a shortlist the reader never made.
+      controls=true;
+      for(const seq of v.split(',')){
+        if(!seq) continue;
+        const key=decodeURIComponent(seq);
+        if(G.some(g=>g.guide===key)) CART.add(key); else refused.push(key);
+      }
+    }
   }
-  return {guide, refused};
+  return {guide, refused, controls};
 }
 function renderRefused(){
   const el=document.getElementById('refused');
   if(!refusedFilters.length){ el.style.display='none'; return; }
   el.style.display='';
-  el.innerHTML=`<b>Refused.</b> The URL asked to set ${refusedFilters.map(esc).join(', ')} -- ${
-    refusedFilters.length===1?'that name has':'those names have'} no control here (a frozen gate, or no
-    such control at all), so nothing moved.`;
+  openFilters();          // a banner inside a closed <details> is a refusal that was swallowed
+  el.innerHTML=`<b>Refused.</b> The URL asked for ${refusedFilters.map(esc).join(', ')} -- ${
+    refusedFilters.length===1?'that name has':'those names have'} no control here and no match in this
+    file (a frozen gate, an unscreened species, a guide this report does not hold, or no such name at
+    all), so nothing was set from ${refusedFilters.length===1?'it':'them'}.`;
 }
 
 function renderDetail(g){
@@ -1468,6 +1653,30 @@ function onThresholdsChanged(){
   syncHash();
 }
 
+// One path for every way a fragment can arrive: the first load, Back, Forward, an edited address bar, a
+// pasted link. The fragment was read exactly once, at load, with no `hashchange` listener anywhere -- so
+// after Back the page showed one state while its URL claimed another. A fragment describes the WHOLE
+// reader state, which is why resetControls runs first: what a URL omits is a default, not whatever the
+// page happened to be showing. The cart is cleared here and not in resetControls for the same reason --
+// `k=` is part of that state, so a URL without one is an empty cart, while the Reset button beside the
+// thresholds must never destroy a pick list.
+function applyFragmentState(raw){
+  resetControls();
+  CART.clear();
+  const applied = applyHashFragment(raw);
+  refusedFilters = applied.refused;
+  recomputeLive();        // thresholds named in the fragment must be live before anything paints
+  buildFilterUI();        // controls, checkboxes and the search box reflect T, R and F
+  renderStatusPills();    // and so do the pills: a fragment can arrive with a threshold already moved
+  applyFilters();
+  renderCart();
+  renderMap();
+  // Whatever the fragment set is inside a container that ships closed, and so is any refusal of it.
+  if(applied.controls || applied.refused.length) openFilters();
+  const start = G.find(g=>g.guide===applied.guide) || G[0];
+  if(start) show(start);
+}
+
 // One bootstrap block, guarded: the substituted <script> body is also handed directly to node for the
 // parity harness (tests/unit/test_report_client_evaluator_parity.py), which has no `document` and no
 // `location`. Every DOM-touching statement in the file lives inside a function or behind this guard,
@@ -1476,16 +1685,17 @@ function onThresholdsChanged(){
 function wireUI(){
   document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
     const k=th.dataset.k; if(k===sortK) sortAsc=!sortAsc; else {sortK=k;sortAsc=(k==='guide');} renderIndex();});
-  document.getElementById('q').oninput = () => applyFilters();
+  document.getElementById('q').oninput = e => { F.q = e.target.value; applyFilters(); syncHash(); };
   document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
   document.getElementById('addtop').onclick = e => {
     if(e.target.id==='topn') return;                     // typing in the field is not a click on the button
     const n=Math.max(0, parseInt(document.getElementById('topn').value,10)||0);
     matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1))
       .slice(0,n).forEach(g=>CART.add(g.guide));
-    renderIndex(); renderCart(); drawOverlay();
+    renderIndex(); renderCart(); drawOverlay(); syncHash();
   };
-  document.getElementById('cartclear').onclick = () => { CART.clear(); renderIndex(); renderCart(); drawOverlay(); };
+  document.getElementById('cartclear').onclick = () => {
+    CART.clear(); renderIndex(); renderCart(); drawOverlay(); syncHash(); };
   document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
   // A Blob download, because that is what "export" means, with the textarea as the declared fallback:
   // the report's own sandbox may withhold allow-downloads, and a button that silently does nothing is
@@ -1509,16 +1719,15 @@ function wireUI(){
   };
   document.getElementById('freset').onclick = () => { resetControls(); buildFilterUI(); onThresholdsChanged(); };
 
-  const {guide, refused} = applyHashFragment(location.hash.slice(1));
-  refusedFilters = refused;
-  recomputeLive();       // thresholds named in the fragment must be live before anything paints
-  buildFilterUI();        // gate controls reflect T, including any fragment overrides
-  renderStatusPills();    // and so do the pills: a fragment can arrive with a threshold already moved
-  applyFilters();
-  renderCart();
-  renderMap();
-  const start = G.find(g=>g.guide===guide) || G[0];
-  if(start) show(start);
+  // The reader's own navigation, back through the report's own URL. Nothing here fires on the report's
+  // own writes: replaceState does not raise hashchange, and the guard covers the location.hash fallback
+  // syncHash uses in a sandbox that refuses the History API -- re-applying a fragment we just wrote would
+  // fight the reader's typing.
+  if(typeof window!=='undefined') window.addEventListener('hashchange', () => {
+    if(location.hash.slice(1) === encodeHash()) return;
+    applyFragmentState(location.hash.slice(1));
+  });
+  applyFragmentState(location.hash.slice(1));
 }
 if (typeof document !== 'undefined') { wireUI(); }
 </script></body></html>
