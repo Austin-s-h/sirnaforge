@@ -93,7 +93,6 @@ from sirnaforge.core.repeat_detection import (
     normalize_guide_sequence,
 )
 from sirnaforge.core.scoring import (
-    COMPOSITE_TERMS,
     SCORING_WEIGHT_SET_VERSION,
     ScoringError,
     compute_composite,
@@ -123,17 +122,23 @@ from sirnaforge.core.selection import (
 )
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
-from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
+from sirnaforge.data.ensembl_references import ENSEMBL_ASSEMBLIES, infer_species_from_cdna_headers
 from sirnaforge.data.gene_search import GeneSearcher
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.data.orthology import (
+    ENSEMBL_BASE_URL,
+    SOURCE_COMPARA,
     OrthologTable,
     OrthologueMapping,
     load_ortholog_table,
     mapping_from_table,
     resolve_orthologues,
 )
-from sirnaforge.data.species_registry import normalize_species_name
+from sirnaforge.data.species_registry import (
+    CANONICAL_SPECIES_REGISTRY,
+    MIRGENEDB_SPECIES_TABLE,
+    normalize_species_name,
+)
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
@@ -143,13 +148,16 @@ from sirnaforge.models.evidence import (
     ScreeningPlan,
 )
 from sirnaforge.models.policy import (
+    EvidenceRequirements,
     FilterAction,
     FilterEvaluation,
+    Requiredness,
     RunMode,
     RunStatus,
     ScreeningChannel,
 )
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
+from sirnaforge.models.scoring_profile import TERM_REGISTRY
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
@@ -169,6 +177,16 @@ from sirnaforge.models.zfn import (
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
+from sirnaforge.provenance import (
+    PROVENANCE_SCHEMA_VERSION,
+    absent,
+    build_identity,
+    index_attestation,
+    pipeline_revision_identity,
+    present,
+    report_html_artifact,
+    write_report_manifest,
+)
 from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
@@ -601,6 +619,10 @@ class SiRNAWorkflow:
 
         self.results: dict[str, Any] = {}
         self._nextflow_cache_info: dict[str, Any] | None = None
+        # What step5's orthologue lookup produced. None is not "nothing resolved": write_offtarget_only
+        # and design-only runs never reach step5, so the manifest reports orthology as not attempted
+        # rather than publishing a Compara call that never happened.
+        self._orthology_mapping: OrthologueMapping | None = None
         self._annotation_summary: dict[str, Any] = {}
         self._gene_transcript_ids: set[str] = set()
         self._query_gene_ids: set[str] = set()
@@ -1565,6 +1587,8 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.warning(f"Failed to write candidate variant links: {e}")
 
+        manifest_path = base / "manifest.json"
+        report_html_path = base / "report.html"
         try:
             manifest = self._build_fair_manifest(
                 all_csv=all_csv,
@@ -1574,8 +1598,8 @@ class SiRNAWorkflow:
                 qualified_csv=qualified_csv,
                 qualified_fasta=qualified_fasta,
                 provisional_csv=provisional_csv,
+                report_html=report_html_path,
             )
-            manifest_path = base / "manifest.json"
             with manifest_path.open("w") as mf:
                 json.dump(manifest, mf, indent=2)
         except Exception as e:
@@ -1591,7 +1615,7 @@ class SiRNAWorkflow:
             # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
             # the gates it actually applied, and a default panel would report other thresholds.
             payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
-            report_path = write_report(payload, base / "report.html")
+            report_path = write_report(payload, report_html_path)
         except Exception as e:
             logger.warning(f"Failed to write self-contained HTML report: {e}")
 
@@ -1599,6 +1623,13 @@ class SiRNAWorkflow:
         if payload is not None and report_path is not None:
             self._report_registration = (payload, report_path)
             summarize_path = self._write_quilt_summarize(payload, report_path)
+            # Its own handler, per the same rule as the registration above (#103): the manifest cannot
+            # carry the report's digest without rewriting the bytes the report already quoted, so the
+            # sidecar attests both -- and a failed sidecar must not be logged as a failed report.
+            try:
+                write_report_manifest(report_path, manifest_path, base / "report_manifest.json")
+            except Exception as e:
+                logger.warning(f"Failed to write the report manifest sidecar: {e}")
 
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         # Each line only for an artifact that is really there. An operator told a file exists when it
@@ -1864,6 +1895,7 @@ class SiRNAWorkflow:
         qualified_csv: Path | None = None,
         qualified_fasta: Path | None = None,
         provisional_csv: Path | None = None,
+        report_html: Path | None = None,
     ) -> dict[str, Any]:
         """Create a manifest JSON describing generated outputs (checksums, sizes, counts).
 
@@ -1871,6 +1903,11 @@ class SiRNAWorkflow:
         entirely, which is the honest record for a caller that published no selection: an
         ``exists: false`` entry would claim the run tried to write one. ``orf_report`` follows the same
         rule for the off-target-only entry point, which validates no ORF and so never asks for one.
+
+        ``report_html`` is the path the caller is *about* to render, and is deliberately not added to
+        ``files``, where every key means "digested": the report is rendered after this manifest is
+        written and embeds its content, so it is attested by a sidecar instead. A caller that renders
+        no report passes ``None``, and the artifact record says so rather than reading "not attested".
         """
         now = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
         files: dict[str, dict[str, Any]] = {}
@@ -1921,6 +1958,12 @@ class SiRNAWorkflow:
         # resolves to the exact numbers that produced it. Weights are never altered at runtime, so
         # what is recorded here is what applied.
         scoring_weights = self.config.design_params.scoring
+        # Derived from THIS run's vectors against the term registry, not hand-listed: whether a term is
+        # scored is a per-run property, and a literal cannot notice a term being promoted. That is the
+        # same drift class as #96's two undeclared normalisations. The literal was also wrong three
+        # ways -- it missed pos1_mismatch and au_1_5, and named paired_fraction, which has no
+        # TermRecord because it is a gate input whose record lives in design_parameters.filters.
+        scored_terms = {term for vector in scoring_weights.all_vectors() for term in vector.terms}
 
         return {
             "tool": "sirnaforge",
@@ -1937,10 +1980,481 @@ class SiRNAWorkflow:
                 "weight_set_version": SCORING_WEIGHT_SET_VERSION,
                 "vectors": scoring_weights.as_manifest(),
                 "vector_terms": {vector.name: list(vector.terms) for vector in scoring_weights.all_vectors()},
-                "scored_terms": list(COMPOSITE_TERMS),
-                "reported_not_scored": ["empirical", "isoform_coverage", "conservation", "paired_fraction"],
+                # Registry order in both lists, so they are deterministic and partition the vocabulary.
+                "scored_terms": [term for term in TERM_REGISTRY if term in scored_terms],
+                "reported_not_scored": [term for term in TERM_REGISTRY if term not in scored_terms],
+                "reported_not_scored_source": (
+                    "sirnaforge.models.scoring_profile.TERM_REGISTRY minus the union of this run's weight-vector terms"
+                ),
             },
             "files": files,
+            "provenance": self._build_provenance_block(report_html=report_html),
+        }
+
+    def _build_provenance_block(self, *, report_html: Path | None) -> dict[str, Any]:
+        """Name the build and the references this run's science rests on, or say why it cannot.
+
+        The manifest recorded every gate as data and no reference identity at all: no Ensembl release,
+        no transcriptome checksum, no index digest, no git SHA. Two runs could not be shown to have
+        screened the same bytes. Everything here is read from state this process already holds -- no
+        manager is instantiated, because a manager built at manifest time would attest bytes this run
+        may never have touched.
+
+        Wrapped whole: provenance is bookkeeping and must never fail a run. A named failure is not
+        silence, so the degraded block says what went wrong instead of dropping the key.
+        """
+        try:
+            build = dict(build_identity())
+            # Omitted rather than nulled when no Nextflow screen ran: there is no pipeline to revise.
+            if self._nextflow_cache_info is not None:
+                build["pipeline_revision"] = pipeline_revision_identity(
+                    self._nextflow_cache_info.get("pipeline_revision")
+                )
+            return {
+                "schema_version": PROVENANCE_SCHEMA_VERSION,
+                "build": build,
+                "references": self._references_provenance(),
+                "databases": self._databases_provenance(),
+                "artifacts": {"report_html": report_html_artifact(rendered=report_html is not None)},
+                "coverage": self._coverage_provenance(),
+            }
+        except Exception as exc:
+            logger.warning(f"Provenance block not assembled: {exc}")
+            return {
+                "schema_version": PROVENANCE_SCHEMA_VERSION,
+                "state": "provenance_assembly_failed",
+                "reason": str(exc),
+            }
+
+    def _screening_disabled_reason(self) -> str | None:
+        """Why no reference resolved, or ``None`` when the screen was attempted.
+
+        Never omitted and never silently empty: an absent screening block reads "a screen happened and
+        we forgot", while an empty ``resolved`` beside a named reason reads "no screen was attempted".
+        A rejection is not a disabled screen -- the attempt is recorded in ``rejected`` instead.
+        """
+        references = self._screening_references
+        if references.references or references.rejections:
+            return None
+        if self.config.resolved_policy.run_mode is RunMode.DESIGN_ONLY:
+            return "design-only mode requested, so no screening reference was resolved and none was expected"
+        if not getattr(self.config.design_params, "check_off_targets", True):
+            return "off-target screening was switched off by request, so no screening reference was resolved"
+        return (
+            "no screening reference resolved and none was rejected, so no screen was attempted through this entry point"
+        )
+
+    def _references_provenance(self) -> dict[str, Any]:
+        """Both independently floating Ensembl surfaces: the screened bytes, and the REST annotation.
+
+        Deliberately not merged. The screening references are cached FASTAs fetched from
+        ``/pub/current_fasta``; the annotation client talks to ``rest.ensembl.org``, which serves
+        whatever release is current. Two surfaces, two releases, and neither pins one.
+        """
+        references = self._screening_references
+        requirements = self.config.resolved_policy.evidence_requirements
+        return {
+            "reference_identity_schema_version": PROVENANCE_SCHEMA_VERSION,
+            "screening": {
+                "kind": references.kind.value,
+                "requested_species": list(references.requested_species),
+                "resolved": [
+                    self._reference_provenance(reference, requirements=requirements)
+                    for reference in references.references
+                ],
+                "rejected": [
+                    {"species": rejection.species, "identity": rejection.identity, "reason": rejection.reason}
+                    for rejection in references.rejections
+                ],
+                "disabled_reason": self._screening_disabled_reason(),
+            },
+            "annotation": self._annotation_provenance(),
+        }
+
+    def _annotation_provenance(self) -> dict[str, Any]:
+        """The REST annotation surface, whose assembly is *requested* rather than resolved."""
+        if self._annotation_client is None:
+            return {
+                "provider": None,
+                "state": "annotation_client_not_configured",
+                "reason": "no Ensembl REST annotation client was constructed, so nothing was annotated",
+            }
+        return {
+            "provider": "ensembl_rest",
+            "endpoint": self._annotation_client.base_url,
+            "rest_release": absent(
+                "not_probed",
+                "this run made no /info/data call, and the endpoint serves whatever release is current",
+            ),
+            # A hard-coded default is a request, not an observation: nothing checked what came back.
+            "assembly_requested": present(
+                "GRCh38",
+                "hard_coded_default",
+                "ReferenceChoice.default in _annotate_transcripts -- requested, not resolved",
+            ),
+        }
+
+    def _reference_provenance(
+        self, reference: ScreeningReference, *, requirements: EvidenceRequirements
+    ) -> dict[str, Any]:
+        """One resolved reference: the provenance of the choice, and the identity of the bytes.
+
+        The choice half is free from the resolver. The bytes half comes only from
+        ``identity_evidence``, so a reference that resolved without a cache entry (a caller's prebuilt
+        index) is named unidentified rather than described with borrowed numbers.
+        """
+        species = reference.species
+        evidence: Mapping[str, Any] = reference.identity_evidence or {}
+        # Two hops, because the taxid table is keyed by MirGeneDB slug while everything upstream of it
+        # speaks canonical species names.
+        registry_entry = CANONICAL_SPECIES_REGISTRY.get(species, {})
+        slug = registry_entry.get("mirgenedb_slug")
+        taxonomy_id = MIRGENEDB_SPECIES_TABLE.get(str(slug), {}).get("taxonomy_id") if slug else None
+        requiredness = requirements.requiredness_of(ScreeningChannel.TRANSCRIPTOME, species)
+
+        entry: dict[str, Any] = {
+            "species": species,
+            "species_authority": reference.species_authority.value,
+            "taxonomy_id": present(str(taxonomy_id), "species_registry", "NCBI taxid from MIRGENEDB_SPECIES_TABLE")
+            if taxonomy_id
+            else absent(
+                "species_not_in_registry",
+                f"'{species}' has no entry in the canonical species registry, so no taxid can be named",
+            ),
+            "registry_member": species in CANONICAL_SPECIES_REGISTRY,
+            # Joined from the run policy, which is the single authority on requiredness.
+            "requiredness": requiredness.value if isinstance(requiredness, Requiredness) else "not_declared",
+            # A source NAME, not a version: the identity says which source, never which release.
+            "source_id": reference.identity,
+            "form": reference.form.value,
+            "state": reference.state.value,
+            "reason": reference.reason,
+            "needs_index_build": reference.needs_index_build,
+            "local_path": {
+                "fasta": reference.fasta,
+                "index_prefix": reference.index,
+                # The 12-hex cache stem is an md5 of a release-floating URL, so it identifies the
+                # request and not the bytes; it must never be read as a digest.
+                "path_scope": "container" if build_identity()["container"]["in_container"] else "host",
+            },
+        }
+        entry.update(self._reference_bytes_provenance(reference, evidence))
+        entry["index"] = index_attestation(
+            Path(reference.index),
+            reference_fasta_name=Path(reference.fasta).name if reference.fasta else None,
+        )
+        entry["classification_index"] = self._classification_index_provenance(species)
+        return entry
+
+    def _reference_bytes_provenance(self, reference: ScreeningReference, evidence: Mapping[str, Any]) -> dict[str, Any]:
+        """Which bytes were screened: url, assembly, release, digest and the filters applied.
+
+        Every field is present whether or not it is knowable. The assembly comes from the bundled
+        source table and so survives even a reference with no cache entry; everything else is an
+        identity of the *bytes*, and a reference that never carried one is named unidentified rather
+        than described with numbers borrowed from the source it was named after.
+        """
+        assembly = next(
+            (entry.assembly for entry in ENSEMBL_ASSEMBLIES if entry.transcriptome_source_key == reference.identity),
+            None,
+        )
+        assembly_record = (
+            present(assembly, "bundled_source_table", "ENSEMBL_ASSEMBLIES entry for this source")
+            if assembly
+            else absent(
+                "not_a_bundled_source",
+                "this reference is not a bundled Ensembl source, so no assembly table names its build",
+            )
+        )
+        url = evidence.get("url")
+        if not evidence:
+            unidentified = absent(
+                "cache_metadata_not_carried",
+                "this reference resolved without a cache entry, so the bytes' own identity never reached the run",
+            )
+            return {
+                "source_url": unidentified,
+                "assembly": assembly_record,
+                "ensembl_release": {**unidentified, "pinned": False},
+                "bytes": {
+                    "size_bytes": None,
+                    "size_scope": "not_recorded",
+                    "digest": {"algorithm": None, "scope": None, **unidentified},
+                    "cached_at": None,
+                },
+                "remote_observed": dict(unidentified),
+                "filters": None,
+            }
+
+        return {
+            "source_url": present(url, "cache_metadata", "ReferenceSource.url recorded when these bytes were fetched"),
+            "assembly": assembly_record,
+            "ensembl_release": self._ensembl_release_provenance(url),
+            "bytes": {
+                "size_bytes": evidence.get("file_size"),
+                # Mandatory: the recorded size is decompressed and the remote Content-Length is not,
+                # so an unlabelled "size" invites a false mismatch.
+                "size_scope": evidence.get("size_scope") or "not_recorded",
+                "digest": {
+                    # Mandatory: this is md5 while every files.* digest is sha256.
+                    "algorithm": evidence.get("checksum_algorithm"),
+                    "scope": "decompressed_fasta_full",
+                    **present(
+                        evidence.get("checksum"),
+                        "cache_metadata",
+                        "full-file digest computed when these bytes were cached and re-verified on reuse",
+                    ),
+                },
+                "cached_at": evidence.get("downloaded_at"),
+            },
+            "remote_observed": present(
+                evidence.get("remote_observed"),
+                "http_response_headers",
+                "ETag/Last-Modified/Content-Length of the response these bytes arrived in",
+            )
+            if evidence.get("remote_observed")
+            else absent(
+                "cache_hit_not_refetched",
+                "a valid cache entry was served with no HTTP request, and a speculative HEAD would describe "
+                "upstream now rather than the bytes screened",
+            ),
+            # Explicit null, never an absent key: null means the whole reference was screened.
+            "filters": evidence.get("filters"),
+        }
+
+    @staticmethod
+    def _ensembl_release_provenance(url: str | None) -> dict[str, Any]:
+        """Whether the release these bytes came from is pinned anywhere, and where.
+
+        ``/pub/current_fasta`` pins nothing: the release is absent from the URL, from the cache
+        metadata and from the FASTA headers alike. Recording that the pointer floated is the honest
+        answer; stopping it floating is a behaviour change and a separate issue.
+        """
+        release = re.search(r"/release-(\d+)/", url or "")
+        if release:
+            return {
+                **present(release.group(1), "release_pinned_url", "the download URL names the Ensembl release"),
+                "pinned": True,
+            }
+        if url and "/current_fasta" in url:
+            return {
+                **absent(
+                    "release_floating_url",
+                    "fetched via /pub/current_fasta, which pins no release: it is absent from the URL, the "
+                    "cache metadata and the FASTA headers",
+                ),
+                "pinned": False,
+            }
+        return {
+            **absent(
+                "release_not_recorded",
+                "no Ensembl release is recoverable from this reference's URL, cache metadata or headers",
+            ),
+            "pinned": False,
+        }
+
+    def _classification_index_provenance(self, species: str) -> dict[str, Any]:
+        """The confidence bound on every symbol-tier verdict for one species.
+
+        ``TranscriptGeneIndex.build`` never raises, so a bare ``0`` here would read as an empty
+        reference rather than as an index that was never built.
+        """
+        index = self._transcript_index.for_species(species)
+        if index is None:
+            return {
+                "built": False,
+                "transcript_count": None,
+                "state": "not_built_by_this_run",
+                "reason": "no transcript index was built for this species, so no hit could be resolved to a gene",
+            }
+        if index.transcript_count == 0:
+            return {
+                "built": False,
+                "transcript_count": 0,
+                "state": "index_build_returned_empty",
+                "reason": "the index build parsed no transcript header, so the reference classified nothing",
+            }
+        fasta = self._species_cdna_fasta.get(species)
+        return {
+            "built": True,
+            "transcript_count": index.transcript_count,
+            "records_without_gene_symbol": index.missing_symbol_count,
+            "symbol_coverage": round(1 - index.missing_symbol_count / index.transcript_count, 4),
+            "built_from_fasta": str(fasta) if fasta else None,
+        }
+
+    def _databases_provenance(self) -> dict[str, Any]:
+        """The miRNA corpus and the orthology surface, each named only as far as it is knowable."""
+        databases: dict[str, Any] = {}
+        # Omitted entirely unless both were set: the miRNA channel did not run at all otherwise, and an
+        # empty block would read as a corpus we failed to identify.
+        if self.config.mirna_database and self.config.mirna_species:
+            databases["mirna"] = self._mirna_provenance()
+        databases["orthology"] = self._orthology_provenance()
+        return databases
+
+    def _mirna_provenance(self) -> dict[str, Any]:
+        """What the miRNA channel screened against, which the producer does not publish.
+
+        The corpus digest, url, download date and mature-sequence count exist only inside the
+        MIRNA_SEED_ANALYSIS task, whose cache is the container's. Instantiating a manager here would
+        read the *host* cache and attest bytes this run never touched, so it is not done (#111 tier 3).
+        """
+        from sirnaforge.data.mirna_manager import MiRNADatabaseManager  # noqa: PLC0415
+
+        database = self.config.mirna_database
+        known = database in MiRNADatabaseManager.SOURCES
+        return {
+            "requested": {"database": database, "species": list(self.config.mirna_species)},
+            "source_name": present(database, "sources_table", "MiRNADatabaseManager.SOURCES entry")
+            if known
+            else absent(
+                "not_a_known_source",
+                f"'{database}' names no MiRNADatabaseManager.SOURCES entry, so no corpus can be identified",
+            ),
+            "release": absent(
+                "unversioned_endpoint",
+                "the miRNA sources are served from release-less endpoints, and the FASTA headers carry no "
+                "version either",
+            ),
+            "resolved": absent(
+                "not_published_by_producer",
+                "the corpus digest, url, download date and mature-sequence count exist only inside the "
+                "MIRNA_SEED_ANALYSIS task, which does not publish them",
+            ),
+            "per_species": [],
+        }
+
+    def _orthology_provenance(self) -> dict[str, Any]:
+        """Whether an orthology lookup happened, and what it is entitled to claim.
+
+        ``attempted: false`` with a named reason, never a defaulted source: a design-only run, a
+        single-species screen and a gene that yielded neither ID nor symbol all reach step5's early
+        exit, and publishing ``ensembl_compara`` for them named a REST call that never happened.
+        """
+        mapping = self._orthology_mapping
+        if mapping is None or mapping.source is None:
+            if self.config.resolved_policy.run_mode is RunMode.DESIGN_ONLY:
+                reason = "design-only mode requested, so no orthology lookup was attempted and none was expected"
+            elif mapping is None:
+                reason = (
+                    "no orthologue mapping was recorded: this entry point never reaches the step that resolves "
+                    "orthologues"
+                )
+            else:
+                reason = (
+                    "the lookup returned before any request was built -- a single-species screen, or a gene that "
+                    "yielded neither a gene ID nor a symbol"
+                )
+            return {
+                "attempted": False,
+                "source": None,
+                "endpoint": None,
+                "reason": reason,
+                "conservation_scope": {
+                    "denominator_species": [],
+                    "unresolved_in_denominator": [],
+                    "unscreened_in_denominator": [],
+                    # Undefined, not zero: conservation_sub_score returns None for this run shape.
+                    "is_lower_bound": None,
+                    "reason": "conservation has no denominator when no orthologue lookup was attempted",
+                },
+            }
+
+        summary = mapping.summary()
+        denominator = sorted(mapping.resolved_species | mapping.unresolved_species)
+        return {
+            "attempted": True,
+            "source": mapping.source,
+            "endpoint": ENSEMBL_BASE_URL
+            if mapping.source == SOURCE_COMPARA
+            else str(self.config.ortholog_mapping_file),
+            "compara_release": absent(
+                "unversioned_endpoint",
+                "resolved against rest.ensembl.org with no release pin; naming the endpoint is the honest "
+                "substitute for a version",
+            ),
+            "relationship_types_accepted": summary.get("orthologue_types", []),
+            "relationship_type_observed": absent(
+                "not_retained",
+                "the resolver tests homology['type'] for membership and then discards it",
+            ),
+            # A symbol must never be reprinted under a gene-ID key.
+            "queried_identifiers": {
+                "as_gene_ids": summary["queried_gene_ids"],
+                "as_symbols": summary["queried_symbols"],
+            },
+            # Said out loud, so a per-species record is not mistaken for a per-species test.
+            "classification_input": {
+                "granularity": "union_across_species",
+                "gene_id_count": len(mapping.all_gene_ids),
+            },
+            "per_species": [
+                {
+                    "species": species,
+                    "requiredness": self._orthology_requiredness(species),
+                    "status": self._orthology_status(mapping, species),
+                    "gene_ids": sorted(mapping.gene_ids_by_species.get(species, frozenset())),
+                    "route": absent(
+                        "not_retained",
+                        "_lookup_route logs which route answered and returns only the ids it found",
+                    ),
+                }
+                for species in denominator
+            ],
+            "confidence": absent(
+                "not_returned_by_endpoint",
+                "the resolver requests format=condensed, which returns no score; the per-hit evidence tier is "
+                "the honest categorical confidence",
+            ),
+            "conservation_scope": {
+                "denominator_species": denominator,
+                "unresolved_in_denominator": sorted(mapping.unresolved_species),
+                "unscreened_in_denominator": sorted(set(denominator) - set(self._active_screen_species)),
+                "is_lower_bound": bool(mapping.unresolved_species),
+            },
+        }
+
+    def _orthology_requiredness(self, species: str) -> str:
+        """Requiredness of one species' transcriptome evidence, read from the run policy only."""
+        requiredness = self.config.resolved_policy.evidence_requirements.requiredness_of(
+            ScreeningChannel.TRANSCRIPTOME, species
+        )
+        return requiredness.value if isinstance(requiredness, Requiredness) else "not_declared"
+
+    @staticmethod
+    def _orthology_status(mapping: OrthologueMapping, species: str) -> str:
+        """Three-way, never a boolean: resolved-empty is evidence of absence, unresolved is not."""
+        if species in mapping.unresolved_species:
+            return "unresolved"
+        return "resolved" if mapping.gene_ids_by_species.get(species) else "resolved_empty"
+
+    def _coverage_provenance(self) -> dict[str, Any]:
+        """The headline invariant, made machine-readable rather than left a convention.
+
+        A non-empty list is not a crash: it is the manifest declaring, in one place, that a reference
+        this run depended on cannot be shown to be the reference another run used.
+        """
+        required = sorted(self.config.resolved_policy.evidence_requirements.required_pairs)
+        resolved = {
+            reference.species: reference
+            for reference in self._screening_references.references
+            if reference.kind.value == ScreeningChannel.TRANSCRIPTOME.value
+        }
+        unnamed = [
+            [channel, species]
+            for channel, species in required
+            if channel != ScreeningChannel.TRANSCRIPTOME.value or species not in resolved
+        ]
+        unidentified = [
+            [channel, species]
+            for channel, species in required
+            if species in resolved and not (resolved[species].identity_evidence or {}).get("checksum")
+        ]
+        return {
+            "required_pairs": [[channel, species] for channel, species in required],
+            "unnamed_required_references": unnamed,
+            "unidentified_required_references": unidentified,
         }
 
     def write_offtarget_only_exports(self, candidates: Sequence[SiRNACandidate]) -> dict[str, str]:
@@ -2419,8 +2933,10 @@ class SiRNAWorkflow:
             filter_spec: Optional list of filter names (e.g. ``['protein_coding']``).
 
         Returns:
-            ``fasta``/``index`` paths plus ``source_species`` and ``header_species``, or None when
-            preparation failed.
+            ``fasta``/``index`` paths plus ``source_species``, ``header_species`` and the manager's
+            ``identity`` view of the cached bytes, or None when preparation failed. The identity is
+            forwarded rather than re-derived: the manager built here is garbage-collected on return,
+            and it is the only thing that ever knew the url, size, md5 and download date.
         """
         try:
             manager = TranscriptomeManager()
@@ -2606,6 +3122,9 @@ class SiRNAWorkflow:
                 reason=request.reason,
                 fasta=str(fasta),
                 needs_index_build=prebuilt is None,
+                # `identity` names the source; this names the bytes. A prebuilt index adopted from the
+                # caller has no cache entry, so it stays None rather than being invented here.
+                identity_evidence=payload.get("identity"),
             ),
             None,
         )
@@ -3263,6 +3782,8 @@ class SiRNAWorkflow:
         )
         stats["mirna_channel_screened"] = mirna_screened
         stats["orthology"] = ortholog_mapping.summary()
+        # Held for the manifest: this is the only place that knows whether a lookup happened.
+        self._orthology_mapping = ortholog_mapping
         # A species dropped before Nextflow is unscreened in exactly the sense this field names, so
         # it belongs in it; the reasons are published beside it rather than only logged.
         stats["species_screening_shortfalls"] = dict(self._species_screening_shortfalls)

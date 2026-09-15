@@ -459,7 +459,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def get_transcriptome(  # noqa: PLR0911
         self, source_name: str, force_refresh: bool = False, build_index: bool = True
-    ) -> dict[str, Path] | None:
+    ) -> dict[str, Any] | None:
         """Get transcriptome database, downloading and building index if needed.
 
         Args:
@@ -507,7 +507,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def get_custom_transcriptome(
         self, fasta_path: str | Path, build_index: bool = True, cache_name: str | None = None
-    ) -> dict[str, Path] | None:
+    ) -> dict[str, Any] | None:
         """Process a custom transcriptome FASTA with caching and index building.
 
         Args:
@@ -537,7 +537,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # Copy file to cache
         return self._cache_local_file(input_path, cache_name or input_path.stem, build_index)
 
-    def _handle_url_transcriptome(self, url: str, cache_name: str | None, build_index: bool) -> dict[str, Path] | None:
+    def _handle_url_transcriptome(self, url: str, cache_name: str | None, build_index: bool) -> dict[str, Any] | None:
         """Download and cache transcriptome from URL."""
         cache_name = cache_name or self._default_cache_name_for_resource(url)
         source = TranscriptomeSource(
@@ -573,7 +573,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         return self._prepare_result_with_index(cache_file, index_prefix, cache_key, build_index)
 
-    def _handle_cached_file(self, file_path: Path, cache_name: str, build_index: bool) -> dict[str, Path]:
+    def _handle_cached_file(self, file_path: Path, cache_name: str, build_index: bool) -> dict[str, Any]:
         """Handle transcriptome file already in cache directory."""
         extra: dict[str, Any] | None = None
         if self.local_content_dedupe:
@@ -605,7 +605,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         return self._prepare_result_with_index(file_path, index_prefix, cache_key, build_index)
 
-    def _cache_local_file(self, input_path: Path, cache_name: str, build_index: bool) -> dict[str, Path]:
+    def _cache_local_file(self, input_path: Path, cache_name: str, build_index: bool) -> dict[str, Any]:
         """Copy local file to cache and prepare it."""
         extra: dict[str, Any] | None = None
         if self.local_content_dedupe:
@@ -672,7 +672,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         filters: list[str],
         force_refresh: bool = False,
         build_index: bool = True,
-    ) -> dict[str, Path] | None:
+    ) -> dict[str, Any] | None:
         """Get a filtered transcriptome with caching.
 
         Args:
@@ -752,13 +752,46 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         return self._prepare_result_with_index(filtered_fasta, filtered_index, filtered_cache_key, build_index)
 
+    def _identity_view(self, cache_key: str) -> dict[str, Any] | None:
+        """A frozen view of this entry's cache metadata: which bytes these actually are.
+
+        The result dict has always carried paths only, so the url, checksum, size and download date
+        died with the manager that fetched them -- which is why a manifest could name the *source* of
+        a screening reference but never the bytes. Optional and additive because this return shape is
+        shared with :class:`~sirnaforge.data.genome_manager.GenomeManager`.
+
+        ``checksum_algorithm`` and ``size_scope`` are stated rather than implied: the checksum is md5
+        while manifest file digests are sha256, and the recorded size is of the file on disk after any
+        decompression, which is not the remote Content-Length.
+        """
+        meta = self.metadata.get(cache_key)
+        if meta is None:
+            return None
+        extra = meta.extra or {}
+        return {
+            "url": meta.source.url,
+            "checksum": meta.checksum,
+            "checksum_algorithm": "md5",
+            "file_size": meta.file_size,
+            "size_scope": f"decompressed_{meta.source.format}"
+            if meta.source.compressed
+            else f"stored_{meta.source.format}",
+            "downloaded_at": meta.downloaded_at,
+            "filters": extra.get("filters"),
+            "kept_count": extra.get("kept_count"),
+            "base_checksum": extra.get("base_checksum"),
+            "local_content_hash": extra.get("local_content_hash"),
+            "remote_observed": extra.get("remote_observed"),
+        }
+
     def _prepare_result_with_index(
         self, fasta: Path, index_prefix: Path, cache_key: str, build_index: bool
-    ) -> dict[str, Path]:
+    ) -> dict[str, Any]:
         """Helper to prepare result dict with optional index building."""
+        identity = self._identity_view(cache_key)
         if not (build_index and self.auto_build_indices):
             self._save_metadata()
-            return {"fasta": fasta}
+            return {"fasta": fasta, "identity": identity}
 
         meta = self.metadata[cache_key]
 
@@ -766,14 +799,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # from leftovers of the content this entry replaced.
         if self._unremovable_index_blocks_reuse(meta):
             self._save_metadata()
-            return {"fasta": fasta}
+            return {"fasta": fasta, "identity": identity}
 
         index_path = self._get_index_path(meta) or index_prefix
 
         if self._is_index_complete(index_path) and self._index_is_trustworthy(meta, index_path):
             self._ensure_index_marker(index_path)
             logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
-            return {"fasta": fasta, "index": index_path}
+            return {"fasta": fasta, "index": index_path, "identity": identity}
 
         logger.info(f"⚠️  Building index: {index_prefix}")
         # Drop any stamp first so a build that dies half-way cannot leave a stamp
@@ -789,7 +822,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
                 outputs=self._index_outputs(index_prefix),
             )
             self._save_metadata()
-            return {"fasta": fasta, "index": index_prefix}
+            return {"fasta": fasta, "index": index_prefix, "identity": identity}
 
         # A failed build is a completeness fact about this reference, not a downgrade to the FASTA.
         # Returning the FASTA where an index is expected made bwa-mem2 align nothing, which Nextflow
@@ -806,7 +839,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         logger.error(error)
         self._save_metadata()
         self.index_build_errors[str(fasta)] = error
-        return {"fasta": fasta}
+        return {"fasta": fasta, "identity": identity}
 
     def list_available_sources(self) -> dict[str, TranscriptomeSource]:
         """List all pre-configured transcriptome sources."""
