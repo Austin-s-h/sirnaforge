@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **The asymmetry floor could be loosened but never opened** (#101). `min_asymmetry_score` was bounded
+  `ge=0.3` on the model and `min=0.3` on both CLI options, so no caller could set a floor every candidate
+  satisfies. The bound was harder to defend than the number it bounds: this gate's own declared definition
+  says the floor has never been validated against measured knockdown while deciding more of the design
+  space than any other single number, which is exactly why its action is `warn`. A second uncalibrated
+  number forbidding a caller from reaching 0 is the same unearned claim one level up. Now `ge=0`.
+  A floor of 0 is **not** the same run as `--filter-action min_asymmetry_score=off`, and both are
+  reachable: `off` stops the gate being applied, so the manifest records a gate nothing evaluated, while a
+  floor of 0 keeps it declared, applied and reporting `asymmetry_score` on every row. Before this, the
+  second run could not be expressed at all. No default moves — the shipped floor is unchanged.
+
 Scoring transparency release. The composite score applied **two hidden normalisations**, so no
 declared weight was the weight that actually applied: the scorer divided the weight vector by its own
 sum over whichever terms happened to be populated (doubling every design-stage weight), and miRNA mode
@@ -159,6 +170,83 @@ where the two defects removed here were first written down as outstanding.)
   **Fixed**). Per-species miRNA completion, and a batch roll-up that distinguishes `censored` from
   `complete`, remain outstanding — both under **Known limitations**.
 
+- **`sirnaforge benchmark prepare`/`design`: fixed-length benchmark artifacts (#109, bm-cli).** A
+  `benchmark` sub-app, matching the established `sequences`/`internal` one-noun-two-verbs shape.
+  `prepare --panel <panel_id>` writes `<out-dir>/<panel_id>__len<paired_length>/` (`observations.csv`,
+  `design_inputs.fasta`, `manifest.json`); `design --artifact <dir>` runs the existing fixed-length
+  designer over it and extends the same manifest with `candidates_all.csv`, `accounting.csv` and both
+  a benchmark and a re-derived default filter-verdict set per candidate. `--gc-min`/`--gc-max` widen
+  the shipped GC bounds for that run only, resolved through `resolve_run_policy`'s new
+  `EntryPoint.BENCHMARK_COMMAND` exactly as `sirnaforge design` resolves its own options -- a
+  narrower value is refused before any design work, because the default-verdict set is re-derived
+  from what the benchmark run observed and that is only exact if the benchmark run enumerated a
+  superset of what a default run would. The polynucleotide-run requirement (`max_poly_runs <= 3`)
+  cannot be widened through this surface and is recorded in the manifest regardless. Five of the nine
+  registered panel ids ship real bytes: `huesken_subset` (a 180-row Huesken redistribution already
+  vendored for #95/#102) plus the four OligoGym-derived ones described below. `huesken_full` remains
+  `data_present=false` because `work/sirna_bench.csv` is untracked here, as are the three
+  `user_supplied_*` ids by construction, and `manifest.json`'s `panel.data_present` states the answer
+  per artifact either way.
+- **The panel registry is re-derived from the vendored OligoGym bytes (#109).** #109 was settled on a
+  tree where these panels were absent, so its registry declared `data_present=false` for four of them
+  and carried citations reading "no primary citation has been independently verified in this
+  repository". `tests/data/benchmarks/oligogym/records.csv` — 4,113 rows, 21 columns, SHA-256
+  `2fb4493...11a9c1` — makes all of that false, and every descriptor is now read out of those bytes:
+  `ichihara` selects 2,850 rows over two datasets, `martinelli` 907, `shmushkovich` 356 (2,850 + 907 +
+  356 = 4,113, selectors checked disjoint), and `PanelDescriptor` gained `vendored_csv` so
+  `data_present` can no longer be a claim with no path behind it. The bytes contradicted the issue's
+  prose in one place and the bytes won: Martinelli is **not** a fully-complementary 21-mer — 858 of its
+  907 rows are a 19 nt core with a 2 nt 3' overhang on each strand — and declaring it blunt would have
+  written `guide_3p_overhang: ""`, i.e. "measured, and blunt", for 889 rows whose bytes say otherwise.
+  Citations now say exactly what the repository can show and no more: Ichihara's vetted NAR citation
+  corroborated by the DOI its own rows carry, a bare DOI for Martinelli and Shmushkovich with **no**
+  author list or journal inferred from it, Martinelli's 2023-vs-2024 name/DOI discrepancy stated
+  rather than resolved, and for `oligogym` itself no citation at all — only the adapter script and its
+  three member DOIs. A test fails if the word "placeholder" reappears in any citation.
+- **Three `user_supplied_*` panel ids: one per declared duplex geometry (#109).**
+  `user_supplied_paired_core_with_overhang`, `user_supplied_fully_complementary` and
+  `user_supplied_asymmetric` are architecture-level rather than panel-level — they name a geometry, ship
+  no bytes, and read the table a caller passes with `--panel-csv`. Vendoring the OligoGym bytes closed
+  the only door a caller's own table had: every published panel now refuses a `--panel-csv`, correctly,
+  since a run must not read different bytes than the ones its manifest names as vendored, and
+  `fully_complementary` and `asymmetric` were left with no reachable descriptor at all. All three are
+  `data_present=false` with no citation and no redistribution, because there is no source to cite, and
+  `target_identity_status: unavailable`, because this repository knows nothing about a caller's target
+  context — not even whether one exists, and that holds even when `--panel-transcripts` matches the
+  caller's accession: `design_context_source` becomes `panel_transcript`, but the identity stays
+  `unavailable` and `target_transcript_id` unset, since matching a header in a FASTA the caller also
+  supplied is not evidence about a native transcript. What an artifact under one of these ids _is_
+  checkable against is the caller's own bytes: `manifest.json` records their path and SHA-256. The
+  table must use the column names the descriptors declare — `guide_sequence` (the only mandatory
+  one), plus optional `passenger_sequence`, `accession` and `efficacy` — rather than a per-run
+  mapping option, which would be a second way to state what a descriptor already states and would not
+  be covered by the `descriptor_hash` the manifest records. The "no vendored bytes" refusal now names
+  those mandatory columns rather than saying "your own copy of this panel's table" — under a
+  `user_supplied_*` id there is no such thing as this panel's table, and "which columns" is the next
+  question a caller has. `user_supplied_asymmetric` exists to
+  record and refuse: every row comes back `compatibility_status: incompatible` with both strand
+  lengths in its reason, and none is sliced or padded into a 19–23 nt core. Documented in
+  `docs/benchmark_artifacts.md`.
+- **`target_identity_status: synthetic_context_local`: a third value rather than a stretched one
+  (#109).** Every OligoGym-derived row's design context is fabricated by the adapter — 70 A, then the
+  reverse complement of the guide, then 70 A, putting the site at 1-based 71 — so its span is an exact
+  coordinate in a context nobody measured. `panel_local` would read as a coordinate in the panel's own measured target
+  (an overclaim) and `unavailable` would discard something the artifact can honestly reproduce (an
+  underclaim), so `panels.TargetIdentityStatus` gained a member. It still has **no `confirmed`
+  member**, so #109 structurally cannot emit a native claim; `derive_observation` raises if a row's
+  `context_type` contradicts its descriptor, so a native table fed to these panels is refused rather
+  than relabelled. `oligogym` is `data_present=true` and deliberately not ingestible: its one table
+  spans three geometries, so it is marked `aggregate_of` its members and refused by name.
+- **`docs/benchmark_artifacts.md`: the benchmark interface, with the synthetic flanks stated up front**
+  (#109). The artifact's five fixed files, the two-verdict-sets-from-one-run argument and why a GC
+  narrowing is refused, the three places a polynucleotide exclusion is recorded, the measured tallies
+  over the vendored panels, and what the surface deliberately does not do. It opens on the distinction
+  `tests/data/benchmarks/README.md` draws and treats as load-bearing: `oligogym/` makes design
+  enumeration and parameter benchmarking runnable and does **not** validate native transcript
+  accessibility, Shmushkovich's 356 asymmetric rows are recorded and refused rather than designed,
+  native mapping and `oligogym_native_design/` are #110's, nothing here scores an artifact against the
+  efficacy it carries, and the PRD #109 cites does not exist in this repository — so no reader takes a
+  green run as a result it is not.
 - **`selection_summary` in `logs/workflow_summary.json`: why the shortlist is the size it is** (#100).
   Success, "complete run, nothing eligible", "incomplete evidence" and "execution error" all leave
   `top_candidates` empty, so the distinguishing information has to be published rather than inferred.
@@ -219,12 +307,9 @@ where the two defects removed here were first written down as outstanding.)
   and the pipeline agree. `payload.reevaluate_gates` is the single Python statement of that contract
   and the browser restates exactly one thing, the `FilterComparator.passes` comparator table, with no
   per-gate branch; a test asserts none of the 17 declared `filter_id`s appears as a literal in the
-  template at all. Parity is a **gate, not a skip**: the fixture renders the report, slices the
-  substituted `<script>` out of it and runs the shipped evaluator under **Node** over every guide x
-  every filter at five threshold sets, comparing gate triples, all three counters and the derived
-  status against the Python function. Playwright was rejected for this — it is not a dependency and its
-  browser binary is a separate download, so the check would have skipped rather than gated — and
-  missing Node fails with the install hint.
+  template at all. The agreement between the two is **not** under test in this release: the parity
+  harness that ran the shipped evaluator under Node was deleted before release (see _Changed_), so the
+  Python rule is tested and the browser's restatement of it is reviewed.
 - **Five preset views, and `off_target_screened` so "clean" means screened (#103).** `all`, `passing`,
   `near miss` (fails exactly one gate, unknown on none), `off-target clean` and
   `register-deduplicated`, each a pure predicate over the live gate table. `passing` reads the derived
@@ -254,8 +339,9 @@ where the two defects removed here were first written down as outstanding.)
   composite score is excluded by a composite floor, not admitted because there was nothing to compare),
   they compose with the presets, the status and conservation checkboxes, the search and the sort, `Reset`
   clears them with everything else, and they ride in the URL fragment as `r=` on the same footing as
-  `t=`, so a copied link restores the same rows. The Node harness drives all of it through the functions
-  the report ships — including the same `resetControls` the button calls, rather than a restatement of it.
+  `t=`, so a copied link restores the same rows. All of that behaviour lives in the shipped JavaScript and
+  is reviewed rather than tested; the harness that drove it under Node was deleted before release (see
+  _Changed_).
 - **`quilt_summarize.json` is written beside the report (#103).** Quilt's package view renders exactly
   what a package's own summarize file names and nothing else, so until now a run published as a package
   showed **no report at all** in its package view. `sirnaforge report` writes it by default
@@ -331,14 +417,19 @@ where the two defects removed here were first written down as outstanding.)
   gate naming the comparator and both thresholds, and one `#reader_filter=` line per bound. The reader
   bounds are recorded for a different reason and the comment says so: they can never touch `status`, but
   `Add top <n> to cart` picks from the filtered view, so they decide which guides are in the file. Columns
-  and their order are unchanged and are now frozen in the parity harness.
+  and their order are unchanged — the provenance rides above the header, not through it — but no test holds
+  them there any more: the eighteen-name literal that froze them lived in the deleted parity harness (see
+  _Changed_), so a reorder or a rename would now reach a reader's spreadsheet without failing CI. That
+  column contract is kept by review from here.
 - **A payload string spelling `</script>` can no longer truncate the report (#103).** An HTML parser ends
   a script at the first literal `</script>` inside it whatever the JavaScript means, and `json.dumps` does
   not escape `<`, so a gene query, transcript id or gene symbol containing that text produced a dead
   document with every panel below the cut missing. All seven embedded JSON blobs now escape `<`, `>` and
-  `&`. The parity harness had the mirror of the same bug — a greedy `<script>(.*)</script>` regex sliced
-  past a truncation instead of failing on it — and now ends where a browser ends a script and refuses a
-  document that closes its own script more than once.
+  `&`. The test-side `<script>` slice had the mirror of the same bug — a greedy `<script>(.*)</script>`
+  regex ran past a truncation instead of failing on it — and that fix outlived the harness it was written
+  in: `tests/unit/test_reporting_document_structure.py` cuts the slice at the **first** `</script>`, refuses
+  a document that closes its own script more than once, and holds a forged double-close document against the
+  greedy regex, so the difference between the two rules is under test rather than merely described.
 - **The workflow registers the run's own summary, and tells its two writes apart (#103).** Step 6 built
   `quilt_summarize.json` before `run_complete_workflow` wrote `logs/workflow_summary.json`, and the writer
   omits any artifact that does not exist, so the row a reader would go looking for was the one row that
@@ -662,8 +753,64 @@ where the two defects removed here were first written down as outstanding.)
   `FAILED`/`CENSORED` evidence must carry a `detail`, and a `NOT_REQUESTED` entry may not carry an
   observed count — a zero on a search nobody ran is the fabricated zero the counts model exists to
   prevent. Every other invariant in those modules was already enforced by a `model_validator`.
+- **The report's client-side parity harness is deleted, and with it `node` as a test dependency.** The
+  harness rendered the report, sliced the substituted `<script>` out of it and ran the shipped evaluator
+  under Node — every guide x every filter at five threshold sets, plus the presets, the reader filters,
+  `gatesCard`'s Why column, the `cartTsv` provenance lines and column order, and `parseControlValue`'s
+  numeric boundary. It required a `node` binary on `PATH` to gate rather than skip, which made a Python
+  test suite depend on a JavaScript runtime for one file. That was judged not worth it; an in-process JS
+  engine (`mini-racer`) and a static table-equality substitute were both considered and both declined,
+  because the point was **less machinery, not the same coverage by another route**.
+  `tests/unit/test_report_client_evaluator_parity.py` is renamed to
+  `tests/unit/test_reporting_document_structure.py` — after the deletion it proves no parity — and keeps
+  the 6 assertions that never needed an interpreter: every reason code still fires on the fixture, no
+  declared `filter_id` appears **quoted** in the template, the panel keeps its two labelled groups, every
+  threshold box is a real `type="number"`, the `<script>` slice ends where a browser ends a script, and
+  a payload spelling `</script>` is escaped reversibly (proved now with `json.loads` over the embedded
+  literal rather than by echoing it through Node). `.nvmrc` is deleted; nothing else consumed it.
+  **The loss is real and is not made up elsewhere: no test executes the report's JavaScript any more.**
+  A divergence between `payload.reevaluate_gates` and the template's `reevaluateGates` would not fail
+  the suite, so the report could publish a verdict the pipeline would not reproduce and CI would stay
+  green. `tests/unit/test_reporting_rethreshold.py` still holds the **Python** side of the rule in 10
+  tests; what is gone is "and the browser does the same". The shipped evaluator, the presets, the reader
+  filters, the panel's Why column, the cart's provenance and the fragment round-trip are covered by
+  **review** from here. `docs/html_report.md` says so in the section a reader would consult, and lists
+  what each of the 13 deleted tests held, property by property, so the trade can be audited rather than
+  taken on trust.
 
 ### Fixed
+
+- **`benchmark prepare` refused every vendored OligoGym panel as "a bug in prepare.py"** (#109).
+  `prepare.py` kept a private `_VENDORED_PANEL_CSV` map beside `PanelDescriptor.data_present`, on the
+  reasoning that declaring a panel and vendoring its bytes are different acts. They are — but two lists
+  of the same fact drift, and this pair did: the OligoGym descriptors gained `data_present=True` while
+  the map still held its one `huesken_subset` entry, so `--panel ichihara|martinelli|shmushkovich` all
+  failed with "registered `data_present=True` but this module declares no vendored path for it". The
+  path now comes from `vendored_csv`, which the descriptor's own validator ties to `data_present`, so
+  there is one owner. `--panel ichihara` reports `kept 2850 / incompatible 0` (2,431 + 419),
+  `martinelli` `907 / 0`, `shmushkovich` `0 / 356`, and the aggregate `oligogym` is refused by name
+  before any directory is created (exit 1, and no directory) — every count reconciling with
+  `tests/data/benchmarks/oligogym/manifest.json`. `benchmark design` over those artifacts enters
+  2,850 / 907 / 0 observations with `no_candidate` 0 / 0 / 356, and `default_pass` equals
+  `benchmark_pass` on all three (1,682 / 683 / 0) at the shipped default policy.
+  `tests/unit/test_benchmark_real_panels.py` no longer needs its probe descriptor or its own row
+  pre-filter and prepares each panel by its registry id.
+
+- **A benchmark manifest could not be compared against a second run of the same bytes** (#109) —
+  which is the entire content of the criterion it exists to satisfy. Three independent causes, all
+  found by running the same panel twice rather than by reading the code. `outputs.*.path` recorded the
+  absolute path it happened to write to, making the manifest a function of `--out-dir`; it now records
+  the fixed inner filename. `FilterScope.species`/`hit_classes` are `frozenset[str]` and dumped in
+  hash order, which varies with `PYTHONHASHSEED`, so two identical runs disagreed on the order of
+  `hit_classes` inside both policy blocks; both axes now serialise sorted (a set is still the right
+  in-memory type — membership, not order, is what a scope means). And `benchmark design` **appended** a
+  `prepared_artifact` input entry checksumming `manifest.json`, a file it overwrites moments later, so
+  re-running it grew `inputs` by one stale entry per run and hashed an already-designed manifest under
+  a role called "prepared"; `role` is now a key within `inputs`, replaced rather than appended, and the
+  two entries name the files the design pass actually reads. Two full `prepare` + `design` passes over
+  the vendored Huesken subset now produce byte-identical `observations.csv`, `design_inputs.fasta`,
+  `candidates_all.csv` and `accounting.csv`, and manifests differing only in `created_utc` — the one
+  field the schema declares nondeterministic, and the only one that lives outside every CSV.
 
 - **A run with no screening reference called itself `qualified`** — and therefore required evidence it
   could never obtain. `--input-fasta` deliberately does not auto-resolve the default transcriptomes, so
@@ -1318,6 +1465,26 @@ docs` exits 0 with warnings still treated as errors", could not be demonstrated 
 - Species inference from cDNA headers reads Ensembl-formatted headers only, and a reference mixing two
   assemblies is deliberately left unlabelled rather than assigned one of them — both fall back to the
   literal `transcriptome`, where orthology is unresolvable.
+- **`prepare` drops the `synthetic_context_local` span every OligoGym row carries** (#109). This is
+  what is left of the four gaps that used to sit behind "`benchmark prepare` cannot read these panels":
+  the vendored path and the row selector are wired (see Fixed), `artifact.py`'s vocabulary now holds
+  `synthetic_context_local`, and the aggregate `oligogym` is refused before `mkdir` rather than after.
+  But `prepare.py` still writes `target_identity_status: "unavailable"` with `target_start/end: None`
+  for every row, so the 1-based `71..91` span `derive_observation` computes is discarded rather than
+  recorded — `BenchmarkArtifactCounts` has no bucket that would keep the tally honest for such a row.
+  Lossy, and deliberately not an overclaim in either direction: `unavailable` understates evidence the
+  artifact could reproduce exactly, where `panel_local` would read as a coordinate in a panel's own
+  measured target. Carrying it through belongs with the rest of the target-identity story on #110.
+  Note also why the vendored path and the selector had to land together, which was measured rather than
+  feared: wiring the path while ignoring the selector made `--panel ichihara` ingest all 4,113 rows and
+  report `kept 4113 / incompatible 0`, stamping paired-core-19 on all 356 asymmetric Shmushkovich rows
+  and writing them into `design_inputs.fasta` — the relabelling of a measured sequence #109 exists to
+  prevent.
+- **Nothing on the benchmark surface compares a design to the efficacy the panel measured** (#109).
+  Measured labels are carried through verbatim so that an evaluation becomes possible; performing one
+  is out of scope, and no `default_pass` tally is a statement about predictive accuracy. Native
+  transcript mapping is #110's, and `tests/data/benchmarks/oligogym_native_design/` — vendored on this
+  branch — is untouched by #109.
 
 ## [0.7.0] - Unreleased
 

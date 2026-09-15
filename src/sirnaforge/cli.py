@@ -10,6 +10,7 @@ os.environ.setdefault("TERM", "dumb")
 import asyncio
 import json
 import logging
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from pathlib import Path
@@ -1344,12 +1345,13 @@ def workflow(  # noqa: PLR0912
     min_asymmetry: float | None = typer.Option(
         None,
         "--min-asymmetry",
-        min=0.3,
+        min=0.0,
         max=1.0,
         help=(
             f"Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: "
             f"{default_for('min_asymmetry_score')}). The default has not been calibrated against "
-            "measured potency; lower it to widen the candidate pool."
+            "measured potency; lower it to widen the candidate pool, or set 0 to admit every "
+            "candidate while still reporting the score."
         ),
     ),
     max_paired_fraction: float | None = typer.Option(
@@ -2872,6 +2874,261 @@ def cache(
             console.print(f"    Files deleted: [red]{result['files_deleted']}[/red]")
             console.print(f"    Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
             console.print(f"    Status: [green]{result['status']}[/green]")
+
+
+# Create benchmark subcommand group (#109). A sub-app, not a flat `benchmark-prepare`/`benchmark-design`
+# pair, matching the `sequences_app`/`internal_app` shape already established below: one noun, two
+# verbs under it.
+#
+# Vendored-panel status (state this here, not only in the docs, because a passing CLI invocation is
+# the thing most likely to be mistaken for evidence): the only benchmark panel with real measured
+# bytes in this repository is `huesken_subset`
+# (`tests/unit/data/sirna_efficacy_subset.csv`, a third-party redistribution -- see
+# `tests/unit/data/README.md`). Ichihara, Martinelli, Shmushkovich and OligoGym are named in #109/#110
+# but are **not vendored**; a panel descriptor for one of them, if the registry declares it at all,
+# carries no bytes and `benchmark prepare` refuses it without `--panel-csv`. `manifest.json` records
+# `panel.data_present: false` for every panel that is not `huesken_subset`, so a manifest -- not just
+# this help text -- says which panel actually ran.
+benchmark_app = typer.Typer(help="Fixed-length benchmark artifacts and prepare/design commands (#109)")
+app.add_typer(benchmark_app, name="benchmark")
+benchmark_command = command_decorator_typed(benchmark_app.command)
+
+
+def _print_prepare_summary(manifest: Any) -> None:
+    """Print a short summary of a manifest just written by ``prepare_artifact`` (#109).
+
+    Reads the returned manifest's own ``model_dump(mode="json")`` rather than re-deriving any
+    count, so this print can never disagree with the file it describes. Missing keys fall back to
+    ``"?"`` instead of raising, because a field this prints and the manifest lacks is a coupling
+    defect for the settle pass to catch, not a reason for a successful run to exit non-zero on its
+    own summary.
+    """
+    payload = manifest.model_dump(mode="json")
+    panel = payload.get("panel") or {}
+    counts = payload.get("counts") or {}
+    console.print(
+        Panel.fit(
+            "🧬 [bold blue]Benchmark artifact prepared[/bold blue]\n"
+            f"Panel: [cyan]{panel.get('panel_id', '?')}[/cyan] "
+            f"(data present: [yellow]{panel.get('data_present', '?')}[/yellow])\n"
+            f"Paired length: [yellow]{payload.get('paired_length', '?')}[/yellow] nt\n"
+            f"Observations kept: [green]{counts.get('observations_kept', '?')}[/green] "
+            f"(incompatible: [red]{counts.get('observations_incompatible', '?')}[/red])",
+            title="Benchmark Summary",
+        )
+    )
+
+
+def _print_design_summary(result: Any) -> None:
+    """Print a short summary of a ``DesignArtifactResult`` (#109).
+
+    Deliberately not the manifest itself, matching ``design_artifact``'s own docstring: a caller
+    wanting the full record reads ``manifest.json`` back with
+    ``sirnaforge.benchmark.artifact.read_manifest``, which is the one parser this contract has.
+    """
+    console.print(
+        Panel.fit(
+            "🧬 [bold blue]Benchmark design complete[/bold blue]\n"
+            f"Entered design: [green]{result.entered_design}[/green]  "
+            f"no candidate: [yellow]{result.no_candidate}[/yellow]\n"
+            f"Default pass: [green]{result.default_pass}[/green]  "
+            f"Benchmark pass: [green]{result.benchmark_pass}[/green]\n"
+            f"Manifest: [cyan]{result.manifest_path}[/cyan]",
+            title="Benchmark Summary",
+        )
+    )
+
+
+@benchmark_command("prepare")
+def benchmark_prepare(
+    panel: str = typer.Option(
+        ...,
+        "--panel",
+        help=(
+            "Registry panel_id to prepare. Only 'huesken_subset' ships vendored bytes in this repo; "
+            "every other panel needs --panel-csv."
+        ),
+    ),
+    panel_csv: Path | None = typer.Option(
+        None,
+        "--panel-csv",
+        help=(
+            "Panel source table. Required for a panel with no vendored bytes (refused with a reason "
+            "otherwise); refused outright for a panel that ships its own, so a run cannot silently "
+            "read different bytes than the ones the manifest names."
+        ),
+    ),
+    panel_transcripts: Path | None = typer.Option(
+        None,
+        "--panel-transcripts",
+        help="Optional FASTA of panel transcripts. Enables design_context_source=panel_transcript.",
+    ),
+    paired_length: int | None = typer.Option(
+        None,
+        "--paired-length",
+        min=19,
+        max=23,
+        help="Design length for the paired guide slice (default: the panel descriptor's declared length).",
+    ),
+    out_dir: Path = typer.Option(
+        Path("benchmark_artifacts"),
+        "--out-dir",
+        help="Directory to create <panel_id>__len<paired_length> under.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite/--no-overwrite",
+        help="Overwrite an existing artifact directory instead of refusing it.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+) -> None:
+    """Prepare one fixed-length benchmark artifact for a compatible panel and paired length (#109).
+
+    Writes ``<out-dir>/<panel_id>__len<paired_length>/`` with ``observations.csv``,
+    ``design_inputs.fasta`` and ``manifest.json``. Every measured observation is preserved, including
+    one incompatible with this paired length: dropping it silently would make a later count
+    unreproducible from the panel bytes alone. ``design_inputs.fasta`` is a plain FASTA, so
+    ``sirnaforge design`` and ``sirnaforge workflow`` consume it with no new execution path.
+    """
+    try:
+        from sirnaforge.benchmark.prepare import BenchmarkPrepareError, prepare_artifact  # noqa: PLC0415
+    except ImportError as exc:
+        console.print(f"❌ [red]Error preparing benchmark artifact:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        manifest = prepare_artifact(
+            panel_id=panel,
+            panel_csv=panel_csv,
+            panel_transcripts=panel_transcripts,
+            paired_length=paired_length,
+            out_dir=out_dir,
+            overwrite=overwrite,
+            invoked_command=list(sys.argv),
+        )
+    except (RunPolicyError, BenchmarkPrepareError) as exc:
+        _fail_with_config_error(str(exc))
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc))
+    except Exception as exc:  # noqa: BLE001 - reported below, optionally with a traceback
+        console.print(f"❌ [red]Error preparing benchmark artifact:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    _print_prepare_summary(manifest)
+
+
+@benchmark_command("design")
+def benchmark_design(
+    ctx: typer.Context,
+    artifact: Path = typer.Option(
+        ...,
+        "--artifact",
+        help="A directory written by 'sirnaforge benchmark prepare' (<panel_id>__len<paired_length>).",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+    ),
+    design_mode: str = typer.Option(
+        "sirna",
+        "--design-mode",
+        help="Design mode: sirna (default) or mirna.",
+    ),
+    gc_min: float | None = typer.Option(
+        None,
+        "--gc-min",
+        min=0.0,
+        max=100.0,
+        help=(
+            f"Per-run GC floor, widened only (default: {default_for('gc_min')}). A value narrower "
+            "than the default is refused: it would falsify the default-policy verdicts this command "
+            "re-derives for candidates a narrower run never enumerated."
+        ),
+    ),
+    gc_max: float | None = typer.Option(
+        None,
+        "--gc-max",
+        min=0.0,
+        max=100.0,
+        help=(
+            f"Per-run GC ceiling, widened only (default: {default_for('gc_max')}). Narrowing it is "
+            "refused for the same reason as --gc-min."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help="JSON or TOML file of policy settings, reused from 'sirnaforge design'. Cannot narrow gc_min/gc_max.",
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|warn|fail (repeatable), reused from 'sirnaforge "
+            "design'. Only gc_min/gc_max widen through this command; asymmetry, empirical and the "
+            "polynucleotide-run gate resolve exactly as 'sirnaforge design' would."
+        ),
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+) -> None:
+    """Run the fixed-length design path over a prepared benchmark artifact, twice-policied (#109).
+
+    The run executes once, under the (possibly widened) benchmark policy; the default-policy verdict
+    for every candidate is then re-derived from what that one run already observed, never from a
+    second run. ``--gc-min``/``--gc-max`` may only widen the shipped floor/ceiling -- a narrower value
+    is refused before any design work, because the re-derived default verdicts assume the benchmark
+    run enumerated a superset of what a default run would. Every other threshold, and the
+    polynucleotide-run requirement (<= 3) in particular, resolves exactly as ``sirnaforge design``
+    would; nothing here can relax it.
+    """
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+
+    try:
+        from sirnaforge.benchmark.artifact import BenchmarkArtifactError  # noqa: PLC0415
+        from sirnaforge.benchmark.design import design_artifact  # noqa: PLC0415
+    except ImportError as exc:
+        console.print(f"❌ [red]Error running benchmark design:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        result = design_artifact(
+            artifact_dir=artifact,
+            design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+            gc_min=gc_min,
+            gc_max=gc_max,
+            policy_config=policy_config,
+            filter_actions=actions,
+            invoked_command=list(sys.argv),
+        )
+    except (RunPolicyError, BenchmarkArtifactError) as exc:
+        _fail_with_config_error(str(exc))
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc))
+    except Exception as exc:  # noqa: BLE001 - reported below, optionally with a traceback
+        console.print(f"❌ [red]Error running benchmark design:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    _print_design_summary(result)
 
 
 # Create sequences subcommand group

@@ -19,6 +19,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from sirnaforge.utils.typed_decorators import field_serializer_typed
+
 DEFAULT_TARGET_SPECIES = "human"
 
 
@@ -315,6 +317,19 @@ class FilterScope(BaseModel):
             if any(not value.strip() for value in values):
                 raise ValueError(f"{axis} contains a blank entry; omit the axis instead of naming an empty value")
         return self
+
+    @field_serializer_typed("species", "hit_classes")
+    def _sorted_axis(self, values: frozenset[str]) -> list[str]:
+        """Serialise both set-valued axes sorted, so a manifest carrying a scope is byte-stable.
+
+        A ``frozenset[str]`` dumps in hash order, which for strings varies with ``PYTHONHASHSEED`` and
+        therefore between processes. Two identical runs then wrote manifests differing only in the
+        order of ``hit_classes`` -- enough to defeat the "reproduce the artifact from checksummed
+        inputs" comparison #109 rests on, and to make any manifest diff across runs unreadable. A set
+        is still the right in-memory type (membership, not order, is what a scope means); only its
+        serialisation needed pinning.
+        """
+        return sorted(values)
 
 
 class FilterDescriptor(BaseModel):

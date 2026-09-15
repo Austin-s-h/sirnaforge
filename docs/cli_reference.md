@@ -176,6 +176,7 @@ Two honesty notes the manifest carries per gate, because the code earns them and
   `fail_on_high_risk_mirna` count hits **labelled** with the query species only, so an unlabelled miRNA
   hit reaches neither gate; and `max_total_offtarget_hits` **sums the two conventions** in one number,
   which is why it has its own column rather than being re-derivable by addition.
+
 - `max_mirna_1mm_seed` is read by no gate in 0.7.1, so it resolves to `off`, and asking for `warn` or
   `fail` on it is refused. It no longer declares a threshold either: the default was `10`, which read
   as a limit the run enforced, and it is now `None` so the setting states nothing it cannot apply.
@@ -356,5 +357,57 @@ Manage miRNA database cache for off-target analysis.
 ### Help
 
 ```{program-output} uv run sirnaforge cache --help
+
+```
+
+---
+
+## benchmark
+
+Fixed-length benchmark artifacts and `prepare`/`design` commands (#109).
+
+:::{warning}
+**Only one panel ships real bytes in this repository.** `huesken_subset` is a 180-row Huesken
+redistribution (`tests/unit/data/sirna_efficacy_subset.csv`; see `tests/unit/data/README.md`).
+Ichihara, Martinelli, Shmushkovich and OligoGym are named in #109/#110 and may appear in the panel
+registry, but this repository vendors none of their bytes. `manifest.json`'s `panel.data_present`
+records this per artifact, and every other test over the benchmark surface runs against synthetic
+fixtures named `synthetic_<architecture>_*` -- **a passing test over a synthetic fixture, or over
+`huesken_subset`, is not evidence about any of the four unvendored panels.** The issue's cited PRD
+(`docs/prd_benchmark_artifacts_and_variable_length.md`) does not exist in this repository either; the
+acceptance criteria in [#109](https://github.com/Austin-s-h/sirnaforge/issues/109) are the entire
+specification.
+:::
+
+### Help
+
+```{program-output} uv run sirnaforge benchmark --help
+
+```
+
+### prepare
+
+Writes `<out-dir>/<panel_id>__len<paired_length>/` with `observations.csv`, `design_inputs.fasta`
+and `manifest.json`. Every measured observation is preserved, including one incompatible with the
+requested paired length -- dropping it silently would make a later count unreproducible from the
+panel bytes alone.
+
+```{program-output} uv run sirnaforge benchmark prepare --help
+
+```
+
+### design
+
+Runs the fixed-length designer over a prepared artifact and extends `manifest.json` in place with
+`candidates_all.csv`, `accounting.csv`, both filter-verdict sets and both policy blocks
+(`run_policy` for the run that executed, `default_run_policy` re-resolved in the same process for
+comparison). `--gc-min`/`--gc-max` may only **widen** the shipped floor/ceiling: a narrower value is
+refused before any design work, because the default-policy verdicts are re-derived from what the
+(possibly widened) benchmark run already observed, which is only exact if that run enumerated a
+superset of what a default run would. The polynucleotide-run requirement (`max_poly_runs <= 3`)
+stays active and is recorded in `manifest.json`'s `polynucleotide_run_requirement` block regardless
+of any other option here.
+
+```{program-output} uv run sirnaforge benchmark design --help
 
 ```
