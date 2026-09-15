@@ -6634,44 +6634,10 @@ async def run_offtarget_only_workflow(
         gc_count = guide_sequence.count("G") + guide_sequence.count("C")
         gc_content = (gc_count / len(guide_sequence)) * 100 if len(guide_sequence) > 0 else 0.0
 
-        # Calculate thermodynamic properties
-        asymmetry_score = 0.0
-        duplex_stability = 0.0
-        try:
-            calc = ThermodynamicCalculator()
-
-            # Create a temporary candidate for thermodynamic calculations
-            temp_candidate = SiRNACandidate(
-                id=candidate_id,
-                transcript_id="pre_designed",
-                position=1,
-                guide_sequence=guide_sequence,
-                passenger_sequence=passenger_sequence,
-                length=len(guide_sequence),
-                gc_content=gc_content,
-                asymmetry_score=0.0,
-                paired_fraction=0.0,
-                duplex_stability=0.0,
-                off_target_count=0,
-                off_target_penalty=0.0,
-                transcript_hit_count=0,
-                transcript_hit_fraction=0.0,
-                passes_filters=True,
-            )
-
-            # Calculate asymmetry score (5' vs 3' end stability)
-            _, _, asymmetry_score = calc.calculate_asymmetry_score(temp_candidate)
-
-            # Calculate duplex stability
-            duplex_stability = calc.calculate_duplex_stability(guide_sequence, passenger_sequence)
-
-        except Exception as e:
-            # If thermodynamic calculations fail, use default values
-            logger.warning(f"Failed to calculate thermodynamics for {candidate_id}: {e}")
-            asymmetry_score = 0.0
-            duplex_stability = 0.0
-
-        # Create final candidate with computed metrics
+        # Built once and then thermodynamically annotated in place: calculate_asymmetry_score takes
+        # a candidate, so the two fields it feeds start at 0.0 and stay there if the calculation
+        # fails. SiRNACandidate is not frozen and does not validate on assignment, so the two
+        # assignments below are exactly what passing the values to the constructor would have been.
         candidate = SiRNACandidate(
             id=candidate_id,
             transcript_id="pre_designed",  # Placeholder since these are pre-designed
@@ -6680,9 +6646,9 @@ async def run_offtarget_only_workflow(
             passenger_sequence=passenger_sequence,  # Computed as reverse complement
             length=len(guide_sequence),
             gc_content=gc_content,  # Computed from guide sequence
-            asymmetry_score=asymmetry_score,  # Computed thermodynamically
+            asymmetry_score=0.0,
             paired_fraction=0.0,  # Not applicable for pre-designed guides
-            duplex_stability=duplex_stability,  # Computed thermodynamically
+            duplex_stability=0.0,
             off_target_count=0,  # Will be populated by off-target analysis
             off_target_penalty=0.0,  # Will be populated by off-target analysis
             transcript_hit_count=0,  # Will be populated by off-target analysis
@@ -6691,6 +6657,16 @@ async def run_offtarget_only_workflow(
             # screening scores it, and 0.0 would read as a computed worst-possible candidate.
             passes_filters=True,  # Assume valid since user provided them
         )
+
+        try:
+            calc = ThermodynamicCalculator()
+            # Asymmetry is 5' vs 3' end stability
+            _, _, candidate.asymmetry_score = calc.calculate_asymmetry_score(candidate)
+            candidate.duplex_stability = calc.calculate_duplex_stability(guide_sequence, passenger_sequence)
+        except Exception as e:
+            # Both stay at the 0.0 they were constructed with
+            logger.warning(f"Failed to calculate thermodynamics for {candidate_id}: {e}")
+
         candidates.append(candidate)
 
     # Prepare candidates FASTA for off-target analysis
