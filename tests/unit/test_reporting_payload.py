@@ -24,6 +24,8 @@ from sirnaforge.reporting.payload import (
     REASON_FILTER_OFF,
     REASON_OK,
     REASON_RUN_NOT_EVALUATED,
+    STATUSES,
+    reevaluate_gates,
 )
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
@@ -140,6 +142,53 @@ def _write_fully_evidenced_run(
         row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
         row += "".join(f",{v}" for v in recorded.values())
         rows.append(row)
+    (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
+    return run
+
+
+#: How each report status is produced from the observed columns, given the default gate panel. ``fail``
+#: moves the GC floor's own observation below it, ``warn`` trips the warn-action asymmetry floor, and
+#: ``unknown`` is the one state no observation can express -- it needs the run's own recorded non-verdict.
+_GRADE_OBSERVED: Mapping[str, Mapping[str, object]] = {
+    "pass": {},
+    "warn": {"min_asymmetry_score": 0.1},
+    "fail": {"gc_content_min": 10.0},
+    "unknown": {},
+}
+_GRADE_RECORDED = {"unknown": ("max_repeat_transcript_fraction", "unknown")}
+_GRADE_RUN_LABEL = {"fail": "GC_OUT_OF_RANGE"}
+
+
+def _distinct_guide(index: int) -> str:
+    """A distinct 21-mer per index. Gates read the ``_observed`` columns, so only distinctness matters."""
+    tail = "".join("ACGU"[(index >> shift) & 3] for shift in (0, 2, 4, 6))
+    return ("ACGUACGUACGUACGUA"[:17] + tail)[:21]
+
+
+def _write_graded_run(tmp_path: Path, grades: Sequence[str]) -> Path:
+    """A fully evidenced run with one guide per requested status, best-scoring first.
+
+    The cap has to be tested against a run whose verdicts differ, because what it must never do is
+    drop a guide by score alone. Every guide records what all seventeen gates observed, as the fixed
+    design path does, and the run's own ``passes_filters`` label agrees with the status asked for.
+    """
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    verdict_columns = sorted({column for column, _ in (_GRADE_RECORDED.get(g, ("", "")) for g in grades) if column})
+    columns = (
+        _CANDIDATE_COLUMNS
+        + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
+        + "".join(f",{c}_verdict" for c in verdict_columns)
+    )
+    rows = []
+    for n, grade in enumerate(grades, start=1):
+        observed = dict(_PASSING_OBSERVED, **_GRADE_OBSERVED[grade])
+        recorded = _GRADE_RECORDED.get(grade)
+        row = _candidate_row(f"c{n}", _distinct_guide(n), "ENST00000000001", 10 * n).split(",")
+        row[10] = str(1000 - n)  # composite_score: the order the payload ranks them in
+        row[12] = _GRADE_RUN_LABEL.get(grade, "PASS")
+        cells = [*row, *(str(v) for v in observed.values())]
+        cells += [recorded[1] if recorded and recorded[0] == c else "" for c in verdict_columns]
+        rows.append(",".join(cells))
     (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
     return run
 
@@ -746,6 +795,258 @@ def test_a_gate_no_guide_was_evaluated_for_is_frozen_rather_than_given_a_dead_sl
     live = next(f for f in payload.filters if f["filter_id"] == "gc_content_max")
     assert live["evaluable"] is True
     assert live["control"] is not None
+
+
+@pytest.mark.unit
+def test_the_guide_cap_is_a_published_count_and_every_number_counts_the_embedded_guides(tmp_path: Path) -> None:
+    """A cap the counts do not know about is a report advertising guides it does not contain.
+
+    One internal report headlined 5,706 guides, pill-counted 448/976/0/4,282 and embedded 5,000 of them:
+    448 pass, 935 warn, 3,617 fail. The 706 it dropped included 41 pass-warned guides -- shippable
+    candidates that cannot be searched, carted or exported -- and its agreement line claimed coverage of
+    1,424 run PASSes while holding 1,383 of them. The cap now lives above every count.
+    """
+    # The fails score HIGHEST here, so keeping the top 5 by score and keeping the 5 a reader can use
+    # are different answers -- which is the whole distinction the old cap could not make.
+    grades = ["fail", "fail", "fail", "fail", "pass", "pass", "warn", "unknown"]
+    payload = build_payload(_write_graded_run(tmp_path, grades), max_guides=5)
+    run = payload.run
+
+    assert len(payload.guides) == 5
+    assert (run["guides"], run["guides_total"], run["guides_dropped"]) == (5, 8, 3)
+    assert run["guide_embed_limit"] == 5
+    assert sum(run["status_counts"].values()) == len(payload.guides), "the pills count what is embedded"
+    assert run["status_counts"] == {"fail": 1, "unknown": 1, "warn": 1, "pass": 2}
+    assert run["guides_dropped_by_status"] == {"fail": 3, "unknown": 0, "warn": 0, "pass": 0}
+    assert run["agreement"]["run_pass_guides"] == 4, "the denominator is embedded run PASSes, not the run's"
+    assert run["candidate_rows"] == sum(g.n_rows for g in payload.guides)
+    assert run["candidate_rows_total"] == 8, "the run's own row count is still published, under its own name"
+    assert any("embeds 5 of the run's 8 guides" in c for c in payload.caveats), "a dropped guide is stated"
+    assert render_html(payload).startswith("<!DOCTYPE html>")
+
+
+@pytest.mark.unit
+def test_the_cap_drops_the_verdicts_the_run_rejected_before_anything_a_reader_could_ship(tmp_path: Path) -> None:
+    """Dropping by score alone is what lost 41 shippable guides; dropping by verdict cannot.
+
+    A ``fail`` is a guide the run and the report agree to reject, so it is the only kind whose absence
+    costs a reader nothing they could act on. When even that is not enough room, the shortfall is named.
+    """
+    # Again the fail is the best-scoring guide in the run, so a score cap would have kept it and thrown
+    # away one of the three a reader came for.
+    run = _write_graded_run(tmp_path, ["fail", "pass", "warn", "unknown"])
+    kept = build_payload(run, max_guides=3)
+
+    assert [g.status for g in kept.guides] == ["pass", "warn", "unknown"], "the fail went first"
+    assert kept.run["guides_dropped_by_status"]["fail"] == 1
+
+    squeezed = build_payload(run, max_guides=1)
+    assert [g.status for g in squeezed.guides] == ["pass"], "then unknown, then warn, and a pass last"
+    assert squeezed.run["guides_dropped_by_status"] == {"fail": 1, "unknown": 1, "warn": 1, "pass": 0}
+    assert any("a reader might have acted on" in c for c in squeezed.caveats), "and it says so plainly"
+    # Three of this run's four guides carry a run PASS; one of them is embedded. The agreement line has
+    # to say one, or it claims coverage of two guides a reader cannot open.
+    assert squeezed.run["agreement"]["run_pass_guides"] == 1
+
+
+@pytest.mark.unit
+def test_an_uncapped_payload_embeds_the_run_whole_and_says_nothing_about_a_cap(tmp_path: Path) -> None:
+    """``max_guides=None`` is the escape hatch the cap's own caveat points a reader at."""
+    grades = ["pass", "warn", "fail", "fail"]
+    payload = build_payload(_write_graded_run(tmp_path, grades), max_guides=None)
+
+    assert len(payload.guides) == payload.run["guides_total"] == 4
+    assert payload.run["guides_dropped"] == 0
+    assert payload.run["guides_dropped_by_status"] == dict.fromkeys(STATUSES, 0)
+    assert payload.run["guide_embed_limit"] is None
+    assert not [c for c in payload.caveats if "not embedded" in c]
+
+
+@pytest.mark.unit
+def test_a_slider_domain_is_snapped_to_its_step_and_clamped_to_the_settings_own_bounds(tmp_path: Path) -> None:
+    """An unsnapped, unclamped domain published thresholds the pipeline would refuse.
+
+    ``gc_content_min`` opened at 27.804348 with a step of 0.1, so every drag landed on ...704348, 40 was
+    unreachable, and 39.704348 is what went into the URL fragment and the cart TSV. Padding an observed
+    minimum by 5% also published "at most -59 off-targets" and a ``max_paired_fraction`` floor of
+    -0.03913 -- thresholds that fail every guide, on quantities their own fields declare non-negative.
+    """
+    observed = [
+        dict(_PASSING_OBSERVED, gc_content_min=27.804348, max_off_target_count=0, max_paired_fraction=0.0),
+        dict(_PASSING_OBSERVED, gc_content_min=64.7, max_off_target_count=59, max_paired_fraction=0.783),
+    ]
+    columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
+    rows = [
+        _candidate_row(f"c{n}", _distinct_guide(n), "ENST00000000001", 10 * n)
+        + "".join(f",{v}" for v in values.values())
+        for n, values in enumerate(observed, start=1)
+    ]
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
+    payload = build_payload(run)
+    by_id = {f["filter_id"]: f for f in payload.filters}
+
+    gc = by_id["gc_content_min"]["control"]
+    assert gc["step"] == 0.1
+    assert round((40.0 - gc["min"]) / gc["step"], 6).is_integer(), "a reader must be able to land on 40"
+    for f in payload.filters:
+        control = f["control"]
+        if control is None:
+            continue
+        values = [g.gates[payload.filters.index(f)][0] for g in payload.guides]
+        values = [v for v in values if v is not None]
+        assert control["min"] <= min(values) and control["max"] >= max(values), f"{f['filter_id']} hides a value"
+        assert control["min"] <= f["threshold"] <= control["max"], f"{f['filter_id']} cannot be reset"
+        if f["bound_min"] is not None:
+            assert control["min"] >= min(f["bound_min"], *values), f"{f['filter_id']} goes below its field"
+        if f["bound_max"] is not None:
+            assert control["max"] <= max(f["bound_max"], *values), f"{f['filter_id']} goes above its field"
+    assert by_id["max_off_target_count"]["control"]["min"] == 0, "there is no such thing as -59 off-targets"
+    assert by_id["max_paired_fraction"]["control"]["min"] == 0
+
+
+@pytest.mark.unit
+def test_an_inert_gates_domain_can_still_reach_a_threshold_that_changes_a_verdict(tmp_path: Path) -> None:
+    """The one question worth asking of an inert gate is what raising it would do, so it must be askable.
+
+    ``min_empirical_score`` sat at 0.4 against an attainable range of 0.4-0.6, and the domain padded the
+    observed values to 0.39-0.61 -- either side of the two thresholds that answer the question, and both
+    of them values the field itself rejects. Clamping to the field's own bounds makes 0.6 reachable.
+    """
+    observed = [dict(_PASSING_OBSERVED, min_empirical_score=score) for score in (0.4, 0.5, 0.6)]
+    columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
+    rows = [
+        _candidate_row(f"c{n}", _distinct_guide(n), "ENST00000000001", 10 * n)
+        + "".join(f",{v}" for v in values.values())
+        for n, values in enumerate(observed, start=1)
+    ]
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
+    payload = build_payload(run)
+    empirical = next(f for f in payload.filters if f["filter_id"] == "min_empirical_score")
+    index = payload.filters.index(empirical)
+
+    assert (empirical["bound_min"], empirical["bound_max"]) == (0.4, 0.6)
+    assert (empirical["control"]["min"], empirical["control"]["max"]) == (0.4, 0.6)
+
+    at_run = [reevaluate_gates(payload.filters, g.gates)[index][1] for g in payload.guides]
+    at_top = [
+        reevaluate_gates(payload.filters, g.gates, {"min_empirical_score": empirical["control"]["max"]})[index][1]
+        for g in payload.guides
+    ]
+    assert at_run != at_top, "a domain that cannot change a verdict is a control over nothing"
+
+
+@pytest.mark.unit
+def test_liability_is_published_per_species_as_well_as_summed_over_them(tmp_path: Path) -> None:
+    """The gate that rejects the most guides counts every species at once, and nothing decomposed it.
+
+    Run-wide liability alignments on one internal run: 92,658 human, 91,536 mouse, 25,243 macaque, 23,427
+    rat. ``max_off_target_count`` is scoped to all species and failed 3,317 guides, 782 of them on nothing
+    else -- and 458 of those 782 pass the same ceiling on human liabilities alone, against 448 passes in
+    the whole report. Both numbers are now published, because which one a reader takes decides whether
+    they agree with the run.
+    """
+    hits = [_hit_row(GUIDE, "human", f"ENST0000001{i:04d}", 1, "off_target", f"HUMANGENE{i}") for i in range(3)]
+    hits += [_hit_row(GUIDE, "mouse", f"ENSMUST0000{i:04d}", 1, "off_target", f"Mousegene{i}") for i in range(17)]
+    hits += [_hit_row(GUIDE, "mouse", "ENSMUST9999999", 0, "ortholog", "Genex")]
+    columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed,total_offtarget_hits_query"
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], hits)
+    (run / "sirnaforge" / "candidates_all.csv").write_text(
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},20,20,3\n"
+    )
+    payload = build_payload(run)
+    entry = payload.guides[0]
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "max_off_target_count")
+    ceiling = payload.filters[index]["threshold"]
+
+    assert entry.liability_count == 20, "the all-species number the gate compared"
+    assert entry.liability_by_species == {"human": 3, "mouse": 17}, "the ortholog hit is not a liability"
+    assert sum(entry.liability_by_species.values()) == entry.liability_count
+    assert entry.gates[index][1] == 1, "20 liabilities fail a ceiling of 15"
+    assert entry.liability_by_species["human"] <= ceiling, "and on human alone the same ceiling passes it"
+    assert entry.metrics["total_offtarget_hits_query"] == 3, "the query-species gate input #101 exports"
+    assert payload.run["liability_rows_by_species"] == {"human": 3, "mouse": 17}
+    assert payload.run["screened_species"] == ["human", "mouse"]
+    # The run-wide totals stay in one scope: the species split sums to the liability rows, and those
+    # plus the non-liabilities are the alignments the header prints.
+    assert sum(payload.run["liability_rows_by_species"].values()) == payload.run["liability_rows"] == 20
+    assert payload.run["liability_rows"] + payload.run["non_liability_rows"] == payload.run["hit_rows"] == 21
+
+
+@pytest.mark.unit
+def test_the_panel_says_which_gates_did_the_work_and_which_decided_nothing(tmp_path: Path) -> None:
+    """Seventeen equal-looking sliders, and nothing saying that two of them decide everything.
+
+    Sole cause of rejection over one internal payload: ``gc_content_min`` 983, ``max_off_target_count``
+    782, ``max_repeat_transcript_fraction`` 171, ``max_paired_fraction`` 31,
+    ``max_transcriptome_hits_0mm`` 2 -- and ``min_empirical_score`` inert by construction, its floor
+    being the lowest value its own field permits.
+    """
+    payload = build_payload(_write_graded_run(tmp_path, ["pass", "warn", "fail", "fail"]))
+    by_id = {f["filter_id"]: f for f in payload.filters}
+
+    assert (by_id["gc_content_min"]["rejects"], by_id["gc_content_min"]["sole_rejects"]) == (2, 2)
+    assert by_id["gc_content_min"]["inert"] is False
+    assert by_id["min_asymmetry_score"]["warns"] == 1, "a warn is a finding, and not a rejection"
+    assert by_id["min_asymmetry_score"]["inert"] is False
+
+    empirical = by_id["min_empirical_score"]
+    assert (empirical["rejects"], empirical["warns"]) == (0, 0)
+    assert empirical["inert"] is True
+    assert "declared minimum of 0.4" in empirical["inert_reason"], "why it cannot reject, not just that it did not"
+    assert by_id["max_off_target_count"]["inert"] is True, "nothing in this fixture exceeds the ceiling"
+    assert by_id["max_off_target_count"]["inert_reason"] is not None
+    assert "declared" not in by_id["max_off_target_count"]["inert_reason"], "a ceiling of 15 could still reject"
+
+    frozen = next(f for f in payload.filters if not f["evaluable"])
+    assert frozen["inert"] is False and frozen["inert_reason"] is None, "frozen is not inert; it is undecided"
+
+    # The ranking a renderer builds from this: sole_rejects can never exceed the guides that failed.
+    assert sum(f["sole_rejects"] for f in payload.filters) <= payload.run["status_counts"]["fail"]
+
+
+@pytest.mark.unit
+def test_canonical_isoform_status_comes_from_the_run_or_is_unknown(tmp_path: Path) -> None:
+    """The isoform picker is ordered by window count, which is length: the canonical one sat tenth.
+
+    Ordering it properly needs the length and the canonical flag, and canonical status is a fact only the
+    run can supply -- so it is read from the transcript FASTA the workflow writes, and is ``None``
+    everywhere when the run wrote none. Nothing here infers it from being the longest.
+    """
+    rows = [_candidate_row("c1", GUIDE, "ENST00000000001", 10), _candidate_row("c2", GUIDE, "ENST00000000002", 20)]
+    run = _write_run(tmp_path, rows, [])
+    (run / "transcripts").mkdir()
+    (run / "transcripts" / "TP53_canonical.fasta").write_text(
+        ">ENST00000000002 TP53 type:protein_coding length:1200 canonical:true\nACGU\n"
+    )
+    (run / "orf_reports").mkdir()
+    (run / "orf_reports" / "orf_validation.txt").write_text(
+        "transcript_id\tsequence_length\tlongest_orf_start\tlongest_orf_end\n"
+        "ENST00000000001\t7988\t100\t900\nENST00000000002\t1200\t100\t900\n"
+    )
+    payload = build_payload(run)
+    isoforms = {i["transcript"]: i for i in payload.guides[0].isoforms}
+
+    assert payload.run["canonical_transcript_ids"] == ["ENST00000000002"]
+    assert payload.run["canonical_source"] == "TP53_canonical.fasta"
+    assert (isoforms["ENST00000000002"]["canonical"], isoforms["ENST00000000002"]["length"]) == (True, 1200)
+    assert (isoforms["ENST00000000001"]["canonical"], isoforms["ENST00000000001"]["length"]) == (False, 7988)
+
+    # What the renderer needs: canonical first, length only as a tie-break -- and the longest is not it.
+    ordered = sorted(payload.run["transcripts"], key=lambda t: (not t["canonical"], -t["length"]))
+    assert [t["transcript_id"] for t in ordered] == ["ENST00000000002", "ENST00000000001"]
+
+
+@pytest.mark.unit
+def test_a_run_that_records_no_canonical_status_reports_unknown_rather_than_false(tmp_path: Path) -> None:
+    """Not recorded and not canonical are different claims, and only one of them is this run's."""
+    payload = build_payload(_write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], []))
+
+    assert payload.run["canonical_source"] is None
+    assert payload.run["canonical_transcript_ids"] == []
+    assert all(i["canonical"] is None for g in payload.guides for i in g.isoforms)
+    assert all(t["canonical"] is None for t in payload.run["transcripts"])
 
 
 @pytest.mark.unit
