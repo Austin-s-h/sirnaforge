@@ -171,8 +171,8 @@ carries. A unit test asserts that none of the 17 declared `filter_id`s appears a
 the template at all. (Column names such as `gc_content` do appear, in the cart's TSV header.)
 
 The single Python implementation the browser has to agree with is
-`sirnaforge.reporting.payload.reevaluate_gates`, and "Running the client-side parity check" below is
-how that agreement is enforced.
+`sirnaforge.reporting.payload.reevaluate_gates`. That agreement is **not** enforced by a test; see
+"What is verified, and what is only reviewed" below before you trust a threshold you moved.
 
 ## Reader filters, which are not gates
 
@@ -272,8 +272,8 @@ A bare fragment (`report.html#UUAUAGGAUUCAACCGGAGGA`) is still read as a guide, 
 reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id`, or an `r=`
 name that is not one of the three reader filters, is **listed as refused** at the top of the panel
 rather than silently dropped, and an unknown preset name leaves the view at "all". A reader who reloads
-the URL sees the same rows: `encodeHash` and `applyHashFragment` round-trip byte for byte, which the
-parity harness drives directly.
+the URL sees the same rows: `encodeHash` and `applyHashFragment` round-trip byte for byte. That
+round-trip is a property of the shipped JavaScript, so it is reviewed rather than tested.
 
 ## Exporting a selection
 
@@ -301,8 +301,8 @@ verdicts with no way to tell whose they were once it left the page:
 with one `#moved_gate=` line per moved gate. The `#reader_filter=` lines are recorded for a different
 reason: a reader filter can never touch the `status` column, but `Add top <n> to cart` picks from the
 _filtered_ view, so the bounds decide which guides are in the file. The comment says exactly that, so
-the two kinds of provenance are not confused. The columns and their order are unchanged, and are frozen
-in the parity harness.
+the two kinds of provenance are not confused. The columns and their order are unchanged; they used to be
+frozen by a test that generated the TSV, and are now held by review alone.
 
 ## Size, and the one figure
 
@@ -325,56 +325,54 @@ The single figure is a hand-drawn inline SVG. `plotly` was adopted, implemented 
 invokes, and no static check can tell an inert string from a live call. One stacked bar did not justify
 losing the zero-external-reach guarantee.
 
-## Running the client-side parity check
+## What is verified, and what is only reviewed
 
-The evaluator that ships inside the report is JavaScript, and the filter it must agree with is Python
-(`sirnaforge.reporting.payload.reevaluate_gates`). Rather than a browser -- Playwright is not a
-dependency of this repo, and its browser binary is a separate download that would make the test skip
-instead of gate -- the parity fixture runs the shipped evaluator directly under **Node**, which this
-project already expects (`.nvmrc` pins Node 20; Node 26 also works). The placeholder substitution
-happens first, in Python, by calling `render_html` itself, so Node is handed the same JavaScript text a
-browser would receive rather than an unsubstituted template, and it is driven through `subprocess` the
-same way the suite already shells out to other native tools. Every DOM-touching statement in the
-template lives inside a function or behind one `typeof document !== 'undefined'` guard, which is what
-makes that possible. Missing Node **fails** the test with the install hint; it does not skip.
+The re-threshold rule is written twice -- once in Python (`payload.reevaluate_gates`), once in the
+JavaScript that ships inside the report. **Only the Python half is under test.** If you have moved a
+threshold and are about to trust the verdict the page now shows you, that is the sentence to read
+twice.
 
 ```bash
-uv run pytest tests/unit/test_report_client_evaluator_parity.py tests/unit/test_reporting_rethreshold.py -q -n 0
+uv run pytest tests/unit/test_reporting_rethreshold.py tests/unit/test_reporting_document_structure.py -q -n 0
 ```
 
-Both files run in `make test-dev`. The Node harness compares the shipped evaluator against the Python
-filter over **every guide x every filter at five threshold sets** -- the run's own, every control at
-zero, one below each threshold, far above each threshold, and a set naming both a frozen filter and a
-filter id that does not exist -- and asserts the gate triples, all three counters and the derived
-status match on all of them. It also pins the three presets that are not a plain status filter to
-their trap cases, and asserts that a fragment naming a frozen or unknown filter is refused visibly. A
-companion assertion guards the fixture itself against going vacuous: every reason code in `payload.py`
-must still fire on at least one guide.
+Both files run in `make test-dev`.
 
-The same harness drives the three reader filters through the functions the report ships --
-`passesReaderFilters`, `passesFilters`, `encodeHash`, `applyHashFragment` and the `resetControls` the
-`Reset` button itself calls: each filter's selection is compared against the payload's own numbers, a
-guide with **no** composite score is asserted to be excluded by a composite floor, the three are shown
-to narrow together with a preset and the status set (each cutting rows the other two keep), and the
-fragment is round-tripped and then reset. The fixture carries a guide with 4 liabilities and one with 2
-so that "at most 3" has a real answer, and one guide with no composite score at all.
+**Verified by tests.** `tests/unit/test_reporting_rethreshold.py` covers the Python rule in 10 tests: a
+`not_evaluated` gate carrying a measured value cannot be decided by any threshold, a warn gate moved
+past its floor stays `warn`, an empty value stays `unknown`, a run-`unknown` gate and an `off` gate are
+both frozen untouched, a passing gate can still be re-thresholded into a fail, and an `off` filter
+carries no control at all. `tests/unit/test_reporting_document_structure.py` covers the rendered
+document as **text**: none of the 17 declared `filter_id`s appears as a literal in the template, so the
+evaluator cannot have grown a per-gate branch; the panel keeps its two labelled groups and its three
+reader inputs; every threshold box is a real `type="number"` with `validity.badInput` handling and no
+`inputmode`; the document closes its own `<script>` exactly once, and a payload string spelling
+`</script>` is escaped, reversibly (the embedded literal parses back to the original), and appears
+nowhere unescaped. A companion assertion keeps the fixture from going vacuous: every reason code in
+`payload.py` must still fire on at least one guide. `tests/unit/test_reporting_payload.py` separately
+scans the rendered document for external reach.
 
-Four more drivers cover the parts of the report that are text rather than arithmetic, because a report
-whose words disagree with its own numbers is wrong in the way that matters:
+**Reviewed, not verified.** Nothing executes the shipped JavaScript. There used to be a harness that
+rendered the report, sliced the substituted `<script>` out of it and ran the evaluator under Node --
+every guide x every filter at five threshold sets, the presets, the reader filters, `gatesCard`'s Why
+column, the `cartTsv` provenance lines and column order, and `parseControlValue`'s numeric boundary --
+and it has been deleted along with the Node dependency it needed. So the browser side is now covered by
+reading it:
 
-- **the gate panel.** `gatesCard` touches no DOM -- it returns HTML as a string -- so the harness builds
-  the real panel at the run's thresholds and again with one gate moved, parses every row out of it, and
-  asserts as a property that the threshold each Why sentence cites is the one in force, that the
-  sentence's polarity is arithmetically true, and that it agrees with the pill in the same row. Two rows
-  cover the run's own non-decisions: reason 5 and reason 6 must each state _which_ non-decision it was
-  and never a comparison, and the panel's banner must name the set it counts.
-- **the cart export.** The TSV is generated twice, and the `#` provenance lines, the `status_basis` and
-  the frozen column order are all asserted against the payload's own thresholds.
-- **the numeric boundary.** `parseControlValue` is driven over thirteen strings, and `encodeHash` is
-  shown to omit a poisoned `T`/`R` rather than write a fragment `applyHashFragment` refuses. The DOM
-  half -- `type="number"`, `validity.badInput`, the refusal banner -- is asserted structurally, because
-  only a browser sets that flag.
-- **the slice itself.** `_slice_script` ends where a browser ends a script (the **first** `</script>`)
-  and refuses a document that closes its own script twice, and a companion test renders a payload
-  spelling `</script>` to prove the escape in `render._embed` holds. Without both, a truncated document
-  could pass parity.
+- **the evaluator's agreement with Python.** A divergence between `payload.reevaluate_gates` and the
+  template's `reevaluateGates` would not fail the suite. The report could show a verdict the pipeline
+  would not reproduce.
+- **the five presets**, including the `off_target_screened` distinction that keeps a never-screened
+  guide out of "off-target clean".
+- **the three reader filters**, their composition with the presets and the status set, and the rule that
+  an absent value satisfies no threshold.
+- **the gate panel's Why column** agreeing arithmetically with the pill beside it, and reasons 5 and 6
+  each stating _which_ non-decision they were.
+- **the cart export's** `#` provenance lines, `status_basis` and column order.
+- **the URL fragment**: `encodeHash`/`applyHashFragment` round-tripping, and the refusal of a frozen
+  gate id, an unknown gate id, an unknown `r=` name or a non-finite value.
+
+This is a deliberate trade, not an oversight: an in-process JavaScript engine and a static
+table-equality substitute were both considered and both declined in favour of less machinery. The cost
+is stated here so it is not discovered by a reader who trusted the page. Change any of the JavaScript
+above and someone has to read it, because nothing will run it.
