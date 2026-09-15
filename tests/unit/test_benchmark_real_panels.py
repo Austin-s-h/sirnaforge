@@ -11,17 +11,15 @@ invariance of the default verdict set under a widened benchmark run (#109's core
 
 Two facts about *how* it reaches those surfaces, both deliberate:
 
-1. ``prepare.py`` does not yet know the OligoGym panels are vendored -- its ``_VENDORED_PANEL_CSV``
-   names only ``huesken_subset``, so ``benchmark prepare --panel ichihara`` currently fails with
-   "registered data_present=True but this module declares no vendored path for it" -- and it does not
-   yet call :meth:`~sirnaforge.benchmark.panels.PanelDescriptor.selects_row`, so a reader handed the
-   shared table would ingest all 4,113 rows under one panel's architecture. Rather than patch either
-   private, each test here declares a *probe* descriptor: the registry's own descriptor, re-validated
-   under a probe ``panel_id`` with ``data_present=False``, which is the one legal way to hand
-   ``prepare_artifact`` a ``--panel-csv``; and it hands it that panel's selected rows, written out by
-   :func:`_selected_rows_csv`. Both work-arounds become no-ops once ``prepare.py`` learns the vendored
-   path and honours the selector: the descriptor is otherwise byte-identical to the registry's, and
-   filtering rows that a selector-honouring reader would filter again changes nothing.
+1. Every panel is prepared by its **registry id**, through the shipped vendored path. This file used
+   to declare a *probe* descriptor per panel -- the registry's own descriptor re-validated under a
+   ``data_present=False`` id, which was the one legal way to hand ``prepare_artifact`` a
+   ``--panel-csv`` -- and to pre-filter the shared table itself, because ``prepare.py`` named only
+   ``huesken_subset`` as vendored and never called
+   :meth:`~sirnaforge.benchmark.panels.PanelDescriptor.selects_row`. It now reads the path off
+   :attr:`~sirnaforge.benchmark.panels.PanelDescriptor.vendored_csv` and honours the selector, so both
+   work-arounds are gone and the tallies below are the ones ``sirnaforge benchmark prepare --panel
+   ichihara`` itself reports.
 2. The design stage here runs over ``design_inputs.fasta`` as ``prepare`` writes it -- one record per
    compatible observation, holding the *measured target site* (``design_context_source=
    measured_target_site``, the 21 nt reverse complement of the measured guide), not the 161 nt
@@ -38,13 +36,11 @@ import csv
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
 from sirnaforge.benchmark.artifact import read_accounting, read_manifest, read_observations
 from sirnaforge.benchmark.design import design_artifact
-from sirnaforge.benchmark.panels import PanelDescriptor, describe_panel
 from sirnaforge.benchmark.prepare import prepare_artifact
 
 #: ``tests/unit/`` -> ``tests/`` -> repo root, the walk ``prepare.py`` itself does from ``src/``.
@@ -76,62 +72,21 @@ _EXPECTED: dict[str, tuple[tuple[str, ...], tuple[int, int, int]]] = {
 _HONEST_IDENTITIES = frozenset({"unavailable", "synthetic_context_local"})
 
 
-def _probe_descriptor(panel_id: str) -> PanelDescriptor:
-    """The registry's descriptor for ``panel_id``, under a probe id that accepts a ``--panel-csv``.
-
-    Re-validated through ``PanelDescriptor(**...)`` rather than ``model_copy``, so the probe is a
-    legal descriptor and not a validator bypass. Only two fields move: ``panel_id`` (a distinct
-    registry key, and the artifact directory's name) and ``data_present``/``vendored_csv``, which
-    must be ``False``/``None`` together for :func:`sirnaforge.benchmark.prepare._resolve_source_csv`
-    to accept an explicit table. Architecture, column mapping, endpoint, assay label, selector and
-    citation are the shipped ones, so every count this probe produces is the registry's count.
-    """
-    fields: dict[str, Any] = describe_panel(panel_id).model_dump()
-    fields.update(panel_id=f"{panel_id}_vendored_probe", data_present=False, vendored_csv=None)
-    return PanelDescriptor(**fields)
-
-
-def _selected_rows_csv(descriptor: PanelDescriptor, destination: Path) -> Path:
-    """Write the rows ``descriptor`` selects out of the vendored table, verbatim and in order.
-
-    ``records.csv`` holds all four OligoGym datasets in one table and ``prepare.py`` does not yet
-    call ``selects_row``, so the selection is applied here, on the way in. Rows are copied field for
-    field -- no column added, dropped or reformatted -- so what ``prepare`` reads is the panel's own
-    vendored bytes and nothing else. Delete this helper the day ``prepare`` honours the selector.
-    """
-    with RECORDS_CSV.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = list(reader.fieldnames or ())
-        selected = [row for row in reader if descriptor.selects_row(row)]
-    with destination.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(selected)
-    return destination
-
-
-def _prepare_vendored(
-    panel_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, paired_length: int | None = 19
-) -> Path:
+def _prepare_vendored(panel_id: str, tmp_path: Path, *, paired_length: int = 19) -> Path:
     """Prepare one vendored panel through the real ``prepare_artifact``, returning its artifact dir.
 
-    The probe descriptor is registered in :data:`sirnaforge.benchmark.panels.PANEL_REGISTRY` for the
-    duration of the test, because ``prepare_artifact`` resolves its panel through ``describe_panel``
-    and there is no injection point that bypasses the registry.
+    No ``--panel-csv`` and no descriptor substitution: the panel is named by its registry id, the
+    table comes off its own ``vendored_csv``, and ``prepare`` applies the row selector, so the artifact
+    this returns is the one the CLI writes for the same invocation. ``paired_length`` is always passed
+    because ``shmushkovich`` is asymmetric and declares none.
     """
-    from sirnaforge.benchmark import panels  # noqa: PLC0415 -- imported here to monkeypatch the registry
-
-    descriptor = _probe_descriptor(panel_id)
-    monkeypatch.setitem(cast("dict[str, PanelDescriptor]", panels.PANEL_REGISTRY), descriptor.panel_id, descriptor)
-    panel_csv = _selected_rows_csv(descriptor, tmp_path / f"{descriptor.panel_id}.csv")
     prepare_artifact(
-        panel_id=descriptor.panel_id,
+        panel_id=panel_id,
         paired_length=paired_length,
-        panel_csv=panel_csv,
         out_dir=tmp_path / "artifacts",
         invoked_command=("sirnaforge", "benchmark", "prepare", "--panel", panel_id),
     )
-    return tmp_path / "artifacts" / f"{descriptor.panel_id}__len{paired_length}"
+    return tmp_path / "artifacts" / f"{panel_id}__len{paired_length}"
 
 
 def _vendored_dataset_counts() -> dict[str, int]:
@@ -157,9 +112,7 @@ def test_the_vendored_table_is_the_bytes_every_count_here_was_measured_on() -> N
 
 @pytest.mark.unit
 @pytest.mark.parametrize("panel_id", sorted(_EXPECTED))
-def test_prepare_carries_every_selected_vendored_row_into_the_artifact(
-    panel_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_prepare_carries_every_selected_vendored_row_into_the_artifact(panel_id: str, tmp_path: Path) -> None:
     """Per-panel prepare counts, reconciled against the vendored manifest's own dataset totals.
 
     Two independent statements in one place, because a disagreement between them is the failure mode
@@ -172,7 +125,7 @@ def test_prepare_carries_every_selected_vendored_row_into_the_artifact(
     datasets, (in_source, kept, incompatible) = _EXPECTED[panel_id]
     declared = _vendored_dataset_counts()
 
-    artifact_dir = _prepare_vendored(panel_id, tmp_path, monkeypatch)
+    artifact_dir = _prepare_vendored(panel_id, tmp_path)
     manifest = read_manifest(artifact_dir / "manifest.json")
     counts = manifest.counts
 
@@ -185,9 +138,7 @@ def test_prepare_carries_every_selected_vendored_row_into_the_artifact(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("panel_id", sorted(_EXPECTED))
-def test_no_prepared_row_claims_native_or_confirmed_target_evidence(
-    panel_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_prepared_row_claims_native_or_confirmed_target_evidence(panel_id: str, tmp_path: Path) -> None:
     """A site at 1-based 71 in a fabricated context must never be written as native evidence.
 
     The whole reason ``TargetIdentityStatus`` grew a third value (#109) rather than reusing
@@ -199,7 +150,7 @@ def test_no_prepared_row_claims_native_or_confirmed_target_evidence(
     native asymmetric handling", which is a pointer to the issue that owns the work, not a claim of
     evidence -- but "confirmed" is, since #109's vocabulary has no such value to write.
     """
-    artifact_dir = _prepare_vendored(panel_id, tmp_path, monkeypatch)
+    artifact_dir = _prepare_vendored(panel_id, tmp_path)
     observations = read_observations(artifact_dir / "observations.csv")
 
     assert {observation.target_identity_status for observation in observations} <= _HONEST_IDENTITIES
@@ -226,7 +177,6 @@ def test_prepared_measured_values_are_the_rows_own_label_string_verbatim(
     column: str,
     spot_checks: tuple[int, ...],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``measured_value`` must survive prepare as the string ``records.csv`` holds, not a re-format.
 
@@ -243,7 +193,7 @@ def test_prepared_measured_values_are_the_rows_own_label_string_verbatim(
     with RECORDS_CSV.open(newline="") as handle:
         source = [row for row in csv.DictReader(handle) if row["dataset"] == dataset]
 
-    artifact_dir = _prepare_vendored(panel_id, tmp_path, monkeypatch)
+    artifact_dir = _prepare_vendored(panel_id, tmp_path)
     with (artifact_dir / "observations.csv").open(newline="") as handle:
         written = list(csv.DictReader(handle))
     # `write_observations` sorts by the zero-padded `observation_id`, so written order is source
@@ -259,9 +209,7 @@ def test_prepared_measured_values_are_the_rows_own_label_string_verbatim(
 
 
 @pytest.mark.unit
-def test_designing_the_martinelli_panel_enters_all_907_rows_and_agrees_with_itself(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_designing_the_martinelli_panel_enters_all_907_rows_and_agrees_with_itself(tmp_path: Path) -> None:
     """The design-stage tally for a real vendored panel, at the shipped default policy.
 
     Every row's measured site reproduces its own 19 nt core (``guide_match=paired_core_exact`` on all
@@ -272,7 +220,7 @@ def test_designing_the_martinelli_panel_enters_all_907_rows_and_agrees_with_itse
     for 179 of the exclusions under *both* policies, which is what "kept active and explicitly
     recorded" reduces to in a tally.
     """
-    artifact_dir = _prepare_vendored("martinelli", tmp_path, monkeypatch)
+    artifact_dir = _prepare_vendored("martinelli", tmp_path)
     result = design_artifact(artifact_dir=artifact_dir, invoked_command=("sirnaforge", "benchmark", "design"))
 
     assert (result.entered_design, result.no_candidate) == (907, 0)
@@ -290,9 +238,7 @@ def test_designing_the_martinelli_panel_enters_all_907_rows_and_agrees_with_itse
 
 
 @pytest.mark.unit
-def test_all_356_shmushkovich_rows_reach_the_accounting_and_none_reaches_the_designer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_all_356_shmushkovich_rows_reach_the_accounting_and_none_reaches_the_designer(tmp_path: Path) -> None:
     """The asymmetric panel is recorded and refused, never sliced -- end to end, not just in ``panels.py``.
 
     #109 requires every measured observation to appear in the artifact even when it cannot be
@@ -301,7 +247,7 @@ def test_all_356_shmushkovich_rows_reach_the_accounting_and_none_reaches_the_des
     rows, and not 356 rows quietly truncated to a 19 nt core. ``design_artifact`` must also survive a
     zero-record FASTA rather than raising out of the designer.
     """
-    artifact_dir = _prepare_vendored("shmushkovich", tmp_path, monkeypatch)
+    artifact_dir = _prepare_vendored("shmushkovich", tmp_path)
     result = design_artifact(artifact_dir=artifact_dir, invoked_command=("sirnaforge", "benchmark", "design"))
 
     assert (result.entered_design, result.no_candidate) == (0, 356)
@@ -319,9 +265,7 @@ def test_all_356_shmushkovich_rows_reach_the_accounting_and_none_reaches_the_des
 
 
 @pytest.mark.unit
-def test_a_widened_gc_run_leaves_the_default_verdict_set_byte_identical(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_widened_gc_run_leaves_the_default_verdict_set_byte_identical(tmp_path: Path) -> None:
     """Widening the benchmark's GC bounds must move the benchmark tally and nothing else (#109).
 
     The claim the whole two-verdict-sets design rests on: the default set is re-derived from the
@@ -332,7 +276,7 @@ def test_a_widened_gc_run_leaves_the_default_verdict_set_byte_identical(
     711) and the 40 rows the default GC ceiling excludes stay excluded under it, which is the
     asymmetry the design predicts: the benchmark's own ceiling exclusions drop to 0.
     """
-    artifact_dir = _prepare_vendored("martinelli", tmp_path, monkeypatch)
+    artifact_dir = _prepare_vendored("martinelli", tmp_path)
     argv = ("sirnaforge", "benchmark", "design")
 
     unwidened = design_artifact(artifact_dir=artifact_dir, invoked_command=argv)

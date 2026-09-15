@@ -9,19 +9,28 @@ Provenance, citations and checksums for the files backing `tests/unit/test_bench
 _length.md` as its specification. That file is not in the working tree and not in any branch's
    history of this repository. The issue body is the entire specification; nothing here or in
    `panels.py` claims to summarise a document that was read.
-2. **Only one of the five named panels ships real bytes.** #109 and #110 name five benchmark panels:
-   Huesken, Ichihara, Martinelli, Shmushkovich, OligoGym. ⚠️ **Ichihara, Martinelli, Shmushkovich and
-   OligoGym are not vendored anywhere in this repository.** No bytes, no redistribution, no prior
-   reference to any of the four exists in this repository's history. The only real measured data
-   `panels.py` exercises is `../sirna_efficacy_subset.csv` — the 180-row Huesken redistribution
-   documented in `../README.md`, reused here rather than duplicated.
+2. **These fixtures were written when nothing but Huesken was vendored, and they stay synthetic.**
+   #109 and #110 name five benchmark panels: Huesken, Ichihara, Martinelli, Shmushkovich, OligoGym.
+   When this directory was created only `../sirna_efficacy_subset.csv` — the 180-row Huesken
+   redistribution documented in `../README.md` — was present, and the other four descriptors were
+   `data_present=False`. `f4beab7` then vendored `tests/data/benchmarks/oligogym/records.csv`, so
+   Ichihara, Martinelli and Shmushkovich now ship real rows and are carried through `prepare`/`design`
+   by their registry ids in `tests/unit/test_benchmark_real_panels.py`.
 
-   Every fixture in this directory is therefore **synthetic**, and is named `synthetic_<architecture>
-_*` — deliberately _not_ named after any of the four missing panels — so a passing test here is
-   never mistaken for evidence over real panel data. `PanelDescriptor` entries for the four missing
-   panels exist in the registry (`data_present=False`) so the CLI and manifest can name them
-   honestly; their `citation` fields say directly that no primary source has been independently
-   verified in this repository, rather than inventing a DOI or PMID this repository cannot back.
+   Every fixture in this directory is nonetheless still **synthetic**, and still named
+   `synthetic_<architecture>_*` — deliberately _not_ named after any published panel — so a passing
+   test here is never mistaken for evidence over real panel data. An `efficacy` value below is an
+   arbitrary placeholder, not a measurement.
+
+   ⚠️ **They are prepared under the `user_supplied_*` panel ids, not under a published panel's name.**
+   A vendored panel refuses an explicit `--panel-csv`, because a run must not read different bytes
+   than the ones its own manifest names as vendored, so handing one of these tables to `martinelli` or
+   `shmushkovich` is exactly what that refusal exists to stop. The three architecture-level ids
+   (`user_supplied_paired_core_with_overhang`, `user_supplied_fully_complementary`,
+   `user_supplied_asymmetric`) name a geometry and vendor nothing, which is where a caller's own table
+   belongs. Their column set is fixed and documented in `docs/benchmark_artifacts.md`:
+   `guide_sequence` is mandatory, `passenger_sequence`, `accession` and `efficacy` optional — which is
+   why every fixture header below uses exactly those names, and a test asserts it.
 
 ## Fixtures
 

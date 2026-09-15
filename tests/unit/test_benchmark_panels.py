@@ -231,8 +231,15 @@ def test_predeclared_split_is_deterministic() -> None:
 # --------------------------------------------------------------------------------------------------
 
 
-def test_registry_has_exactly_the_six_named_panels() -> None:
-    """Huesken (subset + full) plus the four issue-named panels; no extra, no missing."""
+def test_registry_has_the_six_named_panels_plus_one_id_per_architecture() -> None:
+    """Huesken (subset + full), the four issue-named panels, and the three ``user_supplied_*`` ids.
+
+    The six named panels are #109's own list. The three added ids are architecture-level rather than
+    panel-level -- they name a duplex geometry, ship no bytes, and read the table a caller passes with
+    ``--panel-csv`` -- so there must be exactly one per :class:`PanelArchitecture` member: a caller
+    holding an asymmetric or a blunt fully-complementary table had no reachable descriptor at all once
+    the OligoGym bytes landed and every published panel began refusing ``--panel-csv``.
+    """
     assert set(PANEL_REGISTRY) == {
         "huesken_subset",
         "huesken_full",
@@ -240,7 +247,15 @@ def test_registry_has_exactly_the_six_named_panels() -> None:
         "martinelli",
         "shmushkovich",
         "oligogym",
+        "user_supplied_paired_core_with_overhang",
+        "user_supplied_fully_complementary",
+        "user_supplied_asymmetric",
     }
+    user_supplied = {panel_id: d for panel_id, d in PANEL_REGISTRY.items() if panel_id.startswith("user_supplied_")}
+    assert {d.architecture for d in user_supplied.values()} == set(PanelArchitecture)
+    assert len(user_supplied) == len(PanelArchitecture)
+    # The id names the geometry it reads a table under, so a caller cannot pick one by accident.
+    assert all(panel_id == f"user_supplied_{d.architecture.value}" for panel_id, d in user_supplied.items())
 
 
 def test_vendored_panels_are_huesken_subset_plus_the_four_oligogym_ids() -> None:
@@ -248,12 +263,20 @@ def test_vendored_panels_are_huesken_subset_plus_the_four_oligogym_ids() -> None
 
     ``f4beab7`` vendored ``tests/data/benchmarks/oligogym/records.csv``, so the four OligoGym-derived
     ids joined ``huesken_subset``; ``huesken_full``'s table (``work/sirna_bench.csv``) is untracked
-    here and stays ``False``. This is the assertion that goes red the day a panel's bytes are added or
-    removed without its descriptor being told.
+    here and stays ``False``, and the three ``user_supplied_*`` ids vendor nothing by construction --
+    that is what makes ``--panel-csv`` reachable at all, since a vendored panel refuses one. Both
+    halves are pinned, so this goes red the day a panel's bytes are added or removed without its
+    descriptor being told, in either direction.
     """
     present = {panel_id for panel_id, d in PANEL_REGISTRY.items() if d.data_present}
+    absent = set(PANEL_REGISTRY) - present
     assert present == {"huesken_subset", "ichihara", "martinelli", "shmushkovich", "oligogym"}
-    assert describe_panel("huesken_full").data_present is False
+    assert absent == {
+        "huesken_full",
+        "user_supplied_paired_core_with_overhang",
+        "user_supplied_fully_complementary",
+        "user_supplied_asymmetric",
+    }
 
 
 @pytest.mark.parametrize("panel_id", sorted(PANEL_REGISTRY))
@@ -309,15 +332,106 @@ def test_descriptor_content_hash_changes_when_the_descriptor_changes() -> None:
     assert base.content_hash() != edited.content_hash()
 
 
-def test_asymmetric_descriptor_declares_no_paired_length() -> None:
+@pytest.mark.parametrize("panel_id", ["shmushkovich", "user_supplied_asymmetric"])
+def test_asymmetric_descriptor_declares_no_paired_length(panel_id: str) -> None:
     """An asymmetric panel has no fixed paired length to declare."""
-    assert describe_panel("shmushkovich").declared_paired_length is None
+    assert describe_panel(panel_id).declared_paired_length is None
 
 
-@pytest.mark.parametrize("panel_id", ["huesken_subset", "huesken_full", "ichihara", "martinelli", "oligogym"])
+@pytest.mark.parametrize(
+    "panel_id",
+    [
+        "huesken_subset",
+        "huesken_full",
+        "ichihara",
+        "martinelli",
+        "oligogym",
+        "user_supplied_paired_core_with_overhang",
+        "user_supplied_fully_complementary",
+    ],
+)
 def test_non_asymmetric_descriptors_declare_a_paired_length(panel_id: str) -> None:
     """Every non-asymmetric panel must declare the core its architecture implies."""
     assert describe_panel(panel_id).declared_paired_length is not None
+
+
+# --------------------------------------------------------------------------------------------------
+# The user-supplied architecture-level ids: one column set, no claim about anyone's rows
+# --------------------------------------------------------------------------------------------------
+
+#: The ``user_supplied_*`` ids' column set as ``docs/benchmark_artifacts.md`` publishes it: the one
+#: mandatory column, then the three optional ones. Spelled here independently of
+#: ``panels.USER_TABLE_COLUMNS`` so the two must agree.
+_DOCUMENTED_USER_TABLE_COLUMNS = ("guide_sequence", "passenger_sequence", "accession", "efficacy")
+
+_USER_SUPPLIED_IDS = (
+    "user_supplied_paired_core_with_overhang",
+    "user_supplied_fully_complementary",
+    "user_supplied_asymmetric",
+)
+
+
+def test_the_user_supplied_ids_share_one_column_set_with_one_mandatory_column() -> None:
+    """All three read the same column names, and only ``guide_sequence`` is fatal if absent.
+
+    One fixed set is the whole mechanism -- there is no per-run column-mapping option, because a
+    mapping supplied at run time would not be covered by the ``descriptor_hash`` the manifest records,
+    so two artifacts could share a panel id and a hash while having read different columns. The caller
+    renames their columns instead, and this pins the names ``docs/benchmark_artifacts.md`` tells them
+    to rename to.
+    """
+    mappings = {describe_panel(panel_id).columns for panel_id in _USER_SUPPLIED_IDS}
+    assert len(mappings) == 1  # frozen models, so equal mappings collapse to one entry
+    columns = mappings.pop()
+    assert (
+        columns.guide_column,
+        columns.passenger_column,
+        columns.accession_column,
+        columns.measured_value_column,
+    ) == _DOCUMENTED_USER_TABLE_COLUMNS
+    for panel_id in _USER_SUPPLIED_IDS:
+        assert describe_panel(panel_id).required_source_columns() == ("guide_sequence",)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "synthetic_paired_core_with_overhang.csv",
+        "synthetic_fully_complementary.csv",
+        "synthetic_asymmetric_15_20.csv",
+    ],
+)
+def test_every_synthetic_fixture_uses_the_documented_user_table_column_names(filename: str) -> None:
+    """The fixtures are prepared under these ids, so their headers must be a subset of the declared set.
+
+    A fixture carrying a column the descriptors do not map would be silently ignored, and one missing
+    ``guide_sequence`` would be refused by ``prepare``'s header check -- either way the fixture, not
+    the required set, is what has to move.
+    """
+    header = tuple((BENCHMARK_DATA_DIR / filename).read_text().splitlines()[0].split(","))
+    assert set(header) <= set(_DOCUMENTED_USER_TABLE_COLUMNS), header
+    assert "guide_sequence" in header
+
+
+def test_the_user_supplied_ids_vouch_for_nothing_and_locate_nothing() -> None:
+    """No bytes, no split, and no target coordinate: the honest content of "the caller's own table".
+
+    ``target_identity_status`` is ``UNAVAILABLE`` because this repository knows nothing about a
+    caller's target context -- not even whether one exists -- and ``split_rule_id`` is ``None`` because
+    ``predeclared_split``'s id is pinned to the accession lists in ``tests/unit/data/README.md``, so
+    stamping it on a caller's accessions would report an un-audited partition under an audited rule's
+    name.
+    """
+    for panel_id in _USER_SUPPLIED_IDS:
+        descriptor = describe_panel(panel_id)
+        assert descriptor.data_present is False
+        assert descriptor.vendored_csv is None
+        assert descriptor.row_selector is None
+        assert descriptor.split_rule_id is None
+        assert descriptor.target_identity_status is TargetIdentityStatus.UNAVAILABLE
+        assert descriptor.aggregate_of is None
+        assert "vouches for nothing" in descriptor.citation
+        assert "docs/benchmark_artifacts.md" in (descriptor.redistribution or "")
 
 
 def test_panel_descriptor_rejects_asymmetric_with_a_declared_paired_length() -> None:

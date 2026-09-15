@@ -42,19 +42,21 @@ is the authority for these bytes and draws the same distinction. Read it before 
 
 ## Which panels are present
 
-Five of the six registered panels now ship vendored bytes. Commit `f4beab7` added
+Nine panel ids are registered: the six #109 names, five of which ship vendored bytes, plus three
+architecture-level `user_supplied_*` ids that ship none (see [below](#your-own-table)). Commit `f4beab7` added
 `tests/data/benchmarks/oligogym/records.csv` — 4,113 rows, 21 columns, SHA-256
 `2fb449362985c52c89ef02d8c7606da641b8cb314d86dac1d7f0cba74611a9c1` — and four descriptors read it,
 each selecting its own rows out of the one shared table by `dataset`.
 
-| Panel id         | `data_present` | Bytes                                           | Rows it selects                                         | Declared geometry                            |
-| ---------------- | -------------- | ----------------------------------------------- | ------------------------------------------------------- | -------------------------------------------- |
-| `huesken_subset` | `true`         | `tests/unit/data/sirna_efficacy_subset.csv`     | 180                                                     | paired core 19 + overhang                    |
-| `ichihara`       | `true`         | `tests/data/benchmarks/oligogym/records.csv`    | 2,850 (`ichihara_2007_1` 2,431 + `ichihara_2007_2` 419) | paired core 19 + overhang (21/19 nt)         |
-| `martinelli`     | `true`         | same table                                      | 907 (`martinelli_2023_1`)                               | paired core 19 + overhang (21/21 nt)         |
-| `shmushkovich`   | `true`         | same table                                      | 356 (`shmushkovich_2018_1`)                             | **asymmetric** (20/15 nt) — all incompatible |
-| `oligogym`       | `true`         | same table                                      | all 4,113 — **refused**, `aggregate_of` the three above | mixed; see below                             |
-| `huesken_full`   | `false`        | none — `work/sirna_bench.csv` is untracked here | —                                                       | paired core 19 + overhang                    |
+| Panel id          | `data_present` | Bytes                                            | Rows it selects                                         | Declared geometry                                 |
+| ----------------- | -------------- | ------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------- |
+| `huesken_subset`  | `true`         | `tests/unit/data/sirna_efficacy_subset.csv`      | 180                                                     | paired core 19 + overhang                         |
+| `ichihara`        | `true`         | `tests/data/benchmarks/oligogym/records.csv`     | 2,850 (`ichihara_2007_1` 2,431 + `ichihara_2007_2` 419) | paired core 19 + overhang (21/19 nt)              |
+| `martinelli`      | `true`         | same table                                       | 907 (`martinelli_2023_1`)                               | paired core 19 + overhang (21/21 nt)              |
+| `shmushkovich`    | `true`         | same table                                       | 356 (`shmushkovich_2018_1`)                             | **asymmetric** (20/15 nt) — all incompatible      |
+| `oligogym`        | `true`         | same table                                       | all 4,113 — **refused**, `aggregate_of` the three above | mixed; see below                                  |
+| `huesken_full`    | `false`        | none — `work/sirna_bench.csv` is untracked here  | —                                                       | paired core 19 + overhang                         |
+| `user_supplied_*` | `false`        | none — the caller's own table, via `--panel-csv` | every row of it                                         | one id per geometry; see [below](#your-own-table) |
 
 `data_present` can no longer be a claim with nothing behind it: `PanelDescriptor` carries
 `vendored_csv`, a validator enforces `data_present` ⇔ a named path, and a test asserts every claimed
@@ -146,40 +148,117 @@ The PRD #109 cites as its source, `docs/prd_benchmark_artifacts_and_variable_len
 exist in the working tree or in any branch's history. The issue body is the entire specification, and
 nothing in this page summarises a document that was read.
 
-### `benchmark prepare` cannot read these four panels yet
+### What `benchmark prepare` reads, and the one thing it still drops
 
-:::{warning}
-**At this commit the CLI refuses all four OligoGym-derived panels.** The registry knows the bytes are
-vendored; `prepare.py` does not.
+The CLI reads all four OligoGym-derived panels off their own `vendored_csv` and applies each
+descriptor's row selector. These are the tallies of one run of it, per panel, at `--paired-length 19`:
 
 ```console
-$ uv run sirnaforge benchmark prepare --panel ichihara --paired-length 19
-❌ Error: panel 'ichihara' is registered data_present=True but this module
-declares no vendored path for it; that is a bug in prepare.py, not in your invocation
+$ uv run sirnaforge benchmark prepare --panel ichihara     --paired-length 19 --out-dir work/bench
+Panel: ichihara (data present: True)      Observations kept: 2850 (incompatible: 0)
+$ uv run sirnaforge benchmark prepare --panel martinelli   --paired-length 19 --out-dir work/bench
+Panel: martinelli (data present: True)    Observations kept: 907 (incompatible: 0)
+$ uv run sirnaforge benchmark prepare --panel shmushkovich --paired-length 19 --out-dir work/bench
+Panel: shmushkovich (data present: True)  Observations kept: 0 (incompatible: 356)
+$ uv run sirnaforge benchmark prepare --panel oligogym     --paired-length 19 --out-dir work/bench
+❌ Error: panel 'oligogym' is a shared redistribution of ichihara, martinelli,
+shmushkovich spanning more than one duplex architecture, so it has none of its
+own to ingest under; prepare one of those panels instead
 ```
 
-Four gaps remain, all in `prepare.py`/`artifact.py` and all outside the registry:
+2,850 = 2,431 + 419, and 907 and 356 are the `datasets` counts
+`tests/data/benchmarks/oligogym/manifest.json` declares, so each panel carries every row its selector
+claims and no row belonging to another. The aggregate exits 1 **before** `mkdir`, leaving no artifact
+directory behind. `design` over those artifacts enters 2,850 / 907 / 0 rows respectively, with
+`no_candidate` 0 / 0 / 356.
 
-1. `_VENDORED_PANEL_CSV` still names only `huesken_subset`, so no OligoGym panel resolves a source
-   table (the error above);
-2. `PanelDescriptor.selects_row` is never called, so a reader handed the shared table would ingest
-   all four datasets under one panel's architecture;
-3. `target_identity_status` is hard-coded to `"unavailable"` with `target_start/end: None`, so the
-   `71..91` span `derive_observation` computes is dropped, and `artifact.py`'s
-   `TargetIdentityStatus = Literal["unavailable", "panel_local"]` cannot yet hold
-   `"synthetic_context_local"`;
-4. the aggregate `oligogym` raises a bare `ValueError` **after** `mkdir`, leaving an empty artifact
-   directory behind.
+:::{warning}
+**One gap remains, and it is lossy.** `prepare` writes `target_identity_status: "unavailable"` with
+`target_start/end: None` for every row, so the 1-based `71..91` span `derive_observation` computes in
+the fabricated context is discarded rather than recorded, even though `artifact.py`'s vocabulary now
+holds `synthetic_context_local` and `BenchmarkArtifactCounts` has no bucket that would keep such a
+row's tally honest. Deliberately not an overclaim in either direction: `unavailable` understates
+evidence the artifact could reproduce exactly, where `panel_local` would read as a coordinate in a
+panel's own measured target. Carrying it through belongs with the rest of the target-identity story on
+[#110](https://github.com/Austin-s-h/sirnaforge/issues/110).
 
-**Gaps 1 and 2 must land together.** Wiring the vendored path while still ignoring the selector was
-measured: `--panel ichihara` then ingests all 4,113 rows and reports `kept 4113 / incompatible 0`,
-tallying `{(21 nt, compatible): 3757, (20 nt, compatible): 356}` — it stamps paired-core-19 on all
-356 asymmetric Shmushkovich rows and writes them into `design_inputs.fasta`. That relabelling of a
-measured sequence is precisely what #109 exists to prevent.
-
-Gap 3 is lossy but not an overclaim: `unavailable` understates evidence the artifact could honestly
-reproduce, and the manifest has no bucket for a `synthetic_context_local` row yet.
+Why the vendored path and the row selector had to land in one change was measured, not feared: wiring
+the path while still ignoring the selector makes `--panel ichihara` ingest all 4,113 rows and report
+`kept 4113 / incompatible 0`, tallying `{(21 nt, compatible): 3757, (20 nt, compatible): 356}` — it
+stamps paired-core-19 on all 356 asymmetric Shmushkovich rows and writes them into
+`design_inputs.fasta`. That relabelling of a measured sequence is precisely what #109 exists to
+prevent.
 :::
+
+(your-own-table)=
+
+## Your own table: the `user_supplied_*` ids
+
+Three registered ids are **architecture-level rather than panel-level**. They name a duplex geometry,
+ship no bytes, and read the table you pass with `--panel-csv`:
+
+| Panel id                                  | Reads your table as                                          | `--paired-length`                                              |
+| ----------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------- |
+| `user_supplied_paired_core_with_overhang` | a paired core plus the measured 3′ remainder of the guide    | optional; declared default 19                                  |
+| `user_supplied_fully_complementary`       | a blunt duplex, both strands equal to the requested core     | optional, but usually needed; declared default 21              |
+| `user_supplied_asymmetric`                | an asymmetric duplex — **every row comes back incompatible** | **mandatory**; an asymmetric descriptor declares no fixed core |
+
+They exist because vendoring the OligoGym bytes closed the only door your own table had. Every
+published panel now refuses a `--panel-csv` — correctly, since a run must not read different bytes
+than the ones its own manifest names as vendored — and that left `fully_complementary` and
+`asymmetric` with no reachable descriptor at all.
+
+Your table must use the column names the descriptors declare. There is no per-run column-mapping
+option: a mapping supplied at run time would be a second way to state what a descriptor already
+states, and it would not be covered by the `descriptor_hash` the manifest records, so two artifacts
+could share a panel id and a hash while having read different columns. Rename your columns instead.
+
+| Column               | Required                                      | Absent means                                                                       |
+| -------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `guide_sequence`     | **yes** — the header check refuses without it | —                                                                                  |
+| `passenger_sequence` | no                                            | "this table states no passenger", not an error — the field is `None`               |
+| `accession`          | no                                            | no id for `--panel-transcripts` to match, so the design context is the target site |
+| `efficacy`           | no                                            | no measured value is recorded for the row                                          |
+
+Supplying `accession` buys a transcript lookup and nothing else: `split` is empty on every row of
+these ids whether the column is there or not, because `split_rule_id` is `None`.
+
+You do not have to come here to learn that. Omitting `--panel-csv` under one of these ids refuses with
+the mandatory columns the descriptor itself declares, so the answer arrives at the point the question
+is asked:
+
+```console
+$ uv run sirnaforge benchmark prepare --panel user_supplied_fully_complementary --out-dir work/bench
+❌ Error: panel 'user_supplied_fully_complementary' has no vendored bytes in
+this repository and no --panel-csv was given; supply --panel-csv pointing at a
+table carrying guide_sequence
+```
+
+```console
+$ uv run sirnaforge benchmark prepare --panel user_supplied_paired_core_with_overhang \
+    --paired-length 19 --panel-csv my_table.csv --out-dir work/bench
+Panel: user_supplied_paired_core_with_overhang (data present: False)
+Paired length: 19 nt
+Observations kept: 2 (incompatible: 1)
+```
+
+What an artifact under one of these ids does **not** carry is any claim by this repository. There is
+no citation and no redistribution, because there is no source to cite; the `citation` field says so in
+words. `target_identity_status` is `unavailable` on every row, because this repository knows nothing
+about your target context — not even whether one exists — and `split_rule_id` is `None`, because
+`predeclared_split`'s id is pinned to the accession lists in `tests/unit/data/README.md` and stamping
+it on your accessions would report an un-audited partition under an audited rule's name. That holds
+even when `--panel-transcripts` matches your accession and supplies the design context —
+`design_context_source` becomes `panel_transcript`, but `target_identity_status` stays `unavailable`
+and `target_transcript_id` is left empty, because matching a header in a FASTA you also supplied is
+not evidence about a native transcript. What the artifact _is_ checkable against is your own bytes:
+`manifest.json` records their path and SHA-256.
+
+`user_supplied_asymmetric` exists to **record and refuse**. Split-length and asymmetric design are out
+of #109's scope and out of #110's fixed-length work alike, so every row it ingests comes back
+`compatibility_status: incompatible` with both strand lengths named in its reason, none is sliced or
+padded into a 19–23 nt core, and `design_inputs.fasta` is empty. Preparing a table under it is how you
+get that refusal in writing, per row, rather than inferring it.
 
 ## The artifact
 

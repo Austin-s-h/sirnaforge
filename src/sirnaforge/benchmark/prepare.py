@@ -122,9 +122,13 @@ def _resolve_source_csv(descriptor: PanelDescriptor, panel_csv: Path | None) -> 
             )
         return _REPO_ROOT / relative, relative
     if panel_csv is None:
+        # The required columns are named here rather than left to the header check further in: the
+        # ``user_supplied_*`` ids read a table this repository has never seen, so "which columns" is
+        # the caller's next question and the descriptor is the one thing that can answer it.
+        required = ", ".join(descriptor.required_source_columns())
         raise BenchmarkPrepareError(
             f"panel {descriptor.panel_id!r} has no vendored bytes in this repository and no "
-            "--panel-csv was given; supply --panel-csv pointing at your own copy of this panel's table"
+            f"--panel-csv was given; supply --panel-csv pointing at a table carrying {required}"
         )
     return panel_csv, str(panel_csv)
 
