@@ -138,8 +138,10 @@ class OrthologueMapping:
     def summary(self) -> dict[str, Any]:
         """Provenance record for the run summary, so a conservation claim is auditable.
 
-        ``orthologue_types`` is omitted when no lookup ran: the relationship types a Compara call
-        would have accepted are not provenance for a call that never happened.
+        ``orthologue_types`` is published for a Compara lookup and nobody else: it is the filter this
+        module applies to a Compara *response*, so it is provenance for a call that happened and for
+        nothing else. Omitting it when no lookup ran was half the fix -- a user-supplied mapping file
+        was still described with all three relationship types, as if a REST call had filtered them.
         """
         record: dict[str, Any] = {
             "source": self.source,
@@ -149,7 +151,7 @@ class OrthologueMapping:
             "queried_gene_ids": sorted(self.queried_gene_ids),
             "queried_symbols": sorted(self.queried_symbols),
         }
-        if self.source is not None:
+        if self.source == SOURCE_COMPARA:
             record["orthologue_types"] = sorted(ORTHOLOGUE_TYPES)
         return record
 

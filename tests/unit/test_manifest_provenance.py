@@ -39,6 +39,7 @@ import json
 import re
 import subprocess
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ import pytest
 
 from sirnaforge import __version__
 from sirnaforge.config.reference_policy import (
+    ReferenceChoice,
     ReferenceForm,
     ReferenceKind,
     ReferenceRejection,
@@ -56,7 +58,21 @@ from sirnaforge.config.reference_policy import (
 )
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.scoring import COMPOSITE_TERMS
-from sirnaforge.data.orthology import OrthologueMapping
+from sirnaforge.core.screening_evidence import (
+    EvidenceEnvelope,
+    EvidenceProducer,
+    EvidenceSource,
+    build_plan,
+    reconcile,
+)
+from sirnaforge.data.orthology import (
+    ORTHOLOGUE_TYPES,
+    SOURCE_COMPARA,
+    SOURCE_MAPPING_FILE,
+    OrthologueMapping,
+)
+from sirnaforge.models.evidence import EvidenceStatus, ScreeningEvidenceEntry
+from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.models.scoring_profile import TERM_REGISTRY, ExperimentalAUPostScreenSiRNAWeights
 from sirnaforge.models.sirna import (
     DesignParameters,
@@ -336,6 +352,44 @@ def _mappings(node: Any, path: str = "provenance") -> Iterator[tuple[str, Mappin
             yield from _mappings(value, f"{path}[{index}]")
 
 
+#: Keys that make a mapping an *attestation*: something is being claimed about evidence. ``value`` is
+#: the ``{value, state, reason}`` triple, ``state`` the reason-class on its own, ``attested`` the
+#: boolean form. Any one of them is enough -- the walk once required ``value`` **and** ``state``
+#: together, which structurally exempted every dict shaped like an attestation without being a triple:
+#: the index attestation, the classification index, the annotation surface, the report artifact. Those
+#: are the dicts most likely to fabricate, so they were the ones no test could see.
+_ATTESTATION_KEYS = frozenset({"value", "state", "attested"})
+
+
+def _attestations(block: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+    """Every mapping in the block that claims something about evidence, with its path."""
+    return [(path, mapping) for path, mapping in _mappings(block) if _ATTESTATION_KEYS & set(mapping)]
+
+
+def _fabrications(block: Mapping[str, Any]) -> list[str]:
+    """Every way this block lets absent evidence read like present evidence.
+
+    Three rules over one universe -- every attestation dict, not only the null triples:
+
+    1. an attestation names its reason-class in ``state``, and never as ``"unknown"``;
+    2. it explains itself in ``reason``, whether the value is null or not: a *present* fact with no
+       stated authority is the same defect one step earlier;
+    3. a mapping carrying ``value`` carries ``state`` and ``reason`` too, so no fact is published
+       without the authority that supplied it.
+    """
+    faults: list[str] = []
+    for path, mapping in _attestations(block):
+        state = mapping.get("state")
+        reason = mapping.get("reason")
+        if not (isinstance(state, str) and state and state != "unknown"):
+            faults.append(f"{path}: attestation with no reason-class in `state` (got {state!r})")
+        if not (isinstance(reason, str) and len(reason) >= 20):
+            faults.append(f"{path}: attestation whose `reason` does not explain it (got {reason!r})")
+        if "value" in mapping and not {"state", "reason"} <= set(mapping):
+            faults.append(f"{path}: a value published without the authority that supplied it")
+    return faults
+
+
 def _run_step6(workflow: SiRNAWorkflow, candidates: list[SiRNACandidate] | None = None) -> Path:
     """Run design ranking then step6, exactly as a real run does, and return ``sirnaforge/``."""
     guides = candidates or [_candidate()]
@@ -368,7 +422,9 @@ def test_a_qualified_run_names_every_reference_it_required(tmp_path):
     bytes.
     """
     workflow = _qualified_workflow(tmp_path, "qualified")
-    reference, expected = _cached_reference(tmp_path)
+    # Stamped: identification takes the index bytes as well as the FASTA's, since bwa-mem2 aligns
+    # against the index alone. See test_an_unattested_index_leaves_a_required_reference_unidentified.
+    reference, expected = _cached_reference(tmp_path, with_index_stamp=True)
     _with_resolved_human(workflow, reference)
 
     required = workflow.config.resolved_policy.evidence_requirements.required_pairs
@@ -434,7 +490,7 @@ def test_a_required_reference_that_did_not_resolve_is_declared_not_hidden(tmp_pa
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("shape", ["resolved", "rejected", "design_only"])
+@pytest.mark.parametrize("shape", ["resolved", "resolved_stamped", "rejected", "design_only"])
 def test_the_provenance_block_fabricates_nothing(tmp_path, shape):
     """The recursive no-fabrication walk: absent evidence must not read like present evidence.
 
@@ -443,8 +499,8 @@ def test_the_provenance_block_fabricates_nothing(tmp_path, shape):
     survived this long.
     """
     workflow = _qualified_workflow(tmp_path, f"walk_{shape}")
-    if shape == "resolved":
-        reference, _ = _cached_reference(tmp_path)
+    if shape.startswith("resolved"):
+        reference, _ = _cached_reference(tmp_path, with_index_stamp=shape == "resolved_stamped")
         _with_resolved_human(workflow, reference)
     elif shape == "rejected":
         _with_rejected_human(workflow)
@@ -472,19 +528,53 @@ def test_the_provenance_block_fabricates_nothing(tmp_path, shape):
                 f"{path} carries an mtime fingerprint under a key that reads like a real revision"
             )
 
-    for path, mapping in _mappings(provenance):
-        if "value" not in mapping or "state" not in mapping:
-            continue
-        if mapping["value"] is not None:
-            continue
-        state = mapping["state"]
-        reason = mapping.get("reason")
-        assert isinstance(state, str) and state and state != "unknown", (
-            f"{path} is a null value with no reason-class in `state`"
-        )
-        assert isinstance(reason, str) and len(reason) >= 20, (
-            f"{path} is a null value whose `reason` does not explain the non-availability: {reason!r}"
-        )
+    # Every attestation dict, not only the null triples: see _fabrications.
+    assert _fabrications(provenance) == []
+
+
+@pytest.mark.unit
+def test_the_no_fabrication_walk_can_see_the_dicts_most_likely_to_fabricate(tmp_path):
+    """The walk once inspected only mappings carrying BOTH ``value`` and ``state``.
+
+    That exempted every attestation dict that is not a triple -- the index attestation, the annotation
+    surface, the report artifact, the classification index -- so the test that was supposed to prove
+    nothing is fabricated could not see the fields most likely to. Without this, no other fix in the
+    block is protected by anything.
+    """
+    workflow = _qualified_workflow(tmp_path, "walk_reach")
+    reference, _ = _cached_reference(tmp_path, with_index_stamp=True)
+    _with_resolved_human(workflow, reference)
+    provenance = _provenance(workflow)
+
+    inspected = {path for path, _mapping in _attestations(provenance)}
+    for path in (
+        "provenance.artifacts.report_html",
+        "provenance.references.annotation.provider",
+        "provenance.references.annotation.assembly_requested",
+        "provenance.references.screening.resolved[0].index",
+        "provenance.references.screening.resolved[0].index.built_in_this_process",
+        "provenance.references.screening.resolved[0].assembly",
+        "provenance.references.screening.resolved[0].bytes.digest",
+        "provenance.databases.orthology.conservation_scope.is_lower_bound",
+        "provenance.design_inputs.genome_index",
+        "provenance.build.dependencies.lock_sha256",
+    ):
+        assert path in inspected, f"{path} is an attestation the no-fabrication walk cannot see"
+    assert len(inspected) > 25, "the walk must reach the whole block, not a corner of it"
+
+    # The rule has to bite, or "no findings" means nothing. Each planted dict is a real regression
+    # shape: a state that names no reason-class, a present fact with no authority, a bare "unknown".
+    planted: dict[str, Any] = json.loads(json.dumps(provenance))
+    planted["artifacts"]["report_html"]["state"] = "unknown"
+    planted["references"]["screening"]["resolved"][0]["index"]["reason"] = "no"
+    planted["databases"]["orthology"]["conservation_scope"]["is_lower_bound"] = {"value": True}
+
+    faults = _fabrications(planted)
+
+    assert len(faults) >= 3, f"the walk must reject every planted fabrication, got {faults}"
+    assert any("report_html" in fault for fault in faults)
+    assert any("index" in fault for fault in faults)
+    assert any("is_lower_bound" in fault for fault in faults)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1194,3 +1284,607 @@ def test_a_provenance_failure_is_named_rather_than_silent(tmp_path, monkeypatch)
         "state": "provenance_assembly_failed",
         "reason": "git went missing mid-run",
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# Invariant 10: an identity is asserted from an observation, never from an association
+# ---------------------------------------------------------------------------------------------
+
+
+ENSEMBL_CDNA_HEADER = (
+    ">ENST00000000001.1 cdna chromosome:{assembly}:17:7668402:7687550:-1 gene:ENSG00000141510.19\n"
+    "ACGTACGTACGTACGTACGTAAA\n"
+)
+
+
+def _rewrite_fasta(reference: ScreeningReference, text: str) -> None:
+    """Replace the cached bytes in place, so the artifact and the source table can disagree."""
+    Path(str(reference.fasta)).write_text(text)
+
+
+@pytest.mark.unit
+def test_the_assembly_is_read_from_the_bytes_when_the_bytes_name_one(tmp_path):
+    """``ENSEMBL_ASSEMBLIES`` is keyed on the source NAME, so it associates rather than observes.
+
+    Ensembl writes the assembly into its own cDNA headers, which is the artifact. Reading it there is
+    the difference between "the table says this source is GRCh38" and "these bytes say GRCh38".
+    """
+    workflow = _qualified_workflow(tmp_path, "assembly_from_bytes")
+    reference, _ = _cached_reference(tmp_path, with_index_stamp=True)
+    _rewrite_fasta(reference, ENSEMBL_CDNA_HEADER.format(assembly="GRCh38"))
+    _with_resolved_human(workflow, reference)
+
+    assembly = _provenance(workflow)["references"]["screening"]["resolved"][0]["assembly"]
+
+    assert assembly["value"] == "GRCh38"
+    assert assembly["state"] == "fasta_header", "an observation must not be published under the table's name"
+    assert "header" in assembly["reason"]
+
+
+@pytest.mark.unit
+def test_bytes_that_contradict_the_source_table_publish_the_contradiction(tmp_path):
+    """A source named ``ensembl_human_cdna`` whose bytes are GRCm39 is the case the table cannot see.
+
+    The old record asserted the table's answer flatly, so a mouse FASTA cached under the human source
+    key would have been published as GRCh38 -- the exact mislabelling #99 was raised over, one layer up.
+    """
+    workflow = _qualified_workflow(tmp_path, "assembly_conflict")
+    reference, _ = _cached_reference(tmp_path, with_index_stamp=True)
+    _rewrite_fasta(reference, ENSEMBL_CDNA_HEADER.format(assembly="GRCm39"))
+    _with_resolved_human(workflow, reference)
+
+    assembly = _provenance(workflow)["references"]["screening"]["resolved"][0]["assembly"]
+
+    assert assembly["value"] == "GRCm39", "the bytes that were screened are what is published"
+    assert assembly["state"] == "fasta_header_conflicts_with_source_table"
+    assert "GRCh38" in assembly["reason"], "the reason must name the table's disagreeing answer"
+
+
+@pytest.mark.unit
+def test_an_unobservable_assembly_says_so_rather_than_asserting_the_table(tmp_path):
+    """With no readable bytes and no assembly in the URL, only the table is left -- and it must say so."""
+    module = _provenance_module()
+
+    unchecked = module.assembly_identity(tabled="GRCh38", url="https://example.invalid/custom.fa.gz", fasta=None)
+    corroborated = module.assembly_identity(
+        tabled="GRCh38",
+        url="https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz",
+        fasta=None,
+    )
+    unnamed = module.assembly_identity(tabled=None, url=None, fasta=None)
+
+    assert unchecked["value"] == "GRCh38"
+    assert unchecked["state"] == "source_table_unchecked"
+    assert "not an observation" in unchecked["reason"]
+    assert corroborated["state"] == "source_table_corroborated_by_url"
+    assert unnamed["value"] is None
+    assert unnamed["state"] == "not_a_bundled_source"
+
+
+@pytest.mark.unit
+def test_the_digest_scope_is_derived_from_the_same_evidence_as_the_size_scope(tmp_path):
+    """``scope`` was the literal ``decompressed_fasta_full`` beside a derived ``size_scope``.
+
+    So the two labels contradicted each other for any uncompressed reference, and the digest claimed
+    "full" over a filtered subset -- while the digest is in fact of whatever file the cache entry points
+    at, which for a filtered reference is the subset.
+    """
+    module = _provenance_module()
+    workflow = _qualified_workflow(tmp_path, "digest_scope")
+    reference, _ = _cached_reference(tmp_path, with_index_stamp=True)
+    evidence = dict(reference.identity_evidence or {})
+    # What `_get_filtered_transcriptome` records: an uncompressed subset, cached under a synthetic
+    # `#filters=` URI, digested as itself.
+    evidence["size_scope"] = "stored_fasta"
+    evidence["filters"] = ["protein_coding"]
+    evidence["url"] = f"{evidence['url']}#filters=protein_coding"
+    filtered = replace(reference, identity_evidence=evidence)
+    _with_resolved_human(workflow, filtered)
+
+    entry = _provenance(workflow)["references"]["screening"]["resolved"][0]
+
+    assert entry["bytes"]["size_scope"] == "stored_fasta"
+    assert entry["bytes"]["digest"]["scope"] == "stored_fasta_filtered_subset"
+    assert entry["filters"] == ["protein_coding"]
+    # The recorded URI is not a URI these bytes were fetched from, and must not read as one.
+    assert entry["source_url"]["state"] == "cache_metadata_derived_uri"
+    assert "cut from" in entry["source_url"]["reason"]
+    # Derived, so the two labels cannot drift apart again.
+    assert module.digest_scope("decompressed_fasta", filtered=False) == "decompressed_fasta_whole_file"
+    assert module.digest_scope(None, filtered=False) == "not_recorded"
+
+
+# ---------------------------------------------------------------------------------------------
+# Invariant 11: identification takes the index bytes, not only the FASTA's
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_an_unattested_index_leaves_a_required_reference_unidentified(tmp_path):
+    """bwa-mem2 aligns against the index files alone, and the off-target claims rest on them.
+
+    ``unidentified_required_references`` tested the FASTA checksum only, so a required reference whose
+    index bytes nobody stamped was reported as fully identified -- the headline invariant passing on
+    half the evidence.
+    """
+    workflow = _qualified_workflow(tmp_path, "index_unattested")
+    reference, _ = _cached_reference(tmp_path, with_index_stamp=False)
+    _with_resolved_human(workflow, reference)
+
+    coverage = _provenance(workflow)["coverage"]
+
+    assert coverage["unnamed_required_references"] == [], "the reference resolved; it is named"
+    assert coverage["unidentified_required_references"] == [["transcriptome", "human"]]
+    assert coverage["unidentified_required_reference_detail"] == [
+        {"channel": "transcriptome", "species": "human", "missing": ["index_bytes_unattested"]}
+    ]
+
+
+@pytest.mark.unit
+def test_a_reference_with_neither_digest_names_both_halves_as_missing(tmp_path):
+    """Which half is missing is what makes the shortfall actionable rather than a flag."""
+    workflow = _qualified_workflow(tmp_path, "neither_digest")
+    reference, _ = _cached_reference(tmp_path, with_index_stamp=False)
+    _with_resolved_human(workflow, replace(reference, identity_evidence=None))
+
+    coverage = _provenance(workflow)["coverage"]
+
+    assert coverage["unidentified_required_reference_detail"] == [
+        {
+            "channel": "transcriptome",
+            "species": "human",
+            "missing": ["fasta_digest_not_recorded", "index_bytes_unattested"],
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------------------------
+# Invariant 12: the annotation surface, and the index's authorship
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_no_annotation_call_means_no_annotation_provenance(tmp_path):
+    """``EnsemblTranscriptModelClient`` is constructed in ``__init__``, unconditionally.
+
+    Keying the block on the client merely existing published ``provider: ensembl_rest``, an endpoint and
+    ``assembly_requested: GRCh38`` into every run -- including a design-only run that annotates nothing.
+    """
+    workflow = _design_only_workflow(tmp_path, "no_annotation")
+    assert workflow._annotation_client is not None, "fixture guard: the client is built unconditionally"
+    assert not workflow._annotation_summary, "fixture guard: no annotation call was made"
+
+    annotation = _provenance(workflow)["references"]["annotation"]
+
+    assert annotation["attempted"] is False
+    assert annotation["provider"]["value"] is None
+    assert annotation["provider"]["state"] == "no_annotation_call_made"
+    assert annotation["assembly_requested"]["value"] is None
+    assert annotation["assembly_requested"]["state"] == "no_annotation_call_made"
+    # The endpoint may be named, but only as configuration -- never as evidence of a call.
+    assert annotation["endpoint"]["state"] == "client_configuration"
+
+
+@pytest.mark.unit
+def test_an_annotation_call_supplies_the_assembly_from_its_own_record(tmp_path):
+    """The literal ``"GRCh38"`` here was a second copy of the one at the call site.
+
+    That is the drift class #96 named and this same commit fixed for ``reported_not_scored``, so the
+    value is read back out of the record the call wrote. A record naming a different assembly must
+    therefore be what the manifest publishes.
+    """
+    workflow = _qualified_workflow(tmp_path, "annotated")
+    workflow._annotation_summary = {
+        "enabled": True,
+        "provider": "ensembl_rest",
+        "transcripts_queried": 10,
+        "transcripts_resolved": 9,
+        "transcripts_unresolved": 1,
+        "reference": ReferenceChoice.default("GRCm39", reason="auto-selected for annotation").to_metadata(),
+    }
+
+    annotation = _provenance(workflow)["references"]["annotation"]
+
+    assert annotation["attempted"] is True
+    assert annotation["provider"]["value"] == "ensembl_rest"
+    assert annotation["assembly_requested"]["value"] == "GRCm39", "the value must come from the call's own record"
+    assert annotation["assembly_requested"]["state"] == "annotation_call_record"
+    assert "requested" in annotation["assembly_requested"]["reason"]
+
+
+@pytest.mark.unit
+def test_a_failed_annotation_call_claims_no_provider(tmp_path):
+    """The client records ``{"enabled": False, "error": ...}``; that is an attempt, not an annotation."""
+    workflow = _qualified_workflow(tmp_path, "annotation_failed")
+    workflow._annotation_summary = {"enabled": False, "error": "HTTP 502 from rest.ensembl.org"}
+
+    annotation = _provenance(workflow)["references"]["annotation"]
+
+    assert annotation["attempted"] is True
+    assert annotation["provider"]["value"] is None
+    assert annotation["provider"]["state"] == "annotation_call_failed"
+    assert "502" in annotation["provider"]["reason"]
+    assert annotation["assembly_requested"]["value"] is None
+
+
+@pytest.mark.unit
+def test_index_authorship_is_a_dated_inference_not_a_claim_about_this_run(tmp_path):
+    """``built_by_this_run`` was ``stamped_at >= <module import time>`` published as authorship.
+
+    One process may run more than one workflow, so the inequality bounds the build to the *process*.
+    The field says so, and states the comparison it rests on; an unstamped index and an unreadable
+    timestamp are named absences rather than a bare ``false`` and a bare ``null``.
+    """
+    module = _provenance_module()
+    workflow = _qualified_workflow(tmp_path, "index_authorship")
+    reference, paths = _cached_reference(tmp_path, with_index_stamp=True)
+    _with_resolved_human(workflow, reference)
+
+    built = _provenance(workflow)["references"]["screening"]["resolved"][0]["index"]["built_in_this_process"]
+
+    assert built["value"] is True
+    assert built["state"] == "stamp_dated_after_process_start"
+    assert "more than one workflow" in built["reason"], "the reason must not let the process read as the run"
+
+    stamp_path = artifact_stamp_path(Path(paths["index"]))
+    stamp = json.loads(stamp_path.read_text())
+    stamp["stamped_at"] = "not-a-timestamp"
+    stamp_path.write_text(json.dumps(stamp))
+
+    unreadable = module.index_attestation(Path(paths["index"]))["built_in_this_process"]
+    unstamped = module.index_attestation(tmp_path / "never_built")["built_in_this_process"]
+
+    assert unreadable["value"] is None
+    assert unreadable["state"] == "stamp_timestamp_unreadable"
+    assert unstamped["value"] is None
+    assert unstamped["state"] == "no_stamp_for_this_index"
+    assert len(unstamped["reason"]) >= 20
+
+
+# ---------------------------------------------------------------------------------------------
+# Invariant 13: the lock, and the two design inputs the gap named
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_lock_is_digested_when_it_is_actually_there(tmp_path):
+    """``lock_sha256`` was a PERMANENT absence -- "uv.lock is not shipped in the wheel".
+
+    True of a wheel or container run, and false of the dev worktree the manifest under review came
+    from: the lock sits at the repo root this module already verified. A permanent excuse for a
+    conditional absence is its own kind of fabrication.
+    """
+    lock = REPO_ROOT / "uv.lock"
+    assert lock.is_file(), "fixture guard: this suite runs from a worktree that has the lock"
+
+    dependencies = _provenance(_qualified_workflow(tmp_path, "lock"))["build"]["dependencies"]
+
+    assert dependencies["lock_sha256"]["value"] == _sha256(lock)
+    assert dependencies["lock_sha256"]["state"] == "repo_worktree_lock"
+    assert re.fullmatch(r"\d+", dependencies["lock_revision"]["value"])
+
+
+@pytest.mark.unit
+def test_an_unverified_repository_supplies_no_lock(tmp_path, monkeypatch):
+    """An unverified root's lock is some other project's resolution, so it is not read.
+
+    Same guard as the commit: a repository that cannot be shown to hold this package may not name what
+    built it.
+    """
+    module = _provenance_module()
+    foreign = tmp_path / "not_sirnaforge"
+    foreign.mkdir()
+    (foreign / "uv.lock").write_text("version = 1\nrevision = 99\n")
+    monkeypatch.setattr(module, "_package_repo_root", lambda: foreign)
+    module.build_identity.cache_clear()
+
+    dependencies = _provenance(_qualified_workflow(tmp_path, "foreign_lock"))["build"]["dependencies"]
+
+    assert dependencies["lock_sha256"]["value"] is None
+    assert dependencies["lock_sha256"]["state"] == "no_verified_repo_to_read_a_lock_from"
+    assert dependencies["lock_revision"]["value"] is None
+
+
+@pytest.mark.unit
+def test_a_missing_lock_is_still_the_packaged_absence(tmp_path, monkeypatch):
+    """A container run has no lock at all, and that absence keeps its own name."""
+    module = _provenance_module()
+    root = tmp_path / "wheel_root"
+    root.mkdir()
+    monkeypatch.setattr(module, "_package_repo_root", lambda: root)
+    monkeypatch.setattr(module, "_git", lambda *_a, **_k: "d" * 40)
+    module.build_identity.cache_clear()
+
+    dependencies = _provenance(_qualified_workflow(tmp_path, "no_lock"))["build"]["dependencies"]
+
+    assert dependencies["lock_sha256"]["value"] is None
+    assert dependencies["lock_sha256"]["state"] == "not_packaged"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["genome_index", "snp_file"])
+def test_the_two_unread_design_inputs_are_named_rather_than_bare_nulls(tmp_path, field):
+    """``design_parameters.genome_index: null`` and ``snp_file: null`` were named in the gap itself.
+
+    Both are CLI options forwarded onto ``DesignParameters`` and read by no 0.7.1 code path, so the
+    dump emits nulls that read exactly like "not applicable". They stay nulls in ``design_parameters``
+    -- that is a dump of the model -- but the provenance block says what a null there means, and points
+    at where it lives.
+    """
+    manifest = _manifest(_qualified_workflow(tmp_path, f"design_input_{field}"))
+    record = manifest["provenance"]["design_inputs"][field]
+
+    assert manifest["design_parameters"][field] is None, "fixture guard: the dump still carries the bare null"
+    assert record["value"] is None
+    assert record["state"] == "not_supplied"
+    assert len(record["reason"]) >= 20
+    # The pointer must be live, like reported_not_scored_definitions': a path resolving nowhere is a
+    # dead claim. `is None` is the value, so membership is what is asserted.
+    path = record["design_parameters_path"].split(".")
+    assert path[0] == "design_parameters"
+    assert path[1] in manifest["design_parameters"]
+
+
+@pytest.mark.unit
+def test_a_supplied_design_input_says_that_nothing_read_it(tmp_path):
+    """Supplying one does not make it an input to anything: no code path reads either field."""
+    parameters = DesignParameters()
+    parameters.genome_index = str(tmp_path / "grch38_index")
+    config = WorkflowConfig(output_dir=tmp_path / "supplied", gene_query="TP53", design_params=parameters)
+
+    record = _provenance(SiRNAWorkflow(config))["design_inputs"]["genome_index"]
+
+    assert record["value"] == str(tmp_path / "grch38_index")
+    assert record["state"] == "supplied_but_unread"
+    assert "no 0.7.1 code path reads it" in record["reason"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Invariant 14: orthology and conservation claim only what their own source supports
+# ---------------------------------------------------------------------------------------------
+
+
+def _mapping_from_file(tmp_path: Path) -> OrthologueMapping:
+    """A mapping resolved from a user-supplied file: no REST call, no Compara vocabulary."""
+    table = tmp_path / "orthologs.tsv"
+    table.write_text("species\tgene_id\nmouse\tENSMUSG00000059552\n")
+    return OrthologueMapping(
+        gene_ids_by_species={"mouse": frozenset({"ENSMUSG00000059552"})},
+        resolved_species=frozenset({"mouse"}),
+        unresolved_species=frozenset(),
+        queried_gene_ids=frozenset({"ENSG00000141510"}),
+        source=SOURCE_MAPPING_FILE,
+    )
+
+
+@pytest.mark.unit
+def test_a_supplied_mapping_file_never_publishes_comparas_vocabulary(tmp_path):
+    """#101 warns against claiming validated orthology from a heuristic; this claimed it from a file.
+
+    For a user-supplied mapping the block published all three ``ORTHOLOGUE_TYPES`` and a
+    ``compara_release`` whose reason reads "resolved against rest.ensembl.org with no release pin" --
+    as if a Compara call had happened and filtered relationship types.
+    """
+    workflow = _qualified_workflow(tmp_path, "mapping_file")
+    workflow.config.ortholog_mapping_file = str(tmp_path / "orthologs.tsv")
+    workflow._orthology_mapping = _mapping_from_file(tmp_path)
+
+    orthology = _provenance(workflow)["databases"]["orthology"]
+
+    assert orthology["source"] == "ortholog_mapping_file"
+    assert orthology["relationship_types_accepted"]["value"] is None
+    assert orthology["relationship_types_accepted"]["state"] == "not_a_compara_lookup"
+    assert orthology["compara_release"]["state"] == "not_a_compara_lookup"
+    assert "rest.ensembl.org" not in orthology["compara_release"]["reason"]
+    assert orthology["relationship_type_observed"]["state"] == "not_carried_by_mapping_file"
+    assert orthology["confidence"]["state"] == "not_carried_by_mapping_file"
+    assert orthology["per_species"][0]["route"]["state"] == "not_applicable_to_a_mapping_file"
+    # And at source: summary() fed workflow_summary.json the same three types.
+    assert "orthologue_types" not in workflow._orthology_mapping.summary()
+
+
+@pytest.mark.unit
+def test_a_compara_lookup_still_publishes_the_filter_it_applied(tmp_path):
+    """The guard names the claim, it does not suppress it: a real Compara call did filter types."""
+    workflow = _qualified_workflow(tmp_path, "compara")
+    workflow._orthology_mapping = OrthologueMapping(
+        gene_ids_by_species={"mouse": frozenset({"ENSMUSG00000059552"})},
+        resolved_species=frozenset({"mouse"}),
+        unresolved_species=frozenset(),
+        source=SOURCE_COMPARA,
+    )
+
+    orthology = _provenance(workflow)["databases"]["orthology"]
+
+    assert orthology["relationship_types_accepted"]["value"] == sorted(ORTHOLOGUE_TYPES)
+    assert orthology["relationship_types_accepted"]["state"] == "compara_response_filter"
+    assert orthology["compara_release"]["state"] == "unversioned_endpoint"
+
+
+@pytest.mark.unit
+def test_the_conservation_denominator_is_the_one_the_scorer_divided_by(tmp_path):
+    """It was the *orthology lookup's* species set, which is a different set.
+
+    ``_score_candidate_post_screen`` divides by the species handed to the aligner minus the query
+    species. A lookup that covered a species the screen did not (or the reverse) therefore made the
+    manifest name a denominator nothing was scored against.
+    """
+    workflow = _qualified_workflow(tmp_path, "denominator")
+    workflow._active_screen_species = ["human", "mouse"]
+    workflow._orthology_mapping = OrthologueMapping(
+        gene_ids_by_species={"mouse": frozenset({"ENSMUSG00000059552"})},
+        resolved_species=frozenset({"mouse"}),
+        # A species the lookup covered and the screen never asked the aligner for.
+        unresolved_species=frozenset({"rat"}),
+        source=SOURCE_COMPARA,
+    )
+
+    scope = _provenance(workflow)["databases"]["orthology"]["conservation_scope"]
+
+    assert scope["denominator_species"] == ["mouse"], "rat was never screened, so it is not a denominator species"
+    assert "_score_candidate_post_screen" in scope["denominator_source"]
+    assert scope["unresolved_in_denominator"] == [], "rat is unresolved but outside the denominator"
+    # The lookup's own species are still recorded, under a key that is about the lookup.
+    assert {entry["species"] for entry in _provenance(workflow)["databases"]["orthology"]["per_species"]} == {
+        "mouse",
+        "rat",
+    }
+
+
+@pytest.mark.unit
+def test_is_lower_bound_is_not_true_in_the_case_where_no_conservation_is_published(tmp_path):
+    """It was ``bool(unresolved_species)`` -- true exactly when the scorer publishes nothing.
+
+    An unresolved species inside the denominator nulls ``conservation_score`` for every candidate; a
+    lower bound is instead what a *screened-but-unaligned* species produces, since it stays in the
+    denominator and can only lower the fraction.
+    """
+    workflow = _qualified_workflow(tmp_path, "lower_bound")
+    workflow._active_screen_species = ["human", "mouse"]
+    workflow._orthology_mapping = OrthologueMapping(
+        gene_ids_by_species={},
+        resolved_species=frozenset(),
+        unresolved_species=frozenset({"mouse"}),
+        source=SOURCE_COMPARA,
+    )
+
+    scope = _provenance(workflow)["databases"]["orthology"]["conservation_scope"]
+
+    assert scope["unresolved_in_denominator"] == ["mouse"]
+    assert scope["is_lower_bound"]["value"] is None, "no fraction was published, so nothing is a bound on one"
+    assert scope["is_lower_bound"]["state"] == "conservation_not_published"
+
+
+@pytest.mark.unit
+def test_a_screened_denominator_species_with_no_evidence_makes_the_fraction_a_floor(tmp_path):
+    """The real lower-bound case, decided from reconciled evidence rather than from the lookup."""
+    workflow = _qualified_workflow(tmp_path, "floor")
+    workflow._active_screen_species = ["human", "mouse"]
+    workflow._orthology_mapping = OrthologueMapping(
+        gene_ids_by_species={"mouse": frozenset({"ENSMUSG00000059552"})},
+        resolved_species=frozenset({"mouse"}),
+        unresolved_species=frozenset(),
+        source=SOURCE_COMPARA,
+    )
+    # Mouse was planned and published nothing: it stays in the denominator all the same (#80 F10).
+    workflow._screening_evidence = reconcile(
+        build_plan(guide_set_digest=GUIDE_DIGEST, transcriptome=[("human", None), ("mouse", None)], mirna_species=[]),
+        observed=[_complete_evidence(species="human")],
+    )
+
+    scope = _provenance(workflow)["databases"]["orthology"]["conservation_scope"]
+
+    assert scope["unscreened_in_denominator"]["value"] == ["mouse"]
+    assert scope["is_lower_bound"]["value"] is True
+    assert scope["is_lower_bound"]["state"] == "denominator_species_without_alignment_evidence"
+
+
+@pytest.mark.unit
+def test_an_unreconciled_run_does_not_decide_whether_conservation_is_a_floor(tmp_path):
+    """No reconciliation is not the empty set: #100's rule is that no evidence never reads as clean."""
+    workflow = _qualified_workflow(tmp_path, "unreconciled")
+    workflow._active_screen_species = ["human", "mouse"]
+    workflow._orthology_mapping = OrthologueMapping(
+        gene_ids_by_species={"mouse": frozenset({"ENSMUSG00000059552"})},
+        resolved_species=frozenset({"mouse"}),
+        unresolved_species=frozenset(),
+        source=SOURCE_COMPARA,
+    )
+    assert workflow._screening_evidence is None, "fixture guard: nothing reconciled"
+
+    scope = _provenance(workflow)["databases"]["orthology"]["conservation_scope"]
+
+    assert scope["unscreened_in_denominator"]["value"] is None
+    assert scope["unscreened_in_denominator"]["state"] == "no_screening_reconciliation"
+    assert scope["is_lower_bound"]["value"] is None
+    assert scope["is_lower_bound"]["state"] == "screening_coverage_unknown"
+
+
+# ---------------------------------------------------------------------------------------------
+# Invariant 15: the miRNA corpus is a claim about a scan, not about a config file
+# ---------------------------------------------------------------------------------------------
+
+
+GUIDE_DIGEST = "3f9c1a2b4d5e6f70"
+
+
+def _complete_evidence(*, species: str, channel: ScreeningChannel = ScreeningChannel.TRANSCRIPTOME) -> EvidenceEnvelope:
+    """One unit that published complete evidence, as its producer would have written it."""
+    return EvidenceEnvelope(
+        producer=EvidenceProducer.OFFTARGET_ANALYSIS
+        if channel is ScreeningChannel.TRANSCRIPTOME
+        else EvidenceProducer.MIRNA_SEED_ANALYSIS,
+        source=EvidenceSource.ENVELOPE,
+        entry=ScreeningEvidenceEntry(
+            channel=channel,
+            species=species,
+            guide_set_digest=GUIDE_DIGEST,
+            status=EvidenceStatus.COMPLETE,
+        ),
+    )
+
+
+def _mirna_workflow(tmp_path: Path, name: str) -> SiRNAWorkflow:
+    """A run that names a miRNA database and species, which is a request and not a scan."""
+    workflow = _qualified_workflow(tmp_path, name)
+    workflow.config.mirna_database = "mirgenedb"
+    workflow.config.mirna_species = ["human"]
+    return workflow
+
+
+@pytest.mark.unit
+def test_the_mirna_block_identifies_no_corpus_for_a_scan_that_never_ran(tmp_path):
+    """``source_name`` was emitted from configuration alone.
+
+    So a run that merely *named* a database published a corpus identity for a scan that never
+    happened, and ``per_species`` was a bare ``[]`` -- which reads as "no species" where the truth is
+    that the producer publishes no per-species record to read.
+    """
+    workflow = _mirna_workflow(tmp_path, "mirna_unscreened")
+
+    mirna = _provenance(workflow)["databases"]["mirna"]
+
+    assert mirna["requested"] == {"database": "mirgenedb", "species": ["human"]}, "the request is still recorded"
+    assert mirna["source_name"]["value"] is None
+    assert mirna["source_name"]["state"] == "channel_published_no_completed_evidence"
+    assert mirna["channel_evidence"]["value"] is None
+    assert mirna["channel_evidence"]["state"] == "no_screening_reconciliation"
+    assert mirna["per_species"]["value"] is None
+    assert mirna["per_species"]["state"] == "not_published_by_producer"
+
+
+@pytest.mark.unit
+def test_a_completed_mirna_scan_may_name_the_corpus_it_was_configured_with(tmp_path):
+    """Again the guard names the claim rather than suppressing it, and the evidence is per unit."""
+    workflow = _mirna_workflow(tmp_path, "mirna_screened")
+    workflow._screening_evidence = reconcile(
+        build_plan(guide_set_digest=GUIDE_DIGEST, transcriptome=[("human", None)], mirna_species=["human"]),
+        observed=[
+            _complete_evidence(species="human"),
+            _complete_evidence(species="human", channel=ScreeningChannel.MIRNA_SEED),
+        ],
+    )
+
+    mirna = _provenance(workflow)["databases"]["mirna"]
+
+    assert mirna["source_name"]["value"] == "mirgenedb"
+    assert mirna["source_name"]["state"] == "sources_table"
+    assert mirna["channel_evidence"]["value"] == [{"species": "human", "status": "complete"}]
+    # Still unidentified, because the producer still publishes no digest for the bytes it screened.
+    assert mirna["resolved"]["value"] is None
+
+
+@pytest.mark.unit
+def test_a_failed_mirna_unit_is_not_a_screened_corpus(tmp_path):
+    """A planned unit that published nothing reconciles FAILED, and a failure identifies no corpus."""
+    workflow = _mirna_workflow(tmp_path, "mirna_failed")
+    workflow._screening_evidence = reconcile(
+        build_plan(guide_set_digest=GUIDE_DIGEST, transcriptome=[("human", None)], mirna_species=["human"]),
+        observed=[_complete_evidence(species="human")],
+    )
+
+    mirna = _provenance(workflow)["databases"]["mirna"]
+
+    assert mirna["channel_evidence"]["value"] == [{"species": "human", "status": "failed"}]
+    assert mirna["source_name"]["value"] is None
+    assert mirna["source_name"]["state"] == "channel_published_no_completed_evidence"

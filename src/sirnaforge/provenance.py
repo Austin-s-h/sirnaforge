@@ -11,6 +11,12 @@ that cannot be shown to hold what it is being asked to name -- the package for `
 pipeline for ``build.pipeline_revision``. That is #100's rule for screening evidence, applied to the
 build.
 
+Two corollaries, each learned from a field here that broke the rule while stating it. An **inference**
+is published with the comparison it rests on, never as the thing it approximates: a cache stamp dated
+after this process started bounds a build to the process, not to a run. And an absence is **tested for
+rather than declared**: ``uv.lock`` really is missing from the wheel, but saying so permanently made a
+dev worktree that has the lock at its verified root report it as unobtainable.
+
 Imports stay stdlib-only apart from ``__version__`` and one leaf cache util, so the manifest builder
 can reach this module without pulling ``sirnaforge.data`` into a fresh import cycle.
 """
@@ -67,12 +73,23 @@ _GIT_TIMEOUT_SECONDS = 5
 _PIPELINE_WORKFLOW_DIR = Path(__file__).resolve().parent / "pipeline" / "nextflow" / "workflows"
 _PIPELINE_TRACKED_FILE = "main.nf"
 
-#: When this process started, so a cache stamp written afterwards can be attributed to this run
-#: rather than published as a bare ``built_by_this_run: false``.
+#: When this process started, so a cache stamp can be dated against it. It bounds a build to the
+#: *process*, never to one run: a process may execute more than one workflow, which is why the field
+#: it feeds is named ``built_in_this_process`` and states its own basis.
 _PROCESS_START = datetime.now()
+
+#: ``uv.lock``, present at a verified repo root and absent from the wheel. The absence is conditional,
+#: so it is tested for rather than declared permanent.
+_LOCK_FILENAME = "uv.lock"
 
 _DESCRIBE_DISTANCE = re.compile(r"-(\d+)-g[0-9a-f]+")
 _SHA1_HEX = re.compile(r"[0-9a-f]{40}")
+_LOCK_REVISION = re.compile(r"^revision\s*=\s*(\d+)\s*$", re.MULTILINE)
+
+#: Ensembl writes the assembly into its own FASTA headers, e.g.
+#: ``>ENST00000632684.1 cdna chromosome:GRCh38:14:22438547:22438554:1``. Reading it there consults the
+#: bytes; a table keyed on the source *name* only restates what the source was called.
+_HEADER_ASSEMBLY = re.compile(r"\b(?:chromosome|scaffold|primary_assembly|contig|supercontig):([A-Za-z0-9_.\-]+):")
 
 
 def present(value: Any, state: str, reason: str) -> dict[str, Any]:
@@ -92,6 +109,95 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def fasta_header_assembly(fasta: Path | None, *, max_records: int = 20) -> str | None:
+    """The assembly token these bytes name in their own Ensembl headers, or None.
+
+    The artifact, not a table: ``ENSEMBL_ASSEMBLIES`` is keyed on the source *name*, so it says what
+    the reference was called and nothing about what was downloaded. Only the first ``max_records``
+    headers are read -- a cDNA file is single-species and the first line of one is a header, so this
+    costs a few KB of a 1.5 GB file -- and a disagreement inside the sample yields None rather than a
+    coin toss. Returns None for an unreadable, compressed or absent path, which is the ordinary case
+    when the manifest is written on the host for a container run's paths.
+    """
+    if fasta is None:
+        return None
+    seen: set[str] = set()
+    try:
+        with fasta.open() as handle:
+            records = 0
+            for line in handle:
+                if not line.startswith(">"):
+                    continue
+                records += 1
+                if records > max_records:
+                    break
+                match = _HEADER_ASSEMBLY.search(line)
+                if match:
+                    seen.add(match.group(1))
+    except (OSError, UnicodeDecodeError):
+        return None
+    return seen.pop() if len(seen) == 1 else None
+
+
+def assembly_identity(*, tabled: str | None, url: str | None, fasta: Path | None) -> dict[str, Any]:
+    """Which genome build these bytes are against, preferring the artifact over the source table.
+
+    ``tabled`` is ``ENSEMBL_ASSEMBLIES``' answer for the source *name*, which is an association and
+    not an observation -- it was published as a plain fact in the same dict that admits the release
+    floated and is unpinned. So the bytes are asked first (their headers carry the assembly), the URL
+    second (it contains the assembly for every bundled source), and only then does the table speak,
+    under a state that says nothing checked it. A header that contradicts the table is published as
+    the header's value: the disagreement is the signal, and the bytes are what was screened.
+    """
+    observed = fasta_header_assembly(fasta)
+    if observed and tabled and observed != tabled:
+        return present(
+            observed,
+            "fasta_header_conflicts_with_source_table",
+            f"the cached FASTA's own Ensembl headers name {observed} while the bundled source table names "
+            f"{tabled} for this source; the bytes screened are what is published here",
+        )
+    if observed:
+        return present(
+            observed,
+            "fasta_header",
+            "read from the cached FASTA's own Ensembl headers, so this describes the bytes rather than the "
+            "name the source was requested under",
+        )
+    if tabled and url and tabled in url:
+        return present(
+            tabled,
+            "source_table_corroborated_by_url",
+            f"the bundled source table names {tabled} for this source and the recorded download URL contains "
+            "it; no assembly was readable from the FASTA's own headers here",
+        )
+    if tabled:
+        return present(
+            tabled,
+            "source_table_unchecked",
+            f"the bundled source table names {tabled} for this source name only: no assembly was readable from "
+            "the bytes and none appears in the recorded URL, so this is the table's association and not an "
+            "observation",
+        )
+    return absent(
+        "not_a_bundled_source",
+        "this reference is not a bundled Ensembl source and its headers name no assembly, so no genome build "
+        "can be named for the bytes that were screened",
+    )
+
+
+def digest_scope(size_scope: str | None, *, filtered: bool) -> str:
+    """What the recorded digest covers, derived from the same evidence as ``size_scope``.
+
+    It was the literal ``decompressed_fasta_full`` beside a derived ``size_scope``, so the two labels
+    contradicted each other for any uncompressed reference and the digest said "full" for a filtered
+    subset -- while the digest is in fact computed over whatever file the cache entry points at.
+    """
+    if not size_scope or size_scope == "not_recorded":
+        return "not_recorded"
+    return f"{size_scope}_filtered_subset" if filtered else f"{size_scope}_whole_file"
 
 
 def reported_term_partition(registry_terms: Iterable[str], scored_terms: Container[str]) -> dict[str, Any]:
@@ -291,12 +397,76 @@ def _declared_dependencies() -> list[str]:
     return sorted(set(declared))
 
 
-def _dependency_identity() -> dict[str, Any]:
+def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
+    """The resolution lock's digest and revision when it is on disk, or why it is not.
+
+    Both were declared *permanently* absent as "uv.lock is not shipped in the wheel", which is true of
+    a wheel or container run and false of the dev worktree the manifest under review came from: the
+    lock sits at the repo root this module already verified, readable. A permanent excuse for a
+    conditional absence is its own fabrication, so the file is tested for. ``lock_root`` is None
+    whenever no repository could be *verified* to hold this package -- an unverified root's lock is
+    some other project's resolution.
+    """
+    if lock_root is None:
+        return {
+            "lock_sha256": absent(
+                "no_verified_repo_to_read_a_lock_from",
+                f"{_LOCK_FILENAME} is not shipped in the wheel (pyproject packages only src/sirnaforge) and no "
+                "repository was verified to hold this package, so no lock may be attributed to this build",
+            ),
+            "lock_revision": absent(
+                "no_verified_repo_to_read_a_lock_from",
+                f"no verified repository root was available to read {_LOCK_FILENAME} from, so its revision "
+                "cannot be named",
+            ),
+        }
+
+    lock = lock_root / _LOCK_FILENAME
+    if not lock.is_file():
+        return {
+            "lock_sha256": absent(
+                "not_packaged",
+                f"{_LOCK_FILENAME} is absent from {lock_root}: it is not shipped in the wheel, because pyproject "
+                "packages only src/sirnaforge",
+            ),
+            "lock_revision": absent(
+                "not_packaged",
+                f"{_LOCK_FILENAME} is not on disk beside this build, so its revision cannot be read at runtime",
+            ),
+        }
+
+    try:
+        digest = file_sha256(lock)
+        revision = _LOCK_REVISION.search(lock.read_text(encoding="utf-8", errors="replace"))
+    except OSError as exc:
+        unreadable = absent(
+            "lock_unreadable",
+            f"{lock} exists but could not be read ({type(exc).__name__}), so the resolution behind this "
+            "environment is not identified",
+        )
+        return {"lock_sha256": unreadable, "lock_revision": dict(unreadable)}
+
+    return {
+        "lock_sha256": present(digest, "repo_worktree_lock", f"sha256 of {lock}, at the verified repo root"),
+        "lock_revision": present(
+            revision.group(1),
+            "repo_worktree_lock",
+            f"the `revision` key of {lock}, which is uv's own lock-format revision",
+        )
+        if revision
+        else absent(
+            "revision_not_declared_in_lock",
+            f"{lock} declares no `revision` key, so the lock format it was written in cannot be named",
+        ),
+    }
+
+
+def _dependency_identity(lock_root: Path | None) -> dict[str, Any]:
     """Digest the whole installed environment, and name each declared dependency's resolved version.
 
-    ``uv.lock`` is not shipped in the wheel, so the lock digest is an explicit absence rather than a
-    field a container run silently drops. The inventory digest plus the count is what distinguishes
-    a four-package environment from a two-hundred-package one.
+    The inventory digest plus the count is what distinguishes a four-package environment from a
+    two-hundred-package one; ``_lock_identity`` says whether the resolution that produced it can be
+    named as well.
     """
     installed: dict[str, str] = {}
     for distribution in importlib.metadata.distributions():
@@ -306,14 +476,7 @@ def _dependency_identity() -> dict[str, Any]:
 
     inventory = "\n".join(f"{name}=={version}" for name, version in sorted(installed.items()))
     return {
-        "lock_sha256": absent(
-            "not_packaged",
-            "uv.lock is not shipped in the wheel: pyproject packages only src/sirnaforge",
-        ),
-        "lock_revision": absent(
-            "not_packaged",
-            "uv.lock is not shipped in the wheel, so its revision cannot be read at runtime",
-        ),
+        **_lock_identity(lock_root),
         "distributions_sha256": hashlib.sha256(inventory.encode("utf-8")).hexdigest(),
         "distribution_count": len(installed),
         # A declared-but-uninstalled dependency maps to null, never to omission.
@@ -412,6 +575,9 @@ def build_identity() -> dict[str, Any]:
     vcs = _vcs_identity()
     container = _container_identity()
     release, kind, detail = _release_verdict(vcs, container)
+    # Only a repository verified to track this package may supply its lock, for the same reason it is
+    # the only one allowed to supply its commit.
+    lock_root = _package_repo_root() if vcs["repo_verified"] else None
     return {
         "release": release,
         "kind": kind,
@@ -420,7 +586,7 @@ def build_identity() -> dict[str, Any]:
         "tool_version": __version__,
         "vcs": vcs,
         "container": container,
-        "dependencies": _dependency_identity(),
+        "dependencies": _dependency_identity(lock_root),
         "runtime": _runtime_identity(),
     }
 
@@ -551,7 +717,11 @@ def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = 
                 "against are unattested"
             ),
             "aligner": ALIGNER_NAME,
-            "built_by_this_run": False,
+            "built_in_this_process": absent(
+                "no_stamp_for_this_index",
+                "no cache stamp beside this prefix records when the index was built, so nothing about it can be "
+                "attributed to this process either way",
+            ),
             "built_from_digest": None,
             "aligner_version": aligner_version,
             "members": [],
@@ -575,7 +745,7 @@ def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = 
         "state": "artifact_stamp",
         "reason": "the cache stamp beside this prefix records the inputs it was built from and its own bytes",
         "aligner": ALIGNER_NAME,
-        "built_by_this_run": _stamped_by_this_process(stamp.get("stamped_at")),
+        "built_in_this_process": _stamped_in_this_process(stamp.get("stamped_at")),
         "built_from_digest": built_from,
         "aligner_version": aligner_version,
         "members": members,
@@ -593,12 +763,36 @@ def _stamped_input_digest(inputs: dict[str, Any], reference_fasta_name: str | No
     return None
 
 
-def _stamped_by_this_process(stamped_at: Any) -> bool | None:
-    """Whether the stamp was written after this process started; None when it cannot be read."""
+def _stamped_in_this_process(stamped_at: Any) -> dict[str, Any]:
+    """Date the stamp against this process, and say that that is all the comparison establishes.
+
+    A timestamp inequality is not authorship. It was published as ``built_by_this_run``, a positive
+    claim no comparison against a module-import time can support -- one process may run more than one
+    workflow -- and an unparseable timestamp fell out as a bare ``null`` with no reason-class. So the
+    field is named for the process, and the reason states the inequality it rests on.
+    """
     try:
-        return datetime.fromisoformat(str(stamped_at)) >= _PROCESS_START
+        stamp_time = datetime.fromisoformat(str(stamped_at))
     except (TypeError, ValueError):
-        return None
+        return absent(
+            "stamp_timestamp_unreadable",
+            f"the cache stamp's stamped_at ({stamped_at!r}) is not an ISO timestamp, so when these index bytes "
+            "were built cannot be established at all",
+        )
+    if stamp_time >= _PROCESS_START:
+        return present(
+            True,
+            "stamp_dated_after_process_start",
+            f"the stamp is dated {stamp_time.isoformat()}, at or after this process started "
+            f"({_PROCESS_START.isoformat()}); a process may run more than one workflow, so this bounds the build "
+            "to the process and not to this run",
+        )
+    return present(
+        False,
+        "stamp_dated_before_process_start",
+        f"the stamp is dated {stamp_time.isoformat()}, before this process started "
+        f"({_PROCESS_START.isoformat()}), so these index bytes were built by an earlier run and reused",
+    )
 
 
 def report_html_artifact(*, expected: bool, path: str = "report.html") -> dict[str, Any]:
