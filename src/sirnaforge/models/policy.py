@@ -441,6 +441,30 @@ class TargetSelectivity(str, Enum):
     ISOFORM_SELECTIVE = "isoform_selective"
 
 
+class CoverageMatch(str, Enum):
+    """What "this guide covers that transcript" was actually tested with (#101).
+
+    Issue #101 requires the match semantics be *stated*, because coverage stopped being a set
+    intersection: it used to be the enumeration map intersected with the protein-coding set, which
+    reported an isoform as covered because a guide was enumerated on it, and reported nothing at all
+    about an isoform enumeration never saw. The numerator is now a complementarity test against
+    sequence, and a test has semantics -- a free-text field describing them would drift from the
+    code that implements them, so the semantics are an enum member instead.
+
+    Exactly one member today, so it is a defensible field default. Adding a second (a mismatch- or
+    seed-tolerant criterion, which would report a strictly larger numerator) must remove that
+    default, because from that point on the criterion is a choice the caller is making rather than
+    the only thing this code can do.
+
+    Attributes:
+        EXACT_FULL_SITE: The guide's full-length reverse complement occurs verbatim in the
+            transcript. Full-length, not the seed: a seed-only criterion would count the transcripts
+            a guide *silences off-target* as transcripts it *covers*.
+    """
+
+    EXACT_FULL_SITE = "exact_full_site"
+
+
 class OrthologyEvidenceSource(str, Enum):
     """How a cross-species correspondence was established.
 
@@ -519,6 +543,19 @@ class TargetIntent(BaseModel):
         coverage_denominator: The frozen denominator coverage is reported against. Empty means no
             denominator was frozen, so coverage is unknown rather than complete.
         enumeration_inputs: Transcripts actually submitted to guide enumeration.
+        unresolved_target_ids: Declared required or excluded transcript IDs the annotation source
+            never produced. Recorded rather than dropped, because without this field a mistyped
+            ``--required-transcripts`` ID reads as satisfied: it is simply absent from every other
+            set, and absence from ``excluded_transcript_ids`` looks exactly like compliance. Ids are
+            compared version-stripped, so a caller strips before declaring (see
+            :func:`sirnaforge.core.target_intent.resolve_target_intent`).
+        coverage_sequence_available: Members of ``coverage_denominator`` whose *sequence* this run
+            actually holds. Needed because ``min_isoform_coverage`` is a greater-or-equal floor and
+            the numerator is now a complementarity test against sequence: a numerator that silently
+            omits a transcript whose sequence is missing is a lower bound, and a low lower bound can
+            only wrongly *reject*. Any ``coverage_denominator - coverage_sequence_available``
+            therefore makes coverage unknown rather than smaller.
+        coverage_match: The criterion the coverage numerator was measured with.
         annotation_provenance: Identity of the annotation source behind the sets above.
         orthology_evidence: Recorded cross-species correspondences supporting non-query members
             of ``target_species``. Absence is unknown, not a denial.
@@ -547,6 +584,15 @@ class TargetIntent(BaseModel):
     )
     enumeration_inputs: frozenset[str] = Field(
         default=frozenset(), description="Transcripts actually submitted to guide enumeration"
+    )
+    unresolved_target_ids: frozenset[str] = Field(
+        default=frozenset(), description="Declared required/excluded IDs the annotation source never produced"
+    )
+    coverage_sequence_available: frozenset[str] = Field(
+        default=frozenset(), description="Denominator members whose sequence this run holds"
+    )
+    coverage_match: CoverageMatch = Field(
+        default=CoverageMatch.EXACT_FULL_SITE, description="Criterion the coverage numerator was measured with"
     )
     annotation_provenance: str | None = Field(
         default=None, description="Identity of the annotation source behind the transcript sets"

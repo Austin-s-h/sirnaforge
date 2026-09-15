@@ -30,6 +30,7 @@ from sirnaforge.models.evidence import (
 )
 from sirnaforge.models.policy import (
     ChannelRequirement,
+    CoverageMatch,
     EvidenceRequirements,
     FilterAction,
     FilterComparator,
@@ -378,6 +379,43 @@ def test_an_unfrozen_denominator_makes_filtering_unknown_not_false():
     """With no denominator there is nothing to prove enumeration was complete against."""
     assert _intent().enumeration_was_filtered is None
     assert _intent(coverage_denominator=frozenset({"ENST1"})).enumeration_was_filtered is None
+
+
+@pytest.mark.unit
+def test_the_three_intent_fields_added_for_resolution_default_to_claiming_nothing():
+    """#101 constructs this type; the fields it needed to do so must not change an undeclared intent.
+
+    ``unresolved_target_ids`` exists because a mistyped required ID is otherwise absent from every
+    set, which is indistinguishable from compliance. ``coverage_sequence_available`` exists because
+    the numerator became a complementarity test against sequence, so a denominator member whose
+    sequence is missing makes coverage unknown rather than smaller.
+    """
+    intent = _intent()
+
+    assert intent.unresolved_target_ids == frozenset()
+    assert intent.coverage_sequence_available == frozenset()
+    assert intent.coverage_match is CoverageMatch.EXACT_FULL_SITE
+
+    declared = _intent(
+        required_transcript_ids=frozenset({"ENST1", "ENST_TYPO"}),
+        coverage_denominator=frozenset({"ENST1", "ENST2"}),
+        coverage_sequence_available=frozenset({"ENST1"}),
+        unresolved_target_ids=frozenset({"ENST_TYPO"}),
+    )
+
+    assert declared.coverage_denominator - declared.coverage_sequence_available == {"ENST2"}
+    assert "ENST_TYPO" in declared.required_transcript_ids
+
+
+@pytest.mark.unit
+def test_the_coverage_match_criterion_is_an_enum_rather_than_free_text():
+    """#101 requires the match semantics be stated, and a prose field would drift from the code.
+
+    One member today, which is what makes the field default defensible: a second criterion turns it
+    into a caller's choice and must remove the default.
+    """
+    assert {match.value for match in CoverageMatch} == {"exact_full_site"}
+    assert policy_module.TargetIntent.model_fields["coverage_match"].default is CoverageMatch.EXACT_FULL_SITE
 
 
 @pytest.mark.unit
