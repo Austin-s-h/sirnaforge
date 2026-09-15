@@ -1202,3 +1202,206 @@ def test_re_applying_each_descriptor_reproduces_the_runs_verdict(tmp_path: Path)
     # Present on every row, so its gate is re-derivable. Its value comes from enumeration, which this
     # fixture bypasses; the design tests cover that it is observed.
     assert "max_poly_run_length" in row
+
+
+# ---------------------------------------------------------------------------------------------
+# #105 residual: the coverage gate is reached on every path that reaches selection
+# ---------------------------------------------------------------------------------------------
+
+#: The four ways out of screening on which Nextflow publishes no alignment, with the exit each one
+#: reports. Named rather than stubbed at ``step5`` level, because the defect was in *which* paths ran
+#: the gate: a route that skipped it would keep passing against a stub of itself.
+NO_SCREEN_PATHS: dict[str, dict[str, str]] = {
+    "nextflow_failed": {"status": "skipped", "reason": "nextflow_failed"},
+    "nextflow_unavailable": {"status": "skipped", "reason": "nextflow_unavailable"},
+    "basic_fallback": {"status": "partial", "method": "basic"},
+    "missing_output": {"status": "partial", "method": "embedded_nextflow"},
+}
+
+
+def _run_step5_without_a_screen(
+    workflow: SiRNAWorkflow, candidates: list[SiRNACandidate], path: str
+) -> tuple[DesignResult, dict[str, object]]:
+    """Drive ``step5_offtarget_analysis`` to one of ``NO_SCREEN_PATHS`` and hand back both answers.
+
+    Reference resolution and repeat detection are stubbed on every path: both need a real cDNA
+    reference, and neither is what is under test. Everything downstream of them is the product code.
+    """
+    design_result = _design_result(workflow, candidates)
+
+    async def _references(*_args: object, **_kwargs: object) -> bool:
+        return path != "basic_fallback"
+
+    workflow._resolve_screening_references = _references  # type: ignore[method-assign]
+    workflow._run_repeat_detection = lambda *_args, **_kwargs: {"status": "skipped"}  # type: ignore[method-assign]
+
+    if path == "basic_fallback":
+        # No index and no active species: the sequence-only fallback, which aligns nothing at all.
+        workflow._resolve_active_screen_species = lambda *_args, **_kwargs: []  # type: ignore[method-assign]
+    elif path == "nextflow_unavailable":
+        workflow._validate_nextflow_environment = lambda _runner: False  # type: ignore[method-assign]
+    elif path == "nextflow_failed":
+
+        async def _explode(*_args: object, **_kwargs: object) -> dict[str, object]:
+            raise RuntimeError("nextflow submit failed")
+
+        workflow._run_nextflow_offtarget_analysis = _explode  # type: ignore[method-assign]
+    elif path == "missing_output":
+
+        async def _no_output(*_args: object, **_kwargs: object) -> dict[str, object]:
+            # The runner reported success and wrote nothing: parsing returns "missing", no species
+            # holds alignment evidence, and every candidate is therefore unscreened.
+            return await workflow._process_nextflow_results(
+                candidates, workflow.config.output_dir / "absent", {"status": "completed"}
+            )
+
+        workflow._run_nextflow_offtarget_analysis = _no_output  # type: ignore[method-assign]
+    else:  # pragma: no cover - a typo in the parametrisation, not a product path
+        raise AssertionError(f"unknown path {path}")
+
+    outcome = asyncio.run(workflow.step5_offtarget_analysis(design_result))
+    for key, value in NO_SCREEN_PATHS[path].items():
+        assert outcome[key] == value, f"{path} no longer exits the way this test drives it"
+    return design_result, outcome
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", sorted(NO_SCREEN_PATHS))
+def test_a_configured_coverage_floor_is_unknown_when_the_screen_never_ran(tmp_path: Path, path: str) -> None:
+    """#105 residual: a floor the run could not check reports unknown, not ``not_evaluated``.
+
+    ``_apply_isoform_coverage_gate`` was reachable only from ``_score_and_gate``, which only the
+    integration path calls -- so on all four of these exits a configured, required gate reached no
+    candidate and the exported verdict was ``not_evaluated``: the same cell a run with no floor at all
+    writes. A gate the user asked for cannot disappear from the run that failed to apply it, because
+    ``not_evaluated`` is the one reading that would let the shortlist qualify anyway.
+
+    Coverage is computed during post-screen scoring, so on these paths there is nothing to compare and
+    the honest verdict is ``UNKNOWN``: it never rejects (an annotation gap is not low coverage) but it
+    does withhold from a qualified shortlist, and the reason is published by name.
+    """
+    workflow = _workflow(
+        tmp_path,
+        f"no_screen_{path}",
+        stated={"min_isoform_coverage": 0.9},
+        run_mode=RunMode.QUALIFIED,
+    )
+    candidate = _candidate()
+
+    design_result, _ = _run_step5_without_a_screen(workflow, [candidate], path)
+
+    assert candidate.isoform_coverage is None, "nothing computed coverage on this path"
+    assert candidate.filter_verdicts["min_isoform_coverage"] == FilterEvaluation.UNKNOWN.value
+    assert candidate.filter_observed["min_isoform_coverage"] is None
+    assert candidate.passes_filters is True, "an uncomputable coverage is not a low coverage"
+    # The exported cell, because that is what a #103 client re-derives the verdict from.
+    assert build_candidate_row(candidate)["min_isoform_coverage_verdict"] == FilterEvaluation.UNKNOWN.value
+
+    summary = workflow._selection_summary
+    assert design_result.top_candidates == []
+    assert summary["evidence_excluded"] == 1
+    assert summary["evidence_shortfall_reasons"]["unknown:min_isoform_coverage"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", sorted(NO_SCREEN_PATHS))
+def test_no_configured_floor_still_makes_no_claim_when_the_screen_never_ran(tmp_path: Path, path: str) -> None:
+    """The gate is completed on these paths, not switched on: with no floor it still decides nothing.
+
+    The guard on the fix above. ``min_isoform_coverage`` reads no screening channel, so an ``UNKNOWN``
+    on it always counts against a qualified run -- inventing one where the user configured no floor
+    would empty the shortlist of every default run whose screen was incomplete for any other reason.
+    """
+    workflow = _workflow(tmp_path, f"no_floor_{path}", run_mode=RunMode.QUALIFIED)
+    assert workflow.config.design_params.filters.min_isoform_coverage is None
+    candidate = _candidate()
+
+    _run_step5_without_a_screen(workflow, [candidate], path)
+
+    assert candidate.filter_verdicts["min_isoform_coverage"] == FilterEvaluation.NOT_EVALUATED.value
+    assert "unknown:min_isoform_coverage" not in workflow._selection_summary["evidence_shortfall_reasons"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("action", ["warn", "fail"])
+def test_the_coverage_action_cannot_turn_an_uncomputed_coverage_into_a_rejection(tmp_path: Path, action: str) -> None:
+    """#105's action matrix against a screen that never ran: both actions record, neither rejects.
+
+    The action decides what to do with a *failure*, and there is no failure here -- the comparison was
+    never possible. So ``fail`` must not stamp ``LOW_ISOFORM_COVERAGE`` on a candidate whose coverage is
+    simply unmeasured, while a qualified run still withholds it either way: the two questions are
+    "did this gate reject" and "can this run certify", and only the second has an answer.
+    """
+    workflow = _workflow(
+        tmp_path,
+        f"no_screen_action_{action}",
+        stated={"min_isoform_coverage": 0.9},
+        filter_actions={"min_isoform_coverage": action},
+        run_mode=RunMode.QUALIFIED,
+    )
+    assert workflow.config.resolved_policy.descriptor("min_isoform_coverage").action.value == action
+    candidate = _candidate()
+
+    design_result, _ = _run_step5_without_a_screen(workflow, [candidate], "nextflow_failed")
+
+    assert candidate.filter_verdicts["min_isoform_coverage"] == FilterEvaluation.UNKNOWN.value
+    assert candidate.passes_filters is True
+    assert design_result.top_candidates == []
+    assert workflow._selection_summary["evidence_shortfall_reasons"]["unknown:min_isoform_coverage"] == 1
+    assert workflow._selection_summary["filter_excluded"] == 0, "the gate did not reject; the run withheld"
+
+
+@pytest.mark.unit
+def test_an_unscreened_candidate_on_the_integration_path_still_records_the_floor(tmp_path: Path) -> None:
+    """The residual is not only about failed runs: the integration path skips scoring too.
+
+    ``_integrate_offtarget_results`` withholds post-screen scoring from a candidate whose query species
+    produced no alignment evidence -- correctly, since a zero there is an absence rather than a
+    measurement -- and ``_score_and_gate`` is where the coverage gate lived. So the one path that
+    *does* integrate still left a configured floor unrecorded on exactly the candidates whose evidence
+    was worst.
+    """
+    workflow = _workflow(tmp_path, "unscreened_floor", stated={"min_isoform_coverage": 0.9}, run_mode=RunMode.QUALIFIED)
+    candidate = _candidate()
+
+    workflow._integrate_offtarget_results([candidate], dict(NO_HITS), screened_species=[])
+    assert candidate.scored_after_screening is False
+    assert "min_isoform_coverage" not in candidate.filter_verdicts, "scoring, and so the gate, was skipped"
+
+    result = _design_result(workflow, [candidate])
+    workflow._apply_post_screen_ranking(result)
+
+    assert candidate.filter_verdicts["min_isoform_coverage"] == FilterEvaluation.UNKNOWN.value
+    assert workflow._selection_summary["evidence_shortfall_reasons"]["unknown:min_isoform_coverage"] == 1
+
+
+@pytest.mark.unit
+def test_a_measured_coverage_verdict_is_not_re_decided_at_selection(tmp_path: Path) -> None:
+    """The call that held the measurement owns the verdict: selection only fills an empty cell.
+
+    Completing the gate at selection must not re-run it for a candidate that already reached it, or a
+    rejection is logged twice and the observed value is rewritten from state that has moved on. Here
+    coverage is 1/3 against a floor of 0.9, so the recorded answer is a decided FAIL with its
+    comparison intact -- and it survives ranking unchanged.
+    """
+    workflow = _workflow(
+        tmp_path,
+        "measured_coverage",
+        stated={"min_isoform_coverage": 0.9},
+        filter_actions={"min_isoform_coverage": "warn"},
+        run_mode=RunMode.EXPLORATORY,
+    )
+    candidate = _candidate()
+    workflow._protein_coding_transcript_ids = {"ENST1", "ENST2", "ENST3"}
+    workflow._protein_coding_transcript_count = 3
+    workflow._guide_to_transcripts = {GUIDE: {"ENST1"}}
+
+    workflow._integrate_offtarget_results([candidate], dict(NO_HITS), screened_species=["human"])
+    assert candidate.filter_verdicts["min_isoform_coverage"] == FilterEvaluation.FAIL.value
+
+    result = _design_result(workflow, [candidate])
+    workflow._apply_post_screen_ranking(result)
+
+    assert candidate.filter_verdicts["min_isoform_coverage"] == FilterEvaluation.FAIL.value
+    assert candidate.filter_observed["min_isoform_coverage"] == pytest.approx(1 / 3)
+    assert build_candidate_row(candidate)["min_isoform_coverage_verdict"] == FilterEvaluation.FAIL.value

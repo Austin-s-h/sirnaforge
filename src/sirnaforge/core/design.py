@@ -13,6 +13,7 @@ from Bio.Seq import Seq
 
 from sirnaforge import __version__
 from sirnaforge.config.run_policy import FILTER_SPEC_BY_ID
+from sirnaforge.core.filtering import Comparator, FilterOutcome, GateSpec, evaluate_gate, evaluate_gates
 from sirnaforge.core.repeat_detection import RepeatObservation, normalize_guide_sequence
 from sirnaforge.core.scoring import ScoringError, compute_composite, target_accessibility_sub_score
 from sirnaforge.core.thermodynamics import (
@@ -54,6 +55,36 @@ ID_DIGEST_LEN = 8
 _GATE_WARNED_ISSUE = "GATE_WARNED"
 
 
+def record_gate_outcome(
+    candidate: SiRNACandidate,
+    outcome: FilterOutcome,
+    *,
+    status: "SiRNACandidate.FilterStatus | None" = None,
+) -> None:
+    """Write one :class:`~sirnaforge.core.filtering.FilterOutcome` onto a candidate (#100).
+
+    The bridge between the pure evaluator and the single writer: ``core/filtering.py`` may not import
+    ``models/sirna.py`` (that is what keeps it pure and testable without a candidate), and
+    ``record_filter_verdict`` speaks only PASS/FAIL/UNKNOWN. ``NOT_EVALUATED`` is therefore written
+    directly -- a gate that made no claim must still occupy its verdict column with the value it
+    would have compared, because an empty cell there reads as a verdict.
+
+    Lives here rather than in ``workflow.py`` because the design stage and the post-screen stage must
+    write a verdict identically, and ``workflow.py`` already imports this module (never the reverse).
+    """
+    if outcome.evaluation is FilterEvaluation.NOT_EVALUATED:
+        candidate.filter_verdicts[outcome.filter_id] = FilterEvaluation.NOT_EVALUATED.value
+        candidate.filter_observed[outcome.filter_id] = outcome.observed
+        return
+    candidate.record_filter_verdict(
+        outcome.filter_id,
+        observed=outcome.observed,
+        passed=outcome.evaluation is FilterEvaluation.PASS,
+        action=outcome.action,
+        status=status,
+    )
+
+
 def _as_rna(sequence: str) -> str:
     """Read a stored (DNA) sequence as RNA so T and U compare equal."""
     return sequence.upper().replace("T", "U")
@@ -89,6 +120,19 @@ class SiRNADesigner:
             return override
         spec = FILTER_SPEC_BY_ID.get(filter_id)
         return spec.default_action if spec is not None else FilterAction.FAIL
+
+    def _gate_spec(self, filter_id: str, threshold: float | None, comparator: Comparator) -> GateSpec:
+        """One design-stage gate as configured: its threshold, its resolved action, its direction.
+
+        No ``channels``/``evidence_pairs``: a design-stage gate reads the candidate itself, so its
+        verdict never depends on which screening units completed.
+        """
+        return GateSpec(
+            filter_id=filter_id,
+            threshold=threshold,
+            action=self._action_for(filter_id),
+            comparator=comparator,
+        )
 
     def design_from_file(self, input_file: str) -> DesignResult:
         """Design siRNAs from input FASTA file."""
@@ -308,23 +352,30 @@ class SiRNADesigner:
         exporting ``not_evaluated`` and an empty observed value on every row of every run -- so a
         consumer could not tell a gate that passed from one that never ran, and no candidate could be
         shown as clean. ``passes_filters`` is still set by the caller, which owns the first-label rule.
+
+        The three comparisons go through :func:`~sirnaforge.core.filtering.evaluate_gates` (#100), so a
+        floor and a ceiling are one declared ``Comparator`` rather than two hand-written inequalities.
         """
         filters = self.parameters.filters
         # Written onto the row, not only into filter_observed: max_poly_runs declares this as its
         # column, so without it that gate could not be re-derived from the exported row.
         candidate.max_poly_run_length = poly_run
-        for filter_id, observed, passed in (
-            ("gc_content_min", gc_content, gc_content >= filters.gc_min),
-            ("gc_content_max", gc_content, gc_content <= filters.gc_max),
-            ("max_poly_runs", float(poly_run), poly_run <= filters.max_poly_runs),
-        ):
-            candidate.record_filter_verdict(
-                filter_id,
-                observed=observed,
-                passed=passed,
-                action=self._action_for(filter_id),
+        specs = (
+            self._gate_spec("gc_content_min", filters.gc_min, Comparator.AT_LEAST),
+            self._gate_spec("gc_content_max", filters.gc_max, Comparator.AT_MOST),
+            self._gate_spec("max_poly_runs", float(filters.max_poly_runs), Comparator.AT_MOST),
+        )
+        observed = {
+            "gc_content_min": gc_content,
+            "gc_content_max": gc_content,
+            "max_poly_runs": float(poly_run),
+        }
+        for outcome in evaluate_gates(specs, observed):
+            record_gate_outcome(
+                candidate,
+                outcome,
                 status=_ModelCandidate.FilterStatus.GC_OUT_OF_RANGE
-                if filter_id.startswith("gc_content")
+                if outcome.filter_id.startswith("gc_content")
                 else _ModelCandidate.FilterStatus.POLY_RUNS,
             )
 
@@ -589,12 +640,10 @@ class SiRNADesigner:
 
     def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
         """Flag a candidate whose guide is too structured to be accessible."""
-        ceiling = self.parameters.filters.max_paired_fraction
-        candidate.record_filter_verdict(
-            "max_paired_fraction",
-            observed=paired_fraction,
-            passed=paired_fraction <= ceiling,
-            action=self._action_for("max_paired_fraction"),
+        spec = self._gate_spec("max_paired_fraction", self.parameters.filters.max_paired_fraction, Comparator.AT_MOST)
+        record_gate_outcome(
+            candidate,
+            evaluate_gate(spec, paired_fraction),
             status=_ModelCandidate.FilterStatus.EXCESS_PAIRING,
         )
 
@@ -662,22 +711,23 @@ class SiRNADesigner:
         thresholds, so the two gates' reported counts were a function of gate ordering rather than of
         the candidates -- which is how LOW_ASYMMETRY came to report 6,464 rejections on a run where
         it independently rejected 26,431. ``passes_filters`` still keeps the first label.
+
+        Both are floors, so both declare ``Comparator.AT_LEAST`` and are evaluated by the shared
+        evaluator (#100). ``meets_asymmetry_threshold`` is that same ``>=`` comparison and is not
+        re-called here; the threshold it reads is the one on the spec.
         """
         filters = self.parameters.filters
-        candidate.record_filter_verdict(
-            "min_asymmetry_score",
-            observed=asymmetry_score,
-            passed=ThermodynamicCalculator.meets_asymmetry_threshold(asymmetry_score, filters.min_asymmetry_score),
-            action=self._action_for("min_asymmetry_score"),
-            status=_ModelCandidate.FilterStatus.LOW_ASYMMETRY,
+        specs = (
+            self._gate_spec("min_asymmetry_score", filters.min_asymmetry_score, Comparator.AT_LEAST),
+            self._gate_spec("min_empirical_score", filters.min_empirical_score, Comparator.AT_LEAST),
         )
-        candidate.record_filter_verdict(
-            "min_empirical_score",
-            observed=empirical_score,
-            passed=empirical_score >= filters.min_empirical_score,
-            action=self._action_for("min_empirical_score"),
-            status=_ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE,
-        )
+        observed = {"min_asymmetry_score": asymmetry_score, "min_empirical_score": empirical_score}
+        statuses = {
+            "min_asymmetry_score": _ModelCandidate.FilterStatus.LOW_ASYMMETRY,
+            "min_empirical_score": _ModelCandidate.FilterStatus.LOW_EMPIRICAL_SCORE,
+        }
+        for outcome in evaluate_gates(specs, observed):
+            record_gate_outcome(candidate, outcome, status=statuses[outcome.filter_id])
 
     @staticmethod
     def stamp_repeat_verdict(

@@ -255,7 +255,8 @@ async def test_skip_off_targets_materializes_no_reference_and_runs_no_repeat_sca
 
     result = await workflow.step5_offtarget_analysis(design_result)
 
-    assert result == {"status": "skipped", "reason": "user_disabled"}
+    # The two keys this test is about; #100 publishes an additive ``run_status`` beside them.
+    assert (result["status"], result["reason"]) == ("skipped", "user_disabled")
     assert calls == [], f"skip request must precede all reference work, but ran: {calls}"
     assert workflow._repeat_summary["reason"] == "user_disabled"
     assert design_result.top_candidates == [candidate], "ranking must still be rebuilt on the skip path"

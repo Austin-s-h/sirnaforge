@@ -208,8 +208,8 @@ def test_an_integer_counter_is_read_rather_than_nulled(tmp_path: Path) -> None:
     """``numpy.int64`` is not a Python ``int``, and ``DataFrame.iloc`` hands back numpy scalars.
 
     An isinstance check against ``(int, float)`` therefore passed every float column and nulled every
-    integer one, so ``max_off_target_count`` read ``unknown`` on all 5,706 guides of an MSH3 run whose
-    threshold was rejecting 65% of its candidates.
+    integer one, so ``max_off_target_count`` read ``unknown`` on all 5,706 guides of an internal run
+    whose threshold was rejecting 65% of its candidates.
     """
     columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed"
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [])
@@ -231,8 +231,8 @@ def test_a_gate_reads_the_value_the_run_compared_not_a_wider_counter(tmp_path: P
 
     The human-stratified gates read counters 0.7.1 does not export under the descriptor's name, but it
     does export ``<filter_id>_observed``. Preferring the same-named all-species column instead would
-    let the report fail a guide on a scope wider than the gate's: on a four-species MSH3 run the two
-    disagree 17,600 hits against 63,801.
+    let the report fail a guide on a scope wider than the gate's: on a four-species internal run the
+    two disagree 17,600 hits against 63,801.
     """
     columns = _CANDIDATE_COLUMNS + ",transcriptome_hits_1mm,max_transcriptome_hits_1mm_observed"
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
@@ -309,7 +309,7 @@ def test_a_rejection_no_declared_gate_expresses_is_not_overruled(tmp_path: Path)
     """The report may report less than the run. It may not report more.
 
     ``REPEAT_ELEMENT`` is stamped by the pipeline and declared by no filter, so no descriptor can
-    re-derive it. Calling such a guide clean would have published 185 guides of one MSH3 run as
+    re-derive it. Calling such a guide clean would have published 185 guides of one internal run as
     passing that the run threw out -- the fabricated-evidence direction the reverse metric now guards.
     """
     payload = build_payload(_write_fully_evidenced_run(tmp_path, run_label="REPEAT_ELEMENT"))
@@ -328,8 +328,8 @@ def test_a_fully_evidenced_run_can_reach_a_pass(tmp_path: Path) -> None:
     """The headline defect: no guide of any run could be called clean.
 
     Three gates decided during enumeration and recorded no verdict, so every guide carried an
-    unevaluable gate and one MSH3 report published ``0 pass`` across 5,706 guides. With the verdicts
-    recorded, a guide that satisfies every gate reads as one.
+    unevaluable gate and one internal report published ``0 pass`` across 5,706 guides. With the
+    verdicts recorded, a guide that satisfies every gate reads as one.
     """
     payload = build_payload(_write_fully_evidenced_run(tmp_path))
     entry = payload.guides[0]
@@ -477,8 +477,8 @@ def test_the_map_does_not_colour_an_unestablished_window_as_passing(tmp_path: Pa
     """The map is subject to the same rule as the status column: report less, never more.
 
     Classifying a run-PASS row as "passes every gate" regardless of whether the report could establish
-    it drew all 11,520 passing windows of one MSH3 run under that legend while the report itself called
-    every one of their guides *not established*.
+    it drew all 11,520 passing windows of one internal run under that legend while the report itself
+    called every one of their guides *not established*.
     """
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
     payload = build_payload(run)
@@ -492,8 +492,8 @@ def test_the_map_does_not_colour_an_unestablished_window_as_passing(tmp_path: Pa
 def test_the_structure_is_laid_out_from_the_published_dot_bracket(tmp_path: Path) -> None:
     """The picture must be of the fold the gates used, so the dot-bracket travels with the guide.
 
-    Layouts are keyed by structure and computed once per distinct one: 40,079 candidates on an MSH3 run
-    carry 1,333 distinct structures, which is the difference between embedding them and not.
+    Layouts are keyed by structure and computed once per distinct one: 40,079 candidates on an internal
+    run carry 1,333 distinct structures, which is the difference between embedding them and not.
     """
     fold = ".....((((....))))....."
     columns = _CANDIDATE_COLUMNS + ",structure,mfe"
@@ -554,7 +554,7 @@ def test_the_mirna_panel_names_the_mirna_it_matched(tmp_path: Path) -> None:
 
     The aggregate publishes the name as ``mirna_id``; the payload read ``rname`` or ``mirna``, neither
     of which the table has, so every row rendered with an empty name -- 18,078 anonymous seed matches
-    on one MSH3 run. Which miRNA is mimicked is the whole question, and ``coord`` travels with it
+    on one internal run. Which miRNA is mimicked is the whole question, and ``coord`` travels with it
     because a motif matching away from position 1 is what a real defect in this scanner once counted
     as a perfect seed hit.
     """
@@ -579,17 +579,20 @@ def test_cross_species_conservation_is_published_per_species_with_its_mismatches
     """The ortholog class is conservation evidence, and the summary of it cannot answer the question.
 
     ``conservation_score`` is (species hit)/3 and counts a species conserved at up to 8 mismatches; on
-    one MSH3 run mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. Publishing the best
+    one internal run mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. Publishing the best
     ``(nm, seed_mismatches)`` per species is what lets a reader require "perfect in macaque, seed-intact
     in mouse" -- which took that run's cross-reactive pool from 49 guides to 113.
+
+    The symbol is a synthetic placeholder: this path groups by species, so nothing here reads it. The
+    ``GENEX``/``Genex`` casing only mirrors the primate/rodent symbol convention the hits would carry.
     """
     run = _write_run(
         tmp_path,
         [_candidate_row("c1", GUIDE, "ENST1", 10)],
         [
-            _hit_row(GUIDE, "macaque", "ENSMMUT1", 0, "ortholog", "MSH3"),
-            _hit_row(GUIDE, "mouse", "ENSMUST2", 3, "ortholog", "Msh3"),
-            _hit_row(GUIDE, "mouse", "ENSMUST1", 1, "ortholog", "Msh3"),
+            _hit_row(GUIDE, "macaque", "ENSMMUT1", 0, "ortholog", "GENEX"),
+            _hit_row(GUIDE, "mouse", "ENSMUST2", 3, "ortholog", "Genex"),
+            _hit_row(GUIDE, "mouse", "ENSMUST1", 1, "ortholog", "Genex"),
         ],
     )
     entry = build_payload(run).guides[0]
@@ -609,7 +612,7 @@ def test_the_renderer_knows_every_verdict_the_payload_emits(tmp_path: Path) -> N
 
     ``VERDICT`` listed four codes while the payload emits five: a warn-action gate the guide exceeds
     is code 4, so ``VERDICT[4]`` was undefined and ``v.replace`` threw for every guide carrying one.
-    On one MSH3 run that was 3,098 of 5,000 embedded guides -- the whole gate panel, gone.
+    On one internal run that was 3,098 of 5,000 embedded guides -- the whole gate panel, gone.
     """
     observed = dict(_PASSING_OBSERVED, min_asymmetry_score=0.1)  # below the 0.65 warn-action floor
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])

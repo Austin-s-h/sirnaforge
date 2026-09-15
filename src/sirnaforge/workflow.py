@@ -20,7 +20,6 @@ import re
 import shutil
 import tempfile
 import time
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -62,6 +61,14 @@ from sirnaforge.core.design import (
     MiRNADesigner,
     SiRNADesigner,
     biogenesis_features,
+    record_gate_outcome,
+)
+from sirnaforge.core.filtering import (
+    Comparator,
+    GateSpec,
+    evaluate_gate,
+    evaluate_gates,
+    first_rejection,
 )
 from sirnaforge.core.hit_annotation import (
     CLASSIFICATION_COLUMNS,
@@ -94,6 +101,26 @@ from sirnaforge.core.scoring import (
     isoform_coverage_sub_score,
     off_target_sub_score,
 )
+from sirnaforge.core.screening_evidence import (
+    RECONCILIATION_FILENAME,
+    EvidenceEnvelope,
+    EvidenceProducer,
+    EvidenceSource,
+    Reconciliation,
+    build_plan,
+    collect_evidence,
+    completed_pairs,
+    guide_set_digest,
+    not_requested_entry,
+    parse_reconciliation_payload,
+    reconcile,
+    reconciliation_payload,
+)
+from sirnaforge.core.selection import (
+    CandidateView,
+    SelectionInputs,
+    select,
+)
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.ensembl_references import infer_species_from_cdna_headers
@@ -110,13 +137,17 @@ from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
-from sirnaforge.models.evidence import ScreeningPlan
+from sirnaforge.models.evidence import (
+    EvidenceStatus,
+    ScreeningEvidenceEntry,
+    ScreeningPlan,
+)
 from sirnaforge.models.policy import (
     FilterAction,
     FilterEvaluation,
     RunMode,
+    RunStatus,
     ScreeningChannel,
-    UnknownEvidenceAction,
 )
 from sirnaforge.models.schemas import ORFValidationSchema, SiRNACandidateSchema
 from sirnaforge.models.sirna import (
@@ -124,6 +155,7 @@ from sirnaforge.models.sirna import (
     DesignParameters,
     DesignResult,
     OffTargetFilterCriteria,
+    SelectionState,
     SiRNACandidate,
     build_candidate_row,
     ranking_score,
@@ -166,12 +198,10 @@ _PER_SPECIES_COUNTERS: tuple[str, ...] = (
 )
 
 
-#: ``selection_state`` cell values, stamped by :meth:`SiRNAWorkflow._apply_post_screen_ranking`.
-#: ``WITHHELD`` is the only one about evidence the run did not have; ``NOT_ELIGIBLE`` covers reasons the
-#: row already explains itself (a failed gate, a repeat flag, an incomparable score).
-_SELECTION_ELIGIBLE = "eligible"
-_SELECTION_WITHHELD = "withheld_incomplete_evidence"
-_SELECTION_NOT_ELIGIBLE = "not_eligible"
+#: Guide-set digest stamped on evidence a run synthesized without ever recording a plan (a direct
+#: call into result processing). Never a real 16-character sha256 prefix, so it cannot collide with
+#: one and can only ever explain an absence.
+_UNRECORDED_GUIDE_SET_DIGEST = "unrecorded-guide-set"
 
 
 def describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
@@ -194,10 +224,57 @@ def describe_shortfall_reasons(reasons: Mapping[str, int]) -> str:
     return "; ".join(parts) if parts else "no reason recorded"
 
 
-def _tally(values: Iterable[str]) -> dict[str, int]:
-    """Count each distinct value, ordered most frequent first, then by name for a stable output."""
-    counts = Counter(values)
-    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+def _describe_design_failure(error: BaseException) -> str:
+    """Why a transcript was dropped, in one line that is never blank.
+
+    ``str(exc)`` is empty for a bare ``RuntimeError()`` and for most cancellations, and a shortfall
+    recorded with no reason is indistinguishable from one recorded by mistake -- the same rule
+    ``models/evidence.py``'s ``failure_carries_a_reason`` validator enforces on screening evidence.
+    """
+    detail = str(error).strip()
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
+#: Reason the route through result processing reports when the pipeline exited 0 and staged no output
+#: directory at all. Named here because that route publishes ``partial`` like any thin result, and
+#: writing nothing is a failure to execute rather than a partial answer.
+_EXECUTION_ERROR_REASON = "missing_output"
+
+#: What each ``reason`` a screening exit publishes means in :class:`RunStatus` terms. Keyed on the
+#: reason rather than on ``status`` because the exits that spell themselves ``skipped`` mean opposite
+#: things: a channel the user switched off was never requested, while an engine that could not be
+#: executed is an error the caller must act on. A reason absent from here does not fall back to a
+#: guess -- see :func:`screening_run_status`.
+_RUN_STATUS_BY_REASON: Mapping[str, RunStatus] = {
+    "user_disabled": RunStatus.NOT_REQUESTED,
+    "no_candidates": RunStatus.NO_ELIGIBLE,
+    "nextflow_failed": RunStatus.EXECUTION_ERROR,
+    "nextflow_unavailable": RunStatus.EXECUTION_ERROR,
+    _EXECUTION_ERROR_REASON: RunStatus.EXECUTION_ERROR,
+}
+
+
+def screening_run_status(*, status: str, reason: str = "", required_evidence_missing: bool = False) -> RunStatus:
+    """Translate one screening exit's ``{status, reason}`` pair into the one run-status vocabulary.
+
+    Pure and total, because it is the single definition of what those seven string pairs mean (#100)
+    and every exit is stamped through it. The result is published beside ``status``/``reason``, never
+    instead of them.
+
+    ``required_evidence_missing`` is what lets a step whose own word is ``completed`` report
+    ``INCOMPLETE``: ``status`` is decided from the aggregate's self-report, which says nothing was
+    missing whenever aggregation itself is what failed, while the reconciled evidence knows the unit
+    was planned and published nothing. An unrecognised status word claims no completeness rather
+    than inheriting one, so a new exit cannot arrive silently reading ``COMPLETED``.
+    """
+    known = _RUN_STATUS_BY_REASON.get(reason)
+    if known is not None:
+        return known
+    if status == "missing":
+        return RunStatus.EXECUTION_ERROR
+    if status == "completed":
+        return RunStatus.INCOMPLETE if required_evidence_missing else RunStatus.COMPLETED
+    return RunStatus.INCOMPLETE
 
 
 class OffTargetGateCounts(NamedTuple):
@@ -413,10 +490,19 @@ class WorkflowConfig:
         stated_query_species = (query_species or "").strip()
         self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
         self.mirna_database = mirna_database
-        # Preserve explicit miRNA species order (values already normalized by CLI helpers)
+        # One species vocabulary for the miRNA channel too, in the caller's own order (#100). The CLI
+        # resolves --species into miRNA *database codes* -- `--species human,rhesus` becomes
+        # ['hsa', 'mml'] -- and those codes used to reach `nextflow_config['mirna_species']` raw, so
+        # run_mirna_seed_analysis wrote mirna_seed_hsa_evidence.json while the screening plan and the
+        # declared EvidenceRequirements were keyed on 'human'. The join key never matched: every
+        # mirna_seed unit reconciled FAILED on an ordinary run and its envelope landed in `unplanned`.
+        # Normalizing here is enough because this attribute is the single source of the plan entry, the
+        # pipeline parameter and the published summary, and MiRNADatabaseManager resolves a canonical
+        # name to the same source as its code (identical cache_key for mirgenedb; the mirbase sources
+        # are keyed on the canonical name outright), so the screen still reads the same database.
         if mirna_species:
-            filtered_species = [value for value in mirna_species if value]
-            self.mirna_species = list(dict.fromkeys(filtered_species))
+            normalized_mirna = [normalize_species_name(value) for value in mirna_species if value]
+            self.mirna_species = list(dict.fromkeys(normalized_mirna))
         else:
             self.mirna_species = []
         # Store transcriptome filter for later use
@@ -530,15 +616,32 @@ class SiRNAWorkflow:
         # What the one resolver produced: {species, kind, identity, index} per reference, plus the
         # requests it could not use. Empty until _resolve_screening_references runs.
         self._screening_references = ScreeningReferenceSet(kind=config.screening_kind)
-        # What those references intend to screen, digest-keyed to the guide set actually submitted.
-        # None until the Nextflow stage records one; a run with no resolved reference records an
-        # empty plan, which claims nothing.
+        # What this run intends to screen, digest-keyed to the guide set actually submitted. Recorded
+        # from the REQUESTED references, before resolution can drop one: a plan derived from what
+        # survived resolution cannot represent a missing reference at all (#100). None until the
+        # screening stage records one; a run that asked for nothing records an empty plan, which
+        # claims nothing.
         self._screening_plan: ScreeningPlan | None = None
+        # The plan reconciled against what the run actually published, and the authority for
+        # ``_completed_evidence_pairs``. None until screening reports, which is not the same as
+        # reporting that nothing completed.
+        self._screening_evidence: Reconciliation | None = None
+        # Digest of the guide set the plan and every evidence entry are keyed on. Held so a
+        # synthesized entry joins the plan entry it answers for rather than opening a second key.
+        self._guide_set_digest: str | None = None
+        # Distinct guides handed to the aligner, as counted when the FASTA was written. None means
+        # nothing was submitted through this workflow, never "all of them".
+        self._submitted_guide_count: int | None = None
         # Species requested for screening that never reached Nextflow, and why. A species with no
         # resolvable reference used to be filtered out of the species list before the pipeline ran,
         # so it appeared in no artifact at all: the run reported on the species it managed to screen
         # and said nothing about the one it dropped.
         self._species_screening_shortfalls: dict[str, str] = {}
+        # Transcripts a design failure dropped, and why -- the design-stage twin of the record above
+        # (#100). The parallel design path catches a failed batch and carries on, so the batch's
+        # transcripts vanished from the candidate pool while DesignResult.total_sequences kept
+        # counting them: the target set read as complete and nothing said which ids were lost.
+        self._design_input_shortfalls: dict[str, str] = {}
         self._representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         self._candidate_id_to_representative: dict[str, str] = {}
         # Channel/species pairs with completed evidence, spelled as ``ChannelRequirement.key`` so they
@@ -1083,6 +1186,14 @@ class SiRNAWorkflow:
         Parallelizes per-transcript design when not running from a user-provided input FASTA,
         to preserve backward-compatibility with tests and monkeypatching of design_from_file.
         Set env SIRNAFORGE_PARALLEL_DESIGN=1 to force parallel mode.
+
+        The two branches have inverse failure modes, and only the parallel one needs a record
+        (#100). The single-call branch has no try/except at all: a design failure propagates and the
+        run stops, so no result can claim a target set the designer never covered. The parallel
+        branch catches a failed batch (and, inside the batch, a failed transcript) and carries on,
+        which is the right call for a 40-transcript gene -- but the loss has to be written down, so
+        every dropped transcript id goes to ``_design_input_shortfalls`` and from there into
+        ``design_summary`` and ``SelectionInputs.design_input_shortfalls``.
         """
         # Create temporary FASTA file for siRNA design (preserves original behavior)
         temp_fasta = self.config.output_dir / "transcripts" / "temp_for_design.fasta"
@@ -1127,11 +1238,14 @@ class SiRNAWorkflow:
 
             for fut in as_completed(futures):
                 try:
-                    batch_results, batch_guide_mapping = fut.result()
+                    batch_results, batch_guide_mapping, batch_shortfalls = fut.result()
                     results.extend(batch_results)
                     # Merge guide-to-transcript mappings
                     for guide_seq, transcript_set in batch_guide_mapping.items():
                         guide_to_transcripts.setdefault(guide_seq, set()).update(transcript_set)
+                    # Transcripts the batch itself lost, recorded here rather than inside the worker so
+                    # only this thread ever writes the run's shortfall record.
+                    self._record_design_input_shortfalls(batch_shortfalls)
                     # Advance progress by the number of transcripts in this batch
                     batch = futures[fut]
                     progress.advance(task, len(batch))
@@ -1139,9 +1253,25 @@ class SiRNAWorkflow:
                     batch = futures[fut]
                     batch_transcript_ids = [t.transcript_id for t in batch]
                     logger.exception(f"Design failed for transcript batch {batch_transcript_ids}: {e}")
+                    # The whole batch's results are discarded with the exception, so every transcript
+                    # in it is unrepresented -- including any that had already been designed.
+                    self._record_design_input_shortfalls(
+                        dict.fromkeys(batch_transcript_ids, _describe_design_failure(e))
+                    )
                     progress.advance(task, len(batch))
 
         self._store_guide_to_transcripts(guide_to_transcripts)
+
+        if self._design_input_shortfalls:
+            # Said out loud at the step that lost them, not only in the JSON: the candidate counts
+            # printed two lines below are over the transcripts that survived, and nothing else on the
+            # console distinguishes a gene designed whole from one designed in part.
+            dropped = sorted(self._design_input_shortfalls)
+            console.print(
+                f"⚠️  {len(dropped)} of {total} transcript(s) were dropped by a design failure and are "
+                f"covered by no candidate: {', '.join(dropped)}"
+            )
+            logger.error(f"Design input shortfalls: {self._design_input_shortfalls}")
 
         # Merge candidates
         all_candidates: list[SiRNACandidate] = [c for dr in results for c in dr.candidates]
@@ -1252,17 +1382,25 @@ class SiRNAWorkflow:
 
         return batches
 
-    def _process_transcript_batch(self, batch: list[TranscriptInfo]) -> tuple[list[DesignResult], dict[str, set[str]]]:
-        """Process a batch of transcripts and return results plus guide-to-transcript mapping.
+    def _process_transcript_batch(
+        self, batch: list[TranscriptInfo]
+    ) -> tuple[list[DesignResult], dict[str, set[str]], dict[str, str]]:
+        """Process a batch of transcripts and return results, guide mapping and what it lost.
+
+        Runs in a worker thread, so it *returns* its shortfalls rather than writing them onto the
+        workflow: the caller merges them, and only the collecting thread mutates run state. A
+        transcript whose design raised here is dropped exactly as a whole failed batch is, so it is
+        the same loss and gets the same record (#100).
 
         Args:
             batch: List of transcripts to process
 
         Returns:
-            Tuple of (design_results, guide_to_transcripts_mapping)
+            Tuple of (design_results, guide_to_transcripts_mapping, dropped_transcript_id -> reason)
         """
         results: list[DesignResult] = []
         guide_to_transcripts: dict[str, set[str]] = {}
+        shortfalls: dict[str, str] = {}
 
         for transcript in batch:
             if not transcript.sequence:
@@ -1279,9 +1417,20 @@ class SiRNAWorkflow:
 
             except Exception as e:
                 logger.exception(f"Design failed for transcript {transcript.transcript_id}: {e}")
+                shortfalls[transcript.transcript_id] = _describe_design_failure(e)
                 continue
 
-        return results, guide_to_transcripts
+        return results, guide_to_transcripts, shortfalls
+
+    def _record_design_input_shortfalls(self, shortfalls: Mapping[str, str]) -> None:
+        """Record transcripts a design failure dropped, so a lost target cannot read as a designed one.
+
+        First reason wins per transcript, matching ``record_filter_verdict``'s rule: the per-transcript
+        reason a surviving batch reports is more specific than any later re-statement, and a transcript
+        belongs to exactly one batch, so the two records here cannot describe the same loss twice.
+        """
+        for transcript_id, reason in shortfalls.items():
+            self._design_input_shortfalls.setdefault(transcript_id, reason)
 
     def _apply_modifications_to_results(self, design_results: DesignResult) -> None:
         """Apply chemical modification patterns to all candidates in design results.
@@ -1360,7 +1509,15 @@ class SiRNAWorkflow:
         }
 
     async def step6_generate_reports(self, design_results: DesignResult) -> None:  # noqa: C901, PLR0912
-        """Step 6: Generate comprehensive reports."""
+        """Step 6: Generate comprehensive reports.
+
+        Four candidate tables, and the difference between them is the point (#100). ``candidates_all``
+        is every row; ``candidates_pass`` is the gate verdict and nothing else, kept exactly as it was
+        because it is the compat deliverable (narrowing it once deleted the whole output of an
+        unscreened run); ``candidates_qualified`` and ``candidates_provisional`` are the *selection*,
+        named as files so "which of these can I order?" does not depend on the reader knowing to filter
+        a column.
+        """
         # No user-facing top-candidates FASTA or text/json summaries are produced anymore.
         # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
         # prepares its own internal FASTA input under off_target/.
@@ -1372,66 +1529,13 @@ class SiRNAWorkflow:
         all_csv = base / "candidates_all.csv"
         pass_csv = base / "candidates_pass.csv"
         pass_fasta = base / "candidates_pass.fasta"
+        qualified_csv = base / "candidates_qualified.csv"
+        qualified_fasta = base / "candidates_qualified.fasta"
+        provisional_csv = base / "candidates_provisional.csv"
         report_file = self.config.output_dir / "orf_reports" / "orf_validation.txt"
-        is_mirna_mode = self.config.design_params.design_mode == DesignMode.MIRNA
 
         try:
-            # Single shared row-builder (models/sirna.py) so this CSV and DesignResult.save_csv
-            # can never drift on which columns they emit (issue #80 F2).
-            rows: list[dict[str, Any]] = [build_candidate_row(candidate) for candidate in design_results.candidates]
-
-            if rows:
-                all_df = pd.DataFrame(rows)
-            else:
-                template_cols = list(SiRNACandidateSchema.to_schema().columns.keys())
-                all_df = pd.DataFrame(columns=template_cols)
-
-            for col in ("seed_7mer_hits", "seed_8mer_hits"):
-                if col in all_df.columns:
-                    all_df[col] = all_df[col].astype("Int64")
-
-            if "passes_filters" not in all_df.columns:
-                all_df["passes_filters"] = pd.Series(dtype="object")
-
-            validated_all = SiRNACandidateSchema.validate(all_df)
-
-            if not is_mirna_mode:
-                mirna_cols = [
-                    "guide_pos1_base",
-                    "pos1_pairing_state",
-                    "seed_class",
-                    "supp_13_16_score",
-                    "seed_7mer_hits",
-                    "seed_8mer_hits",
-                    "seed_hits_weighted",
-                    "off_target_seed_risk_class",
-                ]
-                existing = [col for col in mirna_cols if col in validated_all.columns]
-                if existing:
-                    validated_all = validated_all.drop(columns=existing)
-
-            def _normalize_pass(value: Any) -> str:
-                normalized = "FAIL"
-                try:
-                    if value is True or (isinstance(value, int | float) and value == 1):
-                        normalized = "PASS"
-                    elif value is False or (isinstance(value, int | float) and value == 0):
-                        normalized = "FAIL"
-                    elif isinstance(value, str):
-                        cleaned = value.strip().upper()
-                        if cleaned in {"PASS", "TRUE", "YES"}:
-                            normalized = "PASS"
-                        elif cleaned in {"FAIL", "FALSE", "NO"}:
-                            normalized = "FAIL"
-                        else:
-                            normalized = cleaned
-                    else:
-                        normalized = "PASS" if bool(value) else "FAIL"
-                except Exception:
-                    normalized = "FAIL"
-                return normalized
-
-            validated_all["passes_filters"] = [_normalize_pass(value) for value in validated_all["passes_filters"]]
+            validated_all = self._build_candidate_frame(design_results.candidates)
             pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
 
             validated_all.to_csv(all_csv, index=False)
@@ -1444,6 +1548,13 @@ class SiRNAWorkflow:
                     self._write_pass_candidates_fasta(pass_df, pass_fasta)
                 except Exception as e:
                     logger.warning(f"Failed to write PASS candidates FASTA: {e}")
+
+            self._write_selection_exports(
+                validated_all,
+                qualified_csv=qualified_csv,
+                qualified_fasta=qualified_fasta,
+                provisional_csv=provisional_csv,
+            )
 
         except Exception as e:  # Do not fail workflow for reporting extras
             logger.warning(f"Failed to write all/pass CSVs: {e}")
@@ -1460,6 +1571,9 @@ class SiRNAWorkflow:
                 pass_csv=pass_csv,
                 pass_fasta=pass_fasta,
                 orf_report=report_file,
+                qualified_csv=qualified_csv,
+                qualified_fasta=qualified_fasta,
+                provisional_csv=provisional_csv,
             )
             manifest_path = base / "manifest.json"
             with manifest_path.open("w") as mf:
@@ -1496,6 +1610,12 @@ class SiRNAWorkflow:
             console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
         if pass_fasta.exists():
             console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
+        # The selection exports are #100's, and they get the same treatment: a qualified run with nothing
+        # eligible writes no qualified file, and saying otherwise would advertise an empty shortlist.
+        if qualified_csv.exists() or qualified_fasta.exists() or provisional_csv.exists():
+            console.print(
+                "   - Selection exports: sirnaforge/ (candidates_qualified.csv/.fasta, candidates_provisional.csv)"
+            )
         if report_path is not None and report_path.exists():
             console.print("   - Self-contained HTML report: sirnaforge/report.html")
         if summarize_path is not None and summarize_path.exists():
@@ -1516,6 +1636,128 @@ class SiRNAWorkflow:
             logger.warning(f"Failed to write Quilt package summary: {e}")
             return None
 
+    def _build_candidate_frame(self, candidates: Sequence[SiRNACandidate]) -> pd.DataFrame:
+        """The validated candidate table every export slices, from the one shared row builder.
+
+        Shared by step6 and by #100's off-target-only exports, so the two entry points cannot drift on
+        which columns they publish or on how ``passes_filters`` is spelled -- the reason the off-target
+        entry point could not simply grow its own writer.
+
+        Two dtype repairs before validation, both cases of a column that is *entirely* null:
+        ``seed_7mer_hits``/``seed_8mer_hits`` become ``Int64``, and a float-typed column arrives as
+        ``object`` because pandas has no float to infer from. The schema's class-level ``coerce`` never
+        reaches those fields, so an all-null ``mfe`` failed validation outright -- which is why a run of
+        pre-designed guides, none of which carries a folding energy, could produce no candidate table at
+        all. A column with even one value present already infers ``float64``, so this repair can only
+        ever fire on a column the run measured nowhere.
+
+        Raises:
+            pandera.errors.SchemaError: The rows do not satisfy ``SiRNACandidateSchema``. Callers that
+                treat a missing table as a reporting extra catch this themselves.
+        """
+        # Single shared row-builder (models/sirna.py) so this CSV and DesignResult.save_csv
+        # can never drift on which columns they emit (issue #80 F2).
+        rows: list[dict[str, Any]] = [build_candidate_row(candidate) for candidate in candidates]
+
+        if rows:
+            all_df = pd.DataFrame(rows)
+        else:
+            template_cols = list(SiRNACandidateSchema.to_schema().columns.keys())
+            all_df = pd.DataFrame(columns=template_cols)
+
+        for col in ("seed_7mer_hits", "seed_8mer_hits"):
+            if col in all_df.columns:
+                all_df[col] = all_df[col].astype("Int64")
+
+        for name, column in SiRNACandidateSchema.to_schema().columns.items():
+            dtype = str(column.dtype)
+            if not dtype.startswith("float") or name not in all_df.columns:
+                continue
+            if all_df[name].dtype == object and all_df[name].isna().all():
+                all_df[name] = all_df[name].astype(dtype)
+
+        if "passes_filters" not in all_df.columns:
+            all_df["passes_filters"] = pd.Series(dtype="object")
+
+        validated_all = SiRNACandidateSchema.validate(all_df)
+
+        if self.config.design_params.design_mode != DesignMode.MIRNA:
+            mirna_cols = [
+                "guide_pos1_base",
+                "pos1_pairing_state",
+                "seed_class",
+                "supp_13_16_score",
+                "seed_7mer_hits",
+                "seed_8mer_hits",
+                "seed_hits_weighted",
+                "off_target_seed_risk_class",
+            ]
+            existing = [col for col in mirna_cols if col in validated_all.columns]
+            if existing:
+                validated_all = validated_all.drop(columns=existing)
+
+        def _normalize_pass(value: Any) -> str:
+            normalized = "FAIL"
+            try:
+                if value is True or (isinstance(value, int | float) and value == 1):
+                    normalized = "PASS"
+                elif value is False or (isinstance(value, int | float) and value == 0):
+                    normalized = "FAIL"
+                elif isinstance(value, str):
+                    cleaned = value.strip().upper()
+                    if cleaned in {"PASS", "TRUE", "YES"}:
+                        normalized = "PASS"
+                    elif cleaned in {"FAIL", "FALSE", "NO"}:
+                        normalized = "FAIL"
+                    else:
+                        normalized = cleaned
+                else:
+                    normalized = "PASS" if bool(value) else "FAIL"
+            except Exception:
+                normalized = "FAIL"
+            return normalized
+
+        validated_all["passes_filters"] = [_normalize_pass(value) for value in validated_all["passes_filters"]]
+        return cast(pd.DataFrame, validated_all)
+
+    def _write_selection_exports(
+        self,
+        validated_all: pd.DataFrame,
+        *,
+        qualified_csv: Path,
+        qualified_fasta: Path,
+        provisional_csv: Path,
+    ) -> None:
+        """Write the two selection-named candidate tables from the resolved selection (#100).
+
+        Both are slices of the already-validated all-candidates frame, in its order -- which is the
+        selection's own ranking, because :meth:`_apply_post_screen_ranking` re-sorted the candidate list
+        step6 built these rows from. Re-filtering on something else, as ``candidates_pass.csv`` does on
+        ``passes_filters``, is what let a withheld candidate lead a "pass" list.
+
+        The CSVs are written even when empty, header and all: a qualified run that could qualify nobody
+        must publish that answer, and an absent file reads as "this version does not report it".
+        The FASTA is removed instead, mirroring ``candidates_pass.fasta`` -- an empty FASTA is not a
+        valid order list, and a stale one from a previous run in the same directory would be worse.
+        """
+        if "selection_state" not in validated_all.columns:
+            # An older row builder, or a frame that lost the column: say nothing rather than guess.
+            logger.warning("No selection_state column: candidates_qualified/provisional not written")
+            return
+
+        qualified_df = validated_all[validated_all["selection_state"] == SelectionState.ELIGIBLE.value].copy()
+        provisional_df = validated_all[validated_all["selection_state"] == SelectionState.PROVISIONAL.value].copy()
+        qualified_df.to_csv(qualified_csv, index=False)
+        provisional_df.to_csv(provisional_csv, index=False)
+
+        if qualified_df.empty:
+            qualified_fasta.unlink(missing_ok=True)
+        else:
+            try:
+                self._write_pass_candidates_fasta(qualified_df, qualified_fasta)
+            except Exception as e:
+                logger.warning(f"Failed to write qualified candidates FASTA: {e}")
+
     def _write_pass_candidates_fasta(self, pass_df: pd.DataFrame, output_path: Path) -> None:
         """Write passing candidates to FASTA, each header naming its selection state.
 
@@ -1524,8 +1766,12 @@ class SiRNAWorkflow:
         whole deliverable of an unscreened run (152 guides to 0 on a measured ``--input-fasta`` run), and
         a reader who splits on the state gets the narrower list whenever they want it.
 
+        Also writes ``candidates_qualified.fasta`` (#100), whose rows are already narrowed to the
+        eligible selection: one header format for both files, so the two order lists cannot disagree on
+        what a header means.
+
         Args:
-            pass_df: DataFrame containing passing candidates
+            pass_df: DataFrame of the candidates to write, in the order to write them
             output_path: Path to write the FASTA file
         """
         try:
@@ -1540,7 +1786,7 @@ class SiRNAWorkflow:
                     f"{row['id']} score={score:.1f}" if score is not None and not pd.isna(score) else str(row["id"])
                 )
                 state = row.get("selection_state")
-                if isinstance(state, str) and state and state != _SELECTION_ELIGIBLE:
+                if isinstance(state, str) and state and state != SelectionState.ELIGIBLE.value:
                     header = f"{header} selection={state}"
                 # A gate the run was told to only *warn* about still failed, and this file is an order
                 # list -- so the header says which. Without it a guide outside a GC window the user
@@ -1557,7 +1803,7 @@ class SiRNAWorkflow:
 
             # Use FastaUtils to write the sequences
             FastaUtils.save_sequences_fasta(sequences, output_path)
-            logger.info(f"Saved {len(sequences)} passing candidates to FASTA: {output_path}")
+            logger.info(f"Saved {len(sequences)} candidates to FASTA: {output_path}")
 
         except Exception as e:
             logger.error(f"Failed to write PASS candidates FASTA: {e}")
@@ -1614,9 +1860,18 @@ class SiRNAWorkflow:
         all_csv: Path,
         pass_csv: Path,
         pass_fasta: Path,
-        orf_report: Path,
+        orf_report: Path | None = None,
+        qualified_csv: Path | None = None,
+        qualified_fasta: Path | None = None,
+        provisional_csv: Path | None = None,
     ) -> dict[str, Any]:
-        """Create a manifest JSON describing generated outputs (checksums, sizes, counts)."""
+        """Create a manifest JSON describing generated outputs (checksums, sizes, counts).
+
+        The three selection exports (#100) default to ``None`` and are then absent from ``files``
+        entirely, which is the honest record for a caller that published no selection: an
+        ``exists: false`` entry would claim the run tried to write one. ``orf_report`` follows the same
+        rule for the off-target-only entry point, which validates no ORF and so never asks for one.
+        """
         now = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
         files: dict[str, dict[str, Any]] = {}
 
@@ -1648,7 +1903,19 @@ class SiRNAWorkflow:
         add_file("candidates_all_csv", all_csv, "csv", {"rows": csv_rows(all_csv)})
         add_file("candidates_pass_csv", pass_csv, "csv", {"rows": csv_rows(pass_csv)})
         add_file("candidates_pass_fasta", pass_fasta, "fasta", {"sequences": self._count_fasta_sequences(pass_fasta)})
-        add_file("orf_validation_report", orf_report, "tsv")
+        if qualified_csv is not None:
+            add_file("candidates_qualified_csv", qualified_csv, "csv", {"rows": csv_rows(qualified_csv)})
+        if qualified_fasta is not None:
+            add_file(
+                "candidates_qualified_fasta",
+                qualified_fasta,
+                "fasta",
+                {"sequences": self._count_fasta_sequences(qualified_fasta)},
+            )
+        if provisional_csv is not None:
+            add_file("candidates_provisional_csv", provisional_csv, "csv", {"rows": csv_rows(provisional_csv)})
+        if orf_report is not None:
+            add_file("orf_validation_report", orf_report, "tsv")
 
         # Scoring metadata: every named vector with its weights, so a row's weight_vector column
         # resolves to the exact numbers that produced it. Weights are never altered at runtime, so
@@ -1676,6 +1943,79 @@ class SiRNAWorkflow:
             "files": files,
         }
 
+    def write_offtarget_only_exports(self, candidates: Sequence[SiRNACandidate]) -> dict[str, str]:
+        """Publish the candidate tables and the manifest for a run of pre-designed guides (#100).
+
+        ``run_offtarget_only_workflow`` bypasses step5 and step6 entirely, so it used to write no
+        candidate table at all: its whole answer was a count of candidates and an off-target status,
+        and ``sirnaforge report <output_dir>`` -- which the command itself tells the user to run next --
+        failed with "no candidates_all.csv". The same four tables step6 writes are written here, into
+        the same ``sirnaforge/`` sub-directory and from the same
+        :meth:`_build_candidate_frame`, so one column set and one directory shape serve both entry
+        points and the report reader needs no special case.
+
+        What is *not* published is as deliberate. A pre-designed guide arrives with no design score and
+        no transcript context, so ``design_score``, ``composite_score`` and every accessibility column
+        stay null and ``scored_after_screening`` stays False: score-unavailable is the honest cell.
+        Deriving accessibility from the guide alone would be a fabricated target measurement, and
+        falling back to a design score would invent a potency claim for a guide this tool did not
+        design. Nothing here writes an ORF report either, because no ORF was validated.
+
+        Returns:
+            Written file name -> path, for the caller's own result dictionary. Only files that exist:
+            the qualified FASTA is absent when nothing qualified.
+        """
+        base = self.config.output_dir / "sirnaforge"
+        base.mkdir(parents=True, exist_ok=True)
+        all_csv = base / "candidates_all.csv"
+        pass_csv = base / "candidates_pass.csv"
+        pass_fasta = base / "candidates_pass.fasta"
+        qualified_csv = base / "candidates_qualified.csv"
+        qualified_fasta = base / "candidates_qualified.fasta"
+        provisional_csv = base / "candidates_provisional.csv"
+        manifest_path = base / "manifest.json"
+
+        validated_all = self._build_candidate_frame(candidates)
+        pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
+        validated_all.to_csv(all_csv, index=False)
+        pass_df.to_csv(pass_csv, index=False)
+        if pass_df.empty:
+            pass_fasta.unlink(missing_ok=True)
+        else:
+            try:
+                self._write_pass_candidates_fasta(pass_df, pass_fasta)
+            except Exception as e:
+                logger.warning(f"Failed to write PASS candidates FASTA: {e}")
+
+        self._write_selection_exports(
+            validated_all,
+            qualified_csv=qualified_csv,
+            qualified_fasta=qualified_fasta,
+            provisional_csv=provisional_csv,
+        )
+
+        manifest = self._build_fair_manifest(
+            all_csv=all_csv,
+            pass_csv=pass_csv,
+            pass_fasta=pass_fasta,
+            qualified_csv=qualified_csv,
+            qualified_fasta=qualified_fasta,
+            provisional_csv=provisional_csv,
+        )
+        with manifest_path.open("w") as mf:
+            json.dump(manifest, mf, indent=2)
+
+        written = {
+            "candidates_all_csv": all_csv,
+            "candidates_pass_csv": pass_csv,
+            "candidates_pass_fasta": pass_fasta,
+            "candidates_qualified_csv": qualified_csv,
+            "candidates_qualified_fasta": qualified_fasta,
+            "candidates_provisional_csv": provisional_csv,
+            "manifest_json": manifest_path,
+        }
+        return {name: str(path) for name, path in written.items() if path.exists()}
+
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict[str, Any]:
         """Step 5: Detect repeat elements, then run off-target analysis via the Nextflow pipeline.
 
@@ -1698,7 +2038,7 @@ class SiRNAWorkflow:
             }
             # Nothing to rank, but every step5 exit still publishes a selection outcome.
             self._apply_post_screen_ranking(design_results)
-            return {"status": "skipped", "reason": "no_candidates"}
+            return self._publish_run_status({"status": "skipped", "reason": "no_candidates"})
 
         # Honour the skip request BEFORE touching any reference: materializing the default
         # transcriptomes downloads and indexes multi-gigabyte cDNA files, and repeat detection
@@ -1717,7 +2057,7 @@ class SiRNAWorkflow:
             # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
             # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
             self._apply_post_screen_ranking(design_results)
-            return {"status": "skipped", "reason": "user_disabled"}
+            return self._publish_run_status({"status": "skipped", "reason": "user_disabled"})
 
         # One `finally`, so selection runs on every exit: the returns, the caught Nextflow failure, and
         # an exception that propagates. Not a try/except, because `_prepare_offtarget_input`'s
@@ -1730,6 +2070,9 @@ class SiRNAWorkflow:
             # Resolve the screening references once; repeat detection and Nextflow both reuse them
             # instead of each fetching/indexing their own copy.
             additional_params: dict[str, Any] = dict(self.config.nextflow_config)
+            # Before resolution, so a reference that cannot be fetched is still a planned unit that
+            # reconciles as failed rather than a species that was never mentioned again (#100).
+            self._record_screening_plan(input_fasta, additional_params)
             has_transcriptome = await self._resolve_screening_references(additional_params)
             self._repeat_summary = self._run_repeat_detection(candidates_for_offtarget)
 
@@ -1743,7 +2086,10 @@ class SiRNAWorkflow:
             except Exception as e:
                 console.print(f"⚠️  Nextflow execution failed: {e}")
                 logger.exception("Nextflow pipeline execution error")
-                return {"status": "skipped", "reason": "nextflow_failed", "error": str(e)}
+                # An aborted screen leaves the gates undecided, not unrun (#106). Only the candidates
+                # that reached no gate: the failure can be raised after integration already gated some.
+                self._gate_without_screening_evidence(candidates_for_offtarget)
+                return self._publish_run_status({"status": "skipped", "reason": "nextflow_failed", "error": str(e)})
         finally:
             self._apply_post_screen_ranking(design_results)
 
@@ -1817,195 +2163,172 @@ class SiRNAWorkflow:
 
         Every exclusion is counted by reason in :attr:`_selection_summary`, because a qualified run that
         found nothing eligible and one that never produced the evidence both leave the shortlist empty.
+
+        The decision itself is :func:`sirnaforge.core.selection.select` (#100): this method builds the
+        views, applies the answer to the live candidates and keeps the console/logger messages, which
+        are the user-facing half of the contract. ``EXPLORATORY``'s retained-but-incomplete candidates
+        now carry ``SelectionState.PROVISIONAL`` instead of the same ``eligible`` a fully evidenced one
+        gets -- they still rank (below complete evidence) and still enter ``top_candidates``.
+
+        The decision itself lives in :meth:`_apply_selection`, which knows nothing about
+        ``DesignResult``: the off-target-only entry point has no design result at all and must still
+        reach the same answer through the same code rather than a second copy of it (#100).
         """
-        policy = getattr(self.config, "resolved_policy", None)
-        run_mode = policy.run_mode if policy is not None else None
-        qualified = run_mode is RunMode.QUALIFIED
+        design_results.top_candidates = self._apply_selection(design_results.candidates)
 
-        candidates = design_results.candidates
-        scored_count = sum(1 for c in candidates if c.scored_after_screening)
-        # Mixed scales: some candidates carry a post-screen score and some do not, so the unscored ones
-        # cannot be ranked against them. A wholly unscored list is not mixed; the evidence rule answers
-        # that case instead.
-        mixed_scales = 0 < scored_count < len(candidates)
+    def _apply_selection(self, candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+        """Decide the selection over ``candidates``, apply it to them in place, and return the shortlist.
 
-        # Two questions. `any_shortfall` orders: exploratory retains an incomplete candidate but must
-        # not let it outrank a complete one, and nothing is *required* in that mode, so the required set
-        # is empty and cannot express the ordering. `required_shortfall` disqualifies, in qualified only.
-        any_shortfall = {c.id: self._evidence_shortfall(c, required_only=False) for c in candidates}
-        required_shortfall = {c.id: self._required_evidence_shortfall(c) for c in candidates}
-        candidates.sort(
-            key=lambda c: (not any_shortfall[c.id], bool(c.scored_after_screening), ranking_score(c)),
-            reverse=True,
-        )
+        Everything :meth:`_apply_post_screen_ranking` does except naming the object that holds the
+        shortlist, so ``run_offtarget_only_workflow`` -- which bypasses step5 and therefore holds no
+        ``DesignResult`` -- publishes a selection under the same rules, the same states and the same
+        console messages (#100). Before this split that entry point never selected at all: every
+        candidate it screened kept ``SelectionState.NOT_SELECTED``, the model default.
 
-        # A list, not a dict keyed by id: duplicate ids are refused before screening, but selection
-        # still runs on such a list via step5's `finally`, and a dict would collapse two exclusions.
-        shortfalls: list[tuple[str, tuple[str, ...]]] = []
-        rankable: list[SiRNACandidate] = []
-        repeat_excluded = 0
-        filter_excluded = 0
-        unscored_excluded = 0
-        # The repeat exclusion consults the gate's action too. It used to fire ahead of the
-        # passes_filters test and independently of it, so `max_repeat_transcript_fraction=warn` was
-        # worse than useless: the row flipped to PASS -- putting the guide into the order list -- while
-        # the guide stayed out of the shortlist anyway, and nothing on the row explained why.
-        repeat_action = self._filter_action_for(
-            "max_repeat_transcript_fraction", self.config.design_params.filters.max_repeat_transcript_fraction
-        )
-        repeat_rejects = repeat_action is FilterAction.FAIL
-        for candidate in candidates:
-            if candidate.repeat_flagged and repeat_rejects:
-                repeat_excluded += 1
-                continue
-            if not self._passes_filters(candidate):
-                filter_excluded += 1
-                continue
-            missing = required_shortfall[candidate.id]
-            if missing and qualified:
-                shortfalls.append((candidate.id, missing))
-                continue
-            if mixed_scales and not candidate.scored_after_screening:
-                unscored_excluded += 1
-                continue
-            rankable.append(candidate)
+        Re-sorts ``candidates`` in place (the CSV writers emit them in this order) and returns the
+        first ``top_n`` eligible candidates.
+        """
+        # Before the views are built, because eligibility reads this gate's verdict off the candidate
+        # and a gate that never ran has none to read (#105).
+        self._complete_isoform_coverage_verdicts(candidates)
+        views = tuple(self._candidate_view(candidate, ordinal) for ordinal, candidate in enumerate(candidates))
+        result = select(views, self._selection_inputs())
 
-        design_results.top_candidates = rankable[: self.config.top_n]
+        # Ordinals, not ids or identity: duplicate ids are refused before screening, but selection still
+        # runs on such a list via step5's `finally`, and a dict keyed by id would collapse two answers.
+        by_ordinal = list(candidates)
+        # Re-sorted in place, because step6 writes the CSVs in this list's order.
+        candidates[:] = [by_ordinal[ordinal] for ordinal in result.order]
+        top_candidates = [by_ordinal[ordinal] for ordinal in result.top_ordinals]
         # On the candidate, not bolted onto a dataframe later, so both CSV writers emit one column set
         # from build_candidate_row and the FASTA header can read it.
-        eligible_ids = {id(candidate) for candidate in rankable}
-        withheld_ids = {candidate_id for candidate_id, _ in shortfalls}
-        for candidate in candidates:
-            if id(candidate) in eligible_ids:
-                candidate.selection_state = _SELECTION_ELIGIBLE
-            elif candidate.id in withheld_ids:
-                candidate.selection_state = _SELECTION_WITHHELD
-            else:
-                candidate.selection_state = _SELECTION_NOT_ELIGIBLE
-        self._eligible_candidate_ids = frozenset(candidate.id for candidate in rankable)
-        self._selection_summary = {
-            "run_mode": run_mode.value if run_mode is not None else None,
-            "eligible_candidates": len(rankable),
-            "top_candidates": len(design_results.top_candidates),
-            "scored_after_screening": scored_count,
-            "repeat_excluded": repeat_excluded,
-            "filter_excluded": filter_excluded,
-            "evidence_excluded": len(shortfalls),
-            "unscored_excluded": unscored_excluded,
-            # Every distinct reason with its cost, not one example: a missing species alignment and a
-            # missing coverage annotation are different problems with different fixes.
-            "evidence_shortfall_reasons": _tally(reason for _, reasons in shortfalls for reason in reasons),
-            # Run-level, and not derivable from the per-candidate reasons above: the loop `continue`s on
-            # a failed gate before it reaches the evidence check, so a run whose screen produced nothing
-            # AND whose candidates also fail a gate reports no shortfall reasons at all.
-            "required_evidence_missing": self._missing_required_evidence(),
-        }
+        for selected in result.per_candidate:
+            by_ordinal[selected.ordinal].selection_state = selected.state.value
+        self._eligible_candidate_ids = frozenset(by_ordinal[ordinal].id for ordinal in result.eligible_ordinals)
+        self._selection_summary = result.summary
+
+        summary = result.summary
+        withheld = int(summary["evidence_excluded"])
+        scored_count = int(summary["scored_after_screening"])
+        provisional = int(summary["provisional_candidates"])
         logger.info(
-            f"Re-ranked {len(rankable)} eligible candidates after screening (excluded {repeat_excluded} "
-            f"repeat-flagged, {filter_excluded} failing a gate, {len(shortfalls)} for incomplete required "
-            f"evidence, {unscored_excluded} for an incomparable score)"
+            f"Re-ranked {len(result.eligible_ordinals)} eligible candidates after screening (excluded "
+            f"{summary['repeat_excluded']} repeat-flagged, {summary['filter_excluded']} failing a gate, "
+            f"{withheld} for incomplete required evidence, {summary['unscored_excluded']} for an "
+            "incomparable score)"
         )
-        if shortfalls:
-            reasons = cast(dict[str, int], self._selection_summary["evidence_shortfall_reasons"])
+        if withheld:
+            reasons = cast(dict[str, int], summary["evidence_shortfall_reasons"])
             logger.error(
-                f"{len(shortfalls)} of {len(candidates)} candidates are held out of the qualified shortlist for "
+                f"{withheld} of {len(candidates)} candidates are held out of the qualified shortlist for "
                 f"incomplete required evidence: {reasons}. Re-run with the missing evidence, or use "
                 "run_mode=exploratory to retain them with that scope stated."
             )
             # The reasons, not a generic sentence about screening: an unknown caused by a coverage
             # annotation gap is not a screening failure and does not have the same fix.
             console.print(
-                f"⚠️  {len(shortfalls)} candidate(s) excluded from the qualified shortlist "
+                f"⚠️  {withheld} candidate(s) excluded from the qualified shortlist "
                 f"({describe_shortfall_reasons(reasons)}). This run cannot qualify them; "
                 "re-run with the missing evidence, or use run_mode=exploratory to keep them labelled."
             )
             console.print(
                 "   ↳ they remain in candidates_all.csv and candidates_pass.csv with "
-                f"selection_state={_SELECTION_WITHHELD}"
+                f"selection_state={SelectionState.WITHHELD.value}"
             )
-        if mixed_scales:
+        if provisional:
+            # Retained, ranked and exported -- but named, because an exploratory result that reads like a
+            # qualified one is the confusion this state exists to remove.
+            console.print(
+                f"ℹ️  {provisional} candidate(s) are provisional: retained on incomplete evidence and "
+                "ranked below every fully evidenced candidate (candidates_provisional.csv)."
+            )
+        if 0 < scored_count < len(candidates):
             logger.error(
                 f"{len(candidates) - scored_count} of {len(candidates)} candidates could not be scored after "
                 "screening; they keep design-time scores and are excluded from top_candidates because the two "
                 "scores are not comparable."
             )
+        return top_candidates
 
-    def _missing_required_evidence(self) -> list[str]:
-        """Required channel/species pairs this run produced no completed evidence for.
+    def _complete_isoform_coverage_verdicts(self, candidates: Sequence[SiRNACandidate]) -> None:
+        """Apply the coverage gate to any candidate that never reached it, so its verdict exists (#105).
 
-        A property of the run, not of a candidate, so an empty shortlist can be explained even when
-        every candidate was excluded by something else first. Empty in design-only and exploratory
-        modes, where nothing is required.
+        ``_apply_isoform_coverage_gate`` is reached from :meth:`_score_and_gate`, which only the
+        integration path calls -- and only for a candidate whose query species was actually screened. So
+        on every other route out of screening (``nextflow_unavailable``, ``nextflow_failed``, the basic
+        sequence-only fallback, a missing output directory, and any unscreened candidate on the
+        integration path itself) a configured floor reached no candidate at all: ``filter_verdicts``
+        held no ``min_isoform_coverage`` key and ``build_candidate_row`` exported ``not_evaluated``,
+        which reads as "no floor was configured" rather than "the floor could not be checked". That is
+        the residual half of #105 -- the WARN half was fixed by routing the gate through the verdict
+        recorder; this is a gate that never ran.
+
+        Selection is the one point every one of those paths passes through, so the gate is completed
+        here. Only where no verdict was recorded yet: the call that held the measurement owns the
+        answer, and re-deciding would log the same rejection twice and re-offer the rejection label.
+
+        Coverage is only computed during post-screen scoring, so on those paths there is nothing to
+        compare and the verdict is ``UNKNOWN`` -- which never rejects, but does withhold a candidate
+        from a QUALIFIED shortlist, because a run that cannot check a floor it was given has not met
+        it. With no floor configured the gate still makes no claim and the verdict stays
+        ``NOT_EVALUATED``, so a default run is unaffected.
         """
-        policy = getattr(self.config, "resolved_policy", None)
-        if policy is None:
-            return []
-        completed = self._completed_evidence_pairs
-        return sorted(
-            f"{channel}:{species}"
-            for channel, species in policy.evidence_requirements.required_pairs
-            if completed is None or (channel, species) not in completed
-        )
-
-    def _required_evidence_shortfall(self, candidate: SiRNACandidate) -> tuple[str, ...]:
-        """Why this candidate cannot qualify: the required evidence it does not have.
-
-        Two ways to be short, reported by name so the summary can say which. A declared ``REQUIRED``
-        channel/species pair with no completed evidence -- the query-species transcriptome pair answered
-        per candidate from ``off_target_screened``, any other from the run-level record, which is the
-        finest granularity the evidence producers offer today. Or a gate whose verdict is ``UNKNOWN``
-        while ``unknown_evidence_action`` is ``FAIL``.
-
-        The unknown rule is scoped to gates *all* of whose channels are required. A subset and not an
-        intersection: ``max_total_offtarget_hits`` counts the transcriptome and miRNA channels together,
-        so an absent miRNA aggregate alone makes it ``UNKNOWN``, and an intersection put it in scope --
-        emptying the shortlist of a complete screen over a channel the policy calls exploratory, the
-        mirror of the defect the scoping exists to prevent (#101). A gate reading no channel at all
-        (``min_isoform_coverage``, the design-stage gates) is always in scope: its unknown is the run's.
-        """
-        return self._evidence_shortfall(candidate, required_only=True)
-
-    def _evidence_shortfall(self, candidate: SiRNACandidate, *, required_only: bool) -> tuple[str, ...]:
-        """The evidence this candidate does not have, named so a summary can say which.
-
-        ``required_only=True`` is what disqualifies in ``qualified`` mode. ``False`` is every declared
-        pair and every undecided gate whatever its requiredness, and it is what **orders** candidates --
-        a separate question, because nothing is required in ``exploratory`` mode, so the required set is
-        always empty there and could not put an incomplete candidate below a complete one.
-        """
-        policy = getattr(self.config, "resolved_policy", None)
-        if policy is None:
-            return ()
-        requirements = policy.evidence_requirements
-        completed = self._completed_evidence_pairs
-        in_scope_pairs = (
-            requirements.required_pairs
-            if required_only
-            else frozenset(entry.key for entry in requirements.channel_requirements)
-        )
-
-        missing: list[str] = []
-        for channel, species in sorted(in_scope_pairs):
-            if channel == ScreeningChannel.TRANSCRIPTOME.value and species == self._query_species:
-                if not candidate.off_target_screened:
-                    missing.append(f"no_evidence:{channel}:{species}")
+        for candidate in candidates:
+            if "min_isoform_coverage" in (candidate.filter_verdicts or {}):
                 continue
-            if completed is None or (channel, species) not in completed:
-                missing.append(f"no_evidence:{channel}:{species}")
+            self._apply_isoform_coverage_gate(candidate)
 
-        # An UNKNOWN verdict is a shortfall for ordering purposes always; for *disqualifying* purposes
-        # only when the run said an undecided gate should fail.
-        unknown_counts = not required_only or requirements.unknown_evidence_action is UnknownEvidenceAction.FAIL
-        if unknown_counts:
-            in_scope_channels = {channel for channel, _ in in_scope_pairs}
-            for filter_id, verdict in sorted((candidate.filter_verdicts or {}).items()):
-                if verdict != FilterEvaluation.UNKNOWN.value:
-                    continue
-                channels = POST_SCREEN_FILTER_CHANNELS.get(filter_id)
-                if channels is None or not required_only or {c.value for c in channels} <= in_scope_channels:
-                    missing.append(f"unknown:{filter_id}")
+    def _candidate_view(self, candidate: SiRNACandidate, ordinal: int) -> CandidateView:
+        """One candidate as the facts selection reads, and nothing else.
 
-        return tuple(dict.fromkeys(missing))
+        ``unknown_filter_ids`` is computed here rather than inside selection so that module never has
+        to know how a verdict was spelled -- only that it was undecided.
+        """
+        verdicts = candidate.filter_verdicts or {}
+        return CandidateView(
+            candidate_id=candidate.id,
+            ordinal=ordinal,
+            passes_filters=self._passes_filters(candidate),
+            repeat_flagged=bool(candidate.repeat_flagged),
+            scored_after_screening=bool(candidate.scored_after_screening),
+            off_target_screened=bool(candidate.off_target_screened),
+            ranking_score=ranking_score(candidate),
+            unknown_filter_ids=frozenset(
+                filter_id for filter_id, verdict in verdicts.items() if verdict == FilterEvaluation.UNKNOWN.value
+            ),
+        )
+
+    def _selection_inputs(self) -> SelectionInputs:
+        """Everything selection needs that is a property of the run rather than of one candidate.
+
+        One builder, so every entry point that selects (step5's three exits, and #100's
+        offtarget-only path) asks the same question of the same policy and the same evidence record.
+
+        ``repeat_rejects`` consults the repeat gate's own action. It used to fire ahead of the
+        ``passes_filters`` test and independently of it, so ``max_repeat_transcript_fraction=warn`` was
+        worse than useless: the row flipped to PASS -- putting the guide into the order list -- while
+        the guide stayed out of the shortlist anyway, and nothing on the row explained why.
+
+        ``design_input_shortfalls`` is snapshotted, not aliased: :class:`SelectionInputs` is frozen and
+        must describe the run as it was when the decision was made. It reaches the summary as
+        run-level ``required_evidence_missing`` entries only -- a batch failure disqualifies no
+        individual candidate, because the guides that *were* designed are as well evidenced as before;
+        what it denies is the claim that the target set was covered (#100).
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        repeat_action = self._filter_action_for(
+            "max_repeat_transcript_fraction", self.config.design_params.filters.max_repeat_transcript_fraction
+        )
+        return SelectionInputs(
+            run_mode=policy.run_mode if policy is not None else None,
+            requirements=policy.evidence_requirements if policy is not None else None,
+            completed_pairs=self._completed_evidence_pairs,
+            query_species=self._query_species,
+            filter_channels=POST_SCREEN_FILTER_CHANNELS,
+            repeat_rejects=repeat_action is FilterAction.FAIL,
+            top_n=self.config.top_n,
+            design_input_shortfalls=dict(self._design_input_shortfalls),
+        )
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
         """Prepare FASTA input file for off-target analysis with deduplication.
@@ -2056,6 +2379,10 @@ class SiRNAWorkflow:
         # above, so this id->id lookup is O(1) and never needs to compare candidates by value.
         self._representative_to_candidates = representative_to_candidates
         self._candidate_id_to_representative = candidate_id_to_representative
+        # What "submitted" means in every evidence entry this run synthesizes: the FASTA records, not
+        # the candidate count. Recorded here because this is the only place that knows it, and an
+        # entry claiming a submitted count nothing observed is the defect the counts model exists for.
+        self._submitted_guide_count = len(sequences)
 
         console.print(
             f"📝 Prepared off-target input: {len(candidates)} candidates → "
@@ -2412,7 +2739,13 @@ class SiRNAWorkflow:
             "max_memory": nf_config.max_memory,
             "max_time": nf_config.max_time,
             "screen_species": sorted(screen_species),
-            "additional_params": self._normalize_param_dict(additional_params),
+            # ``evidence_plan`` is deliberately excluded: it is a path inside this run's own output
+            # directory, so keying the shared work dir on it would give every run a fresh one and
+            # rebuild every index. The plan still reaches the pipeline as a staged path input, so
+            # Nextflow re-runs the aggregation task by itself when its content changes (#100).
+            "additional_params": self._normalize_param_dict(
+                {key: value for key, value in additional_params.items() if key != "evidence_plan"}
+            ),
             "extra_params": self._normalize_param_dict(nf_config.extra_params),
         }
         cache_key = stable_cache_key(payload)
@@ -2519,38 +2852,40 @@ class SiRNAWorkflow:
         except OSError as exc:
             logger.debug(f"Unable to create Nextflow workdir symlink: {exc}")
 
+    @staticmethod
+    def _read_results_json(results_dir: Path, filename: str) -> dict[str, Any] | None:
+        """One JSON object published by the pipeline, or None when there is nothing readable.
+
+        The aggregated subdirectory wins over the results root, because that is where publishDir puts
+        the aggregate; an unreadable or non-object payload is None, never a partially-trusted dict.
+        """
+        results_path = Path(results_dir)
+        search_roots = [results_path / "aggregated", results_path]
+        for root in search_roots:
+            candidate = root / filename
+            if not candidate.exists():
+                continue
+            try:
+                with candidate.open() as fh:
+                    payload = json.load(fh)
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                logger.warning(f"Failed to read aggregated summary {candidate}: {exc}")
+                return None
+            if isinstance(payload, dict):
+                return cast(dict[str, Any], payload)
+            logger.warning(f"Aggregated summary {candidate} is not a JSON object; skipping")
+            return None
+        return None
+
     def _load_offtarget_aggregates(self, results_dir: Path) -> dict[str, Any]:
         """Load aggregated Nextflow summary JSON files when available."""
         aggregated: dict[str, Any] = {}
-        results_path = Path(results_dir)
-        search_roots: list[Path] = []
-        agg_dir = results_path / "aggregated"
-        if agg_dir.exists():
-            search_roots.append(agg_dir)
-        search_roots.append(results_path)
 
-        def _load_json(filename: str) -> dict[str, Any] | None:
-            for root in search_roots:
-                candidate = root / filename
-                if not candidate.exists():
-                    continue
-                try:
-                    with candidate.open() as fh:
-                        payload = json.load(fh)
-                except Exception as exc:  # pragma: no cover - defensive logging path
-                    logger.warning(f"Failed to read aggregated summary {candidate}: {exc}")
-                    return None
-                if isinstance(payload, dict):
-                    return cast(dict[str, Any], payload)
-                logger.warning(f"Aggregated summary {candidate} is not a JSON object; skipping")
-                return None
-            return None
-
-        transcriptome_summary = _load_json("combined_summary.json")
+        transcriptome_summary = self._read_results_json(results_dir, "combined_summary.json")
         if transcriptome_summary:
             aggregated["transcriptome"] = transcriptome_summary
 
-        mirna_summary = _load_json("combined_mirna_summary.json")
+        mirna_summary = self._read_results_json(results_dir, "combined_mirna_summary.json")
         if mirna_summary:
             aggregated["mirna"] = mirna_summary
 
@@ -2626,17 +2961,64 @@ class SiRNAWorkflow:
             settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
         return settings
 
-    def _record_screening_plan(self, input_fasta: Path, additional_params: Mapping[str, Any]) -> None:
-        """Record what this run intends to screen, one entry per resolved reference.
+    def _requested_screening_units(self) -> tuple[tuple[tuple[str, str | None], ...], tuple[str, ...]]:
+        """What this run asked to screen: transcriptome ``(species, reference_id)`` pairs, then miRNA species.
+
+        Requested, not resolved. Every species the run named is here whether or not a reference for it
+        can be fetched, which is the whole point: a species dropped by ``_reject_reference`` has to
+        reconcile as a failure, and it can only do that if the plan already holds an entry for it.
+
+        A channel nobody asked for gets no entry at all -- that is what keeps ``NOT_REQUESTED``
+        distinguishable from ``FAILED``. So transcriptome units exist only when a screening reference
+        was requested, and miRNA units only when both a database and a species list were given, which
+        is the same condition that populates the pipeline's ``mirna_db``/``mirna_species`` parameters.
+        """
+        transcriptome: dict[str, str | None] = {}
+        if self.config.screening_requests:
+            # The request's own identity is the reference_id: the reconciler adopts the plan's value,
+            # and an in-container emitter never knows it.
+            for request in self.config.screening_requests:
+                if request.declared_species:
+                    transcriptome.setdefault(normalize_species_name(request.declared_species), request.value)
+            for species in self.config.screen_species:
+                transcriptome.setdefault(normalize_species_name(species), None)
+
+        mirna_species = (
+            tuple(dict.fromkeys(normalize_species_name(species) for species in self.config.mirna_species))
+            if self.config.mirna_database and self.config.mirna_species
+            else ()
+        )
+        return tuple(transcriptome.items()), mirna_species
+
+    def _record_screening_plan(self, input_fasta: Path, additional_params: dict[str, Any]) -> None:
+        """Record what this run intends to screen, and hand the plan to the pipeline.
+
+        Called BEFORE ``_resolve_screening_references``, because that is where a reference can be
+        dropped: a plan built from what survived resolution cannot represent a missing one, so the
+        species whose index failed to build simply vanished from every artifact (#100). The plan is
+        also serialized to ``screening_plan.json`` and passed on as ``evidence_plan``, so the
+        pipeline's own aggregation reconciles against the same expectation this workflow holds.
 
         The guide-set digest is the submitted FASTA's own hash: two screens of one reference with
         different guide sets are different evidence, and joining them would attribute one screen's
         counts to the other's guides.
         """
-        self._screening_plan = self._screening_references.plan(
-            guide_set_digest=self._file_hash_sha256(input_fasta)[:16],
+        transcriptome, mirna_species = self._requested_screening_units()
+        self._guide_set_digest = guide_set_digest(input_fasta)
+        self._screening_plan = build_plan(
+            guide_set_digest=self._guide_set_digest,
+            transcriptome=transcriptome,
+            mirna_species=mirna_species,
             search_settings=self._plan_search_settings(additional_params),
         )
+
+        plan_file = self.config.output_dir / "screening_plan.json"
+        try:
+            plan_file.write_text(self._screening_plan.model_dump_json(indent=2))
+        except OSError as exc:  # pragma: no cover - defensive logging path
+            logger.warning(f"Could not write the screening plan to {plan_file}: {exc}")
+            return
+        additional_params["evidence_plan"] = str(plan_file)
 
     def _summarize_screening_references(self) -> dict[str, Any]:
         """The published reference record: what resolved, over which species, and what did not.
@@ -2645,6 +3027,11 @@ class SiRNAWorkflow:
         planned to screen, fixed at resolution. It is not a coverage report -- a species whose
         alignment published nothing is subtracted post-run in ``filtering_stats.unscreened_species``,
         not from here. No gate reads it in 0.7.1; applying a scope is #101's.
+
+        ``screening_evidence`` is the plan reconciled against what the run published: what was asked
+        for, what each unit actually did, and where each answer came from. It is additive behind the
+        same ``is not None`` guard as ``screening_plan``, so it reaches every ``workflow_summary.json``
+        write site for free (#100).
         """
         summary: dict[str, Any] = {
             "transcriptome": self.config.transcriptome_selection.to_metadata(),
@@ -2653,6 +3040,8 @@ class SiRNAWorkflow:
         }
         if self._screening_plan is not None:
             summary["screening_plan"] = self._screening_plan.model_dump(mode="json")
+        if self._screening_evidence is not None:
+            summary["screening_evidence"] = reconciliation_payload(self._screening_evidence)
         return summary
 
     def _log_nextflow_targets(
@@ -2685,17 +3074,18 @@ class SiRNAWorkflow:
             candidates: Candidates to screen.
             input_fasta: Deduplicated FASTA input for the Nextflow pipeline.
             additional_params: Pre-configured Nextflow parameters (screening references already
-                resolved), or None to resolve them here.
+                resolved, and the plan already recorded), or None to do both here.
             has_transcriptome: Paired with additional_params; ignored when that is None.
         """
         if additional_params is None:
             additional_params = dict(self.config.nextflow_config)
+            # Recorded before resolution, never after: see _record_screening_plan (#100).
+            self._record_screening_plan(input_fasta, additional_params)
             has_transcriptome = await self._resolve_screening_references(additional_params)
         has_transcriptome = bool(has_transcriptome)
         active_species = self._resolve_active_screen_species(additional_params)
         has_transcriptome = has_transcriptome or bool(additional_params.get("transcriptome_indices"))
         self._log_nextflow_targets(active_species, has_transcriptome, additional_params)
-        self._record_screening_plan(input_fasta, additional_params)
 
         if not active_species and not has_transcriptome:
             console.print("ℹ️  No transcriptome indices configured; skipping Nextflow run")
@@ -2704,7 +3094,9 @@ class SiRNAWorkflow:
         runner, _ = self._setup_nextflow_runner(active_species, additional_params)
 
         if not self._validate_nextflow_environment(runner):
-            return {"status": "skipped", "reason": "nextflow_unavailable"}
+            # No screen ran, so the gates report unknown rather than never having been reached (#106).
+            self._gate_without_screening_evidence(candidates)
+            return self._publish_run_status({"status": "skipped", "reason": "nextflow_unavailable"})
 
         # Execute pipeline
         console.print("🚀 Running embedded Nextflow off-target analysis...")
@@ -2796,20 +3188,20 @@ class SiRNAWorkflow:
         console.print("✅ Nextflow pipeline completed successfully")
         parsed = await self._parse_nextflow_results(output_dir)
         aggregated_views = self._load_offtarget_aggregates(output_dir)
-        run_status = "completed"
+        published_status = "completed"
         workflow_warnings: list[str] = []
 
         tx_summary = aggregated_views.get("transcriptome") if aggregated_views else None
         if tx_summary:
             for warning_msg in self._transcriptome_shortfall_warnings(tx_summary):
-                run_status = "partial"
+                published_status = "partial"
                 console.print(warning_msg)
                 workflow_warnings.append(warning_msg)
 
         # Shortfalls decided before Nextflow ran are reported on the same footing as ones the
         # aggregate found: a species dropped for want of a reference appeared in no artifact at all.
         for species, reason in sorted(self._species_screening_shortfalls.items()):
-            run_status = "partial"
+            published_status = "partial"
             warning_msg = f"⚠️  '{species}' was not screened: {reason}"
             console.print(warning_msg)
             workflow_warnings.append(warning_msg)
@@ -2822,7 +3214,7 @@ class SiRNAWorkflow:
         # reading "no hits here means clean".
         screened_species = self._species_with_alignment_evidence(tx_summary)
         if not screened_species:
-            run_status = "partial"
+            published_status = "partial"
             warning_msg = (
                 "⚠️  No transcriptome alignment evidence for any species (no aggregated summary, or "
                 "miRNA-only mode): off-target counts are unknown, so candidates keep their design-time scores."
@@ -2840,7 +3232,7 @@ class SiRNAWorkflow:
         ortholog_mapping = await self._resolve_ortholog_mapping(screened_species, parsed)
         mirna_screened = self._mirna_channel_completed(aggregated_views.get("mirna") if aggregated_views else None)
         if not mirna_screened:
-            # Warned, but not a status downgrade: ``run_status`` speaks for the evidence the run
+            # Warned, but not a status downgrade: ``published_status`` speaks for the evidence the run
             # *requires*, and every miRNA pair is exploratory in 0.7.1. The consequence is carried as
             # UNKNOWN on the miRNA gates and as a flag in filtering_stats.
             warning_msg = (
@@ -2849,6 +3241,17 @@ class SiRNAWorkflow:
             )
             console.print(warning_msg)
             workflow_warnings.append(warning_msg)
+
+        # Reconciled BEFORE integration, because the pairs the gates read come from it: what the run
+        # planned, against what it published. Replaces _species_with_alignment_evidence as the
+        # authority for completeness -- that heuristic survives inside it as the fallback for a
+        # result directory written before evidence existed (#100).
+        self._screening_evidence = self._reconcile_screening_evidence(
+            output_dir, screened_species=screened_species, mirna_screened=mirna_screened
+        )
+        for key in self._screening_evidence.keys_with_status(EvidenceStatus.FAILED):
+            logger.error(f"No {key[0]} evidence for '{key[1]}': that unit was planned and published nothing.")
+
         updated_candidates, stats = self._integrate_offtarget_results(
             candidates,
             parsed,
@@ -2891,17 +3294,23 @@ class SiRNAWorkflow:
                 "off_target_score": entry.get("off_target_score", 0.0) if entry else 0.0,
             }
 
-        return {
-            "status": run_status,
-            "method": "embedded_nextflow",
-            "output_dir": str(output_dir),
-            "results": mapped,
-            "detail_files": self._offtarget_detail_files(parsed, output_dir),
-            "execution_metadata": results,
-            "filtering_stats": stats,
-            "aggregated": aggregated_views,
-            "warnings": workflow_warnings,
-        }
+        return self._publish_run_status(
+            {
+                "status": published_status,
+                "method": "embedded_nextflow",
+                "output_dir": str(output_dir),
+                "results": mapped,
+                "detail_files": self._offtarget_detail_files(parsed, output_dir),
+                "execution_metadata": results,
+                "filtering_stats": stats,
+                "aggregated": aggregated_views,
+                "warnings": workflow_warnings,
+            },
+            # An output directory that does not exist is a failure to execute, not a thin result: the
+            # runner reported exit 0 and staged nothing, so there is no partial answer to read. The
+            # published `status` stays whatever this method decided, per #100's beside-not-instead rule.
+            reason=_EXECUTION_ERROR_REASON if parsed.get("status") == "missing" else None,
+        )
 
     @staticmethod
     def _offtarget_detail_files(parsed: Mapping[str, Any], output_dir: Path) -> dict[str, list[str]]:
@@ -3061,6 +3470,187 @@ class SiRNAWorkflow:
                 return value > 0
         return False
 
+    def _evidence_species_scope(self) -> frozenset[str]:
+        """Species a channel-level completion speaks for: what this run screened, plus the query species.
+
+        The miRNA scan is one batch over every submitted guide, so it has no per-species outcome of
+        its own; this is the scope its completion covers, and it is deliberately the same set the
+        hand-rolled pair record used before evidence existed.
+        """
+        return frozenset(
+            normalize_species_name(species) for species in (self._active_screen_species or self.config.screen_species)
+        ) | {self._query_species}
+
+    def _legacy_evidence_envelopes(
+        self, digest: str, *, screened_species: Sequence[str], mirna_screened: bool
+    ) -> tuple[EvidenceEnvelope, ...]:
+        """Evidence inferred from an aggregate that carries no per-unit envelope of its own.
+
+        A 0.7.0/0.7.1 result directory has no ``*_evidence.json`` anywhere, so the three-tier
+        :meth:`_species_with_alignment_evidence` heuristic is the only positive evidence available.
+        Those entries are marked :attr:`EvidenceSource.LEGACY_SUMMARY` rather than ``ENVELOPE``:
+        nothing published them, so a caller that wants only first-hand records can drop them, while
+        every existing result directory keeps the answer it has today.
+
+        Counts stay unobserved. The heuristic establishes that an alignment ran, not what it counted,
+        and writing a zero here would be exactly the fabricated clean screen #100 exists to stop.
+        """
+        entries = [
+            ScreeningEvidenceEntry(
+                channel=ScreeningChannel.TRANSCRIPTOME,
+                species=species,
+                guide_set_digest=digest,
+                status=EvidenceStatus.COMPLETE,
+                submitted_guide_digest=digest,
+                submitted_guides=self._submitted_guide_count,
+            )
+            for species in dict.fromkeys(normalize_species_name(species) for species in screened_species)
+        ]
+        if mirna_screened:
+            entries.extend(
+                ScreeningEvidenceEntry(
+                    channel=ScreeningChannel.MIRNA_SEED,
+                    species=species,
+                    guide_set_digest=digest,
+                    status=EvidenceStatus.COMPLETE,
+                    submitted_guide_digest=digest,
+                    submitted_guides=self._submitted_guide_count,
+                )
+                for species in sorted(self._evidence_species_scope())
+            )
+        return tuple(
+            EvidenceEnvelope(
+                producer=EvidenceProducer.WORKFLOW_SYNTHESIS, source=EvidenceSource.LEGACY_SUMMARY, entry=entry
+            )
+            for entry in entries
+        )
+
+    def _not_requested_envelopes(
+        self, digest: str, *, plan: ScreeningPlan, observed: Sequence[EvidenceEnvelope]
+    ) -> tuple[EvidenceEnvelope, ...]:
+        """``NOT_REQUESTED`` entries for declared pairs the plan deliberately holds no entry for.
+
+        The plan, not a producer's silence, is what says whether a channel was asked for: a miRNA
+        channel nobody requested and one that was requested and published nothing used to be the
+        same absent aggregate. Only pairs the policy takes a position on are synthesized, because an
+        entry nobody declared answers no question, and only ``workflow_synthesis`` may emit this
+        status -- a task that ran was requested by definition.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is None:
+            return ()
+        known = {(entry.channel.value, entry.species) for entry in plan.entries}
+        known.update((envelope.entry.channel.value, envelope.entry.species) for envelope in observed)
+        return tuple(
+            EvidenceEnvelope(
+                producer=EvidenceProducer.WORKFLOW_SYNTHESIS,
+                source=EvidenceSource.SYNTHESIZED,
+                entry=not_requested_entry(
+                    requirement.channel,
+                    requirement.species,
+                    digest,
+                    "declared by the run policy but never requested for screening, so nothing was searched",
+                ),
+            )
+            for requirement in policy.evidence_requirements.channel_requirements
+            if requirement.key not in known
+        )
+
+    def _reconcile_screening_evidence(
+        self, output_dir: Path, *, screened_species: Sequence[str], mirna_screened: bool
+    ) -> Reconciliation:
+        """Reconcile the run's plan against what screening actually published.
+
+        Three sources, in order of how directly they speak: the per-unit envelopes the tasks wrote,
+        the reconciliation the pipeline's own aggregation published, and -- for a directory written
+        before #100 existed -- the legacy summary heuristic. Whichever answers, every *planned* unit
+        with nothing to show for it becomes a FAILED entry, so a species whose index build crashed
+        and a pipeline that aborted before aggregation both leave a record instead of vanishing.
+        """
+        observed = collect_evidence(output_dir)
+        if not observed:
+            published = parse_reconciliation_payload(self._read_results_json(output_dir, RECONCILIATION_FILENAME))
+            if published is not None:
+                return published
+
+        digest = self._guide_set_digest or (
+            observed[0].entry.guide_set_digest if observed else _UNRECORDED_GUIDE_SET_DIGEST
+        )
+        plan = (
+            self._screening_plan
+            if self._screening_plan is not None
+            # No plan recorded: a caller that reached result processing directly. The resolved set
+            # restates one, rejections included, so the reconciliation is still keyed on the units
+            # this run asked for rather than on whatever happened to publish.
+            else self._screening_references.requested_plan(guide_set_digest=digest)
+        )
+        envelopes = list(observed) or list(
+            self._legacy_evidence_envelopes(digest, screened_species=screened_species, mirna_screened=mirna_screened)
+        )
+        envelopes.extend(self._not_requested_envelopes(digest, plan=plan, observed=envelopes))
+        return reconcile(plan, envelopes)
+
+    def _completed_pairs_from_evidence(self, reconciliation: Reconciliation) -> frozenset[tuple[str, str]]:
+        """The (channel, species) pairs reconciled evidence says completed: #100's integration seam.
+
+        Spelled as ``ChannelRequirement.key`` is, so eligibility compares rather than re-derives, and
+        derived from evidence rather than from a species list so a censored or failed unit cannot be
+        read as clean. ``strict`` drops entries inferred from a pre-#100 summary, and applies only
+        when this run's own tasks published envelopes -- where by construction there is nothing
+        legacy to drop. A run is never downgraded by its own fallback, and no existing result
+        directory changes the answer it already gives (#100).
+
+        The whole reconciliation goes in, not its ``evidence``: the plan has to be in scope where the
+        projection to (channel, species) drops the guide-set digest, or an envelope for a foreign
+        guide set satisfies the requirement whose plan entry just failed over that mismatch.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        qualified = policy is not None and policy.run_mode is RunMode.QUALIFIED
+        envelope_backed = any(source is EvidenceSource.ENVELOPE for source in reconciliation.sources.values())
+        return completed_pairs(reconciliation, strict=qualified and envelope_backed)
+
+    def _missing_required_evidence_units(self) -> tuple[tuple[str, str], ...]:
+        """Required channel/species pairs this run reconciled no complete evidence for (#100).
+
+        Asked of the reconciliation, not of the aggregate's own word: only a run that recorded a plan
+        can know a unit was expected, and only ``EvidenceRequirements`` may say a unit was required.
+        A run that reconciled nothing (a direct call into result processing, or an exit that returns
+        before any producer runs) returns nothing here rather than claiming a shortfall it cannot
+        substantiate -- that exit's ``reason`` already says what happened.
+
+        Completeness comes from :meth:`_completed_pairs_from_evidence`, the same rule that fills
+        :attr:`_completed_evidence_pairs` for eligibility, so the run status and the shortlist can
+        never disagree about which unit was complete -- and a censored unit counts as missing in
+        both, because a lower bound cannot show a ceiling was respected. Recomputed rather than read
+        off that attribute because integration returns before assigning it on exactly the exit this
+        question matters most for: the one where the pipeline published no results at all.
+        """
+        policy = getattr(self.config, "resolved_policy", None)
+        if self._screening_evidence is None or policy is None:
+            return ()
+        completed = self._completed_pairs_from_evidence(self._screening_evidence)
+        return tuple(sorted(policy.evidence_requirements.required_pairs - completed))
+
+    def _publish_run_status(self, summary: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
+        """Stamp one screening summary with its :class:`RunStatus`, beside the keys it already has.
+
+        Every exit out of screening goes through here, which is what makes the vocabulary one
+        vocabulary rather than a seventh string. ``status``, ``reason`` and ``method`` are left
+        exactly as they were: consumers compare ``status == "completed"`` (the CLI table, #103's
+        report, existing result directories) and this slice publishes an additional key rather than
+        redefining theirs.
+
+        ``reason`` overrides the summary's own for an exit that carries no reason key but is still a
+        named outcome -- the missing-output route reports ``partial`` because that is what its caller
+        published, while what actually happened is that the pipeline wrote no output directory.
+        """
+        summary["run_status"] = screening_run_status(
+            status=str(summary.get("status") or ""),
+            reason=reason if reason is not None else str(summary.get("reason") or ""),
+            required_evidence_missing=bool(self._missing_required_evidence_units()),
+        ).value
+        return summary
+
     @staticmethod
     def _transcriptome_shortfall_warnings(tx_summary: Mapping[str, Any]) -> list[str]:
         """Every way the aggregate says a requested species was not screened, as run warnings.
@@ -3208,7 +3798,12 @@ class SiRNAWorkflow:
             )
 
     async def _basic_offtarget_analysis(self, candidates: list[SiRNACandidate]) -> dict[str, Any]:
-        """Fallback basic off-target analysis."""
+        """Fallback basic off-target analysis: sequence-only, and no evidence for any planned unit.
+
+        This path aligns nothing against a reference, so every unit the run planned FAILED, and the
+        published evidence says so rather than leaving the plan unanswered. Without that record the
+        fallback was indistinguishable from a screen that ran and found nothing (#100).
+        """
         # Use simplified analysis when external tools are not available
         analyzer = OffTargetAnalysisManager(species="human")  # Default to human for basic analysis
         results = {}
@@ -3237,6 +3832,22 @@ class SiRNAWorkflow:
         with results_file.open("w") as f:
             json.dump(results, f, indent=2)
 
+        # Every planned unit failed here, stated from the plan rather than left unanswered: this
+        # method is also the landing place after a Nextflow failure, so "nothing was published" is
+        # exactly what happened to each one.
+        self._screening_evidence = reconcile(
+            self._screening_plan or ScreeningPlan(),
+            (),
+            missing_detail=(
+                "no reference alignment ran: the basic sequence-only fallback replaced the screen, "
+                "so this unit produced no screening evidence"
+            ),
+        )
+        self._completed_evidence_pairs = self._completed_pairs_from_evidence(self._screening_evidence)
+        # Nothing was aligned, so every gate reading a screening channel is undecidable here rather
+        # than unrun (#106): this path reaches _integrate_offtarget_results on no route at all.
+        self._gate_without_screening_evidence(candidates)
+
         # `partial`, never `completed`: this path aligns nothing and never reaches
         # _integrate_offtarget_results, so no candidate gets a verdict at all. It is also reached after a
         # Nextflow failure, where `completed` printed as "Off-target Analysis: Complete".
@@ -3244,7 +3855,15 @@ class SiRNAWorkflow:
             f"📊 Basic sequence-only off-target analysis for {len(candidates)} candidates "
             "(no reference alignment: this is not a completed screen)"
         )
-        return {"status": "partial", "method": "basic", "results": results, "aggregated": {}}
+        return self._publish_run_status(
+            {
+                "status": "partial",
+                "method": "basic",
+                "results": results,
+                "aggregated": {},
+                "screening_evidence": reconciliation_payload(self._screening_evidence),
+            }
+        )
 
     async def _parse_nextflow_results(self, output_dir: Path) -> dict[str, Any]:  # noqa: PLR0912
         """Parse results from Nextflow off-target analysis.
@@ -3448,6 +4067,8 @@ class SiRNAWorkflow:
 
         One entry point for both the no-hit and with-hit paths, so a gate cannot be wired into only one
         of them -- how the clean-screen case ended up ungated (#106).
+        :meth:`_gate_without_screening_evidence` is the third caller: the paths that publish no
+        evidence at all come through here too, with ``complete_pairs`` empty.
 
         ``passes_filters`` is set by the rejecting gate through ``record_filter_verdict``, which keeps
         the first failure. Not assigned here: overwriting it unconditionally let an off-target label mask
@@ -3465,6 +4086,76 @@ class SiRNAWorkflow:
         stat_key = _OFFTARGET_REJECTION_STATS.get(fail_status)
         if stat_key is not None:
             stats[stat_key] += 1
+
+    def _requested_species_scope(self) -> frozenset[str]:
+        """The species every post-screen gate's evidence is scoped over: what was asked for, plus the query.
+
+        ``_active_screen_species`` rather than ``config.screen_species`` because extra species can
+        arrive on ``transcriptome_indices``/``transcriptome_fastas``, and the query species is always in
+        scope even when it was never listed. Shared by the integration path and by
+        :meth:`_gate_without_screening_evidence` so a gate's evidence requirement is the same set
+        whether or not a screen ran -- a scope that shrank when the screen failed would leave the gate
+        with no pair to be incomplete about.
+        """
+        requested = frozenset(
+            normalize_species_name(species) for species in (self._active_screen_species or self.config.screen_species)
+        )
+        return requested | {self._query_species}
+
+    def _gate_without_screening_evidence(
+        self,
+        candidates: Sequence[SiRNACandidate],
+        *,
+        filter_criteria: OffTargetFilterCriteria | None = None,
+    ) -> None:
+        """Reach every off-target gate on a path that published no screening evidence at all (#106).
+
+        The residual half of #106. Its first half -- a *completed* screen that found nothing -- was
+        fixed by gating the no-hit branch on a measured zero. This is the mirror case: the basic
+        sequence-only fallback, ``nextflow_unavailable``, ``nextflow_failed`` and an output directory
+        that never appeared all return without reaching ``_integrate_offtarget_results``, so no
+        candidate reached ``_gate_offtarget_counts`` and every channel-reading gate exported
+        ``not_evaluated`` -- the same cell a run with no threshold configured writes. A screen that
+        never happened and a screen that came back clean must not export the same nine cells.
+
+        ``complete_pairs=frozenset()``: nothing completed, so no gate may report a pass, and each one
+        records ``UNKNOWN`` with an empty observed value rather than a fabricated zero. An undecidable
+        gate never rejects, so ``passes_filters`` is untouched and no rejection counter can move --
+        which is why no statistics are published from here. What it does do is withhold the candidate
+        from a QUALIFIED shortlist under the named reason ``unknown:<filter_id>``.
+
+        Only candidates that reached no off-target gate: the call that held the counts owns the
+        answer, and ``record_filter_verdict`` overwrites, so re-gating one would replace a decided
+        PASS/FAIL with ``UNKNOWN``. That matters on the ``nextflow_failed`` path, which can be reached
+        by an exception raised after integration already ran.
+
+        Deliberately not called from the ``user_disabled`` or ``no_candidates`` exits: a channel the
+        user switched off was never requested, and ``not_evaluated`` is the honest cell for it.
+        """
+        criteria = filter_criteria or getattr(self.config.design_params, "offtarget_filters", None)
+        criteria = criteria or OffTargetFilterCriteria()
+        # Set here as well as in _integrate_offtarget_results, which never ran on these paths.
+        self._screened_species_scope = self._screened_species_scope or self._requested_species_scope()
+        # Nothing here can reject, so this dict only exists to satisfy the shared entry point.
+        discarded_stats: dict[str, Any] = dict.fromkeys(_OFFTARGET_REJECTION_STATS.values(), 0)
+        gated = 0
+        for candidate in candidates:
+            verdicts = candidate.filter_verdicts or {}
+            if any(filter_id in verdicts for filter_id in POST_SCREEN_FILTER_CHANNELS):
+                continue
+            self._gate_offtarget_counts(
+                candidate,
+                counts=_ZERO_OFFTARGET_COUNTS,
+                filter_criteria=criteria,
+                complete_pairs=frozenset(),
+                stats=discarded_stats,
+            )
+            gated += 1
+        if gated:
+            logger.warning(
+                f"No screening evidence was published for this run: the off-target gates on {gated} candidate(s) "
+                "report unknown rather than a clean screen, and their observed values stay empty."
+            )
 
     def _gate_evidence_pairs(self, filter_id: str, channels: frozenset[ScreeningChannel]) -> frozenset[tuple[str, str]]:
         """The channel x species pairs one gate needs before it may report a pass.
@@ -3505,6 +4196,11 @@ class SiRNAWorkflow:
         more here than at the design stage: six of these gates read human-stratified counters that
         exist only as locals in the caller, so before this the row could not be used to check the
         verdict at all -- the identically named exported columns are all-species totals and disagree.
+
+        The rules themselves live in :mod:`sirnaforge.core.filtering` (#100), which decides every gate
+        from (threshold, action, observed, evidence completeness); this method's job is to say what
+        each gate compares, which evidence its pass claim rests on, and which label it rejects under.
+        They are documented below because this is the only place all four inputs are assembled.
 
         ``complete_pairs`` is which channel x species pairs this candidate holds evidence for; ``None``
         means the caller has no per-species record and every gate is treated as evidenced. A gate whose channels did
@@ -3587,40 +4283,34 @@ class SiRNAWorkflow:
             ),
         ]
 
-        # Every check is evaluated and recorded. Returning on the first rejection left the remaining
-        # gates unmeasured, so their reported counts were a function of this list's order.
-        rejection: SiRNACandidate.FilterStatus | None = None
+        # Every check is evaluated and recorded, by the one shared evaluator. Returning on the first
+        # rejection left the remaining gates unmeasured, so their reported counts were a function of
+        # this list's order; deriving the rules here left five call sites to keep in step.
+        specs: list[GateSpec] = []
+        observed: dict[str, float | None] = {}
+        statuses: dict[str, SiRNACandidate.FilterStatus] = {}
         for filter_id, threshold, value, status in checks:
             channels = POST_SCREEN_FILTER_CHANNELS[filter_id]
-            action = self._filter_action_for(filter_id, threshold)
-            if threshold is None or action is FilterAction.OFF:
-                candidate.filter_verdicts[filter_id] = FilterEvaluation.NOT_EVALUATED.value
-                candidate.filter_observed[filter_id] = value
-                continue
-            exceeds = value > threshold
-            required = self._gate_evidence_pairs(filter_id, channels)
-            if not exceeds and complete_pairs is not None and not required <= complete_pairs:
-                # In force but undecidable: the count is a lower bound, so it cannot show the ceiling
-                # was respected. No observed value either -- see the docstring.
-                candidate.record_filter_verdict(
-                    filter_id,
-                    observed=None,
-                    passed=False,
-                    action=action,
-                    status=status,
+            specs.append(
+                GateSpec(
+                    filter_id=filter_id,
+                    threshold=threshold,
+                    action=self._filter_action_for(filter_id, threshold),
+                    # Every gate here is a ceiling, including the boolean flag as a ceiling of zero.
+                    comparator=Comparator.AT_MOST,
+                    channels=channels,
+                    evidence_pairs=self._gate_evidence_pairs(filter_id, channels),
                 )
-                continue
-            candidate.record_filter_verdict(
-                filter_id,
-                observed=value,
-                passed=not exceeds,
-                action=action,
-                status=status,
             )
-            if exceeds and action is FilterAction.FAIL and rejection is None:
-                rejection = status
+            observed[filter_id] = value
+            statuses[filter_id] = status
 
-        return rejection is not None, rejection
+        outcomes = evaluate_gates(specs, observed, complete_pairs=complete_pairs)
+        for outcome in outcomes:
+            record_gate_outcome(candidate, outcome, status=statuses[outcome.filter_id])
+
+        rejection = first_rejection(outcomes)
+        return rejection is not None, statuses[rejection.filter_id] if rejection is not None else None
 
     def _filter_action_for(self, filter_id: str, threshold: float | None) -> FilterAction:
         """The action in force for one post-screen filter: the run's policy, else the declared default.
@@ -3778,6 +4468,9 @@ class SiRNAWorkflow:
         """
         if not offtarget_data or offtarget_data.get("status") != "completed":
             logger.warning("No completed off-target data available; candidates keep design-time scores")
+            # Keeping the design-time score is not the whole answer: the gates still have to say they
+            # could not decide, or this exit publishes `not_evaluated` for every one of them (#106).
+            self._gate_without_screening_evidence(candidates, filter_criteria=filter_criteria)
             return candidates, {}
 
         if filter_criteria is None:
@@ -3843,17 +4536,26 @@ class SiRNAWorkflow:
                 "count of zero, and their observed values stay empty."
             )
         # Spelled as the declared requirements are, so eligibility compares rather than re-derives.
-        self._completed_evidence_pairs = frozenset(
-            (ScreeningChannel.TRANSCRIPTOME.value, species) for species in screened
-        ) | (
-            frozenset((ScreeningChannel.MIRNA_SEED.value, species) for species in requested_species | {query_species})
-            if mirna_channel_complete
-            else frozenset()
+        # Reconciled evidence is the authority whenever screening produced any (#100): a unit that
+        # failed, was censored or was never requested cannot contribute a pair, however many species
+        # a summary lists. The species-list derivation below remains for a caller that integrates
+        # hits with no evidence at all -- a direct call, or a path that never reached a producer.
+        self._completed_evidence_pairs = (
+            self._completed_pairs_from_evidence(self._screening_evidence)
+            if self._screening_evidence is not None
+            else frozenset((ScreeningChannel.TRANSCRIPTOME.value, species) for species in screened)
+            | (
+                frozenset(
+                    (ScreeningChannel.MIRNA_SEED.value, species) for species in requested_species | {query_species}
+                )
+                if mirna_channel_complete
+                else frozenset()
+            )
         )
 
         # The same pairs the gates read, so eligibility and gate evaluation cannot disagree about what
         # completed. `unscreened_pairs` is what a candidate the query-species alignment missed loses.
-        self._screened_species_scope = requested_species | {query_species}
+        self._screened_species_scope = self._requested_species_scope()
         run_complete_pairs = self._completed_evidence_pairs or frozenset()
         unscreened_pairs = frozenset(
             {(ScreeningChannel.TRANSCRIPTOME.value, query_species)} if query_species_unscreened else ()
@@ -4294,31 +4996,35 @@ class SiRNAWorkflow:
         two non-rejecting outcomes somewhere to live -- PASS at or above the floor, and UNKNOWN when
         coverage could not be computed, which never rejects because an annotation gap is not evidence of
         poor coverage. Whether such a candidate can still *qualify* is decided in
-        :meth:`_apply_post_screen_ranking`, not here.
+        :meth:`_apply_post_screen_ranking`, not here -- which is also where
+        :meth:`_complete_isoform_coverage_verdicts` calls this gate for a candidate that reached no
+        scoring at all, so the verdict exists on every path and not only the one that integrated hits.
+
+        A floor, so it declares ``Comparator.AT_LEAST`` and no evidence pairs: coverage comes from the
+        transcript annotation rather than from a screening channel, which is why an incomplete channel
+        never excuses it (see ``POST_SCREEN_FILTER_CHANNELS``).
 
         Returns True when this gate rejected the candidate, so the caller can count it.
         """
         floor = self.config.design_params.filters.min_isoform_coverage
         coverage = candidate.isoform_coverage
-        action = self._filter_action_for("min_isoform_coverage", floor)
-        if floor is None or action is FilterAction.OFF:
-            # In force nowhere: still write a word, because the exported column is fixed and an empty
-            # cell there reads as a verdict rather than as "this gate was not applied".
-            candidate.filter_verdicts["min_isoform_coverage"] = FilterEvaluation.NOT_EVALUATED.value
-            candidate.filter_observed["min_isoform_coverage"] = coverage
-            return False
-
-        candidate.record_filter_verdict(
-            "min_isoform_coverage",
-            observed=coverage,
-            passed=coverage is not None and coverage >= floor,
-            action=action,
-            status=SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE,
+        spec = GateSpec(
+            filter_id="min_isoform_coverage",
+            threshold=floor,
+            action=self._filter_action_for("min_isoform_coverage", floor),
+            comparator=Comparator.AT_LEAST,
         )
-        if coverage is None or coverage >= floor:
+        # In force nowhere still writes a word: the exported column is fixed, and an empty cell there
+        # reads as a verdict rather than as "this gate was not applied". record_gate_outcome does that.
+        outcome = evaluate_gate(spec, coverage)
+        record_gate_outcome(candidate, outcome, status=SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE)
+        if outcome.evaluation is not FilterEvaluation.FAIL:
             return False
-        logger.info(f"Candidate {candidate.id} failed isoform coverage ({action.value}): {coverage:.3f} < {floor:.3f}")
-        return action is FilterAction.FAIL
+        # A decided FAIL means both numbers exist, so the message can quote the comparison it made.
+        logger.info(
+            f"Candidate {candidate.id} failed isoform coverage ({spec.action.value}): {coverage:.3f} < {floor:.3f}"
+        )
+        return outcome.rejects
 
     def _score_candidate_post_screen(
         self,
@@ -4342,7 +5048,8 @@ class SiRNAWorkflow:
         Returns:
             True when the candidate now carries a post-screen score; False when scoring failed
             and the design-time score was kept (the caller counts these so a degraded run is
-            visible, and ranking demotes them).
+            visible, and ranking demotes them). A failure after an earlier *success* on the same
+            candidate additionally clears that earlier score -- see :meth:`_clear_post_screen_score`.
         """
         # Build features from design-time component scores (reuse existing sub-scores)
         features: dict[str, float] = {}
@@ -4435,8 +5142,36 @@ class SiRNAWorkflow:
             # ERROR, not WARNING: the candidate now carries a design-time score that is not
             # comparable with its neighbours' post-screen scores, so the run is degraded.
             logger.error(f"Post-screen scoring failed for {candidate.id}: {exc}. Keeping design-time score.")
+            if candidate.scored_after_screening:
+                self._clear_post_screen_score(candidate)
             candidate.scored_after_screening = False
             return False
+
+    @staticmethod
+    def _clear_post_screen_score(candidate: SiRNACandidate) -> None:
+        """Drop a post-screen score this method wrote earlier, once a later attempt has failed (#100).
+
+        Only reached when ``scored_after_screening`` was already True on entry, i.e. an earlier call
+        succeeded and this one did not. Without it the row published ``scored_after_screening=False``
+        beside a full set of post-screen fields from the first attempt -- a composite the run no longer
+        stands behind, and the number ``ranking_score`` would still rank on.
+
+        Deliberately narrow in two ways. It clears exactly the ten fields the success path writes, all
+        of which the earlier success had already overwritten -- and it runs only on that retry, so a
+        candidate whose *first* attempt fails keeps whatever the design stage or a caller left there
+        (the mixed-scale ranking rule reads those). ``isoform_coverage`` and ``conservation_score``
+        stay either way: those are measurements the run made, not a score it claims.
+        """
+        candidate.composite_score = None
+        candidate.weight_set_version = ""
+        candidate.weight_vector = ""
+        candidate.score_off_target = None
+        candidate.score_target_accessibility = None
+        candidate.score_asymmetry = None
+        candidate.score_gc_content = None
+        candidate.score_ago_start = None
+        candidate.score_pos1_mismatch = None
+        candidate.score_supp_13_16 = None
 
     def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
         """Generate ORF validation report in tab-delimited format with schema validation.
@@ -4579,7 +5314,14 @@ class SiRNAWorkflow:
         }
 
     def _summarize_design_results(self, design_results: DesignResult) -> dict[str, Any]:
-        """Summarize siRNA design results."""
+        """Summarize siRNA design results, including the inputs design never covered.
+
+        ``design_input_shortfalls`` is the only place a dropped transcript appears: ``base`` is
+        derived from the DesignResults that were produced, and ``input_sequences`` still counts every
+        transcript handed to design, so on its own it reports a target set the run never covered
+        (#100). The count sits beside the map for the same reason ``repeat_flagged_count`` does --
+        a reader comparing it against ``input_sequences`` sees the divergence without parsing reasons.
+        """
         base = design_results.get_summary()
         total = design_results.total_candidates
         passed = design_results.filtered_candidates
@@ -4598,6 +5340,8 @@ class SiRNAWorkflow:
                 "top_n_requested": self.config.top_n,
                 "dirty_controls_added": getattr(self, "_dirty_controls_added", 0),
                 "threads_used": self.config.num_threads,
+                "design_input_shortfalls": dict(self._design_input_shortfalls),
+                "design_input_dropped_count": len(self._design_input_shortfalls),
             }
         )
         return base
@@ -5037,7 +5781,10 @@ async def run_offtarget_only_workflow(
             the replacement instead of "unexpected keyword argument".
 
     Returns:
-        Dictionary with off-target analysis results
+        Dictionary with off-target analysis results: the seven long-standing keys, plus (#100)
+        ``selection_summary`` -- the resolved selection, counted by exclusion reason -- and
+        ``written_files``. A run that could qualify nobody is a result, not a failure: it reports an
+        empty shortlist and still returns normally.
     """
     refuse_renamed_arguments(renamed)
     # Resolved before the output tree is created, exactly as the other two entry points do it.
@@ -5208,9 +5955,25 @@ async def run_offtarget_only_workflow(
 
         progress.remove_task(task)
 
+    # The same evidence -> gates -> selection -> exports contract the design entry point gets (#100).
+    # Bypassing step5 used to mean bypassing all four: every guide this command screened kept
+    # selection_state=not_selected, no gate reading a screening channel was reached on a screen that
+    # published nothing, and no candidate table was written at all.
+    # A no-op when the screen integrated hits: each of these skips a candidate that already holds the
+    # verdict it would write.
+    workflow._gate_without_screening_evidence(candidates)
+    workflow._apply_selection(candidates)
+
+    written_files: dict[str, str] = {}
+    try:
+        written_files = workflow.write_offtarget_only_exports(candidates)
+    except Exception as e:  # Do not fail the run for reporting extras, exactly as step6 does not
+        logger.warning(f"Failed to write off-target-only candidate exports: {e}")
+
     total_time = max(0.0, time.perf_counter() - start_time)
 
-    # Compile results
+    # Compile results. The seven original keys are unchanged; selection_summary and written_files are
+    # additive, because a caller that only reads offtarget_summary must keep working.
     final_results: dict[str, Any] = {
         "workflow_type": "offtarget_only",
         "input_candidates": str(input_candidates_fasta),
@@ -5221,9 +5984,18 @@ async def run_offtarget_only_workflow(
         # Same reference record as the full workflow publishes: which references resolved, over which
         # species, and what did not. This path used to report nothing about its own references.
         "reference_summary": workflow._summarize_screening_references(),
+        # Why the shortlist is the size it is -- including "nothing qualified", which for pre-designed
+        # guides is a legitimate answer this command must be able to state without failing.
+        "selection_summary": workflow._selection_summary,
+        "written_files": written_files,
     }
 
     console.print(f"\n✅ [bold green]Off-target analysis completed in {total_time:.2f}s[/bold green]")
     console.print(f"📊 Results saved to: [blue]{output_path}[/blue]")
+    if written_files:
+        console.print(
+            "   - Candidate tables: sirnaforge/ (candidates_all.csv, candidates_pass.csv, "
+            "candidates_qualified.csv, candidates_provisional.csv, manifest.json)"
+        )
 
     return final_results

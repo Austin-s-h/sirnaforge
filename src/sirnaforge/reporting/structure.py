@@ -13,7 +13,8 @@ Two renderings, because a 23-mer guide has two honest pictures:
   ViennaRNA is absent, and the clearer picture when a caller wants the seed register to stay readable.
 
 A degenerate fold -- all dots, ``mfe`` 0 -- is a real and common answer, not a failure: 34.8% of the
-passing pool on one MSH3 run. It renders as an open chain and says so, rather than as an empty panel.
+passing pool on one internal run. It renders as an open chain and says so, rather than as an empty
+panel.
 """
 
 from __future__ import annotations
@@ -108,8 +109,8 @@ def layout_xy(structure: str) -> list[tuple[float, float]] | None:
 def layouts_for(structures: Iterable[object]) -> dict[str, list[list[float]]]:
     """Coordinates keyed by dot-bracket, computed once per distinct structure.
 
-    Deduplicating is what makes this affordable to embed: one MSH3 run has 40,079 candidates and only
-    1,333 distinct structures among them.
+    Deduplicating is what makes this affordable to embed: one internal run has 40,079 candidates and
+    only 1,333 distinct structures among them.
     """
     out: dict[str, list[list[float]]] = {}
     for structure in structures:

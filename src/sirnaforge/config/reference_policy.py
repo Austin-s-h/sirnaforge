@@ -403,6 +403,53 @@ class ScreeningReferenceSet:
             )
         )
 
+    def requested_plan(self, *, guide_set_digest: str, search_settings: SearchSettings | None = None) -> ScreeningPlan:
+        """The plan this run *asked* for: one entry per resolved reference and one per rejection.
+
+        :meth:`plan` walks ``references`` only, so a request that resolved to nothing leaves no plan
+        entry and its species reconciles as never having been asked for rather than as a failure
+        (#100). This is the same plan seen from after resolution: a rejected request keeps its entry,
+        carrying the identity that failed, so the species it was for still has something to
+        reconcile against. A run that records its plan *before* resolution does not need this; a
+        caller holding only a resolved set does.
+        """
+        from sirnaforge.models.evidence import ScreeningPlan  # noqa: PLC0415
+
+        entries = [
+            reference.plan_entry(guide_set_digest=guide_set_digest, search_settings=search_settings)
+            for reference in self.references
+        ]
+        planned_species = {reference.species for reference in self.references}
+        for rejection in self.rejections:
+            if rejection.species in planned_species:
+                continue
+            planned_species.add(rejection.species)
+            entries.append(
+                self._rejection_plan_entry(
+                    rejection, guide_set_digest=guide_set_digest, search_settings=search_settings
+                )
+            )
+        return ScreeningPlan(entries=tuple(entries))
+
+    def _rejection_plan_entry(
+        self,
+        rejection: ReferenceRejection,
+        *,
+        guide_set_digest: str,
+        search_settings: SearchSettings | None = None,
+    ) -> ScreeningPlanEntry:
+        """The plan entry a rejected request would have had, keyed identically to a resolved one."""
+        from sirnaforge.models.evidence import ScreeningPlanEntry  # noqa: PLC0415
+        from sirnaforge.models.policy import ScreeningChannel  # noqa: PLC0415
+
+        return ScreeningPlanEntry(
+            channel=ScreeningChannel.TRANSCRIPTOME,
+            species=rejection.species,
+            reference_id=rejection.identity,
+            guide_set_digest=guide_set_digest,
+            search_settings=dict(search_settings or {}),
+        )
+
     def to_metadata(self) -> dict[str, object]:
         """Serializable snapshot: what resolved, what did not, and over which species."""
         return {

@@ -100,7 +100,7 @@ class GuideEntry:
 
         ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, and the 17-filter registry
         declares no repeat gate, so the report has no descriptor that can re-derive the rejection. It
-        must not therefore call the guide clean -- on one MSH3 run that would have published 185
+        must not therefore call the guide clean -- on one internal run that would have published 185
         guides as passing that the run threw out.
         """
         return self.run_verdict not in (None, "PASS") and not (self.n_gates_failed or self.n_gates_unknown)
@@ -248,10 +248,11 @@ def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
     ``<filter_id>_observed`` is preferred over the descriptor's own ``column``, because it is the
     number the pipeline itself compared. It is the answer for the gates that read human-stratified
     counters: 0.7.1 does not export ``transcriptome_hits_1mm_human`` under that name (#101), but it
-    does export ``max_transcriptome_hits_1mm_observed``, and on a four-species MSH3 run the observed
-    column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named all-species
-    column disagrees -- 17,600 hits against 63,801. Reading the descriptor's column instead would let
-    the report contradict the run using a counter with a wider scope than the gate's.
+    does export ``max_transcriptome_hits_1mm_observed``, and on a four-species internal run the
+    observed column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named
+    all-species column disagrees -- 17,600 hits against 63,801. Same-named is the argument: the column
+    bearing the descriptor's own name holds a wider-scoped quantity than the gate compared, so reading
+    it instead would let the report contradict the run while looking like it agreed.
 
     ``populated`` must hold only columns that carry at least one value. A column present but empty
     for every row is the shape a gate takes when the run never recorded its verdict, and preferring
@@ -485,7 +486,7 @@ def _transcript_hits(rows: pd.DataFrame) -> int | None:
     """How many distinct transcripts carry this guide -- the numerator of isoform coverage.
 
     Not the row count. A guide's site can occur twice in one transcript, so enumerations exceed
-    isoforms: on one MSH3 run 14 guides have more rows than transcripts and one has 19 rows over 10.
+    isoforms: on one internal run 14 guides have more rows than transcripts, one with 19 rows over 10.
     Prefers the run's own ``transcript_hit_count`` (which equals the distinct count on every row of
     that run) and falls back to counting, so the report agrees with the column when it exists.
     """
@@ -630,6 +631,30 @@ def _gate_panel(policy: ResolvedRunPolicy | None, manifest: Mapping[str, Any], c
     return _GatePanel(tuple(fallback.filters), fallback.profile.name, fallback.run_mode.value, "library defaults")
 
 
+def _has_transcript_context(manifest: Mapping[str, Any], caveats: list[str]) -> bool:
+    """Whether this run's candidate rows sit on real transcripts, per the run's own declared entry point.
+
+    ``sirnaforge offtarget`` screens guides someone else designed, so it enumerates nothing: every row
+    carries a placeholder transcript id and position 1 (#100). Read as an enumeration, that drew an
+    isoform table claiming each guide targets a transcript that does not exist, and a design map of one
+    fabricated transcript -- inventing exactly the target context the entry point does not have. So the
+    isoform table, the design map and the coverage denominator are all withheld for such a run.
+
+    Decided from the manifest's declared entry point rather than by sniffing the placeholder value,
+    because a sentinel string is a coincidence a reader cannot verify and the entry point is a fact the
+    run published about itself. A run with no readable manifest declares nothing, and is read as a
+    design run -- the same assumption every other provenance field already makes.
+    """
+    entry_point = str((manifest.get("run_policy") or {}).get("entry_point") or "")
+    if entry_point != EntryPoint.OFFTARGET_ONLY.value:
+        return True
+    caveats.append(
+        "this run screened pre-designed guides, which carry no transcript context: no isoform table, "
+        "no design map and no coverage denominator are reported"
+    )
+    return False
+
+
 def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = None) -> ReportPayload:
     """Build the payload for a finished run directory.
 
@@ -667,6 +692,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
             caveats.append(f"manifest.json could not be read ({exc}); the header shows less provenance")
 
     panel = _gate_panel(policy, manifest, caveats)
+    transcript_context = _has_transcript_context(manifest, caveats)
 
     candidates["_guide"] = candidates["guide_sequence"].map(_normalise_guide)
     if not hits.empty:
@@ -702,6 +728,7 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
                 mirna=mirna_by_guide.get(guide, pd.DataFrame()),
                 register=register,
                 clusters=clusters,
+                transcript_context=transcript_context,
             )
         )
 
@@ -732,9 +759,9 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         # not the same as the transcripts the map can plot -- a transcript can be present with no
         # scoreable row and still be an isoform this guide either does or does not reach.
         "transcript_ids": sorted(candidates["transcript_id"].dropna().astype(str).unique())
-        if "transcript_id" in candidates.columns
+        if transcript_context and "transcript_id" in candidates.columns
         else [],
-        "transcripts": _transcript_maps(candidates, guides, run_dir, caveats),
+        "transcripts": _transcript_maps(candidates, guides, run_dir, caveats) if transcript_context else [],
         # Keyed by dot-bracket and computed once per distinct structure, which is what makes the
         # layouts small enough to embed: 40,079 candidates carry 1,333 distinct structures.
         "structure_layouts": layouts_for(g.structure for g in guides),
@@ -857,10 +884,12 @@ def _build_guide(
     mirna: pd.DataFrame,
     register: dict[str, list[int]],
     clusters: dict[str, dict[str, Any]],
+    transcript_context: bool = True,
 ) -> GuideEntry:
     gates = [list(_evaluate(d, best, c)) for d, c in zip(descriptors, gate_columns, strict=True)]
 
-    isoforms = _isoform_table(rows, register, clusters)
+    # No transcript context means no enumeration to report; see _has_transcript_context.
+    isoforms = _isoform_table(rows, register, clusters) if transcript_context else []
     by_symbol, matrix, embedded, liability = _offtarget_views(hits)
 
     counts_exist = bool(len(hits)) and not embedded
@@ -986,11 +1015,11 @@ def _isoform_table(
 
     An earlier version of this report told the reader "two such designs differed 1.4x in measured
     knockdown" in the rendered card. That claim is now confined to this docstring, for two reasons.
-    It is traceable but **mislabelled**: 1.4x is the ratio of *fraction remaining* between AZ's HD-001
-    (0.49) and HD-002 (0.35) at transcript positions 1982/1983, and the ratio of *knockdown* for the
-    same pair is 1.27x. And it is not the strongest case on that panel -- the pair at 2733/2735
-    differs 1.97x in fraction remaining. Neither number belongs in a card that ships with the tool
-    and is read against targets that panel says nothing about.
+    It is traceable but **mislabelled**: 1.4x is the ratio of *fraction remaining* between two designs
+    of one internal reference set (0.49 and 0.35) at transcript positions 1982/1983, and the ratio of
+    *knockdown* for the same pair is 1.27x. And it is not the strongest case in that set -- the pair
+    at 2733/2735 differs 1.97x in fraction remaining. Neither number belongs in a card that ships
+    with the tool and is read against targets that set says nothing about.
     """
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
@@ -1101,7 +1130,7 @@ def _ortholog_conservation(hits: pd.DataFrame) -> dict[str, dict[str, Any]]:
     summarises those hits as ``conservation_score``, which is ``(species hit) / 3``.
 
     That summary cannot answer the question a cross-species programme asks, for two reasons. It is
-    **mismatch-blind**: on one MSH3 run it counted a species as conserved on alignments up to 8
+    **mismatch-blind**: on one internal run it counted a species as conserved on alignments up to 8
     mismatches, and mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. And it is
     **seed-blind**: mouse nm=1 split 96 seed-intact against 79 seed-hit, and one mismatch outside
     positions 2-8 is a different molecule from one inside them -- allowing it took the
