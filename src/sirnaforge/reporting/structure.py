@@ -22,6 +22,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from sirnaforge.reporting.svg import XMLNS, escape_text
+
 #: Guide positions carrying the seed, 1-based inclusive. The seed decides off-target reach, so it is
 #: shaded on every rendering.
 SEED_SPAN = (2, 8)
@@ -30,12 +32,6 @@ _BACKBONE = "#9ca3af"
 _RUNG = "#1d4ed8"
 _SEED = "#fef3c7"
 _BASE_TEXT = "#1a1d21"
-
-
-#: The SVG namespace, required for a standalone ``.svg`` file and pointless inside an HTML document,
-#: where the parser already knows the element. The report omits it: its own contract is that the file
-#: contains no URL at all, and a namespace declaration would satisfy the letter and not the spirit.
-_XMLNS = 'xmlns="http://www.w3.org/2000/svg"'
 
 
 class StructureError(ValueError):
@@ -193,10 +189,10 @@ def structure_svg(
     return (
         f'<svg viewBox="0 0 {width:g} {height:g}" width="100%" style="max-width:{width:g}px;'
         'font:11px ui-monospace,SFMono-Regular,Menlo,monospace" '
-        f'{_XMLNS if standalone else ""} role="img">'
+        f'{XMLNS if standalone else ""} role="img">'
         f"{body}"
         f'<text x="{width / 2:g}" y="{height - 6:g}" text-anchor="middle" font-size="10.5" '
-        f'fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">{_esc(caption)}</text>'
+        f'fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">{escape_text(caption)}</text>'
         "</svg>"
     )
 
@@ -232,7 +228,7 @@ def _draw_layout(
             parts.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="7" fill="{_SEED}"/>')
         parts.append(
             f'<text x="{px:.1f}" y="{py + 3.5:.1f}" text-anchor="middle" font-size="9.5" '
-            f'fill="{_BASE_TEXT}">{_esc(sequence[i])}</text>'
+            f'fill="{_BASE_TEXT}">{escape_text(sequence[i])}</text>'
         )
     if seed:
         parts.append(
@@ -274,7 +270,7 @@ def _draw_arcs(
             )
     for i, base in enumerate(sequence):
         parts.append(
-            f'<text x="{px[i]:.1f}" y="{baseline + 14:.1f}" text-anchor="middle" font-size="9.5" fill="{_BASE_TEXT}">{_esc(base)}</text>'
+            f'<text x="{px[i]:.1f}" y="{baseline + 14:.1f}" text-anchor="middle" font-size="9.5" fill="{_BASE_TEXT}">{escape_text(base)}</text>'
         )
     return "".join(parts)
 
@@ -287,7 +283,3 @@ def _fit(
     dx = left + ((right - left) - (x_hi - x_lo) * scale) / 2
     dy = top + ((bottom - top) - (y_hi - y_lo) * scale) / 2
     return (lambda x: dx + (x - x_lo) * scale), (lambda y: dy + (y_hi - y) * scale)
-
-
-def _esc(text: str) -> str:
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")

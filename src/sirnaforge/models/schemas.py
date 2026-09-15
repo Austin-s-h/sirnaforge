@@ -10,6 +10,10 @@ Use schemas: MySchema.validate(df) - validation errors provide detailed feedback
 """
 
 from collections.abc import Callable
+
+# ``Optional[Series[...]]`` is how pandera spells "this column may be absent", so UP045's
+# ``X | None`` rewrite is not equivalent here. That is what every bare UP045 suppression below
+# means, and it is stated here rather than restated on each of the 46 of them.
 from typing import Any, Optional, TypeVar, cast
 
 import pandas as pd
@@ -307,7 +311,7 @@ class SiRNACandidateSchema(DataFrameModel):
     # (not just ``nullable``) so an older run's CSV that predates this column stays absent rather
     # than being materialised as a value by ``add_missing_columns``; check_selection_state_values
     # enforces the SelectionState vocabulary only on rows that actually carry it.
-    selection_state: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    selection_state: Optional[Series[str]] = Field(  # noqa: UP045
         description="SelectionState value: eligible | provisional_incomplete_evidence | "
         "withheld_incomplete_evidence | not_eligible | not_selected",
         nullable=True,
@@ -838,31 +842,31 @@ class AggregatedOffTargetSchema(GenomeAlignmentSchema):
         strict = True
         coerce = True
 
-    hit_class: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    hit_class: Optional[Series[str]] = Field(  # noqa: UP045
         isin=[*HIT_CLASS_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="Persisted hit class; 'undetermined' means no reference existed to decide it",
     )
-    matched_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    matched_symbol: Optional[Series[str]] = Field(  # noqa: UP045
         str_length={"min_value": 1},
         description="Symbol that ESTABLISHED the class, or 'unknown'; not a per-hit gene name",
     )
-    symbol_lookup_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    symbol_lookup_missing: Optional[Series[str]] = Field(  # noqa: UP045
         isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="The hit species' index carries no symbol for this transcript",
     )
-    hit_symbol: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    hit_symbol: Optional[Series[str]] = Field(  # noqa: UP045
         str_length={"min_value": 1},
         description="Gene symbol resolved for rname, independent of class, or 'unknown'",
     )
-    hit_symbol_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    hit_symbol_missing: Optional[Series[str]] = Field(  # noqa: UP045
         isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="hit_symbol could not be resolved for this row",
     )
-    species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045
         isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="No transcript index exists for this row's species at all",
     )
-    ortholog_evidence: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+    ortholog_evidence: Optional[Series[str]] = Field(  # noqa: UP045
         isin=[*ORTHOLOG_EVIDENCE_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="Evidence tier behind an ORTHOLOG verdict; 'not_applicable' for every other class",
     )

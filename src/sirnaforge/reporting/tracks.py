@@ -28,6 +28,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from sirnaforge.reporting.svg import XMLNS, escape_text
+
 #: Verdict colours, matching the report's own status pills so a point and a pill cannot disagree.
 SERIES_FILL = {
     "pass": "#15803d",
@@ -43,12 +45,6 @@ _REGION_LABEL = {"utr5": "5'UTR", "utr3": "3'UTR", "unknown": "no ORF called"}
 _AXIS = "#6b7280"
 _GRID = "#e5e7eb"
 _GAP_FILL = "#f1f5f9"
-
-
-#: The SVG namespace, required for a standalone ``.svg`` file and pointless inside an HTML document,
-#: where the parser already knows the element. The report omits it: its own contract is that the file
-#: contains no URL at all, and a namespace declaration would satisfy the letter and not the spirit.
-_XMLNS = 'xmlns="http://www.w3.org/2000/svg"'
 
 
 @dataclass(frozen=True)
@@ -248,11 +244,11 @@ def transcript_map_svg(
     parts: list[str] = [
         f'<svg viewBox="0 0 {width:g} {total_h:g}" width="100%" '
         f'style="max-width:{width:g}px;font:12px ui-sans-serif,system-ui,sans-serif" '
-        f'{_XMLNS if standalone else ""} role="img">'
+        f'{XMLNS if standalone else ""} role="img">'
     ]
     if title:
         parts.append(
-            f'<text x="{x0:g}" y="{y_title:g}" font-size="12.5" font-weight="650" fill="#1a1d21">{_esc(title)}</text>'
+            f'<text x="{x0:g}" y="{y_title:g}" font-size="12.5" font-weight="650" fill="#1a1d21">{escape_text(title)}</text>'
         )
 
     parts.extend(_region_bar(regions, sx, y_bar, bar_h))
@@ -272,7 +268,7 @@ def transcript_map_svg(
         )
     parts.append(
         f'<text x="{14:g}" y="{(y_plot0 + y_plot1) / 2:g}" font-size="10.5" fill="{_AXIS}" '
-        f'transform="rotate(-90 14 {(y_plot0 + y_plot1) / 2:g})" text-anchor="middle">{_esc(value_label)}</text>'
+        f'transform="rotate(-90 14 {(y_plot0 + y_plot1) / 2:g})" text-anchor="middle">{escape_text(value_label)}</text>'
     )
 
     # One path per series rather than one element per point: 40,000 <circle> nodes cost megabytes and
@@ -301,7 +297,7 @@ def legend_html(series: Sequence[PointSeries], *, gaps: bool = False) -> str:
     items = [
         f'<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:9px;height:9px;'
         f'border-radius:2px;background:{SERIES_FILL.get(s.fill_key, _AXIS)};margin-right:5px"></span>'
-        f"{_esc(s.label)} ({len(s.points):,})</span>"
+        f"{escape_text(s.label)} ({len(s.points):,})</span>"
         for s in series
         if s.points
     ]
@@ -323,7 +319,7 @@ def _region_bar(regions: TranscriptRegions, sx: Callable[[float], float], y: flo
         if rw > 8 * len(label) * 0.55:
             out.append(
                 f'<text x="{rx + rw / 2:g}" y="{y + height / 2 + 4:g}" text-anchor="middle" '
-                f'font-size="11" fill="#1f2937">{_esc(label)}</text>'
+                f'font-size="11" fill="#1f2937">{escape_text(label)}</text>'
             )
     return out
 
@@ -340,7 +336,7 @@ def _tick_lanes(
     out: list[str] = []
     for lane in ticks:
         out.append(
-            f'<text x="{x0 - 8:g}" y="{y + 4:g}" text-anchor="end" font-size="10.5" fill="{_AXIS}">{_esc(lane.label)}</text>'
+            f'<text x="{x0 - 8:g}" y="{y + 4:g}" text-anchor="end" font-size="10.5" fill="{_AXIS}">{escape_text(lane.label)}</text>'
         )
         out.append(f'<line x1="{x0:g}" y1="{y:g}" x2="{x1:g}" y2="{y:g}" stroke="{_GRID}" stroke-width="1"/>')
         if lane.positions:
@@ -348,7 +344,7 @@ def _tick_lanes(
             out.append(f'<path d="{marks}" fill="{SERIES_FILL.get(lane.fill_key, _AXIS)}"/>')
         if lane.note:
             out.append(
-                f'<text x="{x1:g}" y="{y + 18:g}" text-anchor="end" font-size="10" fill="{_AXIS}">{_esc(lane.note)}</text>'
+                f'<text x="{x1:g}" y="{y + 18:g}" text-anchor="end" font-size="10" fill="{_AXIS}">{escape_text(lane.note)}</text>'
             )
         y += lane_h
     return out
@@ -396,14 +392,3 @@ def _int(value: object) -> int | None:
         return int(float(str(value)))
     except (TypeError, ValueError):
         return None
-
-
-def _esc(text: str) -> str:
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
