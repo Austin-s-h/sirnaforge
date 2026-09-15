@@ -77,7 +77,7 @@ executable on `PATH` both lie.
 The two test stages answer different questions and are not interchangeable:
 
 - **Host stage** — every `dev`/`ci`/`release` test that is not `runs_in_container`, serial, with
-  coverage. This is where line coverage comes from: 84% overall, and 90-100% on everything 0.7.1
+  coverage. This is where line coverage comes from: 83-84% overall, and 90-100% on everything 0.7.1
   added. It reaches that number with the screen stubbed and Nextflow monkeypatched.
 - **Container stage** — 46 tests that drive the installed CLI with `subprocess.run` inside the
   image. It answers "does the artifact work", which coverage cannot measure: coverage does not
@@ -92,6 +92,16 @@ installed `benchmark`/`report` commands run for real, so it is the only place a 
 integration defect in them can be caught. `workflow.py` turns a failed render and a failed manifest
 write into `logger.warning`, so the CLI exits 0 either way: the assertions in
 `release_artifacts.py` are what make those failures visible.
+
+> **Do not trust the coverage number if anything else ran pytest in this working tree.**
+> `[tool.coverage.run] data_file` is the fixed path `.coverage`, and `make test-ci`, a bare
+> `uv run pytest --cov` and the container stage's `--cov-append` all write it. A second run in the
+> same checkout — another shell, another agent session — silently rewrites the host stage's data
+> between step 1 and step 3, and the rollup then reads several points low with whole modules
+> deflated (measured: 83% with `workflow.py` at 87% became 76% with it at 62%, from concurrent
+> activity alone, no code change). Test counts are unaffected because each run reports its own.
+> If the total looks wrong, re-run `make test-release-host` alone and report on that, or set
+> `COVERAGE_FILE` to a scratch path for the other run.
 
 ### A `dev` test must never reach the network
 
