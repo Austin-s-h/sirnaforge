@@ -81,7 +81,8 @@ class AnnotationManager(TranscriptomeManager):
         )
         if result is None:
             return None
-        return result["fasta"]
+        # The shared result dict now also carries the cache-identity view, so it is keyed to `Any`.
+        return Path(result["fasta"])
 
     def _handle_url_annotation(self, url: str, cache_name: str | None = None) -> Path | None:
         """Download/cache remote annotation as-is (keep .gz compressed payloads)."""

@@ -115,8 +115,9 @@ class OrthologueMapping:
             result is otherwise indistinguishable from a lookup on the wrong identifier -- the first
             mouse run resolved 0 orthologues purely because the "gene IDs" were transcript IDs.
         queried_symbols: The gene symbols used for the fallback route, if any.
-        source: Where the orthologues came from -- Compara, or a user-supplied mapping file. An
-            offline run must not publish provenance that claims a REST call it never made.
+        source: Where the orthologues came from -- Compara, or a user-supplied mapping file, or
+            ``None`` when no lookup was attempted at all. An offline run must not publish provenance
+            that claims a REST call it never made.
     """
 
     gene_ids_by_species: dict[str, frozenset[str]]
@@ -124,7 +125,7 @@ class OrthologueMapping:
     unresolved_species: frozenset[str]
     queried_gene_ids: frozenset[str] = frozenset()
     queried_symbols: frozenset[str] = frozenset()
-    source: str = SOURCE_COMPARA
+    source: str | None = SOURCE_COMPARA
 
     @property
     def all_gene_ids(self) -> frozenset[str]:
@@ -135,21 +136,40 @@ class OrthologueMapping:
         return frozenset(ids)
 
     def summary(self) -> dict[str, Any]:
-        """Provenance record for the run summary, so a conservation claim is auditable."""
-        return {
+        """Provenance record for the run summary, so a conservation claim is auditable.
+
+        ``orthologue_types`` is published for a Compara lookup and nobody else: it is the filter this
+        module applies to a Compara *response*, so it is provenance for a call that happened and for
+        nothing else. Omitting it when no lookup ran was half the fix -- a user-supplied mapping file
+        was still described with all three relationship types, as if a REST call had filtered them.
+        """
+        record: dict[str, Any] = {
             "source": self.source,
-            "orthologue_types": sorted(ORTHOLOGUE_TYPES),
             "gene_ids_by_species": {s: sorted(g) for s, g in sorted(self.gene_ids_by_species.items())},
             "resolved_species": sorted(self.resolved_species),
             "unresolved_species": sorted(self.unresolved_species),
             "queried_gene_ids": sorted(self.queried_gene_ids),
             "queried_symbols": sorted(self.queried_symbols),
         }
+        if self.source == SOURCE_COMPARA:
+            record["orthologue_types"] = sorted(ORTHOLOGUE_TYPES)
+        return record
 
     @classmethod
     def empty(cls) -> OrthologueMapping:
-        """A mapping that resolved nothing, so every ortholog verdict falls back to the heuristic."""
-        return cls(gene_ids_by_species={}, resolved_species=frozenset(), unresolved_species=frozenset())
+        """A mapping that resolved nothing, so every ortholog verdict falls back to the heuristic.
+
+        ``source=None`` because nothing was asked: inheriting the Compara default published
+        ``{"source": "ensembl_compara", "orthologue_types": [all three]}`` into every single-species
+        screen, every design-only run and every run whose gene yielded neither ID nor symbol -- a REST
+        call that never happened.
+        """
+        return cls(
+            gene_ids_by_species={},
+            resolved_species=frozenset(),
+            unresolved_species=frozenset(),
+            source=None,
+        )
 
     @classmethod
     def from_file(
@@ -316,8 +336,12 @@ async def resolve_orthologues(
     query_slug = ensembl_species_slug(canonical_query)
     if query_slug is None:
         logger.warning("Orthology lookup skipped: %r is not a registered species", query_species)
+        # No slug means no URL was ever built, so this exit made no Compara call either.
         return OrthologueMapping(
-            gene_ids_by_species={}, resolved_species=frozenset(), unresolved_species=frozenset(wanted)
+            gene_ids_by_species={},
+            resolved_species=frozenset(),
+            unresolved_species=frozenset(wanted),
+            source=None,
         )
 
     by_species: dict[str, set[str]] = {}

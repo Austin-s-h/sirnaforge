@@ -125,6 +125,11 @@ class ReferenceManager(ABC, Generic[SourceT]):
         self.cache_dir = self._resolve_cache_directory(cache_dir, cache_subdir)
         self.cache_ttl = timedelta(days=cache_ttl_days)
         self.metadata_file = self.cache_dir / "cache_metadata.json"
+        # URL -> the ETag/Last-Modified/Content-Length of the response these bytes came from. The
+        # response is the only moment those exist, and they are what identifies a release-floating
+        # URL's contents. Never back-filled by a manifest-time HEAD: that would describe upstream
+        # *now* rather than the bytes this run screened.
+        self._remote_observations: dict[str, dict[str, str]] = {}
         self._load_metadata()
 
     def _resolve_cache_directory(self, cache_dir: str | Path | None, cache_subdir: str) -> Path:
@@ -238,6 +243,20 @@ class ReferenceManager(ABC, Generic[SourceT]):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
+    def _observe_response(self, url: str, headers: Any) -> None:
+        """Record the validators of the response these bytes arrived in, at zero extra I/O."""
+        observed = {
+            key: value
+            for key, value in (
+                ("etag", headers.get("ETag")),
+                ("last_modified", headers.get("Last-Modified")),
+                ("content_length", headers.get("Content-Length")),
+            )
+            if value
+        }
+        if observed:
+            self._remote_observations[url] = observed
+
     def _record_cache_entry(
         self,
         cache_key: str,
@@ -250,6 +269,9 @@ class ReferenceManager(ABC, Generic[SourceT]):
         producer_version: str | None = None,
     ) -> CacheMetadata:
         """Create/replace metadata for a cache entry from an on-disk file."""
+        observed = self._remote_observations.get(source.url)
+        if observed:
+            extra = {**(extra or {}), "remote_observed": observed}
         metadata = CacheMetadata(
             source=source,
             downloaded_at=downloaded_at or datetime.now().isoformat(),
@@ -435,6 +457,7 @@ class ReferenceManager(ABC, Generic[SourceT]):
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             with urllib.request.urlopen(request, timeout=timeout) as response:
+                self._observe_response(source.url, response.headers)
                 if source.compressed and source.url.endswith(".gz"):
                     logger.info("🔄 Decompressing gzipped file...")
                     with gzip.GzipFile(fileobj=response) as decompressed, destination.open("wb") as handle:

@@ -21,10 +21,10 @@ Imports of ``sirnaforge.models`` and ``sirnaforge.data`` are deliberately lazy: 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sirnaforge.models.evidence import ScreeningPlan, ScreeningPlanEntry
@@ -291,6 +291,11 @@ class ScreeningReference:
         needs_index_build: True when no index exists yet, so the pipeline must build one. It decides
             which pipeline parameter carries this reference: a FASTA named as an index prefix aligns
             nothing, which the pipeline then reports as a completed screen.
+        identity_evidence: Frozen view of the cache metadata for these bytes -- url, checksum and its
+            algorithm, size and its scope, download date, filters. ``identity`` names a *source*; only
+            this names the bytes, and it is the sole route by which they survive
+            ``_prepare_transcriptome_database``, where the manager that knew them is discarded.
+            Optional because a prebuilt index adopted from the caller has no cache entry at all.
     """
 
     species: str
@@ -303,13 +308,14 @@ class ScreeningReference:
     reason: str
     fasta: str | None = None
     needs_index_build: bool = False
+    identity_evidence: Mapping[str, Any] | None = None
 
     @property
     def index_entry(self) -> str:
         """The ``species:path`` token the pipeline parameter is built from."""
         return f"{self.species}:{self.index}"
 
-    def to_metadata(self) -> dict[str, str | None]:
+    def to_metadata(self) -> dict[str, object]:
         """Serializable snapshot for the published reference summary."""
         return {
             "species": self.species,
@@ -322,6 +328,7 @@ class ScreeningReference:
             "reason": self.reason,
             "fasta": self.fasta,
             "needs_index_build": str(self.needs_index_build),
+            "identity_evidence": dict(self.identity_evidence) if self.identity_evidence else None,
         }
 
     def plan_entry(self, *, guide_set_digest: str, search_settings: SearchSettings | None = None) -> ScreeningPlanEntry:
