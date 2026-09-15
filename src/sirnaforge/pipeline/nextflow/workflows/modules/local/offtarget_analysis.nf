@@ -14,6 +14,10 @@ process OFFTARGET_ANALYSIS {
     output:
     path "${species}_analysis.tsv", emit: analysis
     path "${species}_summary.json", emit: summary
+    // #100: non-optional evidence envelope. offtarget_analysis_cli already writes this file on
+    // both its branches (missing-index failure and completed alignment); declaring it as a real
+    // output is what makes AGGREGATE_RESULTS's reconciliation actually see it.
+    path "transcriptome_${species}_evidence.json", emit: evidence
     path "versions.yml", emit: versions
 
     when:
@@ -61,6 +65,34 @@ PYEOF
     # species as unscreened rather than as screened and clean.
     touch ${species}_analysis.tsv
     echo '{"species": "${species}", "status": "stub", "total_candidates": 0, "total_hits": 0}' > ${species}_summary.json
+
+    # #100: the evidence envelope this species would carry from a real run, mirrored here so a
+    # `-stub-run` still satisfies the non-optional output declared above. status "failed" and
+    # producer "stub" -- nothing actually aligned, so this must never read as "complete".
+    cat <<-'EVIDENCE' > transcriptome_${species}_evidence.json
+    {
+      "schema_version": "2",
+      "producer": "stub",
+      "source": "synthesized",
+      "entry": {
+        "channel": "transcriptome",
+        "species": "${species}",
+        "reference_id": null,
+        "guide_set_digest": "0000000000000000",
+        "status": "failed",
+        "counts": {
+          "sites": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false},
+          "distinct_transcripts": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false},
+          "distinct_genes": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false},
+          "unresolved_gene_sites": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false}
+        },
+        "submitted_guide_digest": null,
+        "submitted_guides": null,
+        "processed_guides": null,
+        "detail": "stub run: no aligner executed"
+      }
+    }
+    EVIDENCE
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

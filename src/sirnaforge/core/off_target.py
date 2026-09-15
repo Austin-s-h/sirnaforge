@@ -22,10 +22,19 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import pandas as pd
+from pandera.errors import SchemaError, SchemaErrors
 
 from sirnaforge.core.hit_annotation import unclassified_cells
+from sirnaforge.core.screening_evidence import (
+    EvidenceProducer,
+    censored_counts,
+    collect_evidence,
+    guide_set_digest,
+    write_evidence,
+)
 from sirnaforge.data.base import FastaUtils
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.models.evidence import EvidenceStatus, ObservedCount, ObservedCounts, ScreeningEvidenceEntry
 from sirnaforge.models.off_target import (
     AggregatedMiRNASummary,
     AggregatedOffTargetSummary,
@@ -36,6 +45,7 @@ from sirnaforge.models.off_target import (
     MiRNASummary,
     OffTargetHit,
 )
+from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.models.schemas import AggregatedOffTargetSchema, GenomeAlignmentSchema, MiRNAAlignmentSchema
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
@@ -161,6 +171,100 @@ class _MiRNASeedScanner(Protocol):
 
 class _MiRNASeedBackendUnavailableError(RuntimeError):
     """Raised when an in-process backend dependency is unavailable."""
+
+
+class _MiRNADatabaseUnavailableError(RuntimeError):
+    """Raised when one species' miRNA database could not be resolved or downloaded.
+
+    Exists so the per-species loop in :func:`run_mirna_seed_analysis` can report that species the
+    same way it reports every other non-completion, instead of skipping it silently (#100).
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionOutcome:
+    """Whether one BWA or in-process seed-scan execution actually completed, and what it observed.
+
+    ``analyze_sequences``/``scan_mirna_seed_matches`` return only a hit list, so a hard aligner
+    failure (the subprocess raising) and a clean zero-hit run are byte-identical: both return
+    ``[]``. This is the sibling contract #100 needs to tell them apart, plus the submitted/
+    processed guide membership and cap/truncation metadata the evidence envelope requires.
+
+    Attributes:
+        completed: Whether execution ran to completion (aligner exit 0 / in-process backend ran).
+        submitted: Guides handed to the aligner or scanner.
+        processed: Guides the aligner or scanner actually processed. For BWA this counts every SAM
+            record observed, including unmapped ones, because an unmapped record still proves the
+            query reached the aligner. For an in-process scanner every submitted guide is processed
+            by construction, so this always equals ``submitted`` on success.
+        retained_hits: Hits kept after any ``max_hits`` cap.
+        pre_cap_hits: Hits found before the cap was applied.
+        cap: The cap in force, or ``None`` when uncapped.
+        truncated: Whether the cap actually discarded hits (``pre_cap_hits > cap``).
+        detail: Failure reason. Required when ``completed`` is ``False``. Emitters read
+            :attr:`evidence_detail`, not this field, so a censored outcome is never reasonless.
+    """
+
+    completed: bool
+    submitted: int
+    processed: int
+    retained_hits: int
+    pre_cap_hits: int
+    cap: int | None
+    truncated: bool
+    detail: str | None = None
+
+    @property
+    def status(self) -> EvidenceStatus:
+        """The #100 evidence-status vocabulary this outcome maps onto."""
+        if not self.completed:
+            return EvidenceStatus.FAILED
+        if self.truncated:
+            return EvidenceStatus.CENSORED
+        return EvidenceStatus.COMPLETE
+
+    @property
+    def censoring_detail(self) -> str | None:
+        """Why a censored outcome's counts are lower bounds: the cap, and what it discarded.
+
+        ``status`` returned CENSORED for ``completed and truncated`` while ``detail`` stayed at its
+        ``None`` default on that branch -- only the two ``completed=False`` paths ever set it. Since
+        ``ScreeningEvidenceEntry.failure_carries_a_reason`` rejects a CENSORED entry with no detail,
+        every emitter raised the moment a cap actually truncated, making CENSORED -- the one status
+        that exists to say "the search ran but its counts are lower bounds" -- unconstructible
+        (#100). Deriving the reason here means no caller has to remember to supply it, and the reason
+        it gets is specific rather than boilerplate. ``None`` for any outcome that is not censored.
+        """
+        if not (self.completed and self.truncated):
+            return None
+        cap = "an unrecorded hit cap" if self.cap is None else f"hit cap {self.cap}"
+        discarded = max(self.pre_cap_hits - self.retained_hits, 0)
+        return (
+            f"{cap} truncated the search: {discarded} of {self.pre_cap_hits} hits were discarded, "
+            "so every reported count is a lower bound"
+        )
+
+    @property
+    def evidence_detail(self) -> str | None:
+        """The detail an envelope must carry for :attr:`status`; ``None`` only for COMPLETE.
+
+        An explicitly supplied ``detail`` wins, so a failure keeps the aligner's own words; a
+        censored outcome that was given none falls back to :attr:`censoring_detail`.
+        """
+        return self.detail or self.censoring_detail
+
+    def counts(self) -> ObservedCounts:
+        """The ``ObservedCounts`` this outcome reports, honouring the failed/censored/complete split.
+
+        A failed execution observed nothing -- every count stays unset rather than reporting a
+        misleading zero. A censored one reuses :func:`censored_counts` so its lower-bound and
+        truncation flags are set the same way every other censored channel sets them.
+        """
+        if not self.completed:
+            return ObservedCounts()
+        if self.truncated:
+            return censored_counts(retained=self.retained_hits, cap=self.cap, pre_cap=self.pre_cap_hits)
+        return ObservedCounts(sites=ObservedCount(value=self.retained_hits))
 
 
 def _compute_species_counts(df: pd.DataFrame) -> dict[str, int]:
@@ -829,6 +933,63 @@ def scan_mirna_seed_matches(
     return results if max_hits is None else results[:max_hits]
 
 
+def scan_mirna_seed_matches_with_outcome(
+    sequences: dict[str, str],
+    mirna_sequences: dict[str, str],
+    *,
+    backend: MiRNASeedBackend | str = MiRNASeedBackend.PYAHOCORASICK,
+    seed_start: int = 2,
+    seed_end: int = 8,
+    max_mismatches: int = 2,
+    max_hits: int | None = None,
+) -> tuple[list[dict[str, Any]], ExecutionOutcome]:
+    """Scan miRNA seed matches, also reporting the #100 ``ExecutionOutcome`` contract.
+
+    Sibling to :func:`scan_mirna_seed_matches`, which keeps its existing return shape so no
+    existing caller is touched. An in-process backend has no partial-execution concept -- every
+    submitted guide is scanned against every miRNA by construction -- so ``processed`` always
+    equals ``submitted`` on success; only an unavailable backend dependency
+    (``_MiRNASeedBackendUnavailableError``) can stop execution before it starts, which is what
+    makes that case ``completed=False`` rather than a hit list of zero.
+    """
+    submitted = len(sequences)
+    try:
+        uncapped = scan_mirna_seed_matches(
+            sequences,
+            mirna_sequences,
+            backend=backend,
+            seed_start=seed_start,
+            seed_end=seed_end,
+            max_mismatches=max_mismatches,
+            max_hits=None,
+        )
+    except _MiRNASeedBackendUnavailableError as exc:
+        return [], ExecutionOutcome(
+            completed=False,
+            submitted=submitted,
+            processed=0,
+            retained_hits=0,
+            pre_cap_hits=0,
+            cap=max_hits,
+            truncated=False,
+            detail=str(exc),
+        )
+
+    pre_cap_hits = len(uncapped)
+    capped = uncapped if max_hits is None else uncapped[:max_hits]
+    truncated = max_hits is not None and pre_cap_hits > max_hits
+    outcome = ExecutionOutcome(
+        completed=True,
+        submitted=submitted,
+        processed=submitted,
+        retained_hits=len(capped),
+        pre_cap_hits=pre_cap_hits,
+        cap=max_hits,
+        truncated=truncated,
+    )
+    return capped, outcome
+
+
 # =============================================================================
 # Core Analyzer Classes
 # =============================================================================
@@ -945,6 +1106,78 @@ class BwaAnalyzer:
             Path(temp_fasta_path).unlink(missing_ok=True)
 
         return results if self.max_hits is None else results[: self.max_hits]
+
+    def analyze_sequences_with_outcome(
+        self, sequences: dict[str, str]
+    ) -> tuple[list[dict[str, Any]], ExecutionOutcome]:
+        """Run BWA-MEM2 analysis, also reporting the #100 ``ExecutionOutcome`` contract.
+
+        Sibling to :meth:`analyze_sequences`, which keeps returning ``[]`` on an aligner failure so
+        every existing caller's return shape stays untouched. That made a hard subprocess failure
+        byte-identical to a clean zero-hit run; ``ExecutionOutcome.completed`` is what tells a
+        caller (workflow.py, the Nextflow evidence emitters) apart, along with the
+        submitted/processed guide membership and cap/truncation metadata evidence.json needs.
+        Truncation is attributed to this method's own cap below, never to ``_filter_and_rank``,
+        which sorts the results but discards none of them.
+        """
+        analysis_sequences = self._prepare_sequences_for_analysis(sequences)
+        submitted = len(sequences)
+        temp_fasta_path = create_temp_fasta(analysis_sequences)
+
+        try:
+            bwa_path = _get_executable_path("bwa-mem2")
+            if not bwa_path:
+                raise FileNotFoundError("BWA-MEM2 executable not found in PATH")
+
+            cmd = self._build_bwa_command(bwa_path, temp_fasta_path)
+            _validate_command_args(cmd)
+            logger.info(f"Running BWA-MEM2 ({self.mode} mode): {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=None, check=True)  # nosec B603
+            parsed, processed_qnames = self._parse_sam_output_with_membership(result.stdout, sequences)
+            ranked = self._filter_and_rank(parsed)
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            detail = f"BWA-MEM2 ({self.mode} mode) failed: {stderr.splitlines()[-1] if stderr else e}"
+            logger.error(f"BWA-MEM2 failed: {e.stderr}")
+            return [], ExecutionOutcome(
+                completed=False,
+                submitted=submitted,
+                processed=0,
+                retained_hits=0,
+                pre_cap_hits=0,
+                cap=self.max_hits,
+                truncated=False,
+                detail=detail,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("BWA-MEM2 timed out")
+            return [], ExecutionOutcome(
+                completed=False,
+                submitted=submitted,
+                processed=0,
+                retained_hits=0,
+                pre_cap_hits=0,
+                cap=self.max_hits,
+                truncated=False,
+                detail=f"BWA-MEM2 ({self.mode} mode) timed out",
+            )
+        finally:
+            Path(temp_fasta_path).unlink(missing_ok=True)
+
+        pre_cap_hits = len(ranked)
+        capped = ranked if self.max_hits is None else ranked[: self.max_hits]
+        truncated = self.max_hits is not None and pre_cap_hits > self.max_hits
+        outcome = ExecutionOutcome(
+            completed=True,
+            submitted=submitted,
+            processed=len(processed_qnames),
+            retained_hits=len(capped),
+            pre_cap_hits=pre_cap_hits,
+            cap=self.max_hits,
+            truncated=truncated,
+        )
+        logger.info(f"BWA-MEM2 analysis completed: {len(capped)} hits found")
+        return capped, outcome
 
     def _prepare_sequences_for_analysis(self, sequences: dict[str, str]) -> dict[str, str]:
         """Prepare sequences for analysis based on mode."""
@@ -1101,7 +1334,21 @@ class BwaAnalyzer:
 
     def _parse_sam_output(self, sam_output: str, original_sequences: dict[str, str]) -> list[dict[str, Any]]:
         """Parse SAM output from BWA-MEM2."""
+        results, _processed_qnames = self._parse_sam_output_with_membership(sam_output, original_sequences)
+        return results
+
+    def _parse_sam_output_with_membership(
+        self, sam_output: str, original_sequences: dict[str, str]
+    ) -> tuple[list[dict[str, Any]], frozenset[str]]:
+        """Parse SAM output, also returning every qname the aligner emitted a record for.
+
+        An unmapped record (``flag & 4``) is excluded from the hit list below, same as always, but
+        it still proves the aligner processed that query -- which is exactly what
+        :meth:`analyze_sequences_with_outcome` needs to report the ``processed`` guide count for
+        #100 evidence, distinct from the ``retained_hits`` count of actual alignments.
+        """
         results = []
+        processed_qnames: set[str] = set()
         query_frames = self._query_frames(original_sequences)
 
         for line in sam_output.splitlines():
@@ -1114,6 +1361,7 @@ class BwaAnalyzer:
 
             qname = parts[0]
             flag = int(parts[1])
+            processed_qnames.add(qname)
             rname = parts[2]
             pos = int(parts[3])
             mapq = int(parts[4]) if parts[4] != "*" else 0
@@ -1167,7 +1415,7 @@ class BwaAnalyzer:
             }
             results.append(result)
 
-        return results
+        return results, frozenset(processed_qnames)
 
     def _parse_md_tag(self, md_tag: str) -> list[int]:
         """Parse MD tag to extract mismatch positions."""
@@ -1653,6 +1901,8 @@ def run_bwa_alignment_analysis(
     bwa_T: int = 15,
     seed_start: int = 2,
     seed_end: int = 8,
+    *,
+    evidence_dir: str | Path | None = None,
 ) -> Path:
     """Run BWA-MEM2 alignment analysis for candidate sequences using Pydantic models.
 
@@ -1668,6 +1918,9 @@ def run_bwa_alignment_analysis(
         bwa_T: BWA minimum score threshold
         seed_start: Seed region start position (1-based)
         seed_end: Seed region end position (1-based)
+        evidence_dir: When given, write a #100 transcriptome evidence envelope reporting whether
+            this execution actually completed, additive and keyword-only so the ``.nf`` script
+            block that calls this function by name is unaffected.
 
     Returns:
         Path to output directory containing results
@@ -1695,7 +1948,14 @@ def run_bwa_alignment_analysis(
         seed_end=seed_end,
     )
 
-    results_dicts = analyzer.analyze_sequences(sequences)
+    # The outcome-reporting path is only taken when a caller actually wants evidence: existing
+    # callers (and the tests that monkeypatch ``analyze_sequences`` directly) keep exercising the
+    # exact method they always have, with zero behaviour change.
+    outcome: ExecutionOutcome | None = None
+    if evidence_dir is not None:
+        results_dicts, outcome = analyzer.analyze_sequences_with_outcome(sequences)
+    else:
+        results_dicts = analyzer.analyze_sequences(sequences)
 
     # Convert dict results to OffTargetHit objects with validation
     all_hits: list[OffTargetHit] = []
@@ -1741,7 +2001,9 @@ def run_bwa_alignment_analysis(
     mean_mismatches = statistics.fmean(hit.nm for hit in all_hits) if all_hits else None
     mean_seed_mismatches = statistics.fmean(hit.seed_mismatches for hit in all_hits) if all_hits else None
 
-    # Create validated summary using Pydantic model
+    # Create validated summary using Pydantic model. `status` keeps its existing free-text
+    # vocabulary ("completed"/"failed") -- aggregate_offtarget_results reads it -- while
+    # `evidence_status` carries the #100 four-value ExecutionOutcome vocabulary alongside it.
     summary = AnalysisSummary(
         candidate_id=candidate_id,
         species=species,
@@ -1751,6 +2013,8 @@ def run_bwa_alignment_analysis(
         mean_mapq=mean_mapq,
         mean_mismatches=mean_mismatches,
         mean_seed_mismatches=mean_seed_mismatches,
+        status="failed" if outcome is not None and not outcome.completed else "completed",
+        evidence_status=outcome.status.value if outcome is not None else None,
     )
 
     # Write summary JSON file
@@ -1766,6 +2030,23 @@ def run_bwa_alignment_analysis(
             "seed_end": seed_end,
         }
         json.dump(summary_dict, f, indent=2)
+
+    if evidence_dir is not None and outcome is not None:
+        digest = guide_set_digest(candidates_file)
+        entry = ScreeningEvidenceEntry(
+            channel=ScreeningChannel.TRANSCRIPTOME,
+            species=species,
+            guide_set_digest=digest,
+            status=outcome.status,
+            counts=outcome.counts(),
+            submitted_guide_digest=digest,
+            submitted_guides=outcome.submitted,
+            processed_guides=outcome.processed,
+            # ``evidence_detail``, not ``detail``: a truncating ``max_hits`` yields a CENSORED status
+            # whose reason is derived, and an entry carrying that status with no reason is rejected.
+            detail=outcome.evidence_detail,
+        )
+        write_evidence(evidence_dir, producer=EvidenceProducer.OFFTARGET_ANALYSIS, entry=entry)
 
     logger.info(f"BWA analysis completed for {candidate_id} vs {species}: {len(all_hits)} hits")
 
@@ -2010,7 +2291,78 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     return output_path
 
 
-def run_mirna_seed_analysis(
+@dataclass(frozen=True, slots=True)
+class _SpeciesEvidence:
+    """What one species' mirna_seed envelope will say, decided inside the guarded block below.
+
+    Deciding and writing are separated because the write used to sit *inside* the ``try`` whose
+    handler exists for Pandera rejections: a ``ValidationError`` raised by the envelope itself was
+    caught there and recorded as bad data, zeroing ``hits_per_species`` while the hits stayed in the
+    combined table (#100). The loop carries one of these out of the ``try`` and writes it afterwards,
+    so an evidence-writer bug surfaces as itself instead of as a species failure.
+
+    Attributes:
+        status: The status the envelope will carry.
+        counts: Observed counts for that status.
+        submitted_guides: Guides handed to the scanner.
+        processed_guides: Guides the scanner reported processing.
+        detail: Reason, required for FAILED and CENSORED.
+    """
+
+    status: EvidenceStatus
+    counts: ObservedCounts
+    submitted_guides: int | None
+    processed_guides: int | None
+    detail: str | None
+
+    @classmethod
+    def failed(cls, *, submitted_guides: int, detail: str) -> "_SpeciesEvidence":
+        """A species that did not complete: it observed nothing, and says why."""
+        return cls(
+            status=EvidenceStatus.FAILED,
+            counts=ObservedCounts(),
+            submitted_guides=submitted_guides,
+            processed_guides=0,
+            detail=detail,
+        )
+
+    @classmethod
+    def from_outcome(cls, outcome: ExecutionOutcome) -> "_SpeciesEvidence":
+        """A species whose scan ran, reported through the execution outcome's own vocabulary."""
+        return cls(
+            status=outcome.status,
+            counts=outcome.counts(),
+            submitted_guides=outcome.submitted,
+            processed_guides=outcome.processed,
+            # ``evidence_detail``, not ``detail``: a truncating cap yields CENSORED, whose reason is
+            # derived from the cap rather than left for this call site to remember.
+            detail=outcome.evidence_detail,
+        )
+
+
+def _write_mirna_species_evidence(
+    evidence_dir: str | Path,
+    candidates_file: str | Path,
+    species: str,
+    evidence: _SpeciesEvidence,
+) -> None:
+    """Write one per-species mirna_seed evidence envelope, shared by every outcome branch below."""
+    digest = guide_set_digest(candidates_file)
+    entry = ScreeningEvidenceEntry(
+        channel=ScreeningChannel.MIRNA_SEED,
+        species=species,
+        guide_set_digest=digest,
+        status=evidence.status,
+        counts=evidence.counts,
+        submitted_guide_digest=digest,
+        submitted_guides=evidence.submitted_guides,
+        processed_guides=evidence.processed_guides,
+        detail=evidence.detail,
+    )
+    write_evidence(evidence_dir, producer=EvidenceProducer.MIRNA_SEED_ANALYSIS, entry=entry)
+
+
+def run_mirna_seed_analysis(  # noqa: PLR0912
     candidates_file: str | Path,
     candidate_id: str,
     mirna_db: str,  # Review, can this be linked to a class describing all miRNA database protocol/ABC?
@@ -2019,6 +2371,8 @@ def run_mirna_seed_analysis(
     backend: MiRNASeedBackend | str = MiRNASeedBackend.PYAHOCORASICK,
     seed_start: int = 2,
     seed_end: int = 8,
+    *,
+    evidence_dir: str | Path | None = None,
 ) -> Path:
     """Run miRNA seed match analysis for candidate sequences.
 
@@ -2031,6 +2385,15 @@ def run_mirna_seed_analysis(
     outputs and summary ``total_hits``; perfect matches in non-seed regions are retained
     in the ``*_raw`` files but are not real miRNA seed off-targets.
 
+    One species failing must not discard every other species' already-computed results: the
+    per-species loop below records a failure and moves on rather than aborting, and only re-raises
+    if *every* requested species hit the same unavailable-backend error (#100) -- the historical
+    all-or-nothing signal a solely-affected run still needs.
+
+    Every exit from that loop writes an envelope when ``evidence_dir`` is given, including the
+    species whose database could not be resolved: that branch used to skip silently, which both let
+    the batch roll-up claim ``complete`` and left the module's non-optional evidence glob unmatched.
+
     Args:
         candidates_file: Path to FASTA file with candidate sequences
         candidate_id: Candidate identifier
@@ -2040,6 +2403,9 @@ def run_mirna_seed_analysis(
         backend: miRNA seed backend to use for analysis (pyahocorasick by default)
         seed_start: Seed region start position (1-based, default 2)
         seed_end: Seed region end position (1-based, default 8)
+        evidence_dir: When given, write a per-species #100 mirna_seed evidence envelope for every
+            species this run actually attempted, additive and keyword-only so the ``.nf`` script
+            block that calls this function by name is unaffected.
 
     Returns:
         Path to output directory containing results
@@ -2056,6 +2422,8 @@ def run_mirna_seed_analysis(
     all_raw_hits = []  # All raw alignments from BWA
     species_raw_stats = {}
     species_filtered_stats = {}
+    unavailable_backend_species: dict[str, str] = {}
+    species_failures: dict[str, str] = {}  # Every species that did not complete, for any reason.
 
     resolved_backend = MiRNASeedBackend(backend)
 
@@ -2063,14 +2431,25 @@ def run_mirna_seed_analysis(
     logger.info(f"Database: {mirna_db}, Species: {mirna_species}, Backend: {resolved_backend.value}")
 
     for species in mirna_species:
+        outcome: ExecutionOutcome | None = None
+        # Decided below, written after the guarded block: see ``_SpeciesEvidence``.
+        pending_evidence: _SpeciesEvidence | None = None
         try:
             # Get or download miRNA database for this species
             logger.info(f"Processing miRNA database for species: {species}")
             db_fasta_path = manager.get_database(mirna_db, species)
 
             if db_fasta_path is None or not db_fasta_path.exists():
-                logger.warning(f"miRNA database not available for {species}, skipping")
-                continue
+                # Raised rather than skipped with a bare ``continue``: ``get_database`` returns None
+                # for an unknown species AND for any download failure, so this is the normal path on
+                # an offline host. Skipping it wrote no envelope and recorded no failure, leaving the
+                # batch roll-up claiming ``complete`` -- and, because the module declares
+                # ``mirna_seed_*_evidence.json`` non-optional on the invariant that at least one
+                # envelope always exists, aborting the whole pipeline on an unmatched glob (#100).
+                raise _MiRNADatabaseUnavailableError(
+                    f"miRNA database '{mirna_db}' is unavailable for species {species}: "
+                    "it could not be resolved or downloaded"
+                )
 
             if resolved_backend == MiRNASeedBackend.BWA:
                 mirna_sequences = parse_fasta_file(db_fasta_path)
@@ -2088,7 +2467,10 @@ def run_mirna_seed_analysis(
                     seed_start=seed_start,
                     seed_end=seed_end,
                 )
-                bwa_results = analyzer.analyze_sequences(sequences)
+                if evidence_dir is not None:
+                    bwa_results, outcome = analyzer.analyze_sequences_with_outcome(sequences)
+                else:
+                    bwa_results = analyzer.analyze_sequences(sequences)
                 results = _normalize_bwa_mirna_seed_hits(
                     bwa_results,
                     sequences=sequences,
@@ -2099,15 +2481,26 @@ def run_mirna_seed_analysis(
                 )
             else:
                 mirna_sequences = parse_fasta_file(db_fasta_path)
-                results = scan_mirna_seed_matches(
-                    sequences,
-                    mirna_sequences,
-                    backend=resolved_backend,
-                    seed_start=seed_start,
-                    seed_end=seed_end,
-                    max_mismatches=2,
-                    max_hits=_mirna_max_hits(),
-                )
+                if evidence_dir is not None:
+                    results, outcome = scan_mirna_seed_matches_with_outcome(
+                        sequences,
+                        mirna_sequences,
+                        backend=resolved_backend,
+                        seed_start=seed_start,
+                        seed_end=seed_end,
+                        max_mismatches=2,
+                        max_hits=_mirna_max_hits(),
+                    )
+                else:
+                    results = scan_mirna_seed_matches(
+                        sequences,
+                        mirna_sequences,
+                        backend=resolved_backend,
+                        seed_start=seed_start,
+                        seed_end=seed_end,
+                        max_mismatches=2,
+                        max_hits=_mirna_max_hits(),
+                    )
 
             results_df = _build_mirna_alignment_frame(
                 results,
@@ -2115,29 +2508,64 @@ def run_mirna_seed_analysis(
                 database=mirna_db,
             )
 
-            # Validate and coerce types using Pandera schema
+            # Validate and coerce types using Pandera schema. The handler is narrowed to Pandera's
+            # own error types: it exists for a rejected table, and catching everything let a bug in
+            # the evidence writer be reported as bad data instead (#100).
             try:
                 validated_df = MiRNAAlignmentSchema.validate(results_df, lazy=True)
-                all_raw_hits.append(validated_df)
-                species_raw_stats[species] = len(validated_df)
-                logger.info(f"Species {species}: {len(validated_df)} miRNA alignments validated")
-            except Exception as validation_error:
+            except (SchemaError, SchemaErrors) as validation_error:
                 logger.error(f"Failed to validate miRNA hits for {species}: {validation_error}")
                 species_raw_stats[species] = 0
                 species_filtered_stats[species] = 0
-                continue
+                species_failures[species] = str(validation_error)
+                pending_evidence = _SpeciesEvidence.failed(
+                    submitted_guides=len(sequences),
+                    detail=f"miRNA hit validation failed: {validation_error}",
+                )
+            else:
+                all_raw_hits.append(validated_df)
+                species_raw_stats[species] = len(validated_df)
+                logger.info(f"Species {species}: {len(validated_df)} miRNA alignments validated")
+                if outcome is not None:
+                    pending_evidence = _SpeciesEvidence.from_outcome(outcome)
 
+        except _MiRNADatabaseUnavailableError as db_error:
+            logger.warning(str(db_error))
+            species_failures[species] = str(db_error)
+            species_raw_stats[species] = 0
+            species_filtered_stats[species] = 0
+            pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=str(db_error))
         except _MiRNASeedBackendUnavailableError as backend_error:
             message = (
                 f"miRNA seed analysis backend '{resolved_backend.value}' is unavailable for species "
                 f"{species}: {backend_error}"
             )
             logger.error(message)
-            raise RuntimeError(message) from backend_error
+            unavailable_backend_species[species] = message
+            species_failures[species] = message
+            species_raw_stats[species] = 0
+            species_filtered_stats[species] = 0
+            pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=message)
         except Exception as e:
             logger.error(f"Failed to process miRNA analysis for {species}: {e}")
             species_raw_stats[species] = 0
             species_filtered_stats[species] = 0
+            species_failures[species] = str(e)
+            pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=str(e))
+
+        # Outside every handler, so a rejection by the envelope's own model surfaces as itself.
+        if evidence_dir is not None and pending_evidence is not None:
+            _write_mirna_species_evidence(evidence_dir, candidates_file, species, pending_evidence)
+
+    # An unavailable backend that hit every requested species leaves nothing to report -- that is
+    # the historical hard-failure signal a solely-affected run raised on directly. A species
+    # failing alongside others that succeeded no longer discards their already-computed results
+    # (#100): it is recorded above and the run continues to the writes below instead.
+    if unavailable_backend_species and len(unavailable_backend_species) == len(mirna_species):
+        combined_detail = "; ".join(
+            unavailable_backend_species[species] for species in mirna_species if species in unavailable_backend_species
+        )
+        raise RuntimeError(combined_detail)
 
     # Concatenate all validated DataFrames from different species
     if all_raw_hits:
@@ -2197,7 +2625,15 @@ def run_mirna_seed_analysis(
         species_raw_stats.setdefault(species, 0)
         species_filtered_stats.setdefault(species, 0)
 
-    # Create validated summary using Pydantic model
+    # Create validated summary using Pydantic model. `status` keeps its historical free-text
+    # meaning: the batch as a whole ran to completion whenever this point is reached (a total
+    # failure raised above instead). `evidence_status` rolls the #100 vocabulary up across every
+    # species this batch attempted, and is only populated when evidence tracking was requested.
+    # The roll-up is deliberately two-valued, and that is coarser than the per-species envelopes it
+    # summarises: only `species_failures` feeds it, so a species whose envelope is CENSORED -- a cap
+    # that truncated its search, making every count a lower bound -- is not a failure and this batch
+    # reports `complete`. The per-species envelope is the authority for that distinction; read the
+    # roll-up as "did any species fail outright", not as the batch's worst evidence status.
     summary = MiRNASummary(
         candidate_id=candidate_id,
         mirna_database=mirna_db,
@@ -2207,6 +2643,11 @@ def run_mirna_seed_analysis(
         hits_per_species=species_raw_stats,  # Raw hits per species
         filtered_hits_per_species=species_filtered_stats,  # Seed-region hits per species
         total_raw_alignments=total_raw,  # Total raw alignments
+        evidence_status=(
+            (EvidenceStatus.FAILED.value if species_failures else EvidenceStatus.COMPLETE.value)
+            if evidence_dir is not None
+            else None
+        ),
     )
 
     # Write summary JSON file
@@ -2228,6 +2669,8 @@ def aggregate_mirna_results(
     output_dir: str | Path,
     mirna_db: str,
     mirna_species: str,
+    *,
+    evidence_root: str | Path | None = None,
 ) -> Path:
     """Aggregate miRNA seed analysis results from multiple candidates using pandas.
 
@@ -2239,6 +2682,11 @@ def aggregate_mirna_results(
         output_dir: Directory to write aggregated results
         mirna_db: miRNA database used for analysis
         mirna_species: Comma-separated list of species analyzed
+        evidence_root: Where to search for ``*_evidence.json`` envelopes, defaulting to
+            ``results_dir``. Separate from ``results_dir`` because a caller may stage only the
+            ``*_mirna_analysis.tsv``/``*_mirna_summary.json`` files into a directory of its own while
+            the envelopes stay in the aggregation task's cwd (#100): searching the staging directory
+            then found nothing and every requested species read as screened whatever happened.
 
     Returns:
         Path to output directory containing aggregated results
@@ -2307,6 +2755,22 @@ def aggregate_mirna_results(
 
     human_hits, other_hits = human_vs_other_totals(species_stats)
 
+    # Positive evidence, mirroring aggregate_offtarget_results: unlike the transcriptome side, one
+    # candidate's *_mirna_analysis.tsv already spans every requested species, so file presence
+    # carries no per-species signal here. A COMPLETE mirna_seed evidence envelope from
+    # run_mirna_seed_analysis is the only positive signal available, and no envelope is no signal:
+    # a directory that carries none (pre-#100, or run_mirna_seed_analysis called without
+    # evidence_dir) reports nothing screened rather than falling back to asserting that everything
+    # was, which is a positive claim nothing observed supports (#100).
+    envelopes = collect_evidence(results_path if evidence_root is None else Path(evidence_root))
+    species_with_complete_evidence = {
+        envelope.entry.species
+        for envelope in envelopes
+        if envelope.entry.channel is ScreeningChannel.MIRNA_SEED and envelope.entry.status is EvidenceStatus.COMPLETE
+    }
+    species_screened = [s for s in species_list if s in species_with_complete_evidence]
+    unscreened_species = [s for s in species_list if s not in species_screened]
+
     # Create validated summary using Pydantic model
     summary = AggregatedMiRNASummary(
         total_mirna_hits=len(combined_df),
@@ -2320,6 +2784,8 @@ def aggregate_mirna_results(
         summary_file=output_path / "combined_mirna_summary.json",
         human_hits=human_hits,
         other_species_hits=other_hits,
+        species_screened=species_screened,
+        unscreened_species=unscreened_species,
     )
 
     # Write summary JSON

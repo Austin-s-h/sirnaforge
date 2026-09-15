@@ -19,7 +19,7 @@ import pytest
 from sirnaforge.config.reference_policy import ReferenceForm, ReferenceRequest, ReferenceState
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, HIT_CLASS_COLUMN, UNCLASSIFIED_CELL
 from sirnaforge.core.hit_classification import HitClass
-from sirnaforge.core.off_target import aggregate_offtarget_results
+from sirnaforge.core.off_target import ExecutionOutcome, aggregate_offtarget_results
 from sirnaforge.data.transcriptome_manager import (
     INDEX_BUILD_ERROR_KEY,
     TranscriptomeManager,
@@ -494,9 +494,24 @@ def test_the_cli_publishes_the_per_species_names_the_bash_mv_used_to(tmp_path, m
     the rename is the real one, which is what makes this a check on the coupling rather than a
     restatement of it.
     """
+    # offtarget_analysis_cli always passes evidence_dir=output_dir (#100), so
+    # run_bwa_alignment_analysis always takes the outcome-reporting branch now: the aligner call to
+    # stub is analyze_sequences_with_outcome, not the plain analyze_sequences this test used to
+    # patch, which is no longer on the path this call exercises at all.
     monkeypatch.setattr(
-        "sirnaforge.core.off_target.BwaAnalyzer.analyze_sequences",
-        lambda _self, _sequences: [],
+        "sirnaforge.core.off_target.BwaAnalyzer.analyze_sequences_with_outcome",
+        lambda _self, sequences: (
+            [],
+            ExecutionOutcome(
+                completed=True,
+                submitted=len(sequences),
+                processed=len(sequences),
+                retained_hits=0,
+                pre_cap_hits=0,
+                cap=None,
+                truncated=False,
+            ),
+        ),
     )
     monkeypatch.setattr("sirnaforge.pipeline.nextflow_cli.validate_index_files", lambda *_a, **_k: True)
     staged = tmp_path / "staged"

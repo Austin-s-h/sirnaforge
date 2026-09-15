@@ -36,6 +36,63 @@ class RunMode(str, Enum):
     QUALIFIED = "qualified"
 
 
+class RunStatus(str, Enum):
+    """What one step of a run actually achieved, in one vocabulary (#100).
+
+    Beside :class:`RunMode`, which says what a run *claims*; this says what it *got*. Screening
+    published seven uncoordinated ``{status, reason}`` string pairs invented at each exit, so
+    "the pipeline aborted", "the engine was not installed", "the user switched the channel off"
+    and "one species produced no evidence" all read as ``skipped`` or ``partial`` and a consumer
+    had to pattern-match prose to tell an error from a gap. This enum is published *beside* those
+    strings and never replaces them: ``status == "completed"`` must keep working.
+
+    ``COMPLETED`` is a statement about *required* evidence, not about work attempted: a run whose
+    exploratory channels published nothing is still complete, and a step whose own word is
+    ``completed`` is ``INCOMPLETE`` here when a required unit reconciled as failed.
+
+    Attributes:
+        COMPLETED: Every unit this run required produced complete evidence.
+        INCOMPLETE: The step ran, but at least one required unit has no complete evidence.
+        NOT_REQUESTED: The work was never asked for, so there is nothing to be incomplete about.
+        NO_ELIGIBLE: Nothing reached the step or qualified from it, with no evidence missing.
+        EXECUTION_ERROR: The step could not be executed, or executed and published nothing at all.
+    """
+
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+    NOT_REQUESTED = "not_requested"
+    NO_ELIGIBLE = "no_eligible_candidates"
+    EXECUTION_ERROR = "execution_error"
+
+
+class ExitCode(int, Enum):
+    """Process exit statuses the CLI is allowed to use, so they can be depended on (#100).
+
+    Deliberately NOT a function of :class:`RunStatus`. An incomplete screen whose surviving
+    candidates still qualified is a usable result and exits ``SUCCESS``; only a run that could
+    qualify *nothing* for want of required evidence exits ``INCOMPLETE_EVIDENCE``. Deriving the
+    code from the screen's own status instead would turn every environment without Nextflow into
+    a failing build.
+
+    ``NO_ELIGIBLE_CANDIDATES`` is reserved and opt-in only (``--fail-on-no-eligible``): "nothing
+    scored well enough" is a result, not a failure, and making it non-zero by default would break
+    any CI already calling this. Note ``INCOMPLETE_EVIDENCE`` shares its number with Click's own
+    usage-error code; a usage error never runs the workflow, so the two are distinguishable by
+    everything else the process printed.
+
+    Attributes:
+        SUCCESS: The run produced its deliverable, including a complete run that qualified nobody.
+        EXECUTION_ERROR: An exception reached the command, or configuration was refused.
+        INCOMPLETE_EVIDENCE: A qualified run could qualify nothing for want of required evidence.
+        NO_ELIGIBLE_CANDIDATES: A complete run qualified nobody, and the caller asked to be told.
+    """
+
+    SUCCESS = 0
+    EXECUTION_ERROR = 1
+    INCOMPLETE_EVIDENCE = 2
+    NO_ELIGIBLE_CANDIDATES = 3
+
+
 class FilterAction(str, Enum):
     """What a filter does with its own verdict.
 

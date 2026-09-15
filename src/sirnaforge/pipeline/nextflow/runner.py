@@ -43,6 +43,18 @@ def _validate_command_args(cmd: list[str]) -> None:
         raise ValueError(f"Executable must be an absolute path: {executable}")
 
 
+def _decode(output: bytes | str | None) -> str:
+    """Normalize a CalledProcessError's captured output/stderr to text.
+
+    ``subprocess.CalledProcessError.output``/``.stderr`` carry whatever the subprocess call was
+    given -- bytes here, since ``_run_subprocess`` captures with no ``text=True`` -- but may be
+    ``None`` if nothing was captured at all.
+    """
+    if output is None:
+        return ""
+    return output.decode() if isinstance(output, bytes) else output
+
+
 def _find_repo_root(start: Path) -> Path | None:
     """Locate the nearest git root from the provided path."""
     for candidate in [start] + list(start.parents):
@@ -243,12 +255,16 @@ class NextflowRunner:
 
                 except subprocess.CalledProcessError as e:
                     progress.update(task, description="❌ Nextflow execution failed")
-                    raise NextflowExecutionError(f"Nextflow failed: {e}") from e
+                    raise NextflowExecutionError(
+                        f"Nextflow failed: {e}", stdout=_decode(e.output), stderr=_decode(e.stderr)
+                    ) from e
         else:
             try:
                 result = await self._run_subprocess(cmd, env=env)
             except subprocess.CalledProcessError as e:
-                raise NextflowExecutionError(f"Nextflow failed: {e}") from e
+                raise NextflowExecutionError(
+                    f"Nextflow failed: {e}", stdout=_decode(e.output), stderr=_decode(e.stderr)
+                ) from e
 
         # Process results
         return self._process_results(output_dir, result)

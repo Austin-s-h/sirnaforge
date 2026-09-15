@@ -36,6 +36,7 @@ from sirnaforge.config.run_policy import (
     switchable_filter_ids,
 )
 from sirnaforge.models.policy import (
+    ExitCode,
     FilterAction,
     FilterEvaluation,
     FilterStage,
@@ -1126,13 +1127,16 @@ def test_only_an_unevidenced_qualified_run_exits_non_zero(selection: dict[str, A
     """One non-zero exit, and only for the case a user can act on.
 
     #100 asks for machine-readable exit behaviour separating success, no-eligible-candidates,
-    incomplete and error. One code covers it as long as it fires on exactly the incomplete case: a
-    complete run that legitimately found nothing eligible is a result and must still exit 0, or every
-    over-tight threshold reads as a tool failure.
+    incomplete and error. This is the incomplete case and it has its own code: a complete run that
+    legitimately found nothing eligible is a result and must still exit 0, or every over-tight
+    threshold reads as a tool failure. Which candidate rows *cause* it is this test's subject; the
+    vocabulary and the codes themselves are pinned in ``test_run_status_taxonomy.py``.
     """
     if expect_exit:
         with pytest.raises(typer.Exit) as excinfo:
             _fail_if_nothing_could_qualify({"selection_summary": selection}, json_summary=True)
-        assert excinfo.value.exit_code == 1, "1, not 2: Click already returns 2 for a usage error"
+        # 2, not the bare 1 this used to raise: an execution error and a run whose required evidence
+        # never arrived are different outcomes, and 1 stays the execution error (#100/W4).
+        assert excinfo.value.exit_code == int(ExitCode.INCOMPLETE_EVIDENCE)
     else:
         _fail_if_nothing_could_qualify({"selection_summary": selection}, json_summary=True)
