@@ -1,12 +1,36 @@
-"""This repository is public, so an internal programme target may not name itself in it.
+"""Identifiers that must not appear in this public repository.
 
-Twenty-four comments, docstrings and fixture values justified a threshold or a design decision by
-citing measurements from an internal drug-programme run and naming that programme's target. The
-measurements are the evidence and stay; the identifier does not, because a public reader learns the
-programme from it. The established phrasing is "one internal run" / "one internal reference set".
+Comments, docstrings and fixture values in this tree once justified a threshold or a design decision by
+citing measurements from an internal run, and named that run's subject. The measurements are the
+evidence and stay; the identifier does not, because a public reader learns from it something the
+repository is not entitled to publish. The established phrasing is "one internal run" / "one internal
+reference set".
 
-The token is assembled at runtime rather than written out, so a plain ``grep`` over the tree stays
-clean and this guard is not its own only hit.
+**The forbidden terms are stored as digests, not as text.** A guard that spells out what it forbids
+does not remove the disclosure -- it concentrates it, and adds a signpost saying which word mattered.
+That is strictly worse than the buried comment it replaced, so this file holds
+:data:`FORBIDDEN_DIGESTS` and never the pre-images.
+
+What that buys and what it does not, stated plainly so nobody over-trusts it:
+
+* It buys removal of the plaintext and of the signpost. Reading this file tells you that some token is
+  forbidden; it does not tell you which, or what kind of thing it names.
+* It does **not** buy secrecy. These are unsalted SHA-256 digests of short tokens, so anyone with a
+  candidate word list can confirm a guess offline. Salting would defeat the point, because the salt
+  would have to live here too.
+
+So this is a **regression guard**, not a secret store: its job is to stop a term that has already been
+removed from coming back. The control that keeps a new one out in the first place is review.
+
+Detection is per token, not per substring -- the price of holding digests rather than text, since a
+digest cannot be matched against the inside of a word. A line is lower-cased and split on non-alphanumeric
+characters, so a reference is caught in prose, in ``snake_case`` and in hyphenated identifiers alike, but a
+term welded into a longer word with no boundary would not be. A leak is written as a word, so that is the
+right granularity; it is a limitation rather than a hole, and it is recorded here rather than discovered
+later.
+
+``SIRNAFORGE_FORBIDDEN_DIGESTS`` extends the set with a comma-separated list of hex digests, so CI can
+police more terms than a public file should enumerate even in digest form.
 
 **Scope is the whole repository, not two trees of ``*.py``.** The first version of this file scanned
 ``rglob("*.py")`` under ``src`` and ``tests``, and an audit defeated it three separate ways, each
@@ -21,24 +45,41 @@ reproduced for real:
 So discovery walks the tree and *excludes*, rather than listing what to include: a new file kind, a
 new top-level directory or a new prose format is scanned by default and has to be argued out of scope
 in ``PRUNED_DIRS`` below. Binary files are recognised by content, not by an extension list, for the
-same reason. ``test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob`` pins all three defeats.
+same reason. :func:`test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob` pins all three defeats,
+using a sentinel term of its own so the fixture does not need the real one either.
 
-Cost, measured on this tree: 352 files / 23.2 MB, 86-91 ms warm and ~5 s on a cold page cache. That
-is fast-tier work, so nothing is excluded for size -- including the ``tests/unit/data/baseline_0_7_1``
-``.tsv`` baselines (252 KB together) and the four multi-megabyte benchmark CSVs under ``tests/data``.
+Cost, measured on this tree: 352 files / 23.2 MB, under 200 ms warm. That is fast-tier work, so nothing
+is excluded for size -- including the ``tests/unit/data/baseline_0_7_1`` ``.tsv`` baselines and the
+multi-megabyte benchmark CSVs under ``tests/data``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: Split so the file does not itself contain the identifier it forbids.
-PRIVATE_TARGET = "MSH" + "3"
+#: SHA-256 of each forbidden token, lower-cased. Pre-images are deliberately absent; see the module
+#: docstring for why, and for what this does and does not protect.
+FORBIDDEN_DIGESTS: frozenset[str] = frozenset(
+    {
+        "dda32cf24f068ffc50751d8ab393323a3744d97f854bd4e29fd002429d37be72",
+        "812d73c14960009f6440a8ef28ca7af79adea5e299fe13f068527616bd2b66b0",
+    }
+)
+
+#: Extra digests for CI, comma-separated hex. Lets a private runner police terms a public file should
+#: not enumerate even as digests.
+_ENV_DIGESTS = "SIRNAFORGE_FORBIDDEN_DIGESTS"
+
+#: Tokens are alphanumeric runs. Splitting here is what makes a digest usable at all: there is nothing
+#: to hash until the line is cut into candidate words.
+_TOKEN = re.compile(r"[a-z0-9]+")
 
 #: Directories never walked, each with the reason it is not authored, published prose. This list is
 #: the whole scope decision: everything not named here is scanned.
@@ -82,12 +123,23 @@ REQUIRED_DISCOVERED_FILES = frozenset(
 MIN_DISCOVERED_FILES = 250
 
 
+def forbidden_digests() -> frozenset[str]:
+    """The digests in force: the declared set plus anything the environment adds."""
+    extra = {value.strip().lower() for value in os.environ.get(_ENV_DIGESTS, "").split(",") if value.strip()}
+    return FORBIDDEN_DIGESTS | extra
+
+
 def _is_binary(raw: bytes) -> bool:
     """A NUL byte in the first 8 KB. Decided by content so no novel extension can hide prose."""
     return b"\x00" in raw[:8192]
 
 
-def _scan(root: Path, needle: str) -> tuple[list[str], list[str]]:
+def _line_offends(line: str, digests: frozenset[str]) -> bool:
+    """True when any alphanumeric token on the line hashes to a forbidden digest."""
+    return any(hashlib.sha256(token.encode()).hexdigest() in digests for token in _TOKEN.findall(line.lower()))
+
+
+def _scan(root: Path, digests: frozenset[str]) -> tuple[list[str], list[str]]:
     """Return ``(offenders, scanned)`` for one tree: ``path:line`` hits, and every file read.
 
     Symlinks are skipped: they either point back inside the tree (already walked) or outside it.
@@ -106,27 +158,42 @@ def _scan(root: Path, needle: str) -> tuple[list[str], list[str]]:
             rel = path.relative_to(root).as_posix()
             scanned.append(rel)
             for n, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), start=1):
-                if needle in line.lower():
+                if _line_offends(line, digests):
                     offenders.append(f"{rel}:{n}")
     return offenders, sorted(scanned)
 
 
-_OFFENDERS, _SCANNED = _scan(REPO_ROOT, PRIVATE_TARGET.lower())
+_OFFENDERS, _SCANNED = _scan(REPO_ROOT, forbidden_digests())
 
 
 @pytest.mark.unit
-def test_no_private_programme_target_anywhere_in_the_repository() -> None:
-    """The programme target appears in no text file in the repository, in any case.
+def test_no_forbidden_identifier_anywhere_in_the_repository() -> None:
+    """No text file in the repository carries a forbidden identifier, in any case.
 
-    Case-insensitive because the species convention writes the mouse symbol in title case, and both
-    spellings were present: the prose carried the upper-case human form and a conservation fixture's
-    symbol column carried the title-case rodent one. A public reference gene used deliberately as a
-    public baseline (``TP53``) is a different thing and is untouched.
+    Case-insensitive by construction -- tokens are lower-cased before hashing -- because both an
+    upper-case and a title-case spelling were present when this was first cleaned up.
     """
     assert not _OFFENDERS, (
-        f"{len(_OFFENDERS)} site(s) name the internal programme target. Keep the measurement, drop the "
+        f"{len(_OFFENDERS)} site(s) carry a forbidden identifier. Keep the measurement, drop the "
         f"identifier -- say 'one internal run' instead: {_OFFENDERS}"
     )
+
+
+@pytest.mark.unit
+def test_this_file_does_not_carry_the_pre_images() -> None:
+    """The guard must not be the disclosure.
+
+    A denylist written in plaintext concentrates what it set out to remove and signposts which word
+    mattered. So the module is held to its own rule: every digest in force must fail to match anything
+    in this file, including the digest strings themselves.
+    """
+    offenders = [
+        n
+        for n, line in enumerate(Path(__file__).read_text(encoding="utf-8").splitlines(), start=1)
+        if _line_offends(line, forbidden_digests())
+    ]
+
+    assert not offenders, f"the guard spells out a term it forbids, on line(s) {offenders}"
 
 
 @pytest.mark.unit
@@ -145,13 +212,30 @@ def test_pruned_directories_state_a_reason(pruned_dir: str) -> None:
 
 
 @pytest.mark.unit
+def test_the_environment_can_add_a_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI must be able to police a term a public file should not enumerate even as a digest."""
+    added = hashlib.sha256(b"someothertoken").hexdigest()
+    monkeypatch.setenv(_ENV_DIGESTS, f" {added.upper()} , ")
+
+    assert added in forbidden_digests()
+    assert forbidden_digests() >= FORBIDDEN_DIGESTS, "the declared set must survive the extension"
+
+
+#: A term this repository does not forbid, used only to exercise the machinery. The fixture below needs
+#: a pre-image, and taking a real one would put it back in the file.
+_SENTINEL = "canaryidentifier"
+_SENTINEL_DIGESTS = frozenset({hashlib.sha256(_SENTINEL.encode()).hexdigest()})
+
+
+@pytest.mark.unit
 def test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob(tmp_path: Path) -> None:
     """The three audited defeats, plus the exclusions, asserted against a planted tree.
 
-    ``.config``, ``CHANGELOG.md`` and ``.ipynb`` each hid a reference from the ``*.py`` glob. The
-    token is assembled here too, so this file still does not spell it.
+    ``.config``, ``CHANGELOG.md`` and ``.ipynb`` each hid a reference from the ``*.py`` glob. Planted
+    with the sentinel rather than a real term, so the fixture proves the walk and the matching without
+    the file needing a pre-image of anything it forbids.
     """
-    leak = f"calibrated on the {PRIVATE_TARGET} run"
+    leak = f"calibrated on the {_SENTINEL.upper()} run"
     (tmp_path / "src" / "workflows").mkdir(parents=True)
     (tmp_path / "src" / "workflows" / "nextflow.config").write_text(f"// {leak}\n", encoding="utf-8")
     (tmp_path / "CHANGELOG.md").write_text(f"- {leak}\n", encoding="utf-8")
@@ -159,12 +243,12 @@ def test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob(tmp_path: Path) 
     (tmp_path / "leak_note.txt").write_text(f"{leak}\n", encoding="utf-8")
     (tmp_path / "clean.py").write_text("# one internal run\n", encoding="utf-8")
 
-    # Exclusions must hold even when the token is present: a pruned dir and a binary file.
+    # Exclusions must hold even when the term is present: a pruned dir and a binary file.
     (tmp_path / "_build").mkdir()
     (tmp_path / "_build" / "index.html").write_text(leak, encoding="utf-8")
     (tmp_path / "index.bin").write_bytes(b"\x00\x01" + leak.encode())
 
-    offenders, scanned = _scan(tmp_path, PRIVATE_TARGET.lower())
+    offenders, scanned = _scan(tmp_path, _SENTINEL_DIGESTS)
 
     assert sorted(offenders) == [
         "CHANGELOG.md:1",
@@ -175,3 +259,31 @@ def test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob(tmp_path: Path) 
     assert "clean.py" in scanned
     assert "index.bin" not in scanned, "binary file was decoded as prose"
     assert not [p for p in scanned if p.startswith("_build/")], "pruned directory was walked"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "line",
+    [
+        "calibrated on the CANARYIDENTIFIER run",
+        "see canaryidentifier_run for the numbers",
+        "threshold from canaryidentifier-002",
+        "# CanaryIdentifier",
+        '{"source": ["taken from the canaryidentifier run"]}',
+    ],
+)
+def test_a_term_is_found_in_prose_snake_case_hyphenation_and_json(line: str) -> None:
+    """Token splitting is what makes a digest usable, so the shapes it must cut are pinned."""
+    assert _line_offends(line, _SENTINEL_DIGESTS)
+
+
+@pytest.mark.unit
+def test_a_term_welded_into_a_longer_word_is_the_documented_limitation() -> None:
+    """Recorded rather than discovered later: per-token matching cannot see inside a word.
+
+    A digest cannot be matched against a substring, which is the price of not storing the pre-image.
+    A leak is written as a word, so this is a limitation and not a hole -- but it is asserted so the
+    boundary is a decision rather than an accident.
+    """
+    assert not _line_offends(f"xx{_SENTINEL}yy", _SENTINEL_DIGESTS)
+    assert _line_offends(f"xx {_SENTINEL} yy", _SENTINEL_DIGESTS)
