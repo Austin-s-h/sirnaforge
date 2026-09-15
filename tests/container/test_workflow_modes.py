@@ -352,8 +352,12 @@ def test_mirna_design_mode(tmp_path: Path, realistic_transcripts_fasta: Path):
     summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
     workflow_config = summary.get("workflow_config", {})
     mirna_reference = workflow_config.get("mirna_reference", {})
-    assert mirna_reference.get("species") == ["hsa"], (
-        f"miRNA species should collapse to ['hsa'], got: {mirna_reference.get('species')}"
+    # Canonical, not the 3-letter database code. This asserted ['hsa'] until #100: the codes reached the
+    # pipeline parameter while the screening plan and EvidenceRequirements were keyed on canonical names,
+    # so the join key never matched and every miRNA unit reconciled FAILED on an ordinary run. One
+    # vocabulary now; the database still resolves, because normalize_species maps 'human' -> 'hsa'.
+    assert mirna_reference.get("species") == ["human"], (
+        f"miRNA species should stay canonical, got: {mirna_reference.get('species')}"
     )
 
 
@@ -430,29 +434,35 @@ def test_nextflow_mirna_batch_path_uses_default_backend(tmp_path: Path):
     assert combined_lines[0].split("\t") == schema_columns
     assert len(combined_lines) == len(batch_lines), "Single batch run should aggregate to the same miRNA hit set"
 
+    # Canonical, not the 3-letter database code. These asserted "hsa" until #100: the codes reached the
+    # pipeline while the screening plan and EvidenceRequirements were keyed on canonical names, so the
+    # join key never matched and every miRNA unit reconciled FAILED on an ordinary run. Named once here
+    # so the list and the per-species dict keys cannot drift apart again.
+    screened = "human"
+
     batch_summary = json.loads(batch_summary_path.read_text())
     assert batch_summary["candidate_id"] == "batch"
     assert batch_summary["total_sequences"] == 3
-    assert batch_summary["species_analyzed"] == ["hsa"]
+    assert batch_summary["species_analyzed"] == [screened]
     assert batch_summary["total_hits"] == len(batch_lines) - 1
     # hits_per_species counts RAW alignments (documented on MiRNASummary); total_hits counts the
     # subset whose seed landed on the miRNA's own seed region, broken out per species by
     # filtered_hits_per_species.
-    assert batch_summary["hits_per_species"]["hsa"] == batch_summary["total_raw_alignments"]
-    assert batch_summary["filtered_hits_per_species"]["hsa"] == batch_summary["total_hits"]
+    assert batch_summary["hits_per_species"][screened] == batch_summary["total_raw_alignments"]
+    assert batch_summary["filtered_hits_per_species"][screened] == batch_summary["total_hits"]
     assert batch_summary["total_raw_alignments"] >= batch_summary["total_hits"]
 
     combined_summary = json.loads(combined_summary_path.read_text())
     assert combined_summary["analysis_files_processed"] == 1
     assert combined_summary["total_candidates"] == 1
     assert combined_summary["hits_per_candidate"] == {"batch": batch_summary["total_hits"]}
-    assert combined_summary["species_analyzed"] == ["hsa"]
+    assert combined_summary["species_analyzed"] == [screened]
     assert combined_summary["total_mirna_hits"] == batch_summary["total_hits"]
     assert combined_summary["human_hits"] == batch_summary["total_hits"]
     assert combined_summary["other_species_hits"] == 0
 
     workflow_summary = json.loads(workflow_summary_path.read_text())
-    assert workflow_summary["workflow_config"]["mirna_reference"]["species"] == ["hsa"]
+    assert workflow_summary["workflow_config"]["mirna_reference"]["species"] == [screened]
     assert workflow_summary["design_summary"]["total_candidates"] == 3
 
     offtarget_summary = workflow_summary["offtarget_summary"]
