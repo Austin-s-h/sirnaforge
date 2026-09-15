@@ -13,18 +13,65 @@ invokes, which no static check can tell apart from live ones. One stacked bar do
 from __future__ import annotations
 
 import json
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, select_autoescape
 
-from sirnaforge.reporting.payload import MIN_UNCOVERED_NT, REGISTER_NEIGHBOUR_NT, ReportPayload
-from sirnaforge.reporting.tracks import PointSeries, TranscriptRegions, legend_html, transcript_map_svg
+from sirnaforge.reporting.payload import (
+    EMBED_MAX_NM,
+    EMBED_SPECIES,
+    LIABILITY,
+    MIN_UNCOVERED_NT,
+    REGISTER_NEIGHBOUR_NT,
+    ReportPayload,
+)
+from sirnaforge.reporting.tracks import SERIES_FILL, PointSeries, TranscriptRegions, transcript_map_svg
 
-#: Guides embedded in the index. The per-guide detail is rendered for all of them; this bounds only
-#: how many rows the client holds, and the number is reported in the header so it is never a silent cap.
-MAX_INDEX_GUIDES = 5000
+#: Hit classes that are a liability, as the strings the payload's own matrix carries.
+_LIABILITY_CLASSES = frozenset(c.value for c in LIABILITY)
+
+#: Mismatch bands ``payload._offtarget_views`` emits, in reading order. ``unknown`` is a row whose
+#: ``nm`` the run left blank, which is neither inside the embedded scope nor countable against a band.
+_NM_BANDS = ("0", "1", "2", ">=3", "unknown")
+
+
+def _liability_scope(payload: ReportPayload) -> dict[str, Any]:
+    """What the embedded off-target scope shows, and how much of the run's liability sits outside it.
+
+    The report embeds per-row detail for human liabilities at nm <= 2 only; everything else rides as
+    counts. That is a deliberate scope decision, but it was stated only once per *guide*, as a warning
+    -- and on one internal run 197,727 of 232,864 liability alignments sit at nm >= 3, so 4,616 of
+    5,000 guides raised it. A warning on 92% of rows is not a warning, so the size of the scope is
+    stated once here, at run level, and the per-guide note is reserved for the guides a reader might
+    act on (see ``offtargetCard``).
+
+    Every number is summed over the guides this report embedded, so the arithmetic closes against the
+    pills and the index rather than against a run total the file does not contain.
+    """
+    bands: Counter[str] = Counter()
+    species: Counter[str] = Counter()
+    for guide in payload.guides:
+        for cell in guide.offtarget_matrix:
+            if cell["hit_class"] in _LIABILITY_CLASSES:
+                bands[str(cell["nm"])] += int(cell["n"])
+                species[str(cell["species"])] += int(cell["n"])
+    liabilities = sum(g.liability_count for g in payload.guides)
+    in_scope = sum(len(g.offtarget_rows) for g in payload.guides)
+    return {
+        "liabilities": liabilities,
+        "in_scope": in_scope,
+        "outside": liabilities - in_scope,
+        "bands": [(band, bands.get(band, 0)) for band in _NM_BANDS if bands.get(band, 0)],
+        "species": sorted(species.items()),
+        "guides_with_liabilities": sum(1 for g in payload.guides if g.liability_count),
+        # The guides the per-guide note is about: they carry liability the reader cannot open here.
+        "guides_with_liability_outside": sum(1 for g in payload.guides if g.liability_count > len(g.offtarget_rows)),
+        "max_nm": EMBED_MAX_NM,
+    }
 
 
 def _embed(value: Any) -> str:
@@ -47,11 +94,25 @@ _TEMPLATE = r"""<!DOCTYPE html>
 :root{--bg:#fbfbfc;--fg:#1a1d21;--mut:#6b7280;--line:#e5e7eb;--card:#fff;
 --pass:#15803d;--fail:#b91c1c;--unk:#b45309;--off:#9ca3af;--acc:#1d4ed8}
 *{box-sizing:border-box}
-body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
-header{padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card)}
+/* The two panes fill whatever the header leaves, measured by the layout rather than guessed at. The
+   height was `calc(100vh - 86px)` against a header that renders 129.5px on a real run -- gene query,
+   provenance, four pills, the agreement line, the dropped-guide banner and the off-target scope, every
+   one of which grows with the run -- so `main` ran 43.5px past the fold, the document itself became
+   scrollable and both panes got a second scrollbar inside a page that already had one. A flex column
+   with `min-height:0` cannot be wrong about a number it never holds. */
+html,body{height:100%}
+body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);
+color:var(--fg);display:flex;flex-direction:column}
+header{flex:0 0 auto;padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card)}
 h1{margin:0 0 4px;font-size:17px;font-weight:650}
 .sub{color:var(--mut);font-size:12.5px}
-main{display:grid;grid-template-columns:minmax(430px,40%) 1fr;gap:0;height:calc(100vh - 86px)}
+/* `grid-template-rows:minmax(0,1fr)` as well as `min-height:0`: an auto-sized row takes its height from
+   its content, which is how a pane 5,000 rows tall overflows a box that was told to be short. */
+main{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(430px,40%) 1fr;
+grid-template-rows:minmax(0,1fr);gap:0}
+/* One header cell carries no label a reader needs, and every label a screen reader needs. */
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.printonly{display:none}
 /* The index carries six columns including a 23-nt monospace sequence. Without tightened padding and
    short headers it overflows its pane and the last column -- isoform coverage -- is the one lost. */
 #idx th,#idx td{padding:6px 7px}
@@ -76,6 +137,15 @@ margin-bottom:5px}
 .fsec{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);font-weight:600;
 margin:9px 0 5px;padding-top:7px;border-top:1px solid var(--line)}
 .fsec i{text-transform:none;letter-spacing:0;font-weight:400;font-style:normal}
+/* What each gate did to the guides in this file, under its own control: the panel is a ranked list,
+   and a slider that decided nothing has to say so where the reader is about to reach for it. */
+.geffect{font-size:11.5px;color:var(--mut);margin:-1px 0 8px}
+/* A threshold the slider's domain cannot represent. Painted in the refusal colour and sitting between
+   the two controls, because the whole point is that the box and the slider no longer agree and the box
+   is the one in force. Empty when they do agree, so the row keeps its height. */
+.offscale{font-size:11.5px;color:var(--fail);margin:-1px 0 7px}
+.offscale:empty{display:none}
+input[type=range]:disabled{opacity:.45}
 .fstat label{margin-right:9px;font-size:12px;white-space:nowrap}
 .cartbtn{cursor:pointer;border:1px solid var(--line);background:var(--card);border-radius:5px;
 padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
@@ -85,8 +155,8 @@ padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
 /* Tab-separated columns only line up if the text is not wrapped. */
 #carttsv{width:100%;height:96px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 border:1px solid var(--line);border-radius:5px;padding:7px;resize:vertical;white-space:pre;overflow:auto}
-#left{border-right:1px solid var(--line);overflow:auto;background:var(--card)}
-#right{overflow:auto;padding:20px 24px}
+#left{border-right:1px solid var(--line);overflow:auto;min-height:0;background:var(--card)}
+#right{overflow:auto;min-height:0;padding:20px 24px}
 #q{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;font-family:ui-monospace,monospace}
 .searchbar{padding:12px;position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--line);z-index:2}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
@@ -122,31 +192,131 @@ letter-spacing:.5px;line-height:1.5;word-break:break-all}
 .big{font-size:22px;font-weight:680}
 .liab{color:var(--fail);font-weight:650}.nonliab{color:var(--mut)}
 code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
+/* A sort a reader can see, on a column they can reach: the arrow is the visible half of `aria-sort`,
+   and the focus ring is what makes a `<th>` a control rather than a word that happens to react. */
+th .si{margin-left:4px;font-size:9px;color:var(--acc)}
+th[aria-sort="none"] .si{color:var(--line)}
+#idx th:focus-visible,#idx tbody tr:focus-visible,#idx td.pick:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+#idx th.pick{cursor:default}
+/* The index draws a window of the matching rows and says so in the last row rather than in a tooltip. */
+tr.drawcap td{color:var(--mut);font-style:italic;background:#f9fafb;cursor:default}
+tr.drawcap:hover td{background:#f9fafb}
+/* Same treatment as every threshold box, because it is refused the same way rather than degraded to 0. */
+#topn{padding:2px 5px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px;
+appearance:textfield;-moz-appearance:textfield}
+#topn::-webkit-outer-spin-button,#topn::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+#topn[aria-invalid="true"]{border-color:var(--fail);background:#fee2e2}
+/* Narrow viewports: the left pane's own 430px minimum plus a 40% track is wider than a phone or a
+   half-screen window, and the grid does not wrap. Stacked, both panes keep their own scroll. */
+@media (max-width:820px){
+  main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,45%) minmax(0,55%)}
+  #left{border-right:0;border-bottom:1px solid var(--line)}
+  #right{padding:16px}
+}
+/* Paper. Nothing here scrolls, so every nested scroller has to become ordinary flow or its content is
+   cut at the first page: a printed copy of this report used to be the header and the top 40% of two
+   panes, once. The controls are dropped because they cannot be operated on paper, and the print-only
+   line says what the reader is therefore not seeing. */
+@media print{
+  html,body{height:auto}
+  body{display:block;background:#fff}
+  main{display:block;min-height:0}
+  #left,#right{overflow:visible;min-height:0;border:0;padding:0}
+  #left{margin-bottom:14px}
+  .searchbar,.filters,.cartbtn,#carttsv{display:none}
+  #idx th,.searchbar{position:static}
+  .printonly{display:block}
+  .card,tr,svg{break-inside:avoid}
+  #idx{font-size:10.5px}
+  @page{margin:14mm}
+}
 </style></head><body>
 <header>
-  <h1>siRNAforge — {{ p.run.gene_query }} · {{ '{:,}'.format(p.run.guides) }} guides</h1>
+  {# Every number in this header counts the guides the FILE holds. `p.run.guides` is that count
+     (payload._select_embedded); the run's own total is named beside it whenever the two differ, and
+     never substituted for it. A header that headlined the run's 5,706 while the file held 5,000 was
+     the sharpest form of that defect: the agreement line then read "0/1,424 run PASS contradicted"
+     as a coverage claim over 41 guides the reader could not open. #}
+  <h1>siRNAforge — {{ p.run.gene_query }} ·
+    {{ '{:,}'.format(p.run.guides) }} guides{% if p.run.guides_dropped %} of the run's
+    {{ '{:,}'.format(p.run.guides_total) }}{% endif %}</h1>
   <div class="sub">
-    {{ '{:,}'.format(p.run.candidate_rows) }} candidate rows collapsed onto guide sequence ·
+    {{ '{:,}'.format(p.run.candidate_rows) }}{% if p.run.candidate_rows_total != p.run.candidate_rows %}
+    of the run's {{ '{:,}'.format(p.run.candidate_rows_total) }}{% endif %}
+    candidate rows collapsed onto guide sequence ·
     {{ '{:,}'.format(p.run.hit_rows) }} alignments
     (<span class="liab">{{ '{:,}'.format(p.run.liability_rows) }} liabilities</span>,
      <span class="nonliab">{{ '{:,}'.format(p.run.non_liability_rows) }} not liabilities</span>) ·
-    liability rows embedded for {{ p.run.embed_scope }} ·
     payload schema {{ p.schema_version }} · profile {{ p.provenance.policy_profile }} ·
     run mode {{ p.provenance.run_mode }} · gates from {{ p.provenance.policy_source }} ·
     sirnaforge {{ p.provenance.tool_version }}
   </div>
+  {# The four counts are Jinja-seeded with the run's own and re-rendered by renderStatusPills() the
+     moment a threshold moves: frozen pills beside a live map is the same defect as a frozen legend. The
+     agreement line is NOT re-derived, because comparing the run to a threshold the run never used is not
+     an agreement -- so it says which thresholds it was computed at, and says when they are no longer
+     the ones in force. #}
   <div class="sub" style="margin-top:6px">
-    <span class="pill v-pass">{{ p.run.status_counts["pass"] }} pass</span>
-    <span class="pill v-warn">{{ p.run.status_counts["warn"] }} pass, warned</span>
-    <span class="pill v-unknown">{{ p.run.status_counts["unknown"] }} not established</span>
-    <span class="pill v-fail">{{ p.run.status_counts["fail"] }} fail</span>
+    <span class="pill v-pass"><span id="n_pass">{{ p.run.status_counts["pass"] }}</span> pass</span>
+    <span class="pill v-warn"><span id="n_warn">{{ p.run.status_counts["warn"] }}</span> pass, warned</span>
+    <span class="pill v-unknown"><span id="n_unknown">{{ p.run.status_counts["unknown"] }}</span> not established</span>
+    <span class="pill v-fail"><span id="n_fail">{{ p.run.status_counts["fail"] }}</span> fail</span>
+    &nbsp;· over the {{ '{:,}'.format(p.run.guides) }} guides in this file<span id="cbasis"></span>
     {% if p.run.agreement.comparable %}
-    &nbsp;· against the run's own verdicts:
+    <div style="margin-top:3px">Against the run's own verdicts:
     <b>{{ p.run.agreement.contradicted_run_pass }}</b>/{{ p.run.agreement.run_pass_guides }} run PASS
     contradicted, <b>{{ p.run.agreement.overruled_run_fail }}</b> run rejections overruled,
-    <b>{{ p.run.agreement.run_failed_not_rederivable }}</b> run rejections not re-derivable here.
+    <b>{{ p.run.agreement.run_failed_not_rederivable }}</b> run rejections not re-derivable here
+    — all four counted over those same {{ '{:,}'.format(p.run.guides) }}, at the run's own
+    thresholds.<span id="agreestale"></span></div>
     {% endif %}
   </div>
+  {% if p.run.guides_dropped %}
+  <div class="warn" style="margin-top:8px">
+    <b>{{ '{:,}'.format(p.run.guides_dropped) }} of the run's {{ '{:,}'.format(p.run.guides_total) }}
+    guides are not in this file.</b> The embed limit is
+    {{ '{:,}'.format(p.run.guide_embed_limit) }} guides, and they cannot be searched, carted or
+    exported here. Not embedded, by verdict:
+    {% for status, n in p.run.guides_dropped_by_status.items() %}{{ '{:,}'.format(n) }} {{ status }}{{ ", " if not loop.last }}{% endfor %}.
+    {% if dropped_shippable %}<b>{{ '{:,}'.format(dropped_shippable) }} of them are not rejections</b> —
+    re-run the report with a higher guide limit to see them.{% else %}All of them are guides the run
+    and this report agree to reject.{% endif %}
+  </div>
+  {% endif %}
+  {# Finding 8: the embedded off-target scope, stated once, at run level, with its own arithmetic. #}
+  <div class="sub" style="margin-top:6px">
+    <b>Off-target scope.</b> Per-alignment detail is embedded for {{ p.run.embed_scope }} only:
+    {{ '{:,}'.format(scope.in_scope) }} of the {{ '{:,}'.format(scope.liabilities) }} liability
+    alignments these {{ '{:,}'.format(p.run.guides) }} guides carry
+    ({{ '%.0f'|format(100 * scope.in_scope / scope.liabilities if scope.liabilities else 0) }}%).
+    The other {{ '{:,}'.format(scope.outside) }} are counted, charted and gated but have no row of
+    their own here, which is why
+    {{ '{:,}'.format(scope.guides_with_liability_outside) }} of
+    {{ '{:,}'.format(p.run.guides) }} guides carry liability this file cannot itemise.
+    {% if scope.bands or scope.species %}
+    <details style="margin-top:4px"><summary style="cursor:pointer">what sits outside it</summary>
+      <div style="margin:4px 0 0">Liability alignments by mismatch count:
+        {% for band, n in scope.bands %}<code>nm {{ band }}</code> {{ '{:,}'.format(n) }}{{ ", " if not loop.last }}{% endfor %}.
+        Only <code>nm 0</code>–<code>nm {{ scope.max_nm }}</code> can be in scope.</div>
+      <div>By species:
+        {% for name, n in scope.species %}{{ name }} {{ '{:,}'.format(n) }}{{ ", " if not loop.last }}{% endfor %}.
+        Only {{ p.run.embed_scope.split(',')[0] }} can be in scope, so every alignment in another
+        species is outside it by definition — a rejection driven by those is a non-human-index
+        finding, not a human liability.</div>
+      {% if p.run.screened_species %}
+      <div>Species screened: {{ p.run.screened_species|join(', ') }}. Run-wide liability alignments by
+        species (all guides, not only the embedded ones):
+        {% for name, n in p.run.liability_rows_by_species.items() %}{{ name }} {{ '{:,}'.format(n) }}{{ ", " if not loop.last }}{% endfor %}.</div>
+      {% endif %}
+    </details>
+    {% endif %}
+  </div>
+  {# Only ever seen on paper (`.printonly`), where the controls are dropped because they cannot be
+     operated there. What a printed copy cannot show, it says. #}
+  <div class="printonly sub" style="margin-top:6px"><b>Printed copy.</b> The thresholds and filters are
+  controls, so they are not on paper: every verdict printed below is the one in force when this was
+  printed, and the legend under the candidate map says whether those thresholds are the run's own. The
+  index prints the rows that were drawn on screen, in the sort order they were drawn in.</div>
 </header>
 <main>
  <div id="left">
@@ -157,23 +327,46 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
     <div id="refused" class="warn" style="display:none"></div>
     <div id="badnum" class="warn" style="display:none"></div>
     <div class="fstat" id="fstat"></div>
-    <div class="fsec">Gate thresholds <i>— moving one re-derives the verdict this run computed</i></div>
+    <div class="fsec">Gate thresholds <i>— moving one re-derives the verdict this run computed.
+    Ranked by the guides each gate is solely responsible for rejecting in this file.</i></div>
     <div id="frows"></div>
     <div class="fsec">Reader filters <i>— these only select among rows; no verdict changes</i></div>
     <div id="rrows"></div>
     <div class="fstat" id="fcons" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
     </div>
+    {# The number box was INSIDE the button: invalid markup, an accessible name that read "Add top  to
+       cart" with the value nowhere in it, and a click on the field counted as a click on the button
+       until a handler was written to guess otherwise. It is its own labelled control now, beside a
+       button whose name is what the button does, and junk in it is refused where it is typed rather
+       than degraded to 0 by `parseInt(...)||0` and silently adding nothing. #}
     <div style="margin-top:8px">
-      <button class="cartbtn" id="addtop">Add top <input id="topn" value="10" style="width:42px"> to cart</button>
+      <label for="topn">Add top</label>
+      <input id="topn" type="number" step="1" min="1" value="10" style="width:52px"
+        aria-label="how many of the highest-scoring matching guides to add to the cart">
+      <button class="cartbtn" id="addtop">Add to cart</button>
       <button class="cartbtn" id="freset">Reset</button>
+      <div id="topnnote" class="empty" style="margin-top:4px"></div>
     </div>
   </details>
+  {# Seven columns, six of them sortable, none of them reachable before: `<th onclick>` with no tabindex
+     and no key handler, `aria-sort` unset on all seven so nothing said which column was sorted or which
+     way, and the blank pick header carried the same handler as the rest -- clicking it set `sortK` to
+     undefined and every row's key to 0, silently destroying the sort. The pick column has no key, so
+     `sortBy` refuses it; the six that do carry one are buttons in every sense a keyboard can tell. #}
   <table id="idx"><thead><tr>
-    <th class="pick" title="in cart"></th>
-    <th data-k="status">Status</th><th data-k="guide">Guide</th><th data-k="composite">Score</th>
-    <th data-k="failed" title="gates failed / gates undecided">Gates</th>
-    <th data-k="liab" title="off-target liabilities">Liab.</th>
-    <th data-k="rows" title="distinct isoforms carrying this guide, of all in the run">Isoforms</th>
+    <th class="pick" scope="col"><span class="vh">In cart</span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="status">Status<span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="guide">Guide<span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="composite">Score<span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="failed" title="gates failed / gates undecided">Gates<span class="si" aria-hidden="true"></span></th>
+    {# One liability column, decomposed in the cell rather than summarised in it. The bare total is the
+       number max_off_target_count gates, and it is also the number that cannot tell a human liability
+       from a non-human-index artefact: on one internal run roughly half of every liability total is
+       non-human. `#liabscope` re-scopes the sort, the emphasis and the liability bound together. #}
+    <th scope="col" tabindex="0" aria-sort="none" data-k="liab" id="thliab"><span
+      id="liablbl">Liab.</span><span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="rows"
+      title="distinct isoforms carrying this guide, of all in the run">Isoforms<span class="si" aria-hidden="true"></span></th>
   </tr></thead><tbody></tbody></table>
  </div>
  <div id="right">
@@ -192,15 +385,27 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      <code>status</code> column was decided at, and say whether they are the run's own or yours: a
      status pasted into a ticket has to carry what produced it.
      <b>Export TSV</b> downloads it. Some viewers -- including a
-     Quilt iframe without <code>allow-downloads</code> -- block that; the box above is then the way
-     out, and says so if the download is refused.</p>
+     Quilt iframe without <code>allow-downloads</code> -- block that, and they do it without telling this
+     page: no error reaches the report, so it cannot say whether your file arrived. The box above is
+     therefore selected every time you export, so a blocked download is one copy away from the data.</p>
+     {# Where the cart lives between reloads, said on screen. It cannot be browser storage: this file
+        reaches nothing outside itself, and the sandbox it is read in withholds storage anyway. The URL
+        is the only place left, so the reader is told that the address IS the cart. #}
+     <div id="carturl" class="empty" style="margin:6px 0 0"></div>
    </div>
    <div class="card" id="mapcard">
      <h2>Candidate positions</h2>
      <div style="font-size:12px;color:#6b7280;margin:-4px 0 10px">Every candidate the run enumerated
-     on one isoform. <label for="tx">Isoform</label>
+     on one isoform, coloured by the verdict in force <b>now</b> — move a gate threshold and the dots
+     and the legend below move with it. <label for="tx">Isoform</label>
      <select id="tx" aria-label="isoform"></select>
-     <span id="txnote"></span></div>
+     <span id="txnote"></span>
+     {# Only shown once the reader has chosen an isoform and the selected guide is not on it: the map used
+        to leave a chosen transcript silently, and now that it stays, leaving it has to be an action. #}
+     <button class="cartbtn" id="txfollow" style="display:none">Show an isoform carrying it</button>
+     {% if not p.run.canonical_source %}
+     <div>This run recorded no canonical transcript, so none of these is marked as one.</div>
+     {% endif %}</div>
      <div id="maplegend"></div>
      <div id="mapwrap"><div id="mapbase"></div><svg id="mapover"></svg></div>
      <div id="mapnote" class="empty"></div>
@@ -212,13 +417,71 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
 const G = GUIDES_JSON_PLACEHOLDER;
 const FILTERS = FILTERS_JSON_PLACEHOLDER;
 const MAPS = MAPS_JSON_PLACEHOLDER;
+const MAP_LEGEND = MAP_LEGEND_JSON_PLACEHOLDER;
+const NOT_EMBEDDED = NOT_EMBEDDED_JSON_PLACEHOLDER;
+const GAPS_KEY = GAPS_KEY_JSON_PLACEHOLDER;
 const LAYOUTS = LAYOUTS_JSON_PLACEHOLDER;
 const TX_IDS = TX_IDS_JSON_PLACEHOLDER;
+const SCREENED_SPECIES = SCREENED_SPECIES_JSON_PLACEHOLDER;
+const EMBED_SPECIES = EMBED_SPECIES_JSON_PLACEHOLDER;
+const EMBED_SCOPE = EMBED_SCOPE_JSON_PLACEHOLDER;
 const GENE = GENE_JSON_PLACEHOLDER;
 const REGISTER_NT = REGISTER_NT_PLACEHOLDER;
 const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Number.isInteger(n)?n.toLocaleString():n.toFixed(3)) : n);
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
+
+// Each guide's own place in this file, stashed once. `renderIndex` read `G.indexOf(g)` INSIDE the row
+// map, so one keystroke on a threshold cost 5,000 scans of a 5,000-element array -- 25 million
+// comparisons, and most of the 148 ms every keystroke took on one internal run. A guide's index never
+// changes, and computing it once is the whole fix.
+G.forEach((g,i)=>{ g._i=i; });
+
+// How many of the matching rows the index draws. Not virtualisation: 5,000 rows of 7 cells is 35,000
+// nodes, each with a decomposed liability cell and a title built per row, and building all of them is
+// what remains of the keystroke cost once the O(n^2) above is gone. A window is proportionate and can be
+// honest about itself -- the last row says how many matched, and every count, the cart and the export
+// are computed over all of them and never over the window. A reader who needs a row outside it sorts or
+// filters, which is what the panel above the table is for.
+const INDEX_DRAW_MAX = 400;
+
+// ---- liabilities, decomposed by species ----------------------------------------------------------
+// A single all-species liability count is what `max_off_target_count` compares, and it is also the one
+// number that cannot tell a human liability from a non-human-index artefact. On one internal run about
+// half of every liability total is non-human, so a guide rejected on that ceiling may be carrying no
+// human liability at all -- and the reader had no way to see which. `liability_by_species` sums to
+// `liability_count` (payload.GuideEntry), so the decomposition is exact rather than an estimate.
+// Species names are read from the run (SCREENED_SPECIES); a spelling hardcoded here would outlive the
+// screen that produced it. EMBED_SPECIES is the query species, the one the per-row detail is embedded
+// for, so it is named first and is what "the rest" is the rest of.
+const OTHER_SPECIES = SCREENED_SPECIES.filter(s => s !== EMBED_SPECIES);
+function liabOf(g, sp){ return (g.liability_by_species||{})[sp] || 0; }
+//: null means every screened species -- the gate's own scope, and the default, so nothing about the
+//: index or the liability bound changes meaning until a reader deliberately narrows it.
+let liabScope = null;
+function liabIn(g){ return liabScope===null ? g.liability_count : liabOf(g, liabScope); }
+function scopeLabel(){ return liabScope===null ? 'all screened species' : liabScope; }
+
+// Total first, because that is the gated number, then the split -- with the scoped part emphasised so
+// the column the reader chose to rank by is the one their eye lands on.
+function liabCell(g){
+  const total=g.liability_count;
+  if(!SCREENED_SPECIES.length || !total) return String(total);
+  const parts=[[EMBED_SPECIES, liabOf(g,EMBED_SPECIES)]]
+    .concat(OTHER_SPECIES.length ? [['other', OTHER_SPECIES.reduce((n,sp)=>n+liabOf(g,sp),0)]] : []);
+  const split=parts.map(([name,n])=>{
+    const scoped = liabScope===null ? false
+      : (name==='other' ? OTHER_SPECIES.includes(liabScope) : liabScope===EMBED_SPECIES);
+    return `<span${scoped?' class="picked"':''}>${n} ${esc(name)}</span>`;
+  }).join(', ');
+  return `${total} <span class="empty">(${split})</span>`;
+}
+
+function liabTitle(g){
+  if(!SCREENED_SPECIES.length) return 'no hit table in this run, so no species is recorded';
+  return SCREENED_SPECIES.map(sp=>`${sp} ${liabOf(g,sp)}`).join(', ')
+    + ` — ${g.liability_count} in total, the count max_off_target_count compares`;
+}
 
 const STATUS_RANK={pass:0,warn:1,unknown:2,fail:3};
 // Every key reads g._live -- the client-recomputed gate table -- not the frozen payload snapshot.
@@ -230,26 +493,66 @@ function rowKey(g,k){
   if(k==='design')return g.design_score??-1;
   if(k==='failed')return g._live.n_gates_failed*100+g._live.n_gates_unknown;
   if(k==='status')return -STATUS_RANK[g._live.status];
-  if(k==='liab')return g.liability_count; if(k==='rows')return g.n_rows; return 0;
+  // Sorts on the SCOPED count, so re-scoping the column re-ranks it: "worst human liabilities first"
+  // and "worst total first" are different questions and the column answers whichever is selected.
+  if(k==='liab')return liabIn(g);
+  if(k==='rows')return g.n_rows; return 0;
 }
+// Which column is sorted and which way, said in the markup a screen reader reads and in a glyph a reader
+// sees. `aria-sort` was unset on all seven columns and there was no visual indicator at all, so the sort
+// was a fact only the person who clicked knew.
+function paintSortHeaders(){
+  document.querySelectorAll('#idx th[data-k]').forEach(th=>{
+    const on = th.dataset.k===sortK;
+    th.setAttribute('aria-sort', on ? (sortAsc?'ascending':'descending') : 'none');
+    const si=th.querySelector('.si'); if(si) si.textContent = on ? (sortAsc?'\u25b2':'\u25bc') : '\u25c6';
+  });
+}
+
+// One place for a sort, reached by click and by Enter/Space. The guard is the defect: the blank pick
+// header carried the same handler as the six real ones, so clicking it set `sortK` to undefined, rowKey
+// returned 0 for every guide and the index kept whatever order the last comparison happened to leave.
+function sortBy(k){
+  if(!k) return;
+  if(k===sortK) sortAsc=!sortAsc; else { sortK=k; sortAsc=(k==='guide'); }
+  renderIndex();
+}
+
 function renderIndex(){
   const tb=document.querySelector('#idx tbody');
+  // The tbody is replaced wholesale on every keystroke, which throws focus back to the document. A reader
+  // who opens a row with Enter would get one row and then have to tab in from the top again, so the
+  // keyboard path has to survive the rebuild that the keypress itself caused.
+  const act=document.activeElement, inRow=act&&act.closest?act.closest('#idx tbody tr'):null;
+  const heldPick=inRow?!!act.closest('td.pick'):false;
+  const held=inRow&&inRow.querySelector('td.pick')?inRow.querySelector('td.pick').dataset.pick:null;
   view.sort((a,b)=>{const x=rowKey(a,sortK),y=rowKey(b,sortK);
     const c = typeof x==='string' ? x.localeCompare(y) : x-y; return sortAsc?c:-c;});
   const V={pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'};
-  tb.innerHTML = view.map(g=>`<tr data-i="${G.indexOf(g)}" class="${g.guide===selected?'sel':''}">
-    <td class="pick" data-pick="${esc(g.guide)}" title="add to / remove from cart"
+  const drawn = view.slice(0, INDEX_DRAW_MAX);
+  // `data-i` is the guide's stashed index, and `tabindex`/`aria-current`/`aria-pressed` are what make a
+  // row and its pick cell operable without a mouse: the row was a `<tr onclick>` and the pick cell a bare
+  // `<td>` with no role, so neither existed for a keyboard or a screen reader.
+  tb.innerHTML = drawn.map(g=>`<tr data-i="${g._i}" tabindex="0"${
+    g.guide===selected?' class="sel" aria-current="true"':''}>
+    <td class="pick" data-pick="${esc(g.guide)}" role="button" tabindex="0"
+      aria-pressed="${CART.has(g.guide)?'true':'false'}" aria-label="${CART.has(g.guide)?'remove':'add'} ${esc(g.guide)} ${CART.has(g.guide)?'from':'to'} cart"
       >${CART.has(g.guide)?'<span class="picked">\u2713</span>':'<span style="color:#d1d5db">+</span>'}</td>
     <td><span class="pill ${V[g._live.status]}">${g._live.status}</span></td>
     <td class="mono">${esc(g.guide)}</td><td>${fmt(g.composite_score)}</td>
     <td>${g._live.n_gates_failed} / ${g._live.n_gates_unknown}</td>
-    <td class="${g.liability_count?'liab':'nonliab'}">${g.liability_count}</td>
-    <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('');
-  tb.querySelectorAll('tr').forEach(tr=>tr.onclick=e=>{
-    const cell=e.target.closest('td.pick');
-    if(cell){ togglePick(cell.dataset.pick); return; }   // the pick column selects, it does not navigate
-    show(G[+tr.dataset.i]);
-  });
+    <td class="${liabIn(g)?'liab':'nonliab'}" title="${esc(liabTitle(g))}">${liabCell(g)}</td>
+    <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('')
+    + (view.length>drawn.length ? `<tr class="drawcap"><td colspan="7">Showing the first ${
+      drawn.length.toLocaleString()} of ${view.length.toLocaleString()} matching rows, in this sort
+      order. Every count above, the cart, <b>Add top</b> and the export are computed over all ${
+      view.length.toLocaleString()}; sort or filter to bring another row into view.</td></tr>` : '');
+  if(held){
+    const cells=[...tb.querySelectorAll('td.pick')].filter(c=>c.dataset.pick===held);
+    if(cells.length) (heldPick?cells[0]:cells[0].parentElement).focus();
+  }
+  paintSortHeaders();
+  renderPlacement();     // the open guide may be outside the filter, or outside the drawn window
 }
 // Both wired in wireUI(), at the bottom: every DOM-touching statement in this file is either inside a
 // function or behind that one guard, so the substituted script also loads under node with nothing
@@ -411,22 +714,41 @@ function offtargetCard(g,idx){
   const rows=g.offtarget_by_symbol.map(s=>`<tr><td class="mono">${esc(s.symbol)}</td>
     <td><span class="pill ${s.is_liability?'v-fail':'v-not_evaluated'}">${esc(s.hit_class)}</span></td>
     <td>${esc(s.species)}</td><td>${s.n}</td><td>${fmt(s.min_nm)}</td></tr>`).join('');
-  const note = g.offtarget_embedded_scope_empty_but_counts_exist
-    ? `<div class="warn"><b>Nothing in the embedded scope, but this guide is not clean.</b>
-       Its alignments all lie outside ${esc('the embedded scope')} and are shown as counts only.
-       A guide with hits at nm&nbsp;&ge;&nbsp;3 must never render like a genuinely clean one.</div>` : '';
+  // Finding 8. The payload's `offtarget_embedded_scope_empty_but_counts_exist` flag is true for every
+  // guide whose liabilities all sit outside the embedded scope -- 4,616 of 5,000 guides on one internal
+  // run, because 197,727 of that run's 232,864 liability alignments are at nm >= 3. A warning on 92% of
+  // rows is not a warning: it trains a reader to skip it and buries the guides it matters for. The size
+  // of the scope is now stated once, at run level, in the header. Here the banner is reserved for the
+  // case that could change a decision -- a guide this report is NOT rejecting whose liability the file
+  // cannot itemise -- and for a guide already being rejected the same fact is stated plainly instead.
+  const outside = g.liability_count - g.offtarget_rows.length;
+  const shortlistable = g._live.status==='pass' || g._live.status==='warn';
+  const note = outside <= 0 ? ''
+    : shortlistable
+      ? `<div class="warn"><b>Nothing here rejects this guide, and ${outside} of its
+         ${g.liability_count} liability alignments lie outside the embedded scope of ${esc(EMBED_SCOPE)}.</b> They are counted,
+         charted and gated, but this file holds no row for them — so the table below is not the whole
+         picture for a guide you could shortlist.</div>`
+      : `<p class="empty">${outside} of this guide's ${g.liability_count} liability alignments lie outside
+         the embedded scope of ${esc(EMBED_SCOPE)}: counted, charted and gated, but not itemised here. The header states how
+         much of this run sits outside that scope.</p>`;
+  const split = SCREENED_SPECIES.filter(sp=>liabOf(g,sp)).map(sp=>`${esc(sp)} ${liabOf(g,sp)}`).join(', ');
   return `<div class="card"><h2>Off-targets by gene — ${g.liability_count} liabilit${g.liability_count===1?'y':'ies'}
       of ${g.offtarget_by_symbol.reduce((a,s)=>a+s.n,0)} alignments</h2>
+    ${split?`<p class="empty" style="margin:-6px 0 10px">By species: ${split}. Only ${esc(EMBED_SPECIES)}
+      is a human liability; the rest is a non-human-index finding, and
+      <code>max_off_target_count</code> compares the total of both.</p>`:''}
     ${note}<div id="mx${idx}" style="height:230px"></div>
     <table><thead><tr><th>Gene</th><th>Class</th><th>Species</th><th>Alignments</th><th>Best nm</th></tr></thead>
     <tbody>${rows}</tbody></table>
-    ${g.offtarget_rows.length?`<h2 style="margin-top:18px">Liability alignments — ${g.offtarget_rows.length} in the embedded scope</h2>
+    ${g.offtarget_rows.length?`<h2 style="margin-top:18px">Liability alignments — ${g.offtarget_rows.length}
+      of ${g.liability_count}, the ones inside the embedded scope of ${esc(EMBED_SCOPE)}</h2>
       <table><thead><tr><th>Transcript</th><th>Gene</th><th>Class</th><th>nm</th><th>Seed mm</th><th>CIGAR</th><th>Strand</th></tr></thead>
       <tbody>${g.offtarget_rows.map(r=>`<tr><td class="mono">${esc(r.t)}</td><td class="mono">${esc(r.s)}</td>
         <td><span class="pill v-fail">${esc(r.c)}</span></td><td>${fmt(r.nm)}</td><td>${fmt(r.sm)}</td>
         <td class="mono">${esc(r.cig)}</td><td>${esc(r.st)}</td></tr>`).join('')}</tbody></table>`
-      :`<p class="empty" style="margin-top:14px">No liability alignment in the embedded scope. Non-liability
-        classes are grouped above and counted completely in the chart.</p>`}</div>`;
+      :`<p class="empty" style="margin-top:14px">No liability alignment inside the embedded scope of ${esc(EMBED_SCOPE)}.
+        Non-liability classes are grouped above and counted completely in the chart.</p>`}</div>`;
 }
 function mirnaCard(g){
   if(!g.mirna.length) return `<div class="card"><h2>miRNA seed resemblance</h2>
@@ -477,26 +799,89 @@ function conservationCard(g){
     positions 2&ndash;8 leaves the seed intact; whether that is acceptable is a programme decision, so
     it is offered as a threshold above rather than enforced as a gate.</p></div>`;
 }
-// ---- design map: one pre-rendered transcript at a time, plus a live marker for the selection ----
-// The map itself is drawn in Python by reporting.tracks, so a notebook figure and this card cannot
-// diverge. Only the selection marker is client-side, because only it depends on what is selected.
+// ---- design map: a Python-drawn backdrop, and dots the reader's own thresholds colour ------------
+// The backdrop -- regions, gridlines, axis, uncovered shading -- is drawn in Python by reporting.tracks,
+// so a notebook figure and this card cannot diverge. The POINTS are not: a dot's colour is a verdict,
+// and the largest visual on the page was the last thing on it still frozen at the run's thresholds. Set
+// one gate so 39 of 5,000 guides pass and the legend still read `PASS, all gates evaluated (394)`,
+// byte-identical, over 394 green dots -- #103's own failure mode, in the one panel a reader looks at
+// first. Both the dots and the legend are now painted from each guide's live gate table.
 const TXS = Object.keys(MAPS);
-let curTx = TXS[0] || null;
+//: `txPinned` is whether the READER chose this isoform. The picker defaults to whatever `_picker_order`
+//: puts first -- the canonical one, where the run recorded it -- and `showOn` then followed each new
+//: selection to an isoform carrying it, which silently re-pointed the map away from the transcript the
+//: reader had deliberately picked. A pinned isoform stays: the note says the selection is not enumerated
+//: there, and the button beside the picker is how you leave it.
+let curTx = TXS[0] || null, txPinned = false;
+const MAP_FILL = {};
+MAP_LEGEND.forEach(e => { MAP_FILL[e.key] = e.fill; });
+
+// A window whose guide is not embedded has no live verdict to read, so it keeps its own key rather than
+// borrowing a colour: it is the one class on this map a moved threshold cannot answer for.
+function mapClass(pt){ const i=pt[2]; return i<0 ? NOT_EMBEDDED : G[i]._live.status; }
+
+// The primitive's own two scales, against the plot area and the value bounds it rounded its gridlines
+// to and handed over in `geometry`. Re-deriving either here would put a second copy of a scale in this
+// file, which is exactly how a dot and its own gridline come to disagree.
+function mapX(geo,p){
+  return geo.x0+(geo.x1-geo.x0)*(Math.min(Math.max(p,1)-1,geo.length-1))/Math.max(geo.length-1,1);
+}
+function mapY(geo,v){
+  const lo=geo.value_min, hi=geo.value_max;
+  return geo.y1-(geo.y1-geo.y0)*(Math.min(Math.max(v,lo),hi)-lo)/((hi-lo)||1);
+}
+
+// `canonical` is true / false / null, and null means this run recorded canonical status NOWHERE. An
+// explicit === null check, because `!canonical` would label an unknown transcript as not canonical --
+// inventing the fact the run declined to state.
+// `mp` and never `m` for a map entry, deliberately: every property the client reads off one is spelled
+// `mp.<key>`, so tests/unit/test_reporting_rethreshold.py can check each against the keys _design_maps
+// actually emits. A renamed or dropped key used to reach the browser as `undefined` painted into the
+// page -- `MAPS[t].legend` outlived the Python that built it and printed the word "undefined" where the
+// legend belongs, with nothing failing.
+function txLabel(t){
+  const mp=MAPS[t];
+  return esc(mp.label) + (mp.canonical===true ? ' \u2022 canonical' : (mp.canonical===null ? '' : ' \u2022 not canonical'));
+}
 
 function renderMap(){
   const sel=document.getElementById('tx');
   if(!TXS.length){ document.getElementById('mapcard').style.display='none'; return; }
   const carries=new Set((G.find(x=>x.guide===selected)||{isoforms:[]}).isoforms.map(i=>i.transcript));
   sel.innerHTML = TXS.map(t=>`<option value="${esc(t)}"${t===curTx?' selected':''}>${
-    esc(MAPS[t].label)}${carries.has(t)?' \u25cf carries this guide':''}</option>`).join('');
+    txLabel(t)}${carries.has(t)?' \u25cf carries this guide':''}</option>`).join('');
+  const stayed = txPinned && selected && !carries.has(curTx);
   document.getElementById('txnote').textContent = selected
-    ? ` \u2014 ${carries.size} of ${TXS.length} shown isoforms carry the selected guide.` : '';
-  const m=MAPS[curTx];
-  document.getElementById('mapbase').innerHTML=m.svg;
-  document.getElementById('maplegend').innerHTML=m.legend;
-  document.getElementById('mapover').setAttribute('viewBox', m.viewBox);
-  document.getElementById('mapnote').textContent=m.note;
+    ? ` \u2014 ${carries.size} of ${TXS.length} shown isoforms carry the selected guide.`
+      + (stayed ? ' The map stayed on the isoform you chose, which is not one of them.' : '') : '';
+  // The escape hatch from a pinned isoform, offered only when the pin is costing the reader the marker.
+  document.getElementById('txfollow').style.display = stayed ? '' : 'none';
+  const mp=MAPS[curTx];
+  document.getElementById('mapbase').innerHTML=mp.svg;
+  document.getElementById('mapover').setAttribute('viewBox', mp.viewBox);
   drawOverlay();
+}
+
+// Painted from the classes just drawn, in draw order, so the legend cannot describe a colouring the map
+// no longer has. A class with no window on this transcript is omitted -- a key for an absent class
+// reads as a class the reader failed to find -- and the gap key is a property of the transcript, not a
+// count of points, so it is offered on its own terms.
+function renderMapLegend(byClass, mp){
+  const swatch = fill => `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;`
+    + (fill ? `background:${fill}` : `background:#f8fafc;border:1px solid var(--line)`)
+    + `;margin-right:5px"></span>`;
+  const items = MAP_LEGEND
+    .filter(e => e.key===GAPS_KEY ? mp.gaps : (byClass[e.key]||[]).length)
+    .map(e => `<span style="margin-right:14px;white-space:nowrap">${swatch(e.fill)}${esc(e.label)}${
+      e.key===GAPS_KEY ? '' : ` (${byClass[e.key].length.toLocaleString()})`}</span>`).join('');
+  const moved=FILTERS.filter(f=>liveThreshold(f)!==f.threshold).length;
+  document.getElementById('maplegend').innerHTML =
+    `<div style="font-size:11.5px;color:var(--mut);margin:6px 0 2px">${items}</div>`
+    + (moved ? `<div style="font-size:11.5px;color:var(--acc);margin:0 0 2px"><b>Re-coloured at your
+        thresholds</b> \u2014 ${moved} moved from the run's, so no colour or count here is the run's own.
+        Every number counts candidate windows on this transcript, not guides.</div>`
+             : `<div style="font-size:11.5px;color:var(--mut);margin:0 0 2px">Counts are candidate
+        windows on this transcript, not guides, at the run's own thresholds.</div>`);
 }
 
 // Where this guide sits on the transcript now shown -- a guide is enumerated once per transcript, so
@@ -516,29 +901,41 @@ function cartPositions(){
 
 function drawOverlay(){
   const over=document.getElementById('mapover'); if(!over||!curTx) return;
-  const geo=MAPS[curTx].geometry, ps=selectedPositions();
-  const x=p=>geo.x0+(geo.x1-geo.x0)*(Math.min(Math.max(p,1)-1,geo.length-1))/Math.max(geo.length-1,1);
-  // Cart members first, so the selection marker draws over them rather than under.
-  over.innerHTML = cartPositions().map(p=>
-      `<path d="M${x(p).toFixed(1)} ${geo.y1}l-3.5 7h7z" fill="#15803d"/>`).join('')
-    + ps.map(p=>{const px=x(p).toFixed(1);
+  const mp=MAPS[curTx], geo=mp.geometry, ps=selectedPositions(), cart=cartPositions();
+  // One path per class rather than one element per point: 40,000 <circle> nodes cost megabytes and
+  // seconds of layout, while the same marks as subpaths of one path cost neither. Legend order is draw
+  // order, so a passing window is never hidden underneath a rejected one.
+  const byClass={};
+  for(const pt of mp.points){ const k=mapClass(pt); (byClass[k]=byClass[k]||[]).push(pt); }
+  const dots = MAP_LEGEND.filter(e=>e.key!==GAPS_KEY && (byClass[e.key]||[]).length).map(e=>
+    `<path d="${byClass[e.key].map(pt=>
+      `M${mapX(geo,pt[0]).toFixed(1)} ${mapY(geo,pt[1]).toFixed(1)}h2v2h-2z`).join('')}"
+      fill="${e.fill}" fill-opacity="0.85"/>`).join('');
+  // Cart members next, so the selection marker draws over them rather than under.
+  over.innerHTML = dots
+    + cart.map(p=>`<path d="M${mapX(geo,p).toFixed(1)} ${geo.y1}l-3.5 7h7z" fill="#15803d"/>`).join('')
+    + ps.map(p=>{const px=mapX(geo,p).toFixed(1);
     return `<line x1="${px}" y1="${geo.y0}" x2="${px}" y2="${geo.y1}" stroke="#1d4ed8" stroke-width="1.4" stroke-dasharray="3 2"/>`
          + `<path d="M${px} ${geo.y0-2}l-4.5-7h9z" fill="#1d4ed8"/>`;}).join('');
-  const note=document.getElementById('mapnote');
-  if(selected) note.textContent = ps.length
-    ? `${esc(selected)} is enumerated at ${ps.map(p=>p.toLocaleString()).join(', ')} on this transcript.`
-    : `${esc(selected)} is not enumerated on this transcript.`;
-  else note.textContent = MAPS[curTx].note;
-  const nc=cartPositions().length;
-  if(nc) note.textContent += ` ${nc} cart position${nc===1?'':'s'} marked below the axis.`;
+  renderMapLegend(byClass, mp);
+  const bits=[];
+  if(selected) bits.push(ps.length
+    ? `${selected} is enumerated at ${ps.map(p=>p.toLocaleString()).join(', ')} on this transcript.`
+    : `${selected} is not enumerated on this transcript.`);
+  if(cart.length) bits.push(`${cart.length} cart position${cart.length===1?'':'s'} marked below the axis.`);
+  if(mp.gap_note) bits.push(mp.gap_note);
+  document.getElementById('mapnote').textContent = bits.join(' ');
 }
 
 function showOn(g){
   // Follow the selection to an isoform that actually carries it, so the marker is never off-screen,
   // then re-label the picker: which isoforms carry the guide is part of the selection, not the map.
+  // Unless the reader chose the isoform, in which case following would take the map off a transcript they
+  // picked on purpose -- and since the run's canonical is only the picker's DEFAULT, that made the
+  // canonical one impossible to hold on to across two selections.
   if(!curTx) return;
   const here=g.isoforms.some(i=>i.transcript===curTx);
-  if(!here){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first) curTx=first.transcript; }
+  if(!here && !txPinned){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first) curTx=first.transcript; }
   renderMap();
 }
 
@@ -644,7 +1041,15 @@ function card(render, g){
 // fragment names, with the refusal shown rather than swallowed.
 const CART = new Set();
 const STATUS_KEYS = ['pass','warn','unknown','fail'];
-const F = {status:new Set(['pass','warn']), cons:new Set(), consSeedIntact:true};
+//: The status set a report opens on. Named rather than spelled twice, because encodeHash has to know
+//: what the default IS: it omits the status set when it is this one, so a URL carries a status filter
+//: only when the reader chose it -- and `Reset` therefore leaves an empty fragment.
+const DEFAULT_STATUS = ['pass','warn'];
+// Every reader-side selection that is not a threshold: the search text, the status set, the
+// conservation species and the seed tolerance. `q` lives here rather than being read off the input on
+// demand, so there is one source of truth for it and the fragment can restore it -- reading the DOM
+// meant a URL could carry a search the box did not show, or a box the URL did not carry.
+const F = {status:new Set(DEFAULT_STATUS), cons:new Set(), consSeedIntact:true, q:''};
 
 // A filter a reader may move: payload.py's own `evaluable` (payload.py's _filter_view), decided from
 // this run's output -- applied, thresholded, and this run measured at least one value for it. Read
@@ -752,8 +1157,12 @@ const READER_FILTERS = [
   {k:'composite', label:'composite score', dir:'min', get:g=>g.composite_score},
   {k:'isoforms',  label:'isoforms hit',    dir:'min', get:g=>g.transcript_hits},
   //: Read off the guide, like the index's own Liab. column: moving a gate re-decides verdicts and the
-  //: counters over them, never this count, so _live carries no copy of it to prefer instead.
-  {k:'liab',      label:'liabilities',     dir:'max', get:g=>g.liability_count},
+  //: counters over them, never this count, so _live carries no copy of it to prefer instead. `liabIn`
+  //: and not `liability_count`, so the species selector beside the box re-scopes the bound too: "at
+  //: most 0 human liabilities" is the question a single all-species ceiling cannot ask, and it is the
+  //: one that separates a real liability from a non-human-index artefact. Unscoped -- the default --
+  //: liabIn IS liability_count, so the bound's meaning does not change until a reader narrows it.
+  {k:'liab',      label:'liabilities',     dir:'max', get:g=>liabIn(g)},
 ];
 
 //: reader filter key -> the bound a reader typed, or null for "not set". A blank box is null and never
@@ -808,6 +1217,14 @@ function fnum(id){ const el=document.getElementById(id); if(!el) return null;
   if(el.validity && el.validity.badInput) return undefined;
   return parseControlValue(el.value); }
 
+// Both refusal banners live inside the thresholds `<details>`, and that element ships closed. On a real
+// load of `#t=<gate>:<value>` the banner was in the DOM with `display` cleared and `checkVisibility()`
+// still returned false: `elementFromPoint` at its own box returned the index's table header behind it.
+// Both banners exist so that a refusal is visible rather than swallowed, and the container was doing the
+// swallowing. Anything the reader has to see opens it -- a refused filter, a refused keystroke, or a
+// fragment that set any control at all.
+function openFilters(){ const d=document.getElementById('filters'); if(d) d.open=true; }
+
 // A refused keystroke has to be visible at the control. Silently keeping the last good value would
 // leave the reader looking at a threshold they did not type and believing they had moved it.
 function markControl(el, ok){
@@ -815,6 +1232,7 @@ function markControl(el, ok){
   const note=document.getElementById('badnum'); if(!note) return;
   const bad=[...document.querySelectorAll('#frows input[aria-invalid="true"], #rrows input[aria-invalid="true"]')];
   note.style.display = bad.length ? '' : 'none';
+  if(bad.length) openFilters();
   note.innerHTML = bad.length ? `<b>Ignored.</b> ${bad.map(b=>esc(b.getAttribute('aria-label')||b.id)).join(', ')}
     ${bad.length===1?'is':'are'} not a finite number, so nothing moved: no verdict here was decided
     against it, and the URL still describes the thresholds actually in force.` : '';
@@ -837,36 +1255,126 @@ function buildPresetButtons(){
   });
 }
 
-// One generic control per evaluable filter -- no filter_id and no filter column is ever a branch in
-// this function, only data read off FILTERS. A frozen filter gets a read-only row, no input, and
-// payload.py's own `unevaluable_reason` (not a re-derived guess at why): the evaluator above already
-// refuses to move it, and this is where that refusal is visible rather than a control nobody could use.
-function buildGateControls(){
-  document.getElementById('frows').innerHTML = FILTERS.map(f=>{
-    if(!evaluable(f)) return `<div class="frow" data-filter="${esc(f.filter_id)}">
+// What one gate actually did to the guides in this file, in words, from the counts payload.py published
+// (rejects / sole_rejects / warns / unknowns / inert / inert_reason) rather than a re-derived guess.
+// Seventeen identical sliders was the panel the audit found: on one internal run five of the seventeen
+// reject anything at all, two of them account for 1,765 of the rejections, and two cannot reject anybody
+// because their threshold sits on the limit their own setting declares. Presenting all seventeen as
+// equals invited a reader to spend their attention on the ones that decide nothing.
+function gateEffect(f){
+  if(!evaluable(f))
+    return `<b>frozen</b> — ${esc(f.unevaluable_reason||'not re-thresholdable')}`;
+  if(f.inert)
+    return `<b>inert in this run</b> — ${esc(f.inert_reason||'no guide in this file is failed or flagged by it')}`;
+  const bits=[`<b>${(f.rejects||0).toLocaleString()} rejected</b>`];
+  if(f.sole_rejects) bits.push(`${f.sole_rejects.toLocaleString()} by this gate alone`);
+  if(f.warns) bits.push(`${f.warns.toLocaleString()} warned`);
+  if(f.unknowns) bits.push(`${f.unknowns.toLocaleString()} left undecided`);
+  return bits.join(', ');
+}
+
+// 0 = decided something, 1 = evaluable but decided nothing, 2 = cannot be re-thresholded at all.
+function gateTier(f){ return !evaluable(f) ? 2 : (f.inert ? 1 : 0); }
+
+// `sole_rejects` is the ranking key: a guide rejected by one gate alone is a guide that gate is solely
+// responsible for losing, so moving that gate is the move that changes the shortlist. Filter order is
+// the final tiebreak, so the ranking is stable and reads the same on every reload.
+function gateOrder(){
+  return FILTERS.map((f,i)=>[f,i]).sort((a,b)=>
+       (gateTier(a[0])-gateTier(b[0]))
+    || ((b[0].sole_rejects||0)-(a[0].sole_rejects||0))
+    || ((b[0].rejects||0)-(a[0].rejects||0))
+    || ((b[0].warns||0)-(a[0].warns||0))
+    || (a[1]-b[1]));
+}
+
+// ---- the box and the slider are ONE threshold ----------------------------------------------------
+// The slider's domain is this run's own observed values, snapped to the step and clamped to the
+// setting's declared range (payload._control_domain) -- deliberately narrower than what the number box
+// can reach, because a domain wider than the run's values spends its travel where no verdict changes.
+// A range input cannot represent a value outside its own min/max: it pins silently at the edge. So
+// typing 90 into a gate whose domain ends at 76.104348 left the box reading 90, T at 90, and the slider
+// sitting at 76.104348 -- and one touch of that slider then dropped the real threshold to the pin
+// without the reader asking for it. The code asserted the two could not disagree by keeping them in
+// sync on every keystroke; the pin is the case where the sync silently fails.
+//
+// The domain is NOT re-derived here to make the disagreement go away: widening it would undo the
+// clamping that stopped this report publishing "at most -59 off-targets" on a count-valued gate. The
+// threshold stays where the reader typed it, the slider says it cannot show it, and it is disabled so it
+// cannot answer for a number it does not hold.
+function offScale(f){
+  const c=f.control||{}, v=T[f.filter_id];
+  return Number.isFinite(v) && Number.isFinite(c.min) && Number.isFinite(c.max) && (v<c.min || v>c.max);
+}
+function offScaleNote(f){
+  if(!offScale(f)) return '';
+  const c=f.control||{};
+  return `<b>Off this slider's scale.</b> ${fmt(T[f.filter_id])} is outside ${fmt(c.min)} to ${fmt(c.max)},
+    the span of the values this run measured for this gate, so the slider cannot show it: the box above is
+    the threshold in force and every verdict here is decided at <span class="mono">${esc(f.comparator)}
+    ${fmt(T[f.filter_id])}</span>. The slider is disabled until the threshold is back inside its scale.`;
+}
+
+// Keeps one gate row's two controls telling the same story after a move: whichever the reader touched
+// stays as they left it, the other follows, and the slider goes disabled-and-labelled the moment it
+// cannot represent T rather than pinning at its own edge.
+function paintControl(f, moved){
+  const id=f.filter_id, off=offScale(f);
+  const box=document.getElementById('ctl_'+id), rng=document.getElementById('rng_'+id);
+  if(box && box!==moved) box.value = T[id];
+  if(rng){ rng.disabled = off; if(!off && rng!==moved) rng.value = T[id]; }
+  const note=document.getElementById('os_'+id);
+  if(note) note.innerHTML = offScaleNote(f);
+}
+
+// One generic control per filter -- no filter_id and no filter column is ever a branch in this function,
+// only data read off FILTERS. A frozen filter gets a read-only row, no input, and payload.py's own
+// `unevaluable_reason` (not a re-derived guess at why): the evaluator above already refuses to move it,
+// and this is where that refusal is visible rather than a control nobody could use. An INERT gate keeps
+// its control, deliberately: it decided nothing at the run's threshold, which is not the same as being
+// unable to decide anything at any threshold.
+function gateRow(f){
+  if(!evaluable(f)) return `<div class="frow" data-filter="${esc(f.filter_id)}">
       <span class="mono">${esc(f.filter_id)}</span>
-      <span class="empty" style="grid-column:span 2">frozen — ${esc(f.unevaluable_reason||'not re-thresholdable')}</span></div>`;
-    const c = f.control || {};
-    return `<div class="frow" data-filter="${esc(f.filter_id)}">
+      <span class="empty" style="grid-column:span 2">${gateEffect(f)}</span></div>`;
+  const c = f.control || {};
+  return `<div class="frow" data-filter="${esc(f.filter_id)}">
       <span title="${esc(f.definition||'')}"><span class="mono">${esc(f.filter_id)}</span> ${esc(f.comparator)}</span>
       <input id="ctl_${esc(f.filter_id)}" type="number" step="any" value="${T[f.filter_id]}"
         aria-label="${esc(f.filter_id)} threshold">
       <span class="empty">run ${fmt(f.threshold)}</span></div>
       <input type="range" id="rng_${esc(f.filter_id)}" min="${c.min}" max="${c.max}" step="${c.step}"
-        value="${T[f.filter_id]}" style="grid-column:1/-1;width:100%" aria-label="${esc(f.filter_id)} slider">`;
-  }).join('');
+        value="${T[f.filter_id]}"${offScale(f)?' disabled':''} style="grid-column:1/-1;width:100%"
+        aria-label="${esc(f.filter_id)} slider">
+      <div class="offscale" id="os_${esc(f.filter_id)}">${offScaleNote(f)}</div>
+      <div class="geffect">${gateEffect(f)}</div>`;
+}
+
+function buildGateControls(){
+  const ordered=gateOrder();
+  const loud=ordered.filter(e=>gateTier(e[0])===0), quiet=ordered.filter(e=>gateTier(e[0])>0);
+  const inert=quiet.filter(e=>evaluable(e[0])).length;
+  document.getElementById('frows').innerHTML = loud.map(e=>gateRow(e[0])).join('')
+    + (quiet.length ? `<details><summary style="cursor:pointer;font-size:11.5px;color:var(--mut);
+        padding:5px 0">${quiet.length} of ${FILTERS.length} gates decided nothing for the guides in this
+        file — ${inert} inert, ${quiet.length-inert} frozen. Each row says why.</summary>
+        ${quiet.map(e=>gateRow(e[0])).join('')}</details>` : '');
   // The number box and the slider are the same threshold; typing in one moves the other, so "yours"
   // never has two disagreeing readouts. The box carries `type=number` and `step=any` but deliberately
   // no min/max: the slider's domain bounds the slider, and payload.py's own contract is that the number
   // box can still reach any threshold (payload._control_domain). What is rejected is not an unusual
-  // number, it is a value that is not a number at all.
+  // number, it is a value that is not a number at all -- and a number the slider's domain cannot hold is
+  // kept, with the slider disabled and saying so, rather than quietly pinned (paintControl).
   document.querySelectorAll('#frows input[id^="ctl_"], #frows input[id^="rng_"]').forEach(el=>el.oninput=()=>{
     const id=el.id.slice(el.id.indexOf('_')+1), f=FILTERS.find(x=>x.filter_id===id), v=fnum(el.id);
     if(v===undefined){ markControl(el,false); return; }   // refused here, so T can never hold a NaN
     markControl(el,true);
+    // While the threshold is off the slider's scale the slider's value is a pin, not a reading, and it
+    // is disabled so a reader cannot touch it. `disabled` alone is the browser's promise; this is the
+    // report's: an input arriving from that control anyway cannot drop the threshold to the pin.
+    if(el.id.startsWith('rng_') && offScale(f)){ paintControl(f, null); return; }
     T[id] = v===null ? f.threshold : v;
-    const other=document.getElementById((el.id.startsWith('ctl_')?'rng_':'ctl_')+id);
-    if(other) other.value = T[id];
+    paintControl(f, el);
     onThresholdsChanged();
   });
 }
@@ -877,11 +1385,12 @@ function buildGateControls(){
 // so recomputing every guide's gate table would be a claim that something changed when nothing did.
 function buildReaderFilters(){
   document.getElementById('rrows').innerHTML = READER_FILTERS.map(f=>
-    `<div class="frow" data-reader="${esc(f.k)}"><span>${esc(f.label)}</span>
+    `<div class="frow" data-reader="${esc(f.k)}"><span>${esc(readerLabel(f))}</span>
       <input id="rf_${esc(f.k)}" type="number" step="any" placeholder="${f.dir}"
         value="${R[f.k]===null||R[f.k]===undefined?'':R[f.k]}"
-        aria-label="${esc(f.label)}, ${f.dir==='min'?'at least':'at most'}">
-      <span class="empty">${f.dir==='min'?'at least':'at most'}</span></div>`).join('');
+        aria-label="${esc(readerLabel(f))}, ${f.dir==='min'?'at least':'at most'}">
+      <span class="empty">${f.dir==='min'?'at least':'at most'}</span></div>`).join('')
+    + liabScopeControl();
   document.querySelectorAll('#rrows input').forEach(el=>el.oninput=()=>{
     const v=fnum(el.id);
     if(v===undefined){ markControl(el,false); return; }   // a bound is a number or it is not a bound
@@ -889,23 +1398,74 @@ function buildReaderFilters(){
     R[el.id.slice(3)] = v;                 // blank clears the bound; it does not set it to 0
     applyFilters(); syncHash();
   });
+  const sel=document.getElementById('liabscope');
+  if(sel) sel.onchange = e => {
+    liabScope = e.target.value || null;
+    // Re-scoping is not a re-derivation: no verdict moves, so onThresholdsChanged is deliberately not
+    // called. What does change is the column, its sort, and which guides the liability bound admits.
+    labelLiabColumn(); buildReaderFilters(); applyFilters(); syncHash();
+  };
+}
+
+// The bound's own label says which species it counts, because "at most 3 liabilities" means two
+// different things before and after the selector moves and a box that did not say so would be lying.
+function readerLabel(f){ return f.k==='liab' ? `liabilities (${scopeLabel()})` : f.label; }
+
+// One selector, three effects: the index column's emphasis and sort, and the liability bound above.
+// Offered only when the run has a hit table to decompose -- otherwise there is no species to choose.
+function liabScopeControl(){
+  if(!SCREENED_SPECIES.length) return '';
+  const opt=(v,label)=>`<option value="${esc(v)}"${(liabScope||'')===v?' selected':''}>${esc(label)}</option>`;
+  return `<div class="frow" data-reader="liabscope"><span>count liabilities in</span>
+    <select id="liabscope" style="grid-column:span 2" aria-label="species the liability count is over">
+      ${opt('','all screened species')}${SCREENED_SPECIES.map(sp=>opt(sp,sp)).join('')}</select></div>
+    <div class="empty" style="font-size:11.5px;margin:-2px 0 5px">Every liability total on this page is
+    over all ${SCREENED_SPECIES.length} screened species, which is what <code>max_off_target_count</code>
+    compares. Narrowing to ${esc(EMBED_SPECIES)} asks the different question of whether a rejection is a
+    human liability or a non-human-index artefact; it re-scopes the column and the bound, never a verdict.</div>`;
+}
+
+// Set from JS, not the template, because the scope is a reader's choice and the species is run data.
+function labelLiabColumn(){
+  // The label is a child span, not the cell's own text: the cell also holds the sort indicator, and
+  // `th.textContent =` would delete it -- a header that stops saying which way it sorts as soon as the
+  // reader narrows the species.
+  const th=document.getElementById('thliab'), lbl=document.getElementById('liablbl');
+  if(!th || !lbl) return;
+  lbl.textContent = SCREENED_SPECIES.length ? `Liab. (${scopeLabel()})` : 'Liab.';
+  th.title = SCREENED_SPECIES.length
+    ? `off-target liabilities: the total over all ${SCREENED_SPECIES.length} screened species -- the count `
+      + `max_off_target_count compares -- then the split into ${EMBED_SPECIES} and the rest. Sorted on `
+      + scopeLabel() + '.'
+    : 'off-target liabilities in every screened species';
 }
 
 function buildFilterUI(){
+  // The search box is a control like any other, so it is restored from F here rather than left holding
+  // whatever the reader last typed: a fragment that carries `q=` has to put the text back in the box, and
+  // Reset has to clear it.
+  const qbox=document.getElementById('q');
+  if(qbox) qbox.value = F.q;
   document.getElementById('fstat').innerHTML = STATUS_KEYS.map(k=>
     `<label><input type="checkbox" data-status="${k}"${F.status.has(k)?' checked':''}> ${k}</label>`).join('');
+  // syncHash, because this is the single biggest thing the URL used to leave out: the default set hides
+  // every fail and unknown row -- 3,617 of them on one internal run -- so a URL that did not carry it did
+  // not carry the rows the reader was looking at.
   document.querySelectorAll('#fstat input').forEach(cb=>cb.onchange=()=>{
-    cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status); applyFilters(); });
+    cb.checked ? F.status.add(cb.dataset.status) : F.status.delete(cb.dataset.status);
+    applyFilters(); syncHash(); });
   buildGateControls();
   buildReaderFilters();
+  labelLiabColumn();
   document.getElementById('fcons').innerHTML =
     '<span style="color:var(--mut)">conserved in</span> ' +
     CONS_SPECIES.map(sp=>`<label><input type="checkbox" data-cons="${sp}"${F.cons.has(sp)?' checked':''}> ${sp}</label>`).join('') +
     `<label title="accept one mismatch outside guide positions 2-8">
       <input type="checkbox" id="consseed"${F.consSeedIntact?' checked':''}> allow 1 mm outside the seed</label>`;
   document.querySelectorAll('#fcons input[data-cons]').forEach(cb=>cb.onchange=()=>{
-    cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); });
-  document.getElementById('consseed').onchange = e => { F.consSeedIntact=e.target.checked; applyFilters(); };
+    cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); syncHash(); });
+  document.getElementById('consseed').onchange = e => {
+    F.consSeedIntact=e.target.checked; applyFilters(); syncHash(); };
   buildPresetButtons();
   renderRefused();
   // Rebuilding the boxes discards every aria-invalid with them, so the refusal banner would otherwise
@@ -917,17 +1477,46 @@ function buildFilterUI(){
 // Everything #freset does, as a function rather than inline in its handler: "Reset" has to mean every
 // control -- the status and conservation checkboxes, every gate threshold, every reader filter and the
 // preset -- and the parity harness drives this same function rather than a restatement of it.
+// The cart is deliberately NOT cleared here: it is a pick list a reader built, not a filter setting, and
+// wiping it from a Reset button inside the thresholds panel would destroy work nothing else on this page
+// can rebuild. A fragment is a different matter -- see applyFragmentState.
 function resetControls(){
-  F.status = new Set(['pass','warn']); F.cons = new Set(); F.consSeedIntact = true;
+  F.status = new Set(DEFAULT_STATUS); F.cons = new Set(); F.consSeedIntact = true; F.q = '';
   FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
   READER_FILTERS.forEach(f => { R[f.k] = null; });
+  liabScope = null;                        // back to the gate's own all-species scope
   activePreset = 'all'; refusedFilters = [];
+}
+
+// The four header pills, over the guides in this file, at the thresholds in force NOW. Seeded from the
+// payload by the template so the numbers are right before any script runs, then re-rendered from the
+// live gate tables: leaving them at the run's own values beside a re-coloured map would be the frozen
+// legend again with the numbers swapped. The agreement clause beside them is deliberately not
+// re-derived -- it is a comparison WITH the run, so it belongs at the run's own thresholds -- and says
+// so, plus says when those are no longer the thresholds the pills came from.
+function renderStatusPills(){
+  const n={pass:0,warn:0,unknown:0,fail:0};
+  for(const g of G) n[g._live.status]++;
+  for(const k of STATUS_KEYS){
+    const el=document.getElementById('n_'+k); if(el) el.textContent=n[k].toLocaleString();
+  }
+  const moved=FILTERS.filter(f=>liveThreshold(f)!==f.threshold).length;
+  const basis=document.getElementById('cbasis');
+  if(basis) basis.textContent = moved
+    ? `, at your thresholds — ${moved} moved from the run's`
+    : ", at the run's own thresholds";
+  const stale=document.getElementById('agreestale');
+  if(stale) stale.innerHTML = moved
+    ? ` <b>Not re-derived at your thresholds:</b> an agreement with the run has to be measured against
+      the run's own, so these four no longer describe the pills above them.` : '';
 }
 
 function matching(){ return G.filter(passesFilters); }
 
+// Reads F.q, not the input: the search text is reader state that the fragment carries and Reset clears,
+// so the box is a view of it rather than its home.
 function applyFilters(){
-  const raw=(document.getElementById('q').value||'').trim();
+  const raw=(F.q||'').trim();
   const seq=raw.toUpperCase().replace(/T/g,'U'), id=raw.toLowerCase();
   view = matching().filter(g => !raw || g.guide.includes(seq)
     || g.isoforms.some(i=>String(i.candidate_id).toLowerCase().includes(id)
@@ -938,8 +1527,21 @@ function applyFilters(){
 
 function togglePick(guide){
   CART.has(guide) ? CART.delete(guide) : CART.add(guide);
-  renderIndex(); renderCart(); drawOverlay();
+  renderIndex(); renderCart(); drawOverlay(); syncHash();
 }
+
+// ---- where the cart lives between reloads ---------------------------------------------------------
+// Not browser storage -- the obvious answer, and the one this report may not use: it reaches nothing
+// outside itself, and the sandbox it is read in withholds same-origin, so no storage API is even
+// reachable there. The URL fragment is the only in-page place a pick list can persist, and it has the
+// property storage does not: a reader can send it. So the cart rides in `k=`, as guide sequences and
+// never as indices into G -- a sequence not in this file is refused, where an index would silently
+// resolve to a different guide in a differently built
+// report. The cap is the cost of that choice: 5,706 guides at 22 characters is a 125 KB address that no
+// mail client keeps intact, so the fragment carries the first CART_IN_URL_MAX in the index's own order
+// and the cart card says on screen when it is carrying fewer than the cart holds.
+const CART_IN_URL_MAX = 500;
+function cartInUrl(){ return G.filter(g=>CART.has(g.guide)).map(g=>g.guide).slice(0, CART_IN_URL_MAX); }
 
 function cartRows(){
   return [...CART].map(k=>G.find(g=>g.guide===k)).filter(Boolean)
@@ -1000,12 +1602,35 @@ function renderCart(){
   document.querySelectorAll('#cartlist tr[data-cart]').forEach(tr=>
     tr.querySelector('td.pick').onclick=()=>togglePick(tr.dataset.cart));
   document.getElementById('carttsv').value = cartTsv(rows);
+  const carried=cartInUrl().length, note=document.getElementById('carturl');
+  if(note) note.textContent = carried < rows.length
+    ? `This page's URL carries ${carried} of these ${rows.length} guides. The cart is kept in the address —
+       nothing is stored in this browser — and ${rows.length-carried} of them do not fit, so a copied URL
+       restores ${carried}. Export the TSV to keep all ${rows.length}.`
+    : `The cart is in this page's URL: copy the address and these ${rows.length}
+       guide${rows.length===1?'':'s'} travel with your thresholds, filters and search. Nothing is stored in
+       this browser, so closing the page without the URL loses the cart.`;
 }
 
-// ---- URL fragment: selected guide, moved thresholds, reader filters, active preset ----------------
+// ---- URL fragment: the whole reader state, and the only place it lives -----------------------------
 // A bare fragment with none of the '=' syntax below is still read as a guide -- what every earlier
 // report in this run wrote. Reader filters ride in their own `r=` list, on the same footing as `t=`:
 // a reader who sends the URL sends the rows they were looking at, not just the verdicts.
+//
+// "The rows they were looking at" was false as shipped: `t=`, `r=`, `sp=`, `preset=` and `g=` were
+// encoded, and the search box, the four status checkboxes, the conservation species, the seed tolerance
+// and the cart were not -- and the status set alone hides every fail and unknown row by default, 3,617
+// of them on one internal run. So `q=`, `s=`, `c=` and `k=` are here too, and every control that changes
+// any of them calls syncHash. Each is omitted when it holds its default, which is what keeps `Reset` on
+// an empty fragment and keeps a URL down to what the reader actually chose.
+//
+// The token for "1 mismatch outside the seed is NOT acceptable". It rides inside `c=` because it is part
+// of one conservation question, and it is spelled out rather than a bare flag so an unknown token in that
+// list can be refused like any other name the URL invents.
+const SEED_STRICT = 'no1mm';
+function statusIsDefault(){
+  return F.status.size===DEFAULT_STATUS.length && DEFAULT_STATUS.every(k=>F.status.has(k));
+}
 function encodeHash(){
   const parts=[];
   if(selected) parts.push('g='+encodeURIComponent(selected));
@@ -1019,23 +1644,52 @@ function encodeHash(){
   if(moved.length) parts.push('t='+moved.map(id=>id+':'+T[id]).join(','));
   const bounded=READER_FILTERS.filter(f=>Number.isFinite(R[f.k]));
   if(bounded.length) parts.push('r='+bounded.map(f=>f.k+':'+R[f.k]).join(','));
+  // The liability scope rides too: it decides which guides the `liab` bound admits, so a URL without it
+  // would restore the bound and not the question it was asked about.
+  if(liabScope!==null) parts.push('sp='+encodeURIComponent(liabScope));
   if(activePreset!=='all') parts.push('preset='+activePreset);
+  // Canonical order for each set -- the status keys' own order, the species' own order, the index's own
+  // order -- so two readers looking at the same view copy the same URL, and a fragment round-trips.
+  if(F.q) parts.push('q='+encodeURIComponent(F.q));
+  if(!statusIsDefault()) parts.push('s='+STATUS_KEYS.filter(k=>F.status.has(k)).join(','));
+  const cons=CONS_SPECIES.filter(sp=>F.cons.has(sp));
+  if(cons.length || !F.consSeedIntact)
+    parts.push('c='+cons.concat(F.consSeedIntact?[]:[SEED_STRICT]).join(','));
+  const carted=cartInUrl();
+  if(carted.length) parts.push('k='+carted.join(','));
   return parts.join('&');
 }
-function syncHash(){ location.hash = encodeHash(); }
+
+// `location.hash = ...` is a navigation: it pushed one history entry per keystroke on every threshold, so
+// `history.length` climbed 5 -> 7 during light use, Back then changed the URL without changing the view --
+// the page showing one state while its URL claimed another -- and escaping the report took dozens of
+// presses. replaceState keeps the URL current without owning the reader's Back button, and does not fire
+// `hashchange`, so the listener below only ever sees changes the reader made.
+// The catch is not defensive noise: pushState and replaceState throw a SecurityError on an opaque origin,
+// and the sandbox this report is read in withholds allow-same-origin. Self-navigation to a fragment is
+// still allowed there, so the fallback is the old behaviour rather than losing the URL altogether.
+function syncHash(){
+  if(typeof location==='undefined') return;
+  const h=encodeHash();
+  try { history.replaceState(null, '', '#'+h); }
+  catch(e){ if(location.hash.slice(1)!==h) location.hash = h; }
+}
 
 // Reads a fragment written by encodeHash (or a bare guide sequence from an earlier report) and
-// returns the filter ids it had to refuse -- an unknown id, or one with no control -- so the caller
-// can show that refusal rather than silently drop it.
+// returns the names it had to refuse -- an unknown filter id, one with no control, a species this run
+// never screened, a guide sequence this file does not hold -- so the caller can show that refusal rather
+// than silently drop it. `controls` says whether the fragment set any control at all, which is what tells
+// the caller to open the panel those controls and their refusal banners live in.
 function applyHashFragment(raw){
   const refused=[];
-  if(raw.indexOf('=')<0) return {guide: raw ? decodeURIComponent(raw) : null, refused};
-  let guide=null;
+  if(raw.indexOf('=')<0) return {guide: raw ? decodeURIComponent(raw) : null, refused, controls:false};
+  let guide=null, controls=false;
   for(const part of raw.split('&')){
     const eq=part.indexOf('='); if(eq<0) continue;
     const k=part.slice(0,eq), v=part.slice(eq+1);
-    if(k==='g') guide=decodeURIComponent(v);
+    if(k==='g'){ guide=decodeURIComponent(v); }
     else if(k==='t'){
+      controls=true;
       for(const pair of v.split(',')){
         if(!pair) continue;
         const ci=pair.indexOf(':'); if(ci<0) continue;
@@ -1048,6 +1702,7 @@ function applyHashFragment(raw){
         else refused.push(id);
       }
     } else if(k==='r'){
+      controls=true;
       for(const pair of v.split(',')){
         if(!pair) continue;
         const ci=pair.indexOf(':'); if(ci<0) continue;
@@ -1055,22 +1710,86 @@ function applyHashFragment(raw){
         if(READER_FILTERS.some(f=>f.k===key) && typeof num==='number') R[key]=num;
         else refused.push(key);
       }
-    } else if(k==='preset'){ if(PRESETS[v]) activePreset=v; }
+    } else if(k==='sp'){
+      // A species this run did not screen is refused, not adopted: scoping the column to a name with no
+      // alignments behind it would read as "no liabilities here" for every guide in the file.
+      controls=true;
+      const sp=decodeURIComponent(v);
+      if(SCREENED_SPECIES.includes(sp)) liabScope=sp; else refused.push(sp);
+    } else if(k==='preset'){ controls=true; if(PRESETS[v]) activePreset=v; }
+    else if(k==='q'){ controls=true; F.q=decodeURIComponent(v); }
+    else if(k==='s'){
+      // A set, so the key REPLACES it rather than adding to it -- and `s=` with nothing after it is a
+      // reader who unchecked all four, which is a real view (every guide) and not a missing key.
+      controls=true;
+      F.status=new Set();
+      for(const key of v.split(',')){
+        if(!key) continue;
+        if(STATUS_KEYS.includes(key)) F.status.add(key); else refused.push(key);
+      }
+    } else if(k==='c'){
+      // Conservation is one question -- which species, and whether a mismatch outside the seed is
+      // acceptable -- so both halves ride in one key and both are reset by it.
+      controls=true;
+      F.cons=new Set(); F.consSeedIntact=true;
+      for(const token of v.split(',')){
+        if(!token) continue;
+        if(CONS_SPECIES.includes(token)) F.cons.add(token);
+        else if(token===SEED_STRICT) F.consSeedIntact=false;
+        else refused.push(token);
+      }
+    } else if(k==='k'){
+      // Cart members as sequences, resolved against this file. A sequence this report does not hold is
+      // refused rather than dropped: a URL from a differently built report names guides that are not
+      // here, and a cart quietly missing them would read as a shortlist the reader never made.
+      controls=true;
+      for(const seq of v.split(',')){
+        if(!seq) continue;
+        const key=decodeURIComponent(seq);
+        if(G.some(g=>g.guide===key)) CART.add(key); else refused.push(key);
+      }
+    }
   }
-  return {guide, refused};
+  return {guide, refused, controls};
 }
 function renderRefused(){
   const el=document.getElementById('refused');
   if(!refusedFilters.length){ el.style.display='none'; return; }
   el.style.display='';
-  el.innerHTML=`<b>Refused.</b> The URL asked to set ${refusedFilters.map(esc).join(', ')} -- ${
-    refusedFilters.length===1?'that name has':'those names have'} no control here (a frozen gate, or no
-    such control at all), so nothing moved.`;
+  openFilters();          // a banner inside a closed <details> is a refusal that was swallowed
+  el.innerHTML=`<b>Refused.</b> The URL asked for ${refusedFilters.map(esc).join(', ')} -- ${
+    refusedFilters.length===1?'that name has':'those names have'} no control here and no match in this
+    file (a frozen gate, an unscreened species, a guide this report does not hold, or no such name at
+    all), so nothing was set from ${refusedFilters.length===1?'it':'them'}.`;
+}
+
+// Where the open guide sits relative to the index beside it. A guide arrives here by URL (`g=`) or stays
+// here while a threshold moves under it, and the pane then showed a full guide -- every card, every
+// metric -- while the index read "0 of 5,000". Nothing said the two were describing different sets, so
+// the index looked broken and the guide looked like a result. The pane says which it is.
+function placementNote(){
+  const g=G.find(x=>x.guide===selected);
+  if(!g) return '';
+  const at=view.indexOf(g);
+  if(at<0) return `<div class="warn"><b>Outside your current filter.</b> This guide is open because you
+    asked for it — by link, or before the ${passesFilters(g)?'search box':'thresholds and filters'} above
+    excluded it — and the index counts only what they admit. Nothing below is filtered: it is this
+    guide's own evidence, at the thresholds in force.</div>`;
+  if(at>=INDEX_DRAW_MAX) return `<div class="warn"><b>Not among the drawn rows.</b> This guide is row ${
+    (at+1).toLocaleString()} of the ${view.length.toLocaleString()} your filter admits, and the index
+    draws the first ${INDEX_DRAW_MAX.toLocaleString()} in this sort order, so it is not highlighted
+    there. Everything below is this guide's own evidence.</div>`;
+  return '';
+}
+function renderPlacement(){
+  const el=document.getElementById('placement');
+  if(el) el.innerHTML = placementNote();
 }
 
 function renderDetail(g){
-  const i=G.indexOf(g), live=g._live;
+  const i=g._i, live=g._live;
   document.getElementById('detail').innerHTML = `
+   <div id="placement"></div>
    <div class="card"><h2>Guide</h2>
      <div class="mono big">${esc(g.guide)} <span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[live.status]}" style="font-size:12px;vertical-align:middle">${live.status==='unknown'?'not established':live.status}</span></div>
      <div class="kv" style="margin-top:12px">
@@ -1082,6 +1801,7 @@ function renderDetail(g){
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
    ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(conservationCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
+  renderPlacement();
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
 }
 
@@ -1097,11 +1817,36 @@ function show(g){
 // the open detail pane and the fragment.
 function onThresholdsChanged(){
   recomputeLive();
+  renderStatusPills();
   applyFilters();
   renderCart();
   drawOverlay();
   if(selected){ const g=G.find(x=>x.guide===selected); if(g) renderDetail(g); }
   syncHash();
+}
+
+// One path for every way a fragment can arrive: the first load, Back, Forward, an edited address bar, a
+// pasted link. The fragment was read exactly once, at load, with no `hashchange` listener anywhere -- so
+// after Back the page showed one state while its URL claimed another. A fragment describes the WHOLE
+// reader state, which is why resetControls runs first: what a URL omits is a default, not whatever the
+// page happened to be showing. The cart is cleared here and not in resetControls for the same reason --
+// `k=` is part of that state, so a URL without one is an empty cart, while the Reset button beside the
+// thresholds must never destroy a pick list.
+function applyFragmentState(raw){
+  resetControls();
+  CART.clear();
+  const applied = applyHashFragment(raw);
+  refusedFilters = applied.refused;
+  recomputeLive();        // thresholds named in the fragment must be live before anything paints
+  buildFilterUI();        // controls, checkboxes and the search box reflect T, R and F
+  renderStatusPills();    // and so do the pills: a fragment can arrive with a threshold already moved
+  applyFilters();
+  renderCart();
+  renderMap();
+  // Whatever the fragment set is inside a container that ships closed, and so is any refusal of it.
+  if(applied.controls || applied.refused.length) openFilters();
+  const start = G.find(g=>g.guide===applied.guide) || G[0];
+  if(start) show(start);
 }
 
 // One bootstrap block, guarded: the substituted <script> body is also handed directly to node for the
@@ -1110,50 +1855,107 @@ function onThresholdsChanged(){
 // so the pure evaluator above (CMP, reevaluateGate, reevaluateGates, the presets, the register
 // clustering) loads and runs there with nothing stubbed beyond the check itself.
 function wireUI(){
-  document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
-    const k=th.dataset.k; if(k===sortK) sortAsc=!sortAsc; else {sortK=k;sortAsc=(k==='guide');} renderIndex();});
-  document.getElementById('q').oninput = () => applyFilters();
-  document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
-  document.getElementById('addtop').onclick = e => {
-    if(e.target.id==='topn') return;                     // typing in the field is not a click on the button
-    const n=Math.max(0, parseInt(document.getElementById('topn').value,10)||0);
-    matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1))
-      .slice(0,n).forEach(g=>CART.add(g.guide));
-    renderIndex(); renderCart(); drawOverlay();
+  // Sorting, by mouse and by keyboard. `<th onclick>` with the default `tabIndex` of -1 is not a control:
+  // it could not be focused, Enter and Space did nothing, and the sort was unreachable without a pointer.
+  document.querySelectorAll('#idx th[data-k]').forEach(th=>{
+    th.onclick=()=>sortBy(th.dataset.k);
+    th.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); sortBy(th.dataset.k); } };
+  });
+  // Delegated once onto the tbody rather than assigned per row: the rows are rebuilt on every keystroke,
+  // so 5,000 handler assignments were part of what a keystroke cost, and a row drawn after wiring used to
+  // have to be re-wired to work at all. Enter/Space opens a row, the arrows walk the index, and the pick
+  // cell is a control of its own -- it was a bare `<td>` with no role, invisible to a keyboard.
+  const tb=document.querySelector('#idx tbody');
+  const rowOf=e=>{ const tr=e.target.closest('tr'); return tr && tr.dataset.i!==undefined ? tr : null; };
+  tb.onclick=e=>{
+    const tr=rowOf(e); if(!tr) return;
+    const cell=e.target.closest('td.pick');
+    if(cell){ togglePick(cell.dataset.pick); return; }   // the pick column selects, it does not navigate
+    show(G[+tr.dataset.i]);
   };
-  document.getElementById('cartclear').onclick = () => { CART.clear(); renderIndex(); renderCart(); drawOverlay(); };
+  tb.onkeydown=e=>{
+    const tr=rowOf(e); if(!tr) return;
+    if(e.key==='Enter'||e.key===' '){
+      e.preventDefault();
+      const cell=e.target.closest('td.pick');
+      if(cell) togglePick(cell.dataset.pick); else show(G[+tr.dataset.i]);
+      return;
+    }
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+      const next = e.key==='ArrowDown' ? tr.nextElementSibling : tr.previousElementSibling;
+      if(next && next.dataset.i!==undefined){ e.preventDefault(); next.focus(); }
+    }
+  };
+  document.getElementById('q').oninput = e => { F.q = e.target.value; applyFilters(); syncHash(); };
+  // A deliberate choice of isoform is pinned, so the map stops following the selection off it.
+  document.getElementById('tx').onchange = e => { curTx = e.target.value; txPinned = true; renderMap(); };
+  document.getElementById('txfollow').onclick = () => {
+    txPinned = false;
+    const g=G.find(x=>x.guide===selected); if(g) showOn(g); else renderMap();
+  };
+  // Read through `fnum`, the same boundary every threshold box uses, and refused at the control rather
+  // than degraded: `parseInt('ten',10)||0` is 0, and adding the top 0 guides is indistinguishable from a
+  // button that does not work. A count is also a whole number of guides, so a fraction is refused too.
+  document.getElementById('addtop').onclick = () => {
+    const box=document.getElementById('topn'), note=document.getElementById('topnnote');
+    const n=fnum('topn'), ok = typeof n==='number' && Number.isInteger(n) && n>0;
+    box.setAttribute('aria-invalid', ok?'false':'true');
+    if(!ok){
+      note.className='offscale';
+      note.textContent = `That is not a whole number of guides above zero, so nothing was added to the cart.`;
+      return;
+    }
+    const pool=matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1));
+    const take=pool.slice(0,n);
+    take.forEach(g=>CART.add(g.guide));
+    note.className='empty';
+    note.textContent = take.length < n
+      ? `Added ${take.length.toLocaleString()} — only ${take.length.toLocaleString()} guides match the filters in force, of the ${n.toLocaleString()} asked for.`
+      : `Added the top ${take.length.toLocaleString()} of ${pool.length.toLocaleString()} matching guides, by composite score.`;
+    renderIndex(); renderCart(); drawOverlay(); syncHash();
+  };
+  document.getElementById('cartclear').onclick = () => {
+    CART.clear(); renderIndex(); renderCart(); drawOverlay(); syncHash(); };
   document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
-  // A Blob download, because that is what "export" means, with the textarea as the declared fallback:
-  // the report's own sandbox may withhold allow-downloads, and a button that silently does nothing is
-  // worse than one that says why.
+  // A Blob download, with the textarea as the declared fallback -- and the fallback CANNOT be reached by
+  // a failure, which was the defect. The case the old catch named is an iframe without `allow-downloads`,
+  // exactly the Quilt one: there the embedder refuses the synthetic `a.click()` itself, silently, with no
+  // exception, no callback and no observable state, so the catch never ran and the reader was told the
+  // file had been written. Nothing in this page can see that refusal, so it is not claimed: the box is
+  // selected on every export, one keystroke from the data, and the note says both outcomes. The catch
+  // stays for what does throw -- URL.createObjectURL and Blob are refused outright by some CSPs.
   document.getElementById('cartdl').onclick = () => {
     const note=document.getElementById('dlnote'), n=CART.size;
     const stamp=new Date().toISOString().slice(0,10).replace(/-/g,'');
     const name=`${GENE.replace(/[^A-Za-z0-9_.-]/g,'_')}_cart_${n}guides_${stamp}.tsv`;
+    const box=document.getElementById('carttsv');
+    box.focus(); box.select();
+    let asked=false;
     try{
-      const url=URL.createObjectURL(new Blob([document.getElementById('carttsv').value],
-        {type:'text/tab-separated-values'}));
+      const url=URL.createObjectURL(new Blob([box.value], {type:'text/tab-separated-values'}));
       const a=document.createElement('a');
       a.href=url; a.download=name; a.style.display='none';
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(()=>URL.revokeObjectURL(url), 0);
-      note.textContent=` ${name}`;
-    }catch(e){
-      note.textContent=' download refused by this viewer — copy the box below instead';
-      const t=document.getElementById('carttsv'); t.focus(); t.select();
-    }
+      asked=true;
+    }catch(e){ asked=false; }
+    note.textContent = asked
+      ? ` ${name} requested. A viewer that blocks downloads refuses it without telling this page, so if no`
+        + ` file arrived, the box below is already selected — copy it.`
+      : ` download refused by this viewer — it could not build the file at all, which is a refusal this`
+        + ` page CAN see. The box below is selected instead: copy it.`;
   };
   document.getElementById('freset').onclick = () => { resetControls(); buildFilterUI(); onThresholdsChanged(); };
 
-  const {guide, refused} = applyHashFragment(location.hash.slice(1));
-  refusedFilters = refused;
-  recomputeLive();       // thresholds named in the fragment must be live before anything paints
-  buildFilterUI();        // gate controls reflect T, including any fragment overrides
-  applyFilters();
-  renderCart();
-  renderMap();
-  const start = G.find(g=>g.guide===guide) || G[0];
-  if(start) show(start);
+  // The reader's own navigation, back through the report's own URL. Nothing here fires on the report's
+  // own writes: replaceState does not raise hashchange, and the guard covers the location.hash fallback
+  // syncHash uses in a sandbox that refuses the History API -- re-applying a fragment we just wrote would
+  // fight the reader's typing.
+  if(typeof window!=='undefined') window.addEventListener('hashchange', () => {
+    if(location.hash.slice(1) === encodeHash()) return;
+    applyFragmentState(location.hash.slice(1));
+  });
+  applyFragmentState(location.hash.slice(1));
 }
 if (typeof document !== 'undefined') { wireUI(); }
 </script></body></html>
@@ -1169,23 +1971,45 @@ def render_html(payload: ReportPayload) -> str:
     Returns:
         The whole document. No sidecar files, no external URLs.
     """
+    # Every guide the payload holds, deliberately with no slice of its own. The cap lives in
+    # build_payload, above every count the report prints (payload.DEFAULT_MAX_EMBEDDED_GUIDES); a second
+    # one here would truncate `max_guides=None` again downstream and make the header over-count.
     guides = []
-    for g in payload.guides[:MAX_INDEX_GUIDES]:
+    for g in payload.guides:
         d = asdict(g)
         d["n_gates_failed"] = g.n_gates_failed
         d["n_gates_unknown"] = g.n_gates_unknown
         d["status"] = g.status
         guides.append(d)
 
+    dropped = payload.run.get("guides_dropped_by_status") or {}
     env = Environment(autoescape=select_autoescape(default=True), trim_blocks=True, lstrip_blocks=True)
     # Rendered before the payload is substituted, so no JSON string can be parsed as template syntax.
-    html = env.from_string(_TEMPLATE).render(p=payload)
+    html = env.from_string(_TEMPLATE).render(
+        p=payload,
+        scope=_liability_scope(payload),
+        # Dropped guides a reader might have shipped: the cap's real cost, as opposed to guides the run
+        # and this report agree to reject.
+        dropped_shippable=sum(n for status, n in dropped.items() if status != "fail"),
+    )
+    maps = _design_maps(payload)
     for placeholder, value in (
         ("GUIDES_JSON_PLACEHOLDER", guides),
         ("FILTERS_JSON_PLACEHOLDER", payload.filters),
-        ("MAPS_JSON_PLACEHOLDER", _design_maps(payload)),
+        ("MAPS_JSON_PLACEHOLDER", maps),
+        ("MAP_LEGEND_JSON_PLACEHOLDER", _MAP_LEGEND),
+        # The two legend keys the client branches on: one is not a verdict (no guide to re-decide), the
+        # other is not a point at all. Substituted rather than spelled in the JS so there is one name.
+        ("NOT_EMBEDDED_JSON_PLACEHOLDER", _NOT_EMBEDDED),
+        ("GAPS_KEY_JSON_PLACEHOLDER", _GAPS_KEY),
         ("LAYOUTS_JSON_PLACEHOLDER", payload.run.get("structure_layouts") or {}),
         ("TX_IDS_JSON_PLACEHOLDER", payload.run.get("transcript_ids") or []),
+        # The species split the index column and its bound read (#101's decomposition), and which of
+        # them the embedded per-row detail is for. Both as data: a species name hardcoded in the JS
+        # would outlive the screen that produced it.
+        ("SCREENED_SPECIES_JSON_PLACEHOLDER", payload.run.get("screened_species") or []),
+        ("EMBED_SPECIES_JSON_PLACEHOLDER", EMBED_SPECIES),
+        ("EMBED_SCOPE_JSON_PLACEHOLDER", str(payload.run.get("embed_scope") or "")),
         ("GENE_JSON_PLACEHOLDER", str(payload.run.get("gene_query") or "run")),
         ("REGISTER_NT_PLACEHOLDER", REGISTER_NEIGHBOUR_NT),
     ):
@@ -1194,24 +2018,83 @@ def render_html(payload: ReportPayload) -> str:
 
 
 #: Point classes on the design map, drawn in this order so a passing window is never hidden under a
-#: rejected one. Labels are the legend text.
+#: rejected one. The keys are the report's own verdicts, so the labels are the words the status pills
+#: use rather than a second vocabulary: the dots are re-coloured from each guide's LIVE verdict, and a
+#: legend reading `run PASS, warn threshold exceeded` beside a dot the reader's own threshold decided
+#: would be describing a comparison that no longer happened.
 _MAP_SERIES = (
-    ("fail", "rejected"),
-    ("unknown", "run PASS, gate evidence incomplete"),
-    ("warn", "run PASS, warn threshold exceeded"),
-    ("pass", "PASS, all gates evaluated"),
+    ("fail", "fail"),
+    ("unknown", "not established"),
+    ("warn", "pass, warned"),
+    ("pass", "pass, every gate evaluated"),
 )
+
+#: Windows whose guide is not in this file, so no live verdict exists for them. They keep the colour the
+#: run's own verdict gave them and are drawn underneath everything else, because they are the one class
+#: on the map a moved threshold cannot answer for. Only a capped report has any (payload's
+#: ``_transcript_maps`` plots every candidate row either way, deliberately).
+_NOT_EMBEDDED = "not_embedded"
+
+#: The gap key. Outlined rather than filled: ``transcript_map_svg`` shades an uncovered stretch almost
+#: white, which is invisible as a 9 px swatch, and the fill itself is that primitive's private business.
+_GAPS_KEY = "gaps"
+
+#: The legend, as data, because the client paints it from the counts it just drew. Pre-rendering it in
+#: Python is what froze it at the run's thresholds while every other number on the page went live: on
+#: one internal run, moving one gate to 60 left 39 guides passing and the legend still read
+#: `PASS, all gates evaluated (394)`, byte-identical, over 394 green dots (#103's own failure mode, in
+#: the largest visual on the page). Order is draw order, so a passing dot is never hidden underneath a
+#: rejected one and the windows no live verdict can answer for sit at the bottom.
+_MAP_LEGEND = [
+    {"key": _NOT_EMBEDDED, "label": "not in this file — the run's own verdict", "fill": SERIES_FILL["reference"]},
+    *({"key": key, "label": label, "fill": SERIES_FILL[key]} for key, label in _MAP_SERIES),
+    {"key": _GAPS_KEY, "label": "no candidate in this table", "fill": None},
+]
+
+
+def _guide_index_by_position(payload: ReportPayload) -> dict[str, dict[int, int]]:
+    """``transcript -> position -> index into the embedded guide list``.
+
+    The link the map needs to go live: the payload's point series carry ``(position, value)`` and the
+    class the run's thresholds gave them, but not which guide each dot is. A position on a transcript is
+    one enumerated window, so the guide's own isoform rows -- which carry both -- resolve it exactly.
+    """
+    out: dict[str, dict[int, int]] = {}
+    for i, guide in enumerate(payload.guides):
+        for row in guide.isoforms:
+            position = row.get("position")
+            if position is None:
+                continue
+            out.setdefault(str(row["transcript"]), {})[int(position)] = i
+    return out
+
+
+def _picker_order(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Transcripts in the order the isoform picker should offer them: canonical first.
+
+    A stable sort on one key only. The payload orders these by window count, which is very nearly
+    length, and that opened one internal report on a 7,988 nt transcript with the canonical one tenth --
+    so the map a reader sees first was of an isoform nobody designs against. ``canonical`` is ``None``
+    when the run recorded canonical status nowhere: unknown sorts between known-canonical and
+    known-not, because promoting an unknown over a stated non-canonical would be inventing the fact.
+    """
+    rank = {True: 0, None: 1, False: 2}
+    return sorted(transcripts, key=lambda t: rank[t.get("canonical")])
 
 
 def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
-    """Pre-render one transcript map per transcript, using the shared track primitive.
+    """Pre-render one transcript backdrop per transcript, and hand the client the dots.
 
-    Server-side because the drawing belongs in one place: a notebook figure and this card come out of
-    the same function, so they cannot drift. Only the selection marker is left to the client, because
-    only it depends on which guide is selected.
+    The backdrop -- regions, gridlines, axis, not-enumerated shading -- is drawn server-side by the
+    shared track primitive, so a notebook figure and this card still come out of one function. The
+    **points** are handed over as numbers instead of pixels, because their colour is a verdict: it has
+    to follow the reader's thresholds like every other verdict on the page, and a pre-rendered dot
+    cannot. The client re-draws them into the marker overlay in the geometry returned here, so the two
+    share one coordinate system rather than two copies of a scale.
     """
     out: dict[str, dict[str, Any]] = {}
-    for entry in payload.run.get("transcripts") or []:
+    guide_at = _guide_index_by_position(payload)
+    for entry in _picker_order(payload.run.get("transcripts") or []):
         regions = TranscriptRegions(
             transcript_id=entry["transcript_id"],
             length=entry["length"],
@@ -1223,27 +2106,47 @@ def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
             for key, label in _MAP_SERIES
         ]
         gaps = [(int(a), int(b)) for a, b in entry.get("gaps") or []]
+        title = f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidate windows"
+        value_label = entry.get("value_column") or "composite score"
+        # Drawn twice on purpose: the first call is the only public way to learn the value bounds the
+        # primitive rounds its own gridlines to, and the second draws the same backdrop with those
+        # bounds and no points on it. Re-deriving the rounding here instead would put a second copy of
+        # the y-scale in this file, which is exactly how a dot and its gridline come to disagree.
+        # Both calls pass the same title and value_label: they shift the plot area down, so a geometry
+        # measured without them would put every client-drawn dot 24 px above the axes it belongs to.
+        _, bounds = transcript_map_svg(
+            regions, series, title=title, value_label=value_label, gaps=gaps, standalone=False
+        )
         svg, geometry = transcript_map_svg(
             regions,
-            series,
-            title=f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidate windows",
-            value_label=entry.get("value_column") or "composite score",
+            [],
+            title=title,
+            value_label=value_label,
+            value_range=(bounds.value_min, bounds.value_max),
             gaps=gaps,
             standalone=False,
         )
-        counts = ", ".join(f"{len(s.points):,} {s.label}" for s in reversed(series))
-        note = f"{counts}." + (
-            f" {len(gaps)} stretch(es) of {MIN_UNCOVERED_NT} nt or more carry no candidate in this table."
-            if gaps
-            else ""
-        )
+        here = guide_at.get(regions.transcript_id, {})
+        points = [
+            [int(p), round(float(v), 3), here.get(int(p), -1)]
+            for key, _label in _MAP_SERIES
+            for p, v in entry["series"].get(key, [])
+        ]
         out[regions.transcript_id] = {
             "label": f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidates",
+            "canonical": entry.get("canonical"),
             "svg": svg,
-            "legend": legend_html(series, gaps=bool(gaps)),
+            # ``[position, value, guide index or -1]``. The run's own class is deliberately absent: it
+            # would be a second, frozen verdict for the same dot, and only the guide's live one paints.
+            "points": points,
             "geometry": geometry.as_dict(),
             "viewBox": _view_box(svg),
-            "note": note,
+            "gaps": len(gaps),
+            "gap_note": (
+                f"{len(gaps)} stretch(es) of {MIN_UNCOVERED_NT} nt or more carry no candidate in this table."
+                if gaps
+                else ""
+            ),
         }
     return out
 

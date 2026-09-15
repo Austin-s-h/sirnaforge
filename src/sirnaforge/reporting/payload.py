@@ -9,6 +9,10 @@ transcript it was found on -- median 6 and up to 34 rows on the public 0.7.1 bas
 off-target screening runs once per distinct guide. Joining evidence on ``id`` therefore leaves most
 candidates falsely reading as having zero off-targets, so the guide sequence is the join key and the
 per-transcript rows collapse into an isoform sub-table.
+
+This module also owns **how many guides the report contains**, and every count it publishes is a
+count of those guides: see :data:`DEFAULT_MAX_EMBEDDED_GUIDES` and :func:`_select_embedded`. The cap
+used to live downstream of the counts, so a report advertised a run's totals over a subset of it.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from typing import Any
 import pandas as pd
 
 from sirnaforge.config.run_policy import (
+    SETTING_BY_KEY,
     EntryPoint,
     ResolvedRunPolicy,
     RunPolicyError,
@@ -33,14 +38,18 @@ from sirnaforge.config.run_policy import (
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, hit_class_of, is_annotated
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
+from sirnaforge.models.sirna import FilterCriteria, OffTargetFilterCriteria
 from sirnaforge.reporting.structure import layouts_for
-from sirnaforge.reporting.tracks import transcript_regions, uncovered_stretches
+from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, uncovered_stretches
 
 #: Bump when the payload's shape changes, so a report and the run it describes can never be
 #: silently mismatched. 1.1.0 (#103): per-filter ``evaluable``/``control``/``n_values`` for
 #: client-side re-thresholding and preset views, ``off_target_screened``/``screen_query_id`` on
-#: ``GuideEntry``, and ``register_cluster``/``register_representative`` on isoform rows.
-PAYLOAD_SCHEMA_VERSION = "1.1.0"
+#: ``GuideEntry``, and ``register_cluster``/``register_representative`` on isoform rows. 1.2.0: the
+#: guide cap moved here and is published as counts (``guides_total``/``guides_dropped``/
+#: ``guides_dropped_by_status``); per-filter ``rejects``/``sole_rejects``/``inert``; per-guide
+#: ``liability_by_species``; ``length``/``canonical`` on isoform and transcript rows.
+PAYLOAD_SCHEMA_VERSION = "1.2.0"
 
 #: Hit rows embedded per guide. Everything outside this scope is carried as counts only, which is a
 #: deliberate scope decision (#103), not a limitation -- and a guide with hits only outside it must
@@ -51,6 +60,23 @@ EMBED_MAX_NM = 2
 #: Classes that are a liability. On-target isoforms, orthologues and repeat-mediated hits are
 #: displayed, but never counted as off-targets.
 LIABILITY = frozenset({HitClass.OFF_TARGET, HitClass.UNDETERMINED})
+
+#: Guides one report embeds. A cap is kept because the file is read in a browser and one internal run
+#: of 5,706 guides already renders to 31 MB, but it is applied **here**, above every count the report
+#: prints, and never below them: it used to live in the renderer, so a report headlined 5,706 guides,
+#: pill-counted 5,706 and embedded 5,000 -- and the 706 it silently dropped included 41 guides a reader
+#: could have shipped. Set ``max_guides=None`` to embed the run whole.
+#:
+#: This is the only cap on how many guides a report holds. The renderer's own slice over this list is
+#: gone: while it stood, ``max_guides=None`` was silently truncated again downstream and the counts
+#: published here would over-count the guides the file holds -- the very defect this cap moved to fix.
+DEFAULT_MAX_EMBEDDED_GUIDES = 5000
+
+#: Statuses the cap drops last, in the order it drops them: a ``fail`` guide is one the run and the
+#: report agree to reject, so it is the only kind whose absence costs a reader nothing they could act
+#: on. Anything a reader might ship, or that the report cannot establish either way, outranks it --
+#: which is why the dropped set is chosen by verdict and not by taking the first N of a score sort.
+CAP_DROP_ORDER = ("fail", "unknown", "warn", "pass")
 
 _UNKNOWN_SYMBOL = "unknown"
 
@@ -80,6 +106,10 @@ class GuideEntry:
     offtarget_embedded_scope_empty_but_counts_exist: bool
     liability_count: int
     mirna: list[dict[str, Any]]
+    #: species -> liability alignments in that species, summing to :attr:`liability_count`. The
+    #: all-species number is what ``max_off_target_count`` gates; this is what a reader needs to ask
+    #: whether it would still reject the guide on one species (:func:`_liability_by_species`).
+    liability_by_species: dict[str, int] = field(default_factory=dict)
     #: species -> {nm, seed_mismatches} for the best ortholog alignment. Empty when none was found.
     ortholog: dict[str, dict[str, Any]] = field(default_factory=dict)
     run_verdict: str | None = None
@@ -240,6 +270,28 @@ VERDICT_WARN = 4
 #: Guide statuses, worst first. ``warn`` belongs in the header tally like the rest: counting only
 #: pass/unknown/fail dropped every warn-status guide out of a total that claims to be all of them.
 STATUSES = ("fail", "unknown", "warn", "pass")
+
+
+def _select_embedded(guides: Sequence[GuideEntry], max_guides: int | None) -> tuple[list[GuideEntry], dict[str, int]]:
+    """The guides this report will contain, and what the cap cost, by verdict.
+
+    ``guides`` arrives best-scoring first. What is dropped is chosen by verdict in
+    :data:`CAP_DROP_ORDER` and, within a verdict, worst-scoring first -- so a run larger than the cap
+    loses the guides its own gates rejected before it loses one a reader could ship. Taking the first
+    N of the score sort instead is what dropped 41 pass-warned guides out of one internal report while
+    its header counted them: they cannot be searched, carted or exported, and nothing said so.
+
+    Returns:
+        ``(embedded, dropped_by_status)`` with ``embedded`` still in score order and every status
+        present in the second, zeros included, so a consumer never has to guard a missing key.
+    """
+    empty = dict.fromkeys(STATUSES, 0)
+    if max_guides is None or len(guides) <= max_guides:
+        return list(guides), empty
+    worst_first = sorted(range(len(guides)), key=lambda i: (CAP_DROP_ORDER.index(guides[i].status), -i))
+    dropped = set(worst_first[: len(guides) - max_guides])
+    counts = Counter(guides[i].status for i in dropped)
+    return [g for i, g in enumerate(guides) if i not in dropped], {**empty, **counts}
 
 
 def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
@@ -408,24 +460,167 @@ def reevaluate_gates(
 #: bounds the slider's resolution, never the reachable thresholds.
 CONTROL_STEPS = 50
 
+#: The models a filter threshold is validated on, keyed as ``SettingSpec.model`` names them. Only the
+#: two filter models can carry a gate threshold; the other setting targets hold no gate.
+_SETTING_MODELS: Mapping[str, Any] = {"filters": FilterCriteria, "offtarget_filters": OffTargetFilterCriteria}
 
-def _control_domain(threshold: float, values: Sequence[float]) -> dict[str, float]:
-    """Slider bounds for one filter, from the values this run actually produced.
 
-    Derived from data rather than from the field's declared bound, because the descriptors carry no
-    display range and inventing one per filter is exactly the per-gate special-casing this report
-    avoids. The run's own threshold is always inside the domain and never on its edge, so a reader
-    can always move a control back to where the run left it.
+@dataclass(frozen=True)
+class _DeclaredBounds:
+    """What values one setting is allowed to take, read off its own field metadata.
+
+    Derived from the model rather than from a table in this module, because a hand-written clamp per
+    filter is a second declaration of the same fact and drifts from the first. ``exclusive`` records a
+    ``gt``/``lt`` bound, so a slider edge lands one step inside a limit the model would reject rather
+    than on it.
+    """
+
+    low: float | None = None
+    high: float | None = None
+    low_exclusive: bool = False
+    high_exclusive: bool = False
+
+    def clamp(self, value: float, *, upper: bool, step: float) -> float:
+        """``value`` pulled inside the declared bound on one side, if the model declares one."""
+        limit = self.high if upper else self.low
+        if limit is None:
+            return value
+        if self.high_exclusive if upper else self.low_exclusive:
+            limit = limit - step if upper else limit + step
+        return min(value, limit) if upper else max(value, limit)
+
+
+def _declared_bounds(setting_key: str) -> _DeclaredBounds:
+    """The declared range of the setting a gate's threshold lives on, or an empty one if it has none."""
+    spec = SETTING_BY_KEY.get(setting_key)
+    model = _SETTING_MODELS.get(spec.model) if spec is not None else None
+    field_info = model.model_fields.get(spec.field) if model is not None and spec is not None else None
+    if field_info is None:
+        return _DeclaredBounds()
+    bounds = _DeclaredBounds()
+    for meta in field_info.metadata:
+        for name, exclusive in (("ge", False), ("gt", True)):
+            limit = getattr(meta, name, None)
+            if limit is not None and (bounds.low is None or float(limit) > bounds.low):
+                bounds = _DeclaredBounds(float(limit), bounds.high, exclusive, bounds.high_exclusive)
+        for name, exclusive in (("le", False), ("lt", True)):
+            limit = getattr(meta, name, None)
+            if limit is not None and (bounds.high is None or float(limit) < bounds.high):
+                bounds = _DeclaredBounds(bounds.low, float(limit), bounds.low_exclusive, exclusive)
+    return bounds
+
+
+def _snap(value: float, step: float, *, up: bool) -> float:
+    """``value`` moved outward onto the step grid, so every slider position is a legible number.
+
+    Unsnapped bounds were the defect: ``gc_content_min`` opened at 27.804348 with a step of 0.1, so
+    every drag landed on ...704348, a reader could not reach 40, and 39.704348 is the number that ended
+    up in the URL fragment and in the cart TSV's ``reader_threshold``.
+    """
+    scaled = value / step
+    grid = math.ceil(round(scaled, 9)) if up else math.floor(round(scaled, 9))
+    return round(grid * step, 9)
+
+
+def _control_domain(threshold: float, values: Sequence[float], bounds: _DeclaredBounds) -> dict[str, Any]:
+    """Slider bounds for one filter: this run's own values, snapped to the grid and inside the model's.
+
+    The span comes from the data because the descriptors carry no display range, and a domain wider
+    than the run's values spends its travel where no verdict changes. Two rules keep it honest:
+
+    * Bounds are snapped to the step, so the grid contains round numbers a reader means to type.
+    * Bounds are clamped to the setting's **own** declared range. Padding an observed minimum by 5% is
+      what published "at most -59 off-targets" on a ``ge 0``, count-valued gate -- a threshold that
+      fails every guide and that the pipeline would refuse -- and it is what locked
+      ``min_empirical_score`` to 0.39-0.61 either side of a range whose declared limits, 0.4 and 0.6,
+      are exactly the two verdict-changing extremes. Clamping never crosses an observed value or the
+      run's own threshold, so every measurement this run produced stays reachable, and the run's
+      threshold sits on an edge only when the run set it at the setting's own limit.
+
+    The declared range itself is published beside the control, not inside it: it is a property of the
+    setting, and the slider is one of several things that read it.
     """
     lo, hi = min([*values, threshold]), max([*values, threshold])
     integral = all(float(v).is_integer() for v in [*values, threshold])
     span = hi - lo
     pad = max(span * 0.05, 1e-6) if span else (1.0 if integral else max(abs(hi) * 0.1, 0.1))
-    lo, hi = lo - pad, hi + pad
-    if integral:
-        return {"min": math.floor(lo), "max": math.ceil(hi), "step": 1}
-    step = 10 ** math.floor(math.log10((hi - lo) / CONTROL_STEPS))
-    return {"min": round(lo, 6), "max": round(hi, 6), "step": step}
+    step = 1.0 if integral else 10 ** math.floor(math.log10((span + 2 * pad) / CONTROL_STEPS))
+    low = min(bounds.clamp(_snap(lo - pad, step, up=False), upper=False, step=step), lo)
+    high = max(bounds.clamp(_snap(hi + pad, step, up=True), upper=True, step=step), hi)
+    return {
+        "min": int(low) if integral else round(low, 6),
+        "max": int(math.ceil(high)) if integral else round(high, 6),
+        "step": int(step) if integral else step,
+    }
+
+
+@dataclass(frozen=True)
+class _GateEffect:
+    """What one gate actually did to the guides this report embedded.
+
+    Seventeen sliders with no indication of which of them decided anything is the panel the audit
+    found: over one internal run five gates reject at all, two of the seventeen account for 1,765 of
+    the rejections, and two more are inert by construction. ``sole`` is the number that ranks them --
+    a guide rejected by one gate alone is a guide that gate is solely responsible for losing.
+    """
+
+    rejects: int = 0
+    sole_rejects: int = 0
+    warns: int = 0
+    unknowns: int = 0
+
+    @property
+    def decides_nothing(self) -> bool:
+        """No embedded guide is failed or flagged by this gate at the run's own threshold."""
+        return not self.rejects and not self.warns
+
+
+def _gate_effects(guides: Sequence[GuideEntry], n_filters: int) -> list[_GateEffect]:
+    """Per-filter reject/sole-reject/warn/unknown tallies over the embedded guides, in filter order."""
+    fail_code = _VERDICT_CODE[FilterEvaluation.FAIL.value]
+    unknown_code = _VERDICT_CODE[FilterEvaluation.UNKNOWN.value]
+    rejects, sole, warns, unknowns = ([0] * n_filters for _ in range(4))
+    for guide in guides:
+        failed = [i for i, gate in enumerate(guide.gates) if gate[1] == fail_code]
+        for i in failed:
+            rejects[i] += 1
+        if len(failed) == 1:
+            sole[failed[0]] += 1
+        for i, gate in enumerate(guide.gates):
+            if gate[1] == VERDICT_WARN:
+                warns[i] += 1
+            elif gate[1] == unknown_code:
+                unknowns[i] += 1
+    return [_GateEffect(*counts) for counts in zip(rejects, sole, warns, unknowns, strict=True)]
+
+
+def _inert_reason(descriptor: Any, effect: _GateEffect, bounds: _DeclaredBounds, setting_key: str) -> str | None:
+    """Why this gate decided nothing in this run, or None when it decided something.
+
+    Two different inertnesses, and the second is the one worth acting on: a gate that happens to reject
+    nobody here, and a gate that *cannot* reject anybody because its threshold sits on the limit its own
+    setting declares. ``min_empirical_score`` is the live case -- a ``ge`` floor at 0.4 against a
+    declared range of 0.4-0.6 -- and the report said nothing about it while giving it a slider as
+    prominent as the two gates that decided 1,765 rejections.
+    """
+    if not effect.decides_nothing:
+        return None
+    floor = descriptor.comparator in (FilterComparator.GE, FilterComparator.GT)
+    limit = bounds.low if floor else bounds.high
+    # Only a non-strict comparator is inert *at* its limit: ``gt``/``lt`` still reject the limit value.
+    at_limit = (
+        limit is not None
+        and descriptor.threshold is not None
+        and descriptor.comparator in (FilterComparator.GE, FilterComparator.LE)
+        and float(limit) == float(descriptor.threshold)
+    )
+    reason = "no guide embedded in this report is failed or flagged by this gate at the run's own threshold"
+    if at_limit:
+        reason += (
+            f"; its threshold is {setting_key}'s own declared "
+            f"{'minimum' if floor else 'maximum'} of {limit}, so no permitted value can fail it"
+        )
+    return reason
 
 
 def _filter_view(
@@ -435,6 +630,7 @@ def _filter_view(
     gates: Sequence[Sequence[Any]],
     setting_key: str,
     definition: str,
+    effect: _GateEffect,
 ) -> dict[str, Any]:
     """One filter as the report carries it: the descriptor, plus whether a reader may re-threshold it.
 
@@ -452,6 +648,11 @@ def _filter_view(
     ``not_evaluated`` -- the values are real, so the test passed, while every row freezes on its reason
     code and nothing a reader does to that control can decide anything (#103). ``n_values`` still counts
     the measurements, because they were measured; it is the deciding that never happened.
+
+    ``rejects``/``sole_rejects``/``warns``/``unknowns`` say what the gate *did* at the run's own
+    threshold, and ``inert`` says it decided nothing, so a panel of seventeen equal-looking sliders can
+    be ranked by which of them the run's verdicts actually turned on. All four count the guides this
+    report embedded, not the run's -- see :func:`_select_embedded`.
     """
     observed = [value for value, _verdict, _reason in gates if value is not None]
     decided = sum(1 for _value, _verdict, reason in gates if reason == REASON_OK)
@@ -469,6 +670,7 @@ def _filter_view(
             f"{column} is exported, but the run evaluated this gate for none of the {len(gates)} guides "
             "in this run, so no threshold can decide it"
         )
+    bounds = _declared_bounds(setting_key)
     return {
         **descriptor.model_dump(mode="json"),
         "setting_key": setting_key,
@@ -477,8 +679,19 @@ def _filter_view(
         "read_column": column,
         "evaluable": reason is None,
         "unevaluable_reason": reason,
-        "control": None if reason is not None else _control_domain(descriptor.threshold, observed),
+        "control": None if reason is not None else _control_domain(descriptor.threshold, observed, bounds),
         "n_values": len(observed),
+        # The setting's own declared limits, or None where the model states none. Beside the control
+        # rather than in it: a consumer refusing a typed threshold the pipeline would reject needs these
+        # even for a gate that has no slider.
+        "bound_min": bounds.low,
+        "bound_max": bounds.high,
+        "rejects": effect.rejects,
+        "sole_rejects": effect.sole_rejects,
+        "warns": effect.warns,
+        "unknowns": effect.unknowns,
+        "inert": reason is None and effect.decides_nothing,
+        "inert_reason": None if reason is not None else _inert_reason(descriptor, effect, bounds, setting_key),
     }
 
 
@@ -508,6 +721,93 @@ def _run_verdict(rows: pd.DataFrame) -> str | None:
     if not labels:
         return None
     return "PASS" if "PASS" in labels else labels[0]
+
+
+def _liability_by_species(hits: pd.DataFrame) -> dict[str, int]:
+    """Liability alignments per species -- the decomposition the headline number hides.
+
+    Half of every liability total on a multi-species run is non-human: 92,658 human against 91,536
+    mouse, 25,243 macaque and 23,427 rat on one internal run of 232,864 alignments. That matters
+    because ``max_off_target_count`` is scoped to *all* species and rejected 3,317 of that run's guides,
+    782 of them on nothing else -- and 458 of those 782 pass the same ceiling on human liabilities
+    alone, against 448 total passes in the whole report. Which number a consumer reads therefore decides
+    whether it agrees with the run, so both are published and neither is called *the* liability count.
+
+    Derived from the published hit table, not from the candidate row: the row's ``off_target_count`` is
+    all-species, and the ``*_query`` counters #101 added (``total_offtarget_hits_query``,
+    ``transcriptome_hits_{0,1,2}mm_query``, ``mirna_hits_0mm_seed_query``, ``mirna_hits_high_risk_query``
+    -- all carried in ``metrics`` now) decompose the *stratified* gate inputs and the query species
+    only. Neither gives a per-species split of the genuine-liability count, and no other species is
+    named anywhere on the row.
+
+    A hit whose species cell is blank is counted as ``query``, matching :func:`_offtarget_views`.
+    """
+    if hits.empty or "_class" not in hits.columns:
+        return {}
+    liabilities = hits[hits["_class"].isin({c.value for c in LIABILITY})]
+    if liabilities.empty:
+        return {}
+    if "species" not in liabilities.columns:
+        return {"query": int(len(liabilities))}
+    labels = liabilities["species"].astype(str).str.strip()
+    labels = labels.mask(labels.eq("") | labels.eq("nan"), "query")
+    return {str(species): int(n) for species, n in sorted(labels.value_counts().items())}
+
+
+@dataclass(frozen=True)
+class _TranscriptFacts:
+    """What the run itself recorded about its transcripts, for ordering and labelling the isoform picker.
+
+    The picker is ordered by how many candidate windows a transcript carries, which is length in
+    disguise: on one internal run it opened on a 7,988 nt transcript with the canonical one tenth in the
+    list. Ordering it properly needs two facts the payload did not carry -- length, and which transcript
+    is canonical -- and the second one is a fact only the run can supply. Canonical status is read from
+    the FASTA the workflow writes (``transcripts/<gene>_canonical.fasta``, or a ``canonical:true``
+    header) and is ``None`` for every transcript when the run wrote no such file: unknown, never
+    inferred from sequence presence or from being the longest.
+    """
+
+    lengths: Mapping[str, int] = field(default_factory=dict)
+    canonical_ids: frozenset[str] = frozenset()
+    #: Which file said so, or None when this run recorded canonical status nowhere.
+    source: str | None = None
+
+    def length(self, transcript: str) -> int | None:
+        """Transcript length as the run recorded it, or None."""
+        return self.lengths.get(transcript)
+
+    def canonical(self, transcript: str) -> bool | None:
+        """True/False when the run recorded canonical status, None when it recorded none at all."""
+        return None if self.source is None else transcript in self.canonical_ids
+
+
+def _transcript_facts(run_dir: Path, regions: Mapping[str, TranscriptRegions]) -> _TranscriptFacts:
+    """Transcript lengths and canonical ids, from the run's own ORF report and transcript FASTAs."""
+    lengths = {tid: r.length for tid, r in regions.items()}
+    canonical: set[str] = set()
+    sources: list[str] = []
+    for path in sorted(run_dir.glob("**/transcripts/*.fasta")):
+        by_filename = path.name.endswith("_canonical.fasta")
+        named_here = False
+        with path.open() as handle:
+            for line in handle:
+                if not line.startswith(">"):
+                    continue
+                header = line[1:].strip()
+                fields = header.split()
+                if not fields:
+                    continue
+                transcript = fields[0]
+                stated = next((f.split(":", 1)[1] for f in fields if f.startswith("length:")), None)
+                declared = _num(stated)
+                if declared is not None and transcript not in lengths:
+                    lengths[transcript] = int(declared)
+                if by_filename or "canonical:true" in header.lower():
+                    canonical.add(transcript)
+                    named_here = True
+        if named_here or by_filename:
+            sources.append(path.name)
+    return _TranscriptFacts(lengths, frozenset(canonical), ", ".join(sources) or None)
 
 
 def _scope_label(descriptor: Any) -> str:
@@ -544,10 +844,15 @@ def _verdict_agreement(candidates: pd.DataFrame, guides: list[GuideEntry]) -> di
     Published in the report header, because a reader has no other way to tell whether the gate panel
     agrees with the pipeline. The asymmetry is the point: the report must never contradict a run PASS,
     while a run failure it cannot re-derive is reported ``unknown`` rather than quietly flipped.
+
+    Every count here is over the guides the report **embedded**. Comparing against the run's whole
+    candidate table published "0/1424 run PASS contradicted" from a report holding 1,383 of those 1,424
+    guides: a coverage claim over 41 guides the reader cannot open.
     """
     if "passes_filters" not in candidates.columns:
         return {"comparable": False, "reason": "the run exports no passes_filters column"}
-    run_pass = set(candidates.loc[candidates["passes_filters"] == "PASS", "_guide"])
+    embedded = {g.guide for g in guides}
+    run_pass = set(candidates.loc[candidates["passes_filters"] == "PASS", "_guide"]) & embedded
     by_status = {g.guide: g.status for g in guides}
     contradicted = sorted(g for g in run_pass if by_status.get(g) == "fail")
     not_rederivable = sorted(g for g, s in by_status.items() if s == "unknown" and g not in run_pass)
@@ -655,13 +960,24 @@ def _has_transcript_context(manifest: Mapping[str, Any], caveats: list[str]) -> 
     return False
 
 
-def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = None) -> ReportPayload:
+def build_payload(
+    run_dir: Path | str,
+    *,
+    policy: ResolvedRunPolicy | None = None,
+    max_guides: int | None = DEFAULT_MAX_EMBEDDED_GUIDES,
+) -> ReportPayload:
     """Build the payload for a finished run directory.
+
+    Every count in ``run`` describes the guides this payload **contains**, and ``guides_total`` /
+    ``guides_dropped`` / ``guides_dropped_by_status`` say what a cap cost. That is the whole point of
+    capping here rather than downstream: the counts and the guides cannot disagree.
 
     Args:
         run_dir: A completed output directory. No live pipeline state is required.
         policy: Resolved policy supplying the gate descriptors. Read from the run's own
             ``manifest.json`` when omitted.
+        max_guides: Guides to embed, worst verdicts dropped first
+            (:data:`DEFAULT_MAX_EMBEDDED_GUIDES`). ``None`` embeds the run whole.
 
     Returns:
         A :class:`ReportPayload`.
@@ -710,6 +1026,8 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
     gate_columns = [observed_column(d, populated) for d in descriptors]
     register = _register_index(candidates)
     clusters = _register_clusters(candidates)
+    regions = transcript_regions(run_dir) if transcript_context else {}
+    facts = _transcript_facts(run_dir, regions) if transcript_context else _TranscriptFacts()
     guides: list[GuideEntry] = []
 
     # Sorted so `best` is the guide's best-scoring enumeration rather than whichever row the CSV
@@ -728,32 +1046,67 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
                 mirna=mirna_by_guide.get(guide, pd.DataFrame()),
                 register=register,
                 clusters=clusters,
+                facts=facts,
                 transcript_context=transcript_context,
             )
         )
 
     guides.sort(key=lambda g: (-(g.composite_score or g.design_score or -1), g.guide))
 
-    undeclared = sorted({g.run_verdict for g in guides if g.undeclared_run_rejection if g.run_verdict})
+    # From here on `embedded` is the report. `guides` stays available for the design map, which plots
+    # every candidate row whether or not its guide fits, and for the cap's own arithmetic.
+    embedded, dropped_by_status = _select_embedded(guides, max_guides)
+    n_dropped = len(guides) - len(embedded)
+    if n_dropped:
+        lost = ", ".join(f"{n} {s}" for s, n in dropped_by_status.items() if n)
+        shippable = sum(n for s, n in dropped_by_status.items() if s != "fail")
+        caveats.append(
+            f"this report embeds {len(embedded)} of the run's {len(guides)} guides, and every count in it "
+            f"-- header, pills, gate tallies and the agreement line -- counts those {len(embedded)}; the "
+            f"{n_dropped} not embedded ({lost}) are the lowest-scoring of their verdict"
+            + (
+                f", including {shippable} a reader might have acted on: raise max_guides to see them"
+                if shippable
+                else ""
+            )
+        )
+
+    undeclared = sorted({g.run_verdict for g in embedded if g.undeclared_run_rejection if g.run_verdict})
     if undeclared:
         caveats.append(
-            f"{sum(1 for g in guides if g.undeclared_run_rejection)} guides were rejected by the run as "
+            f"{sum(1 for g in embedded if g.undeclared_run_rejection)} guides were rejected by the run as "
             f"{', '.join(undeclared)}, which no declared gate expresses; they are reported not "
             "established rather than clean"
         )
 
-    n_liab = sum(g.liability_count for g in guides)
-    agreement = _verdict_agreement(candidates, guides)
+    # Read off the hit table rather than summed over guides, so it stays a run-wide alignment count in
+    # the same scope as `hit_rows` even when the cap dropped guides that carried some of those rows.
+    n_liab = int(hits["_class"].isin({c.value for c in LIABILITY}).sum()) if not hits.empty else 0
+    effects = _gate_effects(embedded, len(panel.filters))
+    agreement = _verdict_agreement(candidates, embedded)
     run = {
-        "candidate_rows": int(len(candidates)),
-        "guides": len(guides),
+        "candidate_rows": sum(g.n_rows for g in embedded),
+        "candidate_rows_total": int(len(candidates)),
+        "guides": len(embedded),
+        "guides_total": len(guides),
+        "guides_dropped": n_dropped,
+        "guides_dropped_by_status": dropped_by_status,
+        "guide_embed_limit": max_guides,
         "hit_rows": int(len(hits)),
         "liability_rows": n_liab,
         "non_liability_rows": int(len(hits)) - n_liab,
+        # Run-wide, and roughly half non-human on a four-species screen. Published because the gate that
+        # rejects the most guides counts every species at once; see _liability_by_species.
+        "liability_rows_by_species": _liability_by_species(hits),
+        "screened_species": sorted(
+            {s for s in hits["species"].astype(str).str.strip().unique() if s and s != "nan"}
+            if not hits.empty and "species" in hits.columns
+            else set()
+        ),
         "mirna_rows": int(len(mirna)),
         "embed_scope": f"{EMBED_SPECIES}, nm<={EMBED_MAX_NM}",
         "gene_query": _gene_query(manifest, candidates),
-        "status_counts": {s: sum(1 for g in guides if g.status == s) for s in STATUSES},
+        "status_counts": {s: sum(1 for g in embedded if g.status == s) for s in STATUSES},
         "agreement": agreement,
         # The isoform-coverage denominator. Every transcript the design step enumerated on, which is
         # not the same as the transcripts the map can plot -- a transcript can be present with no
@@ -761,10 +1114,14 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
         "transcript_ids": sorted(candidates["transcript_id"].dropna().astype(str).unique())
         if transcript_context and "transcript_id" in candidates.columns
         else [],
-        "transcripts": _transcript_maps(candidates, guides, run_dir, caveats) if transcript_context else [],
+        "canonical_transcript_ids": sorted(facts.canonical_ids),
+        # None means this run recorded canonical status nowhere, so every `canonical` field is unknown
+        # rather than false. Nothing here guesses it from length or from sequence presence.
+        "canonical_source": facts.source,
+        "transcripts": _transcript_maps(candidates, guides, regions, facts, caveats) if transcript_context else [],
         # Keyed by dot-bracket and computed once per distinct structure, which is what makes the
         # layouts small enough to embed: 40,079 candidates carry 1,333 distinct structures.
-        "structure_layouts": layouts_for(g.structure for g in guides),
+        "structure_layouts": layouts_for(g.structure for g in embedded),
     }
     return ReportPayload(
         schema_version=PAYLOAD_SCHEMA_VERSION,
@@ -773,13 +1130,14 @@ def build_payload(run_dir: Path | str, *, policy: ResolvedRunPolicy | None = Non
             _filter_view(
                 f.descriptor,
                 column=column,
-                gates=[g.gates[i] for g in guides],
+                gates=[g.gates[i] for g in embedded],
                 setting_key=f.setting_key,
                 definition=f.definition,
+                effect=effects[i],
             )
             for i, (f, column) in enumerate(zip(panel.filters, gate_columns, strict=True))
         ],
-        guides=guides,
+        guides=embedded,
         provenance={
             "run_dir": str(run_dir),
             "candidates_csv": str(candidates_csv.relative_to(run_dir)),
@@ -806,13 +1164,25 @@ _MAP_VALUE_COLUMNS = ("composite_score", "design_score")
 
 
 def _transcript_maps(
-    candidates: pd.DataFrame, guides: list[GuideEntry], run_dir: Path, caveats: list[str]
+    candidates: pd.DataFrame,
+    guides: list[GuideEntry],
+    regions: Mapping[str, TranscriptRegions],
+    facts: _TranscriptFacts,
+    caveats: list[str],
 ) -> list[dict[str, Any]]:
     """Per-transcript position series for the design map, most-enumerated transcript first.
 
     A row the run rejected is plotted as a rejection; every other row carries its guide's report
     status, so a window the report cannot establish is not drawn as passing. Regions come from the
     run's ORF report; a transcript missing from it still gets a map, without a region bar.
+
+    ``canonical`` rides along because the isoform picker is built from this list in the order it is
+    given, and window count -- which is length -- is the wrong first key: it opened one internal report
+    on a 7,988 nt transcript with the canonical one in tenth place. The order here is unchanged; the
+    fact a consumer needs to reorder it is now present.
+
+    Statuses are read from **all** the run's guides, not only the embedded ones, because every candidate
+    row is plotted either way: dropping a guide from the payload must not recolour its windows.
     """
     required = {"position", "transcript_id", "passes_filters"}
     missing = sorted(required - set(candidates.columns))
@@ -824,7 +1194,6 @@ def _transcript_maps(
         caveats.append(f"no design map: this run exports none of {', '.join(_MAP_VALUE_COLUMNS)}")
         return []
 
-    regions = transcript_regions(run_dir)
     if not regions:
         caveats.append("no ORF report in this run, so the design map cannot label CDS and UTR")
 
@@ -854,6 +1223,8 @@ def _transcript_maps(
             {
                 "transcript_id": str(tid),
                 "length": int(length),
+                "length_stated": facts.length(str(tid)) is not None,
+                "canonical": facts.canonical(str(tid)),
                 "cds_start": region.cds_start if region else None,
                 "cds_end": region.cds_end if region else None,
                 "windows": int(len(group)),
@@ -884,12 +1255,13 @@ def _build_guide(
     mirna: pd.DataFrame,
     register: dict[str, list[int]],
     clusters: dict[str, dict[str, Any]],
+    facts: _TranscriptFacts,
     transcript_context: bool = True,
 ) -> GuideEntry:
     gates = [list(_evaluate(d, best, c)) for d, c in zip(descriptors, gate_columns, strict=True)]
 
     # No transcript context means no enumeration to report; see _has_transcript_context.
-    isoforms = _isoform_table(rows, register, clusters) if transcript_context else []
+    isoforms = _isoform_table(rows, register, clusters, facts) if transcript_context else []
     by_symbol, matrix, embedded, liability = _offtarget_views(hits)
 
     counts_exist = bool(len(hits)) and not embedded
@@ -923,6 +1295,18 @@ def _build_guide(
                 "undetermined_hits",
                 "transcriptome_hits_total",
                 "mirna_hits_0mm_seed",
+                # The query-species gate inputs #101 added and nothing surfaced. They are the only
+                # species decomposition the candidate row carries, they are what the human-stratified
+                # gates compared, and a reader asking "would this guide pass on one species?" was
+                # reading the all-species columns above instead. Absent from an older run's CSV, which
+                # is why every key here is conditional (see _liability_by_species for the rest).
+                "total_offtarget_hits_query",
+                "transcriptome_hits_0mm_query",
+                "transcriptome_hits_1mm_query",
+                "transcriptome_hits_2mm_query",
+                "transcriptome_hits_seed_0mm",
+                "mirna_hits_0mm_seed_query",
+                "mirna_hits_high_risk_query",
             )
             if k in best.index
         },
@@ -933,6 +1317,7 @@ def _build_guide(
         offtarget_rows=embedded,
         offtarget_embedded_scope_empty_but_counts_exist=counts_exist,
         liability_count=liability,
+        liability_by_species=_liability_by_species(hits),
         mirna=_mirna_table(mirna),
         ortholog=_ortholog_conservation(hits),
     )
@@ -1005,7 +1390,10 @@ def _flush_cluster(tx: str, members: list[tuple[int, str, float]], out: dict[str
 
 
 def _isoform_table(
-    rows: pd.DataFrame, register: dict[str, list[int]], clusters: dict[str, dict[str, Any]]
+    rows: pd.DataFrame,
+    register: dict[str, list[int]],
+    clusters: dict[str, dict[str, Any]],
+    facts: _TranscriptFacts,
 ) -> list[dict[str, Any]]:
     """One entry per transcript the guide was enumerated on, flagging register neighbours.
 
@@ -1020,6 +1408,10 @@ def _isoform_table(
     *knockdown* for the same pair is 1.27x. And it is not the strongest case in that set -- the pair
     at 2733/2735 differs 1.97x in fraction remaining. Neither number belongs in a card that ships
     with the tool and is read against targets that set says nothing about.
+
+    ``length`` and ``canonical`` travel with each row so a consumer can order these by canonical, then
+    length, instead of by whichever transcript happens to carry the most windows. ``canonical`` is
+    ``None`` when the run recorded no canonical status at all -- see :class:`_TranscriptFacts`.
     """
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
@@ -1039,6 +1431,8 @@ def _isoform_table(
                 "candidate_id": cid,
                 "transcript": tx,
                 "position": pos,
+                "length": facts.length(tx),
+                "canonical": facts.canonical(tx),
                 "register_neighbours": sorted(neighbours),
                 "register_cluster": cluster["register_cluster"],
                 "register_representative": cluster["register_representative"],
