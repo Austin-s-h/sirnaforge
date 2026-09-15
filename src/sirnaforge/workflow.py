@@ -300,6 +300,36 @@ def screening_run_status(*, status: str, reason: str = "", required_evidence_mis
     return RunStatus.INCOMPLETE
 
 
+class CandidateTablePaths(NamedTuple):
+    """Where a run's candidate tables and manifest live, named once for both entry points.
+
+    ``step6_generate_reports`` and :meth:`SiRNAWorkflow.write_offtarget_only_exports` publish the same
+    six files into the same ``sirnaforge/`` sub-directory, which is what lets ``sirnaforge report
+    <output_dir>`` read either kind of run with no special case.
+    """
+
+    all_csv: Path
+    pass_csv: Path
+    pass_fasta: Path
+    qualified_csv: Path
+    qualified_fasta: Path
+    provisional_csv: Path
+    manifest_json: Path
+
+    @classmethod
+    def under(cls, base: Path) -> CandidateTablePaths:
+        """The table paths under one run's ``sirnaforge/`` directory."""
+        return cls(
+            all_csv=base / "candidates_all.csv",
+            pass_csv=base / "candidates_pass.csv",
+            pass_fasta=base / "candidates_pass.fasta",
+            qualified_csv=base / "candidates_qualified.csv",
+            qualified_fasta=base / "candidates_qualified.fasta",
+            provisional_csv=base / "candidates_provisional.csv",
+            manifest_json=base / "manifest.json",
+        )
+
+
 class OffTargetGateCounts(NamedTuple):
     """The counts the off-target gates compare, in the order ``_check_offtarget_filters`` reads them.
 
@@ -1538,36 +1568,11 @@ class SiRNAWorkflow:
             self._apply_modifications_to_results(design_results)
 
         base = self.config.output_dir / "sirnaforge"
-        all_csv = base / "candidates_all.csv"
-        pass_csv = base / "candidates_pass.csv"
-        pass_fasta = base / "candidates_pass.fasta"
-        qualified_csv = base / "candidates_qualified.csv"
-        qualified_fasta = base / "candidates_qualified.fasta"
-        provisional_csv = base / "candidates_provisional.csv"
+        tables = CandidateTablePaths.under(base)
         report_file = self.config.output_dir / "orf_reports" / "orf_validation.txt"
 
         try:
-            validated_all = self._build_candidate_frame(design_results.candidates)
-            pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
-
-            validated_all.to_csv(all_csv, index=False)
-            pass_df.to_csv(pass_csv, index=False)
-
-            if pass_df.empty:
-                pass_fasta.unlink(missing_ok=True)
-            else:
-                try:
-                    self._write_pass_candidates_fasta(pass_df, pass_fasta)
-                except Exception as e:
-                    logger.warning(f"Failed to write PASS candidates FASTA: {e}")
-
-            self._write_selection_exports(
-                validated_all,
-                qualified_csv=qualified_csv,
-                qualified_fasta=qualified_fasta,
-                provisional_csv=provisional_csv,
-            )
-
+            self._write_candidate_tables(design_results.candidates, tables)
         except Exception as e:  # Do not fail workflow for reporting extras
             logger.warning(f"Failed to write all/pass CSVs: {e}")
 
@@ -1577,17 +1582,17 @@ class SiRNAWorkflow:
         except Exception as e:
             logger.warning(f"Failed to write candidate variant links: {e}")
 
-        manifest_path = base / "manifest.json"
+        manifest_path = tables.manifest_json
         report_html_path = base / "report.html"
         try:
             manifest = self._build_fair_manifest(
-                all_csv=all_csv,
-                pass_csv=pass_csv,
-                pass_fasta=pass_fasta,
+                all_csv=tables.all_csv,
+                pass_csv=tables.pass_csv,
+                pass_fasta=tables.pass_fasta,
                 orf_report=report_file,
-                qualified_csv=qualified_csv,
-                qualified_fasta=qualified_fasta,
-                provisional_csv=provisional_csv,
+                qualified_csv=tables.qualified_csv,
+                qualified_fasta=tables.qualified_fasta,
+                provisional_csv=tables.provisional_csv,
                 report_html=report_html_path,
             )
             with manifest_path.open("w") as mf:
@@ -1637,13 +1642,13 @@ class SiRNAWorkflow:
         # is deliberately absent when no candidate passed.
         if report_file.exists():
             console.print("   - ORF validation report: orf_reports/")
-        if all_csv.exists() or pass_csv.exists():
+        if tables.all_csv.exists() or tables.pass_csv.exists():
             console.print("   - siRNA candidate CSVs: sirnaforge/ (candidates_all.csv, candidates_pass.csv)")
-        if pass_fasta.exists():
+        if tables.pass_fasta.exists():
             console.print("   - siRNA candidate FASTA: sirnaforge/ (candidates_pass.fasta)")
         # The selection exports are #100's, and they get the same treatment: a qualified run with nothing
         # eligible writes no qualified file, and saying otherwise would advertise an empty shortlist.
-        if qualified_csv.exists() or qualified_fasta.exists() or provisional_csv.exists():
+        if tables.qualified_csv.exists() or tables.qualified_fasta.exists() or tables.provisional_csv.exists():
             console.print(
                 "   - Selection exports: sirnaforge/ (candidates_qualified.csv/.fasta, candidates_provisional.csv)"
             )
@@ -2795,6 +2800,34 @@ class SiRNAWorkflow:
             },
         }
 
+    def _write_candidate_tables(self, candidates: Sequence[SiRNACandidate], tables: CandidateTablePaths) -> None:
+        """Write the four candidate tables and the PASS/qualified FASTAs from one candidate frame.
+
+        Error-neutral on purpose: ``step6_generate_reports`` must never fail a run over a reporting
+        extra and wraps this call, while ``write_offtarget_only_exports`` lets it raise, because for
+        that entry point these tables ARE the deliverable.
+        """
+        validated_all = self._build_candidate_frame(candidates)
+        pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
+
+        validated_all.to_csv(tables.all_csv, index=False)
+        pass_df.to_csv(tables.pass_csv, index=False)
+
+        if pass_df.empty:
+            tables.pass_fasta.unlink(missing_ok=True)
+        else:
+            try:
+                self._write_pass_candidates_fasta(pass_df, tables.pass_fasta)
+            except Exception as e:
+                logger.warning(f"Failed to write PASS candidates FASTA: {e}")
+
+        self._write_selection_exports(
+            validated_all,
+            qualified_csv=tables.qualified_csv,
+            qualified_fasta=tables.qualified_fasta,
+            provisional_csv=tables.provisional_csv,
+        )
+
     def write_offtarget_only_exports(self, candidates: Sequence[SiRNACandidate]) -> dict[str, str]:
         """Publish the candidate tables and the manifest for a run of pre-designed guides (#100).
 
@@ -2816,52 +2849,29 @@ class SiRNAWorkflow:
         """
         base = self.config.output_dir / "sirnaforge"
         base.mkdir(parents=True, exist_ok=True)
-        all_csv = base / "candidates_all.csv"
-        pass_csv = base / "candidates_pass.csv"
-        pass_fasta = base / "candidates_pass.fasta"
-        qualified_csv = base / "candidates_qualified.csv"
-        qualified_fasta = base / "candidates_qualified.fasta"
-        provisional_csv = base / "candidates_provisional.csv"
-        manifest_path = base / "manifest.json"
+        tables = CandidateTablePaths.under(base)
 
-        validated_all = self._build_candidate_frame(candidates)
-        pass_df = validated_all[validated_all["passes_filters"] == "PASS"].copy()
-        validated_all.to_csv(all_csv, index=False)
-        pass_df.to_csv(pass_csv, index=False)
-        if pass_df.empty:
-            pass_fasta.unlink(missing_ok=True)
-        else:
-            try:
-                self._write_pass_candidates_fasta(pass_df, pass_fasta)
-            except Exception as e:
-                logger.warning(f"Failed to write PASS candidates FASTA: {e}")
-
-        self._write_selection_exports(
-            validated_all,
-            qualified_csv=qualified_csv,
-            qualified_fasta=qualified_fasta,
-            provisional_csv=provisional_csv,
-        )
+        self._write_candidate_tables(candidates, tables)
 
         manifest = self._build_fair_manifest(
-            all_csv=all_csv,
-            pass_csv=pass_csv,
-            pass_fasta=pass_fasta,
-            qualified_csv=qualified_csv,
-            qualified_fasta=qualified_fasta,
-            provisional_csv=provisional_csv,
+            all_csv=tables.all_csv,
+            pass_csv=tables.pass_csv,
+            pass_fasta=tables.pass_fasta,
+            qualified_csv=tables.qualified_csv,
+            qualified_fasta=tables.qualified_fasta,
+            provisional_csv=tables.provisional_csv,
         )
-        with manifest_path.open("w") as mf:
+        with tables.manifest_json.open("w") as mf:
             json.dump(manifest, mf, indent=2)
 
         written = {
-            "candidates_all_csv": all_csv,
-            "candidates_pass_csv": pass_csv,
-            "candidates_pass_fasta": pass_fasta,
-            "candidates_qualified_csv": qualified_csv,
-            "candidates_qualified_fasta": qualified_fasta,
-            "candidates_provisional_csv": provisional_csv,
-            "manifest_json": manifest_path,
+            "candidates_all_csv": tables.all_csv,
+            "candidates_pass_csv": tables.pass_csv,
+            "candidates_pass_fasta": tables.pass_fasta,
+            "candidates_qualified_csv": tables.qualified_csv,
+            "candidates_qualified_fasta": tables.qualified_fasta,
+            "candidates_provisional_csv": tables.provisional_csv,
+            "manifest_json": tables.manifest_json,
         }
         return {name: str(path) for name, path in written.items() if path.exists()}
 
