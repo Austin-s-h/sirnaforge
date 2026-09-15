@@ -163,7 +163,7 @@ def uncovered_stretches(
     that scored badly from one with nothing in it at all.
 
     **This is coverage of the table, not of the transcript, and the two differ a lot.** Candidates
-    rejected at enumeration on GC or poly-run never reach ``candidates_all.csv``: on one MSH3 run
+    rejected at enumeration on GC or poly-run never reach ``candidates_all.csv``: on one internal run
     2,021 of the 4,421 possible 23-mer windows on the canonical transcript -- 46% -- are absent for
     that reason, and the file carries no ``GC_OUT_OF_RANGE`` or ``POLY_RUNS`` label to say so. A
     shaded stretch therefore means "no candidate here", which may be because a gate emptied it or

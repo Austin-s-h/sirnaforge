@@ -2135,9 +2135,9 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     combined_df.to_csv(combined_tsv, sep="\t", index=False)
 
     # No JSON row-dump beside it. `combined_offtargets.json` was a pretty-printed copy of this table
-    # and cost 313 MB against the TSV's 87 MB on one MSH3 run -- 367 MB of the run's 663 MB once the
-    # miRNA twin is counted, for rows nothing reads unless the TSV is missing. The summary JSONs stay:
-    # they carry different content, and they are kilobytes.
+    # and cost 313 MB against the TSV's 87 MB on one internal run -- 367 MB of the run's 663 MB once
+    # the miRNA twin is counted, for rows nothing reads unless the TSV is missing. The summary JSONs
+    # stay: they carry different content, and they are kilobytes.
 
     species_counts = _compute_species_counts(combined_df)
     # Zero-fill only the species that were screened. A zero for an unscreened species is the

@@ -21,9 +21,14 @@ able to express a promotion that has not happened, not because anything reaches 
 
 This module resolves nothing and scores nothing. ``core/scoring.py::compute_composite`` remains the
 only scorer and stays a pure weighted sum over a validated vector;
-``ScoringWeights.vector_for`` remains the only vector selector. A profile here is a *description* of
-a vector set plus its evidence, and -- for the experimental profile -- a place to write down a
-candidate vector so its numbers can be reviewed and compared offline
+``ScoringWeights.vector_for`` remains the only vector selector. Terminology is deliberately precise:
+a **WeightVector** is one exact stage/mode vector, a **ScoringProfile** is a named bundle of those
+vectors plus evidence, and a **RunPolicyProfile** is a separate baseline for thresholds and run
+behavior. The active scoring bundle is ``preproduction_efficacy_v1``; the historical comparison
+bundle is ``baseline_efficacy_4_0_0``. Neither is validated.
+
+A scoring profile is a *description* of a vector set plus its evidence, and -- for the experimental
+profiles -- a place to write down candidate vectors so their numbers can be reviewed and compared offline
 (``scripts/validate_scoring_profiles.py``) without becoming a second scoring engine.
 """
 
@@ -617,17 +622,77 @@ class ExperimentalAUPostScreenMiRNAWeights(WeightVector):
     supp_13_16: float = Field(default=0.10, ge=0, le=1, description="As the shipped 4.0.0 miRNA vector")
 
 
-SHIPPED_PROFILE = ScoringProfile(
-    profile_id="sirnaforge_4_0_0",
+class BaselineDesignWeights(WeightVector):
+    """Historical 4.0.0 design vector retained for explicit result comparison only."""
+
+    VECTOR_NAME: ClassVar[str] = "design_baseline_4_0_0"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = ("target_accessibility", "asymmetry", "gc_content")
+
+    target_accessibility: float = Field(default=0.35, ge=0, le=1)
+    asymmetry: float = Field(default=0.40, ge=0, le=1)
+    gc_content: float = Field(default=0.25, ge=0, le=1)
+
+
+class BaselinePostScreenSiRNAWeights(WeightVector):
+    """Historical 4.0.0 siRNA post-screen vector retained for explicit comparisons only."""
+
+    VECTOR_NAME: ClassVar[str] = "postscreen_sirna_baseline_4_0_0"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = ("off_target", "target_accessibility", "asymmetry", "gc_content")
+
+    off_target: float = Field(default=0.25, ge=0, le=1)
+    target_accessibility: float = Field(default=0.30, ge=0, le=1)
+    asymmetry: float = Field(default=0.25, ge=0, le=1)
+    gc_content: float = Field(default=0.20, ge=0, le=1)
+
+
+class BaselinePostScreenMiRNAWeights(WeightVector):
+    """Historical 4.0.0 miRNA post-screen vector retained for explicit comparisons only."""
+
+    VECTOR_NAME: ClassVar[str] = "postscreen_mirna_baseline_4_0_0"
+    TERM_NAMES: ClassVar[tuple[str, ...]] = (
+        "off_target",
+        "target_accessibility",
+        "asymmetry",
+        "gc_content",
+        "ago_start",
+        "supp_13_16",
+    )
+
+    off_target: float = Field(default=0.20, ge=0, le=1)
+    target_accessibility: float = Field(default=0.24, ge=0, le=1)
+    asymmetry: float = Field(default=0.20, ge=0, le=1)
+    gc_content: float = Field(default=0.16, ge=0, le=1)
+    ago_start: float = Field(default=0.10, ge=0, le=1)
+    supp_13_16: float = Field(default=0.10, ge=0, le=1)
+
+
+PREPRODUCTION_PROFILE = ScoringProfile(
+    profile_id="preproduction_efficacy_v1",
     description=(
-        "The three vectors siRNAforge 0.7.1 actually scores with. Four terms in siRNA mode, six in "
-        "miRNA mode, three at design time; pos1_mismatch is computed and reported but scored "
-        "nowhere, because its attainable range is a single point."
+        "The active pre-production vectors. Three terms are scored at design time, four in siRNA "
+        "post-screen mode and six in miRNA post-screen mode. The siRNA post-screen vector uses the "
+        "OligoGym-informed 0.25 / 0.10 / 0.30 / 0.35 allocation for off-target / accessibility / "
+        "asymmetry / GC. Every weight remains experimental."
     ),
     status=EvidenceStatus.EXPERIMENTAL,
     ships_as_default=True,
     vectors=(DesignWeights(), PostScreenSiRNAWeights(), PostScreenMiRNAWeights()),
 )
+
+BASELINE_PROFILE = ScoringProfile(
+    profile_id="baseline_efficacy_4_0_0",
+    description=(
+        "Historical 4.0.0 vectors retained for explicit comparison with pre-production results. "
+        "This profile is not selected by the pipeline and is not called legacy or current."
+    ),
+    status=EvidenceStatus.EXPERIMENTAL,
+    ships_as_default=False,
+    vectors=(BaselineDesignWeights(), BaselinePostScreenSiRNAWeights(), BaselinePostScreenMiRNAWeights()),
+)
+
+# Compatibility name for callers that imported the registry's former shipped-profile symbol. New
+# documentation should use PREPRODUCTION_PROFILE and BASELINE_PROFILE instead.
+SHIPPED_PROFILE = PREPRODUCTION_PROFILE
 
 EXPERIMENTAL_AU_PROFILE = ScoringProfile(
     profile_id="au_1_5_experimental",
@@ -642,5 +707,5 @@ EXPERIMENTAL_AU_PROFILE = ScoringProfile(
 )
 
 PROFILES: dict[str, ScoringProfile] = {
-    profile.profile_id: profile for profile in (SHIPPED_PROFILE, EXPERIMENTAL_AU_PROFILE)
+    profile.profile_id: profile for profile in (PREPRODUCTION_PROFILE, BASELINE_PROFILE, EXPERIMENTAL_AU_PROFILE)
 }

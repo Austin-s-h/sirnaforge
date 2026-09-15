@@ -3,7 +3,7 @@
 The load-bearing property is that this module lays out a structure and never predicts one: the picture
 has to be of the same fold the gates were decided on, or ``paired_fraction`` in the caption and the
 shape above it can disagree. The rest pins the degenerate fold as a real answer rather than a failure,
-because it is 34.8% of the passing pool on one MSH3 run.
+because it is 34.8% of the passing pool on one internal run.
 """
 
 from __future__ import annotations

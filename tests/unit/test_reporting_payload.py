@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,13 @@ import pytest
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, unclassified_cells
 from sirnaforge.reporting import ReportInputError, build_payload, render_html
-from sirnaforge.reporting.payload import EMBED_MAX_NM, MIN_UNCOVERED_NT, REASON_FILTER_OFF, REASON_OK
+from sirnaforge.reporting.payload import (
+    EMBED_MAX_NM,
+    MIN_UNCOVERED_NT,
+    REASON_FILTER_OFF,
+    REASON_OK,
+    REASON_RUN_NOT_EVALUATED,
+)
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
 OTHER = "UUUUCCCCAAAAGGGGUUUUC"
@@ -108,13 +115,32 @@ _PASSING_OBSERVED = {
 }
 
 
-def _write_fully_evidenced_run(tmp_path: Path, *, run_label: str = "PASS") -> Path:
-    """A run that records what every declared gate observed, as the fixed design path now does."""
+def _write_fully_evidenced_run(
+    tmp_path: Path,
+    *,
+    run_label: str = "PASS",
+    recorded: Mapping[str, str] | None = None,
+    guides: Sequence[str] = (GUIDE,),
+) -> Path:
+    """A run that records what every declared gate observed, as the fixed design path now does.
+
+    ``recorded`` adds ``<filter_id>_verdict`` columns, which is the only way a fixture can express the
+    verdict the *run* reached for one gate -- "in force, evidence unavailable" is a state no threshold
+    comparison over the observed columns reconstructs. Every guide in ``guides`` carries the same
+    observed values and the same recorded verdicts, so a gate recorded ``not_evaluated`` here is
+    not evaluated for the whole run rather than for one row.
+    """
+    recorded = recorded or {}
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
     columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
-    row = _candidate_row("c1", GUIDE, "ENST00000000001", 10).rsplit(",", 1)[0] + f",{run_label}"
-    row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
-    (run / "sirnaforge" / "candidates_all.csv").write_text(f"{columns}\n{row}\n")
+    columns += "".join(f",{k}_verdict" for k in recorded)
+    rows = []
+    for n, guide in enumerate(guides, start=1):
+        row = _candidate_row(f"c{n}", guide, "ENST00000000001", 10 * n).rsplit(",", 1)[0] + f",{run_label}"
+        row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
+        row += "".join(f",{v}" for v in recorded.values())
+        rows.append(row)
+    (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
     return run
 
 
@@ -182,8 +208,8 @@ def test_an_integer_counter_is_read_rather_than_nulled(tmp_path: Path) -> None:
     """``numpy.int64`` is not a Python ``int``, and ``DataFrame.iloc`` hands back numpy scalars.
 
     An isinstance check against ``(int, float)`` therefore passed every float column and nulled every
-    integer one, so ``max_off_target_count`` read ``unknown`` on all 5,706 guides of an MSH3 run whose
-    threshold was rejecting 65% of its candidates.
+    integer one, so ``max_off_target_count`` read ``unknown`` on all 5,706 guides of an internal run
+    whose threshold was rejecting 65% of its candidates.
     """
     columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed"
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [])
@@ -205,8 +231,8 @@ def test_a_gate_reads_the_value_the_run_compared_not_a_wider_counter(tmp_path: P
 
     The human-stratified gates read counters 0.7.1 does not export under the descriptor's name, but it
     does export ``<filter_id>_observed``. Preferring the same-named all-species column instead would
-    let the report fail a guide on a scope wider than the gate's: on a four-species MSH3 run the two
-    disagree 17,600 hits against 63,801.
+    let the report fail a guide on a scope wider than the gate's: on a four-species internal run the
+    two disagree 17,600 hits against 63,801.
     """
     columns = _CANDIDATE_COLUMNS + ",transcriptome_hits_1mm,max_transcriptome_hits_1mm_observed"
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
@@ -283,7 +309,7 @@ def test_a_rejection_no_declared_gate_expresses_is_not_overruled(tmp_path: Path)
     """The report may report less than the run. It may not report more.
 
     ``REPEAT_ELEMENT`` is stamped by the pipeline and declared by no filter, so no descriptor can
-    re-derive it. Calling such a guide clean would have published 185 guides of one MSH3 run as
+    re-derive it. Calling such a guide clean would have published 185 guides of one internal run as
     passing that the run threw out -- the fabricated-evidence direction the reverse metric now guards.
     """
     payload = build_payload(_write_fully_evidenced_run(tmp_path, run_label="REPEAT_ELEMENT"))
@@ -302,8 +328,8 @@ def test_a_fully_evidenced_run_can_reach_a_pass(tmp_path: Path) -> None:
     """The headline defect: no guide of any run could be called clean.
 
     Three gates decided during enumeration and recorded no verdict, so every guide carried an
-    unevaluable gate and one MSH3 report published ``0 pass`` across 5,706 guides. With the verdicts
-    recorded, a guide that satisfies every gate reads as one.
+    unevaluable gate and one internal report published ``0 pass`` across 5,706 guides. With the
+    verdicts recorded, a guide that satisfies every gate reads as one.
     """
     payload = build_payload(_write_fully_evidenced_run(tmp_path))
     entry = payload.guides[0]
@@ -451,8 +477,8 @@ def test_the_map_does_not_colour_an_unestablished_window_as_passing(tmp_path: Pa
     """The map is subject to the same rule as the status column: report less, never more.
 
     Classifying a run-PASS row as "passes every gate" regardless of whether the report could establish
-    it drew all 11,520 passing windows of one MSH3 run under that legend while the report itself called
-    every one of their guides *not established*.
+    it drew all 11,520 passing windows of one internal run under that legend while the report itself
+    called every one of their guides *not established*.
     """
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
     payload = build_payload(run)
@@ -466,8 +492,8 @@ def test_the_map_does_not_colour_an_unestablished_window_as_passing(tmp_path: Pa
 def test_the_structure_is_laid_out_from_the_published_dot_bracket(tmp_path: Path) -> None:
     """The picture must be of the fold the gates used, so the dot-bracket travels with the guide.
 
-    Layouts are keyed by structure and computed once per distinct one: 40,079 candidates on an MSH3 run
-    carry 1,333 distinct structures, which is the difference between embedding them and not.
+    Layouts are keyed by structure and computed once per distinct one: 40,079 candidates on an internal
+    run carry 1,333 distinct structures, which is the difference between embedding them and not.
     """
     fold = ".....((((....))))....."
     columns = _CANDIDATE_COLUMNS + ",structure,mfe"
@@ -528,7 +554,7 @@ def test_the_mirna_panel_names_the_mirna_it_matched(tmp_path: Path) -> None:
 
     The aggregate publishes the name as ``mirna_id``; the payload read ``rname`` or ``mirna``, neither
     of which the table has, so every row rendered with an empty name -- 18,078 anonymous seed matches
-    on one MSH3 run. Which miRNA is mimicked is the whole question, and ``coord`` travels with it
+    on one internal run. Which miRNA is mimicked is the whole question, and ``coord`` travels with it
     because a motif matching away from position 1 is what a real defect in this scanner once counted
     as a perfect seed hit.
     """
@@ -553,17 +579,20 @@ def test_cross_species_conservation_is_published_per_species_with_its_mismatches
     """The ortholog class is conservation evidence, and the summary of it cannot answer the question.
 
     ``conservation_score`` is (species hit)/3 and counts a species conserved at up to 8 mismatches; on
-    one MSH3 run mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. Publishing the best
+    one internal run mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. Publishing the best
     ``(nm, seed_mismatches)`` per species is what lets a reader require "perfect in macaque, seed-intact
     in mouse" -- which took that run's cross-reactive pool from 49 guides to 113.
+
+    The symbol is a synthetic placeholder: this path groups by species, so nothing here reads it. The
+    ``GENEX``/``Genex`` casing only mirrors the primate/rodent symbol convention the hits would carry.
     """
     run = _write_run(
         tmp_path,
         [_candidate_row("c1", GUIDE, "ENST1", 10)],
         [
-            _hit_row(GUIDE, "macaque", "ENSMMUT1", 0, "ortholog", "MSH3"),
-            _hit_row(GUIDE, "mouse", "ENSMUST2", 3, "ortholog", "Msh3"),
-            _hit_row(GUIDE, "mouse", "ENSMUST1", 1, "ortholog", "Msh3"),
+            _hit_row(GUIDE, "macaque", "ENSMMUT1", 0, "ortholog", "GENEX"),
+            _hit_row(GUIDE, "mouse", "ENSMUST2", 3, "ortholog", "Genex"),
+            _hit_row(GUIDE, "mouse", "ENSMUST1", 1, "ortholog", "Genex"),
         ],
     )
     entry = build_payload(run).guides[0]
@@ -583,7 +612,7 @@ def test_the_renderer_knows_every_verdict_the_payload_emits(tmp_path: Path) -> N
 
     ``VERDICT`` listed four codes while the payload emits five: a warn-action gate the guide exceeds
     is code 4, so ``VERDICT[4]`` was undefined and ``v.replace`` threw for every guide carrying one.
-    On one MSH3 run that was 3,098 of 5,000 embedded guides -- the whole gate panel, gone.
+    On one internal run that was 3,098 of 5,000 embedded guides -- the whole gate panel, gone.
     """
     observed = dict(_PASSING_OBSERVED, min_asymmetry_score=0.1)  # below the 0.65 warn-action floor
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
@@ -648,6 +677,75 @@ def test_a_gate_that_is_off_still_reports_what_it_measured(tmp_path: Path) -> No
     assert value == 4, "the number the gate would have compared"
     assert verdict == 3, "and it is still not_evaluated, not a pass"
     assert reason == REASON_FILTER_OFF
+
+
+@pytest.mark.unit
+def test_an_in_force_gate_the_run_did_not_evaluate_is_unknown_rather_than_a_pass(tmp_path: Path) -> None:
+    """A gate that is in force and undecided is not evidence of cleanliness (#103).
+
+    ``n_gates_unknown`` counted only the UNKNOWN code, so a gate the run recorded ``not_evaluated``
+    landed on verdict code 3 and was neither failed nor unknown: ``status`` fell through to ``pass``,
+    the not-evaluated banner was suppressed, and the guide entered the Passing preset -- against
+    #103's own rule that a guide failing no gate is clean only when every gate could be evaluated.
+    ``max_repeat_transcript_fraction`` reaches this state on any run whose repeat scan did not happen:
+    the gate stays in force, and ``repeat_transcript_fraction`` is exported unconditionally from a
+    0.0-default field, so a confident PASS was re-derived for a gate nobody evaluated.
+
+    Verdict code 3 is therefore reserved for a gate that was never in force at all -- off, or with no
+    declared threshold -- and the run's own ``not_evaluated`` on an in-force gate is published as
+    UNKNOWN with :data:`REASON_RUN_NOT_EVALUATED` naming which non-decision it was.
+    """
+    payload = build_payload(
+        _write_fully_evidenced_run(tmp_path, recorded={"max_repeat_transcript_fraction": "not_evaluated"})
+    )
+    entry = payload.guides[0]
+    index = next(i for i, f in enumerate(payload.filters) if f["filter_id"] == "max_repeat_transcript_fraction")
+    descriptor = payload.filters[index]
+
+    assert (descriptor["action"], descriptor["threshold"]) == ("fail", 0.001), "the gate is in force on this run"
+    assert tuple(entry.gates[index]) == (0, 2, REASON_RUN_NOT_EVALUATED), "in force and undecided is unknown"
+    assert entry.n_gates_unknown == 1, "the tally must see it, or the status below cannot"
+    assert entry.n_gates_failed == 0
+    assert entry.run_verdict == "PASS"
+    assert entry.undeclared_run_rejection is False, "the run passed the guide; only the gate is undecided"
+    assert entry.status == "unknown", "an unevaluated in-force gate cannot make a guide clean"
+    assert payload.run["status_counts"]["pass"] == 0
+
+    # The browser agrees by construction rather than by a second tally rule it would have to be taught:
+    # the shipped counter counts the UNKNOWN code, which is the code this state is now published under.
+    assert "t[1]===V_UNKNOWN" in render_html(payload), "the client's unknown tally reads the UNKNOWN code"
+
+
+@pytest.mark.unit
+def test_a_gate_no_guide_was_evaluated_for_is_frozen_rather_than_given_a_dead_slider(tmp_path: Path) -> None:
+    """``evaluable`` means one thing: moving this control can change a verdict (#103).
+
+    A gate every one of whose rows the run recorded ``not_evaluated`` still exports the number it
+    measured, so "this run produced at least one value" called it evaluable and the report shipped a
+    live slider that cannot decide anything: a reader moves it, every row stays frozen on its reason
+    code, nothing changes, and nothing says why. It is published frozen with its own reason instead --
+    the reason the panel already prints beside the control it withholds.
+    """
+    payload = build_payload(
+        _write_fully_evidenced_run(
+            tmp_path, guides=(GUIDE, OTHER), recorded={"max_repeat_transcript_fraction": "not_evaluated"}
+        )
+    )
+    frozen = next(f for f in payload.filters if f["filter_id"] == "max_repeat_transcript_fraction")
+    index = payload.filters.index(frozen)
+
+    assert len(payload.guides) == 2
+    assert {tuple(g.gates[index]) for g in payload.guides} == {(0, 2, REASON_RUN_NOT_EVALUATED)}
+    assert frozen["evaluable"] is False, "no slider position can change a verdict this run never reached"
+    assert frozen["control"] is None
+    assert frozen["n_values"] == 2, "the values were measured; the run simply applied no verdict to them"
+    assert frozen["unevaluable_reason"] in render_html(payload), "and the panel says why it is frozen"
+
+    # A gate the run decided for at least one guide stays movable, or `evaluable` would mean
+    # "sometimes decidable" here and "decidable" everywhere else.
+    live = next(f for f in payload.filters if f["filter_id"] == "gc_content_max")
+    assert live["evaluable"] is True
+    assert live["control"] is not None
 
 
 @pytest.mark.unit

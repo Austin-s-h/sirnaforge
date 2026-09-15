@@ -15,25 +15,33 @@ siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. 
 | `duplex_stability_dg`    | -32 to -43 kcal/mol for a 21mer | Guide:passenger duplex ΔG                                   |
 | `target_accessibility_p` | higher is better, log-scaled    | P(mRNA site's seed-paired 8-mer open)                       |
 
-## Two scores, three named weight vectors
+## Two scores, three named pre-production weight vectors
+
+Terminology is intentionally split. A **WeightVector** is one exact set of terms and weights used
+for one stage/mode. A **ScoringProfile** is a named bundle of those vectors plus evidence status;
+the active bundle is `preproduction_efficacy_v1`, while `baseline_efficacy_4_0_0` is historical.
+A **RunPolicyProfile** is separate and contains workflow defaults such as thresholds, filter actions,
+and run mode. New runs use its `preproduction` name; `legacy` is only a compatibility alias for old
+manifests and API callers.
 
 Since issue #96 every weight vector is **hand-authored, named, sums to 1.0 and is written to the run
 manifest**, and nothing rescales one at runtime. There is no renormalisation and no divisor. A vector
 is _chosen_ by stage and design mode, never combined:
 
 ```
-design_v4                        postscreen_sirna_v4          postscreen_mirna_v4
+design_preproduction_v1           postscreen_sirna_preproduction_v1  postscreen_mirna_preproduction_v1
   asymmetry             0.40       off_target           0.25    off_target            0.20
-  target_accessibility  0.35       target_accessibility 0.30    target_accessibility  0.24
-  gc_content            0.25       asymmetry            0.25    asymmetry             0.20
-                        ----       gc_content           0.20    gc_content            0.16
+  target_accessibility  0.35       target_accessibility 0.10    target_accessibility  0.08
+  gc_content            0.25       asymmetry            0.30    asymmetry             0.24
+                        ----       gc_content           0.35    gc_content            0.28
                         1.00                            ----    ago_start             0.10
                                                         1.00    supp_13_16            0.10
                                                                                       ----
                                                                                       1.00
 ```
 
-`postscreen_mirna_v4`'s four shared terms are exactly `0.80 x postscreen_sirna_v4`; its two
+`postscreen_mirna_preproduction_v1`'s four shared terms are exactly `0.80 x
+postscreen_sirna_preproduction_v1`; its two
 biogenesis terms hold the remaining 0.20. It had a seventh term, `pos1_mismatch` at 0.05, until
 issue #102 measured it **exactly constant at 0.0** on all 13,415 scored candidates of the public
 baseline — constant by construction, because the passenger is the exact reverse complement of the
@@ -42,32 +50,33 @@ was removed from the vector. It is still computed, and the pairing state stays o
 `guide_pos1_base` and `pos1_pairing_state` — but `score_pos1_mismatch` is a _contribution_ column, so
 with the term in no vector that column is now **always null**.
 
-`postscreen_sirna_v4` is exactly `design_v4`'s terms plus `off_target` — one extra term, cleanly
-interpretable. Every row records the vector that produced it in `weight_vector`, and the manifest's
-`scoring.vectors` block maps that name to the numbers, so any score is traceable to the weights that
-made it.
+`postscreen_sirna_preproduction_v1` is the design terms plus `off_target` — one extra term, cleanly
+interpretable. Every row records the exact vector that produced it in `weight_vector`, and the
+manifest's `scoring.vectors` block maps that name to the numbers, so any score is traceable to the
+weights that made it. The previous 4.0.0 vectors are retained under the explicit historical
+`baseline_efficacy_4_0_0` scoring profile; they are not called `legacy` or `current`.
 
 | Field             | Vector                                        | Available                                                                                         |
 | ----------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `design_score`    | `design_v4`                                   | at design time, from the three terms computable before screening                                  |
-| `composite_score` | `postscreen_sirna_v4` / `postscreen_mirna_v4` | only after off-target screening produced usable evidence for that candidate; **null before that** |
+| `design_score`    | `design_preproduction_v1`                                           | at design time, from the three terms computable before screening                                  |
+| `composite_score` | `postscreen_sirna_preproduction_v1` / `postscreen_mirna_preproduction_v1` | only after off-target screening produced usable evidence for that candidate; **null before that** |
 
 **The two are not comparable.** They are different vectors over different term sets, and they also
 weight their _shared_ terms differently, so **neither is systematically the larger**. Issue #102
 deleted the claim that `design_score` is the more optimistic number: all features at 0.5 with
-`off_target = 1.0` gives `design_v4` **50.0** against `postscreen_sirna_v4`'s **62.5**, because the
-post-screen vector spends 0.25 on a term the design vector does not have and takes it from asymmetry
-and accessibility. Do not rank a mixture of the two; the workflow does not (see
+`off_target = 1.0` gives the design vector **50.0** against the siRNA post-screen vector's **62.5**,
+because the post-screen vector spends 0.25 on a term the design vector does not have and takes it
+from asymmetry and accessibility. Do not rank a mixture of the two; the workflow does not (see
 _What `top_candidates` excludes_).
 
 The three declared terms:
 
-- **Target accessibility** (0.35 design / 0.30 post-screen) — log-scaled RNAplfold probability that
+- **Target accessibility** (0.35 design / 0.10 siRNA post-screen) — log-scaled RNAplfold probability that
   the 8 nt of the mRNA target site pairing guide positions 1-8 are unpaired. The guide seed pairs the
   target site's **3' end**, so that is the end scored; the 5'-end 8-mer is a measured near-null
   (ρ +0.07 vs +0.27 against knockdown). See `docs/models_and_scoring.md` §2.5.
-- **Thermodynamic asymmetry** (0.40 / 0.25) — guide strand preferentially enters RISC.
-- **GC content** (0.25 / 0.20) — balance between stability and accessibility. `exp(-((GC%-40)/10)^2)`,
+- **Thermodynamic asymmetry** (0.40 / 0.30 siRNA post-screen) — guide strand preferentially enters RISC.
+- **GC content** (0.25 / 0.35 siRNA post-screen) — balance between stability and accessibility. `exp(-((GC%-40)/10)^2)`,
   a Gaussian centred on 40% GC — note that 40 is not the midpoint of the default GC filter window
   (35-60), so the score's optimum and the gate's optimum are different numbers.
 
@@ -99,7 +108,8 @@ knockdown level nor a probability of any safety event.
 Two terms carry benchmark evidence against measured knockdown (`target_accessibility` ρ +0.267,
 `gc_content` cluster-robust β +0.152 on the Huesken panel, n = 2,816 / 41 transcripts) and
 `off_target`'s weight rests on a screening-scope-dependent variance share rather than on any
-efficacy or safety measurement. `design_v4`'s three numbers are round numbers awaiting sign-off.
+efficacy or safety measurement. The design-stage vector remains unchanged by this post-screen
+investigation; the new post-screen vector is experimental and is not a claim of validated potency.
 
 ### A/U content at guide positions 1-5
 
@@ -114,7 +124,7 @@ residual against efficacy with by-transcript clustering. The residual survived (
 cluster-robust SE 0.0213, t = 2.50, p = 0.017, 41 clusters), so **both terms score** in the candidate
 vector recorded as the `au_1_5_experimental` profile. It is not a default in 0.7.1 for two reasons,
 both stated rather than implied: on predeclared held-out transcripts it buys 0.008 of ρ, and wiring
-it into `postscreen_sirna_v4` needs the post-screen feature assembly to forward it, which is not part
+it into the active siRNA post-screen vector needs the post-screen feature assembly to forward it, which is not part
 of this change.
 
 ### Computed and reported, but not scored
@@ -327,8 +337,8 @@ The `candidates_pass.csv` and `candidates_all.csv` files include:
 | `guide_sequence`                                                  | 21nt guide strand (5'→3')                                                                                                                                                    |
 | `passenger_sequence`                                              | Passenger/sense strand                                                                                                                                                       |
 | `position`                                                        | Start position in transcript                                                                                                                                                 |
-| `design_score`                                                    | Design-stage score on `design_v4` (3 terms), available without screening                                                                                                     |
-| `composite_score`                                                 | Post-screen score on `postscreen_{sirna,mirna}_v4`; empty before screening                                                                                                   |
+| `design_score`                                                    | Design-stage score on `design_preproduction_v1` (3 terms), available without screening                                                                                         |
+| `composite_score`                                                 | Post-screen score on the active pre-production vector; empty before screening                                                                                                  |
 | `asymmetry_score`                                                 | Thermodynamic asymmetry                                                                                                                                                      |
 | `gc_content`                                                      | GC percentage                                                                                                                                                                |
 | `melting_temp_c`                                                  | Melting temperature (°C)                                                                                                                                                     |

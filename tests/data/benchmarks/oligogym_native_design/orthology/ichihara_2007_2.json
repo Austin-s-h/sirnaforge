@@ -1,0 +1,18 @@
+{
+  "benchmark_oligogym_ichihara_2007_2": {
+    "macaque": [
+      "ENSMMUG00000016096",
+      "ENSMMUG00000018679"
+    ],
+    "mouse": [
+      "ENSMUSG00000028063",
+      "ENSMUSG00000057666",
+      "ENSMUSG00000097148",
+      "ENSMUSG00000110469"
+    ],
+    "rat": [
+      "ENSRNOG00000019638",
+      "ENSRNOG00000071205"
+    ]
+  }
+}
