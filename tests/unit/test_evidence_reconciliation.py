@@ -21,6 +21,7 @@ from sirnaforge.core.screening_evidence import (
     censored_counts,
     collect_evidence,
     completed_pairs,
+    completed_pairs_without_plan,
     evidence_filename,
     failed_entry,
     guide_set_digest,
@@ -46,17 +47,24 @@ from sirnaforge.models.evidence import (
 from sirnaforge.models.policy import ScreeningChannel
 
 DIGEST = "3f9c1a2b4d5e6f70"
+OTHER_DIGEST = "0011223344556677"
 
 
 def _complete_envelope(
-    *, species: str = "human", channel: ScreeningChannel = ScreeningChannel.TRANSCRIPTOME, sites: int = 3
+    *,
+    species: str = "human",
+    channel: ScreeningChannel = ScreeningChannel.TRANSCRIPTOME,
+    sites: int = 3,
+    digest: str = DIGEST,
+    source: EvidenceSource = EvidenceSource.ENVELOPE,
 ) -> EvidenceEnvelope:
     return EvidenceEnvelope(
         producer=EvidenceProducer.OFFTARGET_ANALYSIS,
+        source=source,
         entry=ScreeningEvidenceEntry(
             channel=channel,
             species=species,
-            guide_set_digest=DIGEST,
+            guide_set_digest=digest,
             status=EvidenceStatus.COMPLETE,
             counts=ObservedCounts(sites=ObservedCount(value=sites)),
         ),
@@ -74,7 +82,7 @@ def test_a_species_with_no_envelope_reconciles_to_failed_with_a_reason():
     assert len(rat_entries) == 1
     assert rat_entries[0].status is EvidenceStatus.FAILED
     assert rat_entries[0].detail
-    assert completed_pairs(result.evidence) == frozenset({("transcriptome", "human")})
+    assert completed_pairs(result) == frozenset({("transcriptome", "human")})
 
 
 @pytest.mark.unit
@@ -105,7 +113,8 @@ def test_a_zero_hit_complete_envelope_round_trips_and_counts_as_completed(tmp_pa
     assert envelope is not None
     assert envelope.entry.counts.sites.value == 0
     assert envelope.entry.counts.sites.is_lower_bound is False
-    assert completed_pairs(ScreeningEvidence(entries=(envelope.entry,))) == frozenset({("transcriptome", "human")})
+    plan = build_plan(guide_set_digest=DIGEST, transcriptome=[("human", None)], mirna_species=[])
+    assert completed_pairs(reconcile(plan, observed=[envelope])) == frozenset({("transcriptome", "human")})
 
 
 @pytest.mark.unit
@@ -119,8 +128,11 @@ def test_a_censored_envelope_is_excluded_from_completed_pairs():
         counts=censored_counts(retained=500, cap=500, pre_cap=None),
         detail="retained 500 of an unknown total: max_hits=500 truncated the list",
     )
+    plan = build_plan(guide_set_digest=DIGEST, transcriptome=[("human", None)], mirna_species=[])
+    envelope = EvidenceEnvelope(producer=EvidenceProducer.OFFTARGET_ANALYSIS, entry=entry)
 
-    assert completed_pairs(ScreeningEvidence(entries=(entry,))) == frozenset()
+    assert completed_pairs(reconcile(plan, observed=[envelope])) == frozenset()
+    assert completed_pairs_without_plan(ScreeningEvidence(entries=(entry,))) == frozenset()
     assert entry.counts.sites.is_lower_bound is True
     assert entry.counts.sites.truncated is True
 
@@ -172,6 +184,61 @@ def test_an_unplanned_envelope_is_kept_and_listed_not_dropped():
 
     assert join_key(unplanned_envelope.entry) in result.unplanned
     assert any(e.species == "chicken" for e in result.evidence.entries)
+
+
+@pytest.mark.unit
+def test_an_envelope_for_another_guide_set_cannot_complete_the_pair_it_reconciled_failed_against():
+    """#100: the digest is in the join identity so one screen's counts cannot be read as another's.
+
+    ``reconcile`` already honours that -- the plan entry fails and the envelope lands in
+    ``unplanned`` -- but projecting to (channel, species) used to discard the digest, so the same
+    envelope satisfied the very pair whose plan entry had just failed over the mismatch.
+    """
+    plan = build_plan(guide_set_digest=DIGEST, transcriptome=[("human", None)], mirna_species=[])
+    foreign = _complete_envelope(species="human", digest=OTHER_DIGEST)
+
+    result = reconcile(plan, observed=[foreign])
+
+    assert result.keys_with_status(EvidenceStatus.FAILED) == (("transcriptome", "human", DIGEST),)
+    assert join_key(foreign.entry) in result.unplanned
+    assert completed_pairs(result) == frozenset()
+
+
+@pytest.mark.unit
+def test_an_envelope_for_a_pair_the_plan_never_names_still_completes_when_the_guide_set_matches():
+    """Plan silence is not denial: the restated fallback plan carries transcriptome entries only.
+
+    Gating on planned join keys alone would report a legitimately screened miRNA channel as never
+    having run, so an envelope for this run's own guide set counts for a pair the plan is silent
+    about -- while a foreign guide set never does, whatever pair it claims (#100).
+    """
+    plan = build_plan(guide_set_digest=DIGEST, transcriptome=[("human", None)], mirna_species=[])
+    same_guides = _complete_envelope(species="human", channel=ScreeningChannel.MIRNA_SEED)
+    other_guides = _complete_envelope(species="mouse", channel=ScreeningChannel.MIRNA_SEED, digest=OTHER_DIGEST)
+
+    result = reconcile(plan, observed=[_complete_envelope(species="human"), same_guides, other_guides])
+
+    assert completed_pairs(result) == frozenset({("transcriptome", "human"), ("mirna_seed", "human")})
+
+
+@pytest.mark.unit
+def test_completed_pairs_without_plan_stays_lenient_so_a_planless_caller_reports_nothing_unscreened():
+    """A caller with no plan has no planned digest, and must not read its whole screen as absent."""
+    entry = _complete_envelope(species="human", digest=OTHER_DIGEST).entry
+
+    assert completed_pairs_without_plan(ScreeningEvidence(entries=(entry,))) == frozenset({("transcriptome", "human")})
+
+
+@pytest.mark.unit
+def test_strict_drops_a_legacy_summary_entry_through_the_reconciliation_it_is_recorded_in():
+    """``strict`` reads the reconciliation's own sources now that it is no longer passed separately."""
+    plan = build_plan(guide_set_digest=DIGEST, transcriptome=[("human", None), ("mouse", None)], mirna_species=[])
+    inferred = _complete_envelope(species="mouse", source=EvidenceSource.LEGACY_SUMMARY)
+
+    result = reconcile(plan, observed=[_complete_envelope(species="human"), inferred])
+
+    assert completed_pairs(result) == frozenset({("transcriptome", "human"), ("transcriptome", "mouse")})
+    assert completed_pairs(result, strict=True) == frozenset({("transcriptome", "human")})
 
 
 @pytest.mark.unit

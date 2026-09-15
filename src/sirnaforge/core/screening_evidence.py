@@ -10,7 +10,8 @@ instead of silently vanishing from the count. Named ``screening_evidence`` rathe
 so it never shadows the pure-type module it builds on.
 
 Requiredness is not decided here: :class:`~sirnaforge.models.policy.EvidenceRequirements` is that
-authority, and :func:`completed_pairs` only says what ran to completion, never what was needed.
+authority, and :func:`completed_pairs` only says what ran to completion -- for a unit this run
+asked for -- never what was needed.
 """
 
 import hashlib
@@ -250,23 +251,68 @@ def reconcile(
     )
 
 
-def completed_pairs(
+def completed_pairs(reconciliation: Reconciliation, *, strict: bool = False) -> frozenset[tuple[str, str]]:
+    """(channel, species) pairs this run asked about and whose evidence completed (#100).
+
+    Takes the whole :class:`Reconciliation`, not its ``evidence``, because the projection down to
+    (channel, species) drops the guide-set digest that :class:`ScreeningPlanEntry` deliberately puts
+    in the join identity. Passing bare evidence let an envelope for a *different* guide set satisfy
+    the very requirement whose plan entry had just reconciled FAILED over the digest mismatch --
+    the attribution error the digest exists to prevent, arriving one layer later. Here an entry is
+    admissible only if it answers a question this run actually asked:
+
+    * its join key is in the plan -- the ordinary case, digest included; or
+    * it screened a guide set the plan asked about *and* the plan names no entry for its
+      (channel, species) at all. Plan silence about a pair is not a denial: the fallback plan
+      restated from a resolved reference set carries transcriptome entries only, so a legitimate
+      miRNA envelope must keep counting. A pair the plan *does* name, with other guides, is a
+      denial -- that unit's question was asked about a different guide set.
+
+    Only ``COMPLETE`` counts. ``CENSORED`` never does: a lower-bound count cannot show a ceiling
+    was respected. ``strict=True`` additionally drops entries sourced from
+    :attr:`EvidenceSource.LEGACY_SUMMARY` -- the heuristic for a pre-#100 run directory that
+    published no envelope at all. See :func:`completed_pairs_without_plan` for a caller that holds
+    evidence and no plan whatsoever.
+    """
+    planned_keys = {join_key(entry) for entry in reconciliation.plan.entries}
+    planned_pairs = {(entry.channel.value, entry.species) for entry in reconciliation.plan.entries}
+    planned_digests = {entry.guide_set_digest for entry in reconciliation.plan.entries}
+    admissible = tuple(
+        entry
+        for entry in reconciliation.evidence.entries
+        if join_key(entry) in planned_keys
+        or (entry.guide_set_digest in planned_digests and (entry.channel.value, entry.species) not in planned_pairs)
+    )
+    return _completed_pairs(admissible, strict=strict, sources=reconciliation.sources)
+
+
+def completed_pairs_without_plan(
     evidence: ScreeningEvidence,
     *,
     strict: bool = False,
     sources: Mapping[JoinKey, EvidenceSource] | None = None,
 ) -> frozenset[tuple[str, str]]:
-    """(channel, species) pairs whose evidence completed -- the shape the eligibility engine reads.
+    """The same answer for a caller that has evidence and no plan to check it against.
 
-    Only ``COMPLETE`` counts. ``CENSORED`` never does, even with ``strict=False``: a lower-bound
-    count cannot show a ceiling was respected. ``strict=True`` additionally drops any entry whose
-    join key maps to ``EvidenceSource.LEGACY_SUMMARY`` in ``sources`` -- the fallback heuristic for
-    a pre-#100 run directory that carries no envelope at all. ``sources`` is optional and additive
-    to the contract's two-argument call: a caller with no source information gets the lenient
-    (``strict=False``-equivalent) answer regardless of what it passes for ``strict``.
+    Named for what it cannot do: with no plan there is no planned guide-set digest, so every
+    ``COMPLETE`` entry counts whatever it screened. Gating anyway would report a run's whole
+    screen as never having happened, which is worse than the leniency -- so the leniency is a
+    separate, explicitly-named function rather than a default of :func:`completed_pairs` that a
+    call site could reach by accident (#100). ``sources`` is optional: a caller with no source
+    information gets the lenient (``strict=False``-equivalent) answer regardless of ``strict``.
     """
+    return _completed_pairs(evidence.entries, strict=strict, sources=sources)
+
+
+def _completed_pairs(
+    entries: Sequence[ScreeningEvidenceEntry],
+    *,
+    strict: bool,
+    sources: Mapping[JoinKey, EvidenceSource] | None,
+) -> frozenset[tuple[str, str]]:
+    """Project already-admissible entries to the (channel, species) pairs that completed."""
     pairs: set[tuple[str, str]] = set()
-    for entry in evidence.entries:
+    for entry in entries:
         if entry.status is not EvidenceStatus.COMPLETE:
             continue
         if strict and sources is not None and sources.get(join_key(entry)) is EvidenceSource.LEGACY_SUMMARY:
