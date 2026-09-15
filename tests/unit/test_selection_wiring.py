@@ -37,7 +37,7 @@ from sirnaforge.models.sirna import (
     SelectionState,
     SiRNACandidate,
 )
-from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
+from sirnaforge.workflow import OffTargetGateCounts, SiRNAWorkflow, WorkflowConfig
 
 GUIDE = "ACGTACGTACGTACGTACGTA"
 
@@ -312,7 +312,10 @@ def test_every_off_target_gate_is_evaluated_by_the_shared_evaluator(tmp_path: Pa
     criteria = workflow.config.design_params.offtarget_filters
 
     should_fail, status = workflow._check_offtarget_filters(
-        5, 0, 0, 0, 0, 0, 5, 5, criteria, candidate, complete_pairs=frozenset({("transcriptome", "human")})
+        OffTargetGateCounts(transcriptome_0mm=5, total_hits=5, genuine_off_target_count=5),
+        criteria,
+        candidate,
+        complete_pairs=frozenset({("transcriptome", "human")}),
     )
 
     assert should_fail is True
@@ -323,7 +326,7 @@ def test_every_off_target_gate_is_evaluated_by_the_shared_evaluator(tmp_path: Pa
     assert candidate.filter_verdicts["max_transcriptome_seed_perfect"] == FilterEvaluation.NOT_EVALUATED.value
     # Every gate that read a channel whose evidence never completed is undecided, not a pass at zero.
     undecided = workflow._check_offtarget_filters(
-        0, 0, 0, 0, 0, 0, 0, 0, criteria, _candidate("unscreened"), complete_pairs=frozenset()
+        OffTargetGateCounts(), criteria, _candidate("unscreened"), complete_pairs=frozenset()
     )
     assert undecided == (False, None)
 

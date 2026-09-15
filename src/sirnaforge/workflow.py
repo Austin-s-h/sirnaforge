@@ -329,9 +329,11 @@ class CandidateTablePaths(NamedTuple):
 
 
 class OffTargetGateCounts(NamedTuple):
-    """The counts the off-target gates compare, in the order ``_check_offtarget_filters`` reads them.
+    """The counts the off-target gates compare, one field per gate input.
 
-    Named so the no-hit and with-hit paths can hand the same eight numbers to the same gate call.
+    Named so the no-hit and with-hit paths can hand the same eight numbers to the same gate call,
+    which reads them by field name -- so field order here carries no meaning and reordering one
+    cannot feed a gate the wrong number.
     Every field defaults to zero and :data:`_ZERO_OFFTARGET_COUNTS` is that all-zero instance: a
     completed screen that found nothing is a *measurement* of zero, and giving it a name is what
     stopped the clean-screen path from skipping the gates entirely (issue #106).
@@ -4912,7 +4914,7 @@ class SiRNAWorkflow:
         a design verdict already on the row.
         """
         should_fail, fail_status = self._check_offtarget_filters(
-            *counts,
+            counts,
             filter_criteria,
             candidate,
             complete_pairs=complete_pairs,
@@ -5011,14 +5013,7 @@ class SiRNAWorkflow:
 
     def _check_offtarget_filters(
         self,
-        transcriptome_0mm: int,
-        transcriptome_1mm: int,
-        transcriptome_2mm: int,
-        transcriptome_seed_0mm: int,
-        mirna_0mm_seed: int,
-        mirna_high_risk: int,
-        total_hits: int,
-        genuine_off_target_count: int,
+        counts: OffTargetGateCounts,
         filter_criteria: OffTargetFilterCriteria,
         candidate: SiRNACandidate,
         *,
@@ -5065,43 +5060,43 @@ class SiRNAWorkflow:
             (
                 "max_transcriptome_hits_0mm",
                 filter_criteria.max_transcriptome_hits_0mm,
-                transcriptome_0mm,
+                counts.transcriptome_0mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_PERFECT_MATCH,
             ),
             (
                 "max_transcriptome_hits_1mm",
                 filter_criteria.max_transcriptome_hits_1mm,
-                transcriptome_1mm,
+                counts.transcriptome_1mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_1MM,
             ),
             (
                 "max_transcriptome_hits_2mm",
                 filter_criteria.max_transcriptome_hits_2mm,
-                transcriptome_2mm,
+                counts.transcriptome_2mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_2MM,
             ),
             (
                 "max_transcriptome_seed_perfect",
                 filter_criteria.max_transcriptome_seed_perfect,
-                transcriptome_seed_0mm,
+                counts.transcriptome_seed_0mm,
                 SiRNACandidate.FilterStatus.TRANSCRIPTOME_SEED_PERFECT,
             ),
             (
                 "max_mirna_perfect_seed",
                 filter_criteria.max_mirna_perfect_seed,
-                mirna_0mm_seed,
+                counts.mirna_0mm_seed,
                 SiRNACandidate.FilterStatus.MIRNA_PERFECT_SEED,
             ),
             (
                 "max_total_offtarget_hits",
                 filter_criteria.max_total_offtarget_hits,
-                total_hits,
+                counts.total_hits,
                 SiRNACandidate.FilterStatus.TOTAL_OFFTARGETS,
             ),
             (
                 "max_off_target_count",
                 filter_criteria.max_off_target_count,
-                genuine_off_target_count,
+                counts.genuine_off_target_count,
                 SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
             ),
             # The boolean flag, as a ceiling of zero, so it goes through the same path as every other
@@ -5110,7 +5105,7 @@ class SiRNAWorkflow:
             (
                 "fail_on_high_risk_mirna",
                 0 if filter_criteria.fail_on_high_risk_mirna else None,
-                mirna_high_risk,
+                counts.mirna_high_risk,
                 SiRNACandidate.FilterStatus.HIGH_RISK_MIRNA,
             ),
         ]

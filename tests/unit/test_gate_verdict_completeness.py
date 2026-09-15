@@ -48,6 +48,7 @@ from sirnaforge.reporting.payload import REASON_OK, observed_column
 from sirnaforge.reporting.payload import _evaluate as evaluate_descriptor
 from sirnaforge.workflow import (
     POST_SCREEN_FILTER_CHANNELS,
+    OffTargetGateCounts,
     SiRNAWorkflow,
     WorkflowConfig,
     _policy_filter_actions,
@@ -285,14 +286,7 @@ def test_an_incomplete_channel_still_fails_a_count_over_its_ceiling(tmp_path: Pa
     candidate = _candidate()
 
     should_fail, status = workflow._check_offtarget_filters(
-        5,  # transcriptome_0mm, over its ceiling of 1
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        OffTargetGateCounts(transcriptome_0mm=5),  # over its ceiling of 1
         OffTargetFilterCriteria(),
         candidate,
         complete_pairs=frozenset(),  # nothing completed
