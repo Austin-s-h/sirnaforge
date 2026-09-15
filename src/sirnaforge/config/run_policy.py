@@ -426,8 +426,8 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             "says, because the count is of alignments and this is of ubiquity. Declared because the "
             "pipeline has always applied it: it stamped REPEAT_ELEMENT on passes_filters while the "
             "registry declared no such gate, so a report re-deriving verdicts could account for every "
-            "rejection except this one -- 185 guides of one MSH3 run, reported not established because "
-            "no descriptor could express why the run threw them out."
+            "rejection except this one -- 185 guides of one internal run, reported not established "
+            "because no descriptor could express why the run threw them out."
         ),
         default_action=FilterAction.FAIL,
     ),
@@ -450,8 +450,9 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=(
             "Thermodynamic asymmetry floor for RISC loading; records LOW_ASYMMETRY without rejecting. "
             "Warn rather than fail because the floor decides more of the design space than any other "
-            "single number -- 65.9% of candidates on a 40,079-candidate MSH3 run -- and has never been "
-            "validated against measured knockdown. A gate that uncalibrated should report, not reject."
+            "single number -- 65.9% of candidates on a 40,079-candidate internal run -- and has never "
+            "been validated against measured knockdown. A gate that uncalibrated should report, not "
+            "reject."
         ),
         default_action=FilterAction.WARN,
     ),
@@ -548,7 +549,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             f"Perfect miRNA seed matches: {_HUMAN_ONLY_NOTE}; records MIRNA_PERFECT_SEED without "
             "rejecting. Warn rather than fail because a ceiling of 0 means one perfect seed match "
             "anywhere in the miRNA database disqualifies a guide outright, which is a stronger claim "
-            "than the evidence supports: it rejected 1,246 candidates on one MSH3 run with no "
+            "than the evidence supports: it rejected 1,246 candidates on one internal run with no "
             "threshold calibration behind the number 0."
         ),
         default_action=FilterAction.WARN,
