@@ -555,8 +555,9 @@ function renderIndex(){
   renderPlacement();     // the open guide may be outside the filter, or outside the drawn window
 }
 // Both wired in wireUI(), at the bottom: every DOM-touching statement in this file is either inside a
-// function or behind that one guard, so the substituted script also loads under node with nothing
-// stubbed but `document` itself (tests/unit/test_report_client_evaluator_parity.py).
+// function or behind that one guard, so this script loads without touching a document until it is asked
+// to. Keep it that way -- it is what lets the pure evaluator be reasoned about, and read, apart from the
+// UI that drives it.
 
 // Hand-drawn inline SVG, deliberately: plotly.min.js is 4.29 MB and its map traces carry external
 // URLs and browser-storage/network API references this report never invokes, which no static check
@@ -1476,7 +1477,7 @@ function buildFilterUI(){
 
 // Everything #freset does, as a function rather than inline in its handler: "Reset" has to mean every
 // control -- the status and conservation checkboxes, every gate threshold, every reader filter and the
-// preset -- and the parity harness drives this same function rather than a restatement of it.
+// preset -- and every caller reaches that meaning through this one function rather than restating it.
 // The cart is deliberately NOT cleared here: it is a pick list a reader built, not a filter setting, and
 // wiping it from a Reset button inside the thresholds panel would destroy work nothing else on this page
 // can rebuild. A fragment is a different matter -- see applyFragmentState.
@@ -1849,11 +1850,15 @@ function applyFragmentState(raw){
   if(start) show(start);
 }
 
-// One bootstrap block, guarded: the substituted <script> body is also handed directly to node for the
-// parity harness (tests/unit/test_report_client_evaluator_parity.py), which has no `document` and no
-// `location`. Every DOM-touching statement in the file lives inside a function or behind this guard,
-// so the pure evaluator above (CMP, reevaluateGate, reevaluateGates, the presets, the register
-// clustering) loads and runs there with nothing stubbed beyond the check itself.
+// One bootstrap block, guarded. Every DOM-touching statement in the file lives inside a function or
+// behind this guard, so the pure evaluator above (CMP, reevaluateGate, reevaluateGates, the presets, the
+// register clustering) can be loaded and driven without a `document` or a `location` at all.
+//
+// Keep the guard. It used to be justified by a test harness that handed this script to node; that harness
+// is deleted (see docs/html_report.md, "What is verified, and what is only reviewed"), so nothing enforces
+// this property any more -- which makes it worth stating as a deliberate one rather than an incidental
+// consequence. Anything reintroducing a bare top-level DOM read would also be the thing that makes this
+// evaluator impossible to exercise apart from a browser.
 function wireUI(){
   // Sorting, by mouse and by keyboard. `<th onclick>` with the default `tabIndex` of -1 is not a control:
   // it could not be focused, Enter and Space did nothing, and the sort was unreachable without a pointer.

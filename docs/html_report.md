@@ -449,7 +449,7 @@ Asking for more than the filters admit is not an error, and it now says what it 
 ## Size, and the one figure
 
 The tracked `baseline_0_7_1` fixture slice -- 292 candidate rows, 28 guides, 2,173 classified
-alignments and 268 miRNA seed hits -- renders through `sirnaforge report` to **585,987 bytes** (572 KiB),
+alignments and 268 miRNA seed hits -- renders through `sirnaforge report` to **586,344 bytes** (573 KiB),
 of which markup, CSS and script are under 0.5 MB in total and effectively constant. That figure moves
 with the template rather than with the run: it was 519,084 bytes before the reader filters, the
 threshold-provenance banner, the refusal painting and the cart's comment header were added, and 554,923
