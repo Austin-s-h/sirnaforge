@@ -39,7 +39,6 @@ fields, never *add* them.
 from __future__ import annotations
 
 import csv
-import hashlib
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -72,6 +71,7 @@ from sirnaforge.benchmark.artifact import (
 from sirnaforge.benchmark.panels import PanelDescriptor, derive_observation, describe_panel
 from sirnaforge.config.run_policy import default_for
 from sirnaforge.models.policy import FilterAction, FilterComparator, SettingSource
+from sirnaforge.utils.hashing import file_sha256
 
 #: ``prepare.py`` -> ``benchmark`` -> ``sirnaforge`` -> ``src`` -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -180,14 +180,6 @@ def _resolve_paired_length(descriptor: PanelDescriptor, paired_length: int | Non
         f"panel {descriptor.panel_id!r} is {descriptor.architecture.value} and declares no fixed "
         "paired length; pass paired_length explicitly (19-23) to tag the artifact directory"
     )
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8192), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _read_raw_rows(path: Path) -> tuple[tuple[str, ...], tuple[dict[str, str], ...]]:
@@ -420,7 +412,7 @@ def prepare_artifact(
     source_path, source_file = _resolve_source_csv(descriptor, panel_csv_path)
     if not source_path.is_file():
         raise BenchmarkPrepareError(f"panel csv not found: {source_path}")
-    source_sha256 = _file_sha256(source_path)
+    source_sha256 = file_sha256(source_path)
 
     # Read and validated before the artifact directory is created, so a mis-mapped or wrong-panel
     # table is refused without leaving a directory behind for the caller to clean up.
@@ -490,7 +482,7 @@ def prepare_artifact(
             ManifestInputEntry(
                 role="panel_transcripts_fasta",
                 path=str(panel_transcripts),
-                sha256=_file_sha256(transcripts_path),
+                sha256=file_sha256(transcripts_path),
                 size_bytes=transcripts_path.stat().st_size,
             )
         )
@@ -503,14 +495,14 @@ def prepare_artifact(
             path=OBSERVATIONS_FILENAME,
             exists=True,
             size_bytes=observations_path.stat().st_size,
-            sha256=_file_sha256(observations_path),
+            sha256=file_sha256(observations_path),
             rows=_count_csv_rows(observations_path),
         ),
         design_inputs_fasta=ManifestOutputEntry(
             path=DESIGN_INPUTS_FASTA_FILENAME,
             exists=True,
             size_bytes=fasta_path.stat().st_size,
-            sha256=_file_sha256(fasta_path),
+            sha256=file_sha256(fasta_path),
             sequences=_count_fasta_records(fasta_path),
         ),
     )
