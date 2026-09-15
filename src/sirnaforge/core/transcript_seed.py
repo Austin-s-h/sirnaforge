@@ -73,7 +73,7 @@ from sirnaforge.core.seed_geometry import (
     seed_window,
 )
 from sirnaforge.data.species_registry import normalize_species_name
-from sirnaforge.data.transcript_index import TranscriptGeneIndex
+from sirnaforge.data.transcript_index import SpeciesTranscriptIndex, TranscriptGeneIndex
 from sirnaforge.models.evidence import (
     EvidenceStatus,
     ObservedCount,
@@ -254,7 +254,7 @@ class TranscriptSeedSite:
     annotation_provenance: str
 
     @property
-    def identity(self) -> tuple[str, str, str, str, str | None, int]:
+    def identity(self) -> _SiteIdentity:
         """The tuple two rows must share to be the same site.
 
         ``anchor_position`` and not ``site_start``: the classes are nested windows whose starts
@@ -323,6 +323,12 @@ class TranscriptSeedScanResult:
     scope: SeedScanScope
     submitted_guides: int
     processed_guides: int
+
+
+#: The tuple :attr:`TranscriptSeedSite.identity` returns, named so the merge maps below can be typed
+#: without restating it. Kept private: the identity's *meaning* is documented on the property, and a
+#: caller should compare identities rather than build one.
+_SiteIdentity = tuple[str, str, str, str, str | None, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +523,129 @@ def _anchors(sequence: str, search_string: str) -> Iterator[int]:
         start = sequence.find(search_string, start + 1)
 
 
+def _sites_for_record(
+    guide: _PreparedGuide,
+    sequence: str,
+    *,
+    transcript_id: str,
+    transcript_version: str | None,
+    gene_id: str | None,
+    requested_classes: frozenset[SeedClass],
+    species: str,
+    queried_strand: GuideStrand,
+    provenance: str,
+) -> Iterator[TranscriptSeedSite]:
+    """Every candidate site one guide realises in one cDNA record, undeduplicated.
+
+    Both class widths are searched independently and yielded as separate candidates; merging them by
+    :attr:`TranscriptSeedSite.identity` is the caller's job, and is what makes nested classes at one
+    anchor a single site. A width whose classes were not requested was never given a search string by
+    :func:`_prepare_guides` and is skipped here rather than searched and filtered.
+    """
+    for search_string, is_m8_window in ((guide.sixmer_site, False), (guide.m8_site, True)):
+        if search_string is None:
+            continue
+        for anchor in _anchors(sequence, search_string):
+            a1_position = paired_transcript_position(A1_POSITION, anchor)
+            has_a1 = a1_position <= len(sequence) and sequence[a1_position - 1] == "A"
+            publishable = _realised_classes(is_m8_window=is_m8_window, has_a1=has_a1) & requested_classes
+            if not publishable:
+                continue
+            site_class = max(publishable, key=lambda member: SEED_CLASS_RANK[member])
+            yield TranscriptSeedSite(
+                guide_id=guide.guide_id,
+                guide_sequence=guide.sequence,
+                queried_strand=queried_strand,
+                species=species,
+                transcript_id=transcript_id,
+                transcript_version=transcript_version,
+                gene_id=gene_id,
+                site_start=_site_start_for(site_class, anchor),
+                site_end=anchor,
+                anchor_position=anchor,
+                site_class=site_class,
+                site_strand=SiteStrand.TRANSCRIPT_SENSE,
+                region=SiteRegion.FULL_CDNA,
+                coordinate_system=COORDINATE_SYSTEM,
+                annotation_provenance=provenance,
+            )
+
+
+def _collect_sites(
+    prepared: tuple[_PreparedGuide, ...],
+    cdna_fasta: str | Path,
+    *,
+    requested_classes: frozenset[SeedClass],
+    species_index: SpeciesTranscriptIndex | None,
+    species: str,
+    queried_strand: GuideStrand,
+    provenance: str,
+) -> dict[str, dict[_SiteIdentity, TranscriptSeedSite]]:
+    """Stream the reference once, merging every guide's candidates onto their site identities.
+
+    One pass over the FASTA for all guides, because the reference is the expensive thing here and a
+    pass per guide would re-read a human cDNA set once per candidate. The merge keeps the maximal
+    class at each identity, so a record realising a 6mer and an 8mer at one anchor contributes one
+    site published as the 8mer.
+    """
+    by_guide: dict[str, dict[_SiteIdentity, TranscriptSeedSite]] = {guide.guide_id: {} for guide in prepared}
+    for header, raw_sequence in _iter_fasta_records(cdna_fasta):
+        sequence = normalize_guide_sequence(raw_sequence)
+        fields = header.split()
+        transcript_id, transcript_version = _split_version(fields[0]) if fields else ("", None)
+        gene_id = species_index.gene_id_for(transcript_id) if species_index is not None else None
+        for guide in prepared:
+            merged = by_guide[guide.guide_id]
+            for site in _sites_for_record(
+                guide,
+                sequence,
+                transcript_id=transcript_id,
+                transcript_version=transcript_version,
+                gene_id=gene_id,
+                requested_classes=requested_classes,
+                species=species,
+                queried_strand=queried_strand,
+                provenance=provenance,
+            ):
+                existing = merged.get(site.identity)
+                if existing is None or SEED_CLASS_RANK[site.site_class] > SEED_CLASS_RANK[existing.site_class]:
+                    merged[site.identity] = site
+    return by_guide
+
+
+def _apply_per_guide_cap(
+    by_guide: Mapping[str, Mapping[_SiteIdentity, TranscriptSeedSite]],
+    prepared: tuple[_PreparedGuide, ...],
+    max_sites_per_guide: int | None,
+) -> tuple[tuple[TranscriptSeedSite, ...], int, int]:
+    """Retain each guide's strongest sites up to the cap, deterministically.
+
+    Sorted by ``(class rank descending, transcript_id, anchor)``: the ordering has to be total and
+    reference-order-independent, or the same scan against the same reference could publish different
+    survivors on a rerun and a ceiling would be non-reproducible. Strongest first because a cap that
+    discarded 8mers to keep 6mers would understate the liability it exists to bound.
+
+    Returns:
+        The retained sites in guide order, the pre-cap total across all guides, and how many guides
+        the cap actually truncated -- the last being what distinguishes CENSORED from a cap that was
+        merely in force.
+    """
+    retained: list[TranscriptSeedSite] = []
+    pre_cap_total = 0
+    truncated_guides = 0
+    for guide in prepared:
+        guide_sites = sorted(
+            by_guide[guide.guide_id].values(),
+            key=lambda site: (-SEED_CLASS_RANK[site.site_class], site.transcript_id, site.anchor_position),
+        )
+        pre_cap_total += len(guide_sites)
+        if max_sites_per_guide is not None and len(guide_sites) > max_sites_per_guide:
+            truncated_guides += 1
+            guide_sites = guide_sites[:max_sites_per_guide]
+        retained.extend(guide_sites)
+    return tuple(retained), pre_cap_total, truncated_guides
+
+
 def scan_transcript_seed_sites(
     guides: Mapping[str, str],
     cdna_fasta: str | Path,
@@ -567,10 +696,15 @@ def scan_transcript_seed_sites(
     provenance = f"ensembl_cdna:{reference_id}" if reference_id else f"index_sidecar_fasta:{Path(cdna_fasta)}"
 
     if region_scope is not SiteRegion.FULL_CDNA:
+        # FAILED and a wholly unobserved ObservedCounts(), not COMPLETE with sites=0. The zero is the
+        # defect #101 names: a UTR-only request this repository cannot resolve would otherwise publish
+        # a clean UTR screen it never performed, and a transcript-seed ceiling read against that zero
+        # would pass. FAILED keeps the (channel, species) pair out of ``completed_pairs``, so the gate
+        # reports UNKNOWN instead.
         return TranscriptSeedScanResult(
             sites=(),
-            counts=ObservedCounts(sites=ObservedCount(value=0)),
-            status=EvidenceStatus.COMPLETE,
+            counts=ObservedCounts(),
+            status=EvidenceStatus.FAILED,
             detail=_unanswerable_region_detail(region_scope, canonical_species),
             scope=scope,
             submitted_guides=len(guides),
@@ -604,61 +738,16 @@ def scan_transcript_seed_sites(
         )
 
     species_index = gene_index.for_species(canonical_species) if gene_index is not None else None
-    by_guide: dict[str, dict[tuple[str, str, str, str, str | None, int], TranscriptSeedSite]] = {
-        guide.guide_id: {} for guide in prepared
-    }
-
-    for header, raw_sequence in _iter_fasta_records(cdna_fasta):
-        sequence = normalize_guide_sequence(raw_sequence)
-        transcript_id, transcript_version = _split_version(header.split()[0]) if header.split() else ("", None)
-        gene_id = species_index.gene_id_for(transcript_id) if species_index is not None else None
-        for guide in prepared:
-            for search_string, is_m8_window in ((guide.sixmer_site, False), (guide.m8_site, True)):
-                if search_string is None:
-                    continue
-                for anchor in _anchors(sequence, search_string):
-                    a1_position = paired_transcript_position(A1_POSITION, anchor)
-                    has_a1 = a1_position <= len(sequence) and sequence[a1_position - 1] == "A"
-                    publishable = _realised_classes(is_m8_window=is_m8_window, has_a1=has_a1) & requested_classes
-                    if not publishable:
-                        continue
-                    site_class = max(publishable, key=lambda member: SEED_CLASS_RANK[member])
-                    site = TranscriptSeedSite(
-                        guide_id=guide.guide_id,
-                        guide_sequence=guide.sequence,
-                        queried_strand=queried_strand,
-                        species=canonical_species,
-                        transcript_id=transcript_id,
-                        transcript_version=transcript_version,
-                        gene_id=gene_id,
-                        site_start=_site_start_for(site_class, anchor),
-                        site_end=anchor,
-                        anchor_position=anchor,
-                        site_class=site_class,
-                        site_strand=SiteStrand.TRANSCRIPT_SENSE,
-                        region=SiteRegion.FULL_CDNA,
-                        coordinate_system=COORDINATE_SYSTEM,
-                        annotation_provenance=provenance,
-                    )
-                    existing = by_guide[guide.guide_id].get(site.identity)
-                    if existing is None or SEED_CLASS_RANK[site_class] > SEED_CLASS_RANK[existing.site_class]:
-                        by_guide[guide.guide_id][site.identity] = site
-
-    retained: list[TranscriptSeedSite] = []
-    pre_cap_total = 0
-    truncated_guides = 0
-    for guide in prepared:
-        guide_sites = sorted(
-            by_guide[guide.guide_id].values(),
-            key=lambda site: (-SEED_CLASS_RANK[site.site_class], site.transcript_id, site.anchor_position),
-        )
-        pre_cap_total += len(guide_sites)
-        if max_sites_per_guide is not None and len(guide_sites) > max_sites_per_guide:
-            truncated_guides += 1
-            guide_sites = guide_sites[:max_sites_per_guide]
-        retained.extend(guide_sites)
-
-    sites = tuple(retained)
+    by_guide = _collect_sites(
+        prepared,
+        cdna_fasta,
+        requested_classes=requested_classes,
+        species_index=species_index,
+        species=canonical_species,
+        queried_strand=queried_strand,
+        provenance=provenance,
+    )
+    sites, pre_cap_total, truncated_guides = _apply_per_guide_cap(by_guide, prepared, max_sites_per_guide)
     resolves_genes = species_index is not None
     if truncated_guides and max_sites_per_guide is not None:
         return TranscriptSeedScanResult(
