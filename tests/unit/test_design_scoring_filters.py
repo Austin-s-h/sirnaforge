@@ -163,6 +163,37 @@ def test_asymmetry_threshold_default_is_shared():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("floor", [0.0, 0.1, 0.3, DEFAULT_MIN_ASYMMETRY_SCORE, 1.0])
+def test_the_asymmetry_floor_spans_its_whole_declared_range(floor):
+    """The floor's lower bound was ``0.3``, so the gate could be loosened but never opened (#101).
+
+    The bound was harder to defend than the number it bounds: this gate's own declared definition says
+    the floor has never been validated against measured knockdown, which is why its action is ``warn``.
+    A second uncalibrated number forbidding a caller from reaching 0 is the same unearned claim one
+    level up.
+    """
+    assert FilterCriteria(min_asymmetry_score=floor).min_asymmetry_score == floor
+
+
+@pytest.mark.unit
+def test_a_zero_asymmetry_floor_admits_everything_and_still_reports(realistic_transcripts_fasta):
+    """A floor of 0 is not the same run as switching the gate off, and both must be reachable.
+
+    ``--filter-action min_asymmetry_score=off`` stops the gate being applied, so the manifest records a
+    gate nothing evaluated. A floor of 0 keeps it declared, applied and reporting ``asymmetry_score`` on
+    every row, and admits everybody because every score satisfies it. Before #101 the second run could
+    not be expressed at all.
+    """
+    result = _design_gaphd(realistic_transcripts_fasta, filters=FilterCriteria(min_asymmetry_score=0.0))
+
+    verdicts = {c.filter_verdicts.get("min_asymmetry_score") for c in result.candidates}
+    assert verdicts == {"pass"}, f"a floor of 0 must be satisfiable by every candidate, saw {verdicts}"
+    assert all(c.filter_observed["min_asymmetry_score"] == c.asymmetry_score for c in result.candidates), (
+        "the gate must still report what it measured, which is what distinguishes this from off"
+    )
+
+
+@pytest.mark.unit
 def test_low_asymmetry_label_tracks_the_asymmetry_score(realistic_transcripts_fasta):
     """The asymmetry verdict must be consistent with the column it is named after.
 
@@ -370,9 +401,12 @@ def test_threshold_overrides_take_effect_and_stay_validated():
     assert overridden.min_asymmetry_score == pytest.approx(0.50)
     assert overridden.max_paired_fraction == pytest.approx(0.75)
 
-    # Constructed, not model_copy'd, so the declared bounds still hold.
+    # Constructed, not model_copy'd, so the declared bounds still hold. The example is -0.1 rather
+    # than 0.0 because #101 lowered this floor's bound to 0: a floor of 0 is now a legitimate run that
+    # admits every candidate while the gate keeps reporting, so it is no longer out of range. A score
+    # below 0 still is, and that is the property this line exists to hold.
     with pytest.raises(ValidationError):
-        FilterCriteria(gc_min=30.0, gc_max=52.0, min_asymmetry_score=0.0)
+        FilterCriteria(gc_min=30.0, gc_max=52.0, min_asymmetry_score=-0.1)
 
 
 @pytest.mark.unit
