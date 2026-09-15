@@ -100,7 +100,7 @@ class GuideEntry:
 
         ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, and the 17-filter registry
         declares no repeat gate, so the report has no descriptor that can re-derive the rejection. It
-        must not therefore call the guide clean -- on one MSH3 run that would have published 185
+        must not therefore call the guide clean -- on one internal run that would have published 185
         guides as passing that the run threw out.
         """
         return self.run_verdict not in (None, "PASS") and not (self.n_gates_failed or self.n_gates_unknown)
@@ -248,8 +248,8 @@ def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
     ``<filter_id>_observed`` is preferred over the descriptor's own ``column``, because it is the
     number the pipeline itself compared. It is the answer for the gates that read human-stratified
     counters: 0.7.1 does not export ``transcriptome_hits_1mm_human`` under that name (#101), but it
-    does export ``max_transcriptome_hits_1mm_observed``, and on a four-species MSH3 run the observed
-    column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named all-species
+    does export ``max_transcriptome_hits_1mm_observed``, and on a four-species internal run the
+    observed column reproduces each gate's own verdict on 100% of 40,081 rows while the all-species
     column disagrees -- 17,600 hits against 63,801. Reading the descriptor's column instead would let
     the report contradict the run using a counter with a wider scope than the gate's.
 
@@ -485,7 +485,7 @@ def _transcript_hits(rows: pd.DataFrame) -> int | None:
     """How many distinct transcripts carry this guide -- the numerator of isoform coverage.
 
     Not the row count. A guide's site can occur twice in one transcript, so enumerations exceed
-    isoforms: on one MSH3 run 14 guides have more rows than transcripts and one has 19 rows over 10.
+    isoforms: on one internal run 14 guides have more rows than transcripts, one with 19 rows over 10.
     Prefers the run's own ``transcript_hit_count`` (which equals the distinct count on every row of
     that run) and falls back to counting, so the report agrees with the column when it exists.
     """
@@ -986,11 +986,11 @@ def _isoform_table(
 
     An earlier version of this report told the reader "two such designs differed 1.4x in measured
     knockdown" in the rendered card. That claim is now confined to this docstring, for two reasons.
-    It is traceable but **mislabelled**: 1.4x is the ratio of *fraction remaining* between AZ's HD-001
-    (0.49) and HD-002 (0.35) at transcript positions 1982/1983, and the ratio of *knockdown* for the
-    same pair is 1.27x. And it is not the strongest case on that panel -- the pair at 2733/2735
-    differs 1.97x in fraction remaining. Neither number belongs in a card that ships with the tool
-    and is read against targets that panel says nothing about.
+    It is traceable but **mislabelled**: 1.4x is the ratio of *fraction remaining* between two designs
+    of one internal reference set (0.49 and 0.35) at transcript positions 1982/1983, and the ratio of
+    *knockdown* for the same pair is 1.27x. And it is not the strongest case in that set -- the pair
+    at 2733/2735 differs 1.97x in fraction remaining. Neither number belongs in a card that ships
+    with the tool and is read against targets that set says nothing about.
     """
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
@@ -1101,7 +1101,7 @@ def _ortholog_conservation(hits: pd.DataFrame) -> dict[str, dict[str, Any]]:
     summarises those hits as ``conservation_score``, which is ``(species hit) / 3``.
 
     That summary cannot answer the question a cross-species programme asks, for two reasons. It is
-    **mismatch-blind**: on one MSH3 run it counted a species as conserved on alignments up to 8
+    **mismatch-blind**: on one internal run it counted a species as conserved on alignments up to 8
     mismatches, and mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. And it is
     **seed-blind**: mouse nm=1 split 96 seed-intact against 79 seed-hit, and one mismatch outside
     positions 2-8 is a different molecule from one inside them -- allowing it took the
