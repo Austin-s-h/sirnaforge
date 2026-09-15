@@ -185,6 +185,7 @@ from sirnaforge.provenance import (
     pipeline_revision_identity,
     present,
     report_html_artifact,
+    reported_term_partition,
     write_report_manifest,
 )
 from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
@@ -1611,25 +1612,35 @@ class SiRNAWorkflow:
         # that had in fact succeeded (#103).
         payload: ReportPayload | None = None
         report_path: Path | None = None
+        render_error: str | None = None
         try:
             # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
             # the gates it actually applied, and a default panel would report other thresholds.
             payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
             report_path = write_report(payload, report_html_path)
         except Exception as e:
+            render_error = f"{type(e).__name__}: {e}"
             logger.warning(f"Failed to write self-contained HTML report: {e}")
 
         summarize_path: Path | None = None
         if payload is not None and report_path is not None:
             self._report_registration = (payload, report_path)
             summarize_path = self._write_quilt_summarize(payload, report_path)
-            # Its own handler, per the same rule as the registration above (#103): the manifest cannot
-            # carry the report's digest without rewriting the bytes the report already quoted, so the
-            # sidecar attests both -- and a failed sidecar must not be logged as a failed report.
-            try:
-                write_report_manifest(report_path, manifest_path, base / "report_manifest.json")
-            except Exception as e:
-                logger.warning(f"Failed to write the report manifest sidecar: {e}")
+
+        # Unconditional, because manifest.json above claims report.html only as PENDING and the sidecar
+        # is the one place the outcome can be recorded without rewriting the bytes the report quoted. A
+        # sidecar written only on success left the manifest attesting a report.html a failed render
+        # never wrote. Its own handler, per #103's two-handler rule: a failed sidecar must not be logged
+        # as a failed report.
+        try:
+            write_report_manifest(
+                report_path or report_html_path,
+                manifest_path,
+                base / "report_manifest.json",
+                render_error=render_error,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write the report manifest sidecar: {e}")
 
         console.print("📋 Generated comprehensive reports and FAIR metadata")
         # Each line only for an artifact that is really there. An operator told a file exists when it
@@ -1958,11 +1969,11 @@ class SiRNAWorkflow:
         # resolves to the exact numbers that produced it. Weights are never altered at runtime, so
         # what is recorded here is what applied.
         scoring_weights = self.config.design_params.scoring
-        # Derived from THIS run's vectors against the term registry, not hand-listed: whether a term is
-        # scored is a per-run property, and a literal cannot notice a term being promoted. That is the
-        # same drift class as #96's two undeclared normalisations. The literal was also wrong three
-        # ways -- it missed pos1_mismatch and au_1_5, and named paired_fraction, which has no
-        # TermRecord because it is a gate input whose record lives in design_parameters.filters.
+        # Derived from THIS run's vectors, not hand-listed: whether a term is scored is a per-run
+        # property, and a literal cannot notice a term being promoted -- #96's drift class. The literal
+        # missed pos1_mismatch and au_1_5, registered terms the shipped profile does not score. Its one
+        # right instinct was naming paired_fraction, which has no TermRecord and is still reported and
+        # unscored, so the universe is the registry PLUS those terms, never the registry alone.
         scored_terms = {term for vector in scoring_weights.all_vectors() for term in vector.terms}
 
         return {
@@ -1980,12 +1991,9 @@ class SiRNAWorkflow:
                 "weight_set_version": SCORING_WEIGHT_SET_VERSION,
                 "vectors": scoring_weights.as_manifest(),
                 "vector_terms": {vector.name: list(vector.terms) for vector in scoring_weights.all_vectors()},
-                # Registry order in both lists, so they are deterministic and partition the vocabulary.
-                "scored_terms": [term for term in TERM_REGISTRY if term in scored_terms],
-                "reported_not_scored": [term for term in TERM_REGISTRY if term not in scored_terms],
-                "reported_not_scored_source": (
-                    "sirnaforge.models.scoring_profile.TERM_REGISTRY minus the union of this run's weight-vector terms"
-                ),
+                # scored_terms / reported_not_scored / their source and definitions: one partition of one
+                # universe, so a reported term cannot be absent from both lists.
+                **reported_term_partition(TERM_REGISTRY, scored_terms),
             },
             "files": files,
             "provenance": self._build_provenance_block(report_html=report_html),
@@ -2015,7 +2023,10 @@ class SiRNAWorkflow:
                 "build": build,
                 "references": self._references_provenance(),
                 "databases": self._databases_provenance(),
-                "artifacts": {"report_html": report_html_artifact(rendered=report_html is not None)},
+                # `expected`, not `rendered`: this manifest is written before the render runs, so the
+                # only honest claim here is that a report was asked for. report_manifest.json states
+                # the outcome.
+                "artifacts": {"report_html": report_html_artifact(expected=report_html is not None)},
                 "coverage": self._coverage_provenance(),
             }
         except Exception as exc:

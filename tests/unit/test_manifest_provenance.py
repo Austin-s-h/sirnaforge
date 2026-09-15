@@ -568,6 +568,87 @@ def test_a_foreign_repository_is_never_attributed_to_this_build(tmp_path, monkey
     assert vcs["commit"]["state"] == "repo_does_not_track_package"
 
 
+def _screened_workflow(tmp_path: Path, name: str, revision: str) -> SiRNAWorkflow:
+    """A run that executed the Nextflow screen, with ``runner.py``'s recorded revision string."""
+    workflow = _qualified_workflow(tmp_path, name)
+    workflow._nextflow_cache_info = {"cache_key": "0" * 12, "pipeline_revision": revision}
+    return workflow
+
+
+@pytest.mark.unit
+def test_a_foreign_repository_is_never_republished_as_the_pipeline_revision(tmp_path, monkeypatch):
+    """``_detect_pipeline_revision`` publishes the first ancestor ``.git``'s HEAD, whosever it is.
+
+    The build block guards that hazard with ``repo_verified`` and the pipeline block did not: a
+    well-formed SHA1 was passed straight through as ``commit`` with the reason "git rev-parse HEAD of
+    the repository holding the pipeline directory", which may be any ancestor repository. The value is
+    real, but its attribution to this pipeline is not, so it belongs under a key that says so.
+    """
+    module = _provenance_module()
+    foreign = tmp_path / "not_sirnaforge"
+    foreign.mkdir()
+    monkeypatch.setattr(module, "_repo_root_for", lambda _start: foreign)
+    recorded = "a" * 40
+
+    revision = _provenance(_screened_workflow(tmp_path, "foreign_pipeline", recorded))["build"]["pipeline_revision"]
+
+    assert revision["repo_verified"] is False
+    assert revision["commit"]["value"] is None, "a repository that does not hold the pipeline cannot name it"
+    assert revision["commit"]["state"] == "repo_does_not_track_pipeline"
+    assert revision["ancestor_repo_head"] == recorded, "the recorded value is kept, under a key that is true"
+
+
+@pytest.mark.unit
+def test_a_stale_head_is_not_this_runs_pipeline_revision(tmp_path, monkeypatch):
+    """A repository that does hold the pipeline may still have moved on since the run.
+
+    Verifying only that the repository tracks the pipeline would re-admit the same class of claim: a
+    SHA nobody can tie to the bytes that executed.
+    """
+    module = _provenance_module()
+    monkeypatch.setattr(module, "_git", lambda *args, **_k: "b" * 40 if args[0] == "rev-parse" else "")
+
+    revision = _provenance(_screened_workflow(tmp_path, "stale_head", "a" * 40))["build"]["pipeline_revision"]
+
+    assert revision["repo_verified"] is False
+    assert revision["commit"]["value"] is None
+    assert revision["commit"]["state"] == "recorded_revision_is_not_the_pipeline_repo_head"
+    assert "b" * 40 in revision["commit"]["reason"]
+
+
+@pytest.mark.unit
+def test_a_verified_pipeline_repository_may_name_the_revision(tmp_path, monkeypatch):
+    """The guard names the claim, it does not suppress it: a checked SHA is still published as a commit."""
+    module = _provenance_module()
+    recorded = "c" * 40
+    monkeypatch.setattr(module, "_git", lambda *args, **_k: recorded if args[0] == "rev-parse" else "")
+
+    revision = _provenance(_screened_workflow(tmp_path, "verified_pipeline", recorded))["build"]["pipeline_revision"]
+
+    assert revision["repo_verified"] is True
+    assert revision["commit"]["value"] == recorded
+    assert revision["commit"]["state"] == "git_worktree"
+    assert "main.nf" in revision["commit"]["reason"], "the reason must name what the repository was verified to hold"
+    assert "ancestor_repo_head" not in revision
+
+
+@pytest.mark.unit
+def test_a_fingerprinted_pipeline_is_not_a_verified_one(tmp_path):
+    """The ``nogit-<mtime_ns>`` branch carries the same ``repo_verified`` flag, and it is False.
+
+    An mtime fingerprint is not a revision, so the key that says a repository vouched for the pipeline
+    must not be missing here -- absent reads as "not applicable" where False reads as "no".
+    """
+    workflow = _screened_workflow(tmp_path, "fingerprinted", "nogit-1757437200000000000")
+
+    revision = _provenance(workflow)["build"]["pipeline_revision"]
+
+    assert revision["repo_verified"] is False
+    assert revision["commit"]["value"] is None
+    assert revision["commit"]["state"] == "not_a_git_checkout"
+    assert revision["workflow_dir_fingerprint"] == "mtime-1757437200000000000"
+
+
 @pytest.mark.unit
 def test_a_container_run_says_so_and_claims_no_image_digest(tmp_path, monkeypatch):
     """A tag is mutable and is never substituted for a digest.
@@ -621,12 +702,38 @@ def test_the_build_block_records_the_runtime_the_report_drew_with(tmp_path):
 # ---------------------------------------------------------------------------------------------
 
 
+def _reported_terms_without_record() -> dict[str, str]:
+    """The declared reported metrics that have no ``TermRecord``, mapped to where each is defined."""
+    declared: dict[str, str] = _provenance_module().REPORTED_TERMS_WITHOUT_TERM_RECORD
+    return declared
+
+
+def _reported_universe() -> list[str]:
+    """Everything the manifest must classify: the scoring registry plus the terms with no record.
+
+    Not the registry alone. A term is reported-and-unscored whether or not the scoring vocabulary has
+    a name for it, and deriving the lists from the registry alone is exactly what made
+    ``paired_fraction`` disappear from both of them.
+    """
+    return [*TERM_REGISTRY, *(term for term in _reported_terms_without_record() if term not in TERM_REGISTRY)]
+
+
 def _expected_split(weights: ScoringWeights) -> tuple[list[str], list[str]]:
     scored = {term for vector in weights.all_vectors() for term in vector.terms}
+    universe = _reported_universe()
     return (
-        [term for term in TERM_REGISTRY if term in scored],
-        [term for term in TERM_REGISTRY if term not in scored],
+        [term for term in universe if term in scored],
+        [term for term in universe if term not in scored],
     )
+
+
+def _resolve_manifest_path(manifest: Mapping[str, Any], dotted: str) -> Any:
+    """Follow a dotted manifest path, so a declared definition location can be shown to be live."""
+    node: Any = manifest
+    for part in dotted.split("."):
+        assert isinstance(node, Mapping) and part in node, f"{dotted} does not resolve in the manifest at {part!r}"
+        node = node[part]
+    return node
 
 
 def _experimental_au_workflow(tmp_path: Path, name: str) -> SiRNAWorkflow:
@@ -651,17 +758,24 @@ def _experimental_au_workflow(tmp_path: Path, name: str) -> SiRNAWorkflow:
 
 @pytest.mark.unit
 def test_reported_not_scored_is_derived_from_this_runs_vectors(tmp_path):
-    """The literal was wrong in three ways, and each way is a real finding.
+    """The literal was wrong two ways, and each way is a real finding.
 
     ``au_1_5`` and ``pos1_mismatch`` were missing -- registered terms the shipped profile does not
-    score. ``paired_fraction`` was present but has no ``TermRecord`` at all: it is a gate input, and
-    its record lives in ``design_parameters.filters.max_paired_fraction``.
+    score. ``paired_fraction`` it named correctly: the term has no ``TermRecord``, but it is reported
+    and unscored all the same, so deriving the list from ``TERM_REGISTRY`` alone must not drop it.
     """
     scoring = _manifest(_qualified_workflow(tmp_path, "derived"))["scoring"]
     expected_scored, expected_unscored = _expected_split(DesignParameters().scoring)
 
     assert scoring["reported_not_scored"] == expected_unscored
-    assert expected_unscored == ["pos1_mismatch", "au_1_5", "empirical", "isoform_coverage", "conservation"]
+    assert expected_unscored == [
+        "pos1_mismatch",
+        "au_1_5",
+        "empirical",
+        "isoform_coverage",
+        "conservation",
+        "paired_fraction",
+    ]
     # Keeps tests/unit/test_manifest_parameters.py:82-83 green: both lists stay flat.
     assert "empirical" in scoring["reported_not_scored"]
     assert "conservation" in scoring["reported_not_scored"]
@@ -689,7 +803,7 @@ def test_promoting_a_term_moves_it_with_no_source_edit(tmp_path):
 
 @pytest.mark.unit
 def test_no_scoring_term_is_invented_or_lost(tmp_path):
-    """The two lists must partition the registry, for the shipped and the experimental weight sets."""
+    """The two lists must partition the whole reported universe, for both shipped weight sets."""
     default_scoring = _manifest(_qualified_workflow(tmp_path, "partition_default"))["scoring"]
 
     experimental_manifest = _manifest(_experimental_au_workflow(tmp_path, "partition_au"))
@@ -697,15 +811,55 @@ def test_no_scoring_term_is_invented_or_lost(tmp_path):
     for scoring in (default_scoring, experimental_manifest["scoring"]):
         scored = set(scoring["scored_terms"])
         unscored = set(scoring["reported_not_scored"])
-        assert scored | unscored == set(TERM_REGISTRY)
+        assert scored | unscored == set(_reported_universe())
         assert not scored & unscored
 
     # Pins the existing assertion at test_manifest_parameters.py:70.
     assert default_scoring["scored_terms"] == list(COMPOSITE_TERMS)
-    # The correction: paired_fraction has no TermRecord, so it was never a candidate for weight. Its
-    # record lives where it is actually applied.
-    assert "paired_fraction" not in default_scoring["reported_not_scored"]
     assert "max_paired_fraction" in experimental_manifest["design_parameters"]["filters"]
+
+
+@pytest.mark.unit
+def test_a_reported_term_with_no_scoring_record_cannot_vanish_from_both_lists(tmp_path):
+    """Deriving the lists from ``TERM_REGISTRY`` alone silently deleted ``paired_fraction``.
+
+    It is not in the registry's universe, so it appeared in NEITHER ``scored_terms`` nor
+    ``reported_not_scored`` -- a live gate input (``max_paired_fraction``, EXCESS_PAIRING) that the
+    report renders beside the structure it came from, reported and unscored and recorded nowhere. The
+    literal it replaced had named it. Fixing the universe rather than the list is what stops the next
+    such term going the same way, so this test asserts the property, not the one name.
+    """
+    manifest = _manifest(_qualified_workflow(tmp_path, "no_vanishing"))
+    scoring = manifest["scoring"]
+    accounted = set(scoring["scored_terms"]) | set(scoring["reported_not_scored"])
+
+    for term, location in _reported_terms_without_record().items():
+        assert term in accounted, f"{term} is reported and has no TermRecord, so it must appear in one of the lists"
+        assert term in scoring["reported_not_scored"], f"{term} has no TermRecord, so no vector can be scoring it"
+        # A name in the list whose definition resolves nowhere is a dead claim, so the manifest says
+        # where the term IS defined and that pointer must be live.
+        assert scoring["reported_not_scored_definitions"][term] == location
+        assert _resolve_manifest_path(manifest, location) is not None
+
+    # The universe is stated, not implied: a reader can tell which registries were partitioned.
+    assert "TERM_REGISTRY" in scoring["reported_not_scored_source"]
+    assert "REPORTED_TERMS_WITHOUT_TERM_RECORD" in scoring["reported_not_scored_source"]
+
+
+@pytest.mark.unit
+def test_the_partition_covers_a_declared_term_the_registry_has_never_heard_of():
+    """The partition is total by construction, so a term cannot fall between the two universes.
+
+    Exercised directly with a registry that knows nothing of the declared term: that is the exact
+    situation ``paired_fraction`` was in, and the helper must still classify it rather than drop it.
+    """
+    module = _provenance_module()
+    partition = module.reported_term_partition(["gc_content", "off_target"], {"gc_content"})
+
+    declared = list(_reported_terms_without_record())
+    assert partition["scored_terms"] == ["gc_content"]
+    assert partition["reported_not_scored"] == ["off_target", *declared]
+    assert set(partition["reported_not_scored_definitions"]) == set(declared)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -799,15 +953,20 @@ def test_the_report_is_attested_by_a_sidecar_not_by_rewriting_the_manifest(tmp_p
     assert sidecar_path.exists(), "write_report_manifest must run immediately after write_report succeeds"
 
     sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["report_html"]["exists"] is True
     assert sidecar["report_html"]["sha256"] == _sha256(report)
     assert sidecar["report_html"]["size_bytes"] == report.stat().st_size
+    assert sidecar["report_html"]["render_error"] is None
     # manifest.json AS WRITTEN: a mismatch here means the manifest was rewritten after rendering.
     assert sidecar["manifest_json"]["sha256"] == _sha256(manifest_path)
 
     manifest = json.loads(manifest_path.read_text())
     artifact = manifest["provenance"]["artifacts"]["report_html"]
     assert artifact["attested"] is False
-    assert artifact["state"] == "attested_by_sidecar"
+    # PENDING, not attested: the manifest is written before the render, so it can only say a report was
+    # asked for and point at the artifact that records whether one arrived.
+    assert artifact["state"] == "pending_sidecar_attestation"
+    assert artifact["rendered"]["value"] is None
     assert artifact["attestation_artifact"] == "report_manifest.json"
     assert len(artifact["reason"]) >= 20
     # `files` means "digested". The report is not one of those, and must not be listed there.
@@ -831,10 +990,48 @@ def test_a_failed_report_is_not_logged_as_a_failed_sidecar(tmp_path, monkeypatch
         base = _run_step6(workflow)
 
     assert (base / "manifest.json").exists(), "a failed report must not cost the manifest"
-    assert not (base / "report_manifest.json").exists()
     messages = caplog.text
     assert "Failed to write self-contained HTML report" in messages
     assert "report manifest" not in messages.lower(), "no sidecar failure happened; none may be reported"
+
+
+@pytest.mark.unit
+def test_a_failed_render_leaves_nothing_asserting_a_report_that_does_not_exist(tmp_path, monkeypatch):
+    """The attestation must follow the outcome, and only the sidecar can see the outcome.
+
+    ``artifacts.report_html`` was keyed on the CALLER PASSING A PATH, evaluated before the render, and
+    the render runs inside a warn-only handler. A render that raised therefore left manifest.json
+    asserting a report.html and an attesting report_manifest.json that neither existed -- the manifest's
+    whole purpose being attestation. The claim is now pending in the manifest and resolved in the
+    sidecar, which is written whichever way the render went.
+    """
+    monkeypatch.setattr(
+        "sirnaforge.workflow.write_report",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("render exploded")),
+    )
+    base = _run_step6(_qualified_workflow(tmp_path, "render_failed"))
+
+    assert not (base / "report.html").exists(), "fixture guard: the render must really have failed"
+
+    artifact = json.loads((base / "manifest.json").read_text())["provenance"]["artifacts"]["report_html"]
+    assert artifact["attested"] is False
+    assert artifact["state"] == "pending_sidecar_attestation"
+    # Never True from intent: nothing here may read as "a report was rendered".
+    assert artifact["rendered"]["value"] is None
+    assert len(artifact["rendered"]["reason"]) >= 20
+    assert artifact["attestation_artifact"] == "report_manifest.json"
+
+    sidecar_path = base / "report_manifest.json"
+    assert sidecar_path.exists(), (
+        "the sidecar is the only place the render's outcome can be stated, so withholding it on failure "
+        "leaves the manifest's pending claim unresolvable"
+    )
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["report_html"]["exists"] is False
+    assert sidecar["report_html"]["sha256"] is None
+    assert "render exploded" in sidecar["report_html"]["render_error"]
+    # The manifest itself is still attested, so the pair remains verifiable.
+    assert sidecar["manifest_json"]["sha256"] == _sha256(base / "manifest.json")
 
 
 @pytest.mark.unit
