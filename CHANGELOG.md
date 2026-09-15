@@ -139,18 +139,47 @@ where the two defects removed here were first written down as outstanding.)
   narrower value is refused before any design work, because the default-verdict set is re-derived
   from what the benchmark run observed and that is only exact if the benchmark run enumerated a
   superset of what a default run would. The polynucleotide-run requirement (`max_poly_runs <= 3`)
-  cannot be widened through this surface and is recorded in the manifest regardless. Only one panel,
-  `huesken_subset`, ships real bytes in this repository (a 180-row Huesken redistribution already
-  vendored for #95/#102); the other panels #109/#110 name are declared but not vendored, and
-  `manifest.json`'s `panel.data_present` says so per artifact so a passing CLI invocation is never
-  mistaken for evidence over data this repository does not have.
-- **`docs/benchmark_artifacts.md`: the benchmark interface, with the vendoring stated up front**
+  cannot be widened through this surface and is recorded in the manifest regardless. Five of the six
+  registered panels ship real bytes: `huesken_subset` (a 180-row Huesken redistribution already
+  vendored for #95/#102) plus the four OligoGym-derived ones described below. `huesken_full` remains
+  `data_present=false` because `work/sirna_bench.csv` is untracked here, and `manifest.json`'s
+  `panel.data_present` states the answer per artifact either way.
+- **The panel registry is re-derived from the vendored OligoGym bytes (#109).** #109 was settled on a
+  tree where these panels were absent, so its registry declared `data_present=false` for four of them
+  and carried citations reading "no primary citation has been independently verified in this
+  repository". `tests/data/benchmarks/oligogym/records.csv` — 4,113 rows, 21 columns, SHA-256
+  `2fb4493...11a9c1` — makes all of that false, and every descriptor is now read out of those bytes:
+  `ichihara` selects 2,850 rows over two datasets, `martinelli` 907, `shmushkovich` 356 (2,850 + 907 +
+  356 = 4,113, selectors checked disjoint), and `PanelDescriptor` gained `vendored_csv` so
+  `data_present` can no longer be a claim with no path behind it. The bytes contradicted the issue's
+  prose in one place and the bytes won: Martinelli is **not** a fully-complementary 21-mer — 858 of its
+  907 rows are a 19 nt core with a 2 nt 3' overhang on each strand — and declaring it blunt would have
+  written `guide_3p_overhang: ""`, i.e. "measured, and blunt", for 889 rows whose bytes say otherwise.
+  Citations now say exactly what the repository can show and no more: Ichihara's vetted NAR citation
+  corroborated by the DOI its own rows carry, a bare DOI for Martinelli and Shmushkovich with **no**
+  author list or journal inferred from it, Martinelli's 2023-vs-2024 name/DOI discrepancy stated
+  rather than resolved, and for `oligogym` itself no citation at all — only the adapter script and its
+  three member DOIs. A test fails if the word "placeholder" reappears in any citation.
+- **`target_identity_status: synthetic_context_local`: a third value rather than a stretched one
+  (#109).** Every OligoGym-derived row's design context is fabricated by the adapter — 70 A, then the
+  reverse complement of the guide, then 70 A, putting the site at 1-based 71 — so its span is an exact
+  coordinate in a context nobody measured. `panel_local` would read as a coordinate in the panel's own measured target
+  (an overclaim) and `unavailable` would discard something the artifact can honestly reproduce (an
+  underclaim), so `panels.TargetIdentityStatus` gained a member. It still has **no `confirmed`
+  member**, so #109 structurally cannot emit a native claim; `derive_observation` raises if a row's
+  `context_type` contradicts its descriptor, so a native table fed to these panels is refused rather
+  than relabelled. `oligogym` is `data_present=true` and deliberately not ingestible: its one table
+  spans three geometries, so it is marked `aggregate_of` its members and refused by name.
+- **`docs/benchmark_artifacts.md`: the benchmark interface, with the synthetic flanks stated up front**
   (#109). The artifact's five fixed files, the two-verdict-sets-from-one-run argument and why a GC
-  narrowing is refused, the three places a polynucleotide exclusion is recorded, and what the surface
-  deliberately does not do. It opens with the same statement `tests/unit/data/README.md` establishes
-  for vendored data: exactly one panel's bytes are present, Ichihara/Martinelli/Shmushkovich/OligoGym
-  are named by the issues and absent, and the PRD #109 cites does not exist in this repository — so no
-  reader takes a green test run as a result over data nobody has.
+  narrowing is refused, the three places a polynucleotide exclusion is recorded, the measured tallies
+  over the vendored panels, and what the surface deliberately does not do. It opens on the distinction
+  `tests/data/benchmarks/README.md` draws and treats as load-bearing: `oligogym/` makes design
+  enumeration and parameter benchmarking runnable and does **not** validate native transcript
+  accessibility, Shmushkovich's 356 asymmetric rows are recorded and refused rather than designed,
+  native mapping and `oligogym_native_design/` are #110's, nothing here scores an artifact against the
+  efficacy it carries, and the PRD #109 cites does not exist in this repository — so no reader takes a
+  green run as a result it is not.
 - **`selection_summary` in `logs/workflow_summary.json`: why the shortlist is the size it is** (#100).
   Success, "complete run, nothing eligible", "incomplete evidence" and "execution error" all leave
   `top_candidates` empty, so the distinguishing information has to be published rather than inferred.
@@ -1213,6 +1242,25 @@ docs` exits 0 with warnings still treated as errors", could not be demonstrated 
 - Species inference from cDNA headers reads Ensembl-formatted headers only, and a reference mixing two
   assemblies is deliberately left unlabelled rather than assigned one of them — both fall back to the
   literal `transcriptome`, where orthology is unresolvable.
+- **`benchmark prepare` cannot yet read the four vendored OligoGym panels** (#109). The registry knows
+  the bytes are vendored; `prepare.py` does not, so `--panel ichihara|martinelli|shmushkovich|oligogym`
+  fails with "registered `data_present=True` but this module declares no vendored path for it". Three
+  further gaps sit behind it: `PanelDescriptor.selects_row` is never called, `target_identity_status`
+  is hard-coded to `"unavailable"` (so the `71..91` span `derive_observation` computes is dropped, and
+  `artifact.py`'s `Literal["unavailable", "panel_local"]` cannot hold `"synthetic_context_local"`
+  yet), and the aggregate `oligogym` raises after `mkdir`, leaving an empty artifact directory behind.
+  The first two **must land together**, and that is measured, not feared: wiring the vendored path
+  while still ignoring the selector makes `--panel ichihara` ingest all 4,113 rows and report
+  `kept 4113 / incompatible 0`, stamping paired-core-19 on all 356 asymmetric Shmushkovich rows and
+  writing them into `design_inputs.fasta` — the relabelling of a measured sequence #109 exists to
+  prevent. Until then the vendored tallies in `docs/benchmark_artifacts.md` come from the real
+  `prepare`/`design` code with exactly those two pieces supplied in-process, which is also how
+  `tests/unit/test_benchmark_real_panels.py` reaches them.
+- **Nothing on the benchmark surface compares a design to the efficacy the panel measured** (#109).
+  Measured labels are carried through verbatim so that an evaluation becomes possible; performing one
+  is out of scope, and no `default_pass` tally is a statement about predictive accuracy. Native
+  transcript mapping is #110's, and `tests/data/benchmarks/oligogym_native_design/` — vendored on this
+  branch — is untouched by #109.
 
 ## [0.7.0] - Unreleased
 
