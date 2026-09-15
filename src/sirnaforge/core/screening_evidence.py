@@ -61,6 +61,10 @@ class EvidenceProducer(str, Enum):
     Attributes:
         OFFTARGET_ANALYSIS: The transcriptome alignment task.
         MIRNA_SEED_ANALYSIS: The miRNA seed-matching task.
+        TRANSCRIPT_SEED_ANALYSIS: The transcript-seed site scan (#101). A separate producer from
+            ``MIRNA_SEED_ANALYSIS`` because it answers a separate question -- complementary seed
+            sites in transcript sequence, not resemblance to a known miRNA -- and reusing the miRNA
+            producer would make an envelope's origin unreadable from the envelope.
         AGGREGATE_RESULTS: The aggregation step, for units it can speak to directly.
         WORKFLOW_SYNTHESIS: ``workflow.py``, for an entry it derived rather than observed.
         BASIC_ANALYSIS: The Nextflow-unavailable fallback path.
@@ -69,6 +73,7 @@ class EvidenceProducer(str, Enum):
 
     OFFTARGET_ANALYSIS = "offtarget_analysis"
     MIRNA_SEED_ANALYSIS = "mirna_seed_analysis"
+    TRANSCRIPT_SEED_ANALYSIS = "transcript_seed_analysis"
     AGGREGATE_RESULTS = "aggregate_results"
     WORKFLOW_SYNTHESIS = "workflow_synthesis"
     BASIC_ANALYSIS = "basic_analysis"
@@ -327,6 +332,7 @@ def build_plan(
     transcriptome: Sequence[tuple[str, str | None]],
     mirna_species: Sequence[str],
     search_settings: Mapping[str, str | int | float | bool | None] | None = None,
+    transcript_seed: Sequence[tuple[str, str | None]] = (),
 ) -> ScreeningPlan:
     """Build the expected plan from what a run requested, before any reference can be dropped.
 
@@ -334,25 +340,45 @@ def build_plan(
     resolve must still appear in the plan, or its absence reconciles as never having been asked
     for rather than as a failure. An unrequested channel gets no plan entry at all, which is what
     lets ``NOT_REQUESTED`` be distinguished from ``FAILED`` downstream.
+
+    ``transcript_seed`` (#101) is appended *after* the existing entry tuples, and defaults to empty:
+    the channel is opt-in, so a run that does not request it must produce a byte-identical plan to
+    the one it produced before the channel existed. Prepending, or interleaving by species, would
+    change every existing plan's entry order for no benefit. Like ``transcriptome`` it carries
+    ``(species, reference_id)`` pairs, because a transcript-seed scan searches a named cDNA reference
+    and the site counts are meaningless without knowing which.
     """
     settings = dict(search_settings or {})
-    entries = tuple(
-        ScreeningPlanEntry(
-            channel=ScreeningChannel.TRANSCRIPTOME,
-            species=species,
-            reference_id=reference_id,
-            guide_set_digest=guide_set_digest,
-            search_settings=settings,
+    entries = (
+        tuple(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.TRANSCRIPTOME,
+                species=species,
+                reference_id=reference_id,
+                guide_set_digest=guide_set_digest,
+                search_settings=settings,
+            )
+            for species, reference_id in transcriptome
         )
-        for species, reference_id in transcriptome
-    ) + tuple(
-        ScreeningPlanEntry(
-            channel=ScreeningChannel.MIRNA_SEED,
-            species=species,
-            guide_set_digest=guide_set_digest,
-            search_settings=settings,
+        + tuple(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.MIRNA_SEED,
+                species=species,
+                guide_set_digest=guide_set_digest,
+                search_settings=settings,
+            )
+            for species in mirna_species
         )
-        for species in mirna_species
+        + tuple(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.TRANSCRIPT_SEED,
+                species=species,
+                reference_id=reference_id,
+                guide_set_digest=guide_set_digest,
+                search_settings=settings,
+            )
+            for species, reference_id in transcript_seed
+        )
     )
     return ScreeningPlan(entries=entries)
 
