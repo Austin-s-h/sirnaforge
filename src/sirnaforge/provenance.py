@@ -40,6 +40,7 @@ from typing import Any
 
 from sirnaforge import __version__
 from sirnaforge.utils.cache_utils import read_artifact_stamp
+from sirnaforge.utils.hashing import file_sha256
 
 PROVENANCE_SCHEMA_VERSION = "1.0"
 REPORT_MANIFEST_SCHEMA_VERSION = "1.0"
@@ -100,15 +101,6 @@ def present(value: Any, state: str, reason: str) -> dict[str, Any]:
 def absent(state: str, reason: str) -> dict[str, Any]:
     """A named non-availability. ``state`` is the reason-class; never the bare string ``unknown``."""
     return {"value": None, "state": state, "reason": reason}
-
-
-def file_sha256(path: Path) -> str:
-    """SHA-256 of a file, for integrity (non-security) attestation."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def fasta_header_assembly(fasta: Path | None, *, max_records: int = 20) -> str | None:

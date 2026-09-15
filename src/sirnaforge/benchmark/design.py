@@ -44,7 +44,6 @@ candidates.rejected_candidates`` through the unchanged ``DesignResult.save_csv``
 
 from __future__ import annotations
 
-import hashlib
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -84,6 +83,7 @@ from sirnaforge.config.run_policy import (
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterAction, FilterEvaluation, SettingSource
 from sirnaforge.models.sirna import DesignResult, SiRNACandidate
+from sirnaforge.utils.hashing import file_sha256
 
 #: The one gate this surface must never be able to move (#109 scope: "keep the polynucleotide-run
 #: requirement active"). Named once so a comment doesn't have to restate the id.
@@ -201,15 +201,6 @@ def _count_fasta_records(path: Path) -> int:
         return 0
     with path.open("r") as handle:
         return sum(1 for line in handle if line.startswith(">"))
-
-
-def _sha256_file(path: Path) -> str:
-    """Plain hex SHA-256 of a file's bytes; no ``sha256:`` prefix, matching ``source_sha256``'s convention."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8192), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _match_candidate(
@@ -344,7 +335,7 @@ def _prepared_inputs(artifact_path: Path) -> tuple[ManifestInputEntry, ...]:
     ):
         path = artifact_path / filename
         entries.append(
-            ManifestInputEntry(role=role, path=filename, sha256=_sha256_file(path), size_bytes=path.stat().st_size)
+            ManifestInputEntry(role=role, path=filename, sha256=file_sha256(path), size_bytes=path.stat().st_size)
         )
     return tuple(entries)
 
@@ -546,14 +537,14 @@ def design_artifact(
                 path=CANDIDATES_ALL_FILENAME,
                 exists=True,
                 size_bytes=candidates_all_path.stat().st_size,
-                sha256=_sha256_file(candidates_all_path),
+                sha256=file_sha256(candidates_all_path),
                 rows=len(all_candidates),
             ),
             "accounting_csv": ManifestOutputEntry(
                 path=ACCOUNTING_FILENAME,
                 exists=True,
                 size_bytes=accounting_path.stat().st_size,
-                sha256=_sha256_file(accounting_path),
+                sha256=file_sha256(accounting_path),
                 rows=len(accounting_rows),
             ),
         }

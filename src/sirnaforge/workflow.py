@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import hashlib
 import json
 import math
 import os
@@ -193,6 +192,7 @@ from sirnaforge.provenance import (
 from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
+from sirnaforge.utils.hashing import file_sha256
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
@@ -1868,14 +1868,6 @@ class SiRNAWorkflow:
             json.dump(payload, fh, indent=2)
         logger.info(f"Wrote candidate variant links to {output_path}")
 
-    def _file_hash_sha256(self, path: Path) -> str:
-        """Return SHA-256 hash of a file for integrity (non-security) tracking."""
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
     def _count_fasta_sequences(self, path: Path) -> int:
         try:
             # Simple FASTA count: lines starting with '>'
@@ -1920,7 +1912,7 @@ class SiRNAWorkflow:
                 "type": ftype,
                 "exists": True,
                 "size_bytes": p.stat().st_size,
-                "sha256": self._file_hash_sha256(p),
+                "sha256": file_sha256(p),
             }
             if extra:
                 entry.update(extra)

@@ -14,7 +14,6 @@ authority, and :func:`completed_pairs` only says what ran to completion -- for a
 asked for -- never what was needed.
 """
 
-import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +35,7 @@ from sirnaforge.models.evidence import (
     ScreeningPlanEntry,
 )
 from sirnaforge.models.policy import ScreeningChannel
+from sirnaforge.utils.hashing import file_sha256
 
 EVIDENCE_FILE_SUFFIX = "_evidence.json"
 """Suffix of one per-unit envelope file, e.g. ``transcriptome_human_evidence.json``."""
@@ -112,14 +112,11 @@ class EvidenceEnvelope(BaseModel):
 def guide_set_digest(path: str | Path) -> str:
     """Digest a guide-set FASTA the same way the plan and every envelope key on it.
 
-    Byte-identical to ``workflow.py``'s ``self._file_hash_sha256(path)[:16]``: two computations of
-    the same file's digest that disagreed would silently split one guide set into two join keys.
+    Truncated to 16 hex characters, and every producer of a join key calls this one function: two
+    computations of the same file's digest that disagreed would silently split one guide set into two
+    join keys.
     """
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8192), b""):
-            digest.update(chunk)
-    return digest.hexdigest()[:16]
+    return file_sha256(path)[:16]
 
 
 def join_key(entry: ScreeningPlanEntry | ScreeningEvidenceEntry) -> JoinKey:
