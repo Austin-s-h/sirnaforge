@@ -2627,8 +2627,13 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
 
     # Create validated summary using Pydantic model. `status` keeps its historical free-text
     # meaning: the batch as a whole ran to completion whenever this point is reached (a total
-    # failure raised above instead). `evidence_status` is the #100 four-value roll-up across every
+    # failure raised above instead). `evidence_status` rolls the #100 vocabulary up across every
     # species this batch attempted, and is only populated when evidence tracking was requested.
+    # The roll-up is deliberately two-valued, and that is coarser than the per-species envelopes it
+    # summarises: only `species_failures` feeds it, so a species whose envelope is CENSORED -- a cap
+    # that truncated its search, making every count a lower bound -- is not a failure and this batch
+    # reports `complete`. The per-species envelope is the authority for that distinction; read the
+    # roll-up as "did any species fail outright", not as the batch's worst evidence status.
     summary = MiRNASummary(
         candidate_id=candidate_id,
         mirna_database=mirna_db,

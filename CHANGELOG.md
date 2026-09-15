@@ -128,6 +128,37 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Added
 
+- **The screening-evidence contract: a completed screen is now something a run has to prove** (#100).
+  The individual entries below are the parts; this is what they add up to, and what they do not. Every
+  screening unit a run intends to attempt — one channel x species pair — is written into a
+  **`ScreeningPlan` before** any reference can be dropped for being unavailable, and every executing
+  producer publishes a versioned **evidence envelope** naming its unit, the digest of the guide set it
+  was handed, one of four statuses (`complete` | `failed` | `censored` | `not_requested`) and, for
+  anything other than `complete`, a reason. Aggregation **reconciles** the two: plan without envelope
+  is a shortfall, envelope without plan is `unplanned`, and envelope-against-a-different-guide-set is a
+  failure rather than a match. `logs/workflow_summary.json` publishes the reconciliation, the
+  `run_status`, and `selection_summary`'s counts by cause.
+
+  **What it now guarantees.** No output file, and no count of zero, is by itself evidence that a screen
+  ran — completion is asserted by a producer or it is unknown. An unknown a qualified run requires
+  blocks the qualified shortlist instead of being converted to a passing zero, and `run_status` plus a
+  distinct exit code separate success, "complete run, nothing eligible", incomplete evidence and
+  execution error. A truncating cap is recorded as `censored` with the discarded-hit count, so a
+  count derived from it is published as a **lower bound** rather than as a measurement. A configuration
+  that can screen nothing at all now aborts non-zero instead of exiting 0 having published nothing.
+  Every gate reports an independent verdict, `UNKNOWN` included, and those verdicts survive into both
+  the CSVs and the JSON.
+
+  **What it does not guarantee.** `complete` means the configured search finished, **not** that every
+  biologically possible hit was found — an exhaustive search is not claimed, and the thresholds
+  themselves are unchanged and no better calibrated than before. The contract governs which claims a
+  run may publish; it does not make the screen more sensitive, and a required unit that no reference
+  exists for still cannot be screened, only reported honestly as unscreened. It is also not a
+  guarantee about the *legacy* `candidates_pass.csv`/`.fasta` pair, which by design still lists every
+  gate-passing guide and labels its selection state rather than narrowing to it (see the entry under
+  **Fixed**). Per-species miRNA completion, and a batch roll-up that distinguishes `censored` from
+  `complete`, remain outstanding — both under **Known limitations**.
+
 - **`selection_summary` in `logs/workflow_summary.json`: why the shortlist is the size it is** (#100).
   Success, "complete run, nothing eligible", "incomplete evidence" and "execution error" all leave
   `top_candidates` empty, so the distinguishing information has to be published rather than inferred.
@@ -905,9 +936,22 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Known limitations
 
-- **miRNA completion is run-level by construction** (#100). The scan is one batch over every
-  submitted guide, so there is no per-species miRNA evidence to have. The transcriptome channel is
-  now tracked per species; the miRNA channel cannot be until the scan reports per species.
+- **miRNA *hit counts* are run-level, even though miRNA *completion* is now per species** (#100). The
+  earlier version of this note said there was no per-species miRNA evidence to have; that is no longer
+  true. `run_mirna_seed_analysis` resolves one database per species and now publishes a
+  `mirna_seed_<species>_evidence.json` envelope for each, so a species whose database cannot be
+  resolved is reported `failed` by name and `combined_mirna_summary.json` separates
+  `species_screened` from `unscreened_species`. What stays run-level is the *table*: the scan is one
+  batch over every submitted guide and `total_hits`/`filtered_hits_per_species` are counted over the
+  batch, so a per-candidate miRNA count for one species is not something the summary can be asked for.
+- **The miRNA batch roll-up cannot say `censored`** (#100). `MiRNASummary.evidence_status` is derived
+  as "failed if any species failed, else complete", so it reports two of the vocabulary's four values.
+  A species whose hit cap truncated its search publishes a `censored` envelope with the discarded-hit
+  count and is **not** a failure, so the batch it belongs to still rolls up as `complete`. Nothing is
+  fabricated — the envelope carries the truncation and the counts derived from it are marked as lower
+  bounds — but a reader who consults only the batch summary sees `complete` over censored evidence.
+  Read the per-species envelopes, which are the authority; widening the roll-up to three values is
+  left for the release that can also decide what a mixed batch should mean downstream.
 - **A qualified batch where scoring failed for every candidate is still shortlisted.** Comparability
   only excludes unscored candidates on a _mixed_ batch, and required-evidence eligibility asks about
   evidence rather than about the score. So a batch whose evidence is complete but whose
