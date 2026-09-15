@@ -39,7 +39,14 @@ entirely (#110 owns giving it a real, native path), and silently truncating or p
 duplex into a 19-23 nt paired core would misrepresent a measured sequence, which the parent issue
 also forbids. :func:`derive_observation` therefore never slices an asymmetric record -- it returns
 the verbatim guide with ``compatibility_status="incompatible"``. All 356 vendored Shmushkovich rows
-take that path.
+take that path, as does every row of a caller's own table prepared under
+``user_supplied_asymmetric``.
+
+The last three descriptors in the registry are architecture-level rather than panel-level:
+``user_supplied_paired_core_with_overhang``, ``user_supplied_fully_complementary`` and
+``user_supplied_asymmetric`` name a geometry, ship no bytes, and read the table a caller passes with
+``--panel-csv``. Their citations say this repository vouches for nothing about those rows, so an
+artifact built under one of them cannot be read as a published panel's.
 """
 
 from __future__ import annotations
@@ -78,7 +85,7 @@ class DuplexPairingStatus(str, Enum):
 
     ``UNSTATED`` is the fourth value the artifact schema declares, for a panel that measured a guide
     without ever recording how -- or whether -- it pairs a passenger. No descriptor in
-    :data:`PANEL_REGISTRY` emits it, because all six declare an architecture; it is declared here
+    :data:`PANEL_REGISTRY` emits it, because all nine declare an architecture; it is declared here
     because the vocabulary is shared with ``sirnaforge.benchmark.artifact``'s observation schema, and
     a future panel legitimately needs it.
     """
@@ -368,6 +375,35 @@ class PanelDescriptor(BaseModel):
                 "context_type_column, so no row could be checked against that claim"
             )
         return self
+
+    def required_source_columns(self) -> tuple[str, ...]:
+        """Columns a source table must carry, or reading its first row raises.
+
+        Only the fatal ones. ``passenger_column`` and ``measured_value_column`` are read with
+        ``dict.get``, because "this table states no passenger / no number" is a real fact and a
+        different one from a malformed table; ``accession_column`` is fatal only when a split rule has
+        to be computed from it. ``prepare.py`` checks a header against this before it reads a row, so a
+        caller who mapped the wrong column names is told which one is missing rather than handed a
+        ``KeyError`` from the middle of a file.
+        """
+        required = [self.columns.guide_column]
+        if self.assay_label.column is not None:
+            required.append(self.assay_label.column)
+        if self.split_rule_id is not None and self.columns.accession_column is not None:
+            required.append(self.columns.accession_column)
+        if self.row_selector is not None:
+            required.append(self.row_selector.column)
+        if self.target_identity_status is not TargetIdentityStatus.UNAVAILABLE:
+            required.extend(
+                column
+                for column in (
+                    self.columns.context_type_column,
+                    self.columns.target_site_start_column,
+                    self.columns.target_site_end_column,
+                )
+                if column is not None
+            )
+        return tuple(dict.fromkeys(required))
 
     def selects_row(self, row: Mapping[str, str]) -> bool:
         """Whether one raw row is this panel's. Always True when the panel declares no selector.
@@ -880,11 +916,138 @@ OLIGOGYM = PanelDescriptor(
     aggregate_of=("ichihara", "martinelli", "shmushkovich"),
 )
 
-#: Every declared panel, keyed by ``panel_id``. Six entries: five vendored (``huesken_subset`` plus
-#: the four OligoGym-derived ones, of which ``oligogym`` is an aggregate of the other three) and one,
-#: ``huesken_full``, whose table is untracked here.
+# --------------------------------------------------------------------------------------------------
+# User-supplied tables: one descriptor per declared architecture
+#
+# A caller holding their own efficacy table had no descriptor to prepare it against. Every panel above
+# is either vendored -- so `--panel-csv` is refused for it, correctly, since a run must not read
+# different bytes than the ones its manifest names -- or, in `huesken_full`'s case, one specific
+# published panel with one specific column mapping. The three below are the geometry with no panel
+# attached, which is what `--panel-csv` was always for: `fully_complementary` and `ASYMMETRIC` in
+# particular had no reachable descriptor at all once the OligoGym bytes landed.
+#
+# They vouch for nothing, and that is the load-bearing part. `data_present=False`, so `--panel-csv` is
+# required and the "no vendored bytes" refusal fires without it; no citation and no redistribution,
+# because there is no source to cite; and `target_identity_status` UNAVAILABLE, because this
+# repository knows nothing about the caller's target context -- not even whether one exists. What an
+# artifact under one of these ids *is* checkable against is the caller's own bytes: `prepare` records
+# their path and SHA-256 as `source_file`/`source_sha256`.
+# --------------------------------------------------------------------------------------------------
+
+#: The columns a ``--panel-csv`` handed to a ``user_supplied_*`` id must use. The smallest honest
+#: mechanism available: one fixed set, declared here and documented in ``docs/benchmark_artifacts.md``,
+#: so the caller renames their columns. The alternative -- a per-run ``--panel-column`` mapping option
+#: -- would be a second way to state what a descriptor already states, and the mapping a run used would
+#: then not be part of the ``descriptor_hash`` the manifest records. ``guide_sequence`` is the only
+#: mandatory one; see :meth:`PanelDescriptor.required_source_columns` for what the rest costs when
+#: absent (a ``None`` field, not an error).
+USER_TABLE_COLUMNS = PanelColumnMapping(
+    guide_column="guide_sequence",
+    passenger_column="passenger_sequence",
+    # Mapped for ``--panel-transcripts`` lookup only, never for a split: these ids declare
+    # ``split_rule_id=None``, because ``predeclared_split`` is pinned to the accession lists in
+    # tests/unit/data/README.md and applying its id to a caller's accessions would report an
+    # un-audited partition under an audited rule's name.
+    accession_column="accession",
+    measured_value_column="efficacy",
+)
+
+_USER_TABLE_CITATION = (
+    "No citation: the rows are the caller's own, supplied at run time with --panel-csv. This "
+    "repository ships none of them, has read no source for them, and vouches for nothing about them "
+    "-- not the sequences, not the labels, not the assay, not the provenance. All it supplies is the "
+    "duplex geometry the table is read under, which the caller chose by naming this panel id."
+)
+_USER_TABLE_REDISTRIBUTION = (
+    "Not a redistribution: nothing is vendored under this id (data_present=False), so --panel-csv is "
+    "required and manifest.json's source_file/source_sha256 name the caller's own bytes. An artifact "
+    "built here must not be read as a published-panel artifact -- it is a table of the declared "
+    "geometry whose provenance is unknown to this repository. Required and optional columns are "
+    "documented in docs/benchmark_artifacts.md; guide_sequence is the only mandatory one. "
+)
+#: Stated rather than named after an assay, because the caller's assay is exactly what is unknown.
+_USER_TABLE_ASSAY_LABEL = "user_supplied_table_assay_not_stated_here"
+#: Non-empty because the schema requires it, and deliberately says nothing about direction or units:
+#: reading the caller's column as, say, percent knockdown would be this repository interpreting a
+#: number it has never seen. Nothing on this surface scores against ``measured_value`` anyway.
+_USER_TABLE_ENDPOINT = "caller_declared_measured_value_not_interpreted_here"
+
+USER_SUPPLIED_PAIRED_CORE_WITH_OVERHANG = PanelDescriptor(
+    panel_id="user_supplied_paired_core_with_overhang",
+    display_name="User-supplied table read as a paired core with a measured 3' overhang",
+    citation=_USER_TABLE_CITATION,
+    redistribution=_USER_TABLE_REDISTRIBUTION,
+    architecture=PanelArchitecture.PAIRED_CORE_WITH_OVERHANG,
+    # 19 nt: this repository's core, the length huesken_subset and ichihara are both measured at. A
+    # default is needed only because the schema requires one for a non-asymmetric panel;
+    # --paired-length overrides it, and for this architecture any guide at least that long is
+    # compatible, with the remainder recorded as the measured overhang.
+    declared_paired_length=19,
+    columns=USER_TABLE_COLUMNS,
+    assay_label=AssayLabelSource(constant=_USER_TABLE_ASSAY_LABEL),
+    measured_endpoint=_USER_TABLE_ENDPOINT,
+    split_rule_id=None,
+    data_present=False,
+)
+
+USER_SUPPLIED_FULLY_COMPLEMENTARY = PanelDescriptor(
+    panel_id="user_supplied_fully_complementary",
+    display_name="User-supplied table read as a blunt, fully complementary duplex",
+    citation=_USER_TABLE_CITATION,
+    redistribution=_USER_TABLE_REDISTRIBUTION,
+    architecture=PanelArchitecture.FULLY_COMPLEMENTARY,
+    # 21 nt, the canonical blunt siRNA duplex. Unlike the paired-core default, this one usually has to
+    # be overridden: _check_compatibility requires a fully complementary duplex's measured length to
+    # *equal* the requested core, because slicing one would invent an overhang nothing measured -- so a
+    # caller whose strands are 19 or 23 nt long must say so with --paired-length or every row comes
+    # back incompatible, correctly, with both lengths named.
+    declared_paired_length=21,
+    columns=USER_TABLE_COLUMNS,
+    assay_label=AssayLabelSource(constant=_USER_TABLE_ASSAY_LABEL),
+    measured_endpoint=_USER_TABLE_ENDPOINT,
+    split_rule_id=None,
+    data_present=False,
+)
+
+USER_SUPPLIED_ASYMMETRIC = PanelDescriptor(
+    panel_id="user_supplied_asymmetric",
+    display_name="User-supplied table read as an asymmetric duplex (every row incompatible)",
+    citation=_USER_TABLE_CITATION,
+    redistribution=(
+        _USER_TABLE_REDISTRIBUTION + "This id exists to record and refuse: #109's scope excludes "
+        "asymmetric design, so every row it ingests comes back compatibility_status=incompatible with "
+        "both strand lengths in its reason, and none is ever sliced or padded into a 19-23 nt core. "
+        "Preparing a table here is how a caller gets that refusal in writing, per row, rather than "
+        "having it inferred; #110 owns giving the geometry a real path."
+    ),
+    architecture=PanelArchitecture.ASYMMETRIC,
+    # None, as the model requires of an asymmetric panel: there is no fixed core to declare. So
+    # --paired-length is mandatory here, and it only tags the artifact directory.
+    declared_paired_length=None,
+    columns=USER_TABLE_COLUMNS,
+    assay_label=AssayLabelSource(constant=_USER_TABLE_ASSAY_LABEL),
+    measured_endpoint=_USER_TABLE_ENDPOINT,
+    split_rule_id=None,
+    data_present=False,
+)
+
+#: Every declared panel, keyed by ``panel_id``. Nine entries: five vendored (``huesken_subset`` plus
+#: the four OligoGym-derived ones, of which ``oligogym`` is an aggregate of the other three);
+#: ``huesken_full``, a named panel whose table is untracked here; and three ``user_supplied_*``
+#: architecture-level ids, which name a geometry rather than a panel and read the caller's own bytes.
 PANEL_REGISTRY: Mapping[str, PanelDescriptor] = {
-    d.panel_id: d for d in (HUESKEN_SUBSET, HUESKEN_FULL, ICHIHARA, MARTINELLI, SHMUSHKOVICH, OLIGOGYM)
+    d.panel_id: d
+    for d in (
+        HUESKEN_SUBSET,
+        HUESKEN_FULL,
+        ICHIHARA,
+        MARTINELLI,
+        SHMUSHKOVICH,
+        OLIGOGYM,
+        USER_SUPPLIED_PAIRED_CORE_WITH_OVERHANG,
+        USER_SUPPLIED_FULLY_COMPLEMENTARY,
+        USER_SUPPLIED_ASYMMETRIC,
+    )
 }
 
 

@@ -112,7 +112,13 @@ def artifact_dir_name(panel_id: str, paired_length: int) -> str:
 ArchitectureId = Literal["paired_core_with_overhang", "fully_complementary", "asymmetric"]
 DuplexPairingStatus = Literal["fully_complementary", "paired_core_with_overhang", "asymmetric", "unstated"]
 CompatibilityStatus = Literal["compatible", "incompatible"]
-TargetIdentityStatus = Literal["unavailable", "panel_local"]
+#: Deliberately has no ``confirmed`` member: #110 owns native transcript mapping, and #109 must be
+#: structurally unable to claim it. ``synthetic_context_local`` is the honest third state for a site
+#: whose coordinates are real and reproducible but locate it inside a FABRICATED context -- the
+#: OligoGym design inputs are 70 A + revcomp(guide) + 70 A with the site at 1-based 71. ``panel_local``
+#: would read as a coordinate in the panel's own measured target, which overclaims; ``unavailable``
+#: would discard a coordinate the artifact can honestly reproduce, which underclaims.
+TargetIdentityStatus = Literal["unavailable", "panel_local", "synthetic_context_local"]
 DesignContextSource = Literal["panel_transcript", "measured_target_site"]
 SplitLabel = Literal["development", "held_out"]
 GuideMatch = Literal["exact", "paired_core_exact", "none"]
@@ -159,7 +165,9 @@ class BenchmarkObservation(BaseModel):
     source_file: str = Field(min_length=1, description="Path of the source table as given")
     source_sha256: str = Field(min_length=1, description="SHA-256 of the source table's bytes")
     target_transcript_id: str | None = Field(description="#110 placeholder; None in #109")
-    target_identity_status: TargetIdentityStatus = Field(description="unavailable or panel_local; never confirmed")
+    target_identity_status: TargetIdentityStatus = Field(
+        description="unavailable, panel_local or synthetic_context_local; never confirmed -- #110 owns native"
+    )
     target_start_1based: int | None = Field(description="Populated only for panel_local")
     target_end_1based: int | None = Field(description="Populated only for panel_local")
     target_strand: str | None = Field(description="Populated only for panel_local")

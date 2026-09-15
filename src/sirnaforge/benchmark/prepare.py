@@ -16,10 +16,15 @@ accounting in ``tests/unit/data/benchmark/README.md`` and ``panels.py``'s own mo
 
 * The issue's cited source, ``docs/prd_benchmark_artifacts_and_variable_length.md``, does not exist
   in the working tree or in git history. The issue body (#109) is the entire specification.
-* Of the panels #109/#110 name, only one is vendored: ``tests/unit/data/sirna_efficacy_subset.csv``,
-  a 180-row Huesken subset (issues #95/#102). ``_VENDORED_PANEL_CSV`` below names that one path;
-  every other registered panel is ``data_present=False`` and refused without an explicit
-  ``--panel-csv``.
+* Five registered panels are vendored and four are not, and this module reads which is which off
+  ``PanelDescriptor.vendored_csv`` rather than a second map of its own. A vendored panel refuses an
+  explicit ``--panel-csv``; an unvendored one (``huesken_full`` and the three architecture-level
+  ``user_supplied_*`` ids) requires one.
+* One vendored table is shared: ``tests/data/benchmarks/oligogym/records.csv`` holds all four
+  OligoGym datasets, so this module honours ``PanelDescriptor.selects_row`` and
+  ``BenchmarkObservation.source_row_index`` counts within the *selected* rows. Ingesting the whole
+  file under one panel's declared architecture was measured, and it stamps paired-core-19 on all 356
+  asymmetric rows -- the relabelling of a measured sequence #109 exists to prevent.
 
 Because the manifest's design-stage fields (``counts.entered_design``/``no_candidate``/
 ``default_pass``/``benchmark_pass``, ``polynucleotide_run_requirement``, ``run_policy``,
@@ -73,13 +78,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_ARTIFACT_ROOT = Path("benchmark_artifacts")
 
-#: The one place a vendored panel's bytes are located. ``panels.PanelDescriptor`` deliberately
-#: carries no path (declaring a descriptor and vendoring bytes are different acts -- a descriptor
-#: can exist for a panel this repository never ships), so this module -- the one that actually
-#: opens files -- is where a ``data_present=True`` panel resolves to a real path. Exactly one entry
-#: today; see the module docstring's second verified fact.
-_VENDORED_PANEL_CSV: Mapping[str, str] = {"huesken_subset": "tests/unit/data/sirna_efficacy_subset.csv"}
-
 #: The one gate #109 requires to stay active and auditable in every artifact, even one no design has
 #: touched yet (module docstring). Threshold is read off the shipped default so this placeholder
 #: cannot silently drift from the real gate ``design_artifact`` later evaluates against.
@@ -109,11 +107,18 @@ def _resolve_source_csv(descriptor: PanelDescriptor, panel_csv: Path | None) -> 
                 "--panel-csv for it would let a run silently read different bytes than the ones its "
                 "own manifest names as vendored. Omit --panel-csv to use the vendored table"
             )
-        relative = _VENDORED_PANEL_CSV.get(descriptor.panel_id)
-        if relative is None:  # pragma: no cover - registry/vendoring mismatch, not a user error
+        # The descriptor names the path, and its own validator already enforces
+        # ``data_present <=> vendored_csv is not None``. This module used to keep a second map keyed by
+        # panel_id, on the reasoning that declaring a descriptor and vendoring bytes are different
+        # acts. They are -- but two lists of the same fact drift, and this pair did: when the OligoGym
+        # panels were re-derived from the bytes f4beab7 vendored, the descriptors gained
+        # ``data_present=True`` while the map here still held one entry, so every one of those panels
+        # refused with "that is a bug in prepare.py". One owner now.
+        relative = descriptor.vendored_csv
+        if relative is None:  # pragma: no cover - the descriptor validator forbids this pairing
             raise BenchmarkPrepareError(
-                f"panel {descriptor.panel_id!r} is registered data_present=True but this module "
-                "declares no vendored path for it; that is a bug in prepare.py, not in your invocation"
+                f"panel {descriptor.panel_id!r} is registered data_present=True but names no "
+                "vendored_csv; that is a bug in the panel registry, not in your invocation"
             )
         return _REPO_ROOT / relative, relative
     if panel_csv is None:
@@ -152,10 +157,55 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_raw_rows(path: Path) -> tuple[dict[str, str], ...]:
+def _read_raw_rows(path: Path) -> tuple[tuple[str, ...], tuple[dict[str, str], ...]]:
+    """The source table's header and rows. The header is returned so the columns can be checked once."""
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle)
-        return tuple(dict(row) for row in reader)
+        fieldnames = tuple(reader.fieldnames or ())
+        return fieldnames, tuple(dict(row) for row in reader)
+
+
+def _check_source_columns(descriptor: PanelDescriptor, fieldnames: Sequence[str], source_file: str) -> None:
+    """Refuse a table missing a column the descriptor cannot do without, naming it.
+
+    Checked against the header before any row is read, because the alternative is a ``KeyError``
+    from the middle of a file -- and for the ``user_supplied_*`` ids, whose whole input is a table this
+    repository has never seen, a mistyped column name is the likeliest way a run goes wrong. The
+    descriptor decides which columns are fatal (``PanelDescriptor.required_source_columns``); an
+    optional column that is simply absent stays absent, and its field is ``None``.
+    """
+    missing = [column for column in descriptor.required_source_columns() if column not in fieldnames]
+    if missing:
+        raise BenchmarkPrepareError(
+            f"{source_file} is missing the column(s) {', '.join(missing)} that panel "
+            f"{descriptor.panel_id!r} declares. The table's header is "
+            f"{', '.join(fieldnames) if fieldnames else '<empty>'}; rename your columns to the ones "
+            "the descriptor names (docs/benchmark_artifacts.md lists them per panel)"
+        )
+
+
+def _select_rows(
+    descriptor: PanelDescriptor, rows: Sequence[Mapping[str, str]], source_file: str
+) -> tuple[Mapping[str, str], ...]:
+    """The rows of ``source_file`` that are this panel's, in source order.
+
+    A vendored table may be shared -- ``oligogym/records.csv`` holds four datasets keyed by ``dataset``
+    -- so a reader that took every row would derive a sibling panel's measured duplexes under this
+    panel's declared architecture. An empty selection is refused rather than written as a zero-row
+    artifact, which would look like a panel with nothing in it instead of a table that does not hold
+    this panel's rows.
+    """
+    if descriptor.row_selector is None:
+        return tuple(rows)
+    selected = tuple(row for row in rows if descriptor.selects_row(row))
+    if not selected:
+        selector = descriptor.row_selector
+        raise BenchmarkPrepareError(
+            f"{source_file} has no row whose {selector.column!r} is one of "
+            f"{', '.join(selector.values)}, which is how panel {descriptor.panel_id!r} names its own "
+            "rows in a shared table; there is nothing for it to ingest"
+        )
+    return selected
 
 
 def _load_transcripts(path: Path) -> dict[str, str]:
@@ -193,10 +243,13 @@ def _build_observation(
 
     Target-locality fields (``target_transcript_id``, ``target_identity_status``,
     ``target_start_1based``/``target_end_1based``/``target_strand``) are always ``None``/
-    ``"unavailable"``: no descriptor in :data:`sirnaforge.benchmark.panels.PANEL_REGISTRY` maps a
-    per-row local-position column (``PanelColumnMapping`` has none), so there is no local coordinate
-    this module could honestly report as ``panel_local`` -- that mapping, like native transcript
-    resolution, is #110's, not invented here.
+    ``"unavailable"``, which is lossy but never an overclaim. For the three ``user_supplied_*`` ids and
+    both Huesken panels it is simply the truth: no coordinate column is mapped, so there is none to
+    report. For the OligoGym-derived panels ``derive_observation`` does compute a
+    ``synthetic_context_local`` span (1-based 71..) and this writer drops it, because
+    ``BenchmarkArtifactCounts`` has no bucket that would keep the tally honest for such a row; carrying
+    it through is outstanding work, tracked with the rest of the target-identity story on #110. What is
+    structurally impossible either way is a native claim: the vocabulary has no ``confirmed`` member.
     """
     try:
         derived = derive_observation(descriptor, row, requested_paired_length=paired_length)
@@ -309,12 +362,22 @@ def prepare_artifact(
         The manifest that was also written to ``manifest.json``.
 
     Raises:
-        BenchmarkPrepareError: A panel-csv/vendoring conflict, a paired length with no default and
-            none given, a missing column, or an existing artifact directory without ``overwrite``.
+        BenchmarkPrepareError: An aggregate panel id, a panel-csv/vendoring conflict, a paired length
+            with no default and none given, a required column the source table does not carry, a
+            selector that matches no row, or an existing artifact directory without ``overwrite``.
+            Every one of them is raised before the artifact directory is created.
         ValueError: An unregistered ``panel_id`` (:func:`sirnaforge.benchmark.panels.describe_panel`).
         sirnaforge.benchmark.artifact.BenchmarkArtifactError: ``paired_length`` outside 19-23.
     """
     descriptor = describe_panel(panel_id)
+    # Refused here rather than by `derive_observation` on the first row, which raises after `mkdir` and
+    # so leaves an empty artifact directory behind. Same reason, stated once in `panels.py`.
+    if descriptor.aggregate_of is not None:
+        raise BenchmarkPrepareError(
+            f"panel {descriptor.panel_id!r} is a shared redistribution of "
+            f"{', '.join(descriptor.aggregate_of)} spanning more than one duplex architecture, so it "
+            "has none of its own to ingest under; prepare one of those panels instead"
+        )
     length = _resolve_paired_length(descriptor, paired_length)
     # Validates the 19-23 bound and builds the directory name in the one place that spells the
     # convention, before anything is read from disk.
@@ -325,6 +388,12 @@ def prepare_artifact(
     if not source_path.is_file():
         raise BenchmarkPrepareError(f"panel csv not found: {source_path}")
     source_sha256 = _file_sha256(source_path)
+
+    # Read and validated before the artifact directory is created, so a mis-mapped or wrong-panel
+    # table is refused without leaving a directory behind for the caller to clean up.
+    fieldnames, all_rows = _read_raw_rows(source_path)
+    _check_source_columns(descriptor, fieldnames, source_file)
+    raw_rows = _select_rows(descriptor, all_rows, source_file)
 
     transcripts: dict[str, str] = {}
     transcripts_path: Path | None = None
@@ -342,7 +411,6 @@ def prepare_artifact(
         )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_rows = _read_raw_rows(source_path)
     observations: list[BenchmarkObservation] = []
     contexts: dict[str, str] = {}
     for index, row in enumerate(raw_rows):
@@ -368,8 +436,8 @@ def prepare_artifact(
         observations_kept=kept,
         observations_incompatible=incompatible,
         mapped_native=0,
-        # No descriptor maps a per-row local-position column (module docstring), so no observation
-        # is ever "panel_local" in #109; every row is honestly "unavailable" until #110.
+        # No descriptor claims a coordinate in a panel's own measured target, and this writer records
+        # every row as "unavailable" (see `_build_observation`), so both buckets follow from that.
         mapped_panel_local=0,
         mapping_unavailable=len(observations),
         entered_design=0,
