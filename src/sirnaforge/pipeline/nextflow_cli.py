@@ -29,6 +29,7 @@ from sirnaforge.core.screening_evidence import (
 from sirnaforge.models.evidence import EvidenceStatus, ScreeningEvidenceEntry, ScreeningPlan
 from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.parsing import parse_csv
 
 logger = get_logger(__name__)
 
@@ -238,7 +239,7 @@ def aggregate_results_cli(  # noqa: PLR0912
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    species_list = [s.strip() for s in transcriptome_species.split(",") if s.strip()]
+    species_list = parse_csv(transcriptome_species)
 
     # Collect all analysis and summary files from current directory (Nextflow stages them)
     current_dir = Path()
@@ -430,7 +431,7 @@ def aggregate_mirna_results_cli(
 
     reconciliation = _reconcile_species(
         evidence_plan=evidence_plan,
-        mirna_species=[s.strip() for s in mirna_species.split(",") if s.strip()],
+        mirna_species=parse_csv(mirna_species),
         search_root=results_dir,
     )
     reconciliation_file = write_reconciliation(output_dir, reconciliation)

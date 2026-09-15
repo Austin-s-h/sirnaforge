@@ -23,6 +23,7 @@ from sirnaforge.models.modifications import (
     StrandMetadata,
     StrandRole,
 )
+from sirnaforge.utils.parsing import parse_csv
 
 
 def parse_chem_mods(chem_mods_str: str) -> list[ChemicalModification]:
@@ -48,7 +49,7 @@ def parse_chem_mods(chem_mods_str: str) -> list[ChemicalModification]:
         if match:
             mod_type = match.group(1).strip()
             pos_str = match.group(2)
-            positions = [int(p.strip()) for p in pos_str.split(",") if p.strip()]
+            positions = [int(token) for token in parse_csv(pos_str)]
             modifications.append(ChemicalModification(type=mod_type, positions=positions))
 
     return modifications

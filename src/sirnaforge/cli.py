@@ -98,6 +98,7 @@ from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 from sirnaforge.reporting import ReportInputError, build_payload, write_quilt_summarize, write_report
 from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
+from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import describe_shortfall_reasons, run_offtarget_only_workflow, run_sirna_workflow
 from sirnaforge.zfn import emit_zfn_experimental_warning
@@ -522,7 +523,7 @@ def _fail_if_nothing_was_eligible(
 def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
     """Parse and normalize mutation type tokens."""
     aliases = {"mismatch": "substitution", "mismatches": "substitution"}
-    mutation_types = [t.strip().lower() for t in raw_types.split(",") if t.strip()]
+    mutation_types = [token.lower() for token in parse_csv(raw_types)]
     if not mutation_types:
         raise ValueError(f"Invalid ZFN mutation types in '{raw_constraint}'. At least one type is required.")
     return [ZFNMutationType(aliases.get(value, value)) for value in mutation_types]
@@ -776,8 +777,8 @@ def search(  # noqa: PLR0912
         )
 
         # Parse transcript types
-        include_types = [t.strip() for t in transcript_types.split(",") if t.strip()] if transcript_types else []
-        exclude_types_list = [t.strip() for t in exclude_types.split(",") if t.strip()] if exclude_types else []
+        include_types = parse_csv(transcript_types) if transcript_types else []
+        exclude_types_list = parse_csv(exclude_types) if exclude_types else []
 
         results: list[GeneSearchResult]
         with Progress(
@@ -1471,7 +1472,7 @@ def workflow(  # noqa: PLR0912
         filter_actions=actions,
         legacy_skip_screening=skip_off_targets or None,
         query_species=query_species,
-        screen_species=[value.strip() for value in species.split(",") if value.strip()],
+        screen_species=parse_csv(species),
         # `--input-fasta` does not auto-resolve the default transcriptomes (see the reference-policy
         # comment below), so with neither `--transcriptome-fasta` nor `--offtarget-indices` this run has
         # no transcriptome reference. Calling itself `qualified` meant it required evidence it could
@@ -1934,7 +1935,7 @@ def offtarget(  # noqa: PLR0912
         config_file=policy_config,
         filter_actions=actions,
         query_species=query_species,
-        screen_species=[value.strip() for value in species.split(",") if value.strip()],
+        screen_species=parse_csv(species),
     )
     if policy.run_mode is RunMode.DESIGN_ONLY:
         _fail_with_config_error(

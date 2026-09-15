@@ -48,6 +48,7 @@ from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.models.schemas import AggregatedOffTargetSchema, GenomeAlignmentSchema, MiRNAAlignmentSchema
 from sirnaforge.models.sirna import SiRNACandidate
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.utils.species import human_vs_other_totals
 from sirnaforge.utils.subprocess_utils import _get_executable_path, _validate_command_args
 
@@ -598,7 +599,7 @@ def normalize_mirna_seed_hit(
         mismatch_positions: tuple[int, ...] = ()
     elif isinstance(mismatch_positions_value, str):
         stripped = mismatch_positions_value.strip().strip("[]()")
-        mismatch_positions = tuple(int(part.strip()) for part in stripped.split(",") if part.strip())
+        mismatch_positions = tuple(int(token) for token in parse_csv(stripped))
     else:
         mismatch_positions = tuple(int(position) for position in mismatch_positions_value)
 
@@ -2056,7 +2057,7 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    species_list = [s.strip() for s in transcriptome_species.split(",") if s.strip()]
+    species_list = parse_csv(transcriptome_species)
 
     # Collect ONLY transcriptome TSV analysis files
     # miRNA files are handled separately by aggregate_mirna_results()
@@ -2664,7 +2665,7 @@ def aggregate_mirna_results(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    species_list = [s.strip() for s in mirna_species.split(",") if s.strip()]
+    species_list = parse_csv(mirna_species)
 
     # Collect all miRNA analysis files using pandas (much faster than manual parsing)
     analysis_files = list(results_path.glob("**/*_mirna_analysis.tsv"))

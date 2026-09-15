@@ -10,11 +10,9 @@ from dataclasses import dataclass
 
 from sirnaforge.config.reference_policy import parse_index_entries
 from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.utils.parsing import parse_csv
 
-
-def parse_csv(value: str) -> list[str]:
-    """Split a comma-separated string into normalized non-empty tokens."""
-    return [token.strip() for token in value.split(",") if token.strip()]
+__all__ = ["parse_csv"]  # re-exported: this module is where CLI callers already look for it
 
 
 def parse_required_csv(value: str, *, error_message: str) -> list[str]:

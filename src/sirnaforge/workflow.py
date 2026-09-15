@@ -196,6 +196,7 @@ from sirnaforge.utils.ensembl_ids import strip_version
 from sirnaforge.utils.hashing import file_sha256
 from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.modification_patterns import apply_modifications_to_candidate
+from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.utils.resource_resolver import InputSource, resolve_input_source
 from sirnaforge.utils.species import is_human_species
 from sirnaforge.validation import ValidationConfig, ValidationMiddleware
@@ -6201,7 +6202,7 @@ def _normalize_sharding_override_value(overrides: dict[str, Any]) -> dict[str, A
 
     chromosomes = normalized.get("chromosomes")
     if isinstance(chromosomes, str):
-        normalized["chromosomes"] = [token.strip() for token in chromosomes.split(",") if token.strip()]
+        normalized["chromosomes"] = parse_csv(chromosomes)
 
     return normalized
 
