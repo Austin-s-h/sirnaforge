@@ -2,9 +2,9 @@
 
 What these tests assert, and all they assert, are properties of the *text* the renderer produces and of
 the template it produces it from: that the payload fixture still exercises every reason code
-:mod:`sirnaforge.reporting.payload` can freeze on; that no declared ``filter_id`` appears as a literal
-in the template, so the shipped evaluator has to read ``FILTERS`` rather than branch per gate; that the
-control panel keeps its two labelled groups and that every threshold box is a real ``type="number"``;
+:mod:`sirnaforge.reporting.payload` can freeze on; that no declared ``filter_id`` appears *quoted* in the
+template (which is weaker than "the evaluator cannot branch per gate" -- see that test's own docstring);
+that the control panel keeps its two labelled groups and every threshold box is a real ``type="number"``;
 that the ``<script>`` slice ends where a browser ends a script; and that a payload string spelling
 ``</script>`` is escaped, escaped *reversibly*, and never reaches the document unescaped.
 
@@ -21,7 +21,9 @@ cart export and the numeric boundary. The maintainer chose to delete it rather t
 engine into this project's test dependencies: less machinery, honestly labelled. From here the shipped
 evaluator is covered by **review**, not by tests -- a change to the evaluator, the presets, the reader
 filters, ``gatesCard``, ``cartTsv``, ``encodeHash``/``applyHashFragment`` or ``parseControlValue`` has
-to be read, because nothing will run it.
+to be read, because nothing will run it. ``docs/html_report.md`` ("What is verified, and what is only
+reviewed") lists what each of the 13 deleted tests held, property by property; read it before assuming a
+property of the browser side is still covered here.
 
 One half of the contract does survive. ``tests/unit/test_reporting_rethreshold.py`` still tests the
 **Python** side of the re-threshold rule in 10 tests: a ``not_evaluated`` gate carrying a measured
@@ -451,13 +453,18 @@ def test_the_fixture_covers_every_reason_code_the_evaluator_must_freeze_on(paylo
 
 @pytest.mark.unit
 def test_no_declared_filter_id_or_column_is_a_branch_in_the_template() -> None:
-    """The evaluator is generic (#103): it reads FILTERS, it never branches on a specific filter.
+    """No declared ``filter_id`` appears *quoted* in the template. That, and no more than that.
 
-    A static grep over the six hand-written v1 metric boxes is what the issue's own review caught --
-    ``gc_content``, ``asymmetry_score`` and ``off_target_count`` were literal strings in the old
-    template, and those three are gates a reader now moves generically. None of the real registry's 17
-    ids may appear as a literal here. The three restored reader filters are not a counterexample: they
-    read guide fields no gate covers, under their own keys, and no `filter_id` among them.
+    Read the guarantee narrowly. This is a grep for two spellings -- ``'the_id'`` and ``"the_id"`` -- over
+    ``_TEMPLATE``, and a per-gate branch reached any other way passes it: on ``FILTERS[3].filter_id``, on
+    ``f.comparator`` or ``f.action``, on a backtick template literal, on an unquoted occurrence, or on the
+    metric *column* a gate reads (column names are in the template, in the cart's TSV header). It would
+    not even catch the shape it is named after: the v1 template's six hand-written metric boxes branched
+    per metric as ``k:'gc', get:g=>g.metrics.gc_content`` and contained no quoted declared ``filter_id``
+    either. "The evaluator reads ``FILTERS`` and never branches per gate" is therefore a reviewed design
+    property, not one this test establishes; what it does establish is that the one spelling that a
+    reader would reach for first has not come back. The three reader filters are not a counterexample:
+    they read guide fields no gate covers, under their own keys, and no ``filter_id`` among them.
     """
     for filter_id in DECLARED_FILTER_IDS:
         assert f"'{filter_id}'" not in _TEMPLATE and f'"{filter_id}"' not in _TEMPLATE, (

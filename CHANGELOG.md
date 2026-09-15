@@ -406,14 +406,19 @@ where the two defects removed here were first written down as outstanding.)
   gate naming the comparator and both thresholds, and one `#reader_filter=` line per bound. The reader
   bounds are recorded for a different reason and the comment says so: they can never touch `status`, but
   `Add top <n> to cart` picks from the filtered view, so they decide which guides are in the file. Columns
-  and their order are unchanged and are now frozen in the parity harness.
+  and their order are unchanged — the provenance rides above the header, not through it — but no test holds
+  them there any more: the eighteen-name literal that froze them lived in the deleted parity harness (see
+  _Changed_), so a reorder or a rename would now reach a reader's spreadsheet without failing CI. That
+  column contract is kept by review from here.
 - **A payload string spelling `</script>` can no longer truncate the report (#103).** An HTML parser ends
   a script at the first literal `</script>` inside it whatever the JavaScript means, and `json.dumps` does
   not escape `<`, so a gene query, transcript id or gene symbol containing that text produced a dead
   document with every panel below the cut missing. All seven embedded JSON blobs now escape `<`, `>` and
-  `&`. The parity harness had the mirror of the same bug — a greedy `<script>(.*)</script>` regex sliced
-  past a truncation instead of failing on it — and now ends where a browser ends a script and refuses a
-  document that closes its own script more than once.
+  `&`. The test-side `<script>` slice had the mirror of the same bug — a greedy `<script>(.*)</script>`
+  regex ran past a truncation instead of failing on it — and that fix outlived the harness it was written
+  in: `tests/unit/test_reporting_document_structure.py` cuts the slice at the **first** `</script>`, refuses
+  a document that closes its own script more than once, and holds a forged double-close document against the
+  greedy regex, so the difference between the two rules is under test rather than merely described.
 - **The workflow registers the run's own summary, and tells its two writes apart (#103).** Step 6 built
   `quilt_summarize.json` before `run_complete_workflow` wrote `logs/workflow_summary.json`, and the writer
   omits any artifact that does not exist, so the row a reader would go looking for was the one row that
@@ -748,7 +753,7 @@ where the two defects removed here were first written down as outstanding.)
   `tests/unit/test_report_client_evaluator_parity.py` is renamed to
   `tests/unit/test_reporting_document_structure.py` — after the deletion it proves no parity — and keeps
   the 6 assertions that never needed an interpreter: every reason code still fires on the fixture, no
-  declared `filter_id` is a literal in the template, the panel keeps its two labelled groups, every
+  declared `filter_id` appears **quoted** in the template, the panel keeps its two labelled groups, every
   threshold box is a real `type="number"`, the `<script>` slice ends where a browser ends a script, and
   a payload spelling `</script>` is escaped reversibly (proved now with `json.loads` over the embedded
   literal rather than by echoing it through Node). `.nvmrc` is deleted; nothing else consumed it.
@@ -758,7 +763,9 @@ where the two defects removed here were first written down as outstanding.)
   green. `tests/unit/test_reporting_rethreshold.py` still holds the **Python** side of the rule in 10
   tests; what is gone is "and the browser does the same". The shipped evaluator, the presets, the reader
   filters, the panel's Why column, the cart's provenance and the fragment round-trip are covered by
-  **review** from here, which `docs/html_report.md` now says in the section a reader would consult.
+  **review** from here. `docs/html_report.md` says so in the section a reader would consult, and lists
+  what each of the 13 deleted tests held, property by property, so the trade can be audited rather than
+  taken on trust.
 
 ### Fixed
 
