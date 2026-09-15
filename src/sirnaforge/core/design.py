@@ -930,27 +930,20 @@ class MiRNADesigner(SiRNADesigner):
 
         return candidates
 
-    def _classify_pos1_pairing(self, guide_base: str, passenger_base: str) -> str:
-        """Classify pairing state at guide position 1 (delegates to `classify_pos1_pairing`)."""
-        return classify_pos1_pairing(guide_base, passenger_base)
+    @staticmethod
+    def _classify_seed_region(guide: str) -> str:
+        """Return a placeholder seed class from guide length alone.
 
-    def _calculate_supplementary_score(self, guide: str) -> float:
-        """3' supplementary pairing sub-score (delegates to `supplementary_score`)."""
-        return supplementary_score(guide)
-
-    def _classify_seed_region(self, guide: str) -> str:
-        """Classify seed match class based on guide positions 2-8.
+        A real seed class depends on target matching, which happens during off-target analysis, so
+        this returns only one of two values: 6mer under 8 nt, 8mer otherwise. The 7mer-m8 and
+        7mer-a1 classes are unreachable here.
 
         Args:
             guide: Guide strand sequence
 
         Returns:
-            Seed class: "6mer", "7mer-m8", "7mer-a1", or "8mer"
+            ``"6mer"`` or ``"8mer"``.
         """
-        # This is a simplified classification based on seed length
-        # In practice, seed class depends on target matching, which happens during off-target analysis
-        # For now, we just categorize based on sequence properties
         if len(guide) < 8:
             return "6mer"
-        # This is a placeholder - actual seed class determined during off-target matching
         return "8mer"

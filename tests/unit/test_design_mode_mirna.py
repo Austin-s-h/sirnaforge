@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
+from sirnaforge.core.design import MiRNADesigner, SiRNADesigner, classify_pos1_pairing, supplementary_score
 from sirnaforge.models.sirna import (
     DesignMode,
     DesignParameters,
@@ -112,34 +112,28 @@ class TestMiRNADesigner:
 
     def test_mirna_designer_pos1_classification(self):
         """Test position 1 pairing state classification."""
-        params = DesignParameters(design_mode=DesignMode.MIRNA)
-        designer = MiRNADesigner(params)
-
         # Test perfect pair
-        assert designer._classify_pos1_pairing("A", "U") == "perfect"
-        assert designer._classify_pos1_pairing("G", "C") == "perfect"
+        assert classify_pos1_pairing("A", "U") == "perfect"
+        assert classify_pos1_pairing("G", "C") == "perfect"
 
         # Test wobble
-        assert designer._classify_pos1_pairing("G", "U") == "wobble"
-        assert designer._classify_pos1_pairing("U", "G") == "wobble"
+        assert classify_pos1_pairing("G", "U") == "wobble"
+        assert classify_pos1_pairing("U", "G") == "wobble"
 
         # Test mismatch
-        assert designer._classify_pos1_pairing("A", "A") == "mismatch"
-        assert designer._classify_pos1_pairing("C", "U") == "mismatch"
+        assert classify_pos1_pairing("A", "A") == "mismatch"
+        assert classify_pos1_pairing("C", "U") == "mismatch"
 
     def test_mirna_designer_supplementary_score(self):
         """Test 3' supplementary pairing score calculation."""
-        params = DesignParameters(design_mode=DesignMode.MIRNA)
-        designer = MiRNADesigner(params)
-
         # Test sequence with high A/U content in positions 13-16 (0-indexed: 12-15)
         guide_high_au = "AAAAAAAAAAAAAAUUUAAAA"  # Positions 12-15: AUUU (75% A/U)
-        score_high = designer._calculate_supplementary_score(guide_high_au)
+        score_high = supplementary_score(guide_high_au)
         assert score_high > 0.5  # Should be high score (low pairing)
 
         # Test sequence with low A/U content in positions 13-16 (0-indexed: 12-15)
         guide_low_au = "AAAAAAAAAAAAGGGCAAAA"  # Positions 12-15: AGGG (25% A/U)
-        score_low = designer._calculate_supplementary_score(guide_low_au)
+        score_low = supplementary_score(guide_low_au)
         assert score_low < 0.5  # Should be low score (high pairing potential)
 
     def test_mirna_vs_sirna_scoring_difference(self):

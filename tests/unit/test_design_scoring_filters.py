@@ -14,7 +14,14 @@ from Bio.Seq import Seq
 from pydantic import ValidationError
 
 import sirnaforge.cli as cli_module
-from sirnaforge.core.design import DUPLEX_DG_PER_NT_STRONG, DUPLEX_DG_PER_NT_WEAK, MiRNADesigner, SiRNADesigner
+from sirnaforge.core.design import (
+    DUPLEX_DG_PER_NT_STRONG,
+    DUPLEX_DG_PER_NT_WEAK,
+    MiRNADesigner,
+    SiRNADesigner,
+    classify_pos1_pairing,
+    supplementary_score,
+)
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.models.sirna import (
     DEFAULT_MIN_ASYMMETRY_SCORE,
@@ -327,18 +334,14 @@ def test_mirna_mode_does_not_alter_the_design_score(realistic_transcripts_fasta)
 )
 def test_pos1_pairing_reads_dna_as_rna(guide_base, passenger_base, expected):
     """A:T is a Watson-Crick pair, not a mismatch."""
-    designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
-
-    assert designer._classify_pos1_pairing(guide_base, passenger_base) == expected
+    assert classify_pos1_pairing(guide_base, passenger_base) == expected
 
 
 @pytest.mark.unit
 def test_supplementary_score_counts_t_as_u():
     """Positions 13-16 are AU-rich whether spelled with T or U."""
-    designer = MiRNADesigner(DesignParameters(design_mode=DesignMode.MIRNA))
-
-    assert designer._calculate_supplementary_score("GCGCGCGCGCGCTTTTGCGCG") == pytest.approx(1.0)
-    assert designer._calculate_supplementary_score("GCGCGCGCGCGCGCGCGCGCG") == pytest.approx(0.0)
+    assert supplementary_score("GCGCGCGCGCGCTTTTGCGCG") == pytest.approx(1.0)
+    assert supplementary_score("GCGCGCGCGCGCGCGCGCGCG") == pytest.approx(0.0)
 
 
 @pytest.mark.unit
