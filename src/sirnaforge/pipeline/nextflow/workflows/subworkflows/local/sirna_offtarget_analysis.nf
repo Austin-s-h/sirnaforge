@@ -109,6 +109,44 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         }
 
     //
+    // #100 (defect 11): a run that can screen nothing must not exit 0.
+    //
+    // With the miRNA channel deliberately off (a value that resolves to zero species, the idiom
+    // documented above) AND no alignment unit to run, every channel collected below is empty.
+    // `collect()` emits nothing at all for an empty source -- unlike `toList()`, which emits an
+    // empty list -- so AGGREGATE_RESULTS never ran, no reconciliation was ever published, and the
+    // pipeline reported success having screened nothing: the exact failure this evidence contract
+    // exists to prevent, reachable through the subworkflow's own disable idiom.
+    //
+    // Two changes, and both are needed:
+    //
+    //  * the three `collect()` calls below get an `ifEmpty([])` floor, so AGGREGATE_RESULTS always
+    //    runs and always publishes a reconciliation -- including on the paths where a reference
+    //    WAS configured but no analysis unit ran (every entry filtered out by type, every
+    //    BUILD_BWA_INDEX crashed), where the aggregate has an expected plan to reconcile against
+    //    and can therefore report each unit as failed;
+    //
+    //  * this guard aborts the run outright when BOTH channels are off, because the floor alone
+    //    cannot make that case honest: with nothing requested the expected plan may itself be
+    //    empty, and a reconciliation over an empty plan has no shortfall to report -- it is
+    //    byte-comparable to a clean screen. A non-zero exit is the only outcome that cannot be
+    //    mistaken for success, so that is what this configuration gets.
+    //
+    // Reassigned rather than forked off `references`, so the check adds no second consumer of an
+    // existing channel: this is the one channel whose emptiness means "not one unit will align".
+    //
+    if (!ch_mirna_species_list) {
+        ch_reference_analysis_input = ch_reference_analysis_input.ifEmpty {
+            error(
+                "Nothing to screen: --mirna_species resolved to zero species and no usable transcriptome " +
+                "reference was configured, so neither screening channel can run and no evidence can be " +
+                "published. Provide --transcriptome_fastas or --transcriptome_indices, or leave " +
+                "--mirna_species at its default."
+            )
+        }
+    }
+
+    //
     // MODULE: Run off-target analysis once per reference (all candidates in batch)
     //
     OFFTARGET_ANALYSIS(
@@ -126,13 +164,18 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     //
     // Aggregate once after all upstream analyses complete.
     // mix(...).collect() keeps the shape simple for miRNA-only and transcriptome+miRNA runs alike.
+    // ifEmpty([]) is the #100 floor described above: an empty collect() emits nothing, which
+    // silently withheld AGGREGATE_RESULTS altogether; an empty list runs it on nothing, which is
+    // what publishes "these units were expected and none of them produced anything".
     ch_all_analysis = OFFTARGET_ANALYSIS.out.analysis
         .mix(ch_mirna_analysis)
         .collect()
+        .ifEmpty([])
 
     ch_all_summary = OFFTARGET_ANALYSIS.out.summary
         .mix(ch_mirna_summary)
         .collect()
+        .ifEmpty([])
 
     // Every per-unit #100 evidence envelope, from both channels. Staged as a `path` input (not
     // `val`, unlike analysis/summary above) so AGGREGATE_RESULTS's own reconciliation -- which
@@ -141,6 +184,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     ch_all_evidence = OFFTARGET_ANALYSIS.out.evidence
         .mix(ch_mirna_evidence)
         .collect()
+        .ifEmpty([])
 
     //
     // MODULE: Aggregate all results

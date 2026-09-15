@@ -16,6 +16,7 @@ from sirnaforge.core.off_target import (
     validate_index_files,
 )
 from sirnaforge.core.screening_evidence import (
+    EVIDENCE_FILE_SUFFIX,
     EvidenceProducer,
     Reconciliation,
     build_plan,
@@ -70,6 +71,17 @@ def _reconcile_species(
             mirna_species=mirna_species,
         )
     return reconcile(plan, observed)
+
+
+def _staged_mirna_evidence(search_root: Path, destination: Path) -> list[Path]:
+    """Every miRNA per-unit evidence envelope under ``search_root``, excluding ``destination``'s own.
+
+    The miRNA aggregate searches the results directory it is handed, so the envelopes have to be
+    copied into it (#100). Resolved eagerly, and with anything already inside ``destination``
+    skipped, so a copy this call just made can never be re-found and copied onto itself.
+    """
+    pattern = f"{ScreeningChannel.MIRNA_SEED.value}_*{EVIDENCE_FILE_SUFFIX}"
+    return [path for path in search_root.rglob(pattern) if path.parent != destination]
 
 
 def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") -> dict[str, Any]:
@@ -291,6 +303,17 @@ def aggregate_results_cli(  # noqa: PLR0912
             dest_path = mirna_results_dir / dest_name
             shutil.copy(f, dest_path)
 
+        # #100: stage the per-unit miRNA evidence envelopes beside those TSVs. Only the analysis and
+        # summary files used to be copied here, while ``aggregate_mirna_results`` searched the very
+        # directory it was handed for envelopes -- so it found none on any real run and
+        # ``species_screened`` was decided by its no-envelope fallback rather than by the run. The
+        # call below now names the real search root explicitly; this copy is what keeps the staged
+        # directory a self-contained unit, so a caller that leaves ``evidence_root`` unset still
+        # reconciles against real envelopes instead of against nothing. Only the miRNA channel's
+        # envelopes are copied, which is all that function reads.
+        for envelope in _staged_mirna_evidence(current_dir, mirna_results_dir):
+            shutil.copy(envelope, mirna_results_dir / envelope.name)
+
         # Run aggregation using core function
         result_path = aggregate_offtarget_results(
             results_dir=str(results_dir), output_dir=output_dir, transcriptome_species=transcriptome_species
@@ -307,6 +330,10 @@ def aggregate_results_cli(  # noqa: PLR0912
                 output_dir=output_dir,
                 mirna_db=resolved_mirna_db,
                 mirna_species=resolved_mirna_species,
+                # #100: the envelopes live where the tasks wrote them -- this task's own working
+                # directory, staged by AGGREGATE_RESULTS -- not in the staging directory above, so
+                # the search root is named explicitly rather than inherited from ``results_dir``.
+                evidence_root=current_dir,
             )
             mirna_summary = {
                 "mirna_db": resolved_mirna_db,

@@ -1,6 +1,6 @@
 """Nextflow-side plumbing for #100's expected-plan contract (A7).
 
-Three defects, pinned independently:
+Five defects, pinned independently:
 
 1. ``AGGREGATE_RESULTS`` used to learn which species to reconcile from ``ch_reference_indices`` --
    the channel of indices that actually *built* -- so a species whose ``BUILD_BWA_INDEX`` crashed
@@ -12,18 +12,34 @@ Three defects, pinned independently:
 3. ``NextflowExecutionError`` used to carry only ``str(CalledProcessError)`` in its message,
    leaving ``.stdout``/``.stderr`` at their empty-string defaults even though the subprocess call
    that raised it had captured real output.
+4. With BOTH screening channels off, every channel the subworkflow collected was empty. An empty
+   ``collect()`` emits nothing at all (unlike ``toList()``), so ``AGGREGATE_RESULTS`` never ran and
+   a ``nextflow run`` exited 0 having published no evidence whatsoever -- reached through the
+   subworkflow's own documented disable idiom, a value for ``--mirna_species`` that resolves to
+   zero species with no transcriptome reference configured.
+5. ``aggregate_results_cli`` staged only the analysis and summary TSV/JSON files into the miRNA
+   results directory it then hands to ``aggregate_mirna_results``. That function searches the
+   directory it is given for per-unit evidence envelopes, so it found none on every real run, its
+   no-envelopes fallback fired, and ``species_screened`` reported the full requested list however
+   the run had actually gone.
 
-All fixtures here are text/static -- none of these tests invokes a real ``nextflow`` binary.
+Every fixture here is text/static or a direct function call -- none of these tests invokes a real
+``nextflow`` binary.
 """
 
 import asyncio
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from sirnaforge.core.screening_evidence import EvidenceProducer, write_evidence
+from sirnaforge.models.evidence import EvidenceStatus, ScreeningEvidenceEntry
+from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.pipeline.nextflow.config import NextflowConfig
 from sirnaforge.pipeline.nextflow.runner import NextflowExecutionError, NextflowRunner
+from sirnaforge.pipeline.nextflow_cli import aggregate_results_cli
 
 _WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / "src/sirnaforge/pipeline/nextflow/workflows"
 _SUBWORKFLOW = _WORKFLOWS_DIR / "subworkflows/local/sirna_offtarget_analysis.nf"
@@ -162,6 +178,171 @@ def test_aggregate_results_process_declares_evidence_plan_and_evidence_files_inp
     # directory, which is exactly what collect_evidence() globs at aggregation time.
     assert "path evidence_plan" in input_block
     assert "path evidence_files" in input_block
+
+
+# ---------------------------------------------------------------------------
+# 4. Both channels off must not be a silent success
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_every_collected_channel_has_an_empty_list_floor():
+    """AGGREGATE_RESULTS must run even when no upstream unit produced a single file (#100).
+
+    ``collect()`` emits nothing for an empty source, which withheld the aggregation step
+    altogether -- so no reconciliation was published and the run exited 0 having screened nothing.
+    An empty *list* runs the aggregation on nothing, which is what publishes "these units were
+    expected and not one of them produced anything". Verified against a standalone stub harness:
+    an empty ``collect()`` leaves the consuming process at ``completed=0``, an
+    ``ifEmpty([])`` floor runs it.
+    """
+    text = _SUBWORKFLOW.read_text()
+
+    collected = [
+        block
+        for block in text.split("ch_all_")[1:]
+        # Only the three assignments, not later reads of the same names.
+        if "=" in block.split("\n", 1)[0]
+    ]
+    assert len(collected) == 3, "expected exactly three collected channels feeding AGGREGATE_RESULTS"
+    for block in collected:
+        assignment = block.split("AGGREGATE_RESULTS", 1)[0]
+        assert ".collect()" in assignment
+        assert ".ifEmpty([])" in assignment, assignment
+
+
+@pytest.mark.unit
+def test_the_subworkflow_aborts_when_neither_screening_channel_can_run():
+    """With the miRNA channel off and no alignment unit, the only honest outcome is a non-zero exit.
+
+    The floor above cannot make this configuration safe on its own: nothing was requested, so the
+    expected plan can be empty too, and a reconciliation over an empty plan has no shortfall to
+    report -- it is indistinguishable from a clean screen. Reproduced before the fix with
+    ``nextflow run main.nf -stub-run --mirna_species ','``: exit 0, ``completed=0``, and not one
+    published file under ``aggregated/``. After it, exit 1 with the message below.
+    """
+    text = _SUBWORKFLOW.read_text()
+
+    guard = text.split("if (!ch_mirna_species_list) {", 1)
+    assert len(guard) == 2, "the both-channels-off guard must be keyed on the resolved species list"
+    guard_block = guard[1].split("OFFTARGET_ANALYSIS(", 1)[0]
+    assert "ifEmpty" in guard_block, "the guard must fire on an empty alignment-input channel"
+    assert "error(" in guard_block, "the guard must abort the run, not warn"
+    assert "Nothing to screen" in guard_block
+    # The guard must sit upstream of the process it protects, or the run reaches aggregation first.
+    assert text.index("if (!ch_mirna_species_list) {") < text.index("OFFTARGET_ANALYSIS(\n")
+
+
+# ---------------------------------------------------------------------------
+# 5. The miRNA evidence envelopes reach the directory the miRNA aggregate searches
+# ---------------------------------------------------------------------------
+
+
+def _write_mirna_batch(directory: Path) -> tuple[Path, Path]:
+    """One batch miRNA analysis TSV and summary, named the way MIRNA_SEED_ANALYSIS publishes them."""
+    analysis = directory / "batch_mirna_analysis.tsv"
+    analysis.write_text(
+        "qname\tqseq\tspecies\tdatabase\tmirna_id\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\t"
+        "seed_mismatches\tofftarget_score\n"
+    )
+    summary = directory / "batch_mirna_summary.json"
+    summary.write_text(json.dumps({"total_candidates": 0, "total_hits": 0}))
+    return analysis, summary
+
+
+@pytest.mark.unit
+def test_aggregate_results_cli_stages_mirna_evidence_so_screened_species_reflect_it(tmp_path, monkeypatch):
+    """A COMPLETE envelope for one requested species must not report the other one screened (#100).
+
+    ``aggregate_mirna_results`` reads envelopes from the results directory it is handed, and with
+    none found it keeps its historical answer: every requested species reported screened. Staging
+    the analysis files without their envelopes therefore made that fallback fire on every real run.
+    """
+    monkeypatch.chdir(tmp_path)
+    analysis, summary = _write_mirna_batch(tmp_path)
+    write_evidence(
+        tmp_path,
+        producer=EvidenceProducer.MIRNA_SEED_ANALYSIS,
+        entry=ScreeningEvidenceEntry(
+            channel=ScreeningChannel.MIRNA_SEED,
+            species="human",
+            guide_set_digest="a" * 16,
+            status=EvidenceStatus.COMPLETE,
+        ),
+    )
+
+    aggregate_results_cli(
+        transcriptome_species="human",
+        output_dir=str(tmp_path / "aggregated"),
+        mirna_db="toy_db",
+        mirna_species="human,mouse",
+        analysis_files=[str(analysis)],
+        summary_files=[str(summary)],
+    )
+
+    mirna_summary = json.loads((tmp_path / "aggregated" / "combined_mirna_summary.json").read_text())
+    assert mirna_summary["species_screened"] == ["human"]
+    assert mirna_summary["unscreened_species"] == ["mouse"]
+
+
+@pytest.mark.unit
+def test_mirna_evidence_staging_copies_the_envelope_next_to_the_analysis_files(tmp_path, monkeypatch):
+    """The envelope lands in the same directory the miRNA aggregate is pointed at, once."""
+    monkeypatch.chdir(tmp_path)
+    analysis, summary = _write_mirna_batch(tmp_path)
+    write_evidence(
+        tmp_path,
+        producer=EvidenceProducer.MIRNA_SEED_ANALYSIS,
+        entry=ScreeningEvidenceEntry(
+            channel=ScreeningChannel.MIRNA_SEED,
+            species="human",
+            guide_set_digest="a" * 16,
+            status=EvidenceStatus.COMPLETE,
+        ),
+    )
+
+    aggregate_results_cli(
+        transcriptome_species="human",
+        output_dir=str(tmp_path / "aggregated"),
+        mirna_db="toy_db",
+        mirna_species="human",
+        analysis_files=[str(analysis)],
+        summary_files=[str(summary)],
+    )
+
+    staged = sorted((tmp_path / "temp_results" / "mirna").glob("*_evidence.json"))
+    assert [path.name for path in staged] == ["mirna_seed_human_evidence.json"]
+
+
+@pytest.mark.unit
+def test_the_mirna_aggregate_is_told_where_the_envelopes_actually_are(tmp_path, monkeypatch):
+    """The evidence search root is named explicitly: the task's own directory, not the staging one.
+
+    ``results_dir`` holds copies of the analysis files this call staged; the envelopes are written
+    by the upstream tasks and staged into this task's working directory. Naming the root keeps the
+    two facts from being conflated (#100).
+    """
+    monkeypatch.chdir(tmp_path)
+    analysis, summary = _write_mirna_batch(tmp_path)
+    recorded: dict[str, object] = {}
+
+    def _spy(**kwargs):
+        recorded.update(kwargs)
+        return Path(kwargs["output_dir"])
+
+    monkeypatch.setattr("sirnaforge.pipeline.nextflow_cli.aggregate_mirna_results", _spy)
+
+    aggregate_results_cli(
+        transcriptome_species="human",
+        output_dir=str(tmp_path / "aggregated"),
+        mirna_db="toy_db",
+        mirna_species="human",
+        analysis_files=[str(analysis)],
+        summary_files=[str(summary)],
+    )
+
+    assert Path(str(recorded["evidence_root"])) == Path()
+    assert Path(str(recorded["results_dir"])) != Path()
 
 
 # ---------------------------------------------------------------------------
