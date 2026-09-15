@@ -98,6 +98,53 @@ def test_execution_outcome_truncated_maps_to_censored_status_and_lower_bound_cou
     assert counts.sites.cap == 2
 
 
+def test_execution_outcome_censored_derives_its_own_reason_naming_the_cap() -> None:
+    """A censored outcome supplies its own detail, so the status is constructible at all (#100).
+
+    ``status`` returned CENSORED while ``detail`` stayed ``None`` on that branch, and an entry with
+    that pair is rejected outright -- so the one status meaning "the counts are lower bounds" could
+    never be emitted.
+    """
+    outcome = ExecutionOutcome(
+        completed=True, submitted=5, processed=5, retained_hits=2, pre_cap_hits=9, cap=2, truncated=True
+    )
+    detail = outcome.evidence_detail
+    assert detail is not None
+    assert "2" in detail  # the cap in force
+    assert "7" in detail  # the hits it discarded
+    # The whole point: an entry carrying this status and this reason validates.
+    entry = ScreeningEvidenceEntry(
+        channel=ScreeningChannel.MIRNA_SEED,
+        species="human",
+        guide_set_digest="a" * 16,
+        status=outcome.status,
+        counts=outcome.counts(),
+        detail=detail,
+    )
+    assert entry.status is EvidenceStatus.CENSORED
+
+
+def test_execution_outcome_evidence_detail_is_none_for_a_clean_run_and_kept_for_a_failure() -> None:
+    """Derivation never invents a reason for a clean run, and never overwrites a real one."""
+    clean = ExecutionOutcome(
+        completed=True, submitted=1, processed=1, retained_hits=0, pre_cap_hits=0, cap=None, truncated=False
+    )
+    assert clean.evidence_detail is None
+    assert clean.censoring_detail is None
+
+    failed = ExecutionOutcome(
+        completed=False,
+        submitted=1,
+        processed=0,
+        retained_hits=0,
+        pre_cap_hits=0,
+        cap=None,
+        truncated=False,
+        detail="the aligner exited non-zero",
+    )
+    assert failed.evidence_detail == "the aligner exited non-zero"
+
+
 # ---------------------------------------------------------------------------
 # BwaAnalyzer.analyze_sequences_with_outcome -- red-without-fix #1 and #2
 # ---------------------------------------------------------------------------
@@ -290,6 +337,114 @@ def test_run_mirna_seed_analysis_keeps_the_first_species_result_when_the_second_
     assert mouse_envelope.entry.detail
 
 
+def test_run_mirna_seed_analysis_records_truncation_as_censored_not_as_bad_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncating cap is CENSORED evidence; it used to be swallowed as a validation failure (#100).
+
+    The success-path envelope write sat inside the ``try`` whose handler exists for schema
+    rejections, so the reasonless-CENSORED rejection was caught there: the species was recorded as
+    having produced bad data and its raw hit count was zeroed while its hits stayed in the table.
+    """
+    _patch_mirna_database(monkeypatch)
+    monkeypatch.setenv("SIRNAFORGE_MIRNA_MAX_HITS", "1")
+
+    output_dir = tmp_path / "out"
+    evidence_dir = tmp_path / "evidence"
+
+    run_mirna_seed_analysis(
+        candidates_file=TEST_DATA_DIR / "toy_candidates.fasta",
+        candidate_id="toy",
+        mirna_db="toy_db",
+        mirna_species=["human"],
+        output_dir=output_dir,
+        backend=MiRNASeedBackend.EXHAUSTIVE_PYTHON,
+        evidence_dir=evidence_dir,
+    )
+
+    envelope = read_evidence(evidence_dir / "mirna_seed_human_evidence.json")
+    assert envelope is not None
+    assert envelope.entry.status is EvidenceStatus.CENSORED
+    assert envelope.entry.detail
+    assert envelope.entry.counts.sites.truncated is True
+
+    summary = json.loads((output_dir / "toy_mirna_summary.json").read_text())
+    # The retained hit is in the table, so the count must not be zeroed as if nothing was observed.
+    assert summary["hits_per_species"]["human"] == 1
+    assert summary["evidence_status"] != EvidenceStatus.FAILED.value
+
+
+def test_run_mirna_seed_analysis_lets_an_evidence_writer_failure_surface_as_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bug in the envelope writer must never be reported as a species' data being bad (#100)."""
+    _patch_mirna_database(monkeypatch)
+    calls = {"n": 0}
+
+    def _fail_once(*_args: Any, **_kwargs: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("evidence writer bug")
+
+    monkeypatch.setattr("sirnaforge.core.off_target._write_mirna_species_evidence", _fail_once)
+
+    with pytest.raises(ValueError, match="evidence writer bug"):
+        run_mirna_seed_analysis(
+            candidates_file=TEST_DATA_DIR / "toy_candidates.fasta",
+            candidate_id="toy",
+            mirna_db="toy_db",
+            mirna_species=["human"],
+            output_dir=tmp_path / "out",
+            backend=MiRNASeedBackend.EXHAUSTIVE_PYTHON,
+            evidence_dir=tmp_path / "evidence",
+        )
+
+
+def test_run_mirna_seed_analysis_publishes_failed_evidence_when_no_database_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unresolvable database is a reported failure, not a silent skip (#100).
+
+    ``get_database`` returns ``None`` both for an unknown species and for any download failure, so
+    this is the normal path on a network-blocked host. The branch used to ``continue`` without
+    writing an envelope or recording the species, which left the batch roll-up claiming ``complete``
+    and left the module's non-optional evidence glob with nothing to match -- aborting a run that
+    previously completed.
+    """
+    monkeypatch.setattr(
+        "sirnaforge.data.mirna_manager.MiRNADatabaseManager.get_database",
+        lambda *_args, **_kwargs: None,
+    )
+
+    output_dir = tmp_path / "out"
+    evidence_dir = tmp_path / "evidence"
+
+    run_mirna_seed_analysis(
+        candidates_file=TEST_DATA_DIR / "toy_candidates.fasta",
+        candidate_id="toy",
+        mirna_db="toy_db",
+        mirna_species=["human", "mouse"],
+        output_dir=output_dir,
+        backend=MiRNASeedBackend.EXHAUSTIVE_PYTHON,
+        evidence_dir=evidence_dir,
+    )
+
+    # One envelope per requested species: the glob the .nf module declares non-optional matches.
+    assert sorted(p.name for p in evidence_dir.glob("mirna_seed_*_evidence.json")) == [
+        "mirna_seed_human_evidence.json",
+        "mirna_seed_mouse_evidence.json",
+    ]
+    for species in ("human", "mouse"):
+        envelope = read_evidence(evidence_dir / f"mirna_seed_{species}_evidence.json")
+        assert envelope is not None
+        assert envelope.entry.status is EvidenceStatus.FAILED
+        assert envelope.entry.detail is not None
+        assert species in envelope.entry.detail
+
+    summary = json.loads((output_dir / "toy_mirna_summary.json").read_text())
+    assert summary["evidence_status"] == EvidenceStatus.FAILED.value
+
+
 def test_run_mirna_seed_analysis_raises_only_when_every_species_hits_the_same_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -386,6 +541,56 @@ def test_run_bwa_alignment_analysis_writes_failed_evidence_on_aligner_failure(
     assert envelope.entry.detail == "no usable index"
 
 
+def test_run_bwa_alignment_analysis_publishes_a_censored_envelope_when_max_hits_truncates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cap that actually truncates publishes CENSORED instead of raising (#100).
+
+    The emitter passed the outcome's raw ``detail``, which is ``None`` on the censored branch, so
+    the entry's own validator rejected it and this function raised the moment ``max_hits`` bit.
+    """
+    hit = {
+        "qname": "cand_1",
+        "qseq": GUIDE,
+        "rname": "ENST00000000001",
+        "coord": "100",
+        "strand": "+",
+        "cigar": "21M",
+        "mapq": 60,
+        "as_score": 42,
+        "nm": 0,
+        "seed_mismatches": 0,
+        "offtarget_score": 1.0,
+    }
+    monkeypatch.setattr(
+        "sirnaforge.core.off_target.BwaAnalyzer.analyze_sequences_with_outcome",
+        lambda _self, _sequences: (
+            [hit],
+            ExecutionOutcome(
+                completed=True, submitted=1, processed=1, retained_hits=1, pre_cap_hits=4, cap=1, truncated=True
+            ),
+        ),
+    )
+    candidates_file = _write_candidates_fasta(tmp_path / "candidate_0001.fasta")
+    evidence_dir = tmp_path / "evidence"
+
+    run_bwa_alignment_analysis(
+        candidates_file=candidates_file,
+        index_prefix=tmp_path / "index" / "human",
+        species="human",
+        output_dir=tmp_path / "out",
+        max_hits=1,
+        evidence_dir=evidence_dir,
+    )
+
+    envelope = read_evidence(evidence_dir / "transcriptome_human_evidence.json")
+    assert envelope is not None
+    assert envelope.entry.status is EvidenceStatus.CENSORED
+    assert envelope.entry.detail
+    assert envelope.entry.counts.sites.truncated is True
+    assert envelope.entry.counts.sites.is_lower_bound is True
+
+
 def test_run_bwa_alignment_analysis_default_path_still_calls_analyze_sequences(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -417,8 +622,13 @@ def test_run_bwa_alignment_analysis_default_path_still_calls_analyze_sequences(
 # ---------------------------------------------------------------------------
 
 
-def test_aggregate_mirna_results_defaults_to_screened_when_no_evidence_exists(tmp_path: Path) -> None:
-    """A pre-#100 results directory with no evidence envelope keeps its historical answer."""
+def test_aggregate_mirna_results_claims_nothing_screened_when_no_evidence_exists(tmp_path: Path) -> None:
+    """No envelope is no signal: the empty-envelopes case must not assert a positive (#100).
+
+    The fallback used to report every requested species screened, so a run whose envelopes the
+    caller never staged -- the pipeline's own arrangement -- published a positive claim about
+    species nothing had observed.
+    """
     result_dir = aggregate_mirna_results(
         results_dir=tmp_path / "results",
         output_dir=tmp_path / "aggregated",
@@ -426,8 +636,8 @@ def test_aggregate_mirna_results_defaults_to_screened_when_no_evidence_exists(tm
         mirna_species="human,mouse",
     )
     summary = json.loads((result_dir / "combined_mirna_summary.json").read_text())
-    assert summary["species_screened"] == ["human", "mouse"]
-    assert summary["unscreened_species"] == []
+    assert summary["species_screened"] == []
+    assert summary["unscreened_species"] == ["human", "mouse"]
 
 
 def test_aggregate_mirna_results_reports_unscreened_species_from_evidence(tmp_path: Path) -> None:
@@ -446,6 +656,39 @@ def test_aggregate_mirna_results_reports_unscreened_species_from_evidence(tmp_pa
 
     result_dir = aggregate_mirna_results(
         results_dir=results_dir, output_dir=tmp_path / "aggregated", mirna_db="toy_db", mirna_species="human,mouse"
+    )
+    summary = json.loads((result_dir / "combined_mirna_summary.json").read_text())
+    assert summary["species_screened"] == ["human"]
+    assert summary["unscreened_species"] == ["mouse"]
+
+
+def test_aggregate_mirna_results_reads_envelopes_from_an_explicit_evidence_root(tmp_path: Path) -> None:
+    """The envelopes need not live under ``results_dir``: the pipeline stages only the tables (#100).
+
+    ``aggregate_results_cli`` copies ``*_mirna_analysis.tsv``/``*_mirna_summary.json`` into a
+    staging directory of its own while the envelopes stay in the task's cwd, so searching
+    ``results_dir`` found nothing and every requested species read as screened.
+    """
+    staging_dir = tmp_path / "results" / "mirna"
+    staging_dir.mkdir(parents=True)
+    task_cwd = tmp_path / "task_cwd"
+    write_evidence(
+        task_cwd,
+        producer=EvidenceProducer.MIRNA_SEED_ANALYSIS,
+        entry=ScreeningEvidenceEntry(
+            channel=ScreeningChannel.MIRNA_SEED,
+            species="human",
+            guide_set_digest="a" * 16,
+            status=EvidenceStatus.COMPLETE,
+        ),
+    )
+
+    result_dir = aggregate_mirna_results(
+        results_dir=staging_dir,
+        output_dir=tmp_path / "aggregated",
+        mirna_db="toy_db",
+        mirna_species="human,mouse",
+        evidence_root=task_cwd,
     )
     summary = json.loads((result_dir / "combined_mirna_summary.json").read_text())
     assert summary["species_screened"] == ["human"]

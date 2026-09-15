@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import pandas as pd
+from pandera.errors import SchemaError, SchemaErrors
 
 from sirnaforge.core.hit_annotation import unclassified_cells
 from sirnaforge.core.screening_evidence import (
@@ -172,6 +173,14 @@ class _MiRNASeedBackendUnavailableError(RuntimeError):
     """Raised when an in-process backend dependency is unavailable."""
 
 
+class _MiRNADatabaseUnavailableError(RuntimeError):
+    """Raised when one species' miRNA database could not be resolved or downloaded.
+
+    Exists so the per-species loop in :func:`run_mirna_seed_analysis` can report that species the
+    same way it reports every other non-completion, instead of skipping it silently (#100).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionOutcome:
     """Whether one BWA or in-process seed-scan execution actually completed, and what it observed.
@@ -192,7 +201,8 @@ class ExecutionOutcome:
         pre_cap_hits: Hits found before the cap was applied.
         cap: The cap in force, or ``None`` when uncapped.
         truncated: Whether the cap actually discarded hits (``pre_cap_hits > cap``).
-        detail: Failure reason. Required when ``completed`` is ``False``.
+        detail: Failure reason. Required when ``completed`` is ``False``. Emitters read
+            :attr:`evidence_detail`, not this field, so a censored outcome is never reasonless.
     """
 
     completed: bool
@@ -212,6 +222,36 @@ class ExecutionOutcome:
         if self.truncated:
             return EvidenceStatus.CENSORED
         return EvidenceStatus.COMPLETE
+
+    @property
+    def censoring_detail(self) -> str | None:
+        """Why a censored outcome's counts are lower bounds: the cap, and what it discarded.
+
+        ``status`` returned CENSORED for ``completed and truncated`` while ``detail`` stayed at its
+        ``None`` default on that branch -- only the two ``completed=False`` paths ever set it. Since
+        ``ScreeningEvidenceEntry.failure_carries_a_reason`` rejects a CENSORED entry with no detail,
+        every emitter raised the moment a cap actually truncated, making CENSORED -- the one status
+        that exists to say "the search ran but its counts are lower bounds" -- unconstructible
+        (#100). Deriving the reason here means no caller has to remember to supply it, and the reason
+        it gets is specific rather than boilerplate. ``None`` for any outcome that is not censored.
+        """
+        if not (self.completed and self.truncated):
+            return None
+        cap = "an unrecorded hit cap" if self.cap is None else f"hit cap {self.cap}"
+        discarded = max(self.pre_cap_hits - self.retained_hits, 0)
+        return (
+            f"{cap} truncated the search: {discarded} of {self.pre_cap_hits} hits were discarded, "
+            "so every reported count is a lower bound"
+        )
+
+    @property
+    def evidence_detail(self) -> str | None:
+        """The detail an envelope must carry for :attr:`status`; ``None`` only for COMPLETE.
+
+        An explicitly supplied ``detail`` wins, so a failure keeps the aligner's own words; a
+        censored outcome that was given none falls back to :attr:`censoring_detail`.
+        """
+        return self.detail or self.censoring_detail
 
     def counts(self) -> ObservedCounts:
         """The ``ObservedCounts`` this outcome reports, honouring the failed/censored/complete split.
@@ -2002,7 +2042,9 @@ def run_bwa_alignment_analysis(
             submitted_guide_digest=digest,
             submitted_guides=outcome.submitted,
             processed_guides=outcome.processed,
-            detail=outcome.detail,
+            # ``evidence_detail``, not ``detail``: a truncating ``max_hits`` yields a CENSORED status
+            # whose reason is derived, and an entry carrying that status with no reason is rejected.
+            detail=outcome.evidence_detail,
         )
         write_evidence(evidence_dir, producer=EvidenceProducer.OFFTARGET_ANALYSIS, entry=entry)
 
@@ -2249,16 +2291,60 @@ def aggregate_offtarget_results(  # noqa: PLR0912
     return output_path
 
 
+@dataclass(frozen=True, slots=True)
+class _SpeciesEvidence:
+    """What one species' mirna_seed envelope will say, decided inside the guarded block below.
+
+    Deciding and writing are separated because the write used to sit *inside* the ``try`` whose
+    handler exists for Pandera rejections: a ``ValidationError`` raised by the envelope itself was
+    caught there and recorded as bad data, zeroing ``hits_per_species`` while the hits stayed in the
+    combined table (#100). The loop carries one of these out of the ``try`` and writes it afterwards,
+    so an evidence-writer bug surfaces as itself instead of as a species failure.
+
+    Attributes:
+        status: The status the envelope will carry.
+        counts: Observed counts for that status.
+        submitted_guides: Guides handed to the scanner.
+        processed_guides: Guides the scanner reported processing.
+        detail: Reason, required for FAILED and CENSORED.
+    """
+
+    status: EvidenceStatus
+    counts: ObservedCounts
+    submitted_guides: int | None
+    processed_guides: int | None
+    detail: str | None
+
+    @classmethod
+    def failed(cls, *, submitted_guides: int, detail: str) -> "_SpeciesEvidence":
+        """A species that did not complete: it observed nothing, and says why."""
+        return cls(
+            status=EvidenceStatus.FAILED,
+            counts=ObservedCounts(),
+            submitted_guides=submitted_guides,
+            processed_guides=0,
+            detail=detail,
+        )
+
+    @classmethod
+    def from_outcome(cls, outcome: ExecutionOutcome) -> "_SpeciesEvidence":
+        """A species whose scan ran, reported through the execution outcome's own vocabulary."""
+        return cls(
+            status=outcome.status,
+            counts=outcome.counts(),
+            submitted_guides=outcome.submitted,
+            processed_guides=outcome.processed,
+            # ``evidence_detail``, not ``detail``: a truncating cap yields CENSORED, whose reason is
+            # derived from the cap rather than left for this call site to remember.
+            detail=outcome.evidence_detail,
+        )
+
+
 def _write_mirna_species_evidence(
     evidence_dir: str | Path,
     candidates_file: str | Path,
     species: str,
-    *,
-    status: EvidenceStatus,
-    counts: ObservedCounts,
-    submitted_guides: int | None,
-    processed_guides: int | None,
-    detail: str | None,
+    evidence: _SpeciesEvidence,
 ) -> None:
     """Write one per-species mirna_seed evidence envelope, shared by every outcome branch below."""
     digest = guide_set_digest(candidates_file)
@@ -2266,12 +2352,12 @@ def _write_mirna_species_evidence(
         channel=ScreeningChannel.MIRNA_SEED,
         species=species,
         guide_set_digest=digest,
-        status=status,
-        counts=counts,
+        status=evidence.status,
+        counts=evidence.counts,
         submitted_guide_digest=digest,
-        submitted_guides=submitted_guides,
-        processed_guides=processed_guides,
-        detail=detail,
+        submitted_guides=evidence.submitted_guides,
+        processed_guides=evidence.processed_guides,
+        detail=evidence.detail,
     )
     write_evidence(evidence_dir, producer=EvidenceProducer.MIRNA_SEED_ANALYSIS, entry=entry)
 
@@ -2303,6 +2389,10 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
     per-species loop below records a failure and moves on rather than aborting, and only re-raises
     if *every* requested species hit the same unavailable-backend error (#100) -- the historical
     all-or-nothing signal a solely-affected run still needs.
+
+    Every exit from that loop writes an envelope when ``evidence_dir`` is given, including the
+    species whose database could not be resolved: that branch used to skip silently, which both let
+    the batch roll-up claim ``complete`` and left the module's non-optional evidence glob unmatched.
 
     Args:
         candidates_file: Path to FASTA file with candidate sequences
@@ -2342,14 +2432,24 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
 
     for species in mirna_species:
         outcome: ExecutionOutcome | None = None
+        # Decided below, written after the guarded block: see ``_SpeciesEvidence``.
+        pending_evidence: _SpeciesEvidence | None = None
         try:
             # Get or download miRNA database for this species
             logger.info(f"Processing miRNA database for species: {species}")
             db_fasta_path = manager.get_database(mirna_db, species)
 
             if db_fasta_path is None or not db_fasta_path.exists():
-                logger.warning(f"miRNA database not available for {species}, skipping")
-                continue
+                # Raised rather than skipped with a bare ``continue``: ``get_database`` returns None
+                # for an unknown species AND for any download failure, so this is the normal path on
+                # an offline host. Skipping it wrote no envelope and recorded no failure, leaving the
+                # batch roll-up claiming ``complete`` -- and, because the module declares
+                # ``mirna_seed_*_evidence.json`` non-optional on the invariant that at least one
+                # envelope always exists, aborting the whole pipeline on an unmatched glob (#100).
+                raise _MiRNADatabaseUnavailableError(
+                    f"miRNA database '{mirna_db}' is unavailable for species {species}: "
+                    "it could not be resolved or downloaded"
+                )
 
             if resolved_backend == MiRNASeedBackend.BWA:
                 mirna_sequences = parse_fasta_file(db_fasta_path)
@@ -2408,41 +2508,33 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
                 database=mirna_db,
             )
 
-            # Validate and coerce types using Pandera schema
+            # Validate and coerce types using Pandera schema. The handler is narrowed to Pandera's
+            # own error types: it exists for a rejected table, and catching everything let a bug in
+            # the evidence writer be reported as bad data instead (#100).
             try:
                 validated_df = MiRNAAlignmentSchema.validate(results_df, lazy=True)
-                all_raw_hits.append(validated_df)
-                species_raw_stats[species] = len(validated_df)
-                logger.info(f"Species {species}: {len(validated_df)} miRNA alignments validated")
-                if evidence_dir is not None and outcome is not None:
-                    _write_mirna_species_evidence(
-                        evidence_dir,
-                        candidates_file,
-                        species,
-                        status=outcome.status,
-                        counts=outcome.counts(),
-                        submitted_guides=outcome.submitted,
-                        processed_guides=outcome.processed,
-                        detail=outcome.detail,
-                    )
-            except Exception as validation_error:
+            except (SchemaError, SchemaErrors) as validation_error:
                 logger.error(f"Failed to validate miRNA hits for {species}: {validation_error}")
                 species_raw_stats[species] = 0
                 species_filtered_stats[species] = 0
                 species_failures[species] = str(validation_error)
-                if evidence_dir is not None:
-                    _write_mirna_species_evidence(
-                        evidence_dir,
-                        candidates_file,
-                        species,
-                        status=EvidenceStatus.FAILED,
-                        counts=ObservedCounts(),
-                        submitted_guides=len(sequences),
-                        processed_guides=0,
-                        detail=f"miRNA hit validation failed: {validation_error}",
-                    )
-                continue
+                pending_evidence = _SpeciesEvidence.failed(
+                    submitted_guides=len(sequences),
+                    detail=f"miRNA hit validation failed: {validation_error}",
+                )
+            else:
+                all_raw_hits.append(validated_df)
+                species_raw_stats[species] = len(validated_df)
+                logger.info(f"Species {species}: {len(validated_df)} miRNA alignments validated")
+                if outcome is not None:
+                    pending_evidence = _SpeciesEvidence.from_outcome(outcome)
 
+        except _MiRNADatabaseUnavailableError as db_error:
+            logger.warning(str(db_error))
+            species_failures[species] = str(db_error)
+            species_raw_stats[species] = 0
+            species_filtered_stats[species] = 0
+            pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=str(db_error))
         except _MiRNASeedBackendUnavailableError as backend_error:
             message = (
                 f"miRNA seed analysis backend '{resolved_backend.value}' is unavailable for species "
@@ -2453,33 +2545,17 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
             species_failures[species] = message
             species_raw_stats[species] = 0
             species_filtered_stats[species] = 0
-            if evidence_dir is not None:
-                _write_mirna_species_evidence(
-                    evidence_dir,
-                    candidates_file,
-                    species,
-                    status=EvidenceStatus.FAILED,
-                    counts=ObservedCounts(),
-                    submitted_guides=len(sequences),
-                    processed_guides=0,
-                    detail=message,
-                )
+            pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=message)
         except Exception as e:
             logger.error(f"Failed to process miRNA analysis for {species}: {e}")
             species_raw_stats[species] = 0
             species_filtered_stats[species] = 0
             species_failures[species] = str(e)
-            if evidence_dir is not None:
-                _write_mirna_species_evidence(
-                    evidence_dir,
-                    candidates_file,
-                    species,
-                    status=EvidenceStatus.FAILED,
-                    counts=ObservedCounts(),
-                    submitted_guides=len(sequences),
-                    processed_guides=0,
-                    detail=str(e),
-                )
+            pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=str(e))
+
+        # Outside every handler, so a rejection by the envelope's own model surfaces as itself.
+        if evidence_dir is not None and pending_evidence is not None:
+            _write_mirna_species_evidence(evidence_dir, candidates_file, species, pending_evidence)
 
     # An unavailable backend that hit every requested species leaves nothing to report -- that is
     # the historical hard-failure signal a solely-affected run raised on directly. A species
@@ -2588,6 +2664,8 @@ def aggregate_mirna_results(
     output_dir: str | Path,
     mirna_db: str,
     mirna_species: str,
+    *,
+    evidence_root: str | Path | None = None,
 ) -> Path:
     """Aggregate miRNA seed analysis results from multiple candidates using pandas.
 
@@ -2599,6 +2677,11 @@ def aggregate_mirna_results(
         output_dir: Directory to write aggregated results
         mirna_db: miRNA database used for analysis
         mirna_species: Comma-separated list of species analyzed
+        evidence_root: Where to search for ``*_evidence.json`` envelopes, defaulting to
+            ``results_dir``. Separate from ``results_dir`` because a caller may stage only the
+            ``*_mirna_analysis.tsv``/``*_mirna_summary.json`` files into a directory of its own while
+            the envelopes stay in the aggregation task's cwd (#100): searching the staging directory
+            then found nothing and every requested species read as screened whatever happened.
 
     Returns:
         Path to output directory containing aggregated results
@@ -2670,18 +2753,17 @@ def aggregate_mirna_results(
     # Positive evidence, mirroring aggregate_offtarget_results: unlike the transcriptome side, one
     # candidate's *_mirna_analysis.tsv already spans every requested species, so file presence
     # carries no per-species signal here. A COMPLETE mirna_seed evidence envelope from
-    # run_mirna_seed_analysis is the only positive signal available; a results directory that
-    # never wrote one (pre-#100, or run_mirna_seed_analysis called without evidence_dir) keeps
-    # every requested species reported screened, this function's historical default for them.
-    envelopes = collect_evidence(results_path)
+    # run_mirna_seed_analysis is the only positive signal available, and no envelope is no signal:
+    # a directory that carries none (pre-#100, or run_mirna_seed_analysis called without
+    # evidence_dir) reports nothing screened rather than falling back to asserting that everything
+    # was, which is a positive claim nothing observed supports (#100).
+    envelopes = collect_evidence(results_path if evidence_root is None else Path(evidence_root))
     species_with_complete_evidence = {
         envelope.entry.species
         for envelope in envelopes
         if envelope.entry.channel is ScreeningChannel.MIRNA_SEED and envelope.entry.status is EvidenceStatus.COMPLETE
     }
-    species_screened = (
-        list(species_list) if not envelopes else [s for s in species_list if s in species_with_complete_evidence]
-    )
+    species_screened = [s for s in species_list if s in species_with_complete_evidence]
     unscreened_species = [s for s in species_list if s not in species_screened]
 
     # Create validated summary using Pydantic model
