@@ -132,6 +132,13 @@ DECLARED_FILTER_IDS: tuple[str, ...] = (
     "max_mirna_1mm_seed",
     "fail_on_high_risk_mirna",
     "max_total_offtarget_hits",
+    # The transcript-seed channel and the two intent gates (#101). Registry order, appended, so every
+    # verdict/observed column above keeps its position in the candidate CSV.
+    "max_transcript_seed_sites",
+    "max_transcript_seed_transcripts",
+    "max_transcript_seed_genes",
+    "max_excluded_isoform_hits",
+    "max_unintended_isoform_hits",
 )
 
 

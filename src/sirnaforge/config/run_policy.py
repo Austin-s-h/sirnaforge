@@ -140,6 +140,11 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("max_mirna_1mm_seed", "offtarget_filters", "max_mirna_1mm_seed"),
     SettingSpec("fail_on_high_risk_mirna", "offtarget_filters", "fail_on_high_risk_mirna"),
     SettingSpec("max_total_offtarget_hits", "offtarget_filters", "max_total_offtarget_hits"),
+    SettingSpec("max_transcript_seed_sites", "offtarget_filters", "max_transcript_seed_sites"),
+    SettingSpec("max_transcript_seed_transcripts", "offtarget_filters", "max_transcript_seed_transcripts"),
+    SettingSpec("max_transcript_seed_genes", "offtarget_filters", "max_transcript_seed_genes"),
+    SettingSpec("max_excluded_isoform_hits", "offtarget_filters", "max_excluded_isoform_hits"),
+    SettingSpec("max_unintended_isoform_hits", "offtarget_filters", "max_unintended_isoform_hits"),
     SettingSpec("plfold_window", "target_accessibility", "window_size"),
     SettingSpec("plfold_max_bp_span", "target_accessibility", "max_bp_span"),
     SettingSpec("accessibility_log_floor", "target_accessibility", "log_floor"),
@@ -393,6 +398,37 @@ _MIXED_HUMAN_NOTE = (
     f"plus query-species-labelled-only miRNA hits; {_ALL_SPECIES_COLUMN_NOTE}"
 )
 
+# The two hit classes an intent gate can be about. An intent verdict is not a hit class -- the
+# four-way taxonomy stays descriptive and the verdict beside it decides acceptability -- but the
+# scope still has to say which rows the counter could ever draw from, and only an ON_TARGET row can
+# be an excluded or unintended isoform of the target gene. ``undetermined`` is in the set because a
+# row whose class could not be decided is not evidence that it was not on-target; the verdict for
+# such a row is UNKNOWN and it is counted by neither intent counter.
+_ON_TARGET_CLASSES: tuple[str, ...] = ("on_target", "undetermined")
+
+# Why the transcript-seed gates read a query-species counter, and why all three resolve to off on a
+# default run (#101/#102). Kept as two notes rather than one sentence: the first is what the number
+# IS, the second is why nothing acts on it, and a future calibration removes only the second.
+_TRANSCRIPT_SEED_CHANNEL_NOTE = (
+    "a THIRD liability channel, seed complementarity against the transcriptome itself, which is not "
+    "resemblance to a known miRNA and is never folded into max_total_offtarget_hits; each species is "
+    "its own evidence unit, so this is the query-species counter and not an all-species sum, and the "
+    "count is a lower bound whenever the per-guide cap censored the scan."
+)
+_TRANSCRIPT_SEED_UNCALIBRATED_NOTE = (
+    "Reported, not enforced: no threshold ships, for the reason max_transcriptome_seed_perfect ships "
+    "none either. There is no measured relationship between a 6/7/8mer site count and knockdown, and "
+    "the counts scale with the reference -- a 7mer is expected roughly once per 16 kb, so the same "
+    "guide scores an order of magnitude higher against a full cDNA set than against canonical "
+    "transcripts -- so a fixed integer would encode the reference rather than the biology, which is "
+    "the mistake max_repeat_transcript_fraction avoids by being a fraction. A ceiling read against a "
+    "censored count could not show it was respected either. Encoded the way that gate encodes it: a "
+    "declared action of fail over a threshold of None, so the gate resolves to off because there is "
+    "no number to compare and becomes a real limit the moment a caller states one. A declared action "
+    "of OFF would have been the wrong spelling -- the resolver reads that as 'no code applies this "
+    "action', and a stated ceiling would then have been accepted and silently ignored."
+)
+
 FILTER_SPECS: tuple[_FilterSpec, ...] = (
     _FilterSpec(
         filter_id="gc_content_min",
@@ -601,6 +637,90 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=(f"Transcriptome plus miRNA hits combined: {_MIXED_HUMAN_NOTE}; fails TOTAL_OFFTARGETS."),
         default_action=FilterAction.FAIL,
         scope_query_species=True,
+    ),
+    _FilterSpec(
+        filter_id="max_transcript_seed_sites",
+        setting_key="max_transcript_seed_sites",
+        column="transcript_seed_sites_query",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "Deduplicated transcript-seed sites in the QUERY species, over the requested seed "
+            f"classes: {_TRANSCRIPT_SEED_CHANNEL_NOTE} {_TRANSCRIPT_SEED_UNCALIBRATED_NOTE} Fails "
+            "TRANSCRIPT_SEED_SITES once a ceiling is stated."
+        ),
+        default_action=FilterAction.FAIL,
+        scope_query_species=True,
+    ),
+    _FilterSpec(
+        filter_id="max_transcript_seed_transcripts",
+        setting_key="max_transcript_seed_transcripts",
+        column="transcript_seed_transcripts_query",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "DISTINCT query-species transcripts carrying a transcript-seed site. Reported apart from "
+            "the site count because one transcript can carry many sites, so the two answer different "
+            f"questions and neither is derivable from the other: {_TRANSCRIPT_SEED_CHANNEL_NOTE} "
+            f"{_TRANSCRIPT_SEED_UNCALIBRATED_NOTE} Fails TRANSCRIPT_SEED_TRANSCRIPTS once a ceiling "
+            "is stated."
+        ),
+        default_action=FilterAction.FAIL,
+        scope_query_species=True,
+    ),
+    _FilterSpec(
+        filter_id="max_transcript_seed_genes",
+        setting_key="max_transcript_seed_genes",
+        column="transcript_seed_genes_query",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "DISTINCT query-species genes carrying a transcript-seed site, counted over RESOLVED "
+            "gene ids only. Sites whose transcript resolved to no gene are reported in "
+            "transcript_seed_unresolved_gene_sites rather than discarded, so this count is a "
+            "declared lower bound whenever that column is above 0 -- that is what stops a gene-level "
+            f"cap silently dropping what it could not resolve: {_TRANSCRIPT_SEED_CHANNEL_NOTE} "
+            f"{_TRANSCRIPT_SEED_UNCALIBRATED_NOTE} Fails TRANSCRIPT_SEED_GENES once a ceiling is stated."
+        ),
+        default_action=FilterAction.FAIL,
+        scope_query_species=True,
+    ),
+    _FilterSpec(
+        filter_id="max_excluded_isoform_hits",
+        setting_key="max_excluded_isoform_hits",
+        column="excluded_isoform_hits",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "Hits on a transcript the caller declared EXCLUDED, counted from the alignment rows' "
+            "intent verdicts rather than from their hit class: on-target by gene taxonomy does not "
+            "imply acceptable once an intent is in force, so the four-way class stays descriptive and "
+            "the verdict beside it decides. Ships fail at 0 -- unlike the three transcript-seed "
+            "ceilings this is not an uncalibrated prior but a restatement of something the user "
+            "stated, and a required limit uses fail. With no exclusions declared the observed count "
+            "is 0 on every candidate and the gate passes trivially, so a default run rejects nothing "
+            "new; fails EXCLUDED_ISOFORM."
+        ),
+        default_action=FilterAction.FAIL,
+        scope_query_species=True,
+        scope_hit_classes=_ON_TARGET_CLASSES,
+    ),
+    _FilterSpec(
+        filter_id="max_unintended_isoform_hits",
+        setting_key="max_unintended_isoform_hits",
+        column="unintended_isoform_hits",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "Same-gene hits on a transcript outside the required set, in isoform-selective mode "
+            "only. No threshold ships, so it resolves to off on a default run: 'same gene, not "
+            "required' is a reportable consequence of asking for selectivity, not something the "
+            "caller prohibited -- the excluded set is where a prohibition is stated. State a ceiling "
+            "to opt in; fails UNINTENDED_ISOFORM."
+        ),
+        default_action=FilterAction.FAIL,
+        scope_query_species=True,
+        scope_hit_classes=_ON_TARGET_CLASSES,
     ),
 )
 
@@ -961,7 +1081,11 @@ def _resolve_run_mode(
 
 
 def _evidence_requirements(
-    *, run_mode: RunMode, query_species: str, screen_species: Sequence[str]
+    *,
+    run_mode: RunMode,
+    query_species: str,
+    screen_species: Sequence[str],
+    transcript_seed_requested: bool = False,
 ) -> EvidenceRequirements:
     """Declare which channel/species pairs must complete, and what an undecided filter costs.
 
@@ -969,6 +1093,12 @@ def _evidence_requirements(
     decides on-target membership and post-screen scoring. Every other pair is exploratory: a
     secondary species that fails to align is reportable, not disqualifying. Nothing here enforces
     the requirement; eligibility against it is #100's.
+
+    The transcript-seed pair is declared only when the channel was requested, and only ever as
+    EXPLORATORY (#101). Never required in 0.7.1: all three of its gates ship off, so requiring the
+    evidence would withhold candidates over a channel nothing acts on. Declaring the pair when the
+    channel was NOT requested would be worse -- it would make every run report an unmet requirement
+    for a scan it deliberately did not ask for.
     """
     if run_mode is RunMode.DESIGN_ONLY:
         return EvidenceRequirements(unknown_evidence_action=UnknownEvidenceAction.WARN)
@@ -990,6 +1120,14 @@ def _evidence_requirements(
             channel=ScreeningChannel.MIRNA_SEED, species=query_species, requiredness=Requiredness.EXPLORATORY
         )
     )
+    if transcript_seed_requested:
+        pairs.append(
+            ChannelRequirement(
+                channel=ScreeningChannel.TRANSCRIPT_SEED,
+                species=query_species,
+                requiredness=Requiredness.EXPLORATORY,
+            )
+        )
     return EvidenceRequirements(
         channel_requirements=tuple(pairs),
         unknown_evidence_action=(
@@ -1151,6 +1289,7 @@ def resolve_run_policy(
     query_species: str | None = None,
     screen_species: Sequence[str] = (),
     transcriptome_reference_available: bool | None = None,
+    transcript_seed_requested: bool = False,
 ) -> ResolvedRunPolicy:
     """Resolve one run's policy. Pure: no downloads, no folding, no alignment.
 
@@ -1180,6 +1319,10 @@ def resolve_run_policy(
             withheld from a shortlist the run could never fill. Exploratory rather than design-only
             because the miRNA seed channel has its own reference and still runs. ``None`` means the
             caller has nothing to say, which is the honest default for a direct API caller.
+        transcript_seed_requested: Whether this run asked for the opt-in transcript-seed channel.
+            Only declares the exploratory transcript-seed evidence pair; it does not turn the scan on
+            (the subworkflow does) and it changes no threshold or action. Default False, so a run that
+            does not request the channel resolves byte-identically to before (#101).
 
     Returns:
         The immutable resolved policy.
@@ -1344,6 +1487,7 @@ def resolve_run_policy(
             run_mode=resolved_run_mode,
             query_species=resolved_query_species,
             screen_species=screen_species,
+            transcript_seed_requested=transcript_seed_requested,
         ),
         requested=tuple(requested),
         resolved=tuple(resolved_records),

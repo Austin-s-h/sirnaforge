@@ -38,6 +38,13 @@ class SchemaConfig:
     ordered = False  # Allow columns in any order
 
 
+#: The three spellings of "why isoform_coverage is what it is" (#101). Mirrors
+#: ``core.target_intent.CoverageStatus``; restated here rather than imported to avoid a models -> core
+#: dependency, exactly as :data:`UNCLASSIFIED_CELL_VALUE` mirrors ``core.hit_annotation``. A unit test
+#: pins the two against each other so the vocabulary cannot drift.
+COVERAGE_STATUS_VALUES: tuple[str, ...] = ("known", "unknown_no_denominator", "unknown_missing_sequence")
+
+
 class SiRNACandidateSchema(DataFrameModel):
     """Validation schema for siRNA candidate results (CSV output).
 
@@ -396,6 +403,67 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
     )
 
+    # Transcript-seed channel and intent columns (#101). Additive: ``Optional`` throughout, so a CSV
+    # written before the channel existed still validates rather than gaining materialised nulls. The
+    # five seed counters are nullable because a null is a real value here -- the channel is opt-in, so
+    # the difference between "did not scan" and "scanned, no sites" has to survive to the CSV.
+    # Nullable FLOAT rather than Int64 for these counts, deliberately: a run that did not request the
+    # channel writes the column all-null, which pandas infers as `object`, and the workflow's
+    # all-null repair only rescues float columns -- Int64 needed the two hard-coded column names
+    # beside it. A count is exact in a float64 far past any attainable site count, and this is the
+    # same choice every `{filter_id}_observed` column already makes.
+    transcript_seed_sites_query: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        coerce=True,
+        description="Deduplicated query-species transcript-seed sites; gate input, null = channel did not run",
+        nullable=True,
+    )
+    transcript_seed_transcripts_query: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        coerce=True,
+        description="Distinct query-species transcripts carrying a seed site; gate input, null = channel did not run",
+        nullable=True,
+    )
+    transcript_seed_genes_query: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        coerce=True,
+        description=(
+            "Distinct RESOLVED query-species genes carrying a seed site; gate input, a lower bound "
+            "when transcript_seed_unresolved_gene_sites is above 0, null = channel did not run"
+        ),
+        nullable=True,
+    )
+    transcript_seed_unresolved_gene_sites: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        coerce=True,
+        description="Query-species seed sites whose transcript resolved to no gene id; null = channel did not run",
+        nullable=True,
+    )
+    transcript_seed_sites_total: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        coerce=True,
+        description="Deduplicated seed sites over every screened species; reported only, null = channel did not run",
+        nullable=True,
+    )
+    excluded_isoform_hits: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0, coerce=True, description="Hits on a transcript the caller declared excluded; gate input", nullable=True
+    )
+    unintended_isoform_hits: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        coerce=True,
+        description="Same-gene hits outside the required set in isoform-selective mode; gate input",
+        nullable=True,
+    )
+    # Checked against the CoverageStatus vocabulary by check_intent_coverage_status_values below: an
+    # absent coverage fraction must say WHY it is absent, or a reader reads it as a low one.
+    intent_coverage_status: Optional[Series[str]] = Field(  # noqa: UP045
+        description=(
+            "Why isoform_coverage is or is not a number: known | unknown_no_denominator | unknown_missing_sequence"
+        ),
+        nullable=True,
+        coerce=True,
+    )
+
     # Chemical modification columns (optional, nullable)
     # Using add_missing_columns to auto-add with null values
     guide_overhang: Series[str] = Field(
@@ -497,6 +565,21 @@ class SiRNACandidateSchema(DataFrameModel):
     max_total_offtarget_hits_observed: Optional[Series[float]] = Field(  # noqa: UP045
         description="Observed value max_total_offtarget_hits was compared against", nullable=True, coerce=True
     )
+    max_transcript_seed_sites_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcript_seed_sites was compared against", nullable=True, coerce=True
+    )
+    max_transcript_seed_transcripts_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcript_seed_transcripts was compared against", nullable=True, coerce=True
+    )
+    max_transcript_seed_genes_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcript_seed_genes was compared against", nullable=True, coerce=True
+    )
+    max_excluded_isoform_hits_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_excluded_isoform_hits was compared against", nullable=True, coerce=True
+    )
+    max_unintended_isoform_hits_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_unintended_isoform_hits was compared against", nullable=True, coerce=True
+    )
 
     @dataframe_check_typed
     def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
@@ -537,6 +620,25 @@ class SiRNACandidateSchema(DataFrameModel):
         allowed = {s.value for s in SelectionState}
         series = df["selection_state"]
         return bool(series.map(lambda v: v is None or v in allowed).all())
+
+    @dataframe_check_typed
+    def check_intent_coverage_status_values(cls, df: pd.DataFrame) -> bool:
+        """A present intent_coverage_status column may only hold a COVERAGE_STATUS_VALUES word.
+
+        The column exists so an absent ``isoform_coverage`` says why it is absent rather than being
+        read as a low coverage, which only works if the reason is drawn from a fixed vocabulary --
+        free text would drift into three spellings of "unknown". Absent and null are both fine: the
+        column is ``Optional`` and a run with no resolved target intent writes nothing (#101).
+        """
+        if "intent_coverage_status" not in df.columns:
+            return True
+        allowed = set(COVERAGE_STATUS_VALUES)
+
+        def _ok(value: Any) -> bool:
+            # A null is accepted in both spellings a CSV round-trip produces, None and NaN.
+            return value is None or bool(pd.isna(value)) or value in allowed
+
+        return bool(df["intent_coverage_status"].map(_ok).all())
 
     @dataframe_check_typed
     def check_filter_verdict_values(cls, df: pd.DataFrame) -> bool:
@@ -866,3 +968,104 @@ class AggregatedOffTargetSchema(GenomeAlignmentSchema):
         isin=[*ORTHOLOG_EVIDENCE_VALUES, UNCLASSIFIED_CELL_VALUE],
         description="Evidence tier behind an ORTHOLOG verdict; 'not_applicable' for every other class",
     )
+
+
+#: Vocabularies the transcript-seed site table draws on, mirrored from ``core.transcript_seed`` for
+#: the same reason as :data:`UNCLASSIFIED_CELL_VALUE`: a models -> core import would invert the
+#: dependency. Unit tests pin each tuple against its enum so the two cannot drift (#101).
+GUIDE_STRAND_VALUES: tuple[str, ...] = ("guide", "passenger")
+SITE_STRAND_VALUES: tuple[str, ...] = ("transcript_sense",)
+SEED_CLASS_VALUES: tuple[str, ...] = ("6mer", "7mer-A1", "7mer-m8", "8mer")
+SITE_REGION_VALUES: tuple[str, ...] = ("full_cdna", "utr3", "utr5", "cds", "unknown")
+#: The one coordinate system a transcript-seed site is ever published in. Stated on every row rather
+#: than implied, because the alignment tables beside it publish 0-based aligner coordinates.
+TRANSCRIPT_SEED_COORDINATE_SYSTEM = "transcript_cdna_1based"
+
+
+class TranscriptSeedSiteSchema(DataFrameModel):
+    """Pandera schema for the transcript-seed site table (`<species>_transcript_seed_sites.tsv`).
+
+    One row per deduplicated :class:`~sirnaforge.core.transcript_seed.TranscriptSeedSite`: one guide,
+    one transcript, one anchor. This is the third liability channel's published artifact and it is
+    deliberately **not** derived from :class:`MiRNAAlignmentSchema` or :class:`GenomeAlignmentSchema`
+    (#101). Those describe an aligner's output and carry ``cigar``, ``mapq``, ``nm``,
+    ``seed_mismatches`` and a 0-based ``coord``; a seed site is an exact string match found by
+    scanning a cDNA reference, so it has none of them, and its coordinates are 1-based transcript
+    cDNA positions. Subclassing would have made a reader of the two tables believe one coordinate
+    convention covered both.
+
+    ``strict=True`` so the artifact has exactly one shape: an extra column here would mean a producer
+    published a site property this contract never declared.
+
+    **Corresponding dataclass:** :class:`sirnaforge.core.transcript_seed.TranscriptSeedSite`.
+    """
+
+    class Config(SchemaConfig):
+        """Schema configuration."""
+
+        description = "Transcript-seed liability sites in transcript cDNA coordinates"
+        title = "Transcript Seed Site DataFrame"
+        strict = True
+        coerce = True
+
+    # Query side. guide_id is the screen query name, so a site joins the alignment table on the same
+    # key the candidate row carries (screen_query_id) rather than on a sequence spelling.
+    guide_id: Series[str] = Field(description="Screen query name; equals qname on the alignment rows")
+    guide_sequence: Series[str] = Field(
+        str_matches=r"^[ATCG]+$",
+        description="Normalised DNA guide (uppercase, U mapped to T), so a row is readable without the FASTA",
+    )
+    # Explicit on every row: 0.7.1 submits guide sequences only, so passenger-strand liability is not
+    # screened at all. A column saying so is the difference between an unscreened strand and a clean one.
+    queried_strand: Series[str] = Field(
+        isin=list(GUIDE_STRAND_VALUES), description="Duplex strand submitted to the scan (guide in 0.7.1)"
+    )
+
+    # Reference side.
+    species: Series[str] = Field(description="Canonical species name of the scanned reference")
+    transcript_id: Series[str] = Field(description="Version-stripped transcript identifier")
+    transcript_version: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        nullable=True,
+        description="Version as written in the FASTA header; null means the header carried none",
+    )
+    gene_id: Optional[Series[str]] = Field(  # noqa: UP045 - pandera reads typing.Optional as "column may be absent"
+        nullable=True,
+        description="Version-stripped gene id, or null; a null is counted in unresolved_gene_sites, never dropped",
+    )
+
+    # Geometry. 1-based inclusive and antiparallel: p(i) = anchor + 2 - i, so site_end == anchor.
+    site_start: Series[int] = Field(ge=1, description="1-based inclusive start of the complementary window")
+    site_end: Series[int] = Field(ge=1, description="1-based inclusive end of the complementary window")
+    anchor_position: Series[int] = Field(
+        ge=1, description="Transcript position paired with GUIDE POSITION 2; the site's dedup identity"
+    )
+    site_class: Series[str] = Field(
+        isin=list(SEED_CLASS_VALUES), description="Maximal requested seed class realised at this anchor"
+    )
+    site_strand: Series[str] = Field(
+        isin=list(SITE_STRAND_VALUES), description="Reference strand; a cDNA scan is always transcript sense"
+    )
+    region: Series[str] = Field(
+        isin=list(SITE_REGION_VALUES), description="Transcript region this site was screened in"
+    )
+    coordinate_system: Series[str] = Field(
+        isin=[TRANSCRIPT_SEED_COORDINATE_SYSTEM],
+        description="Stated, not implied: 1-based transcript cDNA, unlike the aligner tables' 0-based coord",
+    )
+    annotation_provenance: Series[str] = Field(
+        str_length={"min_value": 1},
+        description="Which reference produced this site, e.g. ensembl_cdna:<reference_id>",
+    )
+
+    @dataframe_check_typed
+    def check_site_end_is_the_anchor(cls, df: pd.DataFrame) -> bool:
+        """``site_end == anchor_position`` on every row, and ``site_start <= site_end``.
+
+        The anchor is the 3'-most complementary base of the site, which for a guide window running
+        from position 2 rightwards is also its last transcript position. A row where the two disagree
+        has had the antiparallel map applied backwards, and getting that wrong is what would make the
+        channel's null fake -- so it is checked at the artifact boundary, not only in the scanner.
+        """
+        if df.empty:
+            return True
+        return bool((df["site_end"] == df["anchor_position"]).all() and (df["site_start"] <= df["site_end"]).all())

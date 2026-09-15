@@ -296,6 +296,70 @@ class OffTargetFilterCriteria(BaseModel):
         ),
     )
 
+    # Transcript-seed liability ceilings (#101). A THIRD channel, separate from known-miRNA
+    # resemblance: these count seed-complementary sites in the transcriptome itself, so no number
+    # here is ever folded into max_total_offtarget_hits, which stays the transcriptome+miRNA sum it
+    # documents. All three default to None, i.e. counted, exported and acted on by nothing, for the
+    # #102 reason max_transcriptome_seed_perfect ships that way: there is no calibration relating a
+    # 6/7/8mer site count to knockdown, the counts scale with the reference (a 7mer is expected
+    # roughly once per 16 kb, so the same guide scores an order of magnitude higher against a full
+    # cDNA set than against canonical transcripts), and a per-guide cap makes them lower bounds. None
+    # is what turns the gate off, not the declared action: the registry declares `fail` over a
+    # threshold of None, so a caller who names a ceiling gets a real limit and a caller who does not
+    # gets three new reported columns and no silent rejections.
+    max_transcript_seed_sites: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum deduplicated transcript-seed sites in the QUERY species (None = no limit). "
+            "Uncalibrated, so it ships off: the sites are reported and nothing acts on them until a "
+            "caller states a ceiling. A lower bound whenever the per-guide cap censored the scan"
+        ),
+    )
+    max_transcript_seed_transcripts: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum DISTINCT transcripts carrying a transcript-seed site in the query species "
+            "(None = no limit). Reported separately from the site count because one transcript can "
+            "carry many sites; ships off for the same uncalibrated reason"
+        ),
+    )
+    max_transcript_seed_genes: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum DISTINCT genes carrying a transcript-seed site in the query species (None = no "
+            "limit). Counted over RESOLVED gene ids only: sites whose transcript had no gene are "
+            "reported in transcript_seed_unresolved_gene_sites rather than dropped, which is what "
+            "makes this count a declared lower bound instead of a silent one. Ships off"
+        ),
+    )
+
+    # Intent ceilings (#101). Not uncalibrated priors: they restate what the caller declared about
+    # which isoforms are intended, which is why the first one ships FAIL where the seed ceilings
+    # ship off. With no exclusions declared the observed count is 0 on every candidate and the gate
+    # passes trivially, so default behaviour does not change.
+    max_excluded_isoform_hits: int | None = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Maximum hits on a transcript the caller EXCLUDED (None = no limit). Fails "
+            "EXCLUDED_ISOFORM. A declared exclusion is a required limit, not a prior: the user named "
+            "the transcripts, so a hit on one is a stated prohibition rather than an unvalidated "
+            "guess. On-target by gene taxonomy does not make a hit acceptable"
+        ),
+    )
+    max_unintended_isoform_hits: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum hits on a same-gene transcript that is not in the required set, in "
+            "isoform-selective mode (None = no limit). Ships off: 'same gene, not required' is a "
+            "reportable consequence of selectivity, not a declared prohibition. Set it to opt in"
+        ),
+    )
+
 
 class WeightVector(BaseModel):
     """A named, hand-authored weight vector over one explicit term set.
@@ -915,6 +979,88 @@ class SiRNACandidate(BaseModel):
         description="Query-species transcriptome liabilities plus query-species miRNA hits; gate input",
     )
 
+    # Transcript-seed channel counters (#101), the third liability channel. NULLABLE and defaulting
+    # to None, unlike every counter above: the channel is opt-in, so on a run that did not request it
+    # a 0 here would be a clean screen this run never performed. None is the unknown the gates need --
+    # evaluate_gate maps a None observed to UNKNOWN, which withholds rather than passes. 0 therefore
+    # means "scanned, no sites", which is a different and stronger statement.
+    # Never summed into total_offtarget_hits_query: that column is the transcriptome+miRNA sum it
+    # documents, and folding a seed-site count into it would compare sites with alignments.
+    transcript_seed_sites_query: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Deduplicated transcript-seed sites in the QUERY species; gate input. None means the "
+            "transcript-seed channel did not run for this candidate, which is not zero sites"
+        ),
+    )
+    transcript_seed_transcripts_query: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Distinct transcripts carrying a query-species transcript-seed site; gate input. None "
+            "means the channel did not run"
+        ),
+    )
+    transcript_seed_genes_query: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Distinct RESOLVED genes carrying a query-species transcript-seed site; gate input. A "
+            "lower bound whenever transcript_seed_unresolved_gene_sites is above 0. None means the "
+            "channel did not run"
+        ),
+    )
+    transcript_seed_unresolved_gene_sites: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Query-species sites whose transcript resolved to no gene id. Reported rather than "
+            "dropped, so a gene-level cap cannot silently discard what it could not resolve; above 0 "
+            "makes transcript_seed_genes_query a declared lower bound. None means the channel did not run"
+        ),
+    )
+    transcript_seed_sites_total: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Deduplicated transcript-seed sites over EVERY screened species, mirroring the "
+            "all-species convention of transcriptome_hits_seed_0mm. Reported only -- no gate reads "
+            "it, because each species is its own evidence unit and the ceilings read the query-species "
+            "counter. None means the channel did not run"
+        ),
+    )
+
+    # Intent counters (#101). Accumulated from the hit rows' intent verdicts, which sit BESIDE
+    # hit_class rather than replacing it: a row can honestly read on_target + excluded_isoform,
+    # because the four-way taxonomy is descriptive and acceptability is an intent decision. An
+    # UNKNOWN verdict is counted in neither, which is what lets the gates report unknown instead of
+    # a fabricated zero.
+    excluded_isoform_hits: int = Field(
+        default=0,
+        ge=0,
+        description="Hits on a transcript the caller declared excluded; gate input for max_excluded_isoform_hits",
+    )
+    unintended_isoform_hits: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Same-gene hits on a transcript outside the required set in isoform-selective mode; "
+            "gate input for max_unintended_isoform_hits"
+        ),
+    )
+    # Why isoform_coverage is None, in words, so an absent fraction cannot be read as a low one. A
+    # str rather than the CoverageStatus enum because that vocabulary lives in core.target_intent and
+    # models cannot import core; selection_state stays a str for the same reason.
+    intent_coverage_status: str | None = Field(
+        default=None,
+        description=(
+            "Why isoform_coverage is or is not a number: known | unknown_no_denominator | "
+            "unknown_missing_sequence (core.target_intent.CoverageStatus). None means no target "
+            "intent was resolved for this run"
+        ),
+    )
+
     # miRNA-specific fields (populated when design_mode == "mirna")
     guide_pos1_base: str | None = Field(
         default=None, description="Nucleotide at guide position 1 (for Argonaute selection scoring)"
@@ -1063,6 +1209,15 @@ class SiRNACandidate(BaseModel):
         MIRNA_PERFECT_SEED = "MIRNA_PERFECT_SEED"
         HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
         TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
+        # Transcript-seed channel (#101). Declared even though all three gates ship off, because a
+        # caller who names a ceiling promotes the gate to fail and the label it stamps has to exist.
+        TRANSCRIPT_SEED_SITES = "TRANSCRIPT_SEED_SITES"
+        TRANSCRIPT_SEED_TRANSCRIPTS = "TRANSCRIPT_SEED_TRANSCRIPTS"
+        TRANSCRIPT_SEED_GENES = "TRANSCRIPT_SEED_GENES"
+        # Intent (#101). EXCLUDED_ISOFORM is the one new label a default run can produce, and only
+        # once a caller has declared an excluded transcript for it to be about.
+        EXCLUDED_ISOFORM = "EXCLUDED_ISOFORM"
+        UNINTENDED_ISOFORM = "UNINTENDED_ISOFORM"
 
     # One verdict per declared filter, so a gate's outcome is not lost when another gate rejects the
     # same candidate. `passes_filters` holds a SINGLE label and each gate overwrites it, so a label
@@ -1331,6 +1486,17 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "mirna_hits_0mm_seed_query": _maybe_attr("mirna_hits_0mm_seed_query", 0),
         "mirna_hits_high_risk_query": _maybe_attr("mirna_hits_high_risk_query", 0),
         "total_offtarget_hits_query": _maybe_attr("total_offtarget_hits_query", 0),
+        # Transcript-seed and intent gate inputs (#101). The seed counters default to None, not 0:
+        # the channel is opt-in, and a 0 on a run that never scanned would read as a clean screen.
+        "transcript_seed_sites_query": _maybe_attr("transcript_seed_sites_query"),
+        "transcript_seed_transcripts_query": _maybe_attr("transcript_seed_transcripts_query"),
+        "transcript_seed_genes_query": _maybe_attr("transcript_seed_genes_query"),
+        "transcript_seed_unresolved_gene_sites": _maybe_attr("transcript_seed_unresolved_gene_sites"),
+        "transcript_seed_sites_total": _maybe_attr("transcript_seed_sites_total"),
+        "excluded_isoform_hits": _maybe_attr("excluded_isoform_hits", 0),
+        "unintended_isoform_hits": _maybe_attr("unintended_isoform_hits", 0),
+        # Why isoform_coverage is or is not a number, so an absent coverage cannot read as a low one.
+        "intent_coverage_status": _maybe_attr("intent_coverage_status"),
         "selection_state": _maybe_attr("selection_state", SelectionState.NOT_SELECTED.value),
         # Exported because a claim nobody can read is not a claim: GATE_WARNED lives here, and it is
         # the only per-row trace that a retained candidate exceeded a gate resolved to warn.
