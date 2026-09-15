@@ -365,14 +365,41 @@ def _resolve_policy_or_exit(
 
 
 #: Counters that together say whether selection considered anything at all. All zero means no
-#: candidate reached selection, which is not an evidence verdict.
+#: candidate reached selection, which is not an evidence verdict. ``provisional_candidates`` is one of
+#: them: an exploratory run whose whole batch is retained on incomplete evidence considered every one
+#: of those candidates, and leaving the state out made that run read as "nothing reached selection"
+#: and undercounted the total the console prints back (#100).
 _SELECTION_COUNTERS = (
     "eligible_candidates",
+    "provisional_candidates",
     "repeat_excluded",
     "filter_excluded",
     "evidence_excluded",
     "unscored_excluded",
 )
+
+
+def _published_shortlist_size(selection: Mapping[str, Any]) -> int:
+    """How many candidates the run actually published as its shortlist.
+
+    ``selection.py::select`` ranks ``ELIGIBLE`` *and* ``PROVISIONAL`` candidates into
+    ``eligible_ordinals``, so both reach ``top_ordinals``, both are exported and both are what a
+    caller sees -- but ``summary['eligible_candidates']`` counts only ``ELIGIBLE``. Deciding emptiness
+    from that key called an exploratory run empty while it was publishing a shortlist full of
+    provisional candidates (#100), so ``--fail-on-no-eligible`` exited
+    :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` on a run that had produced a deliverable.
+
+    ``top_candidates`` is that shortlist's own size, and it is the right key rather than a convenient
+    one: ``top_n`` is either ``None`` or at least 1, so it is zero exactly when nothing was ranked.
+    A summary that predates the key answers from the two state counts instead, which is the same
+    number, so a partial summary is not read as empty either.
+
+    Says nothing about what *qualified*: a provisional candidate stays labelled provisional in the
+    summary, in the CSVs and on the candidate itself.
+    """
+    if "top_candidates" in selection:
+        return int(selection.get("top_candidates") or 0)
+    return int(selection.get("eligible_candidates") or 0) + int(selection.get("provisional_candidates") or 0)
 
 
 def _fail_if_nothing_could_qualify(
@@ -397,7 +424,7 @@ def _fail_if_nothing_could_qualify(
     selection = results.get("selection_summary") or {}
     if selection.get("run_mode") != RunMode.QUALIFIED.value:
         return
-    if selection.get("eligible_candidates"):
+    if _published_shortlist_size(selection):
         return
     if sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS) == 0:
         return
@@ -466,11 +493,17 @@ def _fail_if_nothing_was_eligible(
 
     Runs after the incomplete-evidence check, which therefore wins: a shortlist that is empty for want
     of evidence is the more specific and more actionable answer.
+
+    Emptiness is decided from the shortlist the run published -- :func:`_published_shortlist_size` --
+    and not from ``eligible_candidates``, which counts only ``SelectionState.ELIGIBLE``. An
+    exploratory run's shortlist is full of ``PROVISIONAL`` candidates that this check used to be blind
+    to, so it exited :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` on a run whose deliverable existed and
+    was exported (#100). A ``QUALIFIED`` run labels nothing provisional, so its exit is unchanged.
     """
     selection = results.get("selection_summary") or {}
     if not enabled or not selection:
         return
-    if selection.get("eligible_candidates"):
+    if _published_shortlist_size(selection):
         return
     considered = sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS)
     if considered == 0:
@@ -478,8 +511,9 @@ def _fail_if_nothing_was_eligible(
     if logger is not None:
         logger.error("No candidate was eligible out of %s considered", considered)
     console.print(
-        f"\n❌ [red]No eligible candidates:[/red] none of {considered} candidate(s) qualified, and "
-        f"--fail-on-no-eligible was requested (exit code {int(ExitCode.NO_ELIGIBLE_CANDIDATES)})."
+        f"\n❌ [red]No eligible candidates:[/red] none of {considered} candidate(s) reached the "
+        f"shortlist, and --fail-on-no-eligible was requested "
+        f"(exit code {int(ExitCode.NO_ELIGIBLE_CANDIDATES)})."
     )
     raise typer.Exit(int(ExitCode.NO_ELIGIBLE_CANDIDATES))
 

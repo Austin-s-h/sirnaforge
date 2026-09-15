@@ -490,10 +490,19 @@ class WorkflowConfig:
         stated_query_species = (query_species or "").strip()
         self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
         self.mirna_database = mirna_database
-        # Preserve explicit miRNA species order (values already normalized by CLI helpers)
+        # One species vocabulary for the miRNA channel too, in the caller's own order (#100). The CLI
+        # resolves --species into miRNA *database codes* -- `--species human,rhesus` becomes
+        # ['hsa', 'mml'] -- and those codes used to reach `nextflow_config['mirna_species']` raw, so
+        # run_mirna_seed_analysis wrote mirna_seed_hsa_evidence.json while the screening plan and the
+        # declared EvidenceRequirements were keyed on 'human'. The join key never matched: every
+        # mirna_seed unit reconciled FAILED on an ordinary run and its envelope landed in `unplanned`.
+        # Normalizing here is enough because this attribute is the single source of the plan entry, the
+        # pipeline parameter and the published summary, and MiRNADatabaseManager resolves a canonical
+        # name to the same source as its code (identical cache_key for mirgenedb; the mirbase sources
+        # are keyed on the canonical name outright), so the screen still reads the same database.
         if mirna_species:
-            filtered_species = [value for value in mirna_species if value]
-            self.mirna_species = list(dict.fromkeys(filtered_species))
+            normalized_mirna = [normalize_species_name(value) for value in mirna_species if value]
+            self.mirna_species = list(dict.fromkeys(normalized_mirna))
         else:
             self.mirna_species = []
         # Store transcriptome filter for later use
@@ -3539,13 +3548,15 @@ class SiRNAWorkflow:
         when this run's own tasks published envelopes -- where by construction there is nothing
         legacy to drop. A run is never downgraded by its own fallback, and no existing result
         directory changes the answer it already gives (#100).
+
+        The whole reconciliation goes in, not its ``evidence``: the plan has to be in scope where the
+        projection to (channel, species) drops the guide-set digest, or an envelope for a foreign
+        guide set satisfies the requirement whose plan entry just failed over that mismatch.
         """
         policy = getattr(self.config, "resolved_policy", None)
         qualified = policy is not None and policy.run_mode is RunMode.QUALIFIED
         envelope_backed = any(source is EvidenceSource.ENVELOPE for source in reconciliation.sources.values())
-        return completed_pairs(
-            reconciliation.evidence, strict=qualified and envelope_backed, sources=reconciliation.sources
-        )
+        return completed_pairs(reconciliation, strict=qualified and envelope_backed)
 
     def _missing_required_evidence_units(self) -> tuple[tuple[str, str], ...]:
         """Required channel/species pairs this run reconciled no complete evidence for (#100).

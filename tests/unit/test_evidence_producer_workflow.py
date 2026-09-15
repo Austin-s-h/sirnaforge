@@ -27,11 +27,19 @@ from pathlib import Path
 
 import pytest
 
-from sirnaforge.core.screening_evidence import EvidenceSource, completed_pairs, guide_set_digest
-from sirnaforge.models.evidence import EvidenceStatus, ScreeningPlan
+from sirnaforge.core.screening_evidence import (
+    EvidenceProducer,
+    EvidenceSource,
+    completed_pairs,
+    guide_set_digest,
+    write_evidence,
+)
+from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.models.evidence import EvidenceStatus, ScreeningEvidenceEntry, ScreeningPlan
 from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
 from sirnaforge.pipeline import NextflowConfig
+from sirnaforge.utils.cli_inputs import resolve_species_inputs
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 
 GUIDE = "ATGCGATGCGATGCGATGCGC"
@@ -263,7 +271,9 @@ def test_a_species_the_screen_never_covered_is_published_as_failed_evidence(tmp_
         EvidenceSource.LEGACY_SUMMARY.value
     )
     assert workflow._completed_evidence_pairs == frozenset({("transcriptome", "human")})
-    assert workflow._completed_evidence_pairs == completed_pairs(workflow._screening_evidence.evidence)
+    # The whole reconciliation, not its ``evidence``: the plan has to be in scope where the join key
+    # is projected down to (channel, species) and loses the guide-set digest.
+    assert workflow._completed_evidence_pairs == completed_pairs(workflow._screening_evidence)
     # The aggregate itself claims nothing was missing, so the run-level word is still "completed":
     # the evidence is what disagrees with it, per unit. Reconciling the two words is W4's (#100).
     assert outcome["status"] == "completed"
@@ -353,3 +363,77 @@ def test_a_rejected_reference_reconciles_as_failed_under_its_own_plan_key(tmp_pa
     assert evidence_entry.key == plan_entry.key
     assert evidence_entry.status is EvidenceStatus.FAILED
     assert evidence_entry.detail
+
+
+# ---------------------------------------------------------------------------
+# 4. The miRNA channel is planned and emitted in ONE species vocabulary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_mirna_channel_is_planned_and_emitted_in_one_species_vocabulary(tmp_path: Path) -> None:
+    """The default path published miRNA evidence under a key nothing had planned.
+
+    ``resolve_species_inputs`` answers with miRNA *database codes* -- ``--species human,rhesus`` comes
+    back as ``['hsa', 'mml']`` -- and those codes reached ``nextflow_config['mirna_species']`` raw, so
+    ``run_mirna_seed_analysis`` wrote ``mirna_seed_hsa_evidence.json`` while the plan and the declared
+    ``EvidenceRequirements`` were keyed on ``human``. Nothing joined: every mirna_seed unit reconciled
+    FAILED on an ordinary ``sirnaforge workflow TP53 --species human`` run, and the envelope that did
+    exist landed in ``unplanned``.
+
+    The two vocabularies are pinned to each other rather than each to a literal, so neither side can
+    drift again without this failing.
+    """
+    resolved = resolve_species_inputs(species="human,rhesus", mirna_db="mirgenedb", mirna_species=None)
+    assert resolved.mirna_species == ["hsa", "mml"], "the resolver's own answer is database codes"
+
+    workflow = _workflow(
+        tmp_path,
+        "mirna_vocabulary",
+        species=resolved.screen_species,
+        mirna_species=resolved.mirna_species,
+    )
+    workflow._record_screening_plan(_guides(tmp_path), {})
+
+    # The parameter the .nf module splits into run_mirna_seed_analysis' own per-species loop.
+    parameter_species = str(workflow.config.nextflow_config["mirna_species"]).split(",")
+    planned_mirna = [
+        entry.species for entry in workflow._screening_plan.entries if entry.channel is ScreeningChannel.MIRNA_SEED
+    ]
+    assert planned_mirna == ["human", "macaque"], "the plan speaks canonical species"
+    assert parameter_species == planned_mirna, "one vocabulary, or the join key cannot match"
+
+    # Verified, not assumed: a canonical name and its code resolve to the same source, so speaking the
+    # plan's vocabulary costs the screen nothing.
+    for canonical, code in zip(planned_mirna, resolved.mirna_species, strict=True):
+        by_name = MiRNADatabaseManager.get_source_configuration("mirgenedb", canonical)
+        by_code = MiRNADatabaseManager.get_source_configuration("mirgenedb", code)
+        assert by_name is not None
+        assert by_name == by_code
+        assert by_name.cache_key() == by_code.cache_key(), "the same cached database, under either name"
+
+    # And what the emitter writes now reconciles against the plan instead of arriving unplanned.
+    results_dir = workflow.config.output_dir / "off_target" / "results"
+    for species in parameter_species:
+        write_evidence(
+            results_dir / "mirna",
+            producer=EvidenceProducer.MIRNA_SEED_ANALYSIS,
+            entry=ScreeningEvidenceEntry(
+                channel=ScreeningChannel.MIRNA_SEED,
+                species=species,
+                guide_set_digest=str(workflow._guide_set_digest),
+                status=EvidenceStatus.COMPLETE,
+            ),
+        )
+    reconciliation = workflow._reconcile_screening_evidence(results_dir, screened_species=[], mirna_screened=True)
+
+    mirna_status = {
+        entry.species: entry.status
+        for entry in reconciliation.evidence.entries
+        if entry.channel is ScreeningChannel.MIRNA_SEED
+    }
+    assert mirna_status == dict.fromkeys(planned_mirna, EvidenceStatus.COMPLETE)
+    assert reconciliation.unplanned == (), "no envelope describes a unit nobody planned"
+    assert {(ScreeningChannel.MIRNA_SEED.value, species) for species in planned_mirna} <= completed_pairs(
+        reconciliation
+    ), "and eligibility can join on it"

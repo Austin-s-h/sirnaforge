@@ -31,12 +31,23 @@ import pytest
 import typer
 
 from sirnaforge.cli import (
+    _SELECTION_COUNTERS,
     _fail_if_nothing_could_qualify,
     _fail_if_nothing_was_eligible,
     _offtarget_status_cell,
     app,
 )
-from sirnaforge.models.policy import ExitCode, RunMode, RunStatus
+from sirnaforge.core.selection import CandidateView, SelectionInputs, select
+from sirnaforge.models.policy import (
+    ChannelRequirement,
+    EvidenceRequirements,
+    ExitCode,
+    Requiredness,
+    RunMode,
+    RunStatus,
+    ScreeningChannel,
+    UnknownEvidenceAction,
+)
 from sirnaforge.models.sirna import DesignParameters, DesignResult, SiRNACandidate
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig, screening_run_status
 
@@ -510,6 +521,88 @@ def test_a_failed_screen_does_not_by_itself_change_the_exit_code() -> None:
     }
 
     assert _exit_code(results, fail_on_no_eligible=True) == int(ExitCode.SUCCESS)
+
+
+def _exploratory_inputs() -> SelectionInputs:
+    """An exploratory run that declares one transcriptome pair and completed none of it.
+
+    Every candidate that clears its gates therefore carries an ordering shortfall, which is exactly
+    the condition ``select`` labels ``PROVISIONAL``.
+    """
+    return SelectionInputs(
+        run_mode=RunMode.EXPLORATORY,
+        requirements=EvidenceRequirements(
+            channel_requirements=(
+                ChannelRequirement(
+                    channel=ScreeningChannel.TRANSCRIPTOME,
+                    species="human",
+                    requiredness=Requiredness.EXPLORATORY,
+                ),
+            ),
+            unknown_evidence_action=UnknownEvidenceAction.WARN,
+        ),
+        completed_pairs=frozenset(),
+        query_species="human",
+        filter_channels={},
+        repeat_rejects=False,
+        top_n=10,
+    )
+
+
+def _views(count: int, *, passing: int) -> tuple[CandidateView, ...]:
+    """``count`` unscreened views of which the first ``passing`` clear their gates."""
+    return tuple(
+        CandidateView(
+            candidate_id=f"cand_{ordinal}",
+            ordinal=ordinal,
+            passes_filters=ordinal < passing,
+            repeat_flagged=False,
+            scored_after_screening=False,
+            off_target_screened=False,
+            ranking_score=1.0,
+        )
+        for ordinal in range(count)
+    )
+
+
+@pytest.mark.unit
+def test_a_shortlist_of_provisional_candidates_is_not_an_empty_shortlist() -> None:
+    """``--fail-on-no-eligible`` called an exploratory run empty while it was publishing a shortlist.
+
+    ``select`` ranks ``ELIGIBLE`` *and* ``PROVISIONAL`` candidates into ``top_ordinals``, so an
+    exploratory shortlist is full of candidates the run published and exported -- but the emptiness
+    test read ``eligible_candidates``, which counts only ``ELIGIBLE``. Exit
+    ``NO_ELIGIBLE_CANDIDATES`` therefore fired on a run that had produced a deliverable, and the
+    summed ``_SELECTION_COUNTERS`` total the console prints back left the entire provisional set out
+    of the batch it claimed to describe (#100).
+
+    Driven through the real ``select`` rather than a hand-written summary, because the defect is the
+    relationship between the states it assigns and the keys the CLI reads off it.
+    """
+    views = _views(5, passing=4)
+    summary = select(views, _exploratory_inputs()).summary
+
+    assert summary["eligible_candidates"] == 0, "nothing here is fully evidenced"
+    assert summary["provisional_candidates"] == 4
+    assert summary["top_candidates"] == 4, "and the run published all four"
+    assert _exit_code({"selection_summary": summary}, fail_on_no_eligible=True) == int(ExitCode.SUCCESS)
+    # The counters describe the whole batch, so the console's "none of N" cannot omit the provisional
+    # set -- and "no candidate reached selection" cannot be read off an all-provisional run.
+    assert sum(int(summary[key]) for key in _SELECTION_COUNTERS) == len(views)
+
+
+@pytest.mark.unit
+def test_a_run_that_published_no_shortlist_at_all_still_exits_three() -> None:
+    """The opt-in exit must survive the fix above: nothing published is still nothing published.
+
+    Same exploratory inputs, but every candidate is excluded by a gate before it can be labelled, so
+    there is no shortlist -- provisional or otherwise -- for the flag to find.
+    """
+    summary = select(_views(5, passing=0), _exploratory_inputs()).summary
+
+    assert summary["top_candidates"] == 0
+    assert summary["provisional_candidates"] == 0
+    assert _exit_code({"selection_summary": summary}, fail_on_no_eligible=True) == int(ExitCode.NO_ELIGIBLE_CANDIDATES)
 
 
 # ---------------------------------------------------------------------------

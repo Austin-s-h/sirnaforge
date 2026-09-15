@@ -138,7 +138,10 @@ class SelectionResult:
         required_evidence_missing: Required channel/species pairs and design-input shortfalls this
             run produced no completed evidence for -- a property of the run, not of any candidate.
         summary: The exact key set ``cli.py::_fail_if_nothing_could_qualify`` and
-            ``_SELECTION_COUNTERS`` read, plus ``provisional_candidates`` and ``design_input_excluded``.
+            ``_SELECTION_COUNTERS`` read -- ``provisional_candidates`` among them, because a
+            provisional candidate was considered and is on the published shortlist, so the CLI counts
+            it as considered and reads emptiness off ``top_candidates`` rather than off
+            ``eligible_candidates`` (#100) -- plus ``design_input_excluded``.
     """
 
     order: tuple[int, ...]
