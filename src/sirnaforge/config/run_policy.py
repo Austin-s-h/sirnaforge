@@ -84,17 +84,24 @@ class EntryPoint(str, Enum):
         DESIGN_COMMAND: ``sirnaforge design`` / a direct designer call. Design-only by default.
         SCREENING_WORKFLOW: ``sirnaforge workflow`` / ``run_sirna_workflow``. Qualified by default.
         OFFTARGET_ONLY: ``sirnaforge offtarget`` / ``run_offtarget_only_workflow``. Qualified.
+        BENCHMARK_COMMAND: ``sirnaforge benchmark design`` (#109). Design-only by default: a
+            benchmark run enumerates and filters fixed-length candidates against a prepared
+            observation panel, holds no screening evidence, and must not report otherwise. Reporting
+            ``design_command`` for a run that was not ``sirnaforge design`` would be a false
+            statement in the manifest, which is the reason this entry exists at all.
     """
 
     DESIGN_COMMAND = "design_command"
     SCREENING_WORKFLOW = "screening_workflow"
     OFFTARGET_ONLY = "offtarget_only"
+    BENCHMARK_COMMAND = "benchmark_command"
 
 
 ENTRY_POINT_DEFAULT_RUN_MODE: Mapping[EntryPoint, RunMode] = {
     EntryPoint.DESIGN_COMMAND: RunMode.DESIGN_ONLY,
     EntryPoint.SCREENING_WORKFLOW: RunMode.QUALIFIED,
     EntryPoint.OFFTARGET_ONLY: RunMode.QUALIFIED,
+    EntryPoint.BENCHMARK_COMMAND: RunMode.DESIGN_ONLY,
 }
 
 

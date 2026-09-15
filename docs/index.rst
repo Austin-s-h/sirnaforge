@@ -18,6 +18,7 @@ siRNAforge Documentation
    usage_examples
    workflows
    html_report
+   benchmark_artifacts
    zfn_module
    gene_search
    scoring
