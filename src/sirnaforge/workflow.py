@@ -1011,6 +1011,10 @@ class SiRNAWorkflow:
 
         return summary
 
+    # ──────────────────────────────────────────────────────
+    #  Design stages 1-3: transcripts, ORFs, candidate enumeration
+    # ──────────────────────────────────────────────────────
+
     async def step1_retrieve_transcripts(self, progress: Progress) -> list[TranscriptInfo]:
         """Step 1: Retrieve and validate transcript sequences."""
         task = progress.add_task("[yellow]Fetching transcripts...", total=3)
@@ -1550,6 +1554,10 @@ class SiRNAWorkflow:
             "repeat_sequences": list(scan_result.repeat_sequences),
         }
 
+    # ──────────────────────────────────────────────────────
+    #  Step 6: reports, candidate tables, FASTA exports
+    # ──────────────────────────────────────────────────────
+
     async def step6_generate_reports(self, design_results: DesignResult) -> None:  # noqa: PLR0912
         """Step 6: Generate comprehensive reports.
 
@@ -1880,6 +1888,15 @@ class SiRNAWorkflow:
                 return sum(1 for line in fh if line.startswith(">"))
         except Exception:
             return 0
+
+    # ──────────────────────────────────────────────────────
+    #  Provenance and the FAIR manifest
+    #
+    #  The recommended extraction seam: these methods read self.config plus about a dozen
+    #  named attributes and nothing else, so they would move as a mixin with no call-site
+    #  change. Not done while stabilising 0.7.1 -- it buys no behaviour and every shared
+    #  attribute would need re-declaring under disallow_untyped_defs.
+    # ──────────────────────────────────────────────────────
 
     def _build_fair_manifest(
         self,
@@ -2875,6 +2892,10 @@ class SiRNAWorkflow:
         }
         return {name: str(path) for name, path in written.items() if path.exists()}
 
+    # ──────────────────────────────────────────────────────
+    #  Step 5: off-target screening, then selection and ranking
+    # ──────────────────────────────────────────────────────
+
     async def step5_offtarget_analysis(self, design_results: DesignResult) -> dict[str, Any]:
         """Step 5: Detect repeat elements, then run off-target analysis via the Nextflow pipeline.
 
@@ -3176,6 +3197,10 @@ class SiRNAWorkflow:
             top_n=self.config.top_n,
             design_input_shortfalls=dict(self._design_input_shortfalls),
         )
+
+    # ──────────────────────────────────────────────────────
+    #  Screening inputs: candidate FASTA, references, indexes, species
+    # ──────────────────────────────────────────────────────
 
     async def _prepare_offtarget_input(self, candidates: list[SiRNACandidate]) -> Path:
         """Prepare FASTA input file for off-target analysis with deduplication.
@@ -3559,6 +3584,10 @@ class SiRNAWorkflow:
                 else:
                     species.add(entry)
         return species
+
+    # ──────────────────────────────────────────────────────
+    #  Nextflow: cache, plan, launch
+    # ──────────────────────────────────────────────────────
 
     def _prepare_nextflow_cache(
         self,
@@ -4032,6 +4061,10 @@ class SiRNAWorkflow:
             console.print("⚠️  Nextflow workflows not found; off-target analysis will be skipped")
             return False
         return True
+
+    # ──────────────────────────────────────────────────────
+    #  Nextflow output: evidence envelopes, reconciliation, run status
+    # ──────────────────────────────────────────────────────
 
     async def _process_nextflow_results(
         self, candidates: list[SiRNACandidate], output_dir: Path, results: dict[str, Any]
@@ -4893,6 +4926,10 @@ class SiRNAWorkflow:
             "mirna_hit_files": mirna_hit_files,
         }
 
+    # ──────────────────────────────────────────────────────
+    #  Gates: every declared off-target filter, against one candidate's counts
+    # ──────────────────────────────────────────────────────
+
     def _gate_offtarget_counts(
         self,
         candidate: SiRNACandidate,
@@ -5238,6 +5275,10 @@ class SiRNAWorkflow:
                 "fall back to gene-symbol equality, which is a heuristic and is labelled as such in the hit table."
             )
         return mapping
+
+    # ──────────────────────────────────────────────────────
+    #  Integration: hit rows to per-candidate counters, then gates and post-screen score
+    # ──────────────────────────────────────────────────────
 
     def _integrate_offtarget_results(  # noqa: PLR0912
         self,
@@ -5976,6 +6017,10 @@ class SiRNAWorkflow:
         candidate.score_ago_start = None
         candidate.score_pos1_mismatch = None
         candidate.score_supp_13_16 = None
+
+    # ──────────────────────────────────────────────────────
+    #  ORF report and the run summaries
+    # ──────────────────────────────────────────────────────
 
     def _generate_orf_report(self, orf_results: dict[str, Any], report_file: Path) -> DataFrame[ORFValidationSchema]:
         """Generate ORF validation report in tab-delimited format with schema validation.
