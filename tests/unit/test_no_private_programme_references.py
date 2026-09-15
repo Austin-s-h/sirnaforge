@@ -42,15 +42,24 @@ reproduced for real:
 * trees it never looked at -- ``CHANGELOG.md``, ``docs/``, ``README.md``, ``scripts/``, ``.github/``.
 * ``.ipynb``, where a notebook cell is plain JSON text and reads like prose to everyone but a glob.
 
-So discovery walks the tree and *excludes*, rather than listing what to include: a new file kind, a
-new top-level directory or a new prose format is scanned by default and has to be argued out of scope
-in ``PRUNED_DIRS`` below. Binary files are recognised by content, not by an extension list, for the
-same reason. :func:`test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob` pins all three defeats,
-using a sentinel term of its own so the fixture does not need the real one either.
+So discovery *excludes* rather than listing what to include: a new file kind, a new top-level directory
+or a new prose format is policed by default and has to be argued out of scope. Binary files are
+recognised by content, not by an extension list, for the same reason.
+:func:`test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob` pins all three defeats, using a
+sentinel term of its own so the fixture does not need the real one either.
 
-Cost, measured on this tree: 352 files / 23.2 MB, under 200 ms warm. That is fast-tier work, so nothing
-is excluded for size -- including the ``tests/unit/data/baseline_0_7_1`` ``.tsv`` baselines and the
-multi-megabyte benchmark CSVs under ``tests/data``.
+**What is scanned is what git tracks, not what happens to be on disk.** The concern is what the public
+repository contains, and those are different sets: walking the filesystem flagged 29 sites in
+gitignored local run output -- ``workflow_test_debug_*/manifest.json`` and a scratch contract under
+``.dev/`` -- none of which is published. A guard that fails on any developer's leftover run output is a
+guard that gets deleted, and it would still have said nothing about the published tree. So the file
+list comes from ``git ls-files``, which also makes almost every path exclusion unnecessary: build
+artefacts, caches, worktrees and Nextflow state are untracked already. ``PRUNED_DIRS`` survives for the
+filesystem fallback used when git is unavailable, and for the planted-tree fixture.
+
+Cost, measured on this tree: 359 tracked files / ~23 MB, under 200 ms warm. That is fast-tier work, so
+nothing is excluded for size -- including the ``tests/unit/data/baseline_0_7_1`` ``.tsv`` baselines and
+the multi-megabyte benchmark CSVs under ``tests/data``.
 """
 
 from __future__ import annotations
@@ -58,6 +67,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -139,27 +149,54 @@ def _line_offends(line: str, digests: frozenset[str]) -> bool:
     return any(hashlib.sha256(token.encode()).hexdigest() in digests for token in _TOKEN.findall(line.lower()))
 
 
-def _scan(root: Path, digests: frozenset[str]) -> tuple[list[str], list[str]]:
+def _tracked_paths(root: Path) -> list[Path] | None:
+    """Every file git tracks, or None when git cannot answer.
+
+    ``git ls-files`` is the right question because the concern is what the repository publishes. It
+    also excludes build artefacts, caches, agent worktrees and Nextflow state for free, since none of
+    them is tracked.
+    """
+    try:
+        listing = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = [name for name in listing.stdout.decode("utf-8", errors="replace").split("\0") if name]
+    return [root / name for name in names]
+
+
+def _walked_paths(root: Path) -> list[Path]:
+    """Fallback discovery for a tree git does not know about, and for the planted-tree fixture."""
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in PRUNED_DIRS and not d.endswith(".egg-info")]
+        found.extend(Path(dirpath) / name for name in sorted(filenames))
+    return found
+
+
+def _scan(root: Path, digests: frozenset[str], *, tracked_only: bool = True) -> tuple[list[str], list[str]]:
     """Return ``(offenders, scanned)`` for one tree: ``path:line`` hits, and every file read.
 
     Symlinks are skipped: they either point back inside the tree (already walked) or outside it.
     """
+    paths = (_tracked_paths(root) if tracked_only else None) or _walked_paths(root)
     offenders: list[str] = []
     scanned: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in PRUNED_DIRS and not d.endswith(".egg-info")]
-        for name in sorted(filenames):
-            path = Path(dirpath) / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            raw = path.read_bytes()
-            if _is_binary(raw):
-                continue
-            rel = path.relative_to(root).as_posix()
-            scanned.append(rel)
-            for n, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), start=1):
-                if _line_offends(line, digests):
-                    offenders.append(f"{rel}:{n}")
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if _is_binary(raw):
+            continue
+        rel = path.relative_to(root).as_posix()
+        scanned.append(rel)
+        for n, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), start=1):
+            if _line_offends(line, digests):
+                offenders.append(f"{rel}:{n}")
     return offenders, sorted(scanned)
 
 
@@ -248,7 +285,7 @@ def test_scan_sees_the_file_kinds_that_defeated_the_narrow_glob(tmp_path: Path) 
     (tmp_path / "_build" / "index.html").write_text(leak, encoding="utf-8")
     (tmp_path / "index.bin").write_bytes(b"\x00\x01" + leak.encode())
 
-    offenders, scanned = _scan(tmp_path, _SENTINEL_DIGESTS)
+    offenders, scanned = _scan(tmp_path, _SENTINEL_DIGESTS, tracked_only=False)
 
     assert sorted(offenders) == [
         "CHANGELOG.md:1",
