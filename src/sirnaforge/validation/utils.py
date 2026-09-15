@@ -188,7 +188,7 @@ class ValidationUtils:
                 result.add_error(f"Unknown schema type: {schema_type}")
 
         except Exception as e:
-            result.add_error(f"Schema validation failed: {str(e)}")
+            result.add_error(f"Schema validation failed: {e!s}")
             logger.error(f"DataFrame schema validation error: {e}")
 
         return result

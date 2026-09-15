@@ -1201,8 +1201,7 @@ class SiRNACandidate(BaseModel):
         """
         if include_metadata and self.guide_metadata:
             header = self.guide_metadata.to_fasta_header(target_gene=self.transcript_id, strand_role=StrandRole.GUIDE)
-            # Extract just the header content after '>'
-            header_content = header[1:] if header.startswith(">") else header
+            header_content = header.removeprefix(">")
             return f">{header_content}\n{self.guide_sequence}\n"
         return f">{self.id}\n{self.guide_sequence}\n"
 

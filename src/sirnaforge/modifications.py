@@ -251,9 +251,7 @@ def merge_metadata_into_fasta(
             # Generate new header
             new_header = strand_meta.to_fasta_header(target_gene=target_gene, strand_role=strand_role)
 
-            # Create new record with updated header
-            # Remove the '>' from header for SeqRecord
-            new_desc = new_header[1:] if new_header.startswith(">") else new_header
+            new_desc = new_header.removeprefix(">")
             new_record = SeqRecord(
                 record.seq,
                 id=seq_id,

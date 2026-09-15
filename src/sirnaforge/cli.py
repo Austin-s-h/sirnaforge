@@ -1072,7 +1072,7 @@ def search(  # noqa: PLR0912
         )
 
     except Exception as e:
-        console.print(f"❌ [red]Search error:[/red] {str(e)}")
+        console.print(f"❌ [red]Search error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -1820,7 +1820,7 @@ def workflow(  # noqa: PLR0912
 
     except Exception as e:
         logger.exception("Workflow execution failed")
-        console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
+        console.print(f"❌ [red]Workflow error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         # An exception that reached here is the execution-error code, and the only one: the run
@@ -2010,7 +2010,7 @@ def offtarget(
     except Exception as e:
         if isinstance(e, typer.Exit):
             raise
-        console.print(f"❌ [red]Error validating input FASTA:[/red] {str(e)}")
+        console.print(f"❌ [red]Error validating input FASTA:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -2124,7 +2124,7 @@ def offtarget(
         console.print("   • Build a report from this run with: [blue]sirnaforge report <output_dir>[/blue]")
 
     except Exception as e:
-        console.print(f"❌ [red]Off-target analysis error:[/red] {str(e)}")
+        console.print(f"❌ [red]Off-target analysis error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -2262,7 +2262,7 @@ def zfn(
         if json_summary:
             console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
     except Exception as e:
-        console.print(f"❌ [red]ZFN workflow error:[/red] {str(e)}")
+        console.print(f"❌ [red]ZFN workflow error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -2597,7 +2597,7 @@ def design(
         console.print(f"\n✅ [green]Results saved to:[/green] {output}")
 
     except Exception as e:
-        console.print(f"❌ [red]Error during design:[/red] {str(e)}")
+        console.print(f"❌ [red]Error during design:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -2660,7 +2660,7 @@ def validate(
         console.print("✅ [green]FASTA validation complete[/green]")
 
     except Exception as e:
-        console.print(f"❌ [red]Validation error:[/red] {str(e)}")
+        console.print(f"❌ [red]Validation error:[/red] {e!s}")
         raise typer.Exit(1)
 
 
@@ -3101,11 +3101,7 @@ def _metadata_value_to_json(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     if isinstance(value, list):
-        json_items: list[Any] = []
-        items: list[object] = list(value)
-        for item in items:
-            json_items.append(_metadata_value_to_json(item))
-        return json_items
+        return [_metadata_value_to_json(item) for item in cast(list[object], value)]
     return value
 
 
@@ -3288,7 +3284,7 @@ def sequences_annotate(
         console.print(f"   Output saved to: [cyan]{output_path}[/cyan]")
 
     except Exception as e:
-        console.print(f"❌ [red]Error:[/red] {str(e)}")
+        console.print(f"❌ [red]Error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)

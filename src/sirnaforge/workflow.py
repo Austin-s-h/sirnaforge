@@ -3207,7 +3207,7 @@ class SiRNAWorkflow:
         sequences: list[tuple[str, str]] = []
         representative_to_candidates: dict[str, list[SiRNACandidate]] = {}
         candidate_id_to_representative: dict[str, str] = {}
-        for _norm_guide, cand_list in sequence_to_candidates.items():
+        for cand_list in sequence_to_candidates.values():
             # Use the first candidate as the representative
             representative = cand_list[0]
             sequences.append((representative.id, representative.guide_sequence))
@@ -4794,14 +4794,11 @@ class SiRNAWorkflow:
             except Exception:
                 raw_data = []
             found = False
-            data: list[dict[str, Any]] = []
-            if isinstance(raw_data, list):
-                raw_entries: list[Any] = raw_data
-            else:
-                raw_entries = []
-            for entry in raw_entries:
-                if isinstance(entry, dict):
-                    data.append(cast(dict[str, Any], entry))
+            data: list[dict[str, Any]] = (
+                [cast(dict[str, Any], entry) for entry in raw_data if isinstance(entry, dict)]
+                if isinstance(raw_data, list)
+                else []
+            )
             for item in data:
                 _ingest_row(item)
                 if table is not None:
@@ -5736,12 +5733,12 @@ class SiRNAWorkflow:
         here once -- unlike the per-candidate loop, which sees it once per candidate. miRNA rows are
         excluded: they carry no class.
         """
-        rows: list[Mapping[str, Any]] = []
-        for entry in cast(dict[str, dict[str, Any]], results).values():
-            for hit in cast(list[Mapping[str, Any]], entry.get("hits") or []):
-                if "mirna_id" not in hit and "database" not in hit:
-                    rows.append(hit)
-        return rows
+        return [
+            hit
+            for entry in cast(dict[str, dict[str, Any]], results).values()
+            for hit in cast(list[Mapping[str, Any]], entry.get("hits") or [])
+            if "mirna_id" not in hit and "database" not in hit
+        ]
 
     @staticmethod
     def _classify_orphan_hit_rows(

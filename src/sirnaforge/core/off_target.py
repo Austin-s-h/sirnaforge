@@ -1691,7 +1691,7 @@ def run_mirna_analysis_for_nextflow(
     except Exception as e:
         error_summary = output_root.parent / f"{output_root.name}_mirna_error.txt"
         with error_summary.open("w") as f:
-            f.write(f"miRNA analysis failed: {str(e)}\n")
+            f.write(f"miRNA analysis failed: {e!s}\n")
         return "", "", str(error_summary)
 
 
@@ -1722,7 +1722,7 @@ def run_transcriptome_analysis_for_nextflow(
     except Exception as e:
         error_summary = output_root.parent / f"{output_root.name}_transcriptome_error.txt"
         with error_summary.open("w") as f:
-            f.write(f"Transcriptome analysis failed: {str(e)}\n")
+            f.write(f"Transcriptome analysis failed: {e!s}\n")
         return "", "", str(error_summary)
 
 
@@ -1795,7 +1795,7 @@ def run_comprehensive_offtarget_analysis(
     except Exception as e:
         error_summary = output_root.parent / f"{output_root.name}_error.txt"
         with error_summary.open("w") as f:
-            f.write(f"Comprehensive off-target analysis failed: {str(e)}\n")
+            f.write(f"Comprehensive off-target analysis failed: {e!s}\n")
         return "", "", str(error_summary)
 
 

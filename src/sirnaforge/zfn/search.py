@@ -927,10 +927,7 @@ class _FMIndexHalfSiteScanEngine(_BaseHalfSiteScanEngine):
 
 def _normalize_chrom_token(chrom: str) -> str:
     """Normalize chromosome labels for robust alias matching (chr3 == 3)."""
-    token = chrom.strip().lower()
-    if token.startswith("chr"):
-        token = token[3:]
-    return token
+    return chrom.strip().lower().removeprefix("chr")
 
 
 def _chrom_matches_filter(chrom: str, token: str) -> bool:
