@@ -1594,34 +1594,6 @@ def create_temp_fasta(sequences: dict[str, str]) -> str:
     return temp_path
 
 
-def validate_and_write_sequences(
-    input_file: str, output_file: str, expected_length: int = 21
-) -> tuple[int, int, list[str]]:
-    """Validate siRNA sequences and write valid ones to output file."""
-    sequences = FastaUtils.parse_fasta_to_dict(input_file)
-
-    try:
-        valid_sequences = FastaUtils.validate_sirna_sequences(sequences, expected_length)
-
-        if valid_sequences:
-            FastaUtils.write_dict_to_fasta(valid_sequences, output_file)
-        else:
-            Path(output_file).touch()
-
-        invalid_count = len(sequences) - len(valid_sequences)
-        issues = [
-            f"{name}: Invalid (length={len(seq)}, expected={expected_length})"
-            for name, seq in sequences.items()
-            if name not in valid_sequences
-        ]
-
-        return len(valid_sequences), invalid_count, issues
-
-    except ValueError as e:
-        Path(output_file).touch()
-        return 0, len(sequences), [str(e)]
-
-
 def build_bwa_index(fasta_file: str | Path, index_prefix: str | Path) -> Path:
     """Build BWA-MEM2 index for both transcriptome and miRNA off-target analysis."""
     fasta_path = Path(fasta_file)
@@ -1660,46 +1632,9 @@ def build_bwa_index(fasta_file: str | Path, index_prefix: str | Path) -> Path:
         raise
 
 
-def validate_sirna_sequences(
-    sequences: dict[str, str], expected_length: int = 21
-) -> tuple[dict[str, str], dict[str, str], list[str]]:
-    """Validate siRNA sequences using existing FastaUtils."""
-    try:
-        valid_sequences = FastaUtils.validate_sirna_sequences(sequences, expected_length)
-        invalid_sequences = {name: seq for name, seq in sequences.items() if name not in valid_sequences}
-        issues = [
-            f"{name}: Invalid sequence (length={len(seq)}, expected={expected_length})"
-            for name, seq in invalid_sequences.items()
-        ]
-        return valid_sequences, invalid_sequences, issues
-    except ValueError as e:
-        return {}, sequences, [str(e)]
-
-
 def parse_fasta_file(fasta_file: str | Path) -> dict[str, str]:
     """Parse FASTA file using existing FastaUtils."""
     return FastaUtils.parse_fasta_to_dict(fasta_file)
-
-
-def write_fasta_file(sequences: dict[str, str], output_file: str) -> None:
-    """Write sequences to FASTA file using existing FastaUtils."""
-    FastaUtils.write_dict_to_fasta(sequences, output_file)
-
-
-def check_tool_availability(tool: str) -> bool:
-    """Check if external tool is available."""
-    try:
-        # Get absolute path to tool executable
-        tool_path = _get_executable_path(tool)
-        if not tool_path:
-            return False
-
-        cmd = [tool_path, "--help"]
-        _validate_command_args(cmd)
-        result = subprocess.run(cmd, capture_output=True, check=False, timeout=10)  # nosec B603
-        return result.returncode in {0, 1}
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
 
 
 def validate_index_files(index_prefix: str | Path, tool: str = "bwa") -> bool:
@@ -2795,12 +2730,8 @@ __all__ = [
     "MiRNASeedBackend",
     # Utility functions
     "create_temp_fasta",
-    "validate_and_write_sequences",
     "build_bwa_index",
-    "validate_sirna_sequences",
     "parse_fasta_file",
-    "write_fasta_file",
-    "check_tool_availability",
     "validate_index_files",
     "mirna_seed_hit_identity",
     "normalize_mirna_seed_hit",

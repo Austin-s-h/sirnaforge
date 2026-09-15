@@ -29,6 +29,15 @@ where the two defects removed here were first written down as outstanding.)
 
 ### Breaking changes
 
+- **BREAKING: four uncalled helpers leave `sirnaforge.core.off_target.__all__`.**
+  `validate_and_write_sequences`, `validate_sirna_sequences`, `write_fasta_file` and
+  `check_tool_availability` had no caller in src/, tests/, docs/, examples/, scripts/ or the Nextflow
+  modules, and each was a thin wrapper over something that stays: `FastaUtils.validate_sirna_sequences`,
+  `FastaUtils.write_dict_to_fasta` and `FastaUtils.parse_fasta_to_dict` in `sirnaforge.data.base`, all
+  still public. `parse_fasta_file`, `create_temp_fasta`, `build_bwa_index` and `validate_index_files`
+  are unaffected. Note that the deleted module-level `validate_sirna_sequences` returned a
+  `(valid, invalid, issues)` triple, which the surviving `FastaUtils` method does not — it returns the
+  valid mapping only.
 - **BREAKING (`weight_set_version` 3.0.0 → 4.0.0): one flat weight vector becomes three named ones.**
   `ScoringWeights` is now a container of `design_v4` (`asymmetry` 0.40, `target_accessibility` 0.35,
   `gc_content` 0.25), `postscreen_sirna_v4` (`off_target` 0.25, `target_accessibility` 0.30,
