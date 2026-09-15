@@ -896,3 +896,343 @@ def test_no_fragment_key_is_written_without_being_read_back(tmp_path: Path) -> N
     assert written == read, (
         f"written but never read back: {sorted(written - read)}; read but never written: {sorted(read - written)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The page as a document, and the index as a control (#103, phase 4)
+# ---------------------------------------------------------------------------
+# Five defects the maintainer reproduced by driving the rendered report in a browser: the layout was
+# sized by arithmetic on a header it could not see, so it ran past the fold and nested one scrollbar
+# inside another, with no print stylesheet and no media query anywhere; a threshold keystroke rebuilt
+# 5,000 rows of seven cells, looking each row's own index up by scanning the whole array; the six
+# sortable columns could not be reached from a keyboard, said nothing about which way they sorted, and
+# the seventh -- blank -- destroyed the sort when clicked; the top-N count box was nested INSIDE its
+# button; and the export's fallback could not fire in the case its own comment named.
+#
+# Asserted against the rendered document, its stylesheet and the payload, never through a JavaScript
+# engine. What only a browser can show is listed in this phase's report; the browser run that confirmed
+# each item is not reproducible here.
+
+
+def _style(html: str) -> str:
+    """The document's one stylesheet, comments stripped, so an assertion sees rules and not prose.
+
+    The comments in it name the defects, `calc(100vh - 86px)` among them, so a check that the arithmetic
+    is gone has to read what the browser reads rather than what the file says about itself.
+    """
+    start = html.index("<style>")
+    return re.sub(r"/\*.*?\*/", "", html[start : html.index("</style>", start)], flags=re.DOTALL)
+
+
+def _element(html: str, marker: str) -> str:
+    """One element's own source, from its opening tag to the matching close of its tag name."""
+    start = html.index(marker)
+    name = html[html.index("<", start) + 1 :].split(maxsplit=1)[0].strip(">")
+    depth, i = 0, start
+    while i < len(html):
+        if html.startswith(f"<{name}", i):
+            depth += 1
+        elif html.startswith(f"</{name}>", i):
+            depth -= 1
+            if depth == 0:
+                return html[start : i + len(name) + 3]
+        i += 1
+    raise AssertionError(f"{marker} is never closed")
+
+
+@pytest.mark.unit
+def test_the_two_panes_fill_the_page_and_never_run_past_the_fold(tmp_path: Path) -> None:
+    """The layout was a subtraction, and the number it subtracted was wrong on every real run.
+
+    `main{height:calc(100vh - 86px)}` against a header that measures 129.5px on one internal run -- and
+    176px on the fixture below -- put the panes 43.5px past the fold: the document itself became
+    scrollable, and each pane then had a scrollbar inside a page that already had one. The header's
+    height is not a constant. It grows with the gene query, the provenance line, the dropped-guide
+    banner and the off-target scope, so nothing in this file is allowed to hold a copy of it: the panes
+    take what the header leaves, which is what a flex column with `min-height:0` means.
+
+    `grid-template-rows:minmax(0,1fr)` is the second half. A grid row sized `auto` takes its height from
+    its content, so a pane 5,000 rows tall would overflow the box that was told to be short, and the
+    pane's own `overflow:auto` would never engage.
+    """
+    css = _style(render_html(build_payload(_graded_run(tmp_path))))
+
+    assert "100vh" not in css, "the layout is measuring the viewport again instead of filling what is left"
+    assert "html,body{height:100%}" in css
+    assert "display:flex;flex-direction:column" in css, "the header and the panes are one column"
+    assert "flex:0 0 auto" in css, "the header takes its own height"
+    for rule in ("flex:1 1 auto", "min-height:0", "grid-template-rows:minmax(0,1fr)"):
+        assert rule in css, f"main is missing {rule}"
+    for pane in ("#left{", "#right{"):
+        body = css[css.index(pane) : css.index("}", css.index(pane))]
+        assert "overflow:auto" in body and "min-height:0" in body, f"{pane} can still be pushed past the fold"
+
+
+@pytest.mark.unit
+def test_the_report_prints_and_says_on_paper_what_paper_cannot_show(tmp_path: Path) -> None:
+    """There was no print stylesheet and no media query of any kind in the document.
+
+    Printing it gave the header and the top of two clipped panes, because everything below the header
+    lives inside a scroller and a scroller prints one screenful. On paper the nesting has to become
+    ordinary flow. The controls are dropped -- a threshold box is not operable on paper and a slider
+    printed at some position invites the reader to believe it -- so a print-only line says that the
+    verdicts printed are the ones that were in force, and where to look for whose thresholds they were.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    css = _style(html)
+
+    assert "@media print{" in css, "the report still has no print stylesheet"
+    printed = css[css.index("@media print{") :]
+    assert "#left,#right{overflow:visible" in printed, "a nested scroller prints one screenful"
+    assert "main{display:block" in printed and "html,body{height:auto}" in printed
+    assert "#idx th,.searchbar{position:static}" in printed, "a sticky header repeats over every page"
+    assert ".searchbar,.filters,.cartbtn,#carttsv{display:none}" in printed, "controls are not operable on paper"
+    assert ".printonly{display:block}" in printed
+    assert ".printonly{display:none}" in css[: css.index("@media print{")], "and it is never on screen"
+
+    # And it says what it is not showing, rather than leaving a printed verdict unattributed.
+    note = _flat(_element(html, '<div class="printonly sub"'))
+    assert "Printed copy." in note
+    assert "the thresholds and filters are controls, so they are not on paper" in note.lower()
+    assert "the rows that were drawn on screen" in note
+
+    # One more media rule, because the left pane's own 430px minimum plus a 40% track does not fit a
+    # narrow window and the grid does not wrap: the panes stack, and each keeps its own scroll.
+    assert "@media (max-width:820px){" in css
+    narrow = css[css.index("@media (max-width:820px){") :]
+    assert "grid-template-columns:minmax(0,1fr)" in narrow and "grid-template-rows:minmax(0,45%)" in narrow
+
+
+@pytest.mark.unit
+def test_a_row_carries_its_own_index_and_the_index_draws_a_window_it_declares(tmp_path: Path) -> None:
+    """`G.indexOf(g)` sat inside the row map, which made drawing the index quadratic in the guide count.
+
+    On one internal run a keystroke on any threshold cost 148 ms, and every one of them rebuilt 5,000
+    rows of seven cells, asked the array where each row was, and then assigned 5,000 click handlers. A
+    guide's index in this file never changes, so it is stashed once; the handlers are delegated to the
+    tbody, so a row does not have to be wired to work; and the rows themselves are drawn as a window.
+
+    The window is not virtualisation and does not pretend to be. It is proportionate, and it can be
+    honest: the last row says how many rows matched, and says that the counts, the cart, `Add top` and
+    the export are computed over all of them. Nothing about what the report claims is scoped to it.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    body = _js_body(html, "function renderIndex()")
+
+    assert "G.forEach((g,i)=>{ g._i=i; });" in html, "the index has to be stashed exactly once, at load"
+    assert "indexOf" not in body, "a row is looking its own position up by scanning the whole array again"
+    assert 'data-i="${g._i}"' in body
+    assert "indexOf" not in _js_body(html, "function renderDetail("), "the open guide knows its own index too"
+    assert "const drawn = view.slice(0, INDEX_DRAW_MAX);" in body
+    assert "const INDEX_DRAW_MAX = " in html
+
+    # Delegation, and the proof it is delegation: the per-row wiring is gone from the render path and the
+    # one handler is on the container, which exists before any row does.
+    assert "querySelectorAll('tr')" not in body, "handlers are being assigned per row again"
+    wire = _js_body(html, "function wireUI()")
+    assert "const tb=document.querySelector('#idx tbody');" in wire
+    assert "tb.onclick=e=>{" in wire and "tb.onkeydown=e=>{" in wire
+
+    # The window states itself, in the table, with the numbers that are not scoped to it.
+    assert "Showing the first ${" in body
+    said = _flat(body[body.index("Showing the first ${") : body.index("sort or filter")])
+    assert "matching rows, in this sort order" in said
+    assert "Every count above, the cart, Add top and the export are computed over all" in said
+
+
+@pytest.mark.unit
+def test_every_sortable_column_is_a_control_that_says_which_way_it_sorts(tmp_path: Path) -> None:
+    """Seven `<th onclick>`, `tabIndex` -1 on all of them, `aria-sort` unset on all of them.
+
+    So the sort could not be reached without a pointer and, once reached, was invisible: nothing on
+    screen or in the accessibility tree said which column was sorted or in which direction. And the
+    seventh column is the blank pick header, which carried the same handler as the six real ones --
+    clicking it set `sortK` to undefined, `rowKey` then returned 0 for every guide, and the sort was
+    silently destroyed. The pick column carries no sort key at all now, and `sortBy` refuses one.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    head = _element(html, '<table id="idx">')[: html.index("</thead>") - html.index('<table id="idx">')]
+    cells = re.findall(r"<th\b[^>]*>", head)
+
+    assert len(cells) == 7, "the index has seven header cells"
+    sortable = [c for c in cells if "data-k=" in c]
+    assert len(sortable) == 6, "six columns sort; the pick column is not one of them"
+    for cell in sortable:
+        assert 'tabindex="0"' in cell, f"not reachable from the keyboard: {cell}"
+        assert 'aria-sort="none"' in cell, f"says nothing about its own sort: {cell}"
+        assert 'scope="col"' in cell
+    pick = next(c for c in cells if "data-k=" not in c)
+    assert "tabindex" not in pick, "the pick header is not a control and must not be focusable"
+    assert '<span class="vh">In cart</span>' in head, "and it still needs a name for a screen reader"
+    assert head.count('<span class="si" aria-hidden="true">') == 6, "one indicator per sortable column"
+
+    # The guard is the defect: a header with no key must change nothing.
+    assert "function sortBy(k){\n  if(!k) return;" in html
+    wire = _js_body(html, "function wireUI()")
+    assert "document.querySelectorAll('#idx th[data-k]')" in wire, "only the six carrying a key are wired"
+    assert "th.onclick=()=>sortBy(th.dataset.k);" in wire
+    assert "if(e.key==='Enter'||e.key===' '){ e.preventDefault(); sortBy(th.dataset.k); }" in wire
+
+    # Both halves of the indicator are painted from the same state, on every render.
+    paint = _js_body(html, "function paintSortHeaders()")
+    assert "th.setAttribute('aria-sort', on ? (sortAsc?'ascending':'descending') : 'none');" in paint
+    assert "si.textContent" in paint
+    assert "paintSortHeaders();" in _js_body(html, "function renderIndex()")
+    # The liability header is relabelled when the species scope changes, and used to be relabelled by
+    # writing the cell's own text -- which would delete the indicator with it.
+    assert "lbl.textContent = SCREENED_SPECIES.length" in _js_body(html, "function labelLiabColumn()")
+    assert 'id="liablbl"' in head
+
+
+@pytest.mark.unit
+def test_a_row_and_its_pick_cell_are_operable_and_keep_focus_across_the_rebuild(tmp_path: Path) -> None:
+    """Rows had no `tabindex` and the pick cell was a bare `<td>` with no role and no state.
+
+    A keyboard reader could not open a guide or add one to the cart, and a screen reader was told
+    nothing about a cell whose whole content is whether this guide is picked. Both are controls now.
+
+    The rebuild is the subtle half: activating a row re-renders the tbody the row lives in, so focus
+    would land back on the document and the next arrow key would go nowhere -- one Enter and the
+    keyboard path is over. `renderIndex` puts focus back on the same guide's row, or its pick cell.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    body = _js_body(html, "function renderIndex()")
+
+    assert '<tr data-i="${g._i}" tabindex="0"' in body
+    assert 'aria-current="true"' in body, "the open row says so, rather than only being coloured"
+    assert 'role="button" tabindex="0"' in body and 'aria-pressed="${CART.has(g.guide)?' in body
+    assert "aria-label=\"${CART.has(g.guide)?'remove':'add'}" in body, "and says which way it will go"
+
+    # Focus survives the rebuild the keypress caused, matched by guide rather than by row position:
+    # the sort may have moved the row, and a row that moved is still the row the reader was on.
+    assert "const act=document.activeElement, inRow=act&&act.closest?act.closest('#idx tbody tr'):null;" in body
+    assert "if(held){" in body and "(heldPick?cells[0]:cells[0].parentElement).focus();" in body
+
+    wire = _js_body(html, "function wireUI()")
+    assert "if(cell) togglePick(cell.dataset.pick); else show(G[+tr.dataset.i]);" in wire
+    assert "if(e.key==='ArrowDown'||e.key==='ArrowUp'){" in wire, "the index is walkable"
+    assert "e.preventDefault();" in wire, "or Space scrolls the page instead of picking a guide"
+
+
+@pytest.mark.unit
+def test_the_top_n_count_is_its_own_labelled_control_and_refuses_junk(tmp_path: Path) -> None:
+    """The number box shipped INSIDE the button: `<button id="addtop">Add top <input id="topn"> …`.
+
+    Invalid HTML, and it read that way -- the button's accessible name was "Add top  to cart" with the
+    value nowhere in it, a click in the field was a click on the button until a handler was written to
+    guess otherwise, and the box had no label of its own. Nor was its input read like any other box:
+    `parseInt('ten',10)||0` is 0, so junk added the top zero guides and the button looked broken. It is
+    read through `fnum`, the boundary every threshold box uses, and refused where it was typed.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    button = _element(html, '<button class="cartbtn" id="addtop"')
+
+    assert 'id="topn"' not in button, "the input is inside the button again, which is not valid markup"
+    assert "Add to cart" in button, "the button's name is what the button does"
+    assert '<label for="topn">Add top</label>' in html, "and the box has a label of its own"
+    assert 'id="topn" type="number" step="1" min="1"' in html, "typed, so the browser records bad input"
+
+    add = _js_body(html, "document.getElementById('addtop').onclick")
+    assert "e.target.id==='topn'" not in add, "the click no longer has to be told which element it hit"
+    assert "const n=fnum('topn')" in add, "read through the same boundary as every threshold"
+    assert "Number.isInteger(n) && n>0" in add, "a count is a whole number of guides"
+    assert "box.setAttribute('aria-invalid', ok?'false':'true');" in add, "refused at the control"
+    assert "not a whole number of guides above zero, so nothing was added" in add
+    assert 'id="topnnote"' in html
+    # And when it works it says what it did, because asking for more than the filters admit is not an
+    # error and used to be indistinguishable from a button that did nothing.
+    assert "only ${take.length.toLocaleString()} guides match the filters in force" in add
+
+
+@pytest.mark.unit
+def test_a_blocked_download_is_not_claimed_as_detected(tmp_path: Path) -> None:
+    """The fallback could not fire in the case its own comment named, which the comment named exactly.
+
+    In an iframe without `allow-downloads` -- the Quilt case -- the embedder refuses the synthetic
+    `a.click()` itself: no exception, no callback, no observable state. So the `catch` never ran, the
+    "download refused by this viewer" note never appeared, and the reader was told the file had been
+    written. Nothing in this page can see that refusal, so the report does not claim to: the box is
+    selected on every export, and the note says both outcomes. The claim of refusal survives only where
+    a refusal really was observed -- `Blob` or `createObjectURL` throwing.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+    handler = _js_body(html, "document.getElementById('cartdl').onclick")
+    before, after = handler.split("try{", 1)
+
+    assert "box.focus(); box.select();" in before, "the fallback is prepared before the attempt, not after it"
+    assert "download refused by this viewer" not in before
+    assert "download refused by this viewer" in after.split("catch(e)", 1)[1], "only where a throw was caught"
+    assert "if no` \n        + ` file arrived" in handler.replace("\n", " \n"), "the success note hedges"
+    assert "the box below is already selected" in handler
+
+    # And the card's own paragraph says the same thing, because that is where a reader looks first.
+    card = _flat(html[html.index("<b>Export TSV</b>") : html.index("</p>", html.index("<b>Export TSV</b>"))])
+    assert "they do it without telling this page" in card
+    assert "it cannot say whether your file arrived" in card
+    assert "selected every time you export" in card
+
+
+@pytest.mark.unit
+def test_a_guide_outside_the_readers_own_filter_says_so_in_the_pane(tmp_path: Path) -> None:
+    """The index read "0 of 5,000" while the pane beside it showed a full guide, and nothing said why.
+
+    A guide arrives in the pane by URL (`g=`) or stays there while a threshold moves under it, and every
+    card below it is real -- so the honest reading of that screen is that the index is broken. The pane
+    says where the open guide sits instead: outside the filter, outside the search, or past the rows the
+    index draws. It is one element, refreshed from the same place the view is, so it cannot go stale
+    while the reader types in the search box.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    assert '<div id="placement"></div>' in _js_body(html, "function renderDetail("), "the note is in the pane"
+    assert "renderPlacement();" in _js_body(html, "function renderDetail(")
+    assert "renderPlacement();" in _js_body(html, "function renderIndex()"), "so it cannot go stale"
+
+    note = _js_body(html, "function placementNote()")
+    assert "const at=view.indexOf(g);" in note, "membership of the drawn view, not of passesFilters alone"
+    assert "Outside your current filter." in note
+    assert "passesFilters(g)?'search box':'thresholds and filters'" in note, "and which of the two excluded it"
+    assert "Not among the drawn rows." in note and "at>=INDEX_DRAW_MAX" in note
+    assert "Nothing below is filtered" in note, "the evidence under the note is the guide's own"
+
+
+@pytest.mark.unit
+def test_a_chosen_isoform_stays_chosen_and_leaving_it_is_an_action(tmp_path: Path) -> None:
+    """`showOn()` re-pointed the map at whatever isoform carried the next guide, and said nothing.
+
+    Phase 2 ordered the picker canonical-first, which fixed the default; this is the other half. The
+    reader could choose the canonical transcript and lose it on their very next selection, because a
+    guide not enumerated on it moved the map for them -- so the canonical could be reached but never
+    held. A deliberate choice is pinned. The map then says the selection is not on the isoform they
+    chose, and offers the move as a button rather than making it silently.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    assert "let curTx = TXS[0] || null, txPinned = false;" in html
+    assert "if(!here && !txPinned){" in _js_body(html, "function showOn(g)"), "a pinned isoform stays"
+    wire = _js_body(html, "function wireUI()")
+    assert "curTx = e.target.value; txPinned = true;" in wire, "choosing one is what pins it"
+    assert "txPinned = false;" in wire, "and the button beside the picker is how it is released"
+
+    rendered = _js_body(html, "function renderMap()")
+    assert "const stayed = txPinned && selected && !carries.has(curTx);" in rendered
+    assert "The map stayed on the isoform you chose, which is not one of them." in rendered
+    assert "document.getElementById('txfollow').style.display = stayed ? '' : 'none';" in rendered
+    assert 'id="txfollow" style="display:none"' in html, "and it is not offered until it is needed"
+
+
+@pytest.mark.unit
+def test_the_phase_four_markup_still_reaches_nothing_outside_itself(tmp_path: Path) -> None:
+    """Re-asserted over the markup this phase changed: a print stylesheet and two new controls.
+
+    A print rule is the kind of thing that arrives with a font URL attached, and the audit's own
+    suggestion for the cart was browser storage. Quilt's default sandbox withholds same-origin, so
+    neither is available to this file at all.
+    """
+    html = render_html(build_payload(_graded_run(tmp_path)))
+
+    assert not re.findall(r"https?://", html), "the report contains an external URL"
+    external = [m for m in re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)""", html) if not m.startswith("#")]
+    assert external == [], f"the report links a non-inline resource: {external}"
+    for forbidden in ("fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "document.cookie", "@import"):
+        assert forbidden not in html, f"{forbidden} cannot work in Quilt's default sandbox"

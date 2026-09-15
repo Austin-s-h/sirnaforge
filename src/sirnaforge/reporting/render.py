@@ -94,11 +94,25 @@ _TEMPLATE = r"""<!DOCTYPE html>
 :root{--bg:#fbfbfc;--fg:#1a1d21;--mut:#6b7280;--line:#e5e7eb;--card:#fff;
 --pass:#15803d;--fail:#b91c1c;--unk:#b45309;--off:#9ca3af;--acc:#1d4ed8}
 *{box-sizing:border-box}
-body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
-header{padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card)}
+/* The two panes fill whatever the header leaves, measured by the layout rather than guessed at. The
+   height was `calc(100vh - 86px)` against a header that renders 129.5px on a real run -- gene query,
+   provenance, four pills, the agreement line, the dropped-guide banner and the off-target scope, every
+   one of which grows with the run -- so `main` ran 43.5px past the fold, the document itself became
+   scrollable and both panes got a second scrollbar inside a page that already had one. A flex column
+   with `min-height:0` cannot be wrong about a number it never holds. */
+html,body{height:100%}
+body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);
+color:var(--fg);display:flex;flex-direction:column}
+header{flex:0 0 auto;padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card)}
 h1{margin:0 0 4px;font-size:17px;font-weight:650}
 .sub{color:var(--mut);font-size:12.5px}
-main{display:grid;grid-template-columns:minmax(430px,40%) 1fr;gap:0;height:calc(100vh - 86px)}
+/* `grid-template-rows:minmax(0,1fr)` as well as `min-height:0`: an auto-sized row takes its height from
+   its content, which is how a pane 5,000 rows tall overflows a box that was told to be short. */
+main{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(430px,40%) 1fr;
+grid-template-rows:minmax(0,1fr);gap:0}
+/* One header cell carries no label a reader needs, and every label a screen reader needs. */
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.printonly{display:none}
 /* The index carries six columns including a 23-nt monospace sequence. Without tightened padding and
    short headers it overflows its pane and the last column -- isoform coverage -- is the one lost. */
 #idx th,#idx td{padding:6px 7px}
@@ -141,8 +155,8 @@ padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
 /* Tab-separated columns only line up if the text is not wrapped. */
 #carttsv{width:100%;height:96px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 border:1px solid var(--line);border-radius:5px;padding:7px;resize:vertical;white-space:pre;overflow:auto}
-#left{border-right:1px solid var(--line);overflow:auto;background:var(--card)}
-#right{overflow:auto;padding:20px 24px}
+#left{border-right:1px solid var(--line);overflow:auto;min-height:0;background:var(--card)}
+#right{overflow:auto;min-height:0;padding:20px 24px}
 #q{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;font-family:ui-monospace,monospace}
 .searchbar{padding:12px;position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--line);z-index:2}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
@@ -178,6 +192,44 @@ letter-spacing:.5px;line-height:1.5;word-break:break-all}
 .big{font-size:22px;font-weight:680}
 .liab{color:var(--fail);font-weight:650}.nonliab{color:var(--mut)}
 code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
+/* A sort a reader can see, on a column they can reach: the arrow is the visible half of `aria-sort`,
+   and the focus ring is what makes a `<th>` a control rather than a word that happens to react. */
+th .si{margin-left:4px;font-size:9px;color:var(--acc)}
+th[aria-sort="none"] .si{color:var(--line)}
+#idx th:focus-visible,#idx tbody tr:focus-visible,#idx td.pick:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+#idx th.pick{cursor:default}
+/* The index draws a window of the matching rows and says so in the last row rather than in a tooltip. */
+tr.drawcap td{color:var(--mut);font-style:italic;background:#f9fafb;cursor:default}
+tr.drawcap:hover td{background:#f9fafb}
+/* Same treatment as every threshold box, because it is refused the same way rather than degraded to 0. */
+#topn{padding:2px 5px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px;
+appearance:textfield;-moz-appearance:textfield}
+#topn::-webkit-outer-spin-button,#topn::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+#topn[aria-invalid="true"]{border-color:var(--fail);background:#fee2e2}
+/* Narrow viewports: the left pane's own 430px minimum plus a 40% track is wider than a phone or a
+   half-screen window, and the grid does not wrap. Stacked, both panes keep their own scroll. */
+@media (max-width:820px){
+  main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,45%) minmax(0,55%)}
+  #left{border-right:0;border-bottom:1px solid var(--line)}
+  #right{padding:16px}
+}
+/* Paper. Nothing here scrolls, so every nested scroller has to become ordinary flow or its content is
+   cut at the first page: a printed copy of this report used to be the header and the top 40% of two
+   panes, once. The controls are dropped because they cannot be operated on paper, and the print-only
+   line says what the reader is therefore not seeing. */
+@media print{
+  html,body{height:auto}
+  body{display:block;background:#fff}
+  main{display:block;min-height:0}
+  #left,#right{overflow:visible;min-height:0;border:0;padding:0}
+  #left{margin-bottom:14px}
+  .searchbar,.filters,.cartbtn,#carttsv{display:none}
+  #idx th,.searchbar{position:static}
+  .printonly{display:block}
+  .card,tr,svg{break-inside:avoid}
+  #idx{font-size:10.5px}
+  @page{margin:14mm}
+}
 </style></head><body>
 <header>
   {# Every number in this header counts the guides the FILE holds. `p.run.guides` is that count
@@ -259,6 +311,12 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
     </details>
     {% endif %}
   </div>
+  {# Only ever seen on paper (`.printonly`), where the controls are dropped because they cannot be
+     operated there. What a printed copy cannot show, it says. #}
+  <div class="printonly sub" style="margin-top:6px"><b>Printed copy.</b> The thresholds and filters are
+  controls, so they are not on paper: every verdict printed below is the one in force when this was
+  printed, and the legend under the candidate map says whether those thresholds are the run's own. The
+  index prints the rows that were drawn on screen, in the sort order they were drawn in.</div>
 </header>
 <main>
  <div id="left">
@@ -276,21 +334,39 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
     <div id="rrows"></div>
     <div class="fstat" id="fcons" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
     </div>
+    {# The number box was INSIDE the button: invalid markup, an accessible name that read "Add top  to
+       cart" with the value nowhere in it, and a click on the field counted as a click on the button
+       until a handler was written to guess otherwise. It is its own labelled control now, beside a
+       button whose name is what the button does, and junk in it is refused where it is typed rather
+       than degraded to 0 by `parseInt(...)||0` and silently adding nothing. #}
     <div style="margin-top:8px">
-      <button class="cartbtn" id="addtop">Add top <input id="topn" value="10" style="width:42px"> to cart</button>
+      <label for="topn">Add top</label>
+      <input id="topn" type="number" step="1" min="1" value="10" style="width:52px"
+        aria-label="how many of the highest-scoring matching guides to add to the cart">
+      <button class="cartbtn" id="addtop">Add to cart</button>
       <button class="cartbtn" id="freset">Reset</button>
+      <div id="topnnote" class="empty" style="margin-top:4px"></div>
     </div>
   </details>
+  {# Seven columns, six of them sortable, none of them reachable before: `<th onclick>` with no tabindex
+     and no key handler, `aria-sort` unset on all seven so nothing said which column was sorted or which
+     way, and the blank pick header carried the same handler as the rest -- clicking it set `sortK` to
+     undefined and every row's key to 0, silently destroying the sort. The pick column has no key, so
+     `sortBy` refuses it; the six that do carry one are buttons in every sense a keyboard can tell. #}
   <table id="idx"><thead><tr>
-    <th class="pick" title="in cart"></th>
-    <th data-k="status">Status</th><th data-k="guide">Guide</th><th data-k="composite">Score</th>
-    <th data-k="failed" title="gates failed / gates undecided">Gates</th>
+    <th class="pick" scope="col"><span class="vh">In cart</span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="status">Status<span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="guide">Guide<span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="composite">Score<span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="failed" title="gates failed / gates undecided">Gates<span class="si" aria-hidden="true"></span></th>
     {# One liability column, decomposed in the cell rather than summarised in it. The bare total is the
        number max_off_target_count gates, and it is also the number that cannot tell a human liability
        from a non-human-index artefact: on one internal run roughly half of every liability total is
        non-human. `#liabscope` re-scopes the sort, the emphasis and the liability bound together. #}
-    <th data-k="liab" id="thliab">Liab.</th>
-    <th data-k="rows" title="distinct isoforms carrying this guide, of all in the run">Isoforms</th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="liab" id="thliab"><span
+      id="liablbl">Liab.</span><span class="si" aria-hidden="true"></span></th>
+    <th scope="col" tabindex="0" aria-sort="none" data-k="rows"
+      title="distinct isoforms carrying this guide, of all in the run">Isoforms<span class="si" aria-hidden="true"></span></th>
   </tr></thead><tbody></tbody></table>
  </div>
  <div id="right">
@@ -309,8 +385,9 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      <code>status</code> column was decided at, and say whether they are the run's own or yours: a
      status pasted into a ticket has to carry what produced it.
      <b>Export TSV</b> downloads it. Some viewers -- including a
-     Quilt iframe without <code>allow-downloads</code> -- block that; the box above is then the way
-     out, and says so if the download is refused.</p>
+     Quilt iframe without <code>allow-downloads</code> -- block that, and they do it without telling this
+     page: no error reaches the report, so it cannot say whether your file arrived. The box above is
+     therefore selected every time you export, so a blocked download is one copy away from the data.</p>
      {# Where the cart lives between reloads, said on screen. It cannot be browser storage: this file
         reaches nothing outside itself, and the sandbox it is read in withholds storage anyway. The URL
         is the only place left, so the reader is told that the address IS the cart. #}
@@ -323,6 +400,9 @@ code{background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px}
      and the legend below move with it. <label for="tx">Isoform</label>
      <select id="tx" aria-label="isoform"></select>
      <span id="txnote"></span>
+     {# Only shown once the reader has chosen an isoform and the selected guide is not on it: the map used
+        to leave a chosen transcript silently, and now that it stays, leaving it has to be an action. #}
+     <button class="cartbtn" id="txfollow" style="display:none">Show an isoform carrying it</button>
      {% if not p.run.canonical_source %}
      <div>This run recorded no canonical transcript, so none of these is marked as one.</div>
      {% endif %}</div>
@@ -350,6 +430,20 @@ const REGISTER_NT = REGISTER_NT_PLACEHOLDER;
 const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Number.isInteger(n)?n.toLocaleString():n.toFixed(3)) : n);
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
+
+// Each guide's own place in this file, stashed once. `renderIndex` read `G.indexOf(g)` INSIDE the row
+// map, so one keystroke on a threshold cost 5,000 scans of a 5,000-element array -- 25 million
+// comparisons, and most of the 148 ms every keystroke took on one internal run. A guide's index never
+// changes, and computing it once is the whole fix.
+G.forEach((g,i)=>{ g._i=i; });
+
+// How many of the matching rows the index draws. Not virtualisation: 5,000 rows of 7 cells is 35,000
+// nodes, each with a decomposed liability cell and a title built per row, and building all of them is
+// what remains of the keystroke cost once the O(n^2) above is gone. A window is proportionate and can be
+// honest about itself -- the last row says how many matched, and every count, the cart and the export
+// are computed over all of them and never over the window. A reader who needs a row outside it sorts or
+// filters, which is what the panel above the table is for.
+const INDEX_DRAW_MAX = 400;
 
 // ---- liabilities, decomposed by species ----------------------------------------------------------
 // A single all-species liability count is what `max_off_target_count` compares, and it is also the one
@@ -404,24 +498,61 @@ function rowKey(g,k){
   if(k==='liab')return liabIn(g);
   if(k==='rows')return g.n_rows; return 0;
 }
+// Which column is sorted and which way, said in the markup a screen reader reads and in a glyph a reader
+// sees. `aria-sort` was unset on all seven columns and there was no visual indicator at all, so the sort
+// was a fact only the person who clicked knew.
+function paintSortHeaders(){
+  document.querySelectorAll('#idx th[data-k]').forEach(th=>{
+    const on = th.dataset.k===sortK;
+    th.setAttribute('aria-sort', on ? (sortAsc?'ascending':'descending') : 'none');
+    const si=th.querySelector('.si'); if(si) si.textContent = on ? (sortAsc?'\u25b2':'\u25bc') : '\u25c6';
+  });
+}
+
+// One place for a sort, reached by click and by Enter/Space. The guard is the defect: the blank pick
+// header carried the same handler as the six real ones, so clicking it set `sortK` to undefined, rowKey
+// returned 0 for every guide and the index kept whatever order the last comparison happened to leave.
+function sortBy(k){
+  if(!k) return;
+  if(k===sortK) sortAsc=!sortAsc; else { sortK=k; sortAsc=(k==='guide'); }
+  renderIndex();
+}
+
 function renderIndex(){
   const tb=document.querySelector('#idx tbody');
+  // The tbody is replaced wholesale on every keystroke, which throws focus back to the document. A reader
+  // who opens a row with Enter would get one row and then have to tab in from the top again, so the
+  // keyboard path has to survive the rebuild that the keypress itself caused.
+  const act=document.activeElement, inRow=act&&act.closest?act.closest('#idx tbody tr'):null;
+  const heldPick=inRow?!!act.closest('td.pick'):false;
+  const held=inRow&&inRow.querySelector('td.pick')?inRow.querySelector('td.pick').dataset.pick:null;
   view.sort((a,b)=>{const x=rowKey(a,sortK),y=rowKey(b,sortK);
     const c = typeof x==='string' ? x.localeCompare(y) : x-y; return sortAsc?c:-c;});
   const V={pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'};
-  tb.innerHTML = view.map(g=>`<tr data-i="${G.indexOf(g)}" class="${g.guide===selected?'sel':''}">
-    <td class="pick" data-pick="${esc(g.guide)}" title="add to / remove from cart"
+  const drawn = view.slice(0, INDEX_DRAW_MAX);
+  // `data-i` is the guide's stashed index, and `tabindex`/`aria-current`/`aria-pressed` are what make a
+  // row and its pick cell operable without a mouse: the row was a `<tr onclick>` and the pick cell a bare
+  // `<td>` with no role, so neither existed for a keyboard or a screen reader.
+  tb.innerHTML = drawn.map(g=>`<tr data-i="${g._i}" tabindex="0"${
+    g.guide===selected?' class="sel" aria-current="true"':''}>
+    <td class="pick" data-pick="${esc(g.guide)}" role="button" tabindex="0"
+      aria-pressed="${CART.has(g.guide)?'true':'false'}" aria-label="${CART.has(g.guide)?'remove':'add'} ${esc(g.guide)} ${CART.has(g.guide)?'from':'to'} cart"
       >${CART.has(g.guide)?'<span class="picked">\u2713</span>':'<span style="color:#d1d5db">+</span>'}</td>
     <td><span class="pill ${V[g._live.status]}">${g._live.status}</span></td>
     <td class="mono">${esc(g.guide)}</td><td>${fmt(g.composite_score)}</td>
     <td>${g._live.n_gates_failed} / ${g._live.n_gates_unknown}</td>
     <td class="${liabIn(g)?'liab':'nonliab'}" title="${esc(liabTitle(g))}">${liabCell(g)}</td>
-    <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('');
-  tb.querySelectorAll('tr').forEach(tr=>tr.onclick=e=>{
-    const cell=e.target.closest('td.pick');
-    if(cell){ togglePick(cell.dataset.pick); return; }   // the pick column selects, it does not navigate
-    show(G[+tr.dataset.i]);
-  });
+    <td title="${g.n_rows} enumeration${g.n_rows===1?'':'s'}">${isoformFrac(g)}</td></tr>`).join('')
+    + (view.length>drawn.length ? `<tr class="drawcap"><td colspan="7">Showing the first ${
+      drawn.length.toLocaleString()} of ${view.length.toLocaleString()} matching rows, in this sort
+      order. Every count above, the cart, <b>Add top</b> and the export are computed over all ${
+      view.length.toLocaleString()}; sort or filter to bring another row into view.</td></tr>` : '');
+  if(held){
+    const cells=[...tb.querySelectorAll('td.pick')].filter(c=>c.dataset.pick===held);
+    if(cells.length) (heldPick?cells[0]:cells[0].parentElement).focus();
+  }
+  paintSortHeaders();
+  renderPlacement();     // the open guide may be outside the filter, or outside the drawn window
 }
 // Both wired in wireUI(), at the bottom: every DOM-touching statement in this file is either inside a
 // function or behind that one guard, so the substituted script also loads under node with nothing
@@ -676,7 +807,12 @@ function conservationCard(g){
 // byte-identical, over 394 green dots -- #103's own failure mode, in the one panel a reader looks at
 // first. Both the dots and the legend are now painted from each guide's live gate table.
 const TXS = Object.keys(MAPS);
-let curTx = TXS[0] || null;
+//: `txPinned` is whether the READER chose this isoform. The picker defaults to whatever `_picker_order`
+//: puts first -- the canonical one, where the run recorded it -- and `showOn` then followed each new
+//: selection to an isoform carrying it, which silently re-pointed the map away from the transcript the
+//: reader had deliberately picked. A pinned isoform stays: the note says the selection is not enumerated
+//: there, and the button beside the picker is how you leave it.
+let curTx = TXS[0] || null, txPinned = false;
 const MAP_FILL = {};
 MAP_LEGEND.forEach(e => { MAP_FILL[e.key] = e.fill; });
 
@@ -714,8 +850,12 @@ function renderMap(){
   const carries=new Set((G.find(x=>x.guide===selected)||{isoforms:[]}).isoforms.map(i=>i.transcript));
   sel.innerHTML = TXS.map(t=>`<option value="${esc(t)}"${t===curTx?' selected':''}>${
     txLabel(t)}${carries.has(t)?' \u25cf carries this guide':''}</option>`).join('');
+  const stayed = txPinned && selected && !carries.has(curTx);
   document.getElementById('txnote').textContent = selected
-    ? ` \u2014 ${carries.size} of ${TXS.length} shown isoforms carry the selected guide.` : '';
+    ? ` \u2014 ${carries.size} of ${TXS.length} shown isoforms carry the selected guide.`
+      + (stayed ? ' The map stayed on the isoform you chose, which is not one of them.' : '') : '';
+  // The escape hatch from a pinned isoform, offered only when the pin is costing the reader the marker.
+  document.getElementById('txfollow').style.display = stayed ? '' : 'none';
   const mp=MAPS[curTx];
   document.getElementById('mapbase').innerHTML=mp.svg;
   document.getElementById('mapover').setAttribute('viewBox', mp.viewBox);
@@ -790,9 +930,12 @@ function drawOverlay(){
 function showOn(g){
   // Follow the selection to an isoform that actually carries it, so the marker is never off-screen,
   // then re-label the picker: which isoforms carry the guide is part of the selection, not the map.
+  // Unless the reader chose the isoform, in which case following would take the map off a transcript they
+  // picked on purpose -- and since the run's canonical is only the picker's DEFAULT, that made the
+  // canonical one impossible to hold on to across two selections.
   if(!curTx) return;
   const here=g.isoforms.some(i=>i.transcript===curTx);
-  if(!here){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first) curTx=first.transcript; }
+  if(!here && !txPinned){ const first=g.isoforms.find(i=>MAPS[i.transcript]); if(first) curTx=first.transcript; }
   renderMap();
 }
 
@@ -1284,8 +1427,12 @@ function liabScopeControl(){
 
 // Set from JS, not the template, because the scope is a reader's choice and the species is run data.
 function labelLiabColumn(){
-  const th=document.getElementById('thliab'); if(!th) return;
-  th.textContent = SCREENED_SPECIES.length ? `Liab. (${scopeLabel()})` : 'Liab.';
+  // The label is a child span, not the cell's own text: the cell also holds the sort indicator, and
+  // `th.textContent =` would delete it -- a header that stops saying which way it sorts as soon as the
+  // reader narrows the species.
+  const th=document.getElementById('thliab'), lbl=document.getElementById('liablbl');
+  if(!th || !lbl) return;
+  lbl.textContent = SCREENED_SPECIES.length ? `Liab. (${scopeLabel()})` : 'Liab.';
   th.title = SCREENED_SPECIES.length
     ? `off-target liabilities: the total over all ${SCREENED_SPECIES.length} screened species -- the count `
       + `max_off_target_count compares -- then the split into ${EMBED_SPECIES} and the rest. Sorted on `
@@ -1616,9 +1763,33 @@ function renderRefused(){
     all), so nothing was set from ${refusedFilters.length===1?'it':'them'}.`;
 }
 
+// Where the open guide sits relative to the index beside it. A guide arrives here by URL (`g=`) or stays
+// here while a threshold moves under it, and the pane then showed a full guide -- every card, every
+// metric -- while the index read "0 of 5,000". Nothing said the two were describing different sets, so
+// the index looked broken and the guide looked like a result. The pane says which it is.
+function placementNote(){
+  const g=G.find(x=>x.guide===selected);
+  if(!g) return '';
+  const at=view.indexOf(g);
+  if(at<0) return `<div class="warn"><b>Outside your current filter.</b> This guide is open because you
+    asked for it — by link, or before the ${passesFilters(g)?'search box':'thresholds and filters'} above
+    excluded it — and the index counts only what they admit. Nothing below is filtered: it is this
+    guide's own evidence, at the thresholds in force.</div>`;
+  if(at>=INDEX_DRAW_MAX) return `<div class="warn"><b>Not among the drawn rows.</b> This guide is row ${
+    (at+1).toLocaleString()} of the ${view.length.toLocaleString()} your filter admits, and the index
+    draws the first ${INDEX_DRAW_MAX.toLocaleString()} in this sort order, so it is not highlighted
+    there. Everything below is this guide's own evidence.</div>`;
+  return '';
+}
+function renderPlacement(){
+  const el=document.getElementById('placement');
+  if(el) el.innerHTML = placementNote();
+}
+
 function renderDetail(g){
-  const i=G.indexOf(g), live=g._live;
+  const i=g._i, live=g._live;
   document.getElementById('detail').innerHTML = `
+   <div id="placement"></div>
    <div class="card"><h2>Guide</h2>
      <div class="mono big">${esc(g.guide)} <span class="pill ${({pass:'v-pass',warn:'v-warn',unknown:'v-unknown',fail:'v-fail'})[live.status]}" style="font-size:12px;vertical-align:middle">${live.status==='unknown'?'not established':live.status}</span></div>
      <div class="kv" style="margin-top:12px">
@@ -1630,6 +1801,7 @@ function renderDetail(g){
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
    ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(conservationCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
+  renderPlacement();
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
 }
 
@@ -1683,39 +1855,95 @@ function applyFragmentState(raw){
 // so the pure evaluator above (CMP, reevaluateGate, reevaluateGates, the presets, the register
 // clustering) loads and runs there with nothing stubbed beyond the check itself.
 function wireUI(){
-  document.querySelectorAll('#idx th').forEach(th=>th.onclick=()=>{
-    const k=th.dataset.k; if(k===sortK) sortAsc=!sortAsc; else {sortK=k;sortAsc=(k==='guide');} renderIndex();});
+  // Sorting, by mouse and by keyboard. `<th onclick>` with the default `tabIndex` of -1 is not a control:
+  // it could not be focused, Enter and Space did nothing, and the sort was unreachable without a pointer.
+  document.querySelectorAll('#idx th[data-k]').forEach(th=>{
+    th.onclick=()=>sortBy(th.dataset.k);
+    th.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); sortBy(th.dataset.k); } };
+  });
+  // Delegated once onto the tbody rather than assigned per row: the rows are rebuilt on every keystroke,
+  // so 5,000 handler assignments were part of what a keystroke cost, and a row drawn after wiring used to
+  // have to be re-wired to work at all. Enter/Space opens a row, the arrows walk the index, and the pick
+  // cell is a control of its own -- it was a bare `<td>` with no role, invisible to a keyboard.
+  const tb=document.querySelector('#idx tbody');
+  const rowOf=e=>{ const tr=e.target.closest('tr'); return tr && tr.dataset.i!==undefined ? tr : null; };
+  tb.onclick=e=>{
+    const tr=rowOf(e); if(!tr) return;
+    const cell=e.target.closest('td.pick');
+    if(cell){ togglePick(cell.dataset.pick); return; }   // the pick column selects, it does not navigate
+    show(G[+tr.dataset.i]);
+  };
+  tb.onkeydown=e=>{
+    const tr=rowOf(e); if(!tr) return;
+    if(e.key==='Enter'||e.key===' '){
+      e.preventDefault();
+      const cell=e.target.closest('td.pick');
+      if(cell) togglePick(cell.dataset.pick); else show(G[+tr.dataset.i]);
+      return;
+    }
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+      const next = e.key==='ArrowDown' ? tr.nextElementSibling : tr.previousElementSibling;
+      if(next && next.dataset.i!==undefined){ e.preventDefault(); next.focus(); }
+    }
+  };
   document.getElementById('q').oninput = e => { F.q = e.target.value; applyFilters(); syncHash(); };
-  document.getElementById('tx').onchange = e => { curTx = e.target.value; renderMap(); };
-  document.getElementById('addtop').onclick = e => {
-    if(e.target.id==='topn') return;                     // typing in the field is not a click on the button
-    const n=Math.max(0, parseInt(document.getElementById('topn').value,10)||0);
-    matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1))
-      .slice(0,n).forEach(g=>CART.add(g.guide));
+  // A deliberate choice of isoform is pinned, so the map stops following the selection off it.
+  document.getElementById('tx').onchange = e => { curTx = e.target.value; txPinned = true; renderMap(); };
+  document.getElementById('txfollow').onclick = () => {
+    txPinned = false;
+    const g=G.find(x=>x.guide===selected); if(g) showOn(g); else renderMap();
+  };
+  // Read through `fnum`, the same boundary every threshold box uses, and refused at the control rather
+  // than degraded: `parseInt('ten',10)||0` is 0, and adding the top 0 guides is indistinguishable from a
+  // button that does not work. A count is also a whole number of guides, so a fraction is refused too.
+  document.getElementById('addtop').onclick = () => {
+    const box=document.getElementById('topn'), note=document.getElementById('topnnote');
+    const n=fnum('topn'), ok = typeof n==='number' && Number.isInteger(n) && n>0;
+    box.setAttribute('aria-invalid', ok?'false':'true');
+    if(!ok){
+      note.className='offscale';
+      note.textContent = `That is not a whole number of guides above zero, so nothing was added to the cart.`;
+      return;
+    }
+    const pool=matching().slice().sort((a,b)=>(b.composite_score??-1)-(a.composite_score??-1));
+    const take=pool.slice(0,n);
+    take.forEach(g=>CART.add(g.guide));
+    note.className='empty';
+    note.textContent = take.length < n
+      ? `Added ${take.length.toLocaleString()} — only ${take.length.toLocaleString()} guides match the filters in force, of the ${n.toLocaleString()} asked for.`
+      : `Added the top ${take.length.toLocaleString()} of ${pool.length.toLocaleString()} matching guides, by composite score.`;
     renderIndex(); renderCart(); drawOverlay(); syncHash();
   };
   document.getElementById('cartclear').onclick = () => {
     CART.clear(); renderIndex(); renderCart(); drawOverlay(); syncHash(); };
   document.getElementById('cartcopy').onclick = () => { const t=document.getElementById('carttsv'); t.focus(); t.select(); };
-  // A Blob download, because that is what "export" means, with the textarea as the declared fallback:
-  // the report's own sandbox may withhold allow-downloads, and a button that silently does nothing is
-  // worse than one that says why.
+  // A Blob download, with the textarea as the declared fallback -- and the fallback CANNOT be reached by
+  // a failure, which was the defect. The case the old catch named is an iframe without `allow-downloads`,
+  // exactly the Quilt one: there the embedder refuses the synthetic `a.click()` itself, silently, with no
+  // exception, no callback and no observable state, so the catch never ran and the reader was told the
+  // file had been written. Nothing in this page can see that refusal, so it is not claimed: the box is
+  // selected on every export, one keystroke from the data, and the note says both outcomes. The catch
+  // stays for what does throw -- URL.createObjectURL and Blob are refused outright by some CSPs.
   document.getElementById('cartdl').onclick = () => {
     const note=document.getElementById('dlnote'), n=CART.size;
     const stamp=new Date().toISOString().slice(0,10).replace(/-/g,'');
     const name=`${GENE.replace(/[^A-Za-z0-9_.-]/g,'_')}_cart_${n}guides_${stamp}.tsv`;
+    const box=document.getElementById('carttsv');
+    box.focus(); box.select();
+    let asked=false;
     try{
-      const url=URL.createObjectURL(new Blob([document.getElementById('carttsv').value],
-        {type:'text/tab-separated-values'}));
+      const url=URL.createObjectURL(new Blob([box.value], {type:'text/tab-separated-values'}));
       const a=document.createElement('a');
       a.href=url; a.download=name; a.style.display='none';
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(()=>URL.revokeObjectURL(url), 0);
-      note.textContent=` ${name}`;
-    }catch(e){
-      note.textContent=' download refused by this viewer — copy the box below instead';
-      const t=document.getElementById('carttsv'); t.focus(); t.select();
-    }
+      asked=true;
+    }catch(e){ asked=false; }
+    note.textContent = asked
+      ? ` ${name} requested. A viewer that blocks downloads refuses it without telling this page, so if no`
+        + ` file arrived, the box below is already selected — copy it.`
+      : ` download refused by this viewer — it could not build the file at all, which is a refusal this`
+        + ` page CAN see. The box below is selected instead: copy it.`;
   };
   document.getElementById('freset').onclick = () => { resetControls(); buildFilterUI(); onThresholdsChanged(); };
 
