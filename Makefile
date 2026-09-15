@@ -65,14 +65,14 @@ help: ## Show available commands
 	@echo "  make dev              Quick dev setup (install + pre-commit)"
 	@echo ""
 	@echo "Testing - By Tier (matches marker structure)"
-	@echo "  make test-dev         Fast unit tests for dev iteration (1,786 tests, ~35s)"
-	@echo "                        Whole suite is 1,866 tests: 1,786 dev + 46 container + release/ci."
+	@echo "  make test-dev         Fast unit tests for dev iteration (1,788 tests, ~36s)"
+	@echo "                        Whole suite is 1,868 tests: 1,788 dev + 46 container + release/ci."
 	@echo "  make test-ci          Smoke tests for CI/CD (40 tests, ~13s, writes coverage.xml)"
-	@echo "  make test-release     Complete release validation, host + container, combined coverage (~5min)"
-	@echo "  make test-release-host      Host-only release suite (1,820 tests serial, ~90s, coverage base)"
-	@echo "  make test-release-container Container release suite (~3.5min, expects host coverage)"
+	@echo "  make test-release     Complete release validation, host + container, combined coverage (~6.5min)"
+	@echo "  make test-release-host      Host-only release suite (1,822 tests serial, ~83s, coverage base)"
+	@echo "  make test-release-container Container release suite (~4.7min, expects host coverage)"
 	@echo "  make test             All tests (may have skips/failures)"
-	@echo "                        Add 15-20min to test-release when the image needs rebuilding."
+	@echo "                        Rebuild adds ~3min for a source change, 15-20min on a cold cache."
 	@echo ""
 	@echo "Docker Testing"
 	@echo "  make docker-build-test Clean + build + test Docker image (all-in-one)"
@@ -109,7 +109,7 @@ dev: ## Quick dev setup (install + pre-commit)
 # TESTING - BY TIER (Matches marker structure)
 #==============================================================================
 
-test-dev: ## Development tier - fast unit tests (1,786 tests, ~35s)
+test-dev: ## Development tier - fast unit tests (1,788 tests, ~36s)
 	$(PYTEST_V) -m "dev"
 
 test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow suites)
@@ -123,7 +123,7 @@ test-release: docs test-release-host test-release-container test-release-report 
 # container stage already proves cross-process merging works here). Keeping it serial also keeps the
 # release log readable. Retained after `test_performance_guard_2mb_reference` moved to CPU time,
 # because serial is what makes stage timings comparable between runs.
-test-release-host: ## Host-only release suite, serial (1,820 tests, ~90s, produces base coverage database)
+test-release-host: ## Host-only release suite, serial (1,822 tests, ~83s, produces base coverage database)
 	@echo "Step 1/3: Running host-based tests with coverage..."
 	@rm -f .coverage coverage*.xml pytest-*.xml 2>/dev/null || true
 	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container" \
@@ -136,7 +136,7 @@ test-release-host: ## Host-only release suite, serial (1,820 tests, ~90s, produc
 # The host runs the same pytest version, so it reused that bytecode and reported its own skip
 # locations as `../../../../../workspace/tests/conftest.py` - cosmetic, but it made host output look
 # like container output while debugging a release run.
-test-release-container: cache-ensure docker-ensure ## Container release suite, ~3.5min (expects .coverage from host stage)
+test-release-container: cache-ensure docker-ensure ## Container release suite, ~4.7min (expects .coverage from host stage)
 	@if [ ! -f ".coverage" ]; then \
 		echo "Missing .coverage from host tests. Run 'make test-release-host' first or provide the artifact before running container tests."; \
 		exit 1; \

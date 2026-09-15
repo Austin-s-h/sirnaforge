@@ -51,9 +51,9 @@ siRNAforge uses a comprehensive `Makefile` for common development tasks. Run `ma
 
 #### By Tier (Recommended)
 ```bash
-make test-dev        # Fast unit tests (1,786 tests, ~35s) - development iteration
+make test-dev        # Fast unit tests (1,788 tests, ~36s) - development iteration
 make test-ci         # Smoke tests for CI/CD with coverage (40 tests, ~13s)
-make test-release    # Comprehensive validation, host + container (~5min)
+make test-release    # Comprehensive validation, host + container (~6.5min)
 make test            # All tests (may have skips/failures)
 ```
 
@@ -216,7 +216,7 @@ git pull
 git checkout -b feature/my-feature
 
 # 2. Make changes and iterate quickly
-make test-dev          # Fast feedback (~35s)
+make test-dev          # Fast feedback (~36s)
 
 # 3. Format and check quality
 make format            # Auto-format code

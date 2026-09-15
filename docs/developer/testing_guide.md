@@ -7,7 +7,7 @@ Tiered testing approach for different development phases and resources.
 ### Development (Python-only)
 
 ```bash
-make test-dev           # Fast marker-based tests (1,786 tests, ~35s) for iteration
+make test-dev           # Fast marker-based tests (1,788 tests, ~36s) for iteration
 make test               # Full pytest run on host (~2min, may include skips)
 make lint               # Ruff + mypy checks (~5s warm, ~30s cold mypy cache)
 make format             # Auto-format & autofix style issues
@@ -32,18 +32,27 @@ make docker-shell       # Interactive debugging
 
 | Target                   | Purpose                                            | Time     | Scope                                      | Resources |
 | ------------------------ | -------------------------------------------------- | -------- | ------------------------------------------ | --------- |
-| `test-dev`               | Fast development iteration (pytest `-m dev`)       | ~35s     | 1,786 tests — unit-style, hermetic         | Minimal   |
+| `test-dev`               | Fast development iteration (pytest `-m dev`)       | ~36s     | 1,788 tests — unit-style, hermetic         | Minimal   |
 | `test-ci`                | CI/CD smoke with coverage                          | ~13s     | 40 `ci`-marked tests + coverage XML        | Low       |
-| `test-release`           | Host + container validation with combined coverage | ~5min    | 1,820 host + 46 container, merged coverage | Medium    |
-| `test`                   | Full pytest run (allows skips/failures)            | ~2min    | Entire 1,866-test suite on host            | Medium    |
+| `test-release`           | Host + container validation with combined coverage | ~6.5min  | 1,822 host + 46 container, merged coverage | Medium    |
+| `test`                   | Full pytest run (allows skips/failures)            | ~2min    | Entire 1,868-test suite on host            | Medium    |
 | `test-requires-network`  | Network-access-required subset                     | 15 tests | `requires_network` marker                  | Low       |
 | `test-requires-nextflow` | Nextflow-specific subset                           | 2 tests  | `requires_nextflow` marker                 | Medium    |
-| `docker-test`            | Container-only tests (`runs_in_container`)         | ~3.5min  | tests/container suite                      | High      |
+| `docker-test`            | Container-only tests (`runs_in_container`)         | ~4.7min  | tests/container suite                      | High      |
 
-`test-release` adds **15-20 minutes** whenever the image is stale, because `docker-ensure` rebuilds
-when `sirnaforge:latest` was built from a different version _or_ a different source fingerprint. The
-two `requires_*` subsets are sized in tests rather than seconds because both skip entirely without
-the capability, and neither is a meaningful timing.
+`test-release` also pays a rebuild whenever the image is stale, because `docker-ensure` rebuilds when
+`sirnaforge:latest` was built from a different version _or_ a different source fingerprint. Two very
+different costs hide behind that:
+
+- **Source-only change** (anything under `src/`, which is the usual case): **~3 minutes**. The conda and
+  bioinformatics-tool layers are cache hits; only the `COPY src` layers and the export re-run. Measured
+  at 3m11s.
+- **Cold cache** (no Docker layer cache, changed `Dockerfile`, changed `uv.lock`): **15-20 minutes**,
+  because the tool stack is rebuilt.
+
+So a full `make test-release` after an ordinary source edit is ~9.5 minutes, not ~25. The two
+`requires_*` subsets are sized in tests rather than seconds because both skip entirely without the
+capability, and neither is a meaningful timing.
 
 There is no `test-requires-docker` target. `-m requires_docker` matches nothing, and pytest exits 0
 on a fully deselected run, so the target was green over an empty set — the worst possible thing to
@@ -77,15 +86,21 @@ executable on `PATH` both lie.
 The two test stages answer different questions and are not interchangeable:
 
 - **Host stage** — every `dev`/`ci`/`release` test that is not `runs_in_container`, serial, with
-  coverage. This is where line coverage comes from: 83-84% overall, and 90-100% on everything 0.7.1
-  added. It reaches that number with the screen stubbed and Nextflow monkeypatched.
+  coverage. 1,822 selected, ~83s. This is where line coverage comes from: 83% overall, and 90-100% on
+  everything 0.7.1 added. It reaches that number with the screen stubbed and Nextflow monkeypatched.
 - **Container stage** — 46 tests that drive the installed CLI with `subprocess.run` inside the
-  image. It answers "does the artifact work", which coverage cannot measure: coverage does not
+  image, ~4.7min. It answers "does the artifact work", which coverage cannot measure: coverage does not
   follow a subprocess, so these tests contribute **0% of the new modules** to the rollup while
   genuinely executing them. That is expected. Do not plumb `COVERAGE_PROCESS_START` into the
   container to raise the number — it would tell you nothing the host stage has not already said.
   Assert the artifacts instead (`tests/container/release_artifacts.py`), which is how the tier
   distinguishes "screened clean" from "never screened".
+
+Expect **8 of the 46 container tests to skip** without a verified TLS route, and know which 8: the TP53
+full workflow, the five variant/SNP modes, the gene-symbol search and the custom-transcriptome
+off-target run. They are the most realistic tests in the repository, so a green container stage on a
+proxied network is a statement about the packaged artifact and the toy-reference screen, not about the
+gene name → Ensembl → transcripts → screen path.
 
 The container stage is the only place the report (#103), the `.nf` evidence emission (#100) and the
 installed `benchmark`/`report` commands run for real, so it is the only place a packaging or
@@ -93,15 +108,22 @@ integration defect in them can be caught. `workflow.py` turns a failed render an
 write into `logger.warning`, so the CLI exits 0 either way: the assertions in
 `release_artifacts.py` are what make those failures visible.
 
-> **Do not trust the coverage number if anything else ran pytest in this working tree.**
-> `[tool.coverage.run] data_file` is the fixed path `.coverage`, and `make test-ci`, a bare
-> `uv run pytest --cov` and the container stage's `--cov-append` all write it. A second run in the
-> same checkout — another shell, another agent session — silently rewrites the host stage's data
-> between step 1 and step 3, and the rollup then reads several points low with whole modules
-> deflated (measured: 83% with `workflow.py` at 87% became 76% with it at 62%, from concurrent
-> activity alone, no code change). Test counts are unaffected because each run reports its own.
-> If the total looks wrong, re-run `make test-release-host` alone and report on that, or set
-> `COVERAGE_FILE` to a scratch path for the other run.
+> **Do not trust the coverage number if anything else touched this working tree.** There are two
+> independent ways to get a wrong percentage, and the second is the one that actually bites.
+>
+> 1. **A second writer.** `[tool.coverage.run] data_file` is the fixed path `.coverage`, and
+>    `make test-ci`, a bare `uv run pytest --cov` and the container stage's `--cov-append` all write it.
+>    A concurrent run in the same checkout rewrites the host stage's data between step 1 and step 3.
+> 2. **A source edit between measurement and report.** `coverage report` stores bare line numbers and
+>    re-parses the source file when it renders, so an edit landing after step 1 makes the recorded lines
+>    land on the wrong statements. Measured on this repository: the rollup printed **83%** with
+>    `workflow.py` at **87%**, and re-reading the _same, untouched_ `.coverage` twelve minutes later
+>    printed **78%** with `workflow.py` at **56%** — one concurrent commit to that file, no test re-run,
+>    no change to the database. Only the edited file drifted; every other module read identically.
+>
+> Test counts are unaffected either way, because each pytest run reports its own. If the total looks
+> wrong, re-run `make test-release-host` on a quiescent tree and report on that, and set `COVERAGE_FILE`
+> to a scratch path for anything else that needs coverage meanwhile.
 
 ### A `dev` test must never reach the network
 
@@ -122,12 +144,16 @@ The two ways it has happened here, both fixed, both cheap to reintroduce:
 `make test-dev` should stay under ~45s with no test above ~3s; `-m dev --durations=10` is the check.
 
 The old wording said 30s and 2s, and both clauses had quietly gone false — the tier grew from 30
-tests to 1,786 while the numbers stayed. A tripwire that is already tripped is one nobody reads, so
-these are re-baselined against measurement: 1,786 tests in ~35s on an idle 10-core laptop, slowest
-item 2.1s. Expect roughly 2-3x those figures on a contended machine (the same tests have been
-measured at 54s and 6.1s under load), which is why the ceilings are stated with headroom rather than
-at the measured value. If a change pushes either past its ceiling, the question to ask is whether a
-test acquired a dependency — those two failure modes are documented above and both have happened.
+tests to 1,788 while the numbers stayed. A tripwire that is already tripped is one nobody reads, so
+these are re-baselined against measurement: 1,788 tests in ~36s on a 10-core laptop, slowest
+item 2.27s. Both ceilings were re-checked after the release run, at load average 13 with another
+session working in the same checkout: 36.22s, slowest 2.27s — so the headroom is real and not an idle-machine
+artifact. Expect up to 2-3x on a badly contended machine (the same tests have been measured at 54s and
+6.1s). If a change pushes either past its ceiling, the question to ask is whether a test acquired a
+dependency — those two failure modes are documented above and both have happened.
+
+Do not read the host stage's `--durations` as this ceiling. Under coverage and `-n 0` the same slowest
+test measures 5.1s rather than 2.27s; that is instrumentation, not a regression.
 
 ### Running network tests behind a TLS-intercepting proxy
 
@@ -162,7 +188,7 @@ make dev
 ```bash
 # Fastest validation (recommended for active development)
 make test-dev
-# Expected: ~35 seconds, 1,786 tests
+# Expected: ~36 seconds, 1,788 tests
 # ✅ Success: All tests pass, no Docker and no network required
 ```
 
@@ -195,14 +221,16 @@ make test-ci
 
 # Full release validation
 make test-release
-# Expected: ~5 minutes -- docs (~10s), host suite serial (~90s), container suite (~3.5min),
-#           coverage rollup (~4s). Add 15-20 minutes if the Docker image needs rebuilding.
-# Note: 13-15 tests skip without a verified TLS route (Ensembl, miRBase); that is honest,
+# Expected: ~6.5 minutes -- docs (~20s), host suite serial (~83s), container suite (~4.7min),
+#           coverage rollup (~6s). Add ~3 minutes for a source-only image rebuild, or 15-20
+#           on a cold Docker cache. Measured end to end at 9m38s including a source rebuild.
+# Note: exactly 15 tests skip without a verified TLS route -- 7 host, 8 container (Ensembl,
+#       miRBase); that is honest,
 #       and the whole gene-name -> Ensembl -> off-target path is what goes untested with them.
 
 # Full local test suite (all tests, may have skips/failures)
 make test
-# Expected: ~2 minutes, 1,866 tests, includes all test categories
+# Expected: ~2 minutes, 1,868 tests, includes all test categories
 # Note: the 46 container tests skip on the host by design (`runs_in_container`)
 ```
 
@@ -228,7 +256,7 @@ make docker-build
 ```bash
 # Run tests INSIDE Docker container (validates image setup)
 make docker-test
-# Expected: ~3.5 minutes (46 tests; rebuilds the image first if it is stale)
+# Expected: ~4.7 minutes (46 tests, 8 of them skipping without Ensembl; rebuilds a stale image first)
 # Tests all container-based functionality
 # ✅ Success: All tests pass, verifying Docker environment
 
@@ -340,9 +368,9 @@ Treat the default backend as rollout-ready only when all of the following hold:
 - **Docker builds** take ~15-20 minutes first time, much faster subsequently. `docker-ensure`
   triggers one whenever `src/`, `pyproject.toml`, `uv.lock` or the Dockerfile has changed since the
   image was built, so `make test-release` after a source edit pays that cost once.
-- **`make test-dev`** should complete in ~35s (1,786 tests) — see the ceiling above
+- **`make test-dev`** should complete in ~36s (1,788 tests) — see the ceiling above
 - **`make test-ci`** completes in ~13s (40 tests) and writes coverage.xml
-- **`make test-release`** completes in ~5 minutes when the image is current
+- **`make test-release`** completes in ~6.5 minutes when the image is current, ~9.5 with a source rebuild
 
 ## Quick Health Checks
 
