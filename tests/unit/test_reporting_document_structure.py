@@ -452,7 +452,7 @@ def test_the_fixture_covers_every_reason_code_the_evaluator_must_freeze_on(paylo
 
 
 @pytest.mark.unit
-def test_no_declared_filter_id_or_column_is_a_branch_in_the_template() -> None:
+def test_no_declared_filter_id_appears_quoted_in_the_template() -> None:
     """No declared ``filter_id`` appears *quoted* in the template. That, and no more than that.
 
     Read the guarantee narrowly. This is a grep for two spellings -- ``'the_id'`` and ``"the_id"`` -- over
