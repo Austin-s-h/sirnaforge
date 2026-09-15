@@ -6,6 +6,12 @@
 # Variables
 DOCKER_IMAGE = sirnaforge
 VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
+# Digest of everything the image bakes in. VERSION cannot answer "is this image current?" -- it stays
+# 0.7.1 across every commit of an unreleased version, so a version-only check passes an image built
+# before the code it is meant to validate. Reads the working tree, not git, so uncommitted edits count.
+SRC_FINGERPRINT = $(shell find src pyproject.toml uv.lock docker/Dockerfile -type f \
+	! -name '*.pyc' ! -path '*/__pycache__/*' -print0 2>/dev/null \
+	| sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c1-16)
 NEXTFLOW_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)
 SIRNAFORGE_NEXTFLOW_IMAGE ?= $(NEXTFLOW_IMAGE)
 export SIRNAFORGE_NEXTFLOW_IMAGE
@@ -175,25 +181,37 @@ test-requires-nextflow: ## Tests requiring Nextflow
 #==============================================================================
 
 docker-build: ## Build Docker image
-	docker build -f docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
-	@echo "Docker image: $(DOCKER_IMAGE):$(VERSION)"
+	docker build -f docker/Dockerfile --build-arg VERSION=$(VERSION) \
+		--build-arg SRC_FINGERPRINT=$(SRC_FINGERPRINT) \
+		-t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
+	@echo "Docker image: $(DOCKER_IMAGE):$(VERSION) (sources $(SRC_FINGERPRINT))"
 
-# Rebuild when :latest is absent OR was built from a different version. Checking
-# only for existence silently validates stale code: :latest lingers pointing at
-# the previous release after a version bump, and container tests exercise the
-# image's installed package, so they would pass against the old version.
-docker-ensure: ## Ensure Docker image exists and matches the project version (build if missing or stale)
-	@built=$$(docker image inspect $(DOCKER_IMAGE):latest \
-		--format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
-		| sed -n 's/^BUILD_VERSION=//p'); \
+# Rebuild when :latest is absent, was built from a different version, or was built from different
+# sources. Container tests exercise the image's installed package, so an image that predates the code
+# under test reports green about code it does not contain.
+#
+# The version check alone was not enough and had already failed in practice: VERSION stays 0.7.1 across
+# every commit of an unreleased version, so a three-day-old image passed the guard while ~180 commits
+# landed, and the container tier certified stale code. SRC_FINGERPRINT is the content answer.
+docker-ensure: ## Ensure the image matches the project version AND its sources (build if missing or stale)
+	@env=$$(docker image inspect $(DOCKER_IMAGE):latest \
+		--format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null); \
+	built=$$(printf '%s\n' "$$env" | sed -n 's/^BUILD_VERSION=//p'); \
+	fp=$$(printf '%s\n' "$$env" | sed -n 's/^BUILD_SRC_FINGERPRINT=//p'); \
 	if [ -z "$$built" ]; then \
 		echo "Image $(DOCKER_IMAGE):latest missing or unversioned - building $(VERSION)..."; \
 		$(MAKE) docker-build; \
 	elif [ "$$built" != "$(VERSION)" ]; then \
 		echo "Image $(DOCKER_IMAGE):latest was built from $$built but project is $(VERSION) - rebuilding..."; \
 		$(MAKE) docker-build; \
+	elif [ -z "$$fp" ] || [ "$$fp" = "unknown" ]; then \
+		echo "Image $(DOCKER_IMAGE):latest carries no source fingerprint - rebuilding to establish one..."; \
+		$(MAKE) docker-build; \
+	elif [ "$$fp" != "$(SRC_FINGERPRINT)" ]; then \
+		echo "Image $(DOCKER_IMAGE):latest was built from sources $$fp but the tree is $(SRC_FINGERPRINT) - rebuilding..."; \
+		$(MAKE) docker-build; \
 	else \
-		echo "Image $(DOCKER_IMAGE):latest matches project version $(VERSION)"; \
+		echo "Image $(DOCKER_IMAGE):latest matches $(VERSION) and sources $(SRC_FINGERPRINT)"; \
 	fi
 
 cache-ensure: ## Ensure the host cache directory exists
