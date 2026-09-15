@@ -18,13 +18,13 @@ siRNAforge Documentation
    usage_examples
    workflows
    html_report
+   benchmark_artifacts
    zfn_module
    gene_search
    scoring
    zfn_ranking
    ccr5_zfn_benchmark
    thermodynamic_guide
-   oligogym_scoring_visual_report
    tutorials/index
 
 .. toctree::

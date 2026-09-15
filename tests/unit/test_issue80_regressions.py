@@ -532,7 +532,8 @@ def test_repeat_flagged_candidate_excluded_when_check_off_targets_disabled(tmp_p
 
     result = asyncio.run(workflow.step5_offtarget_analysis(design_result))
 
-    assert result == {"status": "skipped", "reason": "user_disabled"}
+    # The two keys this test is about; #100 publishes an additive ``run_status`` beside them.
+    assert (result["status"], result["reason"]) == ("skipped", "user_disabled")
     assert repeat_candidate not in design_result.top_candidates
     assert repeat_candidate in design_result.candidates, "excluded from ranking, not dropped from reporting"
 

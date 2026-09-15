@@ -10,6 +10,7 @@ os.environ.setdefault("TERM", "dumb")
 import asyncio
 import json
 import logging
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from pathlib import Path
@@ -71,7 +72,7 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
-from sirnaforge.models.policy import RunMode
+from sirnaforge.models.policy import ExitCode, RunMode, RunStatus
 from sirnaforge.models.sirna import (
     DesignMode,
     ranking_score,
@@ -138,6 +139,31 @@ def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str
         reason = offtarget_summary.get("reason") or "not run"
         return f"   • Off-target results: [yellow]not produced ({reason})[/yellow]"
     return f"   • Off-target results: [blue]{results_path}[/blue]"
+
+
+#: How each run status reads in the summary table. One cell per outcome, because a single "Partial"
+#: for both an aborted pipeline and a run that merely lacked one species told the user nothing about
+#: which of the two had happened -- and "Complete" was printed for the sequence-only fallback (#100).
+_RUN_STATUS_CELLS: Mapping[RunStatus, str] = {
+    RunStatus.COMPLETED: "✅ Complete",
+    RunStatus.INCOMPLETE: "⚠️  Incomplete",
+    RunStatus.NOT_REQUESTED: "⏭️  Not requested",
+    RunStatus.NO_ELIGIBLE: "⚠️  No candidates to screen",
+    RunStatus.EXECUTION_ERROR: "❌ Did not run",
+}
+
+
+def _offtarget_status_cell(offtarget_summary: Mapping[str, Any]) -> str:
+    """The summary table's off-target status cell, from the run's own published ``run_status``.
+
+    Falls back to the pre-#100 two-way reading of ``status`` for a summary that carries no
+    ``run_status`` at all -- a result dictionary from an older version, or a caller that assembled
+    one by hand. An unrecognised value falls back the same way rather than printing an enum name.
+    """
+    try:
+        return _RUN_STATUS_CELLS[RunStatus(offtarget_summary.get("run_status"))]
+    except ValueError:
+        return "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial"
 
 
 def _autotune_zfn_sharding(
@@ -340,9 +366,13 @@ def _resolve_policy_or_exit(
 
 
 #: Counters that together say whether selection considered anything at all. All zero means no
-#: candidate reached selection, which is not an evidence verdict.
+#: candidate reached selection, which is not an evidence verdict. ``provisional_candidates`` is one of
+#: them: an exploratory run whose whole batch is retained on incomplete evidence considered every one
+#: of those candidates, and leaving the state out made that run read as "nothing reached selection"
+#: and undercounted the total the console prints back (#100).
 _SELECTION_COUNTERS = (
     "eligible_candidates",
+    "provisional_candidates",
     "repeat_excluded",
     "filter_excluded",
     "evidence_excluded",
@@ -350,10 +380,33 @@ _SELECTION_COUNTERS = (
 )
 
 
+def _published_shortlist_size(selection: Mapping[str, Any]) -> int:
+    """How many candidates the run actually published as its shortlist.
+
+    ``selection.py::select`` ranks ``ELIGIBLE`` *and* ``PROVISIONAL`` candidates into
+    ``eligible_ordinals``, so both reach ``top_ordinals``, both are exported and both are what a
+    caller sees -- but ``summary['eligible_candidates']`` counts only ``ELIGIBLE``. Deciding emptiness
+    from that key called an exploratory run empty while it was publishing a shortlist full of
+    provisional candidates (#100), so ``--fail-on-no-eligible`` exited
+    :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` on a run that had produced a deliverable.
+
+    ``top_candidates`` is that shortlist's own size, and it is the right key rather than a convenient
+    one: ``top_n`` is either ``None`` or at least 1, so it is zero exactly when nothing was ranked.
+    A summary that predates the key answers from the two state counts instead, which is the same
+    number, so a partial summary is not read as empty either.
+
+    Says nothing about what *qualified*: a provisional candidate stays labelled provisional in the
+    summary, in the CSVs and on the candidate itself.
+    """
+    if "top_candidates" in selection:
+        return int(selection.get("top_candidates") or 0)
+    return int(selection.get("eligible_candidates") or 0) + int(selection.get("provisional_candidates") or 0)
+
+
 def _fail_if_nothing_could_qualify(
     results: Mapping[str, Any], *, json_summary: bool, logger: logging.Logger | None = None
 ) -> None:
-    """Exit non-zero when a qualified run could not qualify a single candidate for want of evidence.
+    """Exit ``INCOMPLETE_EVIDENCE`` when a qualified run could qualify nobody for want of evidence.
 
     Deliberately narrow. A *complete* run that legitimately found nothing eligible exits 0 -- that is
     a result, not a failure -- so the check requires a named evidence shortfall, either per candidate
@@ -363,11 +416,16 @@ def _fail_if_nothing_could_qualify(
 
     Only ``qualified`` runs can fail here. design-only and exploratory claim less by construction, and
     ZFN mode publishes no selection summary, so both return early.
+
+    This is the one incomplete-evidence exit, and it is decided from *selection*, never from the
+    screen's own ``run_status`` (#100): an incomplete screen whose surviving candidates still
+    qualified produced a usable deliverable, and exiting non-zero on it would fail every run on a
+    machine with no Nextflow.
     """
     selection = results.get("selection_summary") or {}
     if selection.get("run_mode") != RunMode.QUALIFIED.value:
         return
-    if selection.get("eligible_candidates"):
+    if _published_shortlist_size(selection):
         return
     if sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS) == 0:
         return
@@ -419,7 +477,46 @@ def _fail_if_nothing_could_qualify(
             f"   ↳ selection_summary in [blue]logs/workflow_summary.json[/blue] has the counts by "
             f"cause; the candidates are in candidates_all.csv with {state_hint}."
         )
-    raise typer.Exit(1)
+    console.print(f"   ↳ exit code {int(ExitCode.INCOMPLETE_EVIDENCE)}: incomplete required evidence.")
+    raise typer.Exit(int(ExitCode.INCOMPLETE_EVIDENCE))
+
+
+def _fail_if_nothing_was_eligible(
+    results: Mapping[str, Any], *, enabled: bool, logger: logging.Logger | None = None
+) -> None:
+    """Exit :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` for an empty shortlist, and only when asked to.
+
+    Off by default, and it must stay off by default: "nothing scored well enough" is a result, and a
+    complete run that legitimately qualified nobody has always exited 0, so making it non-zero would
+    break any caller already invoking this. ``--fail-on-no-eligible`` is for the caller who wants an
+    empty shortlist to stop a pipeline, and it is a separate code from
+    :attr:`ExitCode.INCOMPLETE_EVIDENCE` so the two are still distinguishable (#100).
+
+    Runs after the incomplete-evidence check, which therefore wins: a shortlist that is empty for want
+    of evidence is the more specific and more actionable answer.
+
+    Emptiness is decided from the shortlist the run published -- :func:`_published_shortlist_size` --
+    and not from ``eligible_candidates``, which counts only ``SelectionState.ELIGIBLE``. An
+    exploratory run's shortlist is full of ``PROVISIONAL`` candidates that this check used to be blind
+    to, so it exited :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` on a run whose deliverable existed and
+    was exported (#100). A ``QUALIFIED`` run labels nothing provisional, so its exit is unchanged.
+    """
+    selection = results.get("selection_summary") or {}
+    if not enabled or not selection:
+        return
+    if _published_shortlist_size(selection):
+        return
+    considered = sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS)
+    if considered == 0:
+        return
+    if logger is not None:
+        logger.error("No candidate was eligible out of %s considered", considered)
+    console.print(
+        f"\n❌ [red]No eligible candidates:[/red] none of {considered} candidate(s) reached the "
+        f"shortlist, and --fail-on-no-eligible was requested "
+        f"(exit code {int(ExitCode.NO_ELIGIBLE_CANDIDATES)})."
+    )
+    raise typer.Exit(int(ExitCode.NO_ELIGIBLE_CANDIDATES))
 
 
 def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
@@ -1322,6 +1419,14 @@ def workflow(  # noqa: PLR0912
         "--json-summary/--no-json-summary",
         help="Write logs/workflow_summary.json (disable to skip JSON output)",
     ),
+    fail_on_no_eligible: bool = typer.Option(
+        False,
+        "--fail-on-no-eligible",
+        help=(
+            "Exit 3 when no candidate qualified, even on a complete run. Off by default: an empty "
+            "shortlist is a result, not a failure. Incomplete required evidence always exits 2."
+        ),
+    ),
 ) -> None:
     """Run the end-to-end workflow: transcripts → siRNA design → off-target.
 
@@ -1626,7 +1731,7 @@ def workflow(  # noqa: PLR0912
 
             summary_table.add_row(
                 "Off-target Analysis",
-                "Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
+                _offtarget_status_cell(offtarget_summary),
                 f"Method: {offtarget_summary.get('method', 'basic')}",
             )
 
@@ -1661,11 +1766,15 @@ def workflow(  # noqa: PLR0912
         console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
         if verbose:
             console.print_exception()
-        raise typer.Exit(1)
+        # An exception that reached here is the execution-error code, and the only one: the run
+        # produced no deliverable at all (#100).
+        raise typer.Exit(int(ExitCode.EXECUTION_ERROR))
 
     # Outside the try on purpose: typer.Exit subclasses RuntimeError, so raising it inside would be
     # caught by the handler above, logged as a crash, and reprinted as "Workflow error: 1".
+    # Order is the taxonomy: incomplete evidence (2) is more specific than an empty shortlist (3).
     _fail_if_nothing_could_qualify(results, json_summary=json_summary, logger=logger)
+    _fail_if_nothing_was_eligible(results, enabled=fail_on_no_eligible, logger=logger)
 
 
 @app_command()
@@ -1949,9 +2058,7 @@ def offtarget(  # noqa: PLR0912
         summary_table.add_column("Metric", style="cyan")
         summary_table.add_column("Value", style="white")
 
-        summary_table.add_row(
-            "Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial"
-        )
+        summary_table.add_row("Status", _offtarget_status_cell(offtarget_summary))
         summary_table.add_row("Method", offtarget_summary.get("method", "N/A"))
         summary_table.add_row("Candidates Analyzed", str(len(sequences)))
 
@@ -2767,6 +2874,261 @@ def cache(
             console.print(f"    Files deleted: [red]{result['files_deleted']}[/red]")
             console.print(f"    Size freed: [yellow]{result['size_freed_mb']:.2f} MB[/yellow]")
             console.print(f"    Status: [green]{result['status']}[/green]")
+
+
+# Create benchmark subcommand group (#109). A sub-app, not a flat `benchmark-prepare`/`benchmark-design`
+# pair, matching the `sequences_app`/`internal_app` shape already established below: one noun, two
+# verbs under it.
+#
+# Vendored-panel status (state this here, not only in the docs, because a passing CLI invocation is
+# the thing most likely to be mistaken for evidence): the only benchmark panel with real measured
+# bytes in this repository is `huesken_subset`
+# (`tests/unit/data/sirna_efficacy_subset.csv`, a third-party redistribution -- see
+# `tests/unit/data/README.md`). Ichihara, Martinelli, Shmushkovich and OligoGym are named in #109/#110
+# but are **not vendored**; a panel descriptor for one of them, if the registry declares it at all,
+# carries no bytes and `benchmark prepare` refuses it without `--panel-csv`. `manifest.json` records
+# `panel.data_present: false` for every panel that is not `huesken_subset`, so a manifest -- not just
+# this help text -- says which panel actually ran.
+benchmark_app = typer.Typer(help="Fixed-length benchmark artifacts and prepare/design commands (#109)")
+app.add_typer(benchmark_app, name="benchmark")
+benchmark_command = command_decorator_typed(benchmark_app.command)
+
+
+def _print_prepare_summary(manifest: Any) -> None:
+    """Print a short summary of a manifest just written by ``prepare_artifact`` (#109).
+
+    Reads the returned manifest's own ``model_dump(mode="json")`` rather than re-deriving any
+    count, so this print can never disagree with the file it describes. Missing keys fall back to
+    ``"?"`` instead of raising, because a field this prints and the manifest lacks is a coupling
+    defect for the settle pass to catch, not a reason for a successful run to exit non-zero on its
+    own summary.
+    """
+    payload = manifest.model_dump(mode="json")
+    panel = payload.get("panel") or {}
+    counts = payload.get("counts") or {}
+    console.print(
+        Panel.fit(
+            "🧬 [bold blue]Benchmark artifact prepared[/bold blue]\n"
+            f"Panel: [cyan]{panel.get('panel_id', '?')}[/cyan] "
+            f"(data present: [yellow]{panel.get('data_present', '?')}[/yellow])\n"
+            f"Paired length: [yellow]{payload.get('paired_length', '?')}[/yellow] nt\n"
+            f"Observations kept: [green]{counts.get('observations_kept', '?')}[/green] "
+            f"(incompatible: [red]{counts.get('observations_incompatible', '?')}[/red])",
+            title="Benchmark Summary",
+        )
+    )
+
+
+def _print_design_summary(result: Any) -> None:
+    """Print a short summary of a ``DesignArtifactResult`` (#109).
+
+    Deliberately not the manifest itself, matching ``design_artifact``'s own docstring: a caller
+    wanting the full record reads ``manifest.json`` back with
+    ``sirnaforge.benchmark.artifact.read_manifest``, which is the one parser this contract has.
+    """
+    console.print(
+        Panel.fit(
+            "🧬 [bold blue]Benchmark design complete[/bold blue]\n"
+            f"Entered design: [green]{result.entered_design}[/green]  "
+            f"no candidate: [yellow]{result.no_candidate}[/yellow]\n"
+            f"Default pass: [green]{result.default_pass}[/green]  "
+            f"Benchmark pass: [green]{result.benchmark_pass}[/green]\n"
+            f"Manifest: [cyan]{result.manifest_path}[/cyan]",
+            title="Benchmark Summary",
+        )
+    )
+
+
+@benchmark_command("prepare")
+def benchmark_prepare(
+    panel: str = typer.Option(
+        ...,
+        "--panel",
+        help=(
+            "Registry panel_id to prepare. Only 'huesken_subset' ships vendored bytes in this repo; "
+            "every other panel needs --panel-csv."
+        ),
+    ),
+    panel_csv: Path | None = typer.Option(
+        None,
+        "--panel-csv",
+        help=(
+            "Panel source table. Required for a panel with no vendored bytes (refused with a reason "
+            "otherwise); refused outright for a panel that ships its own, so a run cannot silently "
+            "read different bytes than the ones the manifest names."
+        ),
+    ),
+    panel_transcripts: Path | None = typer.Option(
+        None,
+        "--panel-transcripts",
+        help="Optional FASTA of panel transcripts. Enables design_context_source=panel_transcript.",
+    ),
+    paired_length: int | None = typer.Option(
+        None,
+        "--paired-length",
+        min=19,
+        max=23,
+        help="Design length for the paired guide slice (default: the panel descriptor's declared length).",
+    ),
+    out_dir: Path = typer.Option(
+        Path("benchmark_artifacts"),
+        "--out-dir",
+        help="Directory to create <panel_id>__len<paired_length> under.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite/--no-overwrite",
+        help="Overwrite an existing artifact directory instead of refusing it.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+) -> None:
+    """Prepare one fixed-length benchmark artifact for a compatible panel and paired length (#109).
+
+    Writes ``<out-dir>/<panel_id>__len<paired_length>/`` with ``observations.csv``,
+    ``design_inputs.fasta`` and ``manifest.json``. Every measured observation is preserved, including
+    one incompatible with this paired length: dropping it silently would make a later count
+    unreproducible from the panel bytes alone. ``design_inputs.fasta`` is a plain FASTA, so
+    ``sirnaforge design`` and ``sirnaforge workflow`` consume it with no new execution path.
+    """
+    try:
+        from sirnaforge.benchmark.prepare import BenchmarkPrepareError, prepare_artifact  # noqa: PLC0415
+    except ImportError as exc:
+        console.print(f"❌ [red]Error preparing benchmark artifact:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        manifest = prepare_artifact(
+            panel_id=panel,
+            panel_csv=panel_csv,
+            panel_transcripts=panel_transcripts,
+            paired_length=paired_length,
+            out_dir=out_dir,
+            overwrite=overwrite,
+            invoked_command=list(sys.argv),
+        )
+    except (RunPolicyError, BenchmarkPrepareError) as exc:
+        _fail_with_config_error(str(exc))
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc))
+    except Exception as exc:  # noqa: BLE001 - reported below, optionally with a traceback
+        console.print(f"❌ [red]Error preparing benchmark artifact:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    _print_prepare_summary(manifest)
+
+
+@benchmark_command("design")
+def benchmark_design(
+    ctx: typer.Context,
+    artifact: Path = typer.Option(
+        ...,
+        "--artifact",
+        help="A directory written by 'sirnaforge benchmark prepare' (<panel_id>__len<paired_length>).",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+    ),
+    design_mode: str = typer.Option(
+        "sirna",
+        "--design-mode",
+        help="Design mode: sirna (default) or mirna.",
+    ),
+    gc_min: float | None = typer.Option(
+        None,
+        "--gc-min",
+        min=0.0,
+        max=100.0,
+        help=(
+            f"Per-run GC floor, widened only (default: {default_for('gc_min')}). A value narrower "
+            "than the default is refused: it would falsify the default-policy verdicts this command "
+            "re-derives for candidates a narrower run never enumerated."
+        ),
+    ),
+    gc_max: float | None = typer.Option(
+        None,
+        "--gc-max",
+        min=0.0,
+        max=100.0,
+        help=(
+            f"Per-run GC ceiling, widened only (default: {default_for('gc_max')}). Narrowing it is "
+            "refused for the same reason as --gc-min."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help="JSON or TOML file of policy settings, reused from 'sirnaforge design'. Cannot narrow gc_min/gc_max.",
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|warn|fail (repeatable), reused from 'sirnaforge "
+            "design'. Only gc_min/gc_max widen through this command; asymmetry, empirical and the "
+            "polynucleotide-run gate resolve exactly as 'sirnaforge design' would."
+        ),
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+) -> None:
+    """Run the fixed-length design path over a prepared benchmark artifact, twice-policied (#109).
+
+    The run executes once, under the (possibly widened) benchmark policy; the default-policy verdict
+    for every candidate is then re-derived from what that one run already observed, never from a
+    second run. ``--gc-min``/``--gc-max`` may only widen the shipped floor/ceiling -- a narrower value
+    is refused before any design work, because the re-derived default verdicts assume the benchmark
+    run enumerated a superset of what a default run would. Every other threshold, and the
+    polynucleotide-run requirement (<= 3) in particular, resolves exactly as ``sirnaforge design``
+    would; nothing here can relax it.
+    """
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+
+    try:
+        from sirnaforge.benchmark.artifact import BenchmarkArtifactError  # noqa: PLC0415
+        from sirnaforge.benchmark.design import design_artifact  # noqa: PLC0415
+    except ImportError as exc:
+        console.print(f"❌ [red]Error running benchmark design:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        result = design_artifact(
+            artifact_dir=artifact,
+            design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+            gc_min=gc_min,
+            gc_max=gc_max,
+            policy_config=policy_config,
+            filter_actions=actions,
+            invoked_command=list(sys.argv),
+        )
+    except (RunPolicyError, BenchmarkArtifactError) as exc:
+        _fail_with_config_error(str(exc))
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc))
+    except Exception as exc:  # noqa: BLE001 - reported below, optionally with a traceback
+        console.print(f"❌ [red]Error running benchmark design:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    _print_design_summary(result)
 
 
 # Create sequences subcommand group

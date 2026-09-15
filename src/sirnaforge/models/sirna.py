@@ -21,6 +21,33 @@ logger = get_logger(__name__)
 #: What a filter that did not run writes, rather than a blank a reader mistakes for a verdict.
 _NOT_EVALUATED = FilterEvaluation.NOT_EVALUATED.value
 
+
+class SelectionState(str, Enum):
+    """What the resolved selection was willing to claim about a candidate (#100).
+
+    Distinct from ``passes_filters``, which only answers whether a gate rejected the candidate:
+    a candidate can pass every gate it was subject to and still not be exportable as a *result*,
+    because the evidence behind those gates was never completed rather than adverse. Before this
+    enum existed, three of these four non-default spellings were private literals in workflow.py
+    and nothing validated any of them against ``SiRNACandidate.selection_state``.
+
+    Attributes:
+        ELIGIBLE: Every gate the run required was decided, and none rejected the candidate.
+        PROVISIONAL: An exploratory run scored the candidate ahead of incomplete evidence; the
+            label keeps that scope explicit instead of reporting it identically to ELIGIBLE.
+        WITHHELD: A qualified run required evidence that never became available, so the
+            candidate cannot be claimed even though nothing rejected it.
+        NOT_ELIGIBLE: A gate actively rejected the candidate.
+        NOT_SELECTED: Selection never ran over this candidate. The model default.
+    """
+
+    ELIGIBLE = "eligible"
+    PROVISIONAL = "provisional_incomplete_evidence"
+    WITHHELD = "withheld_incomplete_evidence"
+    NOT_ELIGIBLE = "not_eligible"
+    NOT_SELECTED = "not_selected"
+
+
 # Sequence-length bounds for observed/input siRNA-like sequences the off-target
 # engine analyzes (SiRNACandidate). The classic siRNA guide is ~19-23 nt, but
 # the engine also handles longer species (e.g. Dicer 3' read-through isoforms,
@@ -994,11 +1021,13 @@ class SiRNACandidate(BaseModel):
         description="True if composite_score was computed post-screening (the only stage that computes it)",
     )
     selection_state: str = Field(
-        default="not_selected",
+        default=SelectionState.NOT_SELECTED.value,
         description=(
             "What the resolved selection was willing to claim: eligible | "
-            "withheld_incomplete_evidence | not_selected. Distinct from passes_filters, which answers "
-            "only whether a gate rejected the candidate (#100)"
+            "provisional_incomplete_evidence | withheld_incomplete_evidence | not_eligible | "
+            "not_selected (SelectionState). Stays `str` on the wire so old CSVs still load; "
+            "distinct from passes_filters, which answers only whether a gate rejected the "
+            "candidate (#100)"
         ),
     )
     weight_set_version: str = Field(
@@ -1302,7 +1331,7 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "mirna_hits_0mm_seed_query": _maybe_attr("mirna_hits_0mm_seed_query", 0),
         "mirna_hits_high_risk_query": _maybe_attr("mirna_hits_high_risk_query", 0),
         "total_offtarget_hits_query": _maybe_attr("total_offtarget_hits_query", 0),
-        "selection_state": _maybe_attr("selection_state", "not_selected"),
+        "selection_state": _maybe_attr("selection_state", SelectionState.NOT_SELECTED.value),
         # Exported because a claim nobody can read is not a claim: GATE_WARNED lives here, and it is
         # the only per-row trace that a retained candidate exceeded a gate resolved to warn.
         "quality_issues": ";".join(candidate.quality_issues or []),

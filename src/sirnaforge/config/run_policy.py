@@ -84,17 +84,24 @@ class EntryPoint(str, Enum):
         DESIGN_COMMAND: ``sirnaforge design`` / a direct designer call. Design-only by default.
         SCREENING_WORKFLOW: ``sirnaforge workflow`` / ``run_sirna_workflow``. Qualified by default.
         OFFTARGET_ONLY: ``sirnaforge offtarget`` / ``run_offtarget_only_workflow``. Qualified.
+        BENCHMARK_COMMAND: ``sirnaforge benchmark design`` (#109). Design-only by default: a
+            benchmark run enumerates and filters fixed-length candidates against a prepared
+            observation panel, holds no screening evidence, and must not report otherwise. Reporting
+            ``design_command`` for a run that was not ``sirnaforge design`` would be a false
+            statement in the manifest, which is the reason this entry exists at all.
     """
 
     DESIGN_COMMAND = "design_command"
     SCREENING_WORKFLOW = "screening_workflow"
     OFFTARGET_ONLY = "offtarget_only"
+    BENCHMARK_COMMAND = "benchmark_command"
 
 
 ENTRY_POINT_DEFAULT_RUN_MODE: Mapping[EntryPoint, RunMode] = {
     EntryPoint.DESIGN_COMMAND: RunMode.DESIGN_ONLY,
     EntryPoint.SCREENING_WORKFLOW: RunMode.QUALIFIED,
     EntryPoint.OFFTARGET_ONLY: RunMode.QUALIFIED,
+    EntryPoint.BENCHMARK_COMMAND: RunMode.DESIGN_ONLY,
 }
 
 
@@ -426,8 +433,8 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             "says, because the count is of alignments and this is of ubiquity. Declared because the "
             "pipeline has always applied it: it stamped REPEAT_ELEMENT on passes_filters while the "
             "registry declared no such gate, so a report re-deriving verdicts could account for every "
-            "rejection except this one -- 185 guides of one MSH3 run, reported not established because "
-            "no descriptor could express why the run threw them out."
+            "rejection except this one -- 185 guides of one internal run, reported not established "
+            "because no descriptor could express why the run threw them out."
         ),
         default_action=FilterAction.FAIL,
     ),
@@ -450,8 +457,9 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=(
             "Thermodynamic asymmetry floor for RISC loading; records LOW_ASYMMETRY without rejecting. "
             "Warn rather than fail because the floor decides more of the design space than any other "
-            "single number -- 65.9% of candidates on a 40,079-candidate MSH3 run -- and has never been "
-            "validated against measured knockdown. A gate that uncalibrated should report, not reject."
+            "single number -- 65.9% of candidates on a 40,079-candidate internal run -- and has never "
+            "been validated against measured knockdown. A gate that uncalibrated should report, not "
+            "reject."
         ),
         default_action=FilterAction.WARN,
     ),
@@ -548,7 +556,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             f"Perfect miRNA seed matches: {_HUMAN_ONLY_NOTE}; records MIRNA_PERFECT_SEED without "
             "rejecting. Warn rather than fail because a ceiling of 0 means one perfect seed match "
             "anywhere in the miRNA database disqualifies a guide outright, which is a stronger claim "
-            "than the evidence supports: it rejected 1,246 candidates on one MSH3 run with no "
+            "than the evidence supports: it rejected 1,246 candidates on one internal run with no "
             "threshold calibration behind the number 0."
         ),
         default_action=FilterAction.WARN,
