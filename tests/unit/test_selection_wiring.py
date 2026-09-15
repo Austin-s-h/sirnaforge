@@ -335,7 +335,7 @@ def test_the_asymmetry_gate_still_agrees_with_the_thermodynamic_helper(asymmetry
     """The design gate compares through the shared evaluator now, so pin it against the old authority.
 
     ``_apply_score_filters`` used to call ``ThermodynamicCalculator.meets_asymmetry_threshold``
-    directly. It now declares ``Comparator.AT_LEAST`` instead, which is the same comparison -- and this
+    directly. It now declares ``FilterComparator.GE`` instead, which is the same comparison -- and this
     is what would catch the two drifting apart, boundary included.
     """
     designer = SiRNADesigner(DesignParameters())

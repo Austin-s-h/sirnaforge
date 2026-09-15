@@ -12,7 +12,6 @@ from enum import Enum
 import pytest
 
 from sirnaforge.core.filtering import (
-    Comparator,
     FilterOutcome,
     GateSpec,
     derive_passes_filters,
@@ -22,7 +21,7 @@ from sirnaforge.core.filtering import (
     is_passing,
     unknown_filter_ids,
 )
-from sirnaforge.models.policy import FilterAction, FilterEvaluation, ScreeningChannel
+from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation, ScreeningChannel
 
 
 class _LegacyFilterStatus(str, Enum):
@@ -35,7 +34,7 @@ def _spec(
     filter_id: str = "max_off_target_count",
     threshold: float | None = 5,
     action: FilterAction = FilterAction.FAIL,
-    comparator: Comparator = Comparator.AT_MOST,
+    comparator: FilterComparator = FilterComparator.LE,
     channels: frozenset[ScreeningChannel] = frozenset({ScreeningChannel.TRANSCRIPTOME}),
     evidence_pairs: frozenset[tuple[str, str]] = frozenset(),
 ) -> GateSpec:
@@ -137,15 +136,15 @@ class TestEvaluateGate:
         assert outcome.evaluation is FilterEvaluation.PASS
         assert outcome.observed == 2
 
-    def test_at_least_comparator_fails_below_the_floor(self) -> None:
-        """AT_LEAST is the min_* direction: below the floor exceeds."""
-        outcome = evaluate_gate(_spec(threshold=0.5, comparator=Comparator.AT_LEAST), observed=0.2)
+    def test_ge_comparator_fails_below_the_floor(self) -> None:
+        """GE is the min_* direction: below the floor exceeds."""
+        outcome = evaluate_gate(_spec(threshold=0.5, comparator=FilterComparator.GE), observed=0.2)
         assert outcome.evaluation is FilterEvaluation.FAIL
         assert outcome.rejects is True
 
-    def test_at_least_comparator_passes_at_the_floor(self) -> None:
-        """AT_LEAST passes at the floor itself, not only strictly above it."""
-        outcome = evaluate_gate(_spec(threshold=0.5, comparator=Comparator.AT_LEAST), observed=0.5)
+    def test_ge_comparator_passes_at_the_floor(self) -> None:
+        """GE passes at the floor itself, not only strictly above it."""
+        outcome = evaluate_gate(_spec(threshold=0.5, comparator=FilterComparator.GE), observed=0.5)
         assert outcome.evaluation is FilterEvaluation.PASS
 
 

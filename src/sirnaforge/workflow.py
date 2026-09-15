@@ -63,7 +63,6 @@ from sirnaforge.core.design import (
     record_gate_outcome,
 )
 from sirnaforge.core.filtering import (
-    Comparator,
     GateSpec,
     evaluate_gate,
     evaluate_gates,
@@ -149,6 +148,7 @@ from sirnaforge.models.evidence import (
 from sirnaforge.models.policy import (
     EvidenceRequirements,
     FilterAction,
+    FilterComparator,
     FilterEvaluation,
     Requiredness,
     RunMode,
@@ -5134,7 +5134,7 @@ class SiRNAWorkflow:
                     threshold=threshold,
                     action=self._filter_action_for(filter_id, threshold),
                     # Every gate here is a ceiling, including the boolean flag as a ceiling of zero.
-                    comparator=Comparator.AT_MOST,
+                    comparator=FilterComparator.LE,
                     channels=channels,
                     evidence_pairs=self._gate_evidence_pairs(filter_id, channels),
                 )
@@ -5826,7 +5826,7 @@ class SiRNAWorkflow:
         :meth:`_complete_isoform_coverage_verdicts` calls this gate for a candidate that reached no
         scoring at all, so the verdict exists on every path and not only the one that integrated hits.
 
-        A floor, so it declares ``Comparator.AT_LEAST`` and no evidence pairs: coverage comes from the
+        A floor, so it declares ``FilterComparator.GE`` and no evidence pairs: coverage comes from the
         transcript annotation rather than from a screening channel, which is why an incomplete channel
         never excuses it (see ``POST_SCREEN_FILTER_CHANNELS``).
 
@@ -5838,7 +5838,7 @@ class SiRNAWorkflow:
             filter_id="min_isoform_coverage",
             threshold=floor,
             action=self._filter_action_for("min_isoform_coverage", floor),
-            comparator=Comparator.AT_LEAST,
+            comparator=FilterComparator.GE,
         )
         # In force nowhere still writes a word: the exported column is fixed, and an empty cell there
         # reads as a verdict rather than as "this gate was not applied". record_gate_outcome does that.

@@ -15,10 +15,9 @@ to write, not where.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum
 from typing import TypeVar
 
-from sirnaforge.models.policy import FilterAction, FilterEvaluation, ScreeningChannel
+from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation, ScreeningChannel
 
 #: Display/precedence order for the four verdicts. Not read by anything in this module -- it exists
 #: because a consumer sorting or grouping verdicts needs one canonical order instead of inventing its
@@ -29,24 +28,6 @@ EVALUATION_ORDER: tuple[FilterEvaluation, ...] = (
     FilterEvaluation.PASS,
     FilterEvaluation.FAIL,
 )
-
-
-class Comparator(str, Enum):
-    """The passing direction a gate applies, read as ``observed <comparator> threshold``.
-
-    Attributes:
-        AT_MOST: Passes when the observed value does not exceed the threshold (a ``max_*`` gate).
-        AT_LEAST: Passes when the observed value does not fall below the threshold (a ``min_*`` gate).
-    """
-
-    AT_MOST = "at_most"
-    AT_LEAST = "at_least"
-
-    def exceeds(self, observed: float, threshold: float) -> bool:
-        """Whether ``observed`` breaches this comparator's ceiling or floor."""
-        if self is Comparator.AT_MOST:
-            return observed > threshold
-        return observed < threshold
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +51,7 @@ class GateSpec:
     filter_id: str
     threshold: float | None
     action: FilterAction
-    comparator: Comparator
+    comparator: FilterComparator
     channels: frozenset[ScreeningChannel] = frozenset()
     evidence_pairs: frozenset[tuple[str, str]] = frozenset()
 
@@ -120,7 +101,7 @@ def evaluate_gate(
     if observed is None:
         return FilterOutcome(spec.filter_id, FilterEvaluation.UNKNOWN, None, spec.action, False, True)
 
-    exceeds = spec.comparator.exceeds(observed, spec.threshold)
+    exceeds = not spec.comparator.passes(observed, spec.threshold)
     if not exceeds and complete_pairs is not None and not spec.evidence_pairs <= complete_pairs:
         return FilterOutcome(spec.filter_id, FilterEvaluation.UNKNOWN, None, spec.action, False, True)
 

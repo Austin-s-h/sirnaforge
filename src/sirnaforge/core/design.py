@@ -13,7 +13,7 @@ from Bio.Seq import Seq
 
 from sirnaforge import __version__
 from sirnaforge.config.run_policy import FILTER_SPEC_BY_ID
-from sirnaforge.core.filtering import Comparator, FilterOutcome, GateSpec, evaluate_gate, evaluate_gates
+from sirnaforge.core.filtering import FilterOutcome, GateSpec, evaluate_gate, evaluate_gates
 from sirnaforge.core.repeat_detection import RepeatObservation, normalize_guide_sequence
 from sirnaforge.core.scoring import ScoringError, compute_composite, target_accessibility_sub_score
 from sirnaforge.core.thermodynamics import (
@@ -22,7 +22,7 @@ from sirnaforge.core.thermodynamics import (
     TargetSiteAccessibility,
     ThermodynamicCalculator,
 )
-from sirnaforge.models.policy import FilterAction, FilterEvaluation
+from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
 from sirnaforge.models.sirna import (
     EMPIRICAL_SCORE_MAX,
     EMPIRICAL_SCORE_MIN,
@@ -121,7 +121,7 @@ class SiRNADesigner:
         spec = FILTER_SPEC_BY_ID.get(filter_id)
         return spec.default_action if spec is not None else FilterAction.FAIL
 
-    def _gate_spec(self, filter_id: str, threshold: float | None, comparator: Comparator) -> GateSpec:
+    def _gate_spec(self, filter_id: str, threshold: float | None, comparator: FilterComparator) -> GateSpec:
         """One design-stage gate as configured: its threshold, its resolved action, its direction.
 
         No ``channels``/``evidence_pairs``: a design-stage gate reads the candidate itself, so its
@@ -351,16 +351,16 @@ class SiRNADesigner:
         still set by the caller, which owns the first-label rule.
 
         The three comparisons go through :func:`~sirnaforge.core.filtering.evaluate_gates` (#100), so a
-        floor and a ceiling are one declared ``Comparator`` rather than two hand-written inequalities.
+        floor and a ceiling are one declared ``FilterComparator`` rather than two hand-written inequalities.
         """
         filters = self.parameters.filters
         # Written onto the row, not only into filter_observed: max_poly_runs declares this as its
         # column, so without it that gate could not be re-derived from the exported row.
         candidate.max_poly_run_length = poly_run
         specs = (
-            self._gate_spec("gc_content_min", filters.gc_min, Comparator.AT_LEAST),
-            self._gate_spec("gc_content_max", filters.gc_max, Comparator.AT_MOST),
-            self._gate_spec("max_poly_runs", float(filters.max_poly_runs), Comparator.AT_MOST),
+            self._gate_spec("gc_content_min", filters.gc_min, FilterComparator.GE),
+            self._gate_spec("gc_content_max", filters.gc_max, FilterComparator.LE),
+            self._gate_spec("max_poly_runs", float(filters.max_poly_runs), FilterComparator.LE),
         )
         observed = {
             "gc_content_min": gc_content,
@@ -637,7 +637,7 @@ class SiRNADesigner:
 
     def _flag_excess_pairing(self, candidate: SiRNACandidate, paired_fraction: float) -> None:
         """Flag a candidate whose guide is too structured to be accessible."""
-        spec = self._gate_spec("max_paired_fraction", self.parameters.filters.max_paired_fraction, Comparator.AT_MOST)
+        spec = self._gate_spec("max_paired_fraction", self.parameters.filters.max_paired_fraction, FilterComparator.LE)
         record_gate_outcome(
             candidate,
             evaluate_gate(spec, paired_fraction),
@@ -706,14 +706,14 @@ class SiRNADesigner:
         Both verdicts are recorded unconditionally, so the two gates' reported counts are a property
         of the candidates and not of gate ordering; ``passes_filters`` still keeps the first label.
 
-        Both are floors, so both declare ``Comparator.AT_LEAST`` and are evaluated by the shared
+        Both are floors, so both declare ``FilterComparator.GE`` and are evaluated by the shared
         evaluator (#100). ``meets_asymmetry_threshold`` is that same ``>=`` comparison and is not
         re-called here; the threshold it reads is the one on the spec.
         """
         filters = self.parameters.filters
         specs = (
-            self._gate_spec("min_asymmetry_score", filters.min_asymmetry_score, Comparator.AT_LEAST),
-            self._gate_spec("min_empirical_score", filters.min_empirical_score, Comparator.AT_LEAST),
+            self._gate_spec("min_asymmetry_score", filters.min_asymmetry_score, FilterComparator.GE),
+            self._gate_spec("min_empirical_score", filters.min_empirical_score, FilterComparator.GE),
         )
         observed = {"min_asymmetry_score": asymmetry_score, "min_empirical_score": empirical_score}
         statuses = {
