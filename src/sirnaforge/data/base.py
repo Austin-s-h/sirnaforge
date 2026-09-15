@@ -55,6 +55,14 @@ ENSEMBL_POST_CHUNK_SIZE = 50
 #: All of them are transient -- a plain sequence fetch draws 503s under load -- so retry them.
 ENSEMBL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 ENSEMBL_MAX_ATTEMPTS = 3
+#: Statuses that mean the host answered but will not serve this request -- access denied, or a
+#: gateway with nothing behind it. A 404 is not one of them: that is an answer.
+ENSEMBL_UNAVAILABLE_STATUSES = (403, 502, 503, 504)
+
+
+def ensembl_unavailable_error(status: int) -> DatabaseAccessError:
+    """The error every caller raises for :data:`ENSEMBL_UNAVAILABLE_STATUSES`, worded once."""
+    return DatabaseAccessError(f"HTTP {status}: Access denied or server unavailable", "Ensembl")
 
 
 @asynccontextmanager
@@ -471,9 +479,8 @@ class EnsemblClient(AbstractDatabaseClient):
                     return sequence_text.replace("\n", "").upper()
                 if response.status == 404:
                     raise GeneNotFoundError(identifier, "Ensembl")
-                if response.status in (403, 502, 503, 504):
-                    # Server errors or access denied - likely firewall/access issue
-                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                    raise ensembl_unavailable_error(response.status)
                 logger.debug(f"Failed to get {seq_type} for {identifier}: HTTP {response.status}")
                 raise DatabaseAccessError(f"HTTP {response.status}", "Ensembl")
         except aiohttp.ClientConnectorError as e:

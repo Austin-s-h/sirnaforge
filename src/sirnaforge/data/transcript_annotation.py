@@ -30,15 +30,27 @@ import aiohttp
 from sirnaforge.config.reference_policy import ReferenceChoice
 from sirnaforge.data.base import (
     ENSEMBL_POST_CHUNK_SIZE,
+    ENSEMBL_UNAVAILABLE_STATUSES,
     AbstractTranscriptAnnotationClient,
     DatabaseAccessError,
     ensembl_request_json,
     ensembl_session,
+    ensembl_unavailable_error,
 )
 from sirnaforge.models.transcript_annotation import Interval, TranscriptAnnotation, TranscriptAnnotationBundle
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _interval_from(record: Mapping[str, Any], *, seq_region_name: str, strand: int) -> Interval:
+    """One exon or CDS record from an Ensembl response, falling back to its transcript's placement."""
+    return Interval(
+        seq_region_name=str(record.get("seq_region_name", seq_region_name)),
+        start=int(record.get("start", 0)),
+        end=int(record.get("end", 0)),
+        strand=int(record.get("strand", strand)),
+    )
 
 
 class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
@@ -400,8 +412,8 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
                     return annotation
 
-                if response.status in (403, 502, 503, 504):
-                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                    raise ensembl_unavailable_error(response.status)
 
                 logger.warning(f"Unexpected response status {response.status} for {identifier}")
                 return None
@@ -487,8 +499,8 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
                     return annotations
 
-                if response.status in (403, 502, 503, 504):
-                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                    raise ensembl_unavailable_error(response.status)
 
                 logger.warning(f"Unexpected response status {response.status} for region {region}")
                 return {}
@@ -518,8 +530,8 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
                 return None, None
             if response.status == 200:
                 return self._parse_gene_metadata(cast(dict[str, Any], await response.json()))
-            if response.status in (403, 502, 503, 504):
-                raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+            if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                raise ensembl_unavailable_error(response.status)
             return None, None
 
     @staticmethod
@@ -576,15 +588,11 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         # Parse exons
         exons: list[Interval] = []
         if "Exon" in data and isinstance(data["Exon"], list):
-            for exon_data in data["Exon"]:
-                if isinstance(exon_data, dict):
-                    exon = Interval(
-                        seq_region_name=str(exon_data.get("seq_region_name", seq_region_name)),
-                        start=int(exon_data.get("start", 0)),
-                        end=int(exon_data.get("end", 0)),
-                        strand=int(exon_data.get("strand", strand)),
-                    )
-                    exons.append(exon)
+            exons = [
+                _interval_from(exon_data, seq_region_name=seq_region_name, strand=strand)
+                for exon_data in data["Exon"]
+                if isinstance(exon_data, dict)
+            ]
 
         # Parse CDS (coding sequence intervals)
         cds_intervals: list[Interval] = []
@@ -738,26 +746,15 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             strand = int(transcript_data.get("strand", 1))
 
             # Build exon intervals
-            exons: list[Interval] = []
-            for exon_data in grouped["exons"]:
-                exon = Interval(
-                    seq_region_name=str(exon_data.get("seq_region_name", seq_region_name)),
-                    start=int(exon_data.get("start", 0)),
-                    end=int(exon_data.get("end", 0)),
-                    strand=int(exon_data.get("strand", strand)),
-                )
-                exons.append(exon)
+            exons: list[Interval] = [
+                _interval_from(exon_data, seq_region_name=seq_region_name, strand=strand)
+                for exon_data in grouped["exons"]
+            ]
 
             # Build CDS intervals
-            cds_intervals: list[Interval] = []
-            for cds_data in grouped["cds"]:
-                cds = Interval(
-                    seq_region_name=str(cds_data.get("seq_region_name", seq_region_name)),
-                    start=int(cds_data.get("start", 0)),
-                    end=int(cds_data.get("end", 0)),
-                    strand=int(cds_data.get("strand", strand)),
-                )
-                cds_intervals.append(cds)
+            cds_intervals: list[Interval] = [
+                _interval_from(cds_data, seq_region_name=seq_region_name, strand=strand) for cds_data in grouped["cds"]
+            ]
 
             annotation = TranscriptAnnotation(
                 transcript_id=transcript_id,
