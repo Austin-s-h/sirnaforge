@@ -12,8 +12,15 @@ resulting gene-ID set into ``ClassificationContext``.
 
 Cost is up to *two* Compara requests per (query gene x target species) -- the gene-ID route, then
 the symbol route when the first resolves nothing -- charged once per resolution, never per hit.
-There is no cache, so a caller that resolves twice pays twice. Two guards keep an unreachable
-Compara off the critical path: a transport-level failure is never retried, and
+An on-disk cache under :data:`ORTHOLOGY_CACHE_SUBDIR` charges that cost once per
+(question x target species) rather than once per run: a re-run, a second guide panel against the
+same gene, and an offline run behind a warm cache all resolve without a request. What it guarantees
+is narrow and stated on every row it serves -- one document per *single* target species, so a
+five-species screen that resolved four and failed one re-asks only the fifth; a resolved absence is
+cached because it is a real Compara answer, while a failed or partial lookup never is, so a firewall
+blip cannot become a 30-day claim that no orthologue exists; and a served answer is published as
+:data:`SOURCE_COMPARA_CACHE`, so an offline run cannot claim a REST call it never made. Two guards
+keep an unreachable Compara off the critical path: a transport-level failure is never retried, and
 :meth:`OrthologueMapping.from_file` resolves from a user-supplied mapping with no network at all
 (issue #101: an offline path is required, not optional).
 
@@ -33,7 +40,8 @@ import re
 import socket
 import ssl
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +49,12 @@ import aiohttp
 
 from sirnaforge.data.base import ENSEMBL_MAX_ATTEMPTS, ensembl_request_json, ensembl_session
 from sirnaforge.data.species_registry import ensembl_species_slug, normalize_species_name
+from sirnaforge.utils.cache_utils import (
+    is_artifact_stamp_current,
+    resolve_cache_subdir,
+    stable_cache_key,
+    write_artifact_stamp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +70,27 @@ ORTHOLOGUE_TYPES = frozenset({"ortholog_one2one", "ortholog_one2many", "ortholog
 #: heuristic. Species not reached by then are reported unresolved, which is the honest answer.
 ORTHOLOGY_BUDGET_SECONDS = 60.0
 
-#: Provenance labels for :meth:`OrthologueMapping.summary`.
+#: Provenance labels for :meth:`OrthologueMapping.summary`. ``SOURCE_COMPARA_CACHE`` is a distinct
+#: label rather than a flag beside ``SOURCE_COMPARA`` because the two are different claims: one says
+#: this run asked Ensembl, the other says this run read an answer a previous run obtained.
 SOURCE_COMPARA = "ensembl_compara"
+SOURCE_COMPARA_CACHE = "ensembl_compara_cache"
 SOURCE_MAPPING_FILE = "ortholog_mapping_file"
+
+#: Cache subdir under the shared cache root, and -- by the convention in ``utils.cache_utils`` that
+#: manager-backed classes are named by their subdir -- also the producer-version artifact class, so
+#: ``PRODUCER_VERSIONS["orthology"]`` invalidates every cached answer exactly once when this
+#: resolver is fixed.
+ORTHOLOGY_CACHE_SUBDIR = "orthology"
+
+#: Bumped by hand when the cache *document* shape changes. Part of the cache key rather than a
+#: migration, so an old document is simply never addressed again instead of being reinterpreted.
+ORTHOLOGY_CACHE_SCHEMA = 1
+
+#: Cache TTL. 30 days matches ``AnnotationManager`` rather than the variant resolver's 90: Compara
+#: releases move on a roughly two-month cadence, and an orthologue set that changed between releases
+#: is a changed answer, not a stale copy of the same one.
+ORTHOLOGY_CACHE_TTL_DAYS = 30
 
 #: A user-supplied mapping, keyed on the uppercased version-stripped query gene ID or symbol.
 OrthologTable = dict[str, dict[str, frozenset[str]]]
@@ -117,6 +149,19 @@ class OrthologueMapping:
         queried_symbols: The gene symbols used for the fallback route, if any.
         source: Where the orthologues came from -- Compara, or a user-supplied mapping file. An
             offline run must not publish provenance that claims a REST call it never made.
+        cached_species: Species answered from the on-disk cache rather than from a request made on
+            this run. A set, not a boolean, because a partly-cached resolution is the normal case --
+            one added species means one request and N-1 hits -- and one flag over the whole mapping
+            would be a lie about most of it.
+        provenance_by_species: Resolved species -> :data:`SOURCE_COMPARA`,
+            :data:`SOURCE_COMPARA_CACHE` or :data:`SOURCE_MAPPING_FILE`. This is the field that
+            answers "did this run make a REST call for this species", which ``source`` alone cannot.
+            Unresolved species have no entry: there is no answer to attribute.
+        cache_key_by_species: Resolved species -> the cache key of the document written or read, so
+            an audit can find the exact file behind a conservation claim.
+        cached_at_by_species: Cached species -> the ISO timestamp at which the *request* behind the
+            served document was made. Only cache hits have an entry; a species resolved on this run
+            is dated by the run itself.
     """
 
     gene_ids_by_species: dict[str, frozenset[str]]
@@ -125,6 +170,10 @@ class OrthologueMapping:
     queried_gene_ids: frozenset[str] = frozenset()
     queried_symbols: frozenset[str] = frozenset()
     source: str = SOURCE_COMPARA
+    cached_species: frozenset[str] = frozenset()
+    provenance_by_species: dict[str, str] = field(default_factory=dict)
+    cache_key_by_species: dict[str, str] = field(default_factory=dict)
+    cached_at_by_species: dict[str, str] = field(default_factory=dict)
 
     @property
     def all_gene_ids(self) -> frozenset[str]:
@@ -135,7 +184,12 @@ class OrthologueMapping:
         return frozenset(ids)
 
     def summary(self) -> dict[str, Any]:
-        """Provenance record for the run summary, so a conservation claim is auditable."""
+        """Provenance record for the run summary, so a conservation claim is auditable.
+
+        The cache block is published per species, not per run: with an on-disk cache the run record
+        has to state, for each species separately, whether *this* run asked Ensembl. ``source``
+        keeps its original meaning (mapping file vs Compara) so existing readers are unaffected.
+        """
         return {
             "source": self.source,
             "orthologue_types": sorted(ORTHOLOGUE_TYPES),
@@ -144,6 +198,10 @@ class OrthologueMapping:
             "unresolved_species": sorted(self.unresolved_species),
             "queried_gene_ids": sorted(self.queried_gene_ids),
             "queried_symbols": sorted(self.queried_symbols),
+            "cached_species": sorted(self.cached_species),
+            "provenance_by_species": dict(sorted(self.provenance_by_species.items())),
+            "cache_keys": dict(sorted(self.cache_key_by_species.items())),
+            "cached_at": dict(sorted(self.cached_at_by_species.items())),
         }
 
     @classmethod
@@ -166,6 +224,12 @@ class OrthologueMapping:
         The offline half of issue #101: an air-gapped run, and every deterministic fixture, states
         its orthologues in a file rather than depending on REST being reachable. Same arguments as
         :func:`resolve_orthologues` so the two are interchangeable at the call site.
+
+        Deliberately never reaches the on-disk cache, in either direction. Reading a file is already
+        offline and free, so a cache would save nothing; and *writing* one would let a document
+        outlive the mapping file it was copied from, so an edited file would be silently ignored for
+        the TTL -- exactly the failure the explicit-input-fails-loudly rule in
+        :func:`load_ortholog_table` exists to prevent.
         """
         return mapping_from_table(
             load_ortholog_table(path),
@@ -255,7 +319,138 @@ def mapping_from_table(
         queried_gene_ids=frozenset(genes),
         queried_symbols=frozenset(symbols),
         source=SOURCE_MAPPING_FILE,
+        # Per-species provenance is filled in here too, so the field is a complete record for every
+        # path rather than one that reads as "unknown" whenever the offline route was taken.
+        provenance_by_species=dict.fromkeys(sorted(resolved), SOURCE_MAPPING_FILE),
     )
+
+
+def orthology_cache_key(
+    *,
+    query_species: str,
+    target_species: str,
+    gene_ids: frozenset[str] | set[str],
+    symbols: frozenset[str] | set[str],
+    base_url: str,
+) -> str:
+    """Cache key for one (question x *single* target species) Compara answer.
+
+    One species per key, deliberately: a five-species screen that resolves four and fails one must
+    record four hits and re-ask only the fifth, which a whole-resolution key could not express.
+
+    Everything that changes what the answer *means* is in the payload. ``target_species`` is in it
+    because the mouse document must never be served for rat. ``symbols`` is in it because the symbol
+    fallback route is part of the question asked, not an implementation detail: the same gene IDs
+    with and without a symbol are two different lookups (#101 -- an input FASTA supplies transcript
+    IDs, which only the symbol route rescues). ``base_url`` is in it because a staging or mirrored
+    REST host is a different authority. ``orthologue_types`` is in it because widening the accepted
+    relationship types must miss every answer computed under the narrower set.
+
+    Deliberately excluded: ``timeout`` and ``budget``, which change how long we were willing to wait
+    rather than what the answer means, and the mapping-file path, which is never cached at all.
+    """
+    return stable_cache_key(
+        {
+            "schema": ORTHOLOGY_CACHE_SCHEMA,
+            "query_species": query_species,
+            "target_species": target_species,
+            "gene_ids": sorted(gene_ids),
+            "symbols": sorted(symbols),
+            "base_url": base_url,
+            "orthologue_types": sorted(ORTHOLOGUE_TYPES),
+        }
+    )
+
+
+def _orthology_cache_root(cache_dir: Path | None) -> Path | None:
+    """Resolve the cache directory, or None when it cannot be made writable.
+
+    Uses ``resolve_cache_subdir`` so the orthology cache honours ``SIRNAFORGE_CACHE_DIR`` / XDG /
+    ``$HOME/.cache`` / workspace / temp exactly like every other subsystem, instead of inventing a
+    second location. A cache root we cannot create is a missing optimisation, never an error.
+    """
+    try:
+        if cache_dir is not None:
+            return resolve_cache_subdir(ORTHOLOGY_CACHE_SUBDIR, override=cache_dir)
+        return resolve_cache_subdir(ORTHOLOGY_CACHE_SUBDIR)
+    except (OSError, RuntimeError) as exc:
+        logger.debug("Orthology cache disabled: no writable cache directory (%s)", exc)
+        return None
+
+
+def _read_cached_orthologues(cache_root: Path, cache_key: str) -> tuple[frozenset[str], str] | None:
+    """Read one cached answer, or None on any kind of miss.
+
+    Validity is decided entirely by the sidecar stamp -- producer version, TTL and a fingerprint of
+    the document's own bytes -- so no second invalidation scheme exists here to disagree with it. The
+    output fingerprint is what stops a half-written document being served for its whole TTL.
+
+    Exception-swallowing in the same way as the rest of this module: an unreadable or unparseable
+    document is a miss with a debug line, never a raise, because a broken cache must not fail a
+    screen. It only costs the request the cache was meant to save.
+    """
+    document = cache_root / f"{cache_key}.json"
+    if not document.exists():
+        return None
+    if not is_artifact_stamp_current(ORTHOLOGY_CACHE_SUBDIR, document, max_age_days=ORTHOLOGY_CACHE_TTL_DAYS):
+        return None
+    try:
+        payload = json.loads(document.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("Unreadable orthology cache document %s: %s", document, exc)
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != ORTHOLOGY_CACHE_SCHEMA:
+        logger.debug("Orthology cache document %s has schema %r, not %r", document, payload, ORTHOLOGY_CACHE_SCHEMA)
+        return None
+    gene_ids = payload.get("orthologue_gene_ids")
+    if not isinstance(gene_ids, list):
+        logger.debug("Orthology cache document %s carries no orthologue_gene_ids list", document)
+        return None
+    return frozenset(_strip_version(str(gene_id)) for gene_id in gene_ids if gene_id), str(
+        payload.get("resolved_at") or ""
+    )
+
+
+def _write_cached_orthologues(
+    cache_root: Path,
+    cache_key: str,
+    *,
+    query_species: str,
+    target_species: str,
+    gene_ids: frozenset[str] | set[str],
+    symbols: frozenset[str] | set[str],
+    base_url: str,
+    orthologue_gene_ids: set[str],
+) -> None:
+    """Record one completed Compara answer, then stamp it.
+
+    The question is written into the document alongside the answer even though the key already
+    covers it: a bare digest is unreadable, and the point of this cache is that a cached
+    conservation claim stays auditable. Stamped *after* the bytes are on disk, so the recorded size
+    and digest describe what a later run will read back.
+    """
+    document = cache_root / f"{cache_key}.json"
+    payload = {
+        "schema": ORTHOLOGY_CACHE_SCHEMA,
+        "cache_key": cache_key,
+        "query_species": query_species,
+        "target_species": target_species,
+        "gene_ids": sorted(gene_ids),
+        "symbols": sorted(symbols),
+        "base_url": base_url,
+        "orthologue_types": sorted(ORTHOLOGUE_TYPES),
+        "orthologue_gene_ids": sorted(orthologue_gene_ids),
+        "resolved_at": datetime.now().isoformat(),
+    }
+    try:
+        document.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        write_artifact_stamp(
+            ORTHOLOGY_CACHE_SUBDIR,
+            document,
+            extra={"query_species": query_species, "target_species": target_species},
+        )
+    except OSError as exc:
+        logger.debug("Could not cache the %s orthologue answer: %s", target_species, exc)
 
 
 async def resolve_orthologues(
@@ -268,6 +463,8 @@ async def resolve_orthologues(
     timeout: int = 30,
     budget: float | None = None,
     session: aiohttp.ClientSession | None = None,
+    cache: bool = True,
+    cache_dir: Path | None = None,
 ) -> OrthologueMapping:
     """Resolve orthologues of the query gene(s) in each target species.
 
@@ -288,8 +485,11 @@ async def resolve_orthologues(
     because Compara was briefly unavailable would be worse than screening with weaker evidence, as
     long as the weaker evidence is labelled -- which ``OrthologEvidence`` does.
 
-    Reaches the network. Use :meth:`OrthologueMapping.from_file` for an air-gapped run or any
-    deterministic fixture; a unit test must never end up here.
+    May reach the network. Use :meth:`OrthologueMapping.from_file` for an air-gapped run or any
+    deterministic fixture; a unit test must never end up here. A warm cache makes the request
+    optional per species, and the returned mapping states per species whether one was made -- so the
+    provenance published by an offline run with a warm cache is ``ensembl_compara_cache``, never a
+    REST call it did not perform.
 
     Args:
         query_gene_ids: Stable gene IDs of the query gene (version suffix optional).
@@ -302,6 +502,10 @@ async def resolve_orthologues(
             reported unresolved. Defaults to no ceiling, because an abandoned species is
             indistinguishable from an absent orthologue -- see the module docstring.
         session: Session to reuse; one is opened for this call when omitted.
+        cache: Read and write the on-disk cache. On by default; ``False`` for a test that must not
+            touch the disk, and for a caller that wants to prove Compara answers this question now.
+        cache_dir: Cache directory override. Defaults to the shared cache root's ``orthology``
+            subdir.
 
     Returns:
         An :class:`OrthologueMapping`. Empty when there is nothing to resolve.
@@ -323,7 +527,12 @@ async def resolve_orthologues(
     by_species: dict[str, set[str]] = {}
     resolved: set[str] = set()
     unresolved: set[str] = set()
+    cached: set[str] = set()
+    provenance: dict[str, str] = {}
+    cache_keys: dict[str, str] = {}
+    cached_at: dict[str, str] = {}
     deadline = time.monotonic() + budget if budget else None
+    cache_root = _orthology_cache_root(cache_dir) if cache else None
 
     async with ensembl_session(session, timeout) as active:
         for species in sorted(wanted):
@@ -332,6 +541,39 @@ async def resolve_orthologues(
                 logger.warning("Orthology lookup skipped for unregistered target species %r", species)
                 unresolved.add(species)
                 continue
+
+            cache_key = (
+                orthology_cache_key(
+                    query_species=canonical_query,
+                    target_species=species,
+                    gene_ids=genes,
+                    symbols=symbols,
+                    base_url=base_url,
+                )
+                if cache_root is not None
+                else None
+            )
+            # Read before the budget check: serving a cached answer costs no wall clock, so a spent
+            # budget must not turn a species we already know about into an unresolved one.
+            if cache_root is not None and cache_key is not None:
+                hit = _read_cached_orthologues(cache_root, cache_key)
+                if hit is not None:
+                    cached_ids, resolved_at = hit
+                    resolved.add(species)
+                    cached.add(species)
+                    provenance[species] = SOURCE_COMPARA_CACHE
+                    cache_keys[species] = cache_key
+                    if resolved_at:
+                        cached_at[species] = resolved_at
+                    if cached_ids:
+                        by_species[species] = set(cached_ids)
+                    logger.info(
+                        "Served %d %s orthologue gene ID(s) from the on-disk cache; no Compara request was made",
+                        len(cached_ids),
+                        species,
+                    )
+                    continue
+
             if _budget_spent(deadline):
                 logger.warning(
                     "Orthology budget of %.0fs is spent; %r is left unresolved rather than stalling the screen",
@@ -341,30 +583,42 @@ async def resolve_orthologues(
                 unresolved.add(species)
                 continue
 
-            # ID route first; the symbol route only if it resolved nothing.
-            found, failed = await _lookup_route(
-                active, "id", sorted(genes), query_slug, target_slug, base_url, timeout, species, deadline
+            found, failed = await _lookup_species(
+                active,
+                genes=genes,
+                symbols=symbols,
+                query_slug=query_slug,
+                target_slug=target_slug,
+                base_url=base_url,
+                timeout=timeout,
+                species=species,
+                deadline=deadline,
             )
-            if not found and symbols:
-                logger.info(
-                    "No %s orthologue from gene IDs %s; retrying on symbol(s) %s "
-                    "(an input FASTA supplies transcript IDs, which Compara answers with an empty 200)",
-                    species,
-                    sorted(genes) or "<none>",
-                    sorted(symbols),
-                )
-                symbol_found, symbol_failed = await _lookup_route(
-                    active, "symbol", sorted(symbols), query_slug, target_slug, base_url, timeout, species, deadline
-                )
-                found |= symbol_found
-                failed = failed or symbol_failed
 
             if failed and not found:
                 unresolved.add(species)
                 continue
             resolved.add(species)
+            provenance[species] = SOURCE_COMPARA
             if found:
                 by_species[species] = found
+            # Cached only when *nothing* failed. A resolved absence is cached because it is a real
+            # Compara answer, expensive to re-obtain and stable between releases. A failed or
+            # partially failed lookup never is: writing one would turn a firewall blip or a single
+            # dead identifier into a 30-day claim about what exists, which is the one claim this
+            # module makes (#101).
+            if cache_root is not None and cache_key is not None and not failed:
+                _write_cached_orthologues(
+                    cache_root,
+                    cache_key,
+                    query_species=canonical_query,
+                    target_species=species,
+                    gene_ids=genes,
+                    symbols=symbols,
+                    base_url=base_url,
+                    orthologue_gene_ids=found,
+                )
+                cache_keys[species] = cache_key
             logger.info("Resolved %d %s orthologue gene ID(s) for the query gene", len(found), species)
 
     return OrthologueMapping(
@@ -373,7 +627,49 @@ async def resolve_orthologues(
         unresolved_species=frozenset(unresolved),
         queried_gene_ids=frozenset(genes),
         queried_symbols=frozenset(symbols),
+        cached_species=frozenset(cached),
+        provenance_by_species=provenance,
+        cache_key_by_species=cache_keys,
+        cached_at_by_species=cached_at,
     )
+
+
+async def _lookup_species(
+    session: aiohttp.ClientSession,
+    *,
+    genes: set[str],
+    symbols: set[str],
+    query_slug: str,
+    target_slug: str,
+    base_url: str,
+    timeout: int,
+    species: str,
+    deadline: float | None,
+) -> tuple[set[str], bool]:
+    """Both Compara routes for one target species: (orthologue gene IDs, any failure).
+
+    Gene IDs first, symbols only when those resolved nothing -- the cheap path stays cheap, and the
+    fallback exists because Compara answers a *transcript* ID with a successful empty 200 (#101).
+    Extracted from :func:`resolve_orthologues` so the resolution loop reads as one decision per
+    species rather than interleaving route selection with cache and budget bookkeeping.
+    """
+    found, failed = await _lookup_route(
+        session, "id", sorted(genes), query_slug, target_slug, base_url, timeout, species, deadline
+    )
+    if not found and symbols:
+        logger.info(
+            "No %s orthologue from gene IDs %s; retrying on symbol(s) %s "
+            "(an input FASTA supplies transcript IDs, which Compara answers with an empty 200)",
+            species,
+            sorted(genes) or "<none>",
+            sorted(symbols),
+        )
+        symbol_found, symbol_failed = await _lookup_route(
+            session, "symbol", sorted(symbols), query_slug, target_slug, base_url, timeout, species, deadline
+        )
+        found |= symbol_found
+        failed = failed or symbol_failed
+    return found, failed
 
 
 async def _lookup_route(

@@ -143,6 +143,14 @@ PRODUCER_VERSIONS: dict[str, str] = {
     # Genome/annotation downloads are raw upstream bytes for the same reason.
     "genomes": LEGACY_PRODUCER_VERSION,
     "annotations": LEGACY_PRODUCER_VERSION,
+    # Compara orthologue answers (#101), one JSON document per (query gene set x
+    # target species). Registered rather than left unregistered because this
+    # producer has already shipped a wrong answer class: it sent *transcript* IDs
+    # to /homology/id/, which Compara answers with a successful empty 200, so a
+    # cached "no orthologue in mouse" can be a resolver bug rather than biology.
+    # Bumping this entry in the same change that fixes such a defect is what makes
+    # every stale answer a miss exactly once.
+    "orthology": "1.0",
     # BWA-MEM2 indices. These are bound to the checksum of the FASTA they were
     # built from via an artifact stamp, so a version bump here is only needed if
     # the way we *build* indices changes; rebuilding costs CPU, not bandwidth.

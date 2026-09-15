@@ -8,6 +8,12 @@ condensed payload shape was captured from release 116.
 The last group covers the offline path and the two guards that keep an unreachable Compara off the
 critical path -- a mapping file (#101 point 4), no retries for a transport failure, and a wall-clock
 budget.
+
+Every resolution here passes ``cache=False``. These tests measure what one lookup does, so the
+on-disk cache must not be in the picture at all: with it on they would write into the *user's* cache
+root, and several of them ask the same question, so the second to run would be answered from disk and
+would count zero requests. The cache itself is covered by ``test_orthology_cache.py``, which always
+supplies its own directory.
 """
 
 import json
@@ -68,7 +74,7 @@ def test_ensembl_species_slug_derives_from_scientific_name():
 @pytest.mark.asyncio
 async def test_resolves_mouse_orthologue_gene_id(captured_urls: list[str]):
     """The mouse orthologue arrives as a gene ID -- the evidence symbol equality cannot supply."""
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.gene_ids_by_species == {"mouse": frozenset({MOUSE_TRP53})}
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
@@ -102,7 +108,7 @@ async def test_persistent_error_body_on_a_200_is_a_failure_not_an_empty_result(
 
     monkeypatch.setattr(orthology, "ensembl_request_json", error_body)
     monkeypatch.setattr(orthology.asyncio, "sleep", _no_sleep)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset()
     assert mapping.unresolved_species == frozenset({"mouse"})
@@ -125,7 +131,7 @@ async def test_transient_error_body_is_retried_then_succeeds(monkeypatch: pytest
 
     monkeypatch.setattr(orthology, "ensembl_request_json", flaky)
     monkeypatch.setattr(orthology.asyncio, "sleep", _no_sleep)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
     assert mapping.unresolved_species == frozenset()
@@ -136,7 +142,7 @@ async def test_transient_error_body_is_retried_then_succeeds(monkeypatch: pytest
 @pytest.mark.asyncio
 async def test_query_species_is_never_looked_up(captured_urls: list[str]):
     """A same-species screen needs no Compara call at all."""
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"human"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"human"}, cache=False)
 
     assert mapping == OrthologueMapping.empty()
     assert captured_urls == []
@@ -154,7 +160,7 @@ async def test_paralogues_are_not_orthologues(monkeypatch: pytest.MonkeyPatch):
         )
 
     monkeypatch.setattr(orthology, "ensembl_request_json", fake_request)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53}), "the paralogue must not be admitted"
 
@@ -169,7 +175,7 @@ async def test_versioned_ids_are_stripped(monkeypatch: pytest.MonkeyPatch):
         return _condensed({"id": f"{MOUSE_TRP53}.4", "species": "mus_musculus", "type": "ortholog_one2one"})
 
     monkeypatch.setattr(orthology, "ensembl_request_json", fake_request)
-    mapping = await resolve_orthologues({f"{HUMAN_TP53}.18"}, "human", {"mouse"})
+    mapping = await resolve_orthologues({f"{HUMAN_TP53}.18"}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
 
@@ -188,7 +194,7 @@ async def test_request_failure_degrades_rather_than_raising(monkeypatch: pytest.
 
     monkeypatch.setattr(orthology, "ensembl_request_json", boom)
     monkeypatch.setattr(orthology.asyncio, "sleep", _no_sleep)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset()
     assert mapping.unresolved_species == frozenset({"mouse"})
@@ -204,7 +210,7 @@ async def test_resolved_but_empty_is_not_unresolved(monkeypatch: pytest.MonkeyPa
         return {"data": [{"id": HUMAN_TP53, "homologies": []}]}
 
     monkeypatch.setattr(orthology, "ensembl_request_json", no_homologies)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset()
     assert mapping.resolved_species == frozenset({"mouse"})
@@ -215,7 +221,7 @@ async def test_resolved_but_empty_is_not_unresolved(monkeypatch: pytest.MonkeyPa
 @pytest.mark.asyncio
 async def test_unregistered_target_species_is_unresolved(captured_urls: list[str]):
     """A species with no registry entry cannot be addressed on the REST API; say so."""
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"nonesuch"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"nonesuch"}, cache=False)
 
     assert mapping.unresolved_species == frozenset({"nonesuch"})
     assert captured_urls == []
@@ -230,7 +236,7 @@ async def test_malformed_payload_yields_no_orthologues(monkeypatch: pytest.Monke
         return {"unexpected": "shape"}
 
     monkeypatch.setattr(orthology, "ensembl_request_json", junk)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset()
     assert mapping.resolved_species == frozenset({"mouse"})
@@ -240,13 +246,17 @@ async def test_malformed_payload_yields_no_orthologues(monkeypatch: pytest.Monke
 @pytest.mark.asyncio
 async def test_summary_records_provenance(captured_urls: list[str]):
     """A conservation claim must be auditable back to its source."""
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
     summary = mapping.summary()
 
     assert summary["source"] == "ensembl_compara"
     assert summary["gene_ids_by_species"] == {"mouse": [MOUSE_TRP53]}
     assert summary["resolved_species"] == ["mouse"]
     assert "within_species_paralog" not in summary["orthologue_types"]
+    # A request really was made on this run, so the per-species provenance says so and nothing is
+    # attributed to the cache.
+    assert summary["provenance_by_species"] == {"mouse": "ensembl_compara"}
+    assert summary["cached_species"] == []
 
 
 @pytest.mark.unit
@@ -268,7 +278,7 @@ async def test_transient_http_error_is_retried_then_succeeds(monkeypatch: pytest
 
     monkeypatch.setattr(orthology, "ensembl_request_json", flaky)
     monkeypatch.setattr(orthology.asyncio, "sleep", _no_sleep)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
     assert mapping.unresolved_species == frozenset()
@@ -328,7 +338,9 @@ async def test_symbol_route_rescues_a_transcript_id_query(monkeypatch: pytest.Mo
         return _condensed({"id": MOUSE_TRP53, "species": "mus_musculus", "type": "ortholog_one2one"})
 
     monkeypatch.setattr(orthology, "ensembl_request_json", by_route)
-    mapping = await resolve_orthologues({"ENST00000413465"}, "human", {"mouse"}, query_gene_symbols={"TP53"})
+    mapping = await resolve_orthologues(
+        {"ENST00000413465"}, "human", {"mouse"}, query_gene_symbols={"TP53"}, cache=False
+    )
 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
     assert mapping.resolved_species == frozenset({"mouse"})
@@ -343,7 +355,7 @@ async def test_symbol_route_rescues_a_transcript_id_query(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_symbol_route_is_skipped_when_ids_already_resolved(captured_urls: list[str]):
     """The cheap path stays cheap: a working gene ID must not trigger a second lookup."""
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, query_gene_symbols={"TP53"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, query_gene_symbols={"TP53"}, cache=False)
 
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
     assert len(captured_urls) == 1
@@ -367,6 +379,8 @@ def test_mapping_file_resolves_without_the_network(tmp_path: Path):
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53}), "versions are stripped on both sides"
     assert mapping.resolved_species == frozenset({"mouse"}), "the query species is never a target"
     assert mapping.summary()["source"] == "ortholog_mapping_file", "an offline run must not claim a REST call"
+    assert mapping.summary()["provenance_by_species"] == {"mouse": "ortholog_mapping_file"}
+    assert mapping.cached_species == frozenset(), "the file path never consults the on-disk cache"
 
 
 @pytest.mark.unit
@@ -435,7 +449,7 @@ async def test_an_unreachable_host_is_not_retried(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(orthology, "ensembl_request_json", refused)
     monkeypatch.setattr(orthology.asyncio, "sleep", record_sleep)
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"}, cache=False)
 
     assert attempts == 1, "a transport-level failure is not retried"
     assert slept == [], "and costs no backoff"
@@ -460,7 +474,7 @@ async def test_the_budget_bounds_a_whole_resolution(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(orthology, "ensembl_request_json", slow_timeout)
     # 0.2s is generous enough to reach the first request on a loaded box, and asyncio.sleep is a
     # floor, so one 0.5s request always overruns it. A tighter budget flakes to len(seen) == 0.
-    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse", "rat"}, budget=0.2)
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse", "rat"}, budget=0.2, cache=False)
 
     assert len(seen) == 1, "the second species is abandoned rather than paying the same ladder"
     assert mapping.unresolved_species == frozenset({"mouse", "rat"})
