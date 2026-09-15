@@ -10,14 +10,12 @@ Coordinates the complete siRNA design pipeline:
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import json
 import math
 import os
 import re
 import shutil
-import tempfile
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -5405,11 +5403,6 @@ class SiRNAWorkflow:
         # "what gene did this land on, and did any reference exist" for every row, whatever its class.
         annotator = HitAnnotator(index=self._transcript_index, query_species=query_species)
 
-        # Fan out deduplicated results: each representative's results apply to all candidates sharing that sequence
-        representative_results: dict[str, dict[str, Any]] = {}
-        for repr_id, entry in results.items():
-            representative_results[repr_id] = entry
-
         # Pre-seeded with every requested species (zero-filled) so a species that was screened
         # but produced no hits is distinguishable from one never requested (absent key). Species
         # seen on a hit but not requested (unexpected) still get a bucket via setdefault below.
@@ -5454,10 +5447,12 @@ class SiRNAWorkflow:
         for candidate in candidates:
             candidate_id = candidate.id
 
-            # O(1) lookup: candidate id -> its representative's id -> that representative's
-            # results. Falls back to the candidate's own id when it was never deduplicated.
+            # Fan out deduplicated results: one representative's results apply to every candidate
+            # sharing its sequence. O(1) lookup, candidate id -> representative id -> that
+            # representative's results, falling back to the candidate's own id when it was never
+            # deduplicated.
             repr_id = self._candidate_id_to_representative.get(candidate_id, candidate_id)
-            offtarget_entry = representative_results.get(repr_id)
+            offtarget_entry = results.get(repr_id)
 
             # Zero hits means "clean" only for a candidate that actually reached the aligner. The
             # dedup map holds every submitted candidate and is empty only when screening bypassed
@@ -5609,26 +5604,15 @@ class SiRNAWorkflow:
                     if species_is_human or not species_label:
                         transcriptome_human_total += 1
 
-                    if nm == 0:
-                        transcriptome_totals[0] += 1
+                    # Membership, not `nm <= 2`: the two dicts are keyed {0, 1, 2}, so a negative
+                    # or absent nm falls through here exactly as it did under the equality chain.
+                    if nm in transcriptome_totals:
+                        transcriptome_totals[nm] += 1
                         if treated_as_query:
-                            transcriptome_query[0] += 1
-                    elif nm == 1:
-                        transcriptome_totals[1] += 1
-                        if treated_as_query:
-                            transcriptome_query[1] += 1
-                    elif nm == 2:
-                        transcriptome_totals[2] += 1
-                        if treated_as_query:
-                            transcriptome_query[2] += 1
+                            transcriptome_query[nm] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
-
-            # Totals count every genuine off-target hit (any nm); the _totals/_human dicts above
-            # are stratified nm<=2 subsets, not addends -- do not replace these with a sum().
-            transcriptome_total_hits = transcriptome_off_target_total
-            human_transcriptome_hits = transcriptome_human_total
 
             # Write per-candidate hit class fields
             candidate.on_target_hits = hit_counts.on_target
@@ -5640,8 +5624,10 @@ class SiRNAWorkflow:
             candidate.undetermined_hits = hit_counts.undetermined
             candidate.ortholog_species = ",".join(sorted(hit_counts.ortholog_species))
 
-            # Legacy fields (still needed for reporting and miRNA filters)
-            candidate.transcriptome_hits_total = transcriptome_total_hits
+            # Legacy fields (still needed for reporting and miRNA filters). The total counts every
+            # genuine off-target hit (any nm); the _totals/_query dicts below are stratified nm<=2
+            # subsets, not addends -- do not replace this with a sum().
+            candidate.transcriptome_hits_total = transcriptome_off_target_total
             candidate.transcriptome_hits_0mm = transcriptome_totals[0]
             candidate.transcriptome_hits_1mm = transcriptome_totals[1]
             candidate.transcriptome_hits_2mm = transcriptome_totals[2]
@@ -5671,8 +5657,8 @@ class SiRNAWorkflow:
             candidate_weighted["undetermined"] += hit_counts.undetermined
             stats["ortholog_symbol_lookup_misses"] += hit_counts.symbol_lookup_missing
             stats["species_index_misses"] += hit_counts.no_species_index
-            stats["human_transcriptome_hits"] += human_transcriptome_hits
-            stats["other_transcriptome_hits"] += transcriptome_total_hits - human_transcriptome_hits
+            stats["human_transcriptome_hits"] += transcriptome_human_total
+            stats["other_transcriptome_hits"] += transcriptome_off_target_total - transcriptome_human_total
             stats["human_mirna_hits"] += mirna_human_total
             stats["other_mirna_hits"] += mirna_total - mirna_human_total
 
@@ -6540,17 +6526,6 @@ async def run_sirna_workflow(
     # Run workflow
     workflow = SiRNAWorkflow(config)
     return await workflow.run_complete_workflow()
-
-
-if __name__ == "__main__":
-    # Example usage
-    async def main() -> None:
-        """Run example siRNA workflow."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            results = await run_sirna_workflow(gene_query="TP53", output_dir=temp_dir, top_n_candidates=20)
-            print(f"Workflow completed: {results}")
-
-    asyncio.run(main())
 
 
 async def run_offtarget_only_workflow(
