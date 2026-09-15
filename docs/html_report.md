@@ -85,9 +85,23 @@ status pill, its gate panel, the index counts and the export -- all of them read
 (`recomputeLive`), so the pill and the panel underneath it cannot disagree.
 
 The slider's bounds come from **the values this run produced** for that gate, not from a per-filter
-display range invented in the template; the run's own threshold is always strictly inside the domain,
-so a control can always be moved back to where the run left it. The number box is not bounded by the
-slider, so the slider's step limits its resolution and never the reachable thresholds.
+display range invented in the template, and the run's own threshold is always reachable on it, so a
+control can always be moved back to where the run left it. The bounds are also **snapped to the
+slider's own step and clamped to the range the setting's own field declares** -- read off the
+`FilterCriteria`/`OffTargetFilterCriteria` metadata rather than a hand-written table. Padding the
+observed values by 5% instead published "at most -59 off-targets" and a GC floor of 27.804348 against a
+step of 0.1, so 40 was unreachable and 39.704348 is what reached the URL and the cart TSV. The clamp is
+also what makes `min_empirical_score` useful: its domain is 0.4-0.6, the two thresholds that answer
+whether the gate does anything, rather than 0.39-0.61 either side of them.
+
+The number box is not bounded by the slider, so the slider's step limits its resolution and never the
+reachable thresholds -- which means the two can hold different numbers, and a range input cannot
+represent that: it pins silently at its own edge. Typing 90 into a gate whose domain ends at 76.104348
+used to leave the box at 90 and the slider at the pin, and one touch of the slider then dropped the real
+threshold to 76.104348 without the reader asking. The domain is deliberately not widened -- the clamping
+is what stops a count-valued gate offering a negative ceiling. Instead the threshold stays where it was
+typed, the slider **says it cannot show it** and is disabled, so it cannot answer for a number it does
+not hold.
 
 ### Whose threshold produced the verdict you are reading
 
@@ -173,6 +187,35 @@ the template at all. (Column names such as `gc_content` do appear, in the cart's
 The single Python implementation the browser has to agree with is
 `sirnaforge.reporting.payload.reevaluate_gates`, and "Running the client-side parity check" below is
 how that agreement is enforced.
+
+### Seventeen sliders, ranked by the two that decided the run
+
+Seventeen gates rendered as seventeen equal-looking controls is a panel with no shape: on one internal
+run five of them rejected anything at all, two accounted for 1,765 rejections, and two could not reject
+anybody because their threshold sat on the limit their own setting declares. So the payload publishes
+what each gate did over the guides the report holds -- `rejects`, `sole_rejects`, `warns`, `unknowns` --
+and the panel is a ranked list, ordered by the guides each gate is **solely** responsible for rejecting,
+each row saying so (`9 rejected, 9 by this gate alone`). A gate that decided nothing is folded behind a
+summary and labelled **inert in this run**, beside the payload's own reason why -- including the case
+worth naming, a threshold sitting on the lowest value its own field permits, where "no permitted value
+can fail it" is a property of the gate rather than of this run's data.
+
+## Liability, and the species it is counted in
+
+`max_off_target_count` compares the total over **every screened species**, and roughly half of that total
+is non-human on a four-species screen (92,658 human against 91,536 mouse, 25,243 macaque and 23,427 rat
+on one internal run). A guide that gate rejected may therefore carry no human liability at all, and the
+number on screen could not be decomposed. The index cell now shows the total and its split into the query
+species and the rest, the header states the run-wide split, and **one** selector re-scopes the column, its
+sort and the liability bound together -- one control rather than two over the same number, which is how a
+reader ends up believing the report says two things. The bound's own label names the species it counts,
+because "at most 3 liabilities" means something different either side of that selector, and a species this
+run did not screen is refused rather than adopted.
+
+The selector re-scopes a **question**, never a verdict. Applying `max_off_target_count` to human-only
+liabilities would be the report deciding something the run did not, so it is not offered: the payload
+publishes `liability_by_species` per guide and `liability_rows_by_species` run-wide, and re-thresholding
+still moves the all-species ceiling the run itself applied.
 
 ## Reader filters, which are not gates
 
@@ -261,19 +304,48 @@ passes, and was listed anyway. Every line in that list is existence-checked.
 
 ## The URL fragment
 
-The fragment carries the selected guide, any moved thresholds (`t=`), any reader filters (`r=`), and
-the active preset:
+The fragment is the whole view, not a part of it. Nine keys, written in one canonical order and each
+omitted at its default, so `Reset` leaves an empty fragment: the selected guide (`g=`), moved thresholds
+(`t=`), reader-filter bounds (`r=`), the liability scope (`sp=`), the active preset (`preset=`), the
+search box (`q=`), the status checkboxes (`s=`), the conservation species and seed-tolerance toggle
+(`c=`) and the cart (`k=`).
 
 ```text
-report.html#g=UUAUAGGAUUCAACCGGAGGA&t=min_asymmetry_score:0.2,gc_content_max:58&r=composite:60,liab:3&preset=near_miss
+report.html#g=UUAUAGGAUUCAACCGGAGGA&t=min_asymmetry_score:0.2,gc_content_max:58&r=composite:60,liab:3&sp=human&preset=near_miss&q=CCGGA&s=pass,warn&k=UUAUAGGAUUCAACCGGAGGA
 ```
 
+The four state keys were added because half the visible state used to stay on screen. The default status
+set hides every `fail` and `unknown` row -- 3,617 of them on one internal run -- so a URL carrying moved
+thresholds without `s=` carried the verdicts and not the rows they were chosen to show, and the search box
+never wrote to the fragment at all. `s=` with an **empty** value is meaningful and is not a missing key: it
+is a reader who unchecked all four statuses, which is a real view of every guide. Sets **replace** rather
+than union, because a re-applied fragment must not merge with whatever happened to be on screen, and
+`applyFragmentState` resets the controls first for the same reason -- what a URL omits is a default, not
+the last thing the page was showing.
+
+The cart travels as guide **sequences**, never as indices: an index would resolve to a different guide in a
+differently built report, whereas a sequence this file does not hold can be refused. Browser storage is not
+an option -- the report reaches nothing outside itself, and the sandbox it is usually read in withholds
+same-origin anyway -- so the address is the cart, which the cart card says on screen. The first
+`CART_IN_URL_MAX` (500) guides in the index's own order travel; above that the card says the address
+carries fewer guides than the cart holds, and the TSV export is the way out.
+
 A bare fragment (`report.html#UUAUAGGAUUCAACCGGAGGA`) is still read as a guide, which is what earlier
-reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id`, or an `r=`
-name that is not one of the three reader filters, is **listed as refused** at the top of the panel
-rather than silently dropped, and an unknown preset name leaves the view at "all". A reader who reloads
-the URL sees the same rows: `encodeHash` and `applyHashFragment` round-trip byte for byte, which the
-parity harness drives directly.
+reports wrote. Only re-thresholdable gates are honoured; a frozen or unknown `filter_id`, an `r=` name that
+is not one of the three reader filters, a species this run did not screen, or a `k=` sequence this file does
+not hold is **listed as refused** in the panel rather than silently dropped, and an unknown preset name
+leaves the view at "all". Because that refusal banner lives inside the thresholds `<details>`, which ships
+closed, anything the reader has to see opens the panel -- a refused name, a refused keystroke, or a fragment
+that set any control at all.
+
+Writing the fragment uses `history.replaceState`, not `location.hash =`: the latter is a navigation, so it
+pushed one history entry per keystroke on every threshold, Back then changed the URL without changing the
+view, and leaving the report took dozens of presses. Reading it is not a load-time-only affair either -- a
+`hashchange` listener means Back, Forward, an edited address bar and a pasted link all reach the code a
+fresh load runs. A reader who reloads the URL sees the same rows: `encodeHash` and `applyHashFragment`
+round-trip byte for byte, and the set of keys the encoder writes is asserted equal to the set the parser
+reads back, derived from the source rather than listed, so the next control encoded and never parsed fails
+a test instead of shipping a URL that restores less than it carries.
 
 ## Exporting a selection
 
@@ -282,9 +354,13 @@ the highest-scoring guides currently listed. `Export TSV` downloads exactly what
 guide, passenger, live status, both scores, isoform coverage, the metric columns the thresholds were
 applied to, the structure string and per-species conservation -- generated in the page from the
 payload already loaded and handed to the browser as a `Blob`, so nothing is fetched and no sidecar is
-produced. A sandboxed frame may withhold downloads entirely (a Quilt iframe without
-`allow-downloads` does), so the same bytes sit in a text box above the button, `Select all text`
-selects them, and a refused download says so rather than doing nothing.
+produced. A sandboxed frame may withhold downloads entirely (a Quilt iframe without `allow-downloads`
+does), and **nothing in the page can see that**: the embedder refuses the synthetic `a.click()` itself,
+with no exception, no callback and nothing observable, so a fallback conditional on catching the refusal
+never runs and the reader was told the file had been written. The claim is therefore not made. The same
+bytes sit in a text box above the button on **every** export, one keystroke from the data, and the note
+says both outcomes rather than picking one. "Download refused by this viewer" survives only in the branch
+where a refusal really was observed -- a throw out of `Blob` or `createObjectURL`.
 
 The `status` column is the reader's **live** status, so the file opens with `#`-prefixed, tab-delimited
 `key=value` comment lines saying which thresholds produced it. Without them the export was a table of
@@ -304,21 +380,101 @@ _filtered_ view, so the bounds decide which guides are in the file. The comment 
 the two kinds of provenance are not confused. The columns and their order are unchanged, and are frozen
 in the parity harness.
 
+## The candidate map re-colours with the reader
+
+The design map's backdrop -- axes, gridlines, the CDS/UTR region bar -- is drawn in Python, because one
+function draws both a notebook figure and this card. Its **points and its legend are not**: they used to
+be, and a threshold a reader moves cannot reach into a server-rendered SVG. Setting `gc_content_min` to 60
+on one internal run made the live counts 23 pass / 16 warn / 4,961 fail while the legend still read
+`PASS, all gates evaluated (394)`, byte-identical, over 394 green dots -- this report's own failure mode,
+in the largest visual on the page.
+
+So the windows ride as numbers with the guide behind each one, and both the dots and the legend are
+painted from each guide's live gate table, in draw order, with a class carrying no window on the current
+transcript omitted rather than offered as a class the reader failed to find. A window whose guide the cap
+dropped has no live verdict to read, so it keeps its own key and says whose verdict that colour is. When
+any threshold has moved the legend stamps itself -- "Re-coloured at your thresholds" -- and says that no
+colour or count beside it is the run's own. The isoform picker is ordered canonical-first (by length after
+that), since window count is the wrong first key: it opened one report on a 7,988 nt transcript with the
+canonical one tenth in the list. Canonical status comes from the transcript FASTA the run writes and is
+**unknown**, never `false`, when the run recorded none. A reader who picks an isoform keeps it: the
+selection following each new guide to an isoform that carried it silently re-pointed the map away from the
+transcript they had chosen, so a pinned isoform stays, the note says the selection is not enumerated
+there, and leaving it is a button.
+
+## The page as a document, and the index as a control
+
+The two panes size themselves. `main{height:calc(100vh - 86px)}` was arithmetic on a header the stylesheet
+cannot see -- it renders 129.5px on one internal run and grows with the gene query, the provenance line,
+the cap statement and the off-target scope -- so the panes ran 43.5px past the fold, the document itself
+became scrollable and each pane then had a scrollbar inside a page that already had one. Nothing holds a
+copy of that number now: the header takes its own height, the panes take what is left, and
+`grid-template-rows:minmax(0,1fr)` is the other half of it, because an auto row sizes to its content and a
+5,000-row pane would overflow the box it was told to fit. A narrow window stacks the panes rather than
+overflowing a 430px minimum inside a 40% track, and **printing** is a supported view rather than an
+accident: the nesting becomes ordinary flow, the controls are dropped -- a slider printed at some position
+invites a reader to believe it -- and a print-only line says that every verdict on the paper is the one in
+force when it was printed, and that the index printed the rows that were drawn.
+
+The index is a control, not a table. Six columns sort, from the keyboard as well as the pointer, and say
+which way in the accessibility tree (`aria-sort`) and in a glyph; rows and pick cells answer Enter and
+Space; the arrows walk the index; and focus survives the rebuild a keypress itself causes, matched by guide
+rather than by row position. The seventh column is the blank pick header, and it used to carry the same
+sort handler as the six real ones -- clicking it set the sort key to `undefined`, every row's key became 0
+and the sort was silently destroyed.
+
+It also draws a **window** of `INDEX_DRAW_MAX` (400) rows in the current sort rather than every matching
+row. A threshold keystroke cost 148 ms at the audited scale, almost all of it building 5,000 rows of seven
+cells and wiring 5,000 click handlers; the guide's index is stashed once, the handlers are delegated to the
+`tbody`, and the keystroke path measures 19 ms against 61 ms for the old index build alone. This is not
+virtualisation and does not pretend to be: the last row of the table says how many rows matched and says
+that the counts, the cart, `Add top <n>` and the export are computed over every one of them. A reader who
+wants row 3,000 sorts or filters to it. For the same reason the detail pane says where the open guide sits
+relative to the index beside it -- a full guide, every card real, next to an index reading "0 of 5,000" is
+a screen whose honest reading is that the index is broken -- and names which of the thresholds or the
+search box excluded it.
+
+`Add top <n>` is a labelled number box of its own, read through the same boundary as every threshold. It
+shipped **inside** its own button: invalid markup that read that way, with the accessible name "Add top to
+cart" and the value nowhere in it, a click in the field landing on the button until a handler guessed
+otherwise, and `parseInt('ten',10)||0` adding the top zero guides so junk looked like a broken button.
+Asking for more than the filters admit is not an error, and it now says what it did.
+
 ## Size, and the one figure
 
 The tracked `baseline_0_7_1` fixture slice -- 292 candidate rows, 28 guides, 2,173 classified
-alignments and 268 miRNA seed hits -- renders to **554,923 bytes** (542 KiB), of which markup, CSS and
-script are under 0.5 MB in total and effectively constant. That figure moves with the template rather
-than with the run: it was 519,084 bytes before the reader filters, the threshold-provenance banner, the
-refusal painting and the cart's comment header were added, none of which scale with the number of
-candidates. A full internal reference run of tens of
+alignments and 268 miRNA seed hits -- renders through `sirnaforge report` to **585,987 bytes** (572 KiB),
+of which markup, CSS and script are under 0.5 MB in total and effectively constant. That figure moves
+with the template rather than with the run: it was 519,084 bytes before the reader filters, the
+threshold-provenance banner, the refusal painting and the cart's comment header were added, and 554,923
+bytes before the reader-facing repairs described above -- the cap statement, the client-painted
+map legend and pills, the ranked gate panel, the per-species liability cell, the two `@media` blocks and
+the index's own controls -- none of which scale with the number of candidates. A full internal reference run of tens of
 thousands of candidate rows lands near 15 MB; the growth is candidate rows, embedded off-target
 evidence at `human, nm<=2`, miRNA seed hits and the count matrix. Two decisions keep it that small:
 the filter descriptors are emitted **once** and each guide carries only `[value, verdict, reason]`
 codes against them, and row-level detail is embedded only for liability alignments within the embedded
 scope. Everything outside that scope is still counted completely, and a guide whose only hits lie
-outside it says so rather than rendering like a genuinely clean one. The index itself caps at
-`MAX_INDEX_GUIDES` (5,000) guides, reported in the header so the cap is never silent.
+outside it says so rather than rendering like a genuinely clean one.
+
+The **size** of that scope is a run-level fact and is stated as one, in the header, with the arithmetic
+that closes it and the breakdown by mismatch count and by species. It has to be, because a per-guide
+banner is worthless once it is universal: 197,727 of one run's 232,864 liability alignments sit at
+`nm >= 3`, so 4,616 of 5,000 guides raised "not clean, but nothing in the embedded scope" and a reader
+learned to skip it. The per-guide banner is kept only for the case that could change a decision -- a guide
+nothing here rejects, carrying liability this file cannot itemise -- and a guide already being rejected has
+the same fact stated plainly instead.
+
+The one cap on how many guides a report holds is `DEFAULT_MAX_EMBEDDED_GUIDES` (5,000), and it lives in
+`build_payload` **above** every count the report prints: `guides` is what the file holds, and
+`guides_total`, `guides_dropped` and `guides_dropped_by_status` say what the cap cost. When it bites, the
+header states it -- how many guides are missing, the limit that dropped them, the breakdown by verdict
+with its zeros, and how many of the dropped were not rejections -- so no number on the page describes a
+set the file does not contain. The dropped set is chosen by verdict, worst first, never by truncating a
+score sort. Separately and for a different reason, the index **draws** a window of `INDEX_DRAW_MAX` (400)
+rows in the current sort: the last row of the table says how many rows matched and says that the pills,
+the agreement line, the cart, `Add top <n>` and the export are all computed over every one of them, not
+over the window. Neither number is silent, and they are not the same number.
 
 The single figure is a hand-drawn inline SVG. `plotly` was adopted, implemented and then removed: its
 4.29 MB bundle carries external URLs and browser-storage references in map traces the report never

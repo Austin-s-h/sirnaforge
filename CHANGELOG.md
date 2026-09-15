@@ -154,7 +154,7 @@ where the two defects removed here were first written down as outstanding.)
   themselves are unchanged and no better calibrated than before. The contract governs which claims a
   run may publish; it does not make the screen more sensitive, and a required unit that no reference
   exists for still cannot be screened, only reported honestly as unscreened. It is also not a
-  guarantee about the *legacy* `candidates_pass.csv`/`.fasta` pair, which by design still lists every
+  guarantee about the _legacy_ `candidates_pass.csv`/`.fasta` pair, which by design still lists every
   gate-passing guide and labels its selection state rather than narrowing to it (see the entry under
   **Fixed**). Per-species miRNA completion, and a batch roll-up that distinguishes `censored` from
   `complete`, remain outstanding — both under **Known limitations**.
@@ -881,6 +881,106 @@ where the two defects removed here were first written down as outstanding.)
   the fabricated-evidence direction, produced by the report rather than the pipeline. `_evaluate` now
   reads the run's own `<filter_id>_verdict` first and returns `unknown` when the run did: re-thresholding
   moves a ceiling, it cannot conjure the measurement.
+- **A browser pass over a rendered report found a defect in every layer of it** (#103). All of these were
+  reproduced by driving the file itself over localhost -- not by reading source -- on one internal run of
+  5,706 guides and 232,864 liability alignments, and every number below is measured rather than reasoned
+  about. Payload schema **1.1.0 → 1.2.0**; `render.MAX_INDEX_GUIDES` is deleted.
+  - **The report advertised guides it did not contain.** The 5,000-guide cap lived in the renderer, below
+    every count the payload published, so one report headlined 5,706 guides, pill-counted
+    448/976/0/4,282 and embedded 448/935/0/3,617 — and claimed "0 contradictions over 1,424 run PASSes"
+    while holding 1,383 of them. The 706 it dropped included 41 pass-warned guides: shippable candidates
+    that could not be searched, carted or exported, with nothing on screen saying so. The cap is now
+    `DEFAULT_MAX_EMBEDDED_GUIDES` in `build_payload`, **above** the counts, which therefore cannot
+    disagree with the guides again: `guides` is what the file holds, `guides_total`, `guides_dropped` and
+    `guides_dropped_by_status` say what it cost, and the header states all of it — the missing count, the
+    limit, the breakdown by verdict including its zeros, and how many of the dropped were not rejections.
+    What gets dropped is chosen by verdict, worst first, because a `fail` is the only kind whose absence
+    costs a reader nothing they could act on; `max_guides=None` embeds the run whole.
+  - **Slider domains were unsnapped, negative and sometimes locked, and the box and slider could hold two
+    different thresholds.** Padding observed values by 5% published "at most -59 off-targets" and a GC
+    floor of 27.804348 against a step of 0.1, so 40 was unreachable and 39.704348 is what reached the URL
+    and the cart TSV. Bounds are snapped to the step and clamped to the range the setting's own field
+    declares — read off `FilterCriteria`/`OffTargetFilterCriteria`, not a hand-written table — which also
+    unlocks `min_empirical_score` onto 0.4–0.6, the two thresholds that answer whether the gate does
+    anything. The domain is deliberately not widened to whatever the box can hold, so a threshold outside
+    it leaves the slider **disabled and saying so** rather than pinned at its own edge, where one touch
+    used to drop a typed 90 to 76.104348 without the reader asking.
+  - **Seventeen equal-looking sliders said nothing about which did the work.** Five of the seventeen
+    rejected anything at all, two accounted for 1,765 rejections, and two could not reject anybody. Every
+    filter now carries `rejects`, `sole_rejects`, `warns`, `unknowns` and an `inert` determination with
+    its reason, and the panel is ranked by the guides each gate is solely responsible for rejecting, with
+    the ones that decided nothing folded behind a summary and labelled "inert in this run".
+  - **Liability was one cross-species number that decides rejections.** Roughly half of every headline
+    total is non-human (92,658 human against 91,536 mouse, 25,243 macaque, 23,427 rat), and the
+    all-species `max_off_target_count` rejected 3,317 guides, 782 on nothing else, of which 458 pass the
+    same ceiling on human liabilities alone — against 448 total passes. Per-guide `liability_by_species`
+    and run-wide `liability_rows_by_species` are published beside the all-species count, which stays; the
+    index cell shows the split, and one selector re-scopes the column, its sort and the liability bound
+    together. It re-scopes a question, never a verdict: a per-species gate would be the report deciding
+    something the run did not.
+  - **The design map was the last thing on the page still frozen at the run's thresholds.** With
+    `gc_content_min` at 60 the live counts read 23 pass / 16 warn / 4,961 fail while the legend still read
+    `PASS, all gates evaluated (394)`, byte-identical, over 394 green dots. The backdrop stays
+    server-side, but the windows now ride as numbers with the guide behind each one and both the dots and
+    the legend are painted from each guide's live gate table; the legend stamps itself when a threshold
+    has moved. `MAPS[t].legend` and `MAPS[t].note` had already outlived the Python that built them and
+    were reaching the browser as `undefined`. The isoform picker is ordered canonical-first rather than by
+    window count, which opened one report on a 7,988 nt transcript with the canonical one tenth in the
+    list, and a pinned isoform is no longer re-pointed by the next selection.
+  - **A warning on 92% of guides is not a warning.** 197,727 of the run's 232,864 liability alignments sit
+    at `nm >= 3`, outside the embedded `human, nm<=2` scope, so 4,616 of 5,000 guides raised the "nothing
+    in the embedded scope" banner. The size of the scope is a run-level fact and is now stated as one, in
+    the header, with the arithmetic that closes it; the per-guide banner is kept only where it could change
+    a decision.
+  - **Both refusal banners were unreachable.** `#refused` and `#badnum` live inside the thresholds
+    `<details>`, which ships closed, so a fragment naming an unknown gate set the banner's text, cleared
+    its `display`, and `checkVisibility()` was still false — `elementFromPoint` at the banner's own box
+    returned the index's table header in front of it. Anything that has to be seen now opens the panel: a
+    refused name, a refused keystroke, or a fragment that set any control at all.
+  - **Half the visible state never reached the URL, and every keystroke cost a history entry.** `q=`, `s=`,
+    `c=` and `k=` join `g=`, `t=`, `r=`, `sp=` and `preset=`, each omitted at its default so `Reset` leaves
+    an empty fragment; the default status set hides every fail and unknown row — 3,617 of them — so a URL
+    used to carry the verdicts without the rows it was chosen to show, and the search box never wrote to
+    the fragment at all. `syncHash` uses `replaceState` instead of `location.hash =`, which is a
+    navigation, and a `hashchange` listener makes Back, Forward, an edited address bar and a pasted link
+    all reach the code a fresh load runs. The cart travels as guide sequences, never indices, capped at
+    500 with the shortfall stated on screen: browser storage is not an option, and the sandbox the report
+    is read in withholds same-origin anyway.
+  - **The page did not fit its window and could not be printed.** `main{height:calc(100vh - 86px)}` was
+    arithmetic on a header that measures 129.5px, so the panes ran 43.5px past the fold and each grew a
+    scrollbar inside a page that already had one; nothing holds a copy of that number now. There was no
+    `@media` rule of any kind, so printing gave the header and the top of two clipped panes: on paper the
+    nesting becomes ordinary flow, the controls are dropped because a slider printed at some position
+    invites a reader to believe it, and a print-only line says so.
+  - **The index could not be operated without a pointer, and cost 148 ms a keystroke.** Seven
+    `<th onclick>` with the default tabIndex and `aria-sort` unset meant the sort was unreachable from a
+    keyboard and invisible once reached — and the blank pick header carried the same handler, so clicking
+    it set the sort key to `undefined` and silently destroyed the sort. Six columns are now controls that
+    say which way they sort, rows and pick cells answer Enter and Space, and focus survives the rebuild the
+    keypress causes, matched by guide rather than row position. Every keystroke also rebuilt 5,000 rows of
+    seven cells, scanned the array for each row's index and assigned 5,000 handlers; the index is stashed
+    once, handlers are delegated to the `tbody`, and the rows are drawn as a window of the first 400 in the
+    current sort — 19 ms against 61 ms for the old index build alone. It is not virtualisation and does not
+    claim to be: the last row says how many rows matched and that the pills, the cart, `Add top <n>` and
+    the export are computed over all of them. The detail pane likewise says where the open guide sits, since
+    a full guide beside an index reading "0 of 5,000" reads as a broken index.
+  - **The top-N count box shipped inside its own button**, which is invalid markup and read that way: the
+    accessible name was "Add top to cart" with the value nowhere in it, a click in the field was a click
+    on the button, and `parseInt('ten',10)||0` added the top zero guides. It is a labelled control read
+    through the same boundary as every threshold, refused where it was typed.
+  - **The export claimed a write it could not see.** In an iframe without `allow-downloads` — the Quilt
+    case — the embedder refuses the synthetic `a.click()` itself, with no exception and nothing observable,
+    so the fallback never ran and the reader was told the file had been written. The claim is no longer
+    made: the bytes sit in a text box on every export and the note states both outcomes, with "download
+    refused by this viewer" surviving only where a refusal really was observed.
+
+  Cart persistence outside the URL is **not** solved: `localStorage` is unavailable in the sandbox the
+  report is read in and forbidden by the zero-external-reach constraint the whole file is built on, so the
+  fragment is the only place it can live and the 500-guide cap is the cost, stated on screen rather than
+  designed away. Per-species re-thresholding is not built either, for the reason given above.
+  `test_the_report_reaches_nothing_outside_itself` still passes: everything here is data computed in Python
+  and read in-page.
+
 - **An unresolvable orthologue lookup published `conservation_score = 0.0`, never null** (#101).
   `conservation_score` is (non-query species with an ortholog hit) / (non-query species screened), and
   a species whose Compara lookup never completed cannot contribute to that numerator — so every run
@@ -1104,12 +1204,12 @@ docs` exits 0 with warnings still treated as errors", could not be demonstrated 
 
 ### Known limitations
 
-- **miRNA *hit counts* are run-level, even though miRNA *completion* is now per species** (#100). The
+- **miRNA _hit counts_ are run-level, even though miRNA _completion_ is now per species** (#100). The
   earlier version of this note said there was no per-species miRNA evidence to have; that is no longer
   true. `run_mirna_seed_analysis` resolves one database per species and now publishes a
   `mirna_seed_<species>_evidence.json` envelope for each, so a species whose database cannot be
   resolved is reported `failed` by name and `combined_mirna_summary.json` separates
-  `species_screened` from `unscreened_species`. What stays run-level is the *table*: the scan is one
+  `species_screened` from `unscreened_species`. What stays run-level is the _table_: the scan is one
   batch over every submitted guide and `total_hits`/`filtered_hits_per_species` are counted over the
   batch, so a per-candidate miRNA count for one species is not something the summary can be asked for.
 - **The miRNA batch roll-up cannot say `censored`** (#100). `MiRNASummary.evidence_status` is derived

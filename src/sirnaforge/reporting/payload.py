@@ -67,8 +67,8 @@ LIABILITY = frozenset({HitClass.OFF_TARGET, HitClass.UNDETERMINED})
 #: pill-counted 5,706 and embedded 5,000 -- and the 706 it silently dropped included 41 guides a reader
 #: could have shipped. Set ``max_guides=None`` to embed the run whole.
 #:
-#: Kept equal to ``render.MAX_INDEX_GUIDES``, whose slice is now a no-op over this list. That slice has
-#: to go: while it stands, ``max_guides=None`` is silently truncated again downstream and the counts
+#: This is the only cap on how many guides a report holds. The renderer's own slice over this list is
+#: gone: while it stood, ``max_guides=None`` was silently truncated again downstream and the counts
 #: published here would over-count the guides the file holds -- the very defect this cap moved to fix.
 DEFAULT_MAX_EMBEDDED_GUIDES = 5000
 
