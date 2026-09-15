@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **The asymmetry floor could be loosened but never opened** (#101). `min_asymmetry_score` was bounded
+  `ge=0.3` on the model and `min=0.3` on both CLI options, so no caller could set a floor every candidate
+  satisfies. The bound was harder to defend than the number it bounds: this gate's own declared definition
+  says the floor has never been validated against measured knockdown while deciding more of the design
+  space than any other single number, which is exactly why its action is `warn`. A second uncalibrated
+  number forbidding a caller from reaching 0 is the same unearned claim one level up. Now `ge=0`.
+  A floor of 0 is **not** the same run as `--filter-action min_asymmetry_score=off`, and both are
+  reachable: `off` stops the gate being applied, so the manifest records a gate nothing evaluated, while a
+  floor of 0 keeps it declared, applied and reporting `asymmetry_score` on every row. Before this, the
+  second run could not be expressed at all. No default moves — the shipped floor is unchanged.
+
 Scoring transparency release. The composite score applied **two hidden normalisations**, so no
 declared weight was the weight that actually applied: the scorer divided the weight vector by its own
 sum over whichever terms happened to be populated (doubling every design-stage weight), and miRNA mode

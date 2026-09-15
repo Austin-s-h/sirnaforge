@@ -119,14 +119,29 @@ class FilterCriteria(BaseModel):
     # Thermodynamic asymmetry filters
     min_asymmetry_score: float = Field(
         default=DEFAULT_MIN_ASYMMETRY_SCORE,
-        ge=0.3,
+        ge=0,
         le=1,
         description=(
             "Minimum thermodynamic asymmetry score for guide strand selection into RISC. "
             "Applied to SiRNACandidate.asymmetry_score. "
-            "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading."
+            "Higher values (0.65-0.85) promote correct 5' end instability for effective strand loading. "
+            "A floor of 0 admits every candidate while the gate keeps reporting its observed value."
         ),
     )
+    """The lower bound was ``0.3``, which let the floor be loosened but never lowered to admit
+    everything (#101).
+
+    The bound is harder to defend than the number it bounds. This gate's own declared definition says
+    the floor "has never been validated against measured knockdown" while deciding more of the design
+    space than any other single number, which is why its action is ``warn``. A second uncalibrated
+    number forbidding callers from reaching 0 is the same unearned claim one level up.
+
+    ``--filter-action min_asymmetry_score=off`` was always the other route, and it is not the same
+    thing: ``off`` stops the gate being applied at all, and the manifest then records a gate nothing
+    evaluated. A floor of 0 keeps the gate declared, applied and reporting ``asymmetry_score`` on
+    every row, and admits everything because every score satisfies it. Those are different runs and a
+    caller is entitled to either.
+    """
 
     # Empirical (simplified Reynolds) design-rule filter. Since issue #96 the empirical score is
     # gate-only: it is computed and reported, and this threshold is the only thing that reads it.

@@ -1248,12 +1248,13 @@ def workflow(  # noqa: PLR0912
     min_asymmetry: float | None = typer.Option(
         None,
         "--min-asymmetry",
-        min=0.3,
+        min=0.0,
         max=1.0,
         help=(
             f"Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: "
             f"{default_for('min_asymmetry_score')}). The default has not been calibrated against "
-            "measured potency; lower it to widen the candidate pool."
+            "measured potency; lower it to widen the candidate pool, or set 0 to admit every "
+            "candidate while still reporting the score."
         ),
     ),
     max_paired_fraction: float | None = typer.Option(
