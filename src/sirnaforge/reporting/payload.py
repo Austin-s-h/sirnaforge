@@ -249,9 +249,10 @@ def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
     number the pipeline itself compared. It is the answer for the gates that read human-stratified
     counters: 0.7.1 does not export ``transcriptome_hits_1mm_human`` under that name (#101), but it
     does export ``max_transcriptome_hits_1mm_observed``, and on a four-species internal run the
-    observed column reproduces each gate's own verdict on 100% of 40,081 rows while the all-species
-    column disagrees -- 17,600 hits against 63,801. Reading the descriptor's column instead would let
-    the report contradict the run using a counter with a wider scope than the gate's.
+    observed column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named
+    all-species column disagrees -- 17,600 hits against 63,801. Same-named is the argument: the column
+    bearing the descriptor's own name holds a wider-scoped quantity than the gate compared, so reading
+    it instead would let the report contradict the run while looking like it agreed.
 
     ``populated`` must hold only columns that carry at least one value. A column present but empty
     for every row is the shape a gate takes when the run never recorded its verdict, and preferring
