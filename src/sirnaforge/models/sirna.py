@@ -27,9 +27,7 @@ class SelectionState(str, Enum):
 
     Distinct from ``passes_filters``, which only answers whether a gate rejected the candidate:
     a candidate can pass every gate it was subject to and still not be exportable as a *result*,
-    because the evidence behind those gates was never completed rather than adverse. Before this
-    enum existed, three of these four non-default spellings were private literals in workflow.py
-    and nothing validated any of them against ``SiRNACandidate.selection_state``.
+    because the evidence behind those gates was never completed rather than adverse.
 
     Attributes:
         ELIGIBLE: Every gate the run required was decided, and none rejected the candidate.
@@ -70,26 +68,21 @@ DEFAULT_MIN_ASYMMETRY_SCORE = 0.65
 # (it contradicted the A/U-at-position-1 biogenesis rule), leaving {0.4, 0.5, 0.6}.
 EMPIRICAL_SCORE_MIN = 0.4
 EMPIRICAL_SCORE_MAX = 0.6
-# Default 0.4 == EMPIRICAL_SCORE_MIN, i.e. the gate is inert by default.
-# It was 0.5, which after the position-1 clause was deleted rejected every candidate carrying C at
-# guide position 19 -- a 12.9% cut of the passing pool on a reference TP53 run (264 -> 230). Measured
-# against 2,816 siRNAs with knockdown data that rule is BACKWARDS: C at guide position 19 associates
-# with MORE knockdown (mean inhibition 0.735 vs 0.668, p = 2.4e-13), and the A/U preference the
-# rubric rewards there associates with LESS (0.650 vs 0.719, p = 3.7e-17).
-# The cause is a strand error. Reynolds' criteria are numbered on the SENSE strand, so they land on
-# the guide 5' end, not the guide 3' end: A/U count at guide positions 1-5 tracks efficacy at
-# rho +0.378 (monotonic, 0.455 -> 0.849), while at positions 17-21 it is null (rho -0.017, p = 0.37).
-# Raise this only once the rubric is scored at the end of the guide that carries the signal.
+# Default 0.4 == EMPIRICAL_SCORE_MIN, i.e. the gate is inert by default. Reynolds' criteria are
+# numbered on the SENSE strand, so they land on the guide 5' end, not the 3' end the rubric is
+# meant to grade: on 2,816 siRNAs with measured knockdown, A/U at guide positions 1-5 tracks
+# efficacy (rho +0.378), while at positions 17-21 -- where this rubric actually scores -- it is
+# null (rho -0.017, p = 0.37). C at guide position 19 in fact associates with MORE knockdown
+# (0.735 vs 0.668, p = 2.4e-13), the opposite of what the rubric rewards there. Raise this only
+# once the rubric is rescored at the guide end that carries the signal.
 DEFAULT_MIN_EMPIRICAL_SCORE = 0.4
 
-# Every scored term name, in reporting order. This is a *union* over the named weight vectors
-# below, used for column ordering and for iterating contributions -- it is NOT a weight vector
-# and nothing validates against it. Each vector validates against its own TERM_NAMES, because
-# the three vectors score different terms (3, 4 and 7 of them) and a single global tuple used to
-# make a missing term look like a licence to renormalise -- which is no longer permitted anywhere.
-# `pos1_mismatch` is absent: issue #102 removed it from the only vector that held it, so no vector
-# scores it and `score_pos1_mismatch` -- a *contribution* column -- is now always null. The pairing
-# state itself is still reported, on `guide_pos1_base` and `pos1_pairing_state`.
+# Every scored term name, in reporting order: a *union* over the three weight vectors below, for
+# column ordering only -- it is NOT a weight vector and nothing validates against it. Each vector
+# validates against its own TERM_NAMES (3, 4 and 7 terms respectively), so a missing term cannot
+# be silently renormalised. `pos1_mismatch` is absent -- see PostScreenMiRNAWeights -- so
+# `score_pos1_mismatch` is always null; `guide_pos1_base`/`pos1_pairing_state` still report the
+# pairing state.
 COMPOSITE_TERM_NAMES = (
     "off_target",
     "target_accessibility",
@@ -155,19 +148,10 @@ class FilterCriteria(BaseModel):
             "A floor of 0 admits every candidate while the gate keeps reporting its observed value."
         ),
     )
-    """The lower bound was ``0.3``, which let the floor be loosened but never lowered to admit
-    everything (#101).
-
-    The bound is harder to defend than the number it bounds. This gate's own declared definition says
-    the floor "has never been validated against measured knockdown" while deciding more of the design
-    space than any other single number, which is why its action is ``warn``. A second uncalibrated
-    number forbidding callers from reaching 0 is the same unearned claim one level up.
-
-    ``--filter-action min_asymmetry_score=off`` was always the other route, and it is not the same
-    thing: ``off`` stops the gate being applied at all, and the manifest then records a gate nothing
-    evaluated. A floor of 0 keeps the gate declared, applied and reporting ``asymmetry_score`` on
-    every row, and admits everything because every score satisfies it. Those are different runs and a
-    caller is entitled to either.
+    """Floor is 0, not e.g. 0.3 (#101): a second uncalibrated number above 0 would forbid what the
+    field description above already permits. ``--filter-action min_asymmetry_score=off`` is not
+    equivalent: ``off`` disables the gate (manifest records nothing evaluated), while floor=0 keeps
+    it declared, applied and reporting ``asymmetry_score`` on every row.
     """
 
     # Empirical (simplified Reynolds) design-rule filter. Since issue #96 the empirical score is
@@ -348,12 +332,8 @@ class WeightVector(BaseModel):
 class DesignWeights(WeightVector):
     """The pre-production design-stage vector over the three terms computable before screening.
 
-    ``design_score`` is NOT comparable with ``composite_score``: it is a different vector over a
-    different term set. It is **not** systematically the larger of the two, and issue #102 deleted
-    that claim -- the two vectors weight their shared terms differently, so which is higher depends
-    on the candidate. All features at 0.5 with ``off_target = 1.0`` gives the design vector 50.0
-    against the siRNA post-screen vector's 62.5. Compare neither to the other; compare each within
-    its stage.
+    Not comparable with the post-screen vectors below -- different term set, different weights on
+    shared terms -- see the comparability note on ``SiRNACandidate.design_score``/``composite_score``.
     """
 
     VECTOR_NAME: ClassVar[str] = "design_preproduction_v1"
@@ -384,16 +364,14 @@ class DesignWeights(WeightVector):
 
 
 class PostScreenSiRNAWeights(WeightVector):
-    """The pre-production siRNA post-screen vector: design terms plus ``off_target``.
+    """The active pre-production siRNA post-screen vector: design terms plus ``off_target``.
 
-    This is the active pre-production default selected after the OligoGym panel investigation.
-    ``off_target`` remains fixed at 0.25 as a specificity policy term while the efficacy allocation
-    gives more weight to asymmetry and GC content. It is still experimental: the panel fit is small,
-    Martinelli is not target-identity-qualified, and no held-out replication has promoted it.
+    Experimental: the OligoGym panel fit is small, Martinelli is not target-identity-qualified, and
+    no held-out replication has promoted it. ``off_target`` is fixed at 0.25 as a specificity policy
+    term; the remaining budget favours asymmetry and GC content over accessibility.
 
-    The vector name is intentionally no longer ``legacy`` or ``current``. A vector name identifies
-    the exact terms and numbers stamped onto candidate rows; the enclosing scoring profile explains
-    which set of vectors is active for this pre-production build.
+    Named for its exact terms/numbers, not ``legacy``/``current`` -- the enclosing scoring profile,
+    not the vector name, says which vectors are active for a given build.
     """
 
     VECTOR_NAME: ClassVar[str] = "postscreen_sirna_preproduction_v1"
@@ -419,28 +397,20 @@ class PostScreenSiRNAWeights(WeightVector):
 class PostScreenMiRNAWeights(WeightVector):
     """The pre-production miRNA-biogenesis-aware post-screen vector, with 6 declared terms.
 
-    Hand-authored, not derived from the siRNA pre-production vector: deriving it by scaling would be the
-    1.25 divisor in a new costume. The biogenesis terms replaced an undeclared bonus that was folded
-    into the score and then divided out of it, so ``--design-mode mirna`` used to move every weight
-    by a factor absent from the manifest.
+    Hand-authored, not derived from the siRNA post-screen vector by scaling. The shared terms are
+    exactly ``0.80 x postscreen_sirna_preproduction_v1`` (0.20 / 0.08 / 0.24 / 0.28); ``ago_start``
+    and ``supp_13_16`` hold 0.10 each, so the biogenesis budget is 0.20 and the shared budget 0.80.
 
-    Issue #102 removed ``pos1_mismatch``, which held 0.05 here while being **exactly constant at
-    0.0** -- one distinct value over all 13,415 scored candidates of the public baseline, 0.000% of
-    variance. It is constant by construction, not by accident: the passenger is the exact reverse
-    complement of the guide, so guide position 1 always forms a Watson-Crick pair. A term that ranks
-    nothing must not consume weight. ``biogenesis_features`` still computes it and the miRNA design
-    path still writes it to ``component_scores``, and the pairing state stays on the row as
-    ``guide_pos1_base`` and ``pos1_pairing_state``, so a run stays auditable and the term can return
-    if the designer ever builds deliberately mismatched passengers. Its *contribution* column
-    ``score_pos1_mismatch`` is now always null, because no vector scores it; see
-    ``models/scoring_profile.py``.
+    ``pos1_mismatch`` (removed, issue #102) held 0.05 while scoring **exactly 0.0** for every one of
+    13,415 candidates in the public baseline (0.000% of variance): the passenger is the exact
+    reverse complement of the guide, so guide position 1 always Watson-Crick pairs, and a term that
+    ranks nothing must not consume weight. ``biogenesis_features`` still computes it and the row
+    still carries the pairing state (``guide_pos1_base``/``pos1_pairing_state``), so the term can
+    return if the designer ever builds deliberately mismatched passengers; its now-null contribution
+    column is ``score_pos1_mismatch``.
 
-    The shared terms remain exactly ``0.80 x postscreen_sirna_preproduction_v1`` -- 0.20 / 0.08 /
-    0.24 / 0.28. ``ago_start`` and ``supp_13_16`` keep their declared 0.10 each, so the biogenesis
-    budget is 0.20 and the shared budget is 0.80.
-
-    Declared expert priors, reviewed and accepted, and **not fitted to any dataset**; a run scored
-    under different numbers is not comparable, so bump SCORING_WEIGHT_SET_VERSION if they change.
+    Declared expert priors, reviewed and accepted, **not fitted to any dataset**; bump
+    SCORING_WEIGHT_SET_VERSION if these numbers change.
     """
 
     VECTOR_NAME: ClassVar[str] = "postscreen_mirna_preproduction_v1"
@@ -590,10 +560,8 @@ class MiRNADesignConfig(BaseModel):
         default="MIRNA_SEED_7_8", description="Off-target analysis preset (seed-based matching)"
     )
 
-    # The miRNA-specific scoring weights live in PostScreenMiRNAWeights, not here. This config
-    # carries thresholds and format defaults only. `seed_clean_bonus` and
-    # `five_p_end_destabilization_bonus` used to be declared here and read nowhere in src/ --
-    # 0.25 of declared bonus weight that did nothing -- and were deleted in issue #96.
+    # The miRNA-specific scoring weights live in PostScreenMiRNAWeights, not here; this config
+    # carries thresholds and format defaults only (issue #96 removed two unused bonus fields).
 
     # Pri-miRNA hairpin validation (enabled only when hairpin context is provided)
     enable_pri_hairpin_validation: bool = Field(
@@ -615,9 +583,8 @@ class DesignParameters(BaseModel):
 
     # Basic parameters
     sirna_length: int = Field(default=21, ge=19, le=23, description="siRNA duplex length in nucleotides")
-    # None means report every ranked candidate. Kept as an optional int for backwards compatibility
-    # with callers that pass an explicit ceiling; every consumer slices with ``[: top_n]``, and
-    # ``list[:None]`` is a no-op, so None needs no special-casing downstream.
+    # None means report all: every consumer slices with ``[:top_n]``, and ``list[:None]`` is a
+    # no-op, so None needs no special-casing downstream.
     top_n: int | None = Field(
         default=None,
         ge=1,
@@ -647,10 +614,9 @@ class DesignParameters(BaseModel):
     )
 
     # Optional analysis parameters
-    # Defaults to False because nothing reads it. No gate, scorer or enumerator consults this flag,
-    # so a True default put "avoid_snps: true" in every manifest ever written for a run that did no
-    # such thing -- a claim about the run that was never true. It stays in the model as the switch a
-    # variant-aware enumerator would read; until then, off is the only honest default.
+    # No gate, scorer or enumerator reads this flag, so default False; True would put
+    # "avoid_snps: true" in the manifest for a run that did no such thing. Stays in the model as
+    # the switch a variant-aware enumerator would read.
     avoid_snps: bool = Field(
         default=False,
         description="Exclude regions with known SNPs. NOT IMPLEMENTED in 0.7.1: no code reads this flag",
@@ -735,10 +701,9 @@ class SiRNACandidate(BaseModel):
         ),
     )
 
-    # Target-site accessibility (RNAplfold on the transcript, all windows anchored on the site's
-    # 3' end, which is the end the guide seed pairs). None means it could not be computed, and
-    # since no weight is ever redistributed the candidate then carries no score at all -- the
-    # value is never substituted with a default.
+    # Target-site accessibility (RNAplfold on the transcript, windows anchored on the site's 3'
+    # end, the end the guide seed pairs). None means uncomputed; since weights are never
+    # redistributed, the candidate then carries no score at all rather than a substituted default.
     target_accessibility_p: float | None = Field(
         default=None,
         ge=0,
@@ -762,15 +727,12 @@ class SiRNACandidate(BaseModel):
     off_target_screened: bool = Field(
         default=False,
         description=(
-            "True once this candidate's screen produced usable evidence: it reached the aligner "
-            "and its query species was aligned. Distinguishes 'screened, no hits' from 'never "
-            "screened' -- both leave the hit counts below at 0. It does NOT promise every "
-            "requested species was aligned: an alignment for some OTHER species can fail while "
-            "this stays True, so the counts below are always a lower bound, never a guaranteed "
-            "total (offtarget_summary.filtering_stats.unscreened_species names the shortfall). "
-            "False means the screen yielded no usable evidence for this candidate at all -- never "
-            "run, never submitted, or its query species never aligned -- in which case the counts "
-            "are unknown rather than zero, and any hits that were found are still reported."
+            "True once this candidate reached the aligner and its query species aligned -- "
+            "distinct from 'never screened' (both leave the hit counts below at 0). Not a promise "
+            "every requested species aligned: another species can fail while this stays True, so "
+            "the counts are a lower bound, not a total (see "
+            "offtarget_summary.filtering_stats.unscreened_species). False means no usable evidence "
+            "at all: counts are unknown, not zero, though any hits actually found are still reported."
         ),
     )
     off_target_count: int = Field(
@@ -783,16 +745,10 @@ class SiRNACandidate(BaseModel):
             "OffTargetFilterCriteria.max_off_target_count (default 15)"
         ),
     )
-    # Reporting only -- nothing scores or filters on this field, and its direction depends on
-    # which stage wrote it last, so do not compare values across candidates screened differently:
-    #   * design time (SiRNADesigner._calculate_off_target_score) writes an internal-repeat 7-mer
-    #     penalty, where HIGHER is worse;
-    #   * after screening, _integrate_offtarget_results overwrites it with the MAXIMUM
-    #     ``offtarget_score`` over the candidate's hits, where higher is SAFER -- 0.0 is reserved
-    #     for a full-length exact match (the highest-risk hit there is). Taking the max therefore
-    #     reports the candidate's *least* worrying hit, and since ``nm`` became a guide-level
-    #     distance the values got wider (a clipped minus-strand partial hit reports ~76-98 where
-    #     it used to report 0.0).
+    # Reporting only; direction depends on which stage wrote it last (see the field description) --
+    # design time: SiRNADesigner._calculate_off_target_score; post-screen: overwritten by
+    # _integrate_offtarget_results with the MAXIMUM offtarget_score over the candidate's hits, i.e.
+    # the candidate's *least* worrying hit.
     off_target_penalty: float = Field(
         default=0.0,
         ge=0,
@@ -812,9 +768,7 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_total: int = Field(
         default=0, ge=0, description="Total genuine off-target transcriptome hits (any mismatch count)"
     )
-    # The longest homopolymer run in the guide -- what max_poly_runs compares. Observed during
-    # enumeration and, like the six gate inputs below, previously left off the row, so that gate
-    # declared a column nothing carried.
+    # The longest homopolymer run in the guide -- what max_poly_runs compares.
     max_poly_run_length: int = Field(
         default=0, ge=0, description="Longest run of identical adjacent bases in the guide; gate input"
     )
@@ -823,11 +777,9 @@ class SiRNACandidate(BaseModel):
     )
     transcriptome_hits_1mm: int = Field(default=0, ge=0, description="1-mismatch subset of transcriptome_hits_total")
     transcriptome_hits_2mm: int = Field(default=0, ge=0, description="2-mismatch subset of transcriptome_hits_total")
-    # The numbers the mismatch GATES actually compare, as opposed to the all-species counters above.
-    # They existed only as locals at the gate site, so six of nine off-target gates declared a column
-    # the row did not carry and were published with `evidence_exported: false`: a client re-applying the
-    # descriptor read the all-species column instead and got a different answer from the run.
-    # Query species or unlabelled, which is the convention those gates count by (#101).
+    # Query-species-stratified counters the mismatch GATES actually compare, as opposed to the
+    # all-species counters above; query species or unlabelled is the convention those gates count
+    # by (#101).
     transcriptome_hits_0mm_query: int = Field(
         default=0, ge=0, description="Perfect-match liabilities in the query species (or unlabelled); gate input"
     )
@@ -837,13 +789,11 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_2mm_query: int = Field(
         default=0, ge=0, description="2-mismatch liabilities in the query species (or unlabelled); gate input"
     )
-    # The only counter that sees a PARTIAL hit whose seed paired perfectly. Because nm is a
-    # guide-level distance, a clipped or gapped hit (e.g. 6S15M/NM:i:0 on the minus strand, where
-    # the clip lands on guide positions 16-21 and leaves the seed intact) carries nm=6: it is
-    # counted here and in transcriptome_hits_total / off_target_count, but falls in NO mismatch
-    # stratum, so max_transcriptome_hits_{0,1,2}mm cannot gate it. Only
-    # max_transcriptome_seed_perfect (default None) and max_off_target_count (default 15) do.
-    # Unlike the _0mm/_1mm/_2mm counters this one is not split by species.
+    # The only counter that sees a PARTIAL hit whose seed paired perfectly: nm is a guide-level
+    # distance, so a clipped/gapped hit (e.g. 6S15M/NM:i:0, clip on positions 16-21, seed intact)
+    # carries nm=6 -- counted here and in transcriptome_hits_total/off_target_count but in NO
+    # mismatch stratum. Only max_transcriptome_seed_perfect (default None) and max_off_target_count
+    # (default 15) gate it. Not split by species, unlike the _0mm/_1mm/_2mm counters.
     transcriptome_hits_seed_0mm: int = Field(
         default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species"
     )
@@ -972,10 +922,9 @@ class SiRNACandidate(BaseModel):
     # Composite scoring. Two scores on two declared vectors, deliberately not one field:
     #   design_score    -- active pre-production design vector, 3 terms, available before screening
     #   composite_score -- active pre-production post-screen vector, available only after screening
-    # They are NOT comparable: different term sets, and the two vectors also weight their *shared*
-    # terms differently, so neither score is systematically the larger. Issue #102 deleted the claim
-    # that design_score is the more optimistic number -- 0.5 features with off_target = 1.0 give
-    # the design vector 50.0 against the siRNA post-screen vector's 62.5.
+    # NOT comparable: different term sets, weighted differently even on shared terms, so neither is
+    # systematically the larger (#102) -- all features at 0.5 with off_target=1.0 score 50.0 on the
+    # design vector vs 62.5 on the siRNA post-screen vector.
     component_scores: dict[str, float] = Field(default_factory=dict, description="Individual scoring component values")
     design_score: float | None = Field(
         default=None,
@@ -1064,16 +1013,15 @@ class SiRNACandidate(BaseModel):
         HIGH_RISK_MIRNA = "HIGH_RISK_MIRNA"
         TOTAL_OFFTARGETS = "TOTAL_OFFTARGETS"
 
-    # One verdict per declared filter, so a gate's outcome is not lost when another gate rejects the
-    # same candidate. `passes_filters` holds a SINGLE label and each gate overwrites it, so a label
-    # count was never a rejection count: on a 40,079-candidate run 14,266 candidates carrying an
-    # off-target label had already failed a design gate, and the design gates' own counts read 3x
-    # lower than the number of candidates they actually rejected.
+    # One verdict per declared filter so a gate's outcome survives another gate rejecting the same
+    # candidate: `passes_filters` holds a SINGLE overwritten label, so a label count is never a
+    # rejection count (on a 40,079-candidate run, 14,266 off-target-labelled candidates had already
+    # failed a design gate -- design gate counts read 3x low from that label alone).
     #
-    # These also carry the value each gate compared. That is not redundancy: six gates read
-    # human-stratified counters that exist only as locals at the gate site, and `max_poly_runs` reads
-    # a length that is not a candidate field at all, so for those filters the row cannot otherwise be
-    # used to check the verdict. `evidence_exported` on the descriptor says which ones those are.
+    # Also carries the value each gate compared, not redundantly: six gates read counters that exist
+    # only as locals at the gate site, and `max_poly_runs` reads a length not on the candidate at
+    # all, so only this pair of dicts lets a reader check those verdicts. `evidence_exported` on the
+    # descriptor says which filters those are.
     filter_verdicts: dict[str, str] = Field(
         default_factory=dict,
         description="filter_id -> FilterEvaluation value (pass/fail/unknown/not_evaluated)",
@@ -1162,12 +1110,8 @@ class SiRNACandidate(BaseModel):
     ) -> None:
         """Record one gate's own outcome, and reject only if that gate's action says to.
 
-        This is the split that makes ``FilterAction.WARN`` mean anything. Before it, a gate had
-        exactly one way to express a failure -- overwrite ``passes_filters`` -- so "record it, do not
-        reject" was unrepresentable and ``WARN`` sat in the vocabulary unapplied.
-
         ``passes_filters`` keeps first-failure-wins: it is a single label and the first FAIL-action
-        gate to reject a candidate owns it. That is now only a display choice, because every gate's
+        gate to reject a candidate owns it. That is only a display choice, because every gate's
         verdict survives in ``filter_verdicts`` regardless of which label won.
 
         Args:
@@ -1209,11 +1153,10 @@ class SiRNACandidate(BaseModel):
 def ranking_score(candidate: SiRNACandidate) -> float:
     """The number a candidate is currently ranked by.
 
-    ``composite_score`` when screening produced it, otherwise the design-stage ``design_score``.
-    The two are not comparable, so callers that may hold a mixture must keep them apart (see
-    SiRNAWorkflow._apply_post_screen_ranking); this helper only answers "which number does this
-    candidate have". An unscored candidate sorts last at 0.0 rather than raising: rejected
-    candidates and pre-designed guides legitimately have neither.
+    ``composite_score`` when screening produced it, else ``design_score`` (the two are not
+    comparable -- see ``SiRNACandidate.composite_score``; callers holding a mixture must keep them
+    apart, see ``SiRNAWorkflow._apply_post_screen_ranking``). An unscored candidate sorts last at
+    0.0 rather than raising: rejected candidates and pre-designed guides legitimately have neither.
     """
     if candidate.composite_score is not None:
         return candidate.composite_score
@@ -1299,8 +1242,8 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # Post-screen sub-scores
         "isoform_coverage": candidate.isoform_coverage,
         "conservation_score": candidate.conservation_score,
-        # Scoring. design_score and composite_score are different vectors over different term
-        # sets, so both are emitted and neither is filled in from the other.
+        # design_score and composite_score are different vectors (see SiRNACandidate); both
+        # emitted, neither backfills the other.
         "design_score": candidate.design_score,
         "composite_score": candidate.composite_score,
         "score_off_target": candidate.score_off_target,
@@ -1308,10 +1251,8 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "score_asymmetry": candidate.score_asymmetry,
         "score_gc_content": candidate.score_gc_content,
         "score_ago_start": _maybe_attr("score_ago_start"),
-        # score_pos1_mismatch is not exported: #102 removed pos1_mismatch from the only vector that
-        # held it, so the contribution is null for every candidate of every run. An always-null column
-        # is not neutral -- a reader who finds it in the header tries to use it. The field stays on the
-        # model for whichever vector scores the term next; re-add the column with that vector.
+        # score_pos1_mismatch is not exported: always null since #102 (see PostScreenMiRNAWeights),
+        # and an always-null column invites a reader to use it. Re-add once a vector scores the term.
         "score_supp_13_16": _maybe_attr("score_supp_13_16"),
         "empirical_score": cs.get("empirical"),
         "scored_after_screening": candidate.scored_after_screening,
@@ -1344,9 +1285,9 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         "allele_specific": _maybe_attr("allele_specific", False),
         "targeted_alleles": json.dumps(_maybe_attr("targeted_alleles", [])),
         "overlapped_variants": json.dumps(_maybe_attr("overlapped_variants", [])),
-        # Per-filter verdicts, appended last so every column above keeps its position and meaning.
-        # One pair per declared filter, always the same columns in the same order: a filter that did
-        # not run writes `not_evaluated` rather than a blank, because a blank cell is read as a verdict.
+        # Per-filter verdicts, appended last so earlier columns keep their position. One pair per
+        # declared filter in fixed order; a filter that did not run writes `not_evaluated`, not a
+        # blank (a blank cell reads as a verdict).
         **{f"{filter_id}_verdict": verdicts.get(filter_id, _NOT_EVALUATED) for filter_id in DECLARED_FILTER_IDS},
         **{f"{filter_id}_observed": observed.get(filter_id) for filter_id in DECLARED_FILTER_IDS},
     }
@@ -1412,7 +1353,7 @@ class DesignResult(BaseModel):
         # Note: do not append design parameters as per-row columns to the candidates CSV.
         # Full design parameters are available in workflow metadata (`workflow_summary.json`).
 
-        # Save validated DataFrame (with appended params if available)
+        # Save validated DataFrame
         validated_df.to_csv(filepath, index=False)
 
         return validated_df
