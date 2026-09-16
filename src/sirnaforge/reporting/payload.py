@@ -1,14 +1,14 @@
 """Build the report payload from a finished run directory.
 
-Issue #103. This module reads ``candidates_all.csv``, the aggregated hit tables and ``manifest.json``
-and returns a typed payload. It performs **no** alignment, folding, network access or classification:
-``hit_class`` is read from the table the run published, so the report can never disagree with the run.
+Reads ``candidates_all.csv``, the aggregated hit tables and ``manifest.json`` into a typed payload.
+Performs **no** alignment, folding, network access or classification: ``hit_class`` is read from the
+table the run published, so the report can never disagree with the run.
 
 The report unit is the **guide sequence**, not the candidate id. A guide is enumerated once per
-transcript it was found on -- median 6 and up to 34 rows on the public 0.7.1 baseline -- while
-off-target screening runs once per distinct guide. Joining evidence on ``id`` therefore leaves most
-candidates falsely reading as having zero off-targets, so the guide sequence is the join key and the
-per-transcript rows collapse into an isoform sub-table.
+transcript it was found on (median 6, up to 34 rows on the public 0.7.1 baseline), while off-target
+screening runs once per distinct guide; joining on ``id`` instead leaves most candidates falsely
+reading as having zero off-targets. The guide sequence is the join key, and per-transcript rows
+collapse into an isoform sub-table.
 
 This module also owns **how many guides the report contains**, and every count it publishes is a
 count of those guides: see :data:`DEFAULT_MAX_EMBEDDED_GUIDES` and :func:`_select_embedded`.
@@ -42,17 +42,14 @@ from sirnaforge.reporting.structure import layouts_for
 from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, uncovered_stretches
 
 #: Bump when the payload's shape changes, so a report and the run it describes can never be
-#: silently mismatched. 1.1.0 (#103): per-filter ``evaluable``/``control``/``n_values`` for
-#: client-side re-thresholding and preset views, ``off_target_screened``/``screen_query_id`` on
-#: ``GuideEntry``, and ``register_cluster``/``register_representative`` on isoform rows. 1.2.0: the
-#: guide cap moved here and is published as counts (``guides_total``/``guides_dropped``/
-#: ``guides_dropped_by_status``); per-filter ``rejects``/``sole_rejects``/``inert``; per-guide
-#: ``liability_by_species``; ``length``/``canonical`` on isoform and transcript rows.
+#: silently mismatched. 1.2.0 moved the guide cap here, published as counts (``guides_total``/
+#: ``guides_dropped``/``guides_dropped_by_status``), and added per-filter ``rejects``/
+#: ``sole_rejects``/``inert`` and per-guide ``liability_by_species``.
 PAYLOAD_SCHEMA_VERSION = "1.2.0"
 
-#: Hit rows embedded per guide. Everything outside this scope is carried as counts only, which is a
-#: deliberate scope decision (#103), not a limitation -- and a guide with hits only outside it must
-#: render its counts rather than an empty panel.
+#: Hit rows embedded per guide. Everything outside this scope is carried as counts only -- a
+#: deliberate scope decision, not a limitation, so a guide with hits only outside it must render its
+#: counts rather than an empty panel.
 EMBED_SPECIES = "human"
 EMBED_MAX_NM = 2
 
@@ -60,16 +57,16 @@ EMBED_MAX_NM = 2
 #: displayed, but never counted as off-targets.
 LIABILITY = frozenset({HitClass.OFF_TARGET, HitClass.UNDETERMINED})
 
-#: Guides one report embeds. A cap is kept because the file is read in a browser and one internal run
-#: of 5,706 guides already renders to 31 MB, but it is applied **here**, above every count the report
-#: prints, and never below them. This is the only cap on how many guides a report holds; set
-#: ``max_guides=None`` to embed the run whole.
+#: Guides one report embeds. Kept because the file is read in a browser and one internal run of
+#: 5,706 guides already renders to 31 MB, applied **here**, above every count the report prints, and
+#: never below them -- the only cap on how many guides a report holds. Set ``max_guides=None`` to
+#: embed the run whole.
 DEFAULT_MAX_EMBEDDED_GUIDES = 5000
 
-#: Statuses the cap drops last, in the order it drops them: a ``fail`` guide is one the run and the
-#: report agree to reject, so it is the only kind whose absence costs a reader nothing they could act
-#: on. Anything a reader might ship, or that the report cannot establish either way, outranks it --
-#: which is why the dropped set is chosen by verdict and not by taking the first N of a score sort.
+#: Statuses the cap drops last, in this order: a ``fail`` guide is one the run and report agree to
+#: reject, so it is the only kind whose absence costs a reader nothing actionable. Anything a reader
+#: might ship, or that the report cannot establish either way, outranks it -- which is why the
+#: dropped set is chosen by verdict, not by taking the first N of a score sort.
 CAP_DROP_ORDER = ("fail", "unknown", "warn", "pass")
 
 _UNKNOWN_SYMBOL = "unknown"
@@ -109,10 +106,9 @@ class GuideEntry:
     run_verdict: str | None = None
     structure: str | None = None
     transcript_hits: int | None = None
-    #: Whether screening actually reached the aligner for this guide (candidates_all.csv's own
-    #: ``off_target_screened``, models/sirna.py). An off-target-clean *preset* built on
-    #: ``liability_count == 0`` alone would publish a never-screened guide as clean -- 0 hits and no
-    #: screen look identical unless this rides along.
+    #: Whether screening reached the aligner for this guide (``off_target_screened``, models/sirna.py).
+    #: A clean preset built on ``liability_count == 0`` alone would publish a never-screened guide as
+    #: clean -- 0 hits and no screen look identical unless this rides along.
     off_target_screened: bool = False
     #: The query id this guide's rows were screened under (``screen_query_id``, #103's join key).
     #: Carried for provenance; None when the candidate was never submitted to the aligner.
@@ -120,12 +116,11 @@ class GuideEntry:
 
     @property
     def undeclared_run_rejection(self) -> bool:
-        """The run rejected this guide everywhere, and no declared gate accounts for it.
+        """The run rejected this guide everywhere and no declared gate accounts for it.
 
-        ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, and the 17-filter registry
-        declares no repeat gate, so the report has no descriptor that can re-derive the rejection. It
-        must not therefore call the guide clean -- on one internal run that would have published 185
-        guides as passing that the run threw out.
+        ``REPEAT_ELEMENT`` is the live case: the pipeline stamps it, but the 17-filter registry
+        declares no repeat gate, so nothing here can re-derive the rejection. Must not read as clean --
+        on one internal run this would have published 185 guides as passing that the run rejected.
         """
         return self.run_verdict not in (None, "PASS") and not (self.n_gates_failed or self.n_gates_unknown)
 
@@ -136,13 +131,12 @@ class GuideEntry:
 
     @property
     def n_gates_unknown(self) -> int:
-        """Gates in force that reached no verdict. An unknown is never folded into a pass.
+        """Gates in force that reached no verdict; never folded into a pass.
 
-        One code, deliberately: every in-force non-decision -- a missing column, an empty value, the
-        run's own ``unknown``, and the run's own ``not_evaluated`` -- is emitted as the UNKNOWN verdict
-        by :func:`_evaluate`, with the reason code saying which. Counting a second verdict code here
-        instead would leave the report's tally and the browser's (which counts UNKNOWN alone) free to
-        disagree about the same guide (#103).
+        Every in-force non-decision -- a missing column, an empty value, the run's own ``unknown``, or
+        its own ``not_evaluated`` -- is emitted as the UNKNOWN verdict by :func:`_evaluate`, with the
+        reason code saying which, so this tally and the browser's (which counts UNKNOWN alone) cannot
+        disagree about the same guide.
         """
         return sum(1 for g in self.gates if g[1] == _VERDICT_CODE[FilterEvaluation.UNKNOWN.value])
 
@@ -153,20 +147,16 @@ class GuideEntry:
 
     @property
     def status(self) -> str:
-        """``fail`` / ``unknown`` / ``warn`` / ``pass`` -- four states, because fewer would lie.
+        """``fail`` / ``unknown`` / ``warn`` / ``pass``.
 
-        A guide failing no gate is only clean when every gate could actually be evaluated. On the
-        public 0.7.1 baseline 450 guides fail nothing here while the run failed them, because the
-        gates that failed them read counters the run does not export. Collapsing that into "pass"
-        is the fabricated-evidence mistake this whole report exists to make visible.
+        A guide failing no gate is clean only when every gate could actually be evaluated: on the
+        public 0.7.1 baseline, 450 guides fail nothing here while the run failed them, because those
+        gates read counters the run does not export. Collapsing that into ``pass`` is the
+        fabricated-evidence mistake this report exists to make visible.
 
-        ``warn`` is separate from ``fail`` for the mirror-image reason. A warn-action gate the guide
-        exceeds is a real finding, but the run did not reject the guide for it, so calling it ``fail``
-        would make the report contradict a run PASS it actually agrees with.
-
-        A rejection no declared gate can express is also ``unknown``: see
-        :attr:`undeclared_run_rejection`. The report may report less than the run. It may not report
-        more.
+        ``warn`` stays separate from ``fail`` for the mirror-image reason (:data:`VERDICT_WARN`). A
+        rejection no declared gate can express is ``unknown`` too (:attr:`undeclared_run_rejection`) --
+        the report may report less than the run, never more.
         """
         if self.n_gates_failed:
             return "fail"
@@ -195,11 +185,11 @@ def _normalise_guide(seq: object) -> str:
 def _num(value: object) -> float | int | None:
     """A number, or None for NaN/blank -- never a fabricated zero.
 
-    Coerces through ``float`` rather than testing ``isinstance(value, (int, float))``, because
-    ``numpy.int64`` is **not** a Python ``int`` while ``numpy.float64`` *is* a Python ``float``, and a
-    row taken with ``DataFrame.iloc`` hands back numpy scalars. The isinstance test therefore nulled
-    every integer-dtype column and let float columns through, which made ``max_off_target_count``
-    read ``unknown`` for every guide on a real run while its threshold was rejecting 65% of them.
+    Coerces through ``float`` rather than ``isinstance(value, (int, float))``: ``numpy.int64`` is
+    **not** a Python ``int`` while ``numpy.float64`` *is* a Python ``float``, and ``DataFrame.iloc``
+    hands back numpy scalars. The isinstance test nulled every integer-dtype column, which made
+    ``max_off_target_count`` read ``unknown`` for every guide on a real run while its threshold was
+    rejecting 65% of them.
     """
     if isinstance(value, bool):
         return int(value)
@@ -272,8 +262,8 @@ def _select_embedded(guides: Sequence[GuideEntry], max_guides: int | None) -> tu
     ``guides`` arrives best-scoring first. What is dropped is chosen by verdict in
     :data:`CAP_DROP_ORDER` and, within a verdict, worst-scoring first -- so a run larger than the cap
     loses the guides its own gates rejected before it loses one a reader could ship. Taking the first
-    N of the score sort instead is what dropped 41 pass-warned guides out of one internal report while
-    its header counted them: they cannot be searched, carted or exported, and nothing said so.
+    N of the score sort instead dropped 41 pass/warn guides from one internal report while its header
+    still counted them, uncartable and unexported.
 
     Returns:
         ``(embedded, dropped_by_status)`` with ``embedded`` still in score order and every status
@@ -292,17 +282,17 @@ def observed_column(descriptor: Any, populated: Container[str]) -> str | None:
     """The column carrying the value this gate compared, or None if the run exports neither.
 
     ``<filter_id>_observed`` is preferred over the descriptor's own ``column``, because it is the
-    number the pipeline itself compared. It is the answer for the gates that read human-stratified
-    counters: 0.7.1 does not export ``transcriptome_hits_1mm_human`` under that name (#101), but it
-    does export ``max_transcriptome_hits_1mm_observed``, and on a four-species internal run the
-    observed column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named
-    all-species column disagrees -- 17,600 hits against 63,801. Same-named is the argument: the column
-    bearing the descriptor's own name holds a wider-scoped quantity than the gate compared, so reading
-    it instead would let the report contradict the run while looking like it agreed.
+    number the pipeline itself compared. It is the answer for gates that read human-stratified
+    counters: 0.7.1 does not export ``transcriptome_hits_1mm_human`` under that name (#101), but does
+    export ``max_transcriptome_hits_1mm_observed`` -- on a four-species internal run the observed
+    column reproduces each gate's own verdict on 100% of 40,081 rows while the same-named all-species
+    column disagrees (17,600 hits against 63,801). The same-named column holds a wider-scoped quantity
+    than the gate compared, so reading it instead would let the report contradict the run while
+    looking like it agreed.
 
-    ``populated`` must hold only columns that carry at least one value. A column present but empty
-    for every row is the shape a gate takes when the run never recorded its verdict, and preferring
-    it would turn a gate the descriptor column *can* answer into an unknown.
+    ``populated`` must hold only columns that carry at least one value. A column present but empty for
+    every row is the shape a gate takes when the run never recorded its verdict, and preferring it
+    would turn a gate the descriptor column *can* answer into an unknown.
     """
     for candidate in (f"{descriptor.filter_id}_observed", descriptor.column):
         if candidate in populated:
@@ -328,7 +318,7 @@ def _verdict_code(passed: bool, action: str) -> int:
 
     Both :func:`_evaluate` and :func:`reevaluate_gates` decide this, so they decide it here: a
     ``warn`` gate the guide exceeds must come back as :data:`VERDICT_WARN` and never the fail code
-    (see :func:`reevaluate_gates` for what folding the two together would cost).
+    (see its definition for what folding the two together would cost).
     """
     if passed:
         return _VERDICT_CODE[FilterEvaluation.PASS.value]
@@ -352,29 +342,27 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     Returns:
         ``(value, verdict_code, reason_code)``. The descriptor itself is emitted once per report.
     """
-    # Read the value first, and report it whatever the verdict turns out to be. A gate that is off or
-    # has no threshold still *measured* something the reader wants: three of the four off gates on the
-    # reference run carry a real per-guide number, and `max_mirna_1mm_seed`'s own policy definition says
-    # "the number is reported and nothing acts on it".
+    # Read the value regardless of verdict: an off or threshold-less gate still *measured* something --
+    # three of the four off gates on the reference run carry a real per-guide number, and
+    # `max_mirna_1mm_seed`'s own policy definition says "the number is reported and nothing acts on it".
     value = _num(row.get(column)) if column is not None else None
     not_evaluated = _VERDICT_CODE[FilterEvaluation.NOT_EVALUATED.value]
     if descriptor.action.value == FilterAction.OFF.value:
         return value, not_evaluated, REASON_FILTER_OFF
     if descriptor.threshold is None:
         return value, not_evaluated, REASON_NO_THRESHOLD
-    # The run's own non-decision wins, before any comparison: the report may report less than the run,
-    # never more. Load-bearing, not defensive -- `observed_column` falls back to the descriptor's own
-    # column when the observed one is empty for every row, and three of those fallbacks default to 0,
-    # so without this an unscreened guide's `max_off_target_count` reads as a pass at 0.
+    # The run's own non-decision wins before any comparison, never toward a pass: `observed_column`
+    # falls back to the descriptor's own column when the observed one is empty for every row, and
+    # three of those fallbacks default to 0, so without this an unscreened guide's
+    # `max_off_target_count` would read as a pass at 0.
     #
-    # Both non-decisions land on UNKNOWN, because a gate reaching this line is in force with a threshold
-    # -- off and threshold-less gates returned above -- and an in-force gate is not evidence of anything
-    # the run declined to measure. NOT_EVALUATED here would sit on a verdict code the unknown tally does
-    # not count, so `status` falls through to `pass` and the guide enters the Passing preset with the
-    # banner suppressed (#103). `max_repeat_transcript_fraction` is the live case: a repeat scan that
-    # never ran leaves `repeat_transcript_fraction` at its 0.0 default with verdict `not_evaluated`. The
-    # reason code is what keeps the two non-decisions apart, and the value with them: UNKNOWN has no
-    # measurement to show, while `not_evaluated` keeps the number the run recorded.
+    # Both non-decisions land on UNKNOWN, not NOT_EVALUATED: a gate reaching this line is in force with
+    # a threshold -- off and threshold-less gates returned above -- and NOT_EVALUATED sits on a verdict
+    # code the unknown tally does not count, so `status` would fall through to `pass` with the banner
+    # suppressed. `max_repeat_transcript_fraction` is the live case: a repeat scan that never ran
+    # leaves `repeat_transcript_fraction` at its 0.0 default with verdict `not_evaluated`. The reason
+    # code keeps the two apart along with the value: UNKNOWN has no measurement to show, while
+    # `not_evaluated` keeps the number the run recorded.
     recorded = _recorded_verdict(row, descriptor.filter_id)
     if recorded in (FilterEvaluation.UNKNOWN.value, FilterEvaluation.NOT_EVALUATED.value):
         run_unknown = recorded == FilterEvaluation.UNKNOWN.value
@@ -402,27 +390,23 @@ def reevaluate_gates(
 ) -> list[list[Any]]:
     """Re-apply one guide's gates at reader-chosen thresholds.
 
-    This is the contract the report's client-side evaluator implements, kept here so it can be
-    asserted without a browser and so the browser can be checked against it (#103). Two rules carry
-    the weight:
+    The contract the report's client-side evaluator implements, kept here so it can be asserted
+    without a browser and the browser checked against it. Two rules:
 
     * A gate this guide's own row did not decide is returned **untouched**. Freezing is keyed on the
       row's ``reason`` code, not on whether the *filter* is globally evaluable: a filter can export a
       column for most guides and still leave one row at :data:`REASON_RUN_NOT_EVALUATED` with a real
-      measured value (the run applied no verdict, but still recorded a number), and moving a
-      threshold cannot conjure the decision the run declined to make. Every reason except
-      :data:`REASON_OK` and :data:`REASON_EMPTY_VALUE` -- off, no threshold, a missing column, or the
-      run's own recorded ``unknown``/``not_evaluated`` -- freezes the triple exactly as the run
-      produced it.
+      measured value, and moving a threshold cannot conjure the decision the run declined to make.
+      Every reason except :data:`REASON_OK` and :data:`REASON_EMPTY_VALUE` freezes the triple exactly
+      as the run produced it.
     * :data:`REASON_EMPTY_VALUE` stays ``unknown``. Its value is already ``None``, so nothing is
-      re-compared; the branch exists so a reader can never re-threshold their way out of a
-      non-decision by supplying a value the run never observed.
+      re-compared; this is what stops a reader re-thresholding their way out of a non-decision by
+      supplying a value the run never observed.
 
-    A ``warn``-action gate the guide exceeds comes back as :data:`VERDICT_WARN`, never the ``fail``
-    code -- folding it into fail would flip ``contradicted_run_pass`` for every warn-flagged guide,
-    the one metric that exists to prove the report and the pipeline agree. Comparisons go through
-    :meth:`FilterComparator.passes`, the single Python implementation of the comparator table, so a
-    client-side evaluator restating it in JavaScript has exactly one table to restate.
+    A ``warn``-action gate the guide exceeds comes back as :data:`VERDICT_WARN`, never ``fail`` (see
+    its definition for why). Comparisons go through :meth:`FilterComparator.passes`, the single Python
+    implementation of the comparator table, so a client-side evaluator restating it in JavaScript has
+    exactly one table to restate.
 
     Args:
         filters: Filter entries as emitted in the payload, in payload order.
@@ -462,10 +446,9 @@ _SETTING_MODELS: Mapping[str, Any] = {"filters": FilterCriteria, "offtarget_filt
 class _DeclaredBounds:
     """What values one setting is allowed to take, read off its own field metadata.
 
-    Derived from the model rather than from a table in this module, because a hand-written clamp per
-    filter is a second declaration of the same fact and drifts from the first. ``exclusive`` records a
-    ``gt``/``lt`` bound, so a slider edge lands one step inside a limit the model would reject rather
-    than on it.
+    Derived from the model rather than a hand-written table here, so a clamp cannot drift from the
+    declaration it restates. ``exclusive`` records a ``gt``/``lt`` bound, so a slider edge lands one
+    step inside a limit the model would reject rather than on it.
     """
 
     low: float | None = None
@@ -507,8 +490,8 @@ def _snap(value: float, step: float, *, up: bool) -> float:
     """``value`` moved outward onto the step grid, so every slider position is a legible number.
 
     Unsnapped bounds were the defect: ``gc_content_min`` opened at 27.804348 with a step of 0.1, so
-    every drag landed on ...704348, a reader could not reach 40, and 39.704348 is the number that ended
-    up in the URL fragment and in the cart TSV's ``reader_threshold``.
+    every drag landed on ...704348 and a reader could not reach 40 -- 39.704348 is what ended up in the
+    URL fragment and the cart TSV's ``reader_threshold``.
     """
     scaled = value / step
     grid = math.ceil(round(scaled, 9)) if up else math.floor(round(scaled, 9))
@@ -522,13 +505,13 @@ def _control_domain(threshold: float, values: Sequence[float], bounds: _Declared
     than the run's values spends its travel where no verdict changes. Two rules keep it honest:
 
     * Bounds are snapped to the step, so the grid contains round numbers a reader means to type.
-    * Bounds are clamped to the setting's **own** declared range. Padding an observed minimum by 5% is
-      what published "at most -59 off-targets" on a ``ge 0``, count-valued gate -- a threshold that
-      fails every guide and that the pipeline would refuse -- and it is what locked
-      ``min_empirical_score`` to 0.39-0.61 either side of a range whose declared limits, 0.4 and 0.6,
-      are exactly the two verdict-changing extremes. Clamping never crosses an observed value or the
-      run's own threshold, so every measurement this run produced stays reachable, and the run's
-      threshold sits on an edge only when the run set it at the setting's own limit.
+    * Bounds are clamped to the setting's **own** declared range. Padding an observed minimum by 5%
+      once published "at most -59 off-targets" on a ``ge 0``, count-valued gate -- a threshold that
+      fails every guide and the pipeline would refuse -- and locked ``min_empirical_score`` to
+      0.39-0.61 either side of a declared 0.4-0.6 range, exactly its two verdict-changing extremes.
+      Clamping never crosses an observed value or the run's own threshold, so every measurement this
+      run produced stays reachable, and the run's threshold sits on an edge only when the run set it
+      at the setting's own limit.
 
     The declared range itself is published beside the control, not inside it: it is a property of the
     setting, and the slider is one of several things that read it.
@@ -551,10 +534,10 @@ def _control_domain(threshold: float, values: Sequence[float], bounds: _Declared
 class _GateEffect:
     """What one gate actually did to the guides this report embedded.
 
-    Seventeen sliders with no indication of which of them decided anything is the panel the audit
-    found: over one internal run five gates reject at all, two of the seventeen account for 1,765 of
-    the rejections, and two more are inert by construction. ``sole`` is the number that ranks them --
-    a guide rejected by one gate alone is a guide that gate is solely responsible for losing.
+    Seventeen sliders with no indication of which decided anything is the panel the audit found: over
+    one internal run five gates reject at all, two of the seventeen account for 1,765 of the
+    rejections, and two more are inert by construction. ``sole`` ranks them -- a guide rejected by one
+    gate alone is a guide that gate is solely responsible for losing.
     """
 
     rejects: int = 0
@@ -590,11 +573,11 @@ def _gate_effects(guides: Sequence[GuideEntry], n_filters: int) -> list[_GateEff
 def _inert_reason(descriptor: Any, effect: _GateEffect, bounds: _DeclaredBounds, setting_key: str) -> str | None:
     """Why this gate decided nothing in this run, or None when it decided something.
 
-    Two different inertnesses, and the second is the one worth acting on: a gate that happens to reject
-    nobody here, and a gate that *cannot* reject anybody because its threshold sits on the limit its own
-    setting declares. ``min_empirical_score`` is the live case -- a ``ge`` floor at 0.4 against a
-    declared range of 0.4-0.6 -- and the report said nothing about it while giving it a slider as
-    prominent as the two gates that decided 1,765 rejections.
+    Two inertnesses, and the second is the one worth acting on: a gate that happens to reject nobody
+    here, and one that *cannot* reject anybody because its threshold sits on the limit its own setting
+    declares. ``min_empirical_score`` is the live case -- a ``ge`` floor at 0.4 against a declared
+    0.4-0.6 range -- and the report gave it a slider as prominent as the two gates that decided 1,765
+    rejections.
     """
     if not effect.decides_nothing:
         return None
@@ -627,18 +610,15 @@ def _filter_view(
 ) -> dict[str, Any]:
     """One filter as the report carries it: the descriptor, plus whether a reader may re-threshold it.
 
-    ``evaluable`` is decided from THIS run's own output -- the gate triples the report already built for
-    every guide -- and from ``column``, the ``<filter_id>_observed``-or-descriptor column
-    :func:`observed_column` resolved, never the descriptor's bare column. Reading the descriptor's
-    column instead would freeze every human-stratified gate that ``observed_column`` can in fact
-    answer. A gate is re-thresholdable only when it was applied, has a threshold, and this run left at
-    least one guide's row on :data:`REASON_OK` -- the one reason :func:`reevaluate_gates` and the
-    report's JS will re-compare. Anything else keeps its verdict frozen at whatever the run reached,
-    because no slider position can answer a question the run has no evidence for.
-
-    ``evaluable`` therefore means exactly one thing: moving this control can change a verdict (#103).
-    ``n_values`` still counts the measurements, because they were measured; it is the deciding that
-    never happened.
+    ``evaluable`` is decided from this run's own gate triples and from ``column`` -- the
+    ``<filter_id>_observed``-or-descriptor column :func:`observed_column` resolved, never the
+    descriptor's bare column, which would freeze every human-stratified gate ``observed_column`` can
+    in fact answer. A gate is re-thresholdable only when it was applied, has a threshold, and this run
+    left at least one guide's row on :data:`REASON_OK`, the one reason :func:`reevaluate_gates` and the
+    report's JS will re-compare; anything else stays frozen, since no slider position can answer a
+    question the run has no evidence for. ``evaluable`` therefore means exactly one thing: moving this
+    control can change a verdict. ``n_values`` still counts the measurements, because they were
+    measured -- it is the deciding that never happened.
 
     ``rejects``/``sole_rejects``/``warns``/``unknowns`` say what the gate *did* at the run's own
     threshold, and ``inert`` says it decided nothing, so a panel of seventeen equal-looking sliders can
@@ -689,10 +669,10 @@ def _filter_view(
 def _transcript_hits(rows: pd.DataFrame) -> int | None:
     """How many distinct transcripts carry this guide -- the numerator of isoform coverage.
 
-    Not the row count. A guide's site can occur twice in one transcript, so enumerations exceed
-    isoforms: on one internal run 14 guides have more rows than transcripts, one with 19 rows over 10.
-    Prefers the run's own ``transcript_hit_count`` (which equals the distinct count on every row of
-    that run) and falls back to counting, so the report agrees with the column when it exists.
+    Not the row count: a guide's site can occur twice in one transcript, so enumerations exceed
+    isoforms (14 guides on one internal run have more rows than transcripts, one with 19 rows over
+    10). Prefers the run's own ``transcript_hit_count`` and falls back to counting, so the report
+    agrees with the column when it exists.
     """
     stated = _num(rows["transcript_hit_count"].iloc[0]) if "transcript_hit_count" in rows.columns else None
     if stated is not None:
@@ -718,18 +698,17 @@ def _liability_by_species(hits: pd.DataFrame) -> dict[str, int]:
     """Liability alignments per species -- the decomposition the headline number hides.
 
     Half of every liability total on a multi-species run is non-human: 92,658 human against 91,536
-    mouse, 25,243 macaque and 23,427 rat on one internal run of 232,864 alignments. That matters
-    because ``max_off_target_count`` is scoped to *all* species and rejected 3,317 of that run's guides,
-    782 of them on nothing else -- and 458 of those 782 pass the same ceiling on human liabilities
-    alone, against 448 total passes in the whole report. Which number a consumer reads therefore decides
-    whether it agrees with the run, so both are published and neither is called *the* liability count.
+    mouse, 25,243 macaque and 23,427 rat on one internal run of 232,864 alignments.
+    ``max_off_target_count`` is scoped to *all* species and rejected 3,317 of that run's guides, 782 of
+    them on nothing else -- and 458 of those 782 pass the same ceiling on human liabilities alone,
+    against 448 total passes in the whole report. Which number a consumer reads decides whether it
+    agrees with the run, so both are published and neither is called *the* liability count.
 
-    Derived from the published hit table, not from the candidate row: the row's ``off_target_count`` is
+    Derived from the published hit table, not the candidate row: the row's ``off_target_count`` is
     all-species, and the ``*_query`` counters #101 added (``total_offtarget_hits_query``,
     ``transcriptome_hits_{0,1,2}mm_query``, ``mirna_hits_0mm_seed_query``, ``mirna_hits_high_risk_query``
     -- all carried in ``metrics`` now) decompose the *stratified* gate inputs and the query species
-    only. Neither gives a per-species split of the genuine-liability count, and no other species is
-    named anywhere on the row.
+    only. Neither gives a per-species split of the genuine-liability count.
 
     A hit whose species cell is blank is counted as ``query``, matching :func:`_offtarget_views`.
     """
@@ -749,13 +728,12 @@ def _liability_by_species(hits: pd.DataFrame) -> dict[str, int]:
 class _TranscriptFacts:
     """What the run itself recorded about its transcripts, for ordering and labelling the isoform picker.
 
-    The picker is ordered by how many candidate windows a transcript carries, which is length in
-    disguise: on one internal run it opened on a 7,988 nt transcript with the canonical one tenth in the
-    list. Ordering it properly needs two facts the payload did not carry -- length, and which transcript
-    is canonical -- and the second one is a fact only the run can supply. Canonical status is read from
-    the FASTA the workflow writes (``transcripts/<gene>_canonical.fasta``, or a ``canonical:true``
-    header) and is ``None`` for every transcript when the run wrote no such file: unknown, never
-    inferred from sequence presence or from being the longest.
+    The picker orders by candidate-window count, which is length in disguise: on one internal run it
+    opened on a 7,988 nt transcript with the canonical one tenth down the list. Ordering it properly
+    needs length and which transcript is canonical -- the latter a fact only the run can supply.
+    Canonical status is read from the FASTA the workflow writes (``transcripts/<gene>_canonical.fasta``,
+    or a ``canonical:true`` header) and is ``None`` for every transcript when the run wrote no such
+    file: unknown, never inferred from sequence presence or from being the longest.
     """
 
     lengths: Mapping[str, int] = field(default_factory=dict)
@@ -812,9 +790,7 @@ def _scope_label(descriptor: Any) -> str:
 def _gene_query(manifest: Mapping[str, Any], candidates: pd.DataFrame) -> str:
     """The run's target: the manifest's own ``gene_query``, else a gene column, else unknown.
 
-    The manifest is the authority because ``candidates_all.csv`` carries no gene column at all -- an
-    earlier version read this from a loop variable that had leaked past its loop and reported a
-    transcript accession as the gene.
+    The manifest is authoritative: ``candidates_all.csv`` carries no gene column at all.
     """
     stated = str(manifest.get("gene_query") or "").strip()
     if stated:
@@ -836,9 +812,9 @@ def _verdict_agreement(candidates: pd.DataFrame, guides: list[GuideEntry]) -> di
     agrees with the pipeline. The asymmetry is the point: the report must never contradict a run PASS,
     while a run failure it cannot re-derive is reported ``unknown`` rather than quietly flipped.
 
-    Every count here is over the guides the report **embedded**. Comparing against the run's whole
-    candidate table published "0/1424 run PASS contradicted" from a report holding 1,383 of those 1,424
-    guides: a coverage claim over 41 guides the reader cannot open.
+    Every count here is over the guides the report **embedded**: comparing against the run's whole
+    candidate table published "0/1424 run PASS contradicted" from a report holding 1,383 of those
+    1,424 guides -- a coverage claim over 41 guides the reader cannot open.
     """
     if "passes_filters" not in candidates.columns:
         return {"comparable": False, "reason": "the run exports no passes_filters column"}
@@ -874,8 +850,8 @@ def _read_hits(path: Path, caveats: list[str]) -> pd.DataFrame:
             "be able to disagree with the run. Re-publish the table through the workflow, which writes "
             "these columns, and report again."
         )
-        # Note for reviewers: this is deliberately fatal. A table without hit_class would render
-        # on-target isoform alignments as off-targets, which on the public baseline is 50.1% of rows.
+        # Deliberately fatal: a table without hit_class would render on-target isoform alignments as
+        # off-targets -- 50.1% of rows on the public baseline.
     unannotated = int((~hits.apply(is_annotated, axis=1)).sum()) if len(hits) else 0
     if unannotated:
         caveats.append(f"{unannotated} hit rows carry no classification and are shown as undetermined")
@@ -895,9 +871,9 @@ class _GatePanel:
 def _gate_panel(policy: ResolvedRunPolicy | None, manifest: Mapping[str, Any], caveats: list[str]) -> _GatePanel:
     """The run's own gates: the live policy, else the manifest, else library defaults with a caveat.
 
-    Library defaults are the last resort and must be declared, because they are not this run's gates.
-    Defaulting silently published a GC ceiling of 60 against a run that set 65, which failed 227
-    guides on a threshold the run never applied and made the report contradict 41 of its PASSes.
+    Library defaults are the last resort and must be declared, because they are not this run's gates:
+    defaulting silently once published a GC ceiling of 60 against a run that set 65, failing 227
+    guides on a threshold the run never applied and contradicting 41 of its PASSes.
     """
     if policy is not None:
         return _GatePanel(tuple(policy.filters), policy.profile.name, policy.run_mode.value, "the live run policy")
@@ -930,16 +906,15 @@ def _gate_panel(policy: ResolvedRunPolicy | None, manifest: Mapping[str, Any], c
 def _has_transcript_context(manifest: Mapping[str, Any], caveats: list[str]) -> bool:
     """Whether this run's candidate rows sit on real transcripts, per the run's own declared entry point.
 
-    ``sirnaforge offtarget`` screens guides someone else designed, so it enumerates nothing: every row
-    carries a placeholder transcript id and position 1 (#100). Read as an enumeration, that drew an
-    isoform table claiming each guide targets a transcript that does not exist, and a design map of one
-    fabricated transcript -- inventing exactly the target context the entry point does not have. So the
-    isoform table, the design map and the coverage denominator are all withheld for such a run.
+    ``sirnaforge offtarget`` screens pre-designed guides, so it enumerates nothing: every row carries a
+    placeholder transcript id and position 1 (#100). Read as an enumeration, that fabricates an isoform
+    table, a design map and a coverage denominator for target context this entry point does not have --
+    so all three are withheld for such a run.
 
-    Decided from the manifest's declared entry point rather than by sniffing the placeholder value,
-    because a sentinel string is a coincidence a reader cannot verify and the entry point is a fact the
-    run published about itself. A run with no readable manifest declares nothing, and is read as a
-    design run -- the same assumption every other provenance field already makes.
+    Decided from the manifest's declared entry point, not by sniffing the placeholder value: the entry
+    point is a fact the run published about itself, while a sentinel string is a coincidence a reader
+    cannot verify. A run with no readable manifest declares nothing, and is read as a design run -- the
+    same assumption every other provenance field already makes.
     """
     entry_point = str((manifest.get("run_policy") or {}).get("entry_point") or "")
     if entry_point != EntryPoint.OFFTARGET_ONLY.value:
@@ -1164,16 +1139,15 @@ def _transcript_maps(
     """Per-transcript position series for the design map, most-enumerated transcript first.
 
     A row the run rejected is plotted as a rejection; every other row carries its guide's report
-    status, so a window the report cannot establish is not drawn as passing. Regions come from the
+    status, so a window the report cannot establish is never drawn as passing. Regions come from the
     run's ORF report; a transcript missing from it still gets a map, without a region bar.
 
-    ``canonical`` rides along because the isoform picker is built from this list in the order it is
-    given, and window count -- which is length -- is the wrong first key: it opened one internal report
-    on a 7,988 nt transcript with the canonical one in tenth place. The order here is unchanged; the
-    fact a consumer needs to reorder it is now present.
+    ``canonical`` rides along since window count (length) is the wrong ordering key for the isoform
+    picker built from this list -- see :class:`_TranscriptFacts`. The order here is unchanged; a
+    consumer now has what it needs to reorder it.
 
-    Statuses are read from **all** the run's guides, not only the embedded ones, because every candidate
-    row is plotted either way: dropping a guide from the payload must not recolour its windows.
+    Statuses are read from **all** the run's guides, not only the embedded ones: every candidate row is
+    plotted either way, so dropping a guide from the payload must not recolour its windows.
     """
     required = {"position", "transcript_id", "passes_filters"}
     missing = sorted(required - set(candidates.columns))
@@ -1286,11 +1260,10 @@ def _build_guide(
                 "undetermined_hits",
                 "transcriptome_hits_total",
                 "mirna_hits_0mm_seed",
-                # The query-species gate inputs #101 added and nothing surfaced. They are the only
-                # species decomposition the candidate row carries, they are what the human-stratified
-                # gates compared, and a reader asking "would this guide pass on one species?" was
-                # reading the all-species columns above instead. Absent from an older run's CSV, which
-                # is why every key here is conditional (see _liability_by_species for the rest).
+                # The query-species gate inputs #101 added: the only species decomposition the row
+                # carries, and what the human-stratified gates actually compared -- the all-species
+                # columns above answer a different question. Absent from an older run's CSV, hence the
+                # conditional (see _liability_by_species for the rest).
                 "total_offtarget_hits_query",
                 "transcriptome_hits_0mm_query",
                 "transcriptome_hits_1mm_query",
@@ -1322,8 +1295,8 @@ def _register_index(candidates: pd.DataFrame) -> dict[str, list[int]]:
     """Transcript -> every enumerated position, across **all** guides.
 
     Register neighbours are cross-guide by nature: the point is that two *different* designs one
-    nucleotide apart share a window. Built once from the whole candidate table, because a per-guide
-    map can only ever see the guide's own rows and would report no neighbours at all.
+    nucleotide apart share a window. Built once from the whole candidate table; a per-guide map would
+    see only its own rows and report no neighbours at all.
     """
     index: dict[str, list[int]] = defaultdict(list)
     for tx, pos in zip(candidates.get("transcript_id", []), candidates.get("position", []), strict=False):
@@ -1337,11 +1310,11 @@ def _register_clusters(candidates: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Cross-guide register clusters: candidate id -> its cluster and whether it is the representative.
 
     ``register_neighbours`` (below) names positions, not designs, so a reader cannot map a neighbour
-    back to the guide that owns it and cannot pick which member of a near-duplicate cluster to keep
-    for a register-deduplicated view. This computes the same "positions within
-    :data:`REGISTER_NEIGHBOUR_NT`" runs on one transcript, over the whole candidate table rather than
-    one guide's rows, and names each run's best-scoring member as the representative -- the one a
-    dedup view should keep. A candidate the run never enumerated a position for gets no entry.
+    back to the guide that owns it or pick which member of a near-duplicate cluster to keep for a
+    register-deduplicated view. This runs the same "positions within :data:`REGISTER_NEIGHBOUR_NT`"
+    clustering over the whole candidate table, and names each run's best-scoring member as the
+    representative a dedup view should keep. A candidate the run never enumerated a position for gets
+    no entry.
     """
     score_column = next((c for c in _MAP_VALUE_COLUMNS if c in candidates.columns), None)
     n = len(candidates)
@@ -1389,16 +1362,14 @@ def _isoform_table(
     """One entry per transcript the guide was enumerated on, flagging register neighbours.
 
     A shorter guide starting at *s* sits inside the longer window at *s-1*, so two designs one
-    nucleotide apart can share a window and receive an identical score. That much is a property of the
-    enumeration and holds for any target.
+    nucleotide apart can share a window and receive an identical score -- a property of the
+    enumeration, true for any target.
 
-    An earlier version of this report told the reader "two such designs differed 1.4x in measured
-    knockdown" in the rendered card. That claim is now confined to this docstring, for two reasons.
-    It is traceable but **mislabelled**: 1.4x is the ratio of *fraction remaining* between two designs
-    of one internal reference set (0.49 and 0.35) at transcript positions 1982/1983, and the ratio of
-    *knockdown* for the same pair is 1.27x. And it is not the strongest case in that set -- the pair
-    at 2733/2735 differs 1.97x in fraction remaining. Neither number belongs in a card that ships
-    with the tool and is read against targets that set says nothing about.
+    Do not add a measured-knockdown ratio to the rendered card: a mislabelled one shipped here before
+    ("1.4x", stated as knockdown but actually the *fraction-remaining* ratio between two designs of one
+    internal reference set at positions 1982/1983 -- the knockdown ratio for that pair is 1.27x, and
+    it wasn't even the set's strongest case, which differs 1.97x at 2733/2735). Neither number
+    generalises to a target that reference set says nothing about.
 
     ``length`` and ``canonical`` travel with each row so a consumer can order these by canonical, then
     length, instead of by whichever transcript happens to carry the most windows. ``canonical`` is
@@ -1472,10 +1443,10 @@ def _offtarget_views(
         {"species": sp, "nm": band, "hit_class": cls, "n": n} for (sp, band, cls), n in sorted(matrix_counter.items())
     ]
 
-    # Row-level drill-down exists to inspect liabilities, so only liability rows in the embedded
-    # scope carry per-row detail. On-target isoform, ortholog and repeat alignments are still fully
-    # displayed -- by gene in offtarget_by_symbol and completely in offtarget_matrix -- they just do
-    # not each need a row. Embedding every class cost 14.7 MB of the first render's 38 MB.
+    # Row-level drill-down exists to inspect liabilities, so only liability rows in the embedded scope
+    # carry per-row detail. On-target isoform, ortholog and repeat alignments are still fully
+    # displayed -- by gene in offtarget_by_symbol and completely in offtarget_matrix -- just not
+    # per-row. Embedding every class cost 14.7 MB of the first render's 38 MB.
     in_scope = hits[
         (hits["species"].astype(str).str.strip().isin({EMBED_SPECIES, ""}))
         & (hits["_nm"].notna())
@@ -1500,9 +1471,9 @@ def _offtarget_views(
 
 #: Columns the miRNA name may arrive under. ``mirna_id`` is what the aggregate actually publishes
 #: (``Hsa-Mir-24-P2_3p``); the table has no ``rname``, so reading only that returned an empty string
-#: for every row and the panel listed 18,078 anonymous seed matches. Which miRNA is mimicked is the
-#: whole question -- a perfect seed match to a cardiac or neuronal family is a different finding from
-#: one to an unexpressed paralogue, and a retraction in this programme turned on exactly that.
+#: for every row and listed 18,078 anonymous seed matches. Which miRNA is mimicked is the whole
+#: question -- a match to a cardiac or neuronal family is a different finding from one to an
+#: unexpressed paralogue, and a retraction in this programme turned on exactly that.
 _MIRNA_NAME_COLUMNS = ("mirna_id", "rname", "mirna", "name")
 
 
@@ -1512,19 +1483,18 @@ def _ortholog_conservation(hits: pd.DataFrame) -> dict[str, dict[str, Any]]:
     Cross-species conservation is already in the screen and is thrown away twice over. The screen
     aligns each guide against every requested species' transcriptome and classifies a hit on the
     orthologous gene as ``ortholog`` -- explicitly *not* a liability -- and the candidate table then
-    summarises those hits as ``conservation_score``, which is ``(species hit) / 3``.
+    summarises those hits as ``conservation_score``, i.e. ``(species hit) / 3``.
 
-    That summary cannot answer the question a cross-species programme asks, for two reasons. It is
+    That summary cannot answer what a cross-species programme asks, for two reasons. It is
     **mismatch-blind**: on one internal run it counted a species as conserved on alignments up to 8
     mismatches, and mouse ortholog hits ran 1,413 at nm=0 against 1,493 at nm>=3. And it is
     **seed-blind**: mouse nm=1 split 96 seed-intact against 79 seed-hit, and one mismatch outside
     positions 2-8 is a different molecule from one inside them -- allowing it took the
     mouse-and-macaque pool from 49 guides to 113.
 
-    So the per-species best ``(nm, seed_mismatches)`` is published instead and the thresholding is
-    left to the reader. Requiring "perfect in mouse and macaque" is a programme decision, not a
-    property of the target, and hard-coding it as a gate would put one programme's requirement in
-    every run.
+    So the per-species best ``(nm, seed_mismatches)`` is published instead and thresholding is left to
+    the reader: requiring "perfect in mouse and macaque" is a programme decision, not a property of
+    the target, and hard-coding it as a gate would put one programme's requirement in every run.
     """
     if hits.empty or "_class" not in hits.columns:
         return {}
