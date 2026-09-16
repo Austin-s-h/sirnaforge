@@ -232,3 +232,34 @@ def normalize_species_name(species: str) -> str:
         return species
     normalized = species.strip().lower()
     return CANONICAL_SPECIES_ALIAS_MAP.get(normalized, species)
+
+
+def ensembl_species_slug(species: str) -> str | None:
+    """Ensembl REST species slug for a species name, or None if not in the registry.
+
+    Ensembl addresses species by underscored lowercase scientific name, so this is derived from
+    the registry's scientific name rather than stored twice.
+
+    Args:
+        species: Species name in any recognized form
+
+    Returns:
+        Slug such as ``mus_musculus``, or None when the species is not registered
+
+    Examples:
+        >>> ensembl_species_slug('mouse')
+        'mus_musculus'
+        >>> ensembl_species_slug('hsa')
+        'homo_sapiens'
+        >>> ensembl_species_slug('nonesuch') is None
+        True
+    """
+    canonical = normalize_species_name(species)
+    entry = CANONICAL_SPECIES_REGISTRY.get(canonical)
+    if not entry:
+        return None
+    metadata = MIRGENEDB_SPECIES_TABLE.get(entry["mirgenedb_slug"], {})
+    scientific_name = metadata.get("scientific_name")
+    if not scientific_name:
+        return None
+    return str(scientific_name).strip().lower().replace(" ", "_")

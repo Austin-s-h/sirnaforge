@@ -76,7 +76,8 @@ def locate_rows(table: pd.DataFrame, transcripts: dict[str, str]) -> pd.DataFram
                 "efficacy": float(row.efficacy),
             }
         )
-    return pd.DataFrame(rows)
+    located: pd.DataFrame = pd.DataFrame(rows)
+    return located
 
 
 def choose_accessions(located: pd.DataFrame, transcripts: dict[str, str], max_nt: int) -> list[str]:

@@ -276,6 +276,14 @@ Species Registry
    :undoc-members:
    :show-inheritance:
 
+Orthology
+~~~~~~~~~
+
+.. automodule:: sirnaforge.data.orthology
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Variant Resolver
 ~~~~~~~~~~~~~~~~
 

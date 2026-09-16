@@ -10,14 +10,17 @@ os.environ.setdefault("TERM", "dumb")
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Iterable
+import sys
+from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeVar, cast
 
 import typer
 from Bio.SeqIO import parse as seqio_parse
 from Bio.SeqRecord import SeqRecord
+from click.core import ParameterSource
+from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -50,6 +53,16 @@ from sirnaforge.config import (
     WorkflowInputSpec,
     render_reference_selection_label,
 )
+from sirnaforge.config.run_policy import (
+    EntryPoint,
+    ResolvedRunPolicy,
+    RunPolicyError,
+    default_for,
+    format_validation_error,
+    mirna_preset_default_for,
+    resolve_run_policy,
+    switchable_filter_ids,
+)
 from sirnaforge.core.design import SiRNADesigner
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import (
@@ -59,12 +72,10 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
+from sirnaforge.models.policy import ExitCode, RunMode, RunStatus
 from sirnaforge.models.sirna import (
     DesignMode,
-    DesignParameters,
-    FilterCriteria,
-    MiRNADesignConfig,
-    TargetAccessibilityConfig,
+    ranking_score,
 )
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.models.zfn import (
@@ -84,10 +95,12 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
-from sirnaforge.utils.cli_inputs import extract_override_species_from_offtarget_indices, resolve_species_inputs
+from sirnaforge.reporting import ReportInputError, build_payload, write_quilt_summarize, write_report
+from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
+from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.utils.typed_decorators import command_decorator_typed
-from sirnaforge.workflow import run_offtarget_only_workflow, run_sirna_workflow
+from sirnaforge.workflow import describe_shortfall_reasons, run_offtarget_only_workflow, run_sirna_workflow
 from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
@@ -116,6 +129,171 @@ DEFAULT_ZFN_TOP_N_SITES = 5000
 DEFAULT_ZFN_REPORT_N_SITES = 200
 
 
+# ---------------------------------------------------------------------------
+# Option declarations more than one command shares.
+#
+# Typer reads an OptionInfo as read-only metadata when it builds each command, so one
+# declaration can back several commands. Declared once here because the copies had already
+# started to drift, and a --help difference between two commands that take the same option is
+# a documentation defect a reader cannot tell from a deliberate distinction.
+# ---------------------------------------------------------------------------
+
+#: ``bool`` for: benchmark_design, benchmark_prepare, design, offtarget, search, sequences_annotate, workflow, zfn.
+_VERBOSE_OPTION = typer.Option(
+    False,
+    "--verbose",
+    "-v",
+    help="Enable verbose output",
+)
+
+#: ``Path | None`` for: offtarget, workflow, zfn.
+_LOG_FILE_OPTION = typer.Option(
+    None,
+    "--log-file",
+    help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_CORES_OPTION = typer.Option(
+    None,
+    "--cores",
+    min=1,
+    envvar="SIRNAFORGE_CORES",
+    help=("Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."),
+)
+
+#: ``bool`` for: workflow, zfn.
+_JSON_SUMMARY_OPTION = typer.Option(
+    True,
+    "--json-summary/--no-json-summary",
+    help="Write logs/workflow_summary.json (disable to skip JSON output)",
+)
+
+#: ``str | None`` for: workflow, zfn.
+_NEXTFLOW_DOCKER_IMAGE_OPTION = typer.Option(
+    None,
+    "--nextflow-docker-image",
+    envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
+    help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
+)
+
+#: ``list[str]`` for: workflow, zfn.
+_ZFN_SUBFINGER_MUTATION_OPTION = typer.Option(
+    [],
+    "--zfn-subfinger-mutation",
+    help=(
+        "ZFN sub-finger mutation allowance. "
+        "Repeatable format: scope:max_mutations:type1,type2. "
+        "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
+        "or 'overall' for global budgets. "
+        "Use 'mismatch' as a shorthand alias for 'substitution'."
+    ),
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_MAX_MISMATCHES_PER_SUBFINGER_OPTION = typer.Option(
+    None,
+    "--zfn-max-mismatches-per-subfinger",
+    min=0,
+    help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_MAX_SUBSTITUTIONS_OVERALL_OPTION = typer.Option(
+    None,
+    "--zfn-max-substitutions-overall",
+    min=0,
+    help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
+)
+
+#: ``str | None`` for: workflow, zfn.
+_ZFN_SEARCH_SPACE_INDEX_OPTION = typer.Option(
+    None,
+    "--zfn-search-space-index",
+    help=(
+        "Optional persisted search-space index bundle path for indexed ZFN backends "
+        "(currently fm_index; fm_index is experimental on large references)."
+    ),
+)
+
+#: ``ZFNSearchBackend`` for: workflow, zfn.
+_ZFN_SEARCH_BACKEND_OPTION = typer.Option(
+    ZFNSearchBackend.PYAHOCORASICK,
+    "--zfn-search-backend",
+    help=(
+        "Half-site search backend: pyahocorasick (default), exhaustive_python (baseline), or fm_index (experimental)."
+    ),
+)
+
+#: ``ZFNAlgorithm`` for: workflow, zfn.
+_ZFN_ALGORITHM_OPTION = typer.Option(
+    ZFNAlgorithm.ZFN_V2,
+    "--zfn-algorithm",
+    help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
+)
+
+#: ``DimerMode`` for: workflow, zfn.
+_ZFN_DIMER_MODE_OPTION = typer.Option(
+    DimerMode.HETERODIMER_ONLY,
+    "--zfn-dimer-mode",
+    help="Dimer mode: heterodimer_only (default) or include_homodimers.",
+)
+
+#: ``str`` for: workflow, zfn.
+_ZFN_SPACER_LENGTHS_OPTION = typer.Option(
+    "5,6,7",
+    "--zfn-spacer-lengths",
+    help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
+)
+
+#: ``int`` for: workflow, zfn.
+_ZFN_MAX_MISMATCHES_OPTION = typer.Option(
+    2,
+    "--zfn-max-mismatches",
+    min=0,
+    max=6,
+    help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_WINDOW_STRIDE_OPTION = typer.Option(
+    None,
+    "--zfn-window-stride",
+    envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
+    min=1,
+    max=50,
+    hidden=True,
+    help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_TOP_N_SITES_OPTION = typer.Option(
+    None,
+    "--zfn-top-n-sites",
+    envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
+    min=1,
+    hidden=True,
+    help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
+)
+
+#: ``int | None`` for: workflow, zfn.
+_ZFN_REPORT_N_SITES_OPTION = typer.Option(
+    None,
+    "--zfn-report-n-sites",
+    envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
+    min=1,
+    hidden=True,
+    help="Internal tuning: number of top ranked sites included in report outputs.",
+)
+
+#: ``str | None`` for: workflow, zfn.
+_ZFN_ANNOTATION_OPTION = typer.Option(
+    None,
+    "--zfn-annotation",
+    help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
+)
+
+
 def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str) -> str:
     """Describe where off-target results landed, or why there are none.
 
@@ -127,6 +305,31 @@ def _offtarget_results_line(offtarget_summary: dict[str, Any], results_path: str
         reason = offtarget_summary.get("reason") or "not run"
         return f"   • Off-target results: [yellow]not produced ({reason})[/yellow]"
     return f"   • Off-target results: [blue]{results_path}[/blue]"
+
+
+#: How each run status reads in the summary table. One cell per outcome, because a single "Partial"
+#: for both an aborted pipeline and a run that merely lacked one species told the user nothing about
+#: which of the two had happened -- and "Complete" was printed for the sequence-only fallback (#100).
+_RUN_STATUS_CELLS: Mapping[RunStatus, str] = {
+    RunStatus.COMPLETED: "✅ Complete",
+    RunStatus.INCOMPLETE: "⚠️  Incomplete",
+    RunStatus.NOT_REQUESTED: "⏭️  Not requested",
+    RunStatus.NO_ELIGIBLE: "⚠️  No candidates to screen",
+    RunStatus.EXECUTION_ERROR: "❌ Did not run",
+}
+
+
+def _offtarget_status_cell(offtarget_summary: Mapping[str, Any]) -> str:
+    """The summary table's off-target status cell, from the run's own published ``run_status``.
+
+    Falls back to the pre-#100 two-way reading of ``status`` for a summary that carries no
+    ``run_status`` at all -- a result dictionary from an older version, or a caller that assembled
+    one by hand. An unrecognised value falls back the same way rather than printing an enum name.
+    """
+    try:
+        return _RUN_STATUS_CELLS[RunStatus(offtarget_summary.get("run_status"))]
+    except ValueError:
+        return "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial"
 
 
 def _autotune_zfn_sharding(
@@ -245,54 +448,247 @@ def extract_canonical_transcripts(
     return canonical_file, len(canonical)
 
 
-def _resolve_design_mode(
-    design_mode: str,
-    gc_min: float,
-    gc_max: float,
-    overhang: str,
-    modification_pattern: str,
-) -> tuple[DesignMode, float, float, str, str]:
-    """Normalize design mode and apply miRNA-aware defaults.
+def _option_was_stated(ctx: typer.Context, parameter: str) -> bool:
+    """Whether the user actually supplied one option, read from Click's parameter source.
 
-    The miRNA design mode has a different default GC range, overhang, and
-    modification pattern. To preserve user intent, those defaults are only
-    applied when the corresponding option is still set to its siRNA default.
-
-    Args:
-        design_mode: Raw user input (e.g., ``sirna``, ``mirna``, or ``zfn``).
-        gc_min: Minimum GC percentage.
-        gc_max: Maximum GC percentage.
-        overhang: Overhang string.
-        modification_pattern: Name of the chemical modification pattern.
-
-    Returns:
-        ``(mode_enum, gc_min, gc_max, overhang, modification_pattern)``.
-
-    Raises:
-        ValueError: If ``design_mode`` cannot be parsed.
+    This replaces comparing a value against the siRNA default. A value test cannot tell an omitted
+    ``--gc-max`` from one typed as ``--gc-max 60``, so in miRNA mode an explicit 60 was silently
+    rewritten to 52; the same sentinel governed ``--overhang`` and ``--modifications``. An option
+    set through its environment variable counts as stated, because a user set it.
     """
+    source = ctx.get_parameter_source(parameter)
+    # Compared by name: Typer vendors its own ParameterSource, so an identity test against Click's
+    # enum is a non-overlapping comparison that silently reads every option as unstated.
+    return source is not None and source.name != ParameterSource.DEFAULT.name
+
+
+def _stated_settings(ctx: typer.Context, candidates: Mapping[str, tuple[str, Any]]) -> dict[str, Any]:
+    """Policy settings the user stated, keyed by setting name.
+
+    ``candidates`` maps a policy setting key to ``(cli_parameter_name, value)``. The parameter name
+    is carried explicitly because six options are not named after the setting they set (``--length``
+    sets ``sirna_length``, ``--max-off-targets`` sets ``max_off_target_count``, ...) and looking the
+    wrong name up in Click reports every one of them as unstated.
+    """
+    stated: dict[str, Any] = {}
+    for key, (parameter, value) in candidates.items():
+        if _option_was_stated(ctx, parameter) and value is not None:
+            stated[key] = value
+    return stated
+
+
+def _parse_filter_actions(entries: Iterable[str]) -> dict[str, str]:
+    """Parse repeatable ``--filter-action filter_id=off|warn|fail`` entries.
+
+    Splitting only: the action itself is validated by
+    :data:`~sirnaforge.config.run_policy.SELECTABLE_ACTIONS`, which accepts all three words and
+    refuses an action the addressed gate could not apply -- ``off`` on a design-stage float
+    threshold, or anything but ``off`` on a gate with no threshold, no screening evidence in this
+    run, or no 0.7.1 reader at all.
+
+    ``warn`` is selectable, and the resolver accepting it is not the same as every gate honouring
+    it: four design-stage gates (``gc_content_min``, ``gc_content_max``, ``max_poly_runs``,
+    ``max_repeat_transcript_fraction``) reject regardless, because their rejection is written
+    outside ``record_filter_verdict``. The per-command ``--filter-action`` help names them.
+    """
+    actions: dict[str, str] = {}
+    for raw in entries:
+        token = raw.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise RunPolicyError(f"--filter-action expects filter_id=action, got {raw!r}")
+        filter_id, action = (part.strip() for part in token.split("=", 1))
+        actions[filter_id] = action
+    return actions
+
+
+def _fail_with_config_error(message: str, *, logger: logging.Logger | None = None) -> NoReturn:
+    """Report a configuration problem as a message and exit 1, never as a traceback.
+
+    Cross-field Pydantic errors (``--plfold-max-bp-span 100 --plfold-window 40``) are raised when
+    the model is constructed rather than when the option is parsed, so Typer's own validation never
+    saw them and they reached the user as an unhandled ValidationError.
+    """
+    if logger is not None:
+        logger.error("Invalid configuration: %s", message)
+    console.print(f"❌ Error: {message}", style="red")
+    raise typer.Exit(1)
+
+
+def _resolve_policy_or_exit(
+    *,
+    entry_point: EntryPoint,
+    logger: logging.Logger | None = None,
+    **kwargs: Any,
+) -> ResolvedRunPolicy:
+    """Resolve the run policy, turning every configuration error into a message and exit 1."""
     try:
-        mode_enum = DesignMode(design_mode.lower())
-    except ValueError as exc:
-        raise ValueError(f"Invalid design mode '{design_mode}'. Choose 'sirna', 'mirna', or 'zfn'") from exc
+        return resolve_run_policy(entry_point=entry_point, **kwargs)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc), logger=logger)
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc), logger=logger)
 
-    if mode_enum == DesignMode.MIRNA:
-        mirna_config = MiRNADesignConfig()
-        if gc_min == 30.0 and gc_max == 60.0:
-            gc_min = mirna_config.gc_min
-            gc_max = mirna_config.gc_max
-        if overhang == "dTdT":
-            overhang = mirna_config.overhang
-        if modification_pattern == "standard_2ome":
-            modification_pattern = mirna_config.modifications
 
-    return mode_enum, gc_min, gc_max, overhang, modification_pattern
+#: Counters that together say whether selection considered anything at all. All zero means no
+#: candidate reached selection, which is not an evidence verdict. ``provisional_candidates`` is one of
+#: them: an exploratory run whose whole batch is retained on incomplete evidence considered every one
+#: of those candidates, and leaving the state out made that run read as "nothing reached selection"
+#: and undercounted the total the console prints back (#100).
+_SELECTION_COUNTERS = (
+    "eligible_candidates",
+    "provisional_candidates",
+    "repeat_excluded",
+    "filter_excluded",
+    "evidence_excluded",
+    "unscored_excluded",
+)
+
+
+def _published_shortlist_size(selection: Mapping[str, Any]) -> int:
+    """How many candidates the run actually published as its shortlist.
+
+    ``selection.py::select`` ranks ``ELIGIBLE`` *and* ``PROVISIONAL`` candidates into
+    ``eligible_ordinals``, so both reach ``top_ordinals``, both are exported and both are what a
+    caller sees -- but ``summary['eligible_candidates']`` counts only ``ELIGIBLE``. Deciding emptiness
+    from that key called an exploratory run empty while it was publishing a shortlist full of
+    provisional candidates (#100), so ``--fail-on-no-eligible`` exited
+    :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` on a run that had produced a deliverable.
+
+    ``top_candidates`` is that shortlist's own size, and it is the right key rather than a convenient
+    one: ``top_n`` is either ``None`` or at least 1, so it is zero exactly when nothing was ranked.
+    A summary that predates the key answers from the two state counts instead, which is the same
+    number, so a partial summary is not read as empty either.
+
+    Says nothing about what *qualified*: a provisional candidate stays labelled provisional in the
+    summary, in the CSVs and on the candidate itself.
+    """
+    if "top_candidates" in selection:
+        return int(selection.get("top_candidates") or 0)
+    return int(selection.get("eligible_candidates") or 0) + int(selection.get("provisional_candidates") or 0)
+
+
+def _fail_if_nothing_could_qualify(
+    results: Mapping[str, Any], *, json_summary: bool, logger: logging.Logger | None = None
+) -> None:
+    """Exit ``INCOMPLETE_EVIDENCE`` when a qualified run could qualify nobody for want of evidence.
+
+    Deliberately narrow. A *complete* run that legitimately found nothing eligible exits 0 -- that is
+    a result, not a failure -- so the check requires a named evidence shortfall, either per candidate
+    (``evidence_shortfall_reasons``) or run-level (``required_evidence_missing``). Both are needed:
+    selection skips a gate-failing candidate before it reaches the evidence check, so a run that
+    screened nothing AND designed nothing acceptable reports no per-candidate reason at all.
+
+    Only ``qualified`` runs can fail here. design-only and exploratory claim less by construction, and
+    ZFN mode publishes no selection summary, so both return early.
+
+    This is the one incomplete-evidence exit, and it is decided from *selection*, never from the
+    screen's own ``run_status`` (#100): an incomplete screen whose surviving candidates still
+    qualified produced a usable deliverable, and exiting non-zero on it would fail every run on a
+    machine with no Nextflow.
+    """
+    selection = results.get("selection_summary") or {}
+    if selection.get("run_mode") != RunMode.QUALIFIED.value:
+        return
+    if _published_shortlist_size(selection):
+        return
+    if sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS) == 0:
+        return
+    reasons = selection.get("evidence_shortfall_reasons") or {}
+    missing = selection.get("required_evidence_missing") or []
+    if not reasons and not missing:
+        return
+
+    withheld = int(selection.get("evidence_excluded") or 0)
+    considered = sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS)
+    cause = describe_shortfall_reasons(reasons) if reasons else f"no evidence for {', '.join(missing)}"
+    if logger is not None:
+        logger.error("Nothing could be qualified: %s", cause)
+
+    # Two shapes, and they need different prose. With per-candidate reasons, N candidates were withheld
+    # by the evidence rule and carry `withheld_incomplete_evidence`. Without them, every candidate was
+    # dropped by a gate BEFORE the evidence check, so `withheld` is 0 and no row carries that state --
+    # saying "0 of N withheld ... see selection_state=withheld_incomplete_evidence" was wrong twice.
+    if reasons:
+        console.print(
+            f"\n❌ [red]Nothing could be qualified:[/red] no candidate holds the evidence this run "
+            f"requires, so the qualified shortlist is empty ({withheld} of {considered} candidate(s) "
+            f"withheld: {cause})."
+        )
+        state_hint = "selection_state=withheld_incomplete_evidence"
+    else:
+        console.print(
+            f"\n❌ [red]Nothing could be qualified:[/red] every one of {considered} candidate(s) was "
+            f"already excluded by a gate, and this run cannot qualify anything anyway ({cause})."
+        )
+        state_hint = "selection_state=not_eligible"
+
+    # The remedy follows the cause. An undecided gate on a completed screen is an annotation the gate
+    # could not read, and telling that user to supply a transcriptome is a wrong instruction.
+    if missing or any(str(key).startswith("no_evidence:") for key in reasons):
+        console.print(
+            "   ↳ supply the missing evidence (--transcriptome-fasta ensembl_human_cdna, or "
+            "--offtarget-indices <species>:/path/to/index), or re-run with --run-mode exploratory to "
+            "keep these candidates labelled."
+        )
+    else:
+        console.print(
+            "   ↳ the gates named above could not be decided on this run's inputs: supply what they "
+            "read, turn them off with --filter-action <id>=off, or re-run with --run-mode exploratory "
+            "to keep these candidates labelled."
+        )
+    if json_summary:
+        console.print(
+            f"   ↳ selection_summary in [blue]logs/workflow_summary.json[/blue] has the counts by "
+            f"cause; the candidates are in candidates_all.csv with {state_hint}."
+        )
+    console.print(f"   ↳ exit code {int(ExitCode.INCOMPLETE_EVIDENCE)}: incomplete required evidence.")
+    raise typer.Exit(int(ExitCode.INCOMPLETE_EVIDENCE))
+
+
+def _fail_if_nothing_was_eligible(
+    results: Mapping[str, Any], *, enabled: bool, logger: logging.Logger | None = None
+) -> None:
+    """Exit :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` for an empty shortlist, and only when asked to.
+
+    Off by default, and it must stay off by default: "nothing scored well enough" is a result, and a
+    complete run that legitimately qualified nobody has always exited 0, so making it non-zero would
+    break any caller already invoking this. ``--fail-on-no-eligible`` is for the caller who wants an
+    empty shortlist to stop a pipeline, and it is a separate code from
+    :attr:`ExitCode.INCOMPLETE_EVIDENCE` so the two are still distinguishable (#100).
+
+    Runs after the incomplete-evidence check, which therefore wins: a shortlist that is empty for want
+    of evidence is the more specific and more actionable answer.
+
+    Emptiness is decided from the shortlist the run published -- :func:`_published_shortlist_size` --
+    and not from ``eligible_candidates``, which counts only ``SelectionState.ELIGIBLE``. An
+    exploratory run's shortlist is full of ``PROVISIONAL`` candidates that this check used to be blind
+    to, so it exited :attr:`ExitCode.NO_ELIGIBLE_CANDIDATES` on a run whose deliverable existed and
+    was exported (#100). A ``QUALIFIED`` run labels nothing provisional, so its exit is unchanged.
+    """
+    selection = results.get("selection_summary") or {}
+    if not enabled or not selection:
+        return
+    if _published_shortlist_size(selection):
+        return
+    considered = sum(int(selection.get(key) or 0) for key in _SELECTION_COUNTERS)
+    if considered == 0:
+        return
+    if logger is not None:
+        logger.error("No candidate was eligible out of %s considered", considered)
+    console.print(
+        f"\n❌ [red]No eligible candidates:[/red] none of {considered} candidate(s) reached the "
+        f"shortlist, and --fail-on-no-eligible was requested "
+        f"(exit code {int(ExitCode.NO_ELIGIBLE_CANDIDATES)})."
+    )
+    raise typer.Exit(int(ExitCode.NO_ELIGIBLE_CANDIDATES))
 
 
 def _parse_zfn_mutation_types(raw_types: str, raw_constraint: str) -> list[ZFNMutationType]:
     """Parse and normalize mutation type tokens."""
     aliases = {"mismatch": "substitution", "mismatches": "substitution"}
-    mutation_types = [t.strip().lower() for t in raw_types.split(",") if t.strip()]
+    mutation_types = [token.lower() for token in parse_csv(raw_types)]
     if not mutation_types:
         raise ValueError(f"Invalid ZFN mutation types in '{raw_constraint}'. At least one type is required.")
     return [ZFNMutationType(aliases.get(value, value)) for value in mutation_types]
@@ -368,7 +764,7 @@ def _parse_zfn_mutation_constraints(
     return per_subfinger, default_subfinger, overall_constraints
 
 
-def _build_zfn_design_configuration(  # noqa: PLR0912
+def _build_zfn_design_configuration(
     *,
     zfn_subfinger_mutation: list[str],
     zfn_max_mismatches_per_subfinger: int | None,
@@ -508,12 +904,7 @@ def search(  # noqa: PLR0912
         "--exclude-types",
         help="Comma-separated list of transcript types to exclude",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Search transcript references and optionally fetch sequences.
 
@@ -546,8 +937,8 @@ def search(  # noqa: PLR0912
         )
 
         # Parse transcript types
-        include_types = [t.strip() for t in transcript_types.split(",") if t.strip()] if transcript_types else []
-        exclude_types_list = [t.strip() for t in exclude_types.split(",") if t.strip()] if exclude_types else []
+        include_types = parse_csv(transcript_types) if transcript_types else []
+        exclude_types_list = parse_csv(exclude_types) if exclude_types else []
 
         results: list[GeneSearchResult]
         with Progress(
@@ -681,7 +1072,7 @@ def search(  # noqa: PLR0912
         )
 
     except Exception as e:
-        console.print(f"❌ [red]Search error:[/red] {str(e)}")
+        console.print(f"❌ [red]Search error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -689,7 +1080,47 @@ def search(  # noqa: PLR0912
 
 @app_command()
 def workflow(  # noqa: PLR0912
+    ctx: typer.Context,
     gene_query: str = typer.Argument(..., help="Gene name or ID to analyze"),
+    run_mode: str | None = typer.Option(
+        None,
+        "--run-mode",
+        help=(
+            "How much screening evidence this run claims: design_only, exploratory or qualified. "
+            "Defaults to qualified for this command; --skip-off-targets maps to design_only. "
+            "Independent of --design-mode."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help=(
+            "JSON or TOML file of policy settings. Beats the built-in profile and loses to options "
+            "given on the command line. Unknown setting names are rejected, not ignored."
+        ),
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated -- which is not the same as passing -- and works for "
+            f"these gates: {', '.join(switchable_filter_ids())}. The seven design-stage gates read a "
+            "threshold with no absent state and are refused rather than faked; widen the threshold "
+            "instead. 'warn' keeps the gate measuring and stops it rejecting: the outcome is "
+            "published in <filter_id>_verdict and <filter_id>_observed and passes_filters is left "
+            "alone, so a 'fail' verdict on a retained candidate is a finding, not a contradiction. "
+            "Every declared gate honours it, including the four that used to reject regardless: "
+            "gc_content_min, gc_content_max and max_poly_runs decide during enumeration and now "
+            "retain the candidate (marked GATE_WARNED), and max_repeat_transcript_fraction no longer "
+            "stamps REPEAT_ELEMENT nor drops the guide from the shortlist. Warning a repeat gate has "
+            "a consequence worth knowing: a repeat-ubiquitous guide's alignments classify as "
+            "'repeat' rather than as liabilities, so retaining it also spares it max_off_target_count "
+            "-- widen the threshold instead if you want it judged on its hits. An action can only turn "
+            "a gate off, never on: 'warn' and 'fail' are refused for a gate that would be off anyway "
+            "(no threshold, no screening evidence, or no 0.7.1 reader -- max_mirna_1mm_seed)."
+        ),
+    ),
     input_fasta: str | None = typer.Option(
         None,
         "--input-fasta",
@@ -712,29 +1143,9 @@ def workflow(  # noqa: PLR0912
         "--design-mode",
         help="Design mode: sirna (default), mirna (miRNA-biogenesis-aware), or zfn (EXPERIMENTAL)",
     ),
-    zfn_subfinger_mutation: list[str] = typer.Option(
-        [],
-        "--zfn-subfinger-mutation",
-        help=(
-            "ZFN sub-finger mutation allowance. "
-            "Repeatable format: scope:max_mutations:type1,type2. "
-            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
-            "or 'overall' for global budgets. "
-            "Use 'mismatch' as a shorthand alias for 'substitution'."
-        ),
-    ),
-    zfn_max_mismatches_per_subfinger: int | None = typer.Option(
-        None,
-        "--zfn-max-mismatches-per-subfinger",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
-    ),
-    zfn_max_substitutions_overall: int | None = typer.Option(
-        None,
-        "--zfn-max-substitutions-overall",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
-    ),
+    zfn_subfinger_mutation: list[str] = _ZFN_SUBFINGER_MUTATION_OPTION,
+    zfn_max_mismatches_per_subfinger: int | None = _ZFN_MAX_MISMATCHES_PER_SUBFINGER_OPTION,
+    zfn_max_substitutions_overall: int | None = _ZFN_MAX_SUBSTITUTIONS_OVERALL_OPTION,
     # ── ZFN half-site and search-space inputs (required when --design-mode zfn) ──
     zfn_left_half_site: str | None = typer.Option(
         None,
@@ -756,83 +1167,17 @@ def workflow(  # noqa: PLR0912
             "Default: ensembl_human_hg38_primary when --design-mode zfn."
         ),
     ),
-    zfn_search_space_index: str | None = typer.Option(
-        None,
-        "--zfn-search-space-index",
-        help=(
-            "Optional persisted search-space index bundle path for indexed ZFN backends "
-            "(currently fm_index; fm_index is experimental on large references)."
-        ),
-    ),
-    zfn_search_backend: ZFNSearchBackend = typer.Option(
-        ZFNSearchBackend.PYAHOCORASICK,
-        "--zfn-search-backend",
-        help=(
-            "Half-site search backend: pyahocorasick (default), "
-            "exhaustive_python (baseline), or fm_index (experimental)."
-        ),
-    ),
-    zfn_algorithm: ZFNAlgorithm = typer.Option(
-        ZFNAlgorithm.ZFN_V2,
-        "--zfn-algorithm",
-        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
-    ),
-    zfn_dimer_mode: DimerMode = typer.Option(
-        DimerMode.HETERODIMER_ONLY,
-        "--zfn-dimer-mode",
-        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
-    ),
-    zfn_spacer_lengths: str = typer.Option(
-        "5,6,7",
-        "--zfn-spacer-lengths",
-        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
-    ),
-    zfn_max_mismatches: int = typer.Option(
-        2,
-        "--zfn-max-mismatches",
-        min=0,
-        max=6,
-        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
-    ),
-    zfn_window_stride: int | None = typer.Option(
-        None,
-        "--zfn-window-stride",
-        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
-        min=1,
-        max=50,
-        hidden=True,
-        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
-    ),
-    zfn_top_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-top-n-sites",
-        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
-    ),
-    zfn_report_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-report-n-sites",
-        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: number of top ranked sites included in report outputs.",
-    ),
-    cores: int | None = typer.Option(
-        None,
-        "--cores",
-        min=1,
-        envvar="SIRNAFORGE_CORES",
-        help=(
-            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
-        ),
-    ),
-    zfn_annotation: str | None = typer.Option(
-        None,
-        "--zfn-annotation",
-        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
-    ),
+    zfn_search_space_index: str | None = _ZFN_SEARCH_SPACE_INDEX_OPTION,
+    zfn_search_backend: ZFNSearchBackend = _ZFN_SEARCH_BACKEND_OPTION,
+    zfn_algorithm: ZFNAlgorithm = _ZFN_ALGORITHM_OPTION,
+    zfn_dimer_mode: DimerMode = _ZFN_DIMER_MODE_OPTION,
+    zfn_spacer_lengths: str = _ZFN_SPACER_LENGTHS_OPTION,
+    zfn_max_mismatches: int = _ZFN_MAX_MISMATCHES_OPTION,
+    zfn_window_stride: int | None = _ZFN_WINDOW_STRIDE_OPTION,
+    zfn_top_n_sites: int | None = _ZFN_TOP_N_SITES_OPTION,
+    zfn_report_n_sites: int | None = _ZFN_REPORT_N_SITES_OPTION,
+    cores: int | None = _CORES_OPTION,
+    zfn_annotation: str | None = _ZFN_ANNOTATION_OPTION,
     top_n_candidates: int | None = typer.Option(
         None,
         "--top-n",
@@ -861,7 +1206,7 @@ def workflow(  # noqa: PLR0912
         help=(
             "Organism the TARGET transcripts belong to, which decides which species' hits are "
             "on-target and whose alignment must succeed before candidates can be scored after "
-            "screening. --species is an unordered set of genomes to screen AGAINST and never "
+            "screening. --species is an unordered set of references to screen AGAINST and never "
             "sets this. Defaults to the organism the gene-query database serves (human), which "
             "is also the species of the default transcriptome; set it when designing against an "
             "input FASTA from another organism."
@@ -887,6 +1232,8 @@ def workflow(  # noqa: PLR0912
         help=(
             "Override or extend transcriptome references for off-target analysis. "
             "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "Prefix it with a species to state one -- 'mouse:/path/custom_cdna.fa' -- otherwise the "
+            "species is read from the reference's own Ensembl cDNA headers. "
             "When omitted, automatically fetches Ensembl cDNA for species selected via --species. "
             "Custom FASTA files are cached and indexed automatically. "
             "Use this to add novel sequences (e.g., synthetic contigs) to the default set."
@@ -903,52 +1250,81 @@ def workflow(  # noqa: PLR0912
             "Filtered versions are cached separately with automatic indexing."
         ),
     ),
-    offtarget_indices: str | None = typer.Option(
+    transcriptome_indices: str | None = typer.Option(
         None,
+        "--transcriptome-indices",
         "--offtarget-indices",
         help=(
-            "Comma-separated overrides for genome indices used in off-target analysis. "
-            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39. "
-            "When provided, overrides cached/default genome references."
+            "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is that "
+            "reference's species and is added to the screen; it does NOT suppress the references "
+            "--species resolves, so pass --transcriptome-fasta (or --run-mode design_only) if you "
+            "do not want the Ensembl defaults fetched as well. The cDNA FASTA the index was built "
+            "from must be readable beside the prefix (the prefix itself, or <prefix>.fa) so hits "
+            "can be resolved to genes."
         ),
     ),
-    gc_min: float = typer.Option(
-        30.0,
+    ortholog_mapping: Path | None = typer.Option(
+        None,
+        "--ortholog-mapping",
+        help=(
+            "JSON file of query gene -> species -> orthologue gene IDs, e.g. "
+            '{"ENSG00000141510": {"mouse": ["ENSMUSG00000059552"]}}. '
+            "Use it to classify cross-species hits offline instead of calling Ensembl Compara; "
+            "a species the file omits falls back to the labelled gene-symbol heuristic."
+        ),
+    ),
+    gc_min: float | None = typer.Option(
+        None,
         "--gc-min",
         min=0.0,
         max=100.0,
-        help="Minimum GC content percentage",
+        help=(
+            f"Minimum GC content percentage (default: {default_for('gc_min')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_min')}). Any value in "
+            "0-100 is supported."
+        ),
     ),
-    gc_max: float = typer.Option(
-        60.0,
+    gc_max: float | None = typer.Option(
+        None,
         "--gc-max",
         min=0.0,
         max=100.0,
-        help="Maximum GC content percentage",
+        help=(
+            f"Maximum GC content percentage (default: {default_for('gc_max')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_max')}). Any value in "
+            "0-100 is supported, and stating it keeps it in every design mode."
+        ),
     ),
-    sirna_length: int = typer.Option(
-        21,
+    sirna_length: int | None = typer.Option(
+        None,
         "--length",
         "-l",
         min=19,
         max=23,
-        help="siRNA length in nucleotides",
+        help=f"siRNA length in nucleotides (default: {default_for('sirna_length')})",
     ),
-    modification_pattern: str = typer.Option(
-        "standard_2ome",
+    modification_pattern: str | None = typer.Option(
+        None,
         "--modifications",
         "-m",
-        help="Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)",
+        help=(
+            "Chemical modification pattern: standard_2ome, minimal_terminal, maximal_stability, none "
+            f"(default: {default_for('modification_pattern')})"
+        ),
     ),
-    overhang: str = typer.Option(
-        "dTdT",
+    overhang: str | None = typer.Option(
+        None,
         "--overhang",
-        help="Overhang sequence (dTdT for DNA, UU for RNA)",
+        help=(
+            f"Overhang sequence, dTdT for DNA or UU for RNA (default: {default_for('default_overhang')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('default_overhang')})"
+        ),
     ),
     skip_off_targets: bool = typer.Option(
         False,
         "--skip-off-targets",
-        help="Skip off-target analysis (faster)",
+        help="Skip off-target analysis (faster). Maps to --run-mode design_only.",
     ),
     # Variant targeting parameters
     snp: list[str] = typer.Option(
@@ -1003,23 +1379,9 @@ def workflow(  # noqa: PLR0912
         "--variant-assembly",
         help="Reference genome assembly for variants (only GRCh38 supported)",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
-    ),
-    nextflow_docker_image: str | None = typer.Option(
-        None,
-        "--nextflow-docker-image",
-        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
-        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
-    ),
+    verbose: bool = _VERBOSE_OPTION,
+    log_file: Path | None = _LOG_FILE_OPTION,
+    nextflow_docker_image: str | None = _NEXTFLOW_DOCKER_IMAGE_OPTION,
     max_hits: int | None = typer.Option(
         None,
         "--max-hits",
@@ -1035,19 +1397,22 @@ def workflow(  # noqa: PLR0912
         "--max-off-targets",
         min=0,
         help=(
-            "Reject a candidate above this many genuine off-target sites (default: 3). Counts only "
-            "hits left after on-target, ortholog and repeat classification. Unlike --max-hits this "
-            "changes the PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
+            f"Reject a candidate above this many genuine off-target sites (default: "
+            f"{default_for('max_off_target_count')}). Counts only hits left after on-target, "
+            "ortholog and repeat classification. Unlike --max-hits this changes the "
+            "PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
         ),
     ),
     min_asymmetry: float | None = typer.Option(
         None,
         "--min-asymmetry",
-        min=0.3,
+        min=0.0,
         max=1.0,
         help=(
-            "Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: 0.65). The default has not "
-            "been calibrated against measured potency; lower it to widen the candidate pool."
+            f"Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: "
+            f"{default_for('min_asymmetry_score')}). The default has not been calibrated against "
+            "measured potency; lower it to widen the candidate pool, or set 0 to admit every "
+            "candidate while still reporting the score."
         ),
     ),
     max_paired_fraction: float | None = typer.Option(
@@ -1056,9 +1421,9 @@ def workflow(  # noqa: PLR0912
         min=0.0,
         max=1.0,
         help=(
-            "Guide self-structure ceiling gating EXCESS_PAIRING (default: 0.6). Quantised to 2k/L by "
-            "the dot-bracket, so on a 21-23mer only a few values are attainable and nearby "
-            "thresholds behave identically."
+            f"Guide self-structure ceiling gating EXCESS_PAIRING (default: "
+            f"{default_for('max_paired_fraction')}). Quantised to 2k/L by the dot-bracket, so on a "
+            "21-23mer only a few values are attainable and nearby thresholds behave identically."
         ),
     ),
     min_empirical: float | None = typer.Option(
@@ -1069,15 +1434,26 @@ def workflow(  # noqa: PLR0912
             "component score, whose attainable range is narrow."
         ),
     ),
+    min_isoform_coverage: float | None = typer.Option(
+        None,
+        "--min-isoform-coverage",
+        min=0.0,
+        max=1.0,
+        help=(
+            "Opt into the protein-coding isoform coverage gate (LOW_ISOFORM_COVERAGE). Off by "
+            "default: coverage is reported on every candidate either way, and no floor has been "
+            "calibrated against truth data. Not a scoring term."
+        ),
+    ),
     plfold_window: int | None = typer.Option(
         None,
         "--plfold-window",
         min=20,
         max=1000,
         help=(
-            "RNAplfold averaging window W for target-site accessibility (default: 150). Larger is "
-            "mildly better on the benchmark; W=150-240 is the plateau. Changing it changes the "
-            "scale of composite_score."
+            f"RNAplfold averaging window W for target-site accessibility (default: "
+            f"{default_for('plfold_window')}). Larger is mildly better on the benchmark; W=150-240 "
+            "is the plateau. Changing it changes the scale of composite_score."
         ),
     ),
     plfold_max_bp_span: int | None = typer.Option(
@@ -1085,20 +1461,28 @@ def workflow(  # noqa: PLR0912
         "--plfold-max-bp-span",
         min=10,
         max=1000,
-        help="RNAplfold maximum base-pair span L (default: 100). Must not exceed --plfold-window.",
+        help=(
+            f"RNAplfold maximum base-pair span L (default: {default_for('plfold_max_bp_span')}). "
+            "Must not exceed --plfold-window."
+        ),
     ),
     accessibility_log_floor: float | None = typer.Option(
         None,
         "--accessibility-log-floor",
         help=(
-            "log10 probability treated as zero target-site accessibility (default: -5.0, ~99% of "
-            "observed sites). Fixed, not per-transcript, so scores stay comparable between targets."
+            f"log10 probability treated as zero target-site accessibility (default: "
+            f"{default_for('accessibility_log_floor')}, ~99% of observed sites). Fixed, not "
+            "per-transcript, so scores stay comparable between targets."
         ),
     ),
-    json_summary: bool = typer.Option(
-        True,
-        "--json-summary/--no-json-summary",
-        help="Write logs/workflow_summary.json (disable to skip JSON output)",
+    json_summary: bool = _JSON_SUMMARY_OPTION,
+    fail_on_no_eligible: bool = typer.Option(
+        False,
+        "--fail-on-no-eligible",
+        help=(
+            "Exit 3 when no candidate qualified, even on a complete run. Off by default: an empty "
+            "shortlist is a result, not a failure. Incomplete required evidence always exits 2."
+        ),
     ),
 ) -> None:
     """Run the end-to-end workflow: transcripts → siRNA design → off-target.
@@ -1107,29 +1491,61 @@ def workflow(  # noqa: PLR0912
     reference policies, designs candidates, and then runs off-target analysis on
     the selected top candidates.
     """
+    # Resolve and validate the biological policy BEFORE anything creates a directory or a log file:
+    # an invalid bound or an incompatible mode must cost nothing.
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+    stated = _stated_settings(
+        ctx,
+        {
+            "gc_min": ("gc_min", gc_min),
+            "gc_max": ("gc_max", gc_max),
+            "sirna_length": ("sirna_length", sirna_length),
+            "modification_pattern": ("modification_pattern", modification_pattern),
+            "default_overhang": ("overhang", overhang),
+            "top_n": ("top_n_candidates", top_n_candidates),
+            "max_off_target_count": ("max_off_targets", max_off_targets),
+            "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
+            "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
+            "min_empirical_score": ("min_empirical", min_empirical),
+            "min_isoform_coverage": ("min_isoform_coverage", min_isoform_coverage),
+            "plfold_window": ("plfold_window", plfold_window),
+            "plfold_max_bp_span": ("plfold_max_bp_span", plfold_max_bp_span),
+            "accessibility_log_floor": ("accessibility_log_floor", accessibility_log_floor),
+        },
+    )
+    if "modification_pattern" in stated:
+        stated["apply_modifications"] = str(stated["modification_pattern"]).lower() != "none"
+    policy = _resolve_policy_or_exit(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        # Passed only when the user typed it, so the manifest does not report a mode nobody chose.
+        design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+        run_mode=run_mode,
+        config_file=policy_config,
+        stated=stated,
+        filter_actions=actions,
+        legacy_skip_screening=skip_off_targets or None,
+        query_species=query_species,
+        screen_species=parse_csv(species),
+        # `--input-fasta` does not auto-resolve the default transcriptomes (see the reference-policy
+        # comment below), so with neither `--transcriptome-fasta` nor `--offtarget-indices` this run has
+        # no transcriptome reference. Calling itself `qualified` meant it required evidence it could
+        # never obtain, and every candidate was withheld from a shortlist the run could never fill.
+        # This is the transcriptome channel only: the miRNA seed screen has its own reference and runs.
+        transcriptome_reference_available=(
+            False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
+        ),
+    )
+    mode_enum = policy.design_mode
+    resolved_filters = policy.design_parameters.filters
+
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
     log_destination.parent.mkdir(parents=True, exist_ok=True)
     configure_logging(level=os.getenv("SIRNAFORGE_LOG_LEVEL"), log_file=str(log_destination))
     effective_log = str(log_destination)
     logger = logging.getLogger(__name__)
-
-    if gc_min >= gc_max:
-        logger.error("Invalid GC range: gc_min=%s, gc_max=%s", gc_min, gc_max)
-        console.print("❌ Error: gc-min must be less than gc-max", style="red")
-        raise typer.Exit(1)
-
-    try:
-        mode_enum, gc_min, gc_max, overhang, modification_pattern = _resolve_design_mode(
-            design_mode,
-            gc_min,
-            gc_max,
-            overhang,
-            modification_pattern,
-        )
-    except ValueError as exc:
-        logger.error("Invalid design mode: %s", exc)
-        console.print(f"❌ Error: {exc}", style="red")
-        raise typer.Exit(1)
 
     if mode_enum == DesignMode.ZFN:
         emit_zfn_experimental_warning(console)
@@ -1201,7 +1617,7 @@ def workflow(  # noqa: PLR0912
 
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
-        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
+        override_species = extract_declared_species_from_indices(transcriptome_indices)
     except ValueError as exc:
         logger.error("Species resolution failed: %s", exc)
         console.print(f"❌ Error: {exc}", style="red")
@@ -1209,7 +1625,7 @@ def workflow(  # noqa: PLR0912
 
     source_normalized = resolved_species.source_normalized
     canonical_species = resolved_species.canonical_species
-    species_list = resolved_species.genome_species
+    species_list = resolved_species.screen_species
     mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
@@ -1232,43 +1648,49 @@ def workflow(  # noqa: PLR0912
     # four multi-gigabyte cDNA references nobody asked for (it also contradicted the documented
     # design-only behaviour and timed out the toy container workflow). --transcriptome-fasta is
     # the explicit opt-in, and it accepts a bundled source name such as ensembl_human_cdna.
+    # Key reference selection on the *resolved* run mode, not on the legacy flag: --run-mode
+    # design_only and --skip-off-targets are the same run, and reading the raw flag here made them
+    # publish two different reference_summary records for it.
+    design_only_run = policy.run_mode is RunMode.DESIGN_ONLY
     transcriptome_spec = WorkflowInputSpec(
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
-        design_only=skip_off_targets,
+        design_only=design_only_run,
         allow_transcriptome_for_input_fasta=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
-    if input_fasta and not transcriptome_fasta and not skip_off_targets:
+    if input_fasta and not transcriptome_fasta and not design_only_run:
         console.print(
             "ℹ️  --input-fasta without --transcriptome-fasta: transcriptome off-target screening and "
             "repeat detection are disabled (design-only). Pass --transcriptome-fasta "
             "ensembl_human_cdna (or a path/URL) to screen against a reference.",
             style="yellow",
         )
-    genome_species_for_workflow = override_species or species_list
-    offtarget_override_label = offtarget_indices or "cached defaults"
+    screen_species_for_workflow = override_species or species_list
+    index_override_label = transcriptome_indices or "resolved from --species"
     nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 
     console.print(
         Panel.fit(
             f"🧬 [bold blue]Complete siRNA Workflow[/bold blue]\n"
             f"Design Mode: [cyan]{mode_enum.value}[/cyan]\n"
+            f"Run Mode: [cyan]{policy.run_mode.value}[/cyan] "
+            f"([magenta]{policy.profile.name} {policy.profile.version}, experimental[/magenta])\n"
             f"Gene Query: [cyan]{input_descriptor}[/cyan]\n"
             f"Database: [yellow]{database}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
-            f"siRNA Length: [yellow]{sirna_length}[/yellow] nt\n"
-            f"GC Range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Reported Candidates: [yellow]{top_n_candidates if top_n_candidates is not None else 'all (uncapped)'}[/yellow]\n"
+            f"siRNA Length: [yellow]{policy.design_parameters.sirna_length}[/yellow] nt\n"
+            f"GC Range: [yellow]{resolved_filters.gc_min:.1f}%-{resolved_filters.gc_max:.1f}%[/yellow]\n"
+            f"Reported Candidates: [yellow]{policy.design_parameters.top_n if policy.design_parameters.top_n is not None else 'all (uncapped)'}[/yellow]\n"
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
-            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"  ↳ Prebuilt Index Override: [green]{index_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]\n"
-            f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
-            f"Overhang: [magenta]{overhang}[/magenta]\n"
+            f"Modifications: [magenta]{policy.design_parameters.modification_pattern}[/magenta]\n"
+            f"Overhang: [magenta]{policy.design_parameters.default_overhang}[/magenta]\n"
             f"ZFN Constraints: [magenta]{len(zfn_constraints)} explicit, "
             f"{1 if zfn_default_constraint else 0} default, {len(zfn_overall_constraints)} overall[/magenta]",
             title="Workflow Configuration",
@@ -1290,21 +1712,18 @@ def workflow(  # noqa: PLR0912
                     input_fasta=input_fasta,
                     output_dir=str(output_dir),
                     database=database,
-                    design_mode=design_mode,
-                    top_n_candidates=top_n_candidates,
-                    genome_species=genome_species_for_workflow,
+                    # One resolved policy, so the CLI and a direct API call cannot diverge. Every
+                    # threshold, the design mode and the run mode travel inside it.
+                    resolved_policy=policy,
+                    screen_species=screen_species_for_workflow,
                     query_species=query_species,
-                    genome_indices_override=offtarget_indices,
+                    transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
-                    gc_min=gc_min,
-                    gc_max=gc_max,
-                    sirna_length=sirna_length,
-                    modification_pattern=modification_pattern,
-                    overhang=overhang,
+                    ortholog_mapping_file=ortholog_mapping,
                     zfn_design_params=zfn_design_params,
                     zfn_annotation=annotation if mode_enum == DesignMode.ZFN else None,
                     # Variant parameters
@@ -1317,23 +1736,18 @@ def workflow(  # noqa: PLR0912
                     log_file=effective_log,
                     write_json_summary=json_summary,
                     num_threads=cores,
-                    check_off_targets=not skip_off_targets,
                     nextflow_docker_image=nextflow_docker_image,
                     max_hits=max_hits,
-                    max_off_targets=max_off_targets,
-                    min_asymmetry_score=min_asymmetry,
-                    max_paired_fraction=max_paired_fraction,
-                    min_empirical_score=min_empirical,
-                    plfold_window=plfold_window,
-                    plfold_max_bp_span=plfold_max_bp_span,
-                    accessibility_log_floor=accessibility_log_floor,
                 )
             )
 
             progress.remove_task(task)
         # TODO: simplify the printing and console logging summaries
         # Display results summary
-        console.print("\n✅ [bold green]Workflow completed successfully![/bold green]")
+        # "finished", not "successfully": the qualified-evidence verdict is decided after this block,
+        # and a run that cannot qualify anything still reaches here. The file inventory below is what
+        # tells the user where the withheld candidates are, so it is still worth printing.
+        console.print("\n✅ [bold green]Workflow finished[/bold green]")
 
         # Workflow summary
         summary_table = Table(title="📊 Workflow Results Summary")
@@ -1374,7 +1788,7 @@ def workflow(  # noqa: PLR0912
 
             summary_table.add_row(
                 "Off-target Analysis",
-                "Complete" if offtarget_summary.get("status") == "completed" else "⚠️  Partial",
+                _offtarget_status_cell(offtarget_summary),
                 f"Method: {offtarget_summary.get('method', 'basic')}",
             )
 
@@ -1400,19 +1814,58 @@ def workflow(  # noqa: PLR0912
             if json_summary:
                 console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
 
-            if offtarget_summary.get("method") == "nextflow":
-                console.print("   • Full off-target report: [blue]off_target/results/offtarget_report.html[/blue]")
+            # The real report, at the path step6 actually writes. This line used to name
+            # off_target/results/offtarget_report.html, which no code path has ever produced (#103).
+            console.print("   • Self-contained HTML report: [blue]sirnaforge/report.html[/blue]")
 
     except Exception as e:
         logger.exception("Workflow execution failed")
-        console.print(f"❌ [red]Workflow error:[/red] {str(e)}")
+        console.print(f"❌ [red]Workflow error:[/red] {e!s}")
         if verbose:
             console.print_exception()
-        raise typer.Exit(1)
+        # An exception that reached here is the execution-error code, and the only one: the run
+        # produced no deliverable at all (#100).
+        raise typer.Exit(int(ExitCode.EXECUTION_ERROR))
+
+    # Outside the try on purpose: typer.Exit subclasses RuntimeError, so raising it inside would be
+    # caught by the handler above, logged as a crash, and reprinted as "Workflow error: 1".
+    # Order is the taxonomy: incomplete evidence (2) is more specific than an empty shortlist (3).
+    _fail_if_nothing_could_qualify(results, json_summary=json_summary, logger=logger)
+    _fail_if_nothing_was_eligible(results, enabled=fail_on_no_eligible, logger=logger)
 
 
 @app_command()
 def offtarget(
+    run_mode: str | None = typer.Option(
+        None,
+        "--run-mode",
+        help=(
+            "How much screening evidence this run claims: design_only, exploratory or qualified "
+            "(default: qualified). design_only would screen nothing, so it is rejected here."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help="JSON or TOML file of policy settings; loses to options given on the command line.",
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            f"threshold, so it is not evaluated, which is not the same as passing: {', '.join(switchable_filter_ids())}. "
+            "The seven design-stage gates have no absent threshold and are refused rather than faked. "
+            "'warn' keeps the gate measuring and stops it rejecting: the outcome is published in "
+            "<filter_id>_verdict and <filter_id>_observed and passes_filters is left alone. Every gate "
+            "this command applies -- the off-target gates and min_isoform_coverage -- honours it, "
+            "because each one records through the shared verdict recorder. The design-stage gates do "
+            "not run on pre-designed guides at all, so an action set on one is accepted and applies "
+            "to nothing. min_isoform_coverage, max_transcriptome_seed_perfect and "
+            "max_total_offtarget_hits ship with no threshold, so set one before asking for 'warn' or "
+            "'fail'; max_mirna_1mm_seed is read by no 0.7.1 gate, so only 'off' is accepted for it."
+        ),
+    ),
     input_candidates_fasta: Path = typer.Option(
         ...,
         "--input-candidates-fasta",
@@ -1443,7 +1896,7 @@ def offtarget(
         help=(
             "Organism the supplied guides were designed against, which decides whose alignment "
             "must succeed before candidates can be scored after screening. --species is the set "
-            "of genomes to screen AGAINST and never sets this. Defaults to human."
+            "of references to screen AGAINST and never sets this. Defaults to human."
         ),
     ),
     mirna_db: str = typer.Option(
@@ -1461,7 +1914,9 @@ def offtarget(
         "--transcriptome-fasta",
         help=(
             "Override or extend transcriptome references for off-target analysis. "
-            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna')."
+            "Accepts: local file, HTTP(S) URL, or pre-configured source (e.g., 'ensembl_human_cdna'). "
+            "Prefix it with a species to state one -- 'mouse:/path/custom_cdna.fa' -- otherwise the "
+            "species is read from the reference's own Ensembl cDNA headers."
         ),
     ),
     transcriptome_filter: str | None = typer.Option(
@@ -1473,25 +1928,27 @@ def offtarget(
             "Example: --transcriptome-filter protein_coding,canonical_only."
         ),
     ),
-    offtarget_indices: str | None = typer.Option(
+    transcriptome_indices: str | None = typer.Option(
         None,
+        "--transcriptome-indices",
         "--offtarget-indices",
         help=(
-            "Comma-separated overrides for genome indices used in off-target analysis. "
-            "Format: human:/abs/path/GRCh38,mouse:/abs/path/GRCm39."
+            "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is added to "
+            "the screen and does not suppress the references --species resolves. The cDNA FASTA the "
+            "index was built from must be readable beside the prefix so hits can be resolved to genes."
         ),
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
-    log_file: Path | None = typer.Option(
+    ortholog_mapping: Path | None = typer.Option(
         None,
-        "--log-file",
-        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
+        "--ortholog-mapping",
+        help=(
+            "JSON file of query gene -> species -> orthologue gene IDs, used to classify "
+            "cross-species hits offline instead of calling Ensembl Compara."
+        ),
     ),
+    verbose: bool = _VERBOSE_OPTION,
+    log_file: Path | None = _LOG_FILE_OPTION,
     nextflow_docker_image: str | None = typer.Option(
         None,
         "--nextflow-docker-image",
@@ -1514,6 +1971,24 @@ def offtarget(
         - ``--offtarget-indices`` can override the indices used for alignment
           using ``species:/abs/path/index_prefix`` entries.
     """
+    # Policy first: an invalid threshold must not cost a FASTA read, a download or a directory.
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+    policy = _resolve_policy_or_exit(
+        entry_point=EntryPoint.OFFTARGET_ONLY,
+        run_mode=run_mode,
+        config_file=policy_config,
+        filter_actions=actions,
+        query_species=query_species,
+        screen_species=parse_csv(species),
+    )
+    if policy.run_mode is RunMode.DESIGN_ONLY:
+        _fail_with_config_error(
+            "--run-mode design_only would screen nothing; this command exists to screen pre-designed guides"
+        )
+
     # Validate input FASTA contains sequences (any length accepted)
     try:
         sequences = FastaUtils.read_fasta(input_candidates_fasta)
@@ -1535,21 +2010,21 @@ def offtarget(
     except Exception as e:
         if isinstance(e, typer.Exit):
             raise
-        console.print(f"❌ [red]Error validating input FASTA:[/red] {str(e)}")
+        console.print(f"❌ [red]Error validating input FASTA:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
 
     try:
         resolved_species = resolve_species_inputs(species=species, mirna_db=mirna_db, mirna_species=mirna_species)
-        override_species = extract_override_species_from_offtarget_indices(offtarget_indices)
+        override_species = extract_declared_species_from_indices(transcriptome_indices)
     except ValueError as exc:
         console.print(f"❌ Error: {exc}", style="red")
         raise typer.Exit(1)
 
     source_normalized = resolved_species.source_normalized
     canonical_species = resolved_species.canonical_species
-    species_list = resolved_species.genome_species
+    species_list = resolved_species.screen_species
     mirna_species_list = resolved_species.mirna_species
 
     if not mirna_species_list:
@@ -1566,8 +2041,8 @@ def offtarget(
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
     transcriptome_label = render_reference_selection_label(transcriptome_selection)
 
-    genome_species_for_workflow = override_species or species_list
-    offtarget_override_label = offtarget_indices or "cached defaults"
+    screen_species_for_workflow = override_species or species_list
+    index_override_label = transcriptome_indices or "resolved from --species"
     nextflow_image_label = nextflow_docker_image or DEFAULT_SIRNAFORGE_DOCKER_IMAGE
 
     console.print(
@@ -1576,10 +2051,12 @@ def offtarget(
             f"Input Candidates: [cyan]{input_candidates_fasta.name}[/cyan]\n"
             f"Candidate Count: [yellow]{len(sequences)}[/yellow]\n"
             f"Output Directory: [cyan]{output_dir}[/cyan]\n"
+            f"Run Mode: [cyan]{policy.run_mode.value}[/cyan] "
+            f"([magenta]{policy.profile.name} {policy.profile.version}, experimental[/magenta])\n"
             f"Species (canonical): [green]{', '.join(canonical_species)}[/green]\n"
             f"  ↳ miRNA Database ({source_normalized}): [green]{', '.join(mirna_species_list)}[/green]\n"
             f"  ↳ Transcriptome Reference: [green]{transcriptome_label}[/green]\n"
-            f"  ↳ Off-target Index Override: [green]{offtarget_override_label}[/green]\n"
+            f"  ↳ Prebuilt Index Override: [green]{index_override_label}[/green]\n"
             f"  ↳ Nextflow Docker Image: [green]{nextflow_image_label}[/green]",
             title="Off-Target Configuration",
         )
@@ -1603,16 +2080,18 @@ def offtarget(
                 run_offtarget_only_workflow(
                     input_candidates_fasta=str(input_candidates_fasta),
                     output_dir=str(output_dir),
-                    genome_species=genome_species_for_workflow,
+                    screen_species=screen_species_for_workflow,
                     query_species=query_species,
-                    genome_indices_override=offtarget_indices,
+                    transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
+                    ortholog_mapping_file=ortholog_mapping,
                     log_file=effective_log,
                     nextflow_docker_image=nextflow_docker_image,
+                    resolved_policy=policy,
                 )
             )
 
@@ -1627,9 +2106,7 @@ def offtarget(
         summary_table.add_column("Metric", style="cyan")
         summary_table.add_column("Value", style="white")
 
-        summary_table.add_row(
-            "Status", "✅ Complete" if offtarget_summary.get("status") == "completed" else "⚠️ Partial"
-        )
+        summary_table.add_row("Status", _offtarget_status_cell(offtarget_summary))
         summary_table.add_row("Method", offtarget_summary.get("method", "N/A"))
         summary_table.add_row("Candidates Analyzed", str(len(sequences)))
 
@@ -1642,11 +2119,12 @@ def offtarget(
         console.print(_offtarget_results_line(offtarget_summary, "results/"))
         console.print("   • Console log: [blue]logs/sirnaforge.log[/blue]")
 
-        if offtarget_summary.get("method") == "embedded_nextflow":
-            console.print("   • Full off-target report: [blue]results/offtarget_report.html[/blue]")
+        # No HTML report is advertised here: this command bypasses step6, so nothing writes one.
+        # The removed line named results/offtarget_report.html, which no code path produces (#103).
+        console.print("   • Build a report from this run with: [blue]sirnaforge report <output_dir>[/blue]")
 
     except Exception as e:
-        console.print(f"❌ [red]Off-target analysis error:[/red] {str(e)}")
+        console.print(f"❌ [red]Off-target analysis error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -1660,29 +2138,9 @@ def zfn(
         "-o",
         help="Output directory for ZFN activity evaluation results",
     ),
-    zfn_subfinger_mutation: list[str] = typer.Option(
-        [],
-        "--zfn-subfinger-mutation",
-        help=(
-            "ZFN sub-finger mutation allowance. "
-            "Repeatable format: scope:max_mutations:type1,type2. "
-            "scope can be subfinger index (e.g. 2), '*' for default per-subfinger, "
-            "or 'overall' for global budgets. "
-            "Use 'mismatch' as a shorthand alias for 'substitution'."
-        ),
-    ),
-    zfn_max_mismatches_per_subfinger: int | None = typer.Option(
-        None,
-        "--zfn-max-mismatches-per-subfinger",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation '*:<N>:mismatch'.",
-    ),
-    zfn_max_substitutions_overall: int | None = typer.Option(
-        None,
-        "--zfn-max-substitutions-overall",
-        min=0,
-        help="Convenience option equivalent to --zfn-subfinger-mutation 'overall:<N>:substitution'.",
-    ),
+    zfn_subfinger_mutation: list[str] = _ZFN_SUBFINGER_MUTATION_OPTION,
+    zfn_max_mismatches_per_subfinger: int | None = _ZFN_MAX_MISMATCHES_PER_SUBFINGER_OPTION,
+    zfn_max_substitutions_overall: int | None = _ZFN_MAX_SUBSTITUTIONS_OVERALL_OPTION,
     zfn_left_half_site: str = typer.Option(
         ...,
         "--zfn-left-half-site",
@@ -1703,105 +2161,21 @@ def zfn(
             "Default: ensembl_human_hg38_primary."
         ),
     ),
-    zfn_search_space_index: str | None = typer.Option(
-        None,
-        "--zfn-search-space-index",
-        help=(
-            "Optional persisted search-space index bundle path for indexed ZFN backends "
-            "(currently fm_index; fm_index is experimental on large references)."
-        ),
-    ),
-    zfn_search_backend: ZFNSearchBackend = typer.Option(
-        ZFNSearchBackend.PYAHOCORASICK,
-        "--zfn-search-backend",
-        help=(
-            "Half-site search backend: pyahocorasick (default), "
-            "exhaustive_python (baseline), or fm_index (experimental)."
-        ),
-    ),
-    zfn_algorithm: ZFNAlgorithm = typer.Option(
-        ZFNAlgorithm.ZFN_V2,
-        "--zfn-algorithm",
-        help="ZFN off-target scoring algorithm: homology, conserved_g, or zfn_v2 (default).",
-    ),
-    zfn_dimer_mode: DimerMode = typer.Option(
-        DimerMode.HETERODIMER_ONLY,
-        "--zfn-dimer-mode",
-        help="Dimer mode: heterodimer_only (default) or include_homodimers.",
-    ),
-    zfn_spacer_lengths: str = typer.Option(
-        "5,6,7",
-        "--zfn-spacer-lengths",
-        help="Comma-separated allowed spacer lengths between half-sites (default: 5,6,7).",
-    ),
-    zfn_max_mismatches: int = typer.Option(
-        2,
-        "--zfn-max-mismatches",
-        min=0,
-        max=6,
-        help="Max mismatches per half-site in exhaustive genomic search (default: 2).",
-    ),
-    zfn_window_stride: int | None = typer.Option(
-        None,
-        "--zfn-window-stride",
-        envvar="SIRNAFORGE_ZFN_WINDOW_STRIDE",
-        min=1,
-        max=50,
-        hidden=True,
-        help=("Internal tuning: sliding-window stride in bp for half-site scan (1 = fully exhaustive)."),
-    ),
-    zfn_top_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-top-n-sites",
-        envvar="SIRNAFORGE_ZFN_TOP_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: maximum ranked off-target sites retained before candidate summarization.",
-    ),
-    zfn_report_n_sites: int | None = typer.Option(
-        None,
-        "--zfn-report-n-sites",
-        envvar="SIRNAFORGE_ZFN_REPORT_N_SITES",
-        min=1,
-        hidden=True,
-        help="Internal tuning: number of top ranked sites included in report outputs.",
-    ),
-    cores: int | None = typer.Option(
-        None,
-        "--cores",
-        min=1,
-        envvar="SIRNAFORGE_CORES",
-        help=(
-            "Total CPU core budget for workflow execution. ZFN sharding and workflow parallel stages derive from this."
-        ),
-    ),
-    zfn_annotation: str | None = typer.Option(
-        None,
-        "--zfn-annotation",
-        help="Optional GTF/GFF annotation file for ZFN off-target region classification.",
-    ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        help="Path to centralized log file (overrides SIRNAFORGE_LOG_FILE env)",
-    ),
-    nextflow_docker_image: str | None = typer.Option(
-        None,
-        "--nextflow-docker-image",
-        envvar="SIRNAFORGE_NEXTFLOW_IMAGE",
-        help=(f"Override the Docker image passed to Nextflow (default: {DEFAULT_SIRNAFORGE_DOCKER_IMAGE})"),
-    ),
-    json_summary: bool = typer.Option(
-        True,
-        "--json-summary/--no-json-summary",
-        help="Write logs/workflow_summary.json (disable to skip JSON output)",
-    ),
+    zfn_search_space_index: str | None = _ZFN_SEARCH_SPACE_INDEX_OPTION,
+    zfn_search_backend: ZFNSearchBackend = _ZFN_SEARCH_BACKEND_OPTION,
+    zfn_algorithm: ZFNAlgorithm = _ZFN_ALGORITHM_OPTION,
+    zfn_dimer_mode: DimerMode = _ZFN_DIMER_MODE_OPTION,
+    zfn_spacer_lengths: str = _ZFN_SPACER_LENGTHS_OPTION,
+    zfn_max_mismatches: int = _ZFN_MAX_MISMATCHES_OPTION,
+    zfn_window_stride: int | None = _ZFN_WINDOW_STRIDE_OPTION,
+    zfn_top_n_sites: int | None = _ZFN_TOP_N_SITES_OPTION,
+    zfn_report_n_sites: int | None = _ZFN_REPORT_N_SITES_OPTION,
+    cores: int | None = _CORES_OPTION,
+    zfn_annotation: str | None = _ZFN_ANNOTATION_OPTION,
+    verbose: bool = _VERBOSE_OPTION,
+    log_file: Path | None = _LOG_FILE_OPTION,
+    nextflow_docker_image: str | None = _NEXTFLOW_DOCKER_IMAGE_OPTION,
+    json_summary: bool = _JSON_SUMMARY_OPTION,
 ) -> None:
     """Evaluate a ZFN pair and run exhaustive genome-wide off-target search (EXPERIMENTAL)."""
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
@@ -1888,14 +2262,15 @@ def zfn(
         if json_summary:
             console.print("   • Workflow summary: [blue]logs/workflow_summary.json[/blue]")
     except Exception as e:
-        console.print(f"❌ [red]ZFN workflow error:[/red] {str(e)}")
+        console.print(f"❌ [red]ZFN workflow error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
 
 
 @app_command()
-def design(  # noqa: PLR0912
+def design(
+    ctx: typer.Context,
     input_file: Path = typer.Argument(
         ...,
         help="Input FASTA file containing transcript sequences",
@@ -1914,13 +2289,35 @@ def design(  # noqa: PLR0912
         "--design-mode",
         help="Design mode: sirna (default) or mirna (miRNA-biogenesis-aware). For ZFN use 'sirnaforge zfn'.",
     ),
-    length: int = typer.Option(
-        21,
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help=(
+            "JSON or TOML file of policy settings. Beats the built-in profile and loses to options "
+            "given on the command line. Unknown setting names are rejected, not ignored."
+        ),
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|warn|fail (repeatable). 'off' clears the gate's "
+            "threshold, so it is not evaluated, which is not the same as passing; it is refused for "
+            "the seven design-stage gates, whose thresholds are plain floats with no absent state "
+            "(widen the threshold instead), and it is a no-op on a post-screen gate, which this "
+            "design_only command never evaluates anyway. 'warn' means record the verdict in "
+            "<filter_id>_verdict and leave passes_filters alone, and every design-stage gate honours "
+            "it here -- including gc_content_min, gc_content_max and max_poly_runs, which decide "
+            "during enumeration and now retain the candidate marked GATE_WARNED."
+        ),
+    ),
+    length: int | None = typer.Option(
+        None,
         "--length",
         "-l",
         min=19,
         max=23,
-        help="siRNA length in nucleotides",
+        help=f"siRNA length in nucleotides (default: {default_for('sirna_length')})",
     ),
     top_n: int | None = typer.Option(
         None,
@@ -1932,63 +2329,79 @@ def design(  # noqa: PLR0912
             "All candidates are generated and screened regardless."
         ),
     ),
-    gc_min: float = typer.Option(
-        30.0,
+    gc_min: float | None = typer.Option(
+        None,
         "--gc-min",
         min=0.0,
         max=100.0,
-        help="Minimum GC content percentage",
+        help=(
+            f"Minimum GC content percentage (default: {default_for('gc_min')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_min')})"
+        ),
     ),
-    gc_max: float = typer.Option(
-        60.0,
+    gc_max: float | None = typer.Option(
+        None,
         "--gc-max",
         min=0.0,
         max=100.0,
-        help="Maximum GC content percentage",
+        help=(
+            f"Maximum GC content percentage (default: {default_for('gc_max')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('gc_max')}). Stating it "
+            "keeps it in every design mode."
+        ),
     ),
-    max_poly_runs: int = typer.Option(
-        3,
+    max_poly_runs: int | None = typer.Option(
+        None,
         "--max-poly-runs",
         min=1,
-        help="Maximum consecutive identical nucleotides",
+        help=f"Maximum consecutive identical nucleotides (default: {default_for('max_poly_runs')})",
     ),
     min_asymmetry: float | None = typer.Option(
         None,
         "--min-asymmetry",
         min=0.3,
         max=1.0,
-        help="Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: 0.65)",
+        help=(f"Thermodynamic asymmetry floor gating LOW_ASYMMETRY (default: {default_for('min_asymmetry_score')})"),
     ),
     max_paired_fraction: float | None = typer.Option(
         None,
         "--max-paired-fraction",
         min=0.0,
         max=1.0,
-        help="Guide self-structure ceiling gating EXCESS_PAIRING (default: 0.6)",
+        help=(f"Guide self-structure ceiling gating EXCESS_PAIRING (default: {default_for('max_paired_fraction')})"),
     ),
     min_empirical: float | None = typer.Option(
         None,
         "--min-empirical",
-        help="Empirical design-rule floor gating LOW_EMPIRICAL_SCORE",
+        help=(
+            "Empirical design-rule floor gating LOW_EMPIRICAL_SCORE "
+            f"(default: {default_for('min_empirical_score')}, which rejects nothing)"
+        ),
     ),
     plfold_window: int | None = typer.Option(
         None,
         "--plfold-window",
         min=20,
         max=1000,
-        help="RNAplfold averaging window W for target-site accessibility (default: 150)",
+        help=(f"RNAplfold averaging window W for target-site accessibility (default: {default_for('plfold_window')})"),
     ),
     plfold_max_bp_span: int | None = typer.Option(
         None,
         "--plfold-max-bp-span",
         min=10,
         max=1000,
-        help="RNAplfold maximum base-pair span L (default: 100); must not exceed --plfold-window",
+        help=(
+            f"RNAplfold maximum base-pair span L (default: {default_for('plfold_max_bp_span')}); "
+            "must not exceed --plfold-window"
+        ),
     ),
     accessibility_log_floor: float | None = typer.Option(
         None,
         "--accessibility-log-floor",
-        help="log10 probability treated as zero target-site accessibility (default: -5.0)",
+        help=(
+            "log10 probability treated as zero target-site accessibility "
+            f"(default: {default_for('accessibility_log_floor')})"
+        ),
     ),
     genome_index: Path | None = typer.Option(
         None,
@@ -2010,45 +2423,70 @@ def design(  # noqa: PLR0912
         "--skip-off-targets",
         help="Skip off-target analysis (faster)",
     ),
-    modification_pattern: str = typer.Option(
-        "standard_2ome",
+    modification_pattern: str | None = typer.Option(
+        None,
         "--modifications",
         "-m",
-        help="Chemical modification pattern (standard_2ome, minimal_terminal, maximal_stability, none)",
+        help=(
+            "Chemical modification pattern: standard_2ome, minimal_terminal, maximal_stability, none "
+            f"(default: {default_for('modification_pattern')})"
+        ),
     ),
-    overhang: str = typer.Option(
-        "dTdT",
+    overhang: str | None = typer.Option(
+        None,
         "--overhang",
-        help="Overhang sequence (dTdT for DNA, UU for RNA)",
+        help=(
+            f"Overhang sequence, dTdT for DNA or UU for RNA (default: {default_for('default_overhang')}; "
+            f"--design-mode mirna defaults to {mirna_preset_default_for('default_overhang')})"
+        ),
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Design siRNA candidates from a transcript FASTA file.
 
     Outputs a TSV/CSV-like table of candidates, optionally including secondary
     structure scoring, off-target checks, and chemical modification annotations.
     """
-    if gc_min >= gc_max:
-        console.print("❌ Error: gc-min must be less than gc-max", style="red")
-        raise typer.Exit(1)
-
     try:
-        mode_enum, gc_min, gc_max, overhang, modification_pattern = _resolve_design_mode(
-            design_mode,
-            gc_min,
-            gc_max,
-            overhang,
-            modification_pattern,
-        )
-    except ValueError as exc:
-        console.print(f"❌ Error: {exc}", style="red")
-        raise typer.Exit(1)
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
 
+    stated: dict[str, Any] = _stated_settings(
+        ctx,
+        {
+            "gc_min": ("gc_min", gc_min),
+            "gc_max": ("gc_max", gc_max),
+            "max_poly_runs": ("max_poly_runs", max_poly_runs),
+            "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
+            "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
+            "min_empirical_score": ("min_empirical", min_empirical),
+            "plfold_window": ("plfold_window", plfold_window),
+            "plfold_max_bp_span": ("plfold_max_bp_span", plfold_max_bp_span),
+            "accessibility_log_floor": ("accessibility_log_floor", accessibility_log_floor),
+            "sirna_length": ("length", length),
+            "top_n": ("top_n", top_n),
+            "modification_pattern": ("modification_pattern", modification_pattern),
+            "default_overhang": ("overhang", overhang),
+        },
+    )
+    if skip_structure:
+        stated["predict_structure"] = False
+    if "modification_pattern" in stated:
+        stated["apply_modifications"] = str(stated["modification_pattern"]).lower() != "none"
+    policy = _resolve_policy_or_exit(
+        entry_point=EntryPoint.DESIGN_COMMAND,
+        design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+        config_file=policy_config,
+        stated=stated,
+        filter_actions=actions,
+        legacy_skip_screening=skip_off_targets or None,
+        passthrough={
+            "genome_index": str(genome_index) if genome_index else None,
+            "snp_file": str(snp_file) if snp_file else None,
+        },
+    )
+    mode_enum = policy.design_mode
     if mode_enum == DesignMode.ZFN:
         console.print(
             "❌ Error: --design-mode zfn is not supported in the 'design' command. Use 'sirnaforge zfn' instead.",
@@ -2056,47 +2494,8 @@ def design(  # noqa: PLR0912
         )
         raise typer.Exit(1)
 
-    # Create parameters. Unset thresholds are omitted so the model default applies; passing them
-    # through the constructor keeps Pydantic's range validation.
-    filter_kwargs: dict[str, Any] = {
-        "gc_min": gc_min,
-        "gc_max": gc_max,
-        "max_poly_runs": max_poly_runs,
-    }
-    for name, value in (
-        ("min_asymmetry_score", min_asymmetry),
-        ("max_paired_fraction", max_paired_fraction),
-        ("min_empirical_score", min_empirical),
-    ):
-        if value is not None:
-            filter_kwargs[name] = value
-    filters = FilterCriteria(**filter_kwargs)
-
-    # Same construct-not-copy pattern for the RNAplfold settings behind target_accessibility.
-    accessibility_kwargs: dict[str, Any] = {}
-    for name, value in (
-        ("window_size", plfold_window),
-        ("max_bp_span", plfold_max_bp_span),
-        ("log_floor", accessibility_log_floor),
-    ):
-        if value is not None:
-            accessibility_kwargs[name] = value
-    target_accessibility = TargetAccessibilityConfig(**accessibility_kwargs)
-
-    parameters = DesignParameters(
-        design_mode=mode_enum,
-        sirna_length=length,
-        top_n=top_n,
-        filters=filters,
-        predict_structure=not skip_structure,
-        check_off_targets=not skip_off_targets,
-        genome_index=str(genome_index) if genome_index else None,
-        snp_file=str(snp_file) if snp_file else None,
-        apply_modifications=modification_pattern.lower() != "none",
-        modification_pattern=modification_pattern,
-        default_overhang=overhang,
-        target_accessibility=target_accessibility,
-    )
+    parameters = policy.design_parameters
+    filters = parameters.filters
 
     console.print(
         Panel.fit(
@@ -2104,11 +2503,13 @@ def design(  # noqa: PLR0912
             f"Design Mode: [cyan]{mode_enum.value}[/cyan]\n"
             f"Input: [cyan]{input_file}[/cyan]\n"
             f"Output: [cyan]{output}[/cyan]\n"
-            f"Length: [yellow]{length}[/yellow] nt\n"
-            f"GC range: [yellow]{gc_min:.1f}%-{gc_max:.1f}%[/yellow]\n"
-            f"Reported candidates: [yellow]{top_n if top_n is not None else 'all (uncapped)'}[/yellow]\n"
-            f"Modifications: [magenta]{modification_pattern}[/magenta]\n"
-            f"Overhang: [magenta]{overhang}[/magenta]",
+            f"Run Mode: [cyan]{policy.run_mode.value}[/cyan] "
+            f"([magenta]{policy.profile.name} {policy.profile.version}, experimental[/magenta])\n"
+            f"Length: [yellow]{parameters.sirna_length}[/yellow] nt\n"
+            f"GC range: [yellow]{filters.gc_min:.1f}%-{filters.gc_max:.1f}%[/yellow]\n"
+            f"Reported candidates: [yellow]{parameters.top_n if parameters.top_n is not None else 'all (uncapped)'}[/yellow]\n"
+            f"Modifications: [magenta]{parameters.modification_pattern}[/magenta]\n"
+            f"Overhang: [magenta]{parameters.default_overhang}[/magenta]",
             title="Configuration",
         )
     )
@@ -2124,8 +2525,17 @@ def design(  # noqa: PLR0912
 
             task1 = progress.add_task("Loading sequences...", total=None)
 
-            # Select designer based on design mode
-            designer = MiRNADesigner(parameters) if mode_enum == DesignMode.MIRNA else SiRNADesigner(parameters)
+            # Select designer based on design mode. The actions travel with the thresholds:
+            # DesignParameters carries only the numbers, so without them a --filter-action reached the
+            # manifest and was silently ignored by every design gate on this command.
+            from sirnaforge.workflow import _policy_filter_actions  # noqa: PLC0415
+
+            design_actions = _policy_filter_actions(policy)
+            designer = (
+                MiRNADesigner(parameters, filter_actions=design_actions)
+                if mode_enum == DesignMode.MIRNA
+                else SiRNADesigner(parameters, filter_actions=design_actions)
+            )
 
             progress.update(task1, description="Designing siRNAs...")
             result = designer.design_from_file(str(input_file))
@@ -2179,7 +2589,7 @@ def design(  # noqa: PLR0912
                     f"{candidate.gc_content:.1f}",
                     str(candidate.transcript_hit_count),
                     f"{candidate.transcript_hit_fraction * 100:.1f}%",
-                    f"{candidate.composite_score:.1f}",
+                    f"{ranking_score(candidate):.1f}",
                 )
 
             console.print(candidates_table)
@@ -2187,7 +2597,7 @@ def design(  # noqa: PLR0912
         console.print(f"\n✅ [green]Results saved to:[/green] {output}")
 
     except Exception as e:
-        console.print(f"❌ [red]Error during design:[/red] {str(e)}")
+        console.print(f"❌ [red]Error during design:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -2250,7 +2660,7 @@ def validate(
         console.print("✅ [green]FASTA validation complete[/green]")
 
     except Exception as e:
-        console.print(f"❌ [red]Validation error:[/red] {str(e)}")
+        console.print(f"❌ [red]Validation error:[/red] {e!s}")
         raise typer.Exit(1)
 
 
@@ -2276,10 +2686,18 @@ def version() -> None:
 
 @app_command()
 def config() -> None:
-    """Print the default design parameter values."""
-    default_params = DesignParameters()
+    """Print the parameter values a default run resolves to."""
+    # Resolved rather than constructed: a run takes the profile's numbers, and gc_min is the one
+    # place the profile knowingly differs from the model field default.
+    policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+    default_params = policy.design_parameters
 
-    console.print("[bold blue]Default Design Parameters:[/bold blue]\n")
+    console.print("[bold blue]Resolved Design Parameters:[/bold blue]")
+    console.print(
+        f"  [dim]profile {policy.profile.name} {policy.profile.version} "
+        f"({'experimental' if policy.profile.experimental else 'calibrated'}), "
+        f"run mode {policy.run_mode.value}[/dim]\n"
+    )
 
     # Basic parameters
     console.print("[cyan]Basic Parameters:[/cyan]")
@@ -2295,14 +2713,27 @@ def config() -> None:
     console.print(f"  Max poly runs: {filters.max_poly_runs}")
     console.print(f"  Max paired fraction: {filters.max_paired_fraction}")
 
-    # Scoring weights
-    console.print("\n[cyan]Scoring Weights:[/cyan]")
-    scoring = default_params.scoring
-    console.print(f"  Asymmetry: {scoring.asymmetry}")
-    console.print(f"  GC content: {scoring.gc_content}")
-    console.print(f"  Target accessibility: {scoring.target_accessibility}")
-    console.print(f"  Off-target: {scoring.off_target}")
-    console.print(f"  Empirical: {scoring.empirical}")
+    # Gates, with the three ways one can be in force or not
+    console.print("\n[cyan]Gates:[/cyan]")
+    for resolved in policy.filters:
+        descriptor = resolved.descriptor
+        threshold = "no threshold" if descriptor.threshold is None else descriptor.threshold
+        console.print(
+            f"  {resolved.filter_id}: {descriptor.comparator.value} {threshold} "
+            f"([yellow]{descriptor.action.value}[/yellow], {descriptor.stage.value})"
+        )
+
+    # Scoring weights: one hand-authored vector per stage/mode, each summing to 1.0 and never
+    # rescaled at runtime.
+    console.print("\n[cyan]Scoring Weight Vectors:[/cyan]")
+    for vector in default_params.scoring.all_vectors():
+        console.print(f"  [bold]{vector.name}[/bold]")
+        for term, weight in vector.as_mapping().items():
+            console.print(f"    {term}: {weight}")
+    console.print(
+        "  [dim]Reported but not scored: empirical (min_empirical_score gate), isoform_coverage "
+        "(optional gate), conservation, paired_fraction (EXCESS_PAIRING gate)[/dim]"
+    )
 
 
 @app_command()
@@ -2384,6 +2815,251 @@ def cache(
             console.print(f"    Status: [green]{result['status']}[/green]")
 
 
+# Create benchmark subcommand group (#109). A sub-app, not a flat `benchmark-prepare`/`benchmark-design`
+# pair, matching the `sequences_app`/`internal_app` shape already established below: one noun, two
+# verbs under it.
+#
+# Vendored-panel status (state this here, not only in the docs, because a passing CLI invocation is
+# the thing most likely to be mistaken for evidence): the only benchmark panel with real measured
+# bytes in this repository is `huesken_subset`
+# (`tests/unit/data/sirna_efficacy_subset.csv`, a third-party redistribution -- see
+# `tests/unit/data/README.md`). Ichihara, Martinelli, Shmushkovich and OligoGym are named in #109/#110
+# but are **not vendored**; a panel descriptor for one of them, if the registry declares it at all,
+# carries no bytes and `benchmark prepare` refuses it without `--panel-csv`. `manifest.json` records
+# `panel.data_present: false` for every panel that is not `huesken_subset`, so a manifest -- not just
+# this help text -- says which panel actually ran.
+benchmark_app = typer.Typer(help="Fixed-length benchmark artifacts and prepare/design commands (#109)")
+app.add_typer(benchmark_app, name="benchmark")
+benchmark_command = command_decorator_typed(benchmark_app.command)
+
+
+def _print_prepare_summary(manifest: Any) -> None:
+    """Print a short summary of a manifest just written by ``prepare_artifact`` (#109).
+
+    Reads the returned manifest's own ``model_dump(mode="json")`` rather than re-deriving any
+    count, so this print can never disagree with the file it describes. Missing keys fall back to
+    ``"?"`` instead of raising, because a field this prints and the manifest lacks is a coupling
+    defect for the settle pass to catch, not a reason for a successful run to exit non-zero on its
+    own summary.
+    """
+    payload = manifest.model_dump(mode="json")
+    panel = payload.get("panel") or {}
+    counts = payload.get("counts") or {}
+    console.print(
+        Panel.fit(
+            "🧬 [bold blue]Benchmark artifact prepared[/bold blue]\n"
+            f"Panel: [cyan]{panel.get('panel_id', '?')}[/cyan] "
+            f"(data present: [yellow]{panel.get('data_present', '?')}[/yellow])\n"
+            f"Paired length: [yellow]{payload.get('paired_length', '?')}[/yellow] nt\n"
+            f"Observations kept: [green]{counts.get('observations_kept', '?')}[/green] "
+            f"(incompatible: [red]{counts.get('observations_incompatible', '?')}[/red])",
+            title="Benchmark Summary",
+        )
+    )
+
+
+def _print_design_summary(result: Any) -> None:
+    """Print a short summary of a ``DesignArtifactResult`` (#109).
+
+    Deliberately not the manifest itself, matching ``design_artifact``'s own docstring: a caller
+    wanting the full record reads ``manifest.json`` back with
+    ``sirnaforge.benchmark.artifact.read_manifest``, which is the one parser this contract has.
+    """
+    console.print(
+        Panel.fit(
+            "🧬 [bold blue]Benchmark design complete[/bold blue]\n"
+            f"Entered design: [green]{result.entered_design}[/green]  "
+            f"no candidate: [yellow]{result.no_candidate}[/yellow]\n"
+            f"Default pass: [green]{result.default_pass}[/green]  "
+            f"Benchmark pass: [green]{result.benchmark_pass}[/green]\n"
+            f"Manifest: [cyan]{result.manifest_path}[/cyan]",
+            title="Benchmark Summary",
+        )
+    )
+
+
+@benchmark_command("prepare")
+def benchmark_prepare(
+    panel: str = typer.Option(
+        ...,
+        "--panel",
+        help=(
+            "Registry panel_id to prepare. Only 'huesken_subset' ships vendored bytes in this repo; "
+            "every other panel needs --panel-csv."
+        ),
+    ),
+    panel_csv: Path | None = typer.Option(
+        None,
+        "--panel-csv",
+        help=(
+            "Panel source table. Required for a panel with no vendored bytes (refused with a reason "
+            "otherwise); refused outright for a panel that ships its own, so a run cannot silently "
+            "read different bytes than the ones the manifest names."
+        ),
+    ),
+    panel_transcripts: Path | None = typer.Option(
+        None,
+        "--panel-transcripts",
+        help="Optional FASTA of panel transcripts. Enables design_context_source=panel_transcript.",
+    ),
+    paired_length: int | None = typer.Option(
+        None,
+        "--paired-length",
+        min=19,
+        max=23,
+        help="Design length for the paired guide slice (default: the panel descriptor's declared length).",
+    ),
+    out_dir: Path = typer.Option(
+        Path("benchmark_artifacts"),
+        "--out-dir",
+        help="Directory to create <panel_id>__len<paired_length> under.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite/--no-overwrite",
+        help="Overwrite an existing artifact directory instead of refusing it.",
+    ),
+    verbose: bool = _VERBOSE_OPTION,
+) -> None:
+    """Prepare one fixed-length benchmark artifact for a compatible panel and paired length (#109).
+
+    Writes ``<out-dir>/<panel_id>__len<paired_length>/`` with ``observations.csv``,
+    ``design_inputs.fasta`` and ``manifest.json``. Every measured observation is preserved, including
+    one incompatible with this paired length: dropping it silently would make a later count
+    unreproducible from the panel bytes alone. ``design_inputs.fasta`` is a plain FASTA, so
+    ``sirnaforge design`` and ``sirnaforge workflow`` consume it with no new execution path.
+    """
+    try:
+        from sirnaforge.benchmark.prepare import BenchmarkPrepareError, prepare_artifact  # noqa: PLC0415
+    except ImportError as exc:
+        console.print(f"❌ [red]Error preparing benchmark artifact:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        manifest = prepare_artifact(
+            panel_id=panel,
+            panel_csv=panel_csv,
+            panel_transcripts=panel_transcripts,
+            paired_length=paired_length,
+            out_dir=out_dir,
+            overwrite=overwrite,
+            invoked_command=list(sys.argv),
+        )
+    except (RunPolicyError, BenchmarkPrepareError) as exc:
+        _fail_with_config_error(str(exc))
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc))
+    except Exception as exc:  # noqa: BLE001 - reported below, optionally with a traceback
+        console.print(f"❌ [red]Error preparing benchmark artifact:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    _print_prepare_summary(manifest)
+
+
+@benchmark_command("design")
+def benchmark_design(
+    ctx: typer.Context,
+    artifact: Path = typer.Option(
+        ...,
+        "--artifact",
+        help="A directory written by 'sirnaforge benchmark prepare' (<panel_id>__len<paired_length>).",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+    ),
+    design_mode: str = typer.Option(
+        "sirna",
+        "--design-mode",
+        help="Design mode: sirna (default) or mirna.",
+    ),
+    gc_min: float | None = typer.Option(
+        None,
+        "--gc-min",
+        min=0.0,
+        max=100.0,
+        help=(
+            f"Per-run GC floor, widened only (default: {default_for('gc_min')}). A value narrower "
+            "than the default is refused: it would falsify the default-policy verdicts this command "
+            "re-derives for candidates a narrower run never enumerated."
+        ),
+    ),
+    gc_max: float | None = typer.Option(
+        None,
+        "--gc-max",
+        min=0.0,
+        max=100.0,
+        help=(
+            f"Per-run GC ceiling, widened only (default: {default_for('gc_max')}). Narrowing it is "
+            "refused for the same reason as --gc-min."
+        ),
+    ),
+    policy_config: Path | None = typer.Option(
+        None,
+        "--policy-config",
+        help="JSON or TOML file of policy settings, reused from 'sirnaforge design'. Cannot narrow gc_min/gc_max.",
+    ),
+    filter_action: list[str] = typer.Option(
+        [],
+        "--filter-action",
+        help=(
+            "Set one filter's action: filter_id=off|warn|fail (repeatable), reused from 'sirnaforge "
+            "design'. Only gc_min/gc_max widen through this command; asymmetry, empirical and the "
+            "polynucleotide-run gate resolve exactly as 'sirnaforge design' would."
+        ),
+    ),
+    verbose: bool = _VERBOSE_OPTION,
+) -> None:
+    """Run the fixed-length design path over a prepared benchmark artifact, twice-policied (#109).
+
+    The run executes once, under the (possibly widened) benchmark policy; the default-policy verdict
+    for every candidate is then re-derived from what that one run already observed, never from a
+    second run. ``--gc-min``/``--gc-max`` may only widen the shipped floor/ceiling -- a narrower value
+    is refused before any design work, because the re-derived default verdicts assume the benchmark
+    run enumerated a superset of what a default run would. Every other threshold, and the
+    polynucleotide-run requirement (<= 3) in particular, resolves exactly as ``sirnaforge design``
+    would; nothing here can relax it.
+    """
+    try:
+        actions = _parse_filter_actions(filter_action)
+    except RunPolicyError as exc:
+        _fail_with_config_error(str(exc))
+
+    try:
+        from sirnaforge.benchmark.artifact import BenchmarkArtifactError  # noqa: PLC0415
+        from sirnaforge.benchmark.design import design_artifact  # noqa: PLC0415
+    except ImportError as exc:
+        console.print(f"❌ [red]Error running benchmark design:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    try:
+        result = design_artifact(
+            artifact_dir=artifact,
+            design_mode=design_mode if _option_was_stated(ctx, "design_mode") else None,
+            gc_min=gc_min,
+            gc_max=gc_max,
+            policy_config=policy_config,
+            filter_actions=actions,
+            invoked_command=list(sys.argv),
+        )
+    except (RunPolicyError, BenchmarkArtifactError) as exc:
+        _fail_with_config_error(str(exc))
+    except ValidationError as exc:
+        _fail_with_config_error(format_validation_error(exc))
+    except Exception as exc:  # noqa: BLE001 - reported below, optionally with a traceback
+        console.print(f"❌ [red]Error running benchmark design:[/red] {exc}")
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1)
+
+    _print_design_summary(result)
+
+
 # Create sequences subcommand group
 sequences_app = typer.Typer(help="Manage siRNA sequences and metadata")
 app.add_typer(sequences_app, name="sequences")
@@ -2425,11 +3101,7 @@ def _metadata_value_to_json(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     if isinstance(value, list):
-        json_items: list[Any] = []
-        items: list[object] = list(value)
-        for item in items:
-            json_items.append(_metadata_value_to_json(item))
-        return json_items
+        return [_metadata_value_to_json(item) for item in cast(list[object], value)]
     return value
 
 
@@ -2575,12 +3247,7 @@ def sequences_annotate(
         "-o",
         help="Output FASTA file (default: <input>_annotated.fasta)",
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
-    ),
+    verbose: bool = _VERBOSE_OPTION,
 ) -> None:
     """Merge metadata from a JSON file into FASTA headers.
 
@@ -2617,7 +3284,7 @@ def sequences_annotate(
         console.print(f"   Output saved to: [cyan]{output_path}[/cyan]")
 
     except Exception as e:
-        console.print(f"❌ [red]Error:[/red] {str(e)}")
+        console.print(f"❌ [red]Error:[/red] {e!s}")
         if verbose:
             console.print_exception()
         raise typer.Exit(1)
@@ -2731,6 +3398,52 @@ def internal_zfn_aggregate_shards(
         output_sites_csv=output_sites_csv,
         output_summary_json=output_summary_json,
     )
+
+
+@app_command()
+def report(
+    run_dir: Path = typer.Argument(..., help="A completed run output directory"),
+    output: Path = typer.Option(Path("report.html"), "--output", "-o", help="Where to write the report"),
+    quilt_summarize: bool = typer.Option(
+        True,
+        "--quilt-summarize/--no-quilt-summarize",
+        help="Also write quilt_summarize.json beside the report, registering it and its evidence "
+        "files so a published package renders the report in its package view",
+    ),
+) -> None:
+    """Build a single self-contained HTML report over a finished run.
+
+    Works on any finished or archived run: it reads candidates_all.csv, the aggregated hit tables and
+    manifest.json, and needs no live pipeline state. The report classifies nothing and applies no
+    threshold of its own -- gate descriptors come from the resolved policy and hit_class from the
+    published table -- so it cannot disagree with the run it describes.
+    """
+    try:
+        payload = build_payload(run_dir)
+    except ReportInputError as exc:
+        console.print(f"❌ [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    written = write_report(payload, output)
+    summarize_line = ""
+    if quilt_summarize:
+        summarize_path = write_quilt_summarize(payload, written, run_dir)
+        summarize_line = f"🧵 [bold blue]{summarize_path}[/bold blue]\n"
+
+    counts = payload.run["status_counts"]
+    console.print(
+        Panel.fit(
+            f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, self-contained)\n"
+            f"{summarize_line}"
+            f"{payload.run['guides']:,} guides from {payload.run['candidate_rows']:,} candidate rows\n"
+            f"[green]{counts['pass']} pass[/green] · "
+            f"[yellow]{counts['warn']} pass with a warning[/yellow] · "
+            f"[yellow]{counts['unknown']} not established[/yellow] · [red]{counts['fail']} fail[/red]",
+            title=f"Report — {payload.run['gene_query']}",
+        )
+    )
+    for caveat in payload.caveats:
+        console.print(f"   ⚠️  {caveat}")
 
 
 if __name__ == "__main__":

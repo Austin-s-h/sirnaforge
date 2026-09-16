@@ -80,7 +80,7 @@ _notice_emitted = False
 class _DropEverything(logging.Filter):
     """Filter that rejects every record, used to mute one handler for one call."""
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: ARG002, D102 - signature is logging's
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: ARG002 - signature is logging's
         return False
 
 

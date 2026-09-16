@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .ensembl_references import build_genome_sources
 from .transcriptome_manager import TranscriptomeManager
@@ -53,7 +54,7 @@ class GenomeManager(TranscriptomeManager):
         source_name: str,
         force_refresh: bool = False,
         build_index: bool = True,
-    ) -> dict[str, Path] | None:
+    ) -> dict[str, Any] | None:
         """Get genome reference, downloading and indexing as needed."""
         return self.get_transcriptome(source_name=source_name, force_refresh=force_refresh, build_index=build_index)
 
@@ -62,6 +63,6 @@ class GenomeManager(TranscriptomeManager):
         fasta_path: str | Path,
         build_index: bool = True,
         cache_name: str | None = None,
-    ) -> dict[str, Path] | None:
+    ) -> dict[str, Any] | None:
         """Get custom genome FASTA through shared caching/indexing pipeline."""
         return self.get_custom_transcriptome(fasta_path=fasta_path, build_index=build_index, cache_name=cache_name)

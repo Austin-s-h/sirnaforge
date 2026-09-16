@@ -172,32 +172,27 @@ class TestMiRNADatabaseManager:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    @pytest.mark.skipif(
-        not pytest.importorskip("requests", reason="requests not available"), reason="Network tests require requests"
-    )
+    @pytest.mark.requires_network
     def test_download_mirbase_high_conf(self, manager_with_temp_cache):
-        """Test downloading miRBase high confidence database."""
-        # This is a real network test - marked as slow/integration
-        try:
-            db_file = manager_with_temp_cache.get_database("mirbase_high_conf", "human")
+        """A real miRBase download yields a non-empty FASTA of human sequences.
 
-            if db_file:
-                assert db_file.exists()
-                assert db_file.stat().st_size > 0
+        `requires_network` is what makes this test mean something. `integration` promotes it to the
+        release tier (`tests/conftest.py`) but carries no capability gate, so without the network
+        marker the probe could not reach it: on a host with no verified TLS route it spent 108s
+        failing to reach mirbase.org and then passed anyway, because every assertion sat inside
+        `if db_file:`. Two of these were 73% of `make test-release-host`'s runtime and asserted
+        nothing. The assertions are now unconditional -- once the probe says the network works, a
+        source this repository declares failing to download is a result, not a reason to shrug.
+        """
+        db_file = manager_with_temp_cache.get_database("mirbase_high_conf", "human")
 
-                # Check FASTA format
-                with db_file.open("r") as f:
-                    first_line = f.readline().strip()
-                    assert first_line.startswith(">")
+        assert db_file is not None, "mirbase_high_conf/human returned no file on a verified network"
+        assert db_file.exists()
+        assert db_file.stat().st_size > 0
 
-                    # Count sequences
-                    f.seek(0)
-                    content = f.read()
-                    seq_count = content.count(">")
-                    assert seq_count > 0
-
-        except Exception as e:
-            pytest.skip(f"Network download failed: {e}")
+        content = db_file.read_text()
+        assert content.startswith(">"), "downloaded database is not FASTA"
+        assert content.count(">") > 0
 
     @pytest.mark.unit
     def test_get_combined_database_empty(self, manager_with_temp_cache, monkeypatch, caplog):
@@ -226,26 +221,26 @@ class TestMiRNADatabaseManager:
         assert manager_with_temp_cache.metadata == {}
 
     @pytest.mark.integration
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib", reason="urllib not available"), reason="Network tests require urllib"
-    )
-    def test_get_combined_database_with_mock_files(self, manager_with_temp_cache):
-        """Test combining databases - this is an integration test that uses network."""
-        # Note: This test actually downloads from internet, not from mock files
-        # The get_combined_database method downloads from URLs, not local files
+    @pytest.mark.requires_network
+    def test_get_combined_database_downloads_and_merges_sources(self, manager_with_temp_cache):
+        """Two real sources combine into one FASTA carrying human sequences.
 
+        Renamed from `test_get_combined_database_with_mock_files`, which mocked nothing: it
+        downloads. Same defect as `test_download_mirbase_high_conf` above -- `integration` with no
+        `requires_network`, and every assertion inside `if result:`, so a dead network made it a
+        108s no-op that reported PASSED. `test_get_combined_database_empty` is the unit-tier test
+        that covers the unreachable-source path with `_download_file` stubbed.
+        """
         result = manager_with_temp_cache.get_combined_database(
             sources=["mirbase_high_conf", "mirgenedb"], species="human", output_name="test_combined.fa"
         )
 
-        if result:
-            assert result.exists()
+        assert result is not None, "combining two declared sources returned nothing on a verified network"
+        assert result.exists()
 
-            with result.open("r") as f:
-                content = f.read()
-                # Should contain miRNA sequences in FASTA format
-                assert content.count(">") > 0  # Has at least one sequence
-                assert "hsa-" in content or "human" in content.lower()  # Contains human sequences
+        content = result.read_text()
+        assert content.count(">") > 0
+        assert "hsa-" in content or "human" in content.lower()
 
 
 class TestFilterSpeciesSequences:

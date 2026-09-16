@@ -3,7 +3,7 @@ process BUILD_BWA_INDEX {
     label 'process_high'
 
     input:
-    tuple val(species), path(genome_fasta)
+    tuple val(species), path(transcriptome_fasta)
 
     output:
     tuple val(species), path("${species}_index*"), emit: index
@@ -20,7 +20,7 @@ sys.path.insert(0, '${workflow.projectDir}/../src')
 from sirnaforge.pipeline.nextflow_cli import build_bwa_index_cli
 
 result = build_bwa_index_cli(
-    fasta_file='${genome_fasta}',
+    fasta_file='${transcriptome_fasta}',
     species='${species}',
     output_dir='.'
 )

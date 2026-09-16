@@ -10,12 +10,18 @@ Use schemas: MySchema.validate(df) - validation errors provide detailed feedback
 """
 
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+
+# ``Optional[Series[...]]`` is how pandera spells "this column may be absent", so UP045's
+# ``X | None`` rewrite is not equivalent here. That is what every bare UP045 suppression below
+# means, and it is stated here rather than restated on each of the 46 of them.
+from typing import Any, Optional, TypeVar, cast
 
 import pandas as pd
 import pandera.pandas as pa
 from pandera.pandas import DataFrameModel, Field
 from pandera.typing.pandas import Series
+
+from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterEvaluation
 
 # Typed alias for pandera's dataframe_check decorator to satisfy mypy
 F = TypeVar("F", bound=Callable[..., Any])
@@ -200,51 +206,42 @@ class SiRNACandidateSchema(DataFrameModel):
         ge=0.0, le=1.0, description="Fraction of input transcripts hit by this guide (1.0 = all transcripts)"
     )
 
-    # Post-screen sub-scores
+    # Reported, non-scoring evidence (both left the composite in issue #96)
     isoform_coverage: Series[float] = Field(
         ge=0.0,
         le=1.0,
-        description="Protein-coding isoform coverage sub-score (inactive if no protein-coding isoforms)",
+        description="Protein-coding isoform coverage, reported and the optional gate input (null if none)",
         nullable=True,
         coerce=True,
     )
     conservation_score: Series[float] = Field(
         ge=0.0,
         le=1.0,
-        description="Cross-species conservation sub-score (inactive in single-species)",
+        description="Cross-species conservation fraction, reported only (null in single-species runs)",
+        nullable=True,
+        coerce=True,
+    )
+    empirical_score: Series[float] = Field(
+        ge=0.0,
+        le=1.0,
+        description="Empirical design-rule score, reported and the min_empirical_score gate input",
         nullable=True,
         coerce=True,
     )
 
-    # Scoring results
+    # Scoring results. design_score and composite_score are different vectors over different term
+    # sets and are not comparable; both are nullable because each exists only at its own stage.
+    design_score: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Design-stage score on the active pre-production design vector (null if a term could not be computed)",
+        nullable=True,
+        coerce=True,
+    )
     composite_score: Series[float] = Field(
-        ge=0.0, le=100.0, description="Overall siRNA quality score (higher is better)"
-    )
-    score_asymmetry: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of asymmetry term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_gc_content: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of GC content term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_target_accessibility: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of target-site accessibility term to composite score",
-        nullable=True,
-        coerce=True,
-    )
-    score_empirical: Series[float] = Field(
-        ge=0.0,
-        le=100.0,
-        description="Contribution of empirical term to composite score",
+        description="Post-screen score on postscreen_{sirna,mirna}_v4 (null before screening)",
         nullable=True,
         coerce=True,
     )
@@ -255,22 +252,43 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
-    score_isoform_coverage: Series[float] = Field(
+    score_target_accessibility: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of isoform coverage term to composite score",
+        description="Contribution of target-site accessibility term to the score",
         nullable=True,
         coerce=True,
     )
-    score_conservation: Series[float] = Field(
+    score_asymmetry: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Contribution of conservation term to composite score",
+        description="Contribution of asymmetry term to the score",
+        nullable=True,
+        coerce=True,
+    )
+    score_gc_content: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of GC content term to the score",
+        nullable=True,
+        coerce=True,
+    )
+    score_ago_start: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the Argonaute-start term (miRNA mode only)",
+        nullable=True,
+        coerce=True,
+    )
+    score_supp_13_16: Series[float] = Field(
+        ge=0.0,
+        le=100.0,
+        description="Contribution of the 3' supplementary pairing term (miRNA mode only)",
         nullable=True,
         coerce=True,
     )
     scored_after_screening: Series[pd.BooleanDtype] = Field(
-        description="True if composite score includes post-screen terms",
+        description="True if composite_score was computed post-screening",
         nullable=True,
         coerce=True,
     )
@@ -279,9 +297,108 @@ class SiRNACandidateSchema(DataFrameModel):
         nullable=True,
         coerce=True,
     )
+    weight_vector: Series[str] = Field(
+        description="Name of the exact weight vector that produced the score (recorded in the run manifest)",
+        nullable=True,
+        coerce=True,
+    )
 
     # Quality control: allow legacy booleans or new status strings
     passes_filters: Series[Any] = Field(description="Filter result: PASS or failure reason (GC_OUT_OF_RANGE, etc.)")
+
+    # What the resolved selection was willing to claim about the row -- distinct from
+    # passes_filters, which only answers whether a gate rejected the candidate (#100). ``Optional``
+    # (not just ``nullable``) so an older run's CSV that predates this column stays absent rather
+    # than being materialised as a value by ``add_missing_columns``; check_selection_state_values
+    # enforces the SelectionState vocabulary only on rows that actually carry it.
+    selection_state: Optional[Series[str]] = Field(  # noqa: UP045
+        description="SelectionState value: eligible | provisional_incomplete_evidence | "
+        "withheld_incomplete_evidence | not_eligible | not_selected",
+        nullable=True,
+        coerce=True,
+    )
+
+    # The remaining columns build_candidate_row emits that this schema did not declare (#100): a
+    # column absent here was never rejected (Config.strict=False), but also never validated, and
+    # the empty-frame fallback that builds a zero-row CSV's header from to_schema().columns.keys()
+    # dropped every one of them. Declared ``Optional`` throughout so an older CSV without them is
+    # still valid, and so the empty-frame fallback can find them.
+    screen_query_id: Optional[Series[str]] = Field(  # noqa: UP045
+        description="Query id this candidate was screened under (qname on its hit rows)",
+        nullable=True,
+        coerce=True,
+    )
+    quality_issues: Optional[Series[str]] = Field(  # noqa: UP045
+        description="Semicolon-joined list of detected quality concerns",
+        nullable=True,
+        coerce=True,
+    )
+    max_poly_run_length: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Longest run of identical adjacent bases in the guide; gate input", nullable=True
+    )
+    off_target_penalty: Optional[Series[float]] = Field(  # noqa: UP045
+        ge=0,
+        description="SUPERSEDED by score_off_target; kept for continuity, do not gate or rank on it",
+        nullable=True,
+        coerce=True,
+    )
+    on_target_confirmed: Optional[Series[bool]] = Field(  # noqa: UP045
+        description="Whether any hit was recognised as the query gene",
+        nullable=True,
+        coerce=True,
+    )
+    undetermined_hits: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0,
+        description="Hits whose class could not be decided because the hit species has no transcript index",
+        nullable=True,
+    )
+    transcriptome_hits_total: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Total genuine off-target transcriptome hits (any mismatch count)", nullable=True
+    )
+    transcriptome_hits_0mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect-match subset of transcriptome_hits_total (0 mismatches)", nullable=True
+    )
+    transcriptome_hits_1mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="1-mismatch subset of transcriptome_hits_total", nullable=True
+    )
+    transcriptome_hits_2mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="2-mismatch subset of transcriptome_hits_total", nullable=True
+    )
+    transcriptome_hits_seed_0mm: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species", nullable=True
+    )
+    transcriptome_hits_0mm_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect-match liabilities in the query species (or unlabelled); gate input", nullable=True
+    )
+    transcriptome_hits_1mm_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="1-mismatch liabilities in the query species (or unlabelled); gate input", nullable=True
+    )
+    transcriptome_hits_2mm_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="2-mismatch liabilities in the query species (or unlabelled); gate input", nullable=True
+    )
+    mirna_hits_total: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Total miRNA seed match hits", nullable=True
+    )
+    mirna_hits_0mm_seed: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect miRNA seed matches (positions 2-8)", nullable=True
+    )
+    mirna_hits_1mm_seed: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="miRNA seed matches with 1 mismatch in seed", nullable=True
+    )
+    mirna_hits_high_risk: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="High-risk miRNA hits (perfect seed + low offtarget_score)", nullable=True
+    )
+    mirna_hits_0mm_seed_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="Perfect miRNA seed matches labelled with the query species; gate input", nullable=True
+    )
+    mirna_hits_high_risk_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0, description="High-risk miRNA hits labelled with the query species; gate input", nullable=True
+    )
+    total_offtarget_hits_query: Optional[Series[pd.Int64Dtype]] = Field(  # noqa: UP045
+        ge=0,
+        description="Query-species transcriptome liabilities plus query-species miRNA hits; gate input",
+        nullable=True,
+    )
 
     # Chemical modification columns (optional, nullable)
     # Using add_missing_columns to auto-add with null values
@@ -328,6 +445,63 @@ class SiRNACandidateSchema(DataFrameModel):
         coerce=True,
     )
 
+    # One observed-value column per declared filter (#100/#101): a client re-applying a gate's own
+    # descriptor needs the value the gate actually compared, not only its verdict. Left as plain
+    # nullable floats -- unlike the verdict columns below, an observed value has no fixed
+    # vocabulary to check against, only a type. ``Optional`` so an older CSV without a given
+    # filter's observed column is still valid rather than gaining a materialised null column.
+    gc_content_min_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value gc_content_min was compared against", nullable=True, coerce=True
+    )
+    gc_content_max_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value gc_content_max was compared against", nullable=True, coerce=True
+    )
+    max_poly_runs_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_poly_runs was compared against", nullable=True, coerce=True
+    )
+    max_repeat_transcript_fraction_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_repeat_transcript_fraction was compared against", nullable=True, coerce=True
+    )
+    max_paired_fraction_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_paired_fraction was compared against", nullable=True, coerce=True
+    )
+    min_asymmetry_score_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value min_asymmetry_score was compared against", nullable=True, coerce=True
+    )
+    min_empirical_score_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value min_empirical_score was compared against", nullable=True, coerce=True
+    )
+    min_isoform_coverage_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value min_isoform_coverage was compared against", nullable=True, coerce=True
+    )
+    max_off_target_count_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_off_target_count was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_hits_0mm_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_hits_0mm was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_hits_1mm_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_hits_1mm was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_hits_2mm_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_hits_2mm was compared against", nullable=True, coerce=True
+    )
+    max_transcriptome_seed_perfect_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_transcriptome_seed_perfect was compared against", nullable=True, coerce=True
+    )
+    max_mirna_perfect_seed_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_mirna_perfect_seed was compared against", nullable=True, coerce=True
+    )
+    max_mirna_1mm_seed_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_mirna_1mm_seed was compared against", nullable=True, coerce=True
+    )
+    fail_on_high_risk_mirna_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value fail_on_high_risk_mirna was compared against", nullable=True, coerce=True
+    )
+    max_total_offtarget_hits_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed value max_total_offtarget_hits was compared against", nullable=True, coerce=True
+    )
+
     @dataframe_check_typed
     def check_passes_filters_values(cls, df: pd.DataFrame) -> bool:
         """Ensure passes_filters contains allowed filter status values.
@@ -349,6 +523,39 @@ class SiRNACandidateSchema(DataFrameModel):
             return v in allowed_prefixes or any(v.startswith(prefix) for prefix in allowed_prefixes)
 
         return bool(series.map(_ok).all())
+
+    @dataframe_check_typed
+    def check_selection_state_values(cls, df: pd.DataFrame) -> bool:
+        """Ensure a present selection_state column only holds SelectionState values.
+
+        Derives the allow-list from SelectionState to prevent drift. The column is declared
+        ``Optional`` (see above), so an older CSV that predates it is not checked at all -- only a
+        selection_state column that is actually present must spell one of the five known states.
+        """
+        if "selection_state" not in df.columns:
+            return True
+        # Import here to avoid circular dependency: sirna.py imports this module for
+        # SiRNACandidateSchema.
+        from sirnaforge.models.sirna import SelectionState  # noqa: PLC0415
+
+        allowed = {s.value for s in SelectionState}
+        series = df["selection_state"]
+        return bool(series.map(lambda v: v is None or v in allowed).all())
+
+    @dataframe_check_typed
+    def check_filter_verdict_values(cls, df: pd.DataFrame) -> bool:
+        """Ensure every present ``{filter_id}_verdict`` column holds a FilterEvaluation value.
+
+        Derives the allow-list from FilterEvaluation to prevent drift, mirroring
+        check_passes_filters_values. The verdict columns are not declared as schema fields at all
+        (#100): declaring them would let ``add_missing_columns`` materialise a column an older
+        run's CSV never had, so only columns actually present in the frame are checked here.
+        """
+        allowed = {v.value for v in FilterEvaluation}
+        verdict_columns = [
+            column for filter_id in DECLARED_FILTER_IDS if (column := f"{filter_id}_verdict") in df.columns
+        ]
+        return all(bool(df[column].map(lambda v: v in allowed).all()) for column in verdict_columns)
 
     @dataframe_check_typed
     def check_sequence_lengths(cls, df: pd.DataFrame) -> bool:
@@ -419,7 +626,7 @@ class OffTargetHitsSchema(DataFrameModel):
 
     **Migration Guide:**
     - For miRNA seed analysis → Use `MiRNAAlignmentSchema`
-    - For genome/transcriptome → Use `GenomeAlignmentSchema`
+    - For transcriptome alignments → Use `GenomeAlignmentSchema`
 
     Will be removed in v0.3.0.
     """
@@ -534,6 +741,12 @@ class GenomeAlignmentSchema(DataFrameModel):
     - Validating pandas DataFrames from transcriptome off-target analysis
     - Bulk operations on genome alignment results
 
+    ``strict=True`` over 12 columns, and ``transcriptome/*_analysis.tsv`` no longer has only one shape: the
+    workflow writes the seven classification columns back onto those files on any run whose aggregate
+    came back header-only, so that artifact appears with 12 and with 19 columns and this schema
+    rejects the wider one. Use :class:`AggregatedOffTargetSchema`, which accepts either, unless you
+    specifically mean to require the producer's shape.
+
     **Corresponding Pydantic model:** `models.off_target.OffTargetHit` (for single rows)
     """
 
@@ -592,3 +805,68 @@ class GenomeAlignmentSchema(DataFrameModel):
         if perfect_matches.any():
             return bool((~perfect_matches | (df["offtarget_score"] == 0.0)).all())
         return True
+
+
+HIT_CLASS_VALUES: tuple[str, ...] = ("on_target", "ortholog", "repeat", "off_target", "undetermined")
+BOOLEAN_CELL_VALUES: tuple[str, ...] = ("True", "False")
+#: How an ORTHOLOG verdict was evidenced. ``not_applicable`` is every non-ortholog row: a
+#: symbol-heuristic ortholog is not a validated one, so the tiers are published, not assumed (#101).
+ORTHOLOG_EVIDENCE_VALUES: tuple[str, ...] = ("gene_id", "symbol_heuristic", "not_applicable")
+#: What every classification column holds on a row the producer wrote and no classifier has decided.
+#: Mirrors ``core.hit_annotation.UNCLASSIFIED_CELL``; kept here rather than imported to avoid a
+#: models -> core dependency.
+UNCLASSIFIED_CELL_VALUE = "not_classified"
+
+
+class AggregatedOffTargetSchema(GenomeAlignmentSchema):
+    """Pandera schema for the *published* aggregated off-target table (`combined_offtargets.tsv`).
+
+    `aggregate_offtarget_results` -- the producer, whichever entry point invokes it -- writes all
+    seven classification columns, so the published column set no longer depends on how the run was
+    started. On a row nothing has classified yet every one of them holds
+    :data:`UNCLASSIFIED_CELL_VALUE`, which is why each column's vocabulary admits it: the verdicts
+    are filled in place by the Python workflow, not appended as new columns.
+
+    The columns stay **optional** so a table written by an earlier version, and the per-species
+    `transcriptome/*_analysis.tsv` files as the aligner writes them, still validate against this schema.
+
+    The flag columns are typed as strings over `("True", "False")` deliberately: these tables are
+    read as text, and coercing the string `"False"` to `bool` yields `True`.
+    """
+
+    class Config(SchemaConfig):
+        """Accept either published shape; reject columns from neither."""
+
+        description = "Published aggregated off-target table, with or without the classification columns"
+        title = "Aggregated Off-Target DataFrame"
+        strict = True
+        coerce = True
+
+    hit_class: Optional[Series[str]] = Field(  # noqa: UP045
+        isin=[*HIT_CLASS_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="Persisted hit class; 'undetermined' means no reference existed to decide it",
+    )
+    matched_symbol: Optional[Series[str]] = Field(  # noqa: UP045
+        str_length={"min_value": 1},
+        description="Symbol that ESTABLISHED the class, or 'unknown'; not a per-hit gene name",
+    )
+    symbol_lookup_missing: Optional[Series[str]] = Field(  # noqa: UP045
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="The hit species' index carries no symbol for this transcript",
+    )
+    hit_symbol: Optional[Series[str]] = Field(  # noqa: UP045
+        str_length={"min_value": 1},
+        description="Gene symbol resolved for rname, independent of class, or 'unknown'",
+    )
+    hit_symbol_missing: Optional[Series[str]] = Field(  # noqa: UP045
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="hit_symbol could not be resolved for this row",
+    )
+    species_index_missing: Optional[Series[str]] = Field(  # noqa: UP045
+        isin=[*BOOLEAN_CELL_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="No transcript index exists for this row's species at all",
+    )
+    ortholog_evidence: Optional[Series[str]] = Field(  # noqa: UP045
+        isin=[*ORTHOLOG_EVIDENCE_VALUES, UNCLASSIFIED_CELL_VALUE],
+        description="Evidence tier behind an ORTHOLOG verdict; 'not_applicable' for every other class",
+    )

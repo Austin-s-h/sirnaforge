@@ -16,11 +16,15 @@ Notes on Ensembl FASTA layout:
 - Assembly names are embedded in the filename. ``current_fasta`` tracks the latest
   Ensembl release, so a new release can rename an assembly and break a URL; keeping the
   assembly in this one table makes that a single-line fix.
+- The assembly name is also inside each cDNA header (``chromosome:<Assembly>:...``), which is
+  what :func:`infer_species_from_cdna_headers` reads to label a custom reference with the
+  species it actually contains rather than the one the parameter claimed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -142,6 +146,55 @@ ENSEMBL_ASSEMBLIES: tuple[EnsemblAssembly, ...] = (
         genome_source_key="ensembl_macaque_mmul10_toplevel",
     ),
 )
+
+
+def infer_species_from_cdna_headers(fasta_path: Path, max_records: int = 200) -> str | None:
+    """Infer the canonical species of a cDNA FASTA from its own Ensembl headers.
+
+    A custom transcriptome path used to be labelled with the literal species ``"transcriptome"``,
+    which is not a species: it never matches the query species, so every hit is cross-species with
+    no resolvable orthologue, and a screen against mouse cDNA published 10,217 hits as unqualified
+    ``off_target`` with zero orthologs. Issue #99 requires the species come from the *resolved
+    reference* rather than from the parameter it arrived through, and Ensembl cDNA headers carry it::
+
+        >ENSMUST00000108658.11 cdna chromosome:GRCm39:11:69471109:69482701:1 gene:ENSMUSG00000059552.15
+
+    The assembly token is matched against :data:`ENSEMBL_ASSEMBLIES`, so this needs no new table and
+    stays correct as species are added. Only the first ``max_records`` headers are read: a cDNA file
+    is single-species, and a mixed file should not be silently assigned one label.
+
+    Args:
+        fasta_path: Path to a (plain-text) cDNA FASTA.
+        max_records: How many headers to sample before giving up.
+
+    Returns:
+        Canonical species name (e.g. ``mouse``), or None when the headers do not identify one --
+        an honest unknown, so the caller can say so rather than invent a species.
+    """
+    assembly_to_species = {assembly.assembly: assembly.species for assembly in ENSEMBL_ASSEMBLIES}
+    seen: set[str] = set()
+    try:
+        with fasta_path.open() as handle:
+            records = 0
+            for line in handle:
+                if not line.startswith(">"):
+                    continue
+                records += 1
+                if records > max_records:
+                    break
+                for token in line.split():
+                    if token.startswith("chromosome:") or token.startswith("scaffold:"):
+                        parts = token.split(":")
+                        if len(parts) > 1 and parts[1] in assembly_to_species:
+                            seen.add(assembly_to_species[parts[1]])
+    except (OSError, UnicodeDecodeError):
+        # A compressed or binary file at this path infers nothing rather than aborting the run: the
+        # caller may have named an index prefix whose neighbouring file is not plain-text cDNA.
+        return None
+
+    if len(seen) == 1:
+        return seen.pop()
+    return None
 
 
 def build_transcriptome_sources() -> dict[str, TranscriptomeSource]:

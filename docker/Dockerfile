@@ -58,6 +58,12 @@ RUN micromamba install --prefix /opt/conda --file /tmp/environment.yml -y && \
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS unit-test
 ARG VERSION=0.0.0+local
 ENV BUILD_VERSION=${VERSION}
+# A digest of the sources baked in, so `make docker-ensure` can tell a stale image from a current one.
+# BUILD_VERSION alone cannot: it stays 0.7.1 across every commit of an unreleased version, so a
+# version-only check certifies code the image does not contain -- which is how a three-day-old image
+# passed the guard while ~180 commits landed. See the Makefile's SRC_FINGERPRINT.
+ARG SRC_FINGERPRINT=unknown
+ENV BUILD_SRC_FINGERPRINT=${SRC_FINGERPRINT}
 USER root
 
 # Create non-root user and prepare home; we must create the user before COPY

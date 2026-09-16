@@ -5,8 +5,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from sirnaforge.core.design import MiRNADesigner, SiRNADesigner
-from sirnaforge.models.sirna import DesignMode, DesignParameters, FilterCriteria, MiRNADesignConfig
+from sirnaforge.core.design import MiRNADesigner, SiRNADesigner, classify_pos1_pairing, supplementary_score
+from sirnaforge.models.sirna import (
+    DesignMode,
+    DesignParameters,
+    FilterCriteria,
+    MiRNADesignConfig,
+    PostScreenMiRNAWeights,
+)
 
 
 class TestMiRNADesignConfig:
@@ -29,11 +35,20 @@ class TestMiRNADesignConfig:
         # Check off-target preset
         assert config.off_target_preset == "MIRNA_SEED_7_8"
 
-        # Check scoring weights are present
-        assert "ago_start_bonus" in config.scoring_weights
-        assert "pos1_mismatch_bonus" in config.scoring_weights
-        assert "seed_clean_bonus" in config.scoring_weights
-        assert "supp_13_16_bonus" in config.scoring_weights
+        # Issue #96 moved the miRNA scoring weights out of this config and into the named
+        # postscreen_mirna_v4 vector, and deleted the two that were declared but never read.
+        assert not hasattr(config, "scoring_weights")
+        # Issue #102 removed pos1_mismatch from the vector: it is exactly constant at 0.0 for the
+        # exact-reverse-complement passenger every design uses, so it ranked nothing while holding
+        # 0.05. It is still computed; its score_pos1_mismatch contribution column is now always null.
+        assert PostScreenMiRNAWeights().as_mapping().keys() == {
+            "off_target",
+            "target_accessibility",
+            "asymmetry",
+            "gc_content",
+            "ago_start",
+            "supp_13_16",
+        }
 
 
 class TestDesignModeEnum:
@@ -97,34 +112,28 @@ class TestMiRNADesigner:
 
     def test_mirna_designer_pos1_classification(self):
         """Test position 1 pairing state classification."""
-        params = DesignParameters(design_mode=DesignMode.MIRNA)
-        designer = MiRNADesigner(params)
-
         # Test perfect pair
-        assert designer._classify_pos1_pairing("A", "U") == "perfect"
-        assert designer._classify_pos1_pairing("G", "C") == "perfect"
+        assert classify_pos1_pairing("A", "U") == "perfect"
+        assert classify_pos1_pairing("G", "C") == "perfect"
 
         # Test wobble
-        assert designer._classify_pos1_pairing("G", "U") == "wobble"
-        assert designer._classify_pos1_pairing("U", "G") == "wobble"
+        assert classify_pos1_pairing("G", "U") == "wobble"
+        assert classify_pos1_pairing("U", "G") == "wobble"
 
         # Test mismatch
-        assert designer._classify_pos1_pairing("A", "A") == "mismatch"
-        assert designer._classify_pos1_pairing("C", "U") == "mismatch"
+        assert classify_pos1_pairing("A", "A") == "mismatch"
+        assert classify_pos1_pairing("C", "U") == "mismatch"
 
     def test_mirna_designer_supplementary_score(self):
         """Test 3' supplementary pairing score calculation."""
-        params = DesignParameters(design_mode=DesignMode.MIRNA)
-        designer = MiRNADesigner(params)
-
         # Test sequence with high A/U content in positions 13-16 (0-indexed: 12-15)
         guide_high_au = "AAAAAAAAAAAAAAUUUAAAA"  # Positions 12-15: AUUU (75% A/U)
-        score_high = designer._calculate_supplementary_score(guide_high_au)
+        score_high = supplementary_score(guide_high_au)
         assert score_high > 0.5  # Should be high score (low pairing)
 
         # Test sequence with low A/U content in positions 13-16 (0-indexed: 12-15)
         guide_low_au = "AAAAAAAAAAAAGGGCAAAA"  # Positions 12-15: AGGG (25% A/U)
-        score_low = designer._calculate_supplementary_score(guide_low_au)
+        score_low = supplementary_score(guide_low_au)
         assert score_low < 0.5  # Should be low score (high pairing potential)
 
     def test_mirna_vs_sirna_scoring_difference(self):

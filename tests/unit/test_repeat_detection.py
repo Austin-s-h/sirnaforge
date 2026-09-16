@@ -440,10 +440,17 @@ def test_threshold_at_boundary(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_performance_guard_2mb_reference(tmp_path: Path) -> None:
-    """Performance guard: 2MB synthetic reference scans in under 2.0 seconds.
+    """Performance guard: 2MB synthetic reference scans in under 2.0 seconds of CPU time.
 
     Pre-rewrite performance was 6.57s for this size, which extrapolates to ~55 minutes
     for a 1GB reference. This test discriminates between the old and new implementations.
+
+    Measured as CPU time, not wall clock. The ceiling is unchanged and so is what it
+    discriminates -- `scan` is single-threaded numpy, so CPU time and wall clock agree on an idle
+    machine (0.89s vs 0.89s here) and the old implementation was CPU-bound too. What changes is
+    that a loaded machine can no longer fail it: the wall-clock version was measured at 2.845s
+    under concurrent load and 0.894s alone, i.e. it reported the scheduler rather than the
+    algorithm, and a timing assertion that flakes under load teaches people to ignore red.
     """
     ref = tmp_path / "ref.fa"
 
@@ -462,11 +469,11 @@ def test_performance_guard_2mb_reference(tmp_path: Path) -> None:
     needles = [base[i * 7 : i * 7 + 21] for i in range(50)]
 
     detector = RepeatDetector()
-    start = time.perf_counter()
+    start = time.process_time()
     detector.scan(needles, ref)
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
 
-    assert elapsed < 2.0, f"Scan took {elapsed:.3f}s, should be under 2.0s"
+    assert elapsed < 2.0, f"Scan took {elapsed:.3f}s of CPU time, should be under 2.0s"
 
 
 @pytest.mark.unit

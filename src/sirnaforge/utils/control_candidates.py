@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sirnaforge.models.sirna import DesignResult, SiRNACandidate
+from sirnaforge.models.sirna import DesignResult, SiRNACandidate, ranking_score
 
 DIRTY_CONTROL_LABEL = "DIRTY_CONTROL"
 DIRTY_CONTROL_SUFFIX = "__DIRTY_CONTROL"
@@ -42,13 +42,21 @@ def inject_dirty_controls(design_result: DesignResult, count: int = 2) -> list[S
     if any(DIRTY_CONTROL_SUFFIX in candidate.id for candidate in design_result.candidates):
         return []
 
-    rejected_pool = [c for c in getattr(design_result, "rejected_candidates", []) if DIRTY_CONTROL_SUFFIX not in c.id]
+    # A gate resolved to `warn` retains its failures, and they join this pool too -- so exclude any
+    # candidate that is also live. Cloning one would put a near-duplicate of a shipped guide in the
+    # order list and lose the clone to sequence deduplication before the aligner ever saw it.
+    live_ids = {c.id for c in design_result.candidates}
+    rejected_pool = [
+        c
+        for c in getattr(design_result, "rejected_candidates", [])
+        if DIRTY_CONTROL_SUFFIX not in c.id and c.id not in live_ids
+    ]
     if not rejected_pool:
         return []
 
-    # Rejected candidates never reach scoring, so every composite_score here is 0.0 and this
-    # sort is a stable tie -- fine for the purpose, which is any already-failed candidate.
-    worst_candidates = sorted(rejected_pool, key=lambda c: getattr(c, "composite_score", 0.0))[:count]
+    # Rejected candidates never reach scoring, so every score here is None and this sort is a
+    # stable tie -- fine for the purpose, which is any already-failed candidate.
+    worst_candidates = sorted(rejected_pool, key=ranking_score)[:count]
     if not worst_candidates:
         return []
     dirty_controls: list[SiRNACandidate] = []

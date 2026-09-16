@@ -24,7 +24,7 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.10, <3.13"
-version = "0.7.0"
+version = "0.7.1"
 
 dependencies = [
   "biopython>=1.84",
@@ -45,6 +45,9 @@ dependencies = [
   "pandera>=0.26.0",
   "psutil>=6.0.0",
   "pyarrow>=18.0.0",
+  # Report templating (issue #103). The report's one figure is hand-drawn inline SVG; plotly was tried
+  # and removed because its bundle carries external URLs the report must not contain (see CHANGELOG).
+  "jinja2>=3.1.0",
 ]
 
 [dependency-groups]
@@ -55,6 +58,10 @@ dev = [
   "pytest-mock>=3.15",
   "pytest-asyncio>=1.1.0",
   "pytest-xdist>=3.8",
+  # quilt_summarize.json is validated against quiltdata/quilt's own published schema (#103), so the
+  # validator is a direct dev dependency: it resolved only transitively through jupyter before, and a
+  # test that silently stops running when an unrelated dependency drops it is not a gate.
+  "jsonschema>=4.0",
   "ruff>=0.12.0",
   "mypy>=1.10",
   "pre-commit>=3.8",
@@ -62,7 +69,10 @@ dev = [
   "pandas-stubs>=2.1.0",
   "codespell>=2.4.0",
   "bandit[toml]>=1.7.0",
-  "safety>=2.3.0,<3.0.0",
+  # No `safety` here on purpose: the <3.0.0 pin it carried needs pkg_resources, which modern
+  # setuptools no longer ships on 3.12, so every invocation produced an unhandled exception instead
+  # of a scan. `make security` fetches pip-audit on demand (`uv run --with`) rather than pinning a
+  # scanner into the lock for a target that is advisory.
   "sphinx>=7.3.0",
   "sphinx-rtd-theme>=2.0.0",
   "myst-parser>=2.0.0",
@@ -255,11 +265,17 @@ log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_level = "INFO"
 markers = [
-  # === Core Test Types (mutually exclusive - pick ONE) ===
+  # === Core Test Types (at most one; none is legal and common) ===
+  # "pick ONE" was the old wording and it is not what the suite does: 617 of 1,786 dev-tier tests
+  # carry none of the three, and reach `dev` through the untagged default in tests/conftest.py.
+  # That default is correct (it tiers into the loop that runs most often), so the claim was fixed
+  # rather than the tests. Never mark a test with two of these three.
   "unit: Pure Python unit tests - fast, isolated, no external dependencies",
   "integration: End-to-end workflow tests - multi-component validation",
   "smoke: Ultra-fast gate tests - MUST always pass in CI/CD", # === Execution Environment (where test runs) ===
   "runs_in_container: Test executes INSIDE Docker container (not on host)", # === Requirement Markers (what test needs on host) ===
+  # Declared but unused: no test carries it today, and `make test-ci` filters it out so that a
+  # future host-side Docker test is excluded from CI by default rather than by someone remembering.
   "requires_docker: Test requires Docker daemon on host machine",
   "requires_nextflow: Test requires Nextflow pipeline execution",
   "requires_network: Test requires internet connectivity",

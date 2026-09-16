@@ -17,6 +17,8 @@ from pathlib import Path
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
+from sirnaforge.utils.parsing import parse_csv
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,7 +203,7 @@ def get_filter_spec(filter_string: str | None) -> list[str]:
     if not filter_string:
         return []
 
-    filters = [f.strip() for f in filter_string.split(",") if f.strip()]
+    filters = parse_csv(filter_string)
     valid_filters = {"protein_coding", "canonical_only"}
 
     invalid = [f for f in filters if f not in valid_filters]

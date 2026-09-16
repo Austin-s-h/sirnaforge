@@ -25,6 +25,9 @@ from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+# Ensembl's gnomADe population codes are already the standard ones; REMAINING is the one that is not.
+_ENSEMBL_POPULATION_CODES = {"REMAINING": "OTH"}
+
 
 class VariantResolver:
     """Resolve variant identifiers to VariantRecord using multiple databases with priority ordering.
@@ -371,8 +374,6 @@ class VariantResolver:
                         if len(alleles) < 2:
                             return None
 
-                        # Get the reference and alternate alleles
-                        alleles[0]
                         alt_alleles = set(alleles[1:])  # All alleles except reference
 
                         for pop in ensembl_response.populations:
@@ -390,22 +391,7 @@ class VariantResolver:
                                 # Handle Ensembl's population format: "gnomADe:{code}"
                                 if ":" in pop_name and pop_name.lower().startswith("gnomade:"):
                                     pop_code = pop_name.split(":")[-1].upper()
-                                    # Map Ensembl population codes to standard codes
-                                    pop_mapping = {
-                                        "AFR": "AFR",
-                                        "AMR": "AMR",
-                                        "EAS": "EAS",
-                                        "EUR": "EUR",
-                                        "SAS": "SAS",
-                                        "FIN": "FIN",
-                                        "ASJ": "ASJ",
-                                        "OTH": "OTH",
-                                        "NFE": "NFE",
-                                        "MID": "MID",
-                                        "ALL": "ALL",
-                                        "REMAINING": "OTH",
-                                    }
-                                    standard_code = pop_mapping.get(pop_code, pop_code)
+                                    standard_code = _ENSEMBL_POPULATION_CODES.get(pop_code, pop_code)
                                     if standard_code not in population_afs or freq > population_afs[standard_code]:
                                         # Keep the maximum AF across all alternate alleles for this population
                                         population_afs[standard_code] = freq
@@ -425,16 +411,6 @@ class VariantResolver:
                                 ):
                                     af = freq
                                     break
-
-                        # Get first allele information from mappings
-                        if not ensembl_response.mappings:
-                            return None
-
-                        mapping = ensembl_response.mappings[0]
-                        allele_string = mapping.allele_string
-                        alleles = allele_string.split("/")
-                        if len(alleles) < 2:
-                            return None
 
                         return VariantRecord(
                             id=ensembl_response.name,

@@ -121,6 +121,11 @@ notebooks/zfn_experiment_runs/
 # Local scratch notes for in-flight work
 .dev/
 
+# `make security` scan reports (advisory artifacts, uploaded by CI, never committed)
+bandit-report.json
+pip-audit-report.json
+safety-report.json
+
 # Claude Code agent worktrees (transient, own git dirs)
 .claude/worktrees/
 .nextflow/

@@ -10,8 +10,8 @@ from sirnaforge.cli import (
     _autotune_zfn_sharding,
     _build_zfn_design_configuration,
     _parse_zfn_mutation_constraints,
-    _resolve_design_mode,
 )
+from sirnaforge.config.run_policy import parse_design_mode
 from sirnaforge.models.sirna import (
     DesignMode,
 )
@@ -30,13 +30,13 @@ from sirnaforge.models.zfn import (
 
 
 def test_resolve_design_mode_accepts_zfn() -> None:
-    """ZFN should be accepted as a valid design mode."""
-    mode, gc_min, gc_max, overhang, modification_pattern = _resolve_design_mode("zfn", 30.0, 60.0, "dTdT", "none")
-    assert mode == DesignMode.ZFN
-    assert gc_min == 30.0
-    assert gc_max == 60.0
-    assert overhang == "dTdT"
-    assert modification_pattern == "none"
+    """ZFN should be accepted as a valid design mode.
+
+    Mode parsing no longer carries the four threshold arguments: applying miRNA presets by value
+    equality against them is the defect the run-policy resolver replaced (#99).
+    """
+    assert parse_design_mode("zfn") == DesignMode.ZFN
+    assert parse_design_mode("ZFN") == DesignMode.ZFN
 
 
 def test_parse_zfn_mutation_constraints_valid() -> None:

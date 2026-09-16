@@ -6,7 +6,6 @@ for siRNA off-target analysis with proper Docker integration.
 
 import asyncio
 import os
-import shutil
 import subprocess  # nosec B404
 from pathlib import Path
 from typing import Any
@@ -15,32 +14,23 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.subprocess_utils import _get_executable_path, _validate_command_args
 
 from .config import NextflowConfig
 
 logger = get_logger(__name__)
 
 
-def _get_executable_path(tool_name: str) -> str | None:
-    """Get the full path to an executable, ensuring it exists."""
-    path = shutil.which(tool_name)
-    if path is None:
-        logger.warning(f"Tool '{tool_name}' not found in PATH")
-    return path
+def _decode(output: bytes | str | None) -> str:
+    """Normalize a CalledProcessError's captured output/stderr to text.
 
-
-def _validate_command_args(cmd: list[str]) -> None:
-    """Validate command arguments for subprocess execution."""
-    if not cmd:
-        raise ValueError("Command list cannot be empty")
-
-    executable = cmd[0]
-    if not executable:
-        raise ValueError("Executable path cannot be empty")
-
-    # Ensure we have an absolute path to the executable
-    if not Path(executable).is_absolute():
-        raise ValueError(f"Executable must be an absolute path: {executable}")
+    ``subprocess.CalledProcessError.output``/``.stderr`` carry whatever the subprocess call was
+    given -- bytes here, since ``_run_subprocess`` captures with no ``text=True`` -- but may be
+    ``None`` if nothing was captured at all.
+    """
+    if output is None:
+        return ""
+    return output.decode() if isinstance(output, bytes) else output
 
 
 def _find_repo_root(start: Path) -> Path | None:
@@ -113,14 +103,14 @@ class NextflowRunner:
         return self._pipeline_revision
 
     async def run(
-        self, input_file: Path, output_dir: Path, genome_species: list[str] | None = None, **kwargs: Any
+        self, input_file: Path, output_dir: Path, screen_species: list[str] | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         """Simple method to run Nextflow workflow with auto-validation and defaults.
 
         Args:
             input_file: Path to input FASTA file
             output_dir: Output directory for results
-            genome_species: List of species for miRNA genome lookups (defaults to ["human", "rat", "rhesus"])
+            screen_species: Species to screen against (defaults to ["human", "rat", "rhesus"])
             **kwargs: Additional parameters passed to run_offtarget_analysis
 
         Returns:
@@ -137,22 +127,22 @@ class NextflowRunner:
             raise NextflowExecutionError("Nextflow workflow files not found.")
 
         # Set defaults
-        genome_species = genome_species or ["human", "rat", "rhesus"]
+        screen_species = screen_species or ["human", "rat", "rhesus"]
 
         # Run the analysis
         return await self.run_offtarget_analysis(
-            input_file=input_file, output_dir=output_dir, genome_species=genome_species, **kwargs
+            input_file=input_file, output_dir=output_dir, screen_species=screen_species, **kwargs
         )
 
     def run_sync(
-        self, input_file: Path, output_dir: Path, genome_species: list[str] | None = None, **kwargs: Any
+        self, input_file: Path, output_dir: Path, screen_species: list[str] | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         """Synchronous version of run() for simpler usage without async/await.
 
         Args:
             input_file: Path to input FASTA file
             output_dir: Output directory for results
-            genome_species: List of species for miRNA genome lookups (defaults to ["human", "rat", "rhesus"])
+            screen_species: Species to screen against (defaults to ["human", "rat", "rhesus"])
             **kwargs: Additional parameters passed to run_offtarget_analysis
 
         Returns:
@@ -166,12 +156,12 @@ class NextflowRunner:
             raise NextflowExecutionError("Nextflow workflow files not found.")
 
         # Set defaults
-        genome_species = genome_species or ["human", "rat", "rhesus"]
+        screen_species = screen_species or ["human", "rat", "rhesus"]
 
         # Run synchronously
         return asyncio.run(
             self.run_offtarget_analysis(
-                input_file=input_file, output_dir=output_dir, genome_species=genome_species, **kwargs
+                input_file=input_file, output_dir=output_dir, screen_species=screen_species, **kwargs
             )
         )
 
@@ -179,7 +169,7 @@ class NextflowRunner:
         self,
         input_file: Path,
         output_dir: Path,
-        genome_species: list[str],
+        screen_species: list[str],
         additional_params: dict[str, Any] | None = None,
         show_progress: bool = True,
     ) -> dict[str, Any]:
@@ -188,7 +178,7 @@ class NextflowRunner:
         Args:
             input_file: Path to siRNA candidates FASTA file
             output_dir: Output directory for results
-            genome_species: List of species for miRNA genome lookups
+            screen_species: Species to screen against for off-target liabilities
             additional_params: Additional parameters for the workflow
             show_progress: Whether to show progress indicators
 
@@ -213,7 +203,7 @@ class NextflowRunner:
         args = self.config.get_nextflow_args(
             input_file=abs_input_file,
             output_dir=abs_output_dir,
-            genome_species=genome_species,
+            screen_species=screen_species,
             additional_params=additional_params,
         )
 
@@ -243,12 +233,16 @@ class NextflowRunner:
 
                 except subprocess.CalledProcessError as e:
                     progress.update(task, description="❌ Nextflow execution failed")
-                    raise NextflowExecutionError(f"Nextflow failed: {e}") from e
+                    raise NextflowExecutionError(
+                        f"Nextflow failed: {e}", stdout=_decode(e.output), stderr=_decode(e.stderr)
+                    ) from e
         else:
             try:
                 result = await self._run_subprocess(cmd, env=env)
             except subprocess.CalledProcessError as e:
-                raise NextflowExecutionError(f"Nextflow failed: {e}") from e
+                raise NextflowExecutionError(
+                    f"Nextflow failed: {e}", stdout=_decode(e.output), stderr=_decode(e.stderr)
+                ) from e
 
         # Process results
         return self._process_results(output_dir, result)
@@ -363,7 +357,6 @@ class NextflowRunner:
         output_files = {
             "combined_analyses": list(output_dir.glob("**/combined_*_analysis.tsv")),
             "combined_summary": list(output_dir.glob("**/combined_summary.json")),
-            "html_report": list(output_dir.glob("**/analysis_report.html")),
             "validation_report": list(output_dir.glob("**/validation_report.txt")),
             "individual_results": list(output_dir.glob("**/individual_results/")),
         }
@@ -373,7 +366,9 @@ class NextflowRunner:
             "total_files": sum(len(files) for files in output_files.values()),
             "analysis_files": len(output_files["combined_analyses"]),
             "summary_files": len(output_files["combined_summary"]),
-            "report_files": len(output_files["html_report"]),
+            # No report_files count: the only analysis_report.html this pipeline ever produced was an
+            # empty file the stub touched, so the count reported a report that did not exist. The real
+            # report is written by step6 (sirnaforge/report.html) and by `sirnaforge report`.
         }
 
         stdout_text = ""

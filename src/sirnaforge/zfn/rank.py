@@ -33,9 +33,7 @@ def _score_to_penalty(score: float) -> float:
 @lru_cache(maxsize=512)
 def _chrom_sort_key(chrom: str) -> tuple[int, int | str]:
     """Return a sortable chromosome key with numeric chromosomes first."""
-    normalized = chrom.lower()
-    if normalized.startswith("chr"):
-        normalized = normalized[3:]
+    normalized = chrom.lower().removeprefix("chr")
 
     if normalized.isdigit():
         return (0, int(normalized))
