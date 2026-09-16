@@ -1158,11 +1158,8 @@ class SiRNAWorkflow:
     async def resolve_variants_step(self, progress: Progress) -> list[VariantRecord]:
         """Resolve variants for targeting or avoidance (optional workflow step).
 
-        This step runs after transcript retrieval and before siRNA design,
-        resolving and filtering variants based on the workflow configuration.
-
-        This step is run after transcript retrieval and before ORF validation and siRNA design.
-        Variants are resolved using ClinVar, Ensembl Variation, and/or VCF files.
+        Runs after transcript retrieval and before ORF validation and siRNA design, using
+        ClinVar, Ensembl Variation, and/or VCF files.
 
         Args:
             progress: Rich progress tracker
@@ -1510,9 +1507,9 @@ class SiRNAWorkflow:
         then no reference to reuse.
         """
         distinct_guides = {normalize_guide_sequence(c.guide_sequence) for c in candidates}
-        # The RESOLVED threshold, not the module constant. They agree by default, so a user who set
-        # `max_repeat_transcript_fraction` got the constant silently -- and the run summary published
-        # the value they asked for beside a scan that never used it.
+        # The RESOLVED threshold, not the module constant: they agree by default, but using the
+        # constant would silently ignore a user-set `max_repeat_transcript_fraction` while the run
+        # summary still published the value they asked for.
         threshold = self.config.design_params.filters.max_repeat_transcript_fraction
         action = self._filter_action_for("max_repeat_transcript_fraction", threshold)
 
@@ -1568,9 +1565,9 @@ class SiRNAWorkflow:
         named as files so "which of these can I order?" does not depend on the reader knowing to filter
         a column.
         """
-        # No user-facing top-candidates FASTA or text/json summaries are produced anymore.
-        # We only keep canonical CSV outputs (ALL + PASS) for candidates. Off-target analysis
-        # prepares its own internal FASTA input under off_target/.
+        # No user-facing top-candidates FASTA or text/json summaries; only canonical CSV outputs
+        # (ALL + PASS) for candidates. Off-target analysis prepares its own internal FASTA input
+        # under off_target/.
 
         if self.config.design_params.apply_modifications:
             self._apply_modifications_to_results(design_results)
@@ -1609,9 +1606,8 @@ class SiRNAWorkflow:
             logger.warning(f"Failed to write FAIR manifest: {e}")
 
         # Rendering the report and registering it are two writes with two failure modes, so they get
-        # two handlers: a read-only run root left report.html written and quilt_summarize.json not,
-        # and one shared handler then logged "Failed to write self-contained HTML report" for a report
-        # that had in fact succeeded (#103).
+        # two handlers (#103): a shared handler would mislog a successful render as failed whenever
+        # only the registration write failed.
         payload: ReportPayload | None = None
         report_path: Path | None = None
         render_error: str | None = None
@@ -1629,11 +1625,10 @@ class SiRNAWorkflow:
             self._report_registration = (payload, report_path)
             summarize_path = self._write_quilt_summarize(payload, report_path)
 
-        # Unconditional, because manifest.json above claims report.html only as PENDING and the sidecar
-        # is the one place the outcome can be recorded without rewriting the bytes the report quoted. A
-        # sidecar written only on success left the manifest attesting a report.html a failed render
-        # never wrote. Its own handler, per #103's two-handler rule: a failed sidecar must not be logged
-        # as a failed report.
+        # Unconditional, because manifest.json claims report.html only as PENDING, and the sidecar is
+        # the only place the outcome can be recorded without rewriting the bytes the report quoted.
+        # Its own handler, per #103's two-handler rule: a failed sidecar must not log as a failed
+        # report.
         try:
             write_report_manifest(
                 report_path or report_html_path,
@@ -1972,10 +1967,9 @@ class SiRNAWorkflow:
         # what is recorded here is what applied.
         scoring_weights = self.config.design_params.scoring
         # Derived from THIS run's vectors, not hand-listed: whether a term is scored is a per-run
-        # property, and a literal cannot notice a term being promoted -- #96's drift class. The literal
-        # missed pos1_mismatch and au_1_5, registered terms the shipped profile does not score. Its one
-        # right instinct was naming paired_fraction, which has no TermRecord and is still reported and
-        # unscored, so the universe is the registry PLUS those terms, never the registry alone.
+        # property that a fixed literal cannot track as terms are promoted (#96's drift class). The
+        # universe is the registry PLUS terms like paired_fraction, which has no TermRecord but is
+        # still reported and unscored -- never the registry alone.
         scored_terms = {term for vector in scoring_weights.all_vectors() for term in vector.terms}
 
         return {
@@ -2004,11 +1998,10 @@ class SiRNAWorkflow:
     def _build_provenance_block(self, *, report_html: Path | None) -> dict[str, Any]:
         """Name the build and the references this run's science rests on, or say why it cannot.
 
-        The manifest recorded every gate as data and no reference identity at all: no Ensembl release,
-        no transcriptome checksum, no index digest, no git SHA. Two runs could not be shown to have
-        screened the same bytes. Everything here is read from state this process already holds -- no
-        manager is instantiated, because a manager built at manifest time would attest bytes this run
-        may never have touched.
+        Without it, two runs cannot be shown to have screened the same bytes: no Ensembl release,
+        transcriptome checksum, index digest or git SHA otherwise reaches the manifest. Everything
+        here is read from state this process already holds -- no manager is instantiated, because
+        one built at manifest time would attest bytes this run may never have touched.
 
         Wrapped whole: provenance is bookkeeping and must never fail a run. A named failure is not
         silence, so the degraded block says what went wrong instead of dropping the key.
@@ -2406,8 +2399,7 @@ class SiRNAWorkflow:
         """What this run's reconciled evidence says about the miRNA seed channel, per species.
 
         The configuration says what was asked for; only the reconciliation says whether the channel
-        published anything. Both are needed, because a configured database and a screened corpus are
-        different claims and the block was emitting the first as if it were the second.
+        published anything -- a configured database is not evidence a corpus was screened.
         """
         channel = ScreeningChannel.MIRNA_SEED.value
         if self._screening_evidence is None:
@@ -2446,13 +2438,12 @@ class SiRNAWorkflow:
         """What the miRNA channel screened against, which the producer does not publish.
 
         The corpus digest, url, download date and mature-sequence count exist only inside the
-        MIRNA_SEED_ANALYSIS task, whose cache is the container's. Instantiating a manager here would
-        read the *host* cache and attest bytes this run never touched, so it is not done (#111 tier 3).
+        MIRNA_SEED_ANALYSIS task, whose cache is the container's; instantiating a manager here would
+        read the *host* cache and attest bytes this run never touched (#111 tier 3).
 
-        ``source_name`` is therefore gated on the channel having completed: it was emitted from
-        configuration alone, so a run that merely *named* a database published a corpus identity for a
-        scan that never happened. ``per_species`` was a bare empty list, which reads as "no species"
-        where the truth is that no per-species record exists to read.
+        ``source_name`` is gated on the channel having completed, not merely configured -- naming a
+        database is not evidence a scan ran. ``per_species`` distinguishes no species screened from
+        no per-species record existing.
         """
         from sirnaforge.data.mirna_manager import MiRNADatabaseManager  # noqa: PLC0415
 
@@ -2536,9 +2527,9 @@ class SiRNAWorkflow:
             "attempted": True,
             "source": mapping.source,
             "endpoint": ENSEMBL_BASE_URL if from_compara else str(self.config.ortholog_mapping_file),
-            # Compara's own vocabulary is published only for a Compara call. A user-supplied mapping
-            # file was being described with a release reason that names rest.ensembl.org and with all
-            # three ORTHOLOGUE_TYPES, as if a REST call had filtered them -- #101's warning exactly.
+            # Compara's own vocabulary is published only for a Compara call: a user-supplied mapping
+            # file must not carry a rest.ensembl.org release reason or ORTHOLOGUE_TYPES, as if a
+            # REST call had filtered it (#101).
             "compara_release": absent(
                 "unversioned_endpoint",
                 "resolved against rest.ensembl.org with no release pin; naming the endpoint is the honest "
@@ -2632,14 +2623,11 @@ class SiRNAWorkflow:
     def _conservation_scope(self, mapping: OrthologueMapping | None) -> dict[str, Any]:
         """The denominator conservation was actually divided by, and whether its fractions are floors.
 
-        Both fields were wrong. ``denominator_species`` published the *orthology lookup's* species set,
-        which is not what ``_score_candidate_post_screen`` divides by -- it divides by the species
-        handed to the aligner minus the query species, so the two disagree whenever a lookup covered a
-        species the screen did not (or the reverse), and the manifest named a denominator nothing was
-        scored against. ``is_lower_bound`` was ``bool(unresolved_species)``, which is true in exactly
-        the case where the scorer publishes *no* conservation at all: an unresolved species in the
-        denominator nulls ``conservation_score`` rather than lowering it. A floor is instead what a
-        species that stayed in the denominator with no alignment evidence produces.
+        ``denominator_species`` is the species handed to the aligner minus the query species -- the
+        same set :meth:`_score_candidate_post_screen` divides by, never the orthology lookup's own
+        species set. ``is_lower_bound`` is true only when a denominator species reconciled no
+        transcriptome evidence; an *unresolved* species instead nulls ``conservation_score``
+        outright (no conservation is published at all), so the two cases must not be conflated.
         """
         # The scorer's own expression, replicated verbatim so the two cannot drift.
         requested = frozenset(
@@ -2732,10 +2720,10 @@ class SiRNAWorkflow:
         A non-empty list is not a crash: it is the manifest declaring, in one place, that a reference
         this run depended on cannot be shown to be the reference another run used.
 
-        Identification is read off the entries this block just published, and it takes *both* halves:
-        bwa-mem2 aligns against the index files alone, so a reference whose FASTA digest is recorded
-        while its index bytes are unattested was being reported as fully identified even though the
-        off-target claims rest on the index. Which half is missing is named beside the pair.
+        Identification takes *both* halves: bwa-mem2 aligns against the index files alone, so a
+        reference whose FASTA digest is recorded but whose index bytes are unattested is not fully
+        identified, even though its off-target claims rest on the index. Which half is missing is
+        named beside the pair.
         """
         required = sorted(self.config.resolved_policy.evidence_requirements.required_pairs)
         entries = {
@@ -2775,9 +2763,8 @@ class SiRNAWorkflow:
 
         ``genome_index`` and ``snp_file`` are CLI options forwarded onto ``DesignParameters`` and read
         by nothing in 0.7.1, so ``model_dump`` emits them as bare nulls that read exactly like "not
-        applicable". They were named in the gap this block was written to close, so each is stated here
-        as a named absence -- with the manifest path where the bare null lives, the way
-        ``reported_not_scored_definitions`` names where a term is defined.
+        applicable". Each is stated here as a named absence, with the manifest path where the bare
+        null lives, the way ``reported_not_scored_definitions`` names where a term is defined.
         """
         parameters = self.config.design_params
         return {
@@ -2922,9 +2909,9 @@ class SiRNAWorkflow:
 
         # Honour the skip request BEFORE touching any reference: materializing the default
         # transcriptomes downloads and indexes multi-gigabyte cDNA files, and repeat detection
-        # scans against that same reference (~47s). Doing either first made
+        # scans against that same reference (~47s) -- doing either first would make
         # --skip-off-targets/check_off_targets=False cost nearly as much as a real screen, and
-        # made "skipped by user request" a lie about work already done.
+        # make "skipped by user request" untrue.
         if not getattr(self.config.design_params, "check_off_targets", True):
             console.print("⚠️  Off-target analysis skipped by user request")
             console.print("   ↳ repeat-element detection skipped too: it needs the same cDNA reference")
@@ -3413,8 +3400,8 @@ class SiRNAWorkflow:
             )
 
         # Resolved before any refusal below, so a rejection names the species that went unscreened
-        # rather than 'unknown': the shortfall map is what reports the missing species, and blaming a
-        # phantom one is how "unscreened" started reading as "clean" in the first place.
+        # rather than 'unknown': the shortfall map must report the missing species, not a phantom
+        # one that would read as clean.
         species, authority, conflict = resolve_reference_species(
             declared=declared,
             source_species=payload.get("source_species"),
@@ -3509,9 +3496,9 @@ class SiRNAWorkflow:
         requested = [species.strip() for species in self.config.screen_species if species.strip()]
         available: set[str] = set()
         # Both keys are read because main.nf mixes them into ONE alignment channel: transcriptome
-        # FASTAs are indexed in the container, prebuilt indices are used as they are, and either way
-        # the species really is screened. Omitting one dropped species that had in fact been aligned
-        # from the conservation denominator.
+        # FASTAs are indexed in the container, prebuilt indices used as-is, and either way the
+        # species is screened -- omitting either key would drop an aligned species from the
+        # conservation denominator.
         for key in ("transcriptome_indices", "transcriptome_fastas"):
             raw_value = params.get(key) or self.config.nextflow_config.get(key)
             available.update(self._parse_species_entries(raw_value))
@@ -3553,8 +3540,8 @@ class SiRNAWorkflow:
             filtered = requested
 
         # Remembered because this list, not config.screen_species, is what gets screened: scoring
-        # conservation against the shorter config list yielded a denominator smaller than its
-        # numerator, which aborted post-screen scoring for the whole candidate.
+        # conservation against the shorter config list can make the denominator smaller than its
+        # numerator, aborting post-screen scoring for the whole candidate.
         self._active_screen_species = list(filtered)
         return filtered
 
@@ -4264,10 +4251,8 @@ class SiRNAWorkflow:
 
         The two are counted from different structures — ``results`` by the row ingest,
         ``persisted`` by the tables that were written — so a path that feeds candidates hits it
-        never publishes shows up here. That is the failure this check exists for: an aggregated
-        table rejected upstream left the fallback ingesting real per-species rows into candidates
-        while the published table stayed header-only, so the hit table reported no liabilities
-        beside candidates carrying dozens each.
+        never publishes shows up here (e.g. an aggregated table rejected upstream while a
+        per-species fallback still fed candidates, leaving the table header-only).
         """
         counted = 0
         for entry in cast(dict[str, dict[str, Any]], parsed.get("results") or {}).values():
@@ -4354,8 +4339,7 @@ class SiRNAWorkflow:
         """Species a channel-level completion speaks for: what this run screened, plus the query species.
 
         The miRNA scan is one batch over every submitted guide, so it has no per-species outcome of
-        its own; this is the scope its completion covers, and it is deliberately the same set the
-        hand-rolled pair record used before evidence existed.
+        its own; this is the scope its completion covers.
         """
         return frozenset(
             normalize_species_name(species) for species in (self._active_screen_species or self.config.screen_species)
@@ -4622,8 +4606,8 @@ class SiRNAWorkflow:
         human_hits = tx_summary.get("human_hits", 0)
         other_hits = tx_summary.get("other_species_hits", 0)
         # These roll-ups are derived from the screened species' counts, so on a run that screened
-        # nothing they are 0 for want of evidence. Printing that as the first line of the block was
-        # the same "absent reads as clean" the per-species reporting below exists to prevent.
+        # nothing they read 0 for want of evidence, not for a clean screen -- the same distinction
+        # the per-species reporting below exists to preserve.
         if self._species_with_alignment_evidence(tx_summary):
             console.print(f"   🧾 Aggregated transcriptome hits — human: {human_hits}, other: {other_hits}")
         else:
@@ -4640,7 +4624,8 @@ class SiRNAWorkflow:
             )
 
         # "No hits detected" is a clean-screen claim, so it is made only about species that were
-        # screened. Reported against species_analyzed it read a rejected alignment as good news.
+        # screened, never against species_analyzed (that would read a rejected alignment as good
+        # news).
         screened_species = self._species_with_alignment_evidence(tx_summary)
         zero_hit_species = [species for species in screened_species if species_counts.get(species, 0) == 0]
         if zero_hit_species:
@@ -5292,7 +5277,7 @@ class SiRNAWorkflow:
     ) -> tuple[list[SiRNACandidate], dict[str, Any]]:
         """Integrate off-target analysis results, classify hits, and score candidates.
 
-        Workflow reordering: screening now happens before final scoring. This method:
+        Screening happens before final scoring. This method:
         1. Fans out deduplicated screening results to all candidates sharing a sequence
         2. Classifies each transcriptome hit four ways (on-target, ortholog, repeat, off-target)
         3. Computes post-screen sub-scores (off-target, isoform coverage, conservation)
@@ -5346,10 +5331,10 @@ class SiRNAWorkflow:
 
         # Conservation is keyed on the set handed to the aligner, not on whether species were typed
         # on the CLI: the term goes inactive exactly when that set is query-species-only.
-        # _active_screen_species, not config.screen_species, is what Nextflow was handed: extra
-        # species can arrive on transcriptome_indices/transcriptome_fastas and
-        # can return ortholog hits, so scoring them against the shorter config list made the
-        # conservation numerator exceed its denominator.
+        # _active_screen_species, not config.screen_species, is what Nextflow was handed -- extra
+        # species can arrive on transcriptome_indices/transcriptome_fastas and return ortholog
+        # hits, so scoring against the shorter config list could make the conservation numerator
+        # exceed its denominator.
         requested_species = frozenset(
             normalize_species_name(s) for s in (self._active_screen_species or self.config.screen_species)
         )
@@ -5535,10 +5520,10 @@ class SiRNAWorkflow:
                         candidate, HitClassCounts(), conservation_denominator, stats, unresolved_orthology
                     )
 
-                # Then gate it, on the same footing as a candidate that had hits. This branch used to
-                # `continue`, so a completed screen that found nothing reached no gate at all and
-                # exported every one as `not_evaluated` (#106). The counts are zero and
-                # ``complete_pairs`` says whether that zero was measured.
+                # Then gate it, on the same footing as a candidate that had hits, so a completed
+                # screen that found nothing still reaches every gate (#106) instead of exporting
+                # `not_evaluated`. The counts are zero and ``complete_pairs`` says whether that
+                # zero was measured.
                 self._gate_offtarget_counts(
                     candidate,
                     counts=_ZERO_OFFTARGET_COUNTS,
@@ -5575,10 +5560,9 @@ class SiRNAWorkflow:
                 seed_mismatches = int(hit.get("seed_mismatches", 0))
                 offtarget_score = float(hit.get("offtarget_score", 0.0))
                 species_label = hit.get("species")
-                # The gates count the query species, not literally human. Testing `is_human_species`
-                # here meant that on any non-human query run the mismatch-stratified gates measured
-                # zero on real hits: four perfect-match mouse off-targets on a mouse-query run gave
-                # observed 0 / verdict pass while the exported column said 4.
+                # The gates count the query species, not literally human: testing `is_human_species`
+                # here zeroes real hits on any non-human query run (e.g. mouse off-targets counting
+                # 0 / verdict pass while the exported column reads 4).
                 species_is_query = (normalize_species_name(species_label) == query_species) if species_label else False
                 species_is_human = is_human_species(species_label)
 
@@ -5616,11 +5600,11 @@ class SiRNAWorkflow:
                     annotate_hit_row(hit, classification, annotator)
                     hit_class = accumulate_hit_class(hit, hit_counts, None, hit_species)
 
-                    # Only liabilities feed the mismatch-stratified counters. Letting on-target
+                    # Only liabilities feed the mismatch-stratified counters: letting on-target
                     # isoform hits through here would fail every guide on a multi-isoform gene
-                    # against max_transcriptome_hits_0mm, which is the near-total kill switch
-                    # fixed in 0.5.2. UNDETERMINED is in LIABILITY_CLASSES, so a run with no
-                    # transcript index gates exactly as it did before the class existed.
+                    # against max_transcriptome_hits_0mm (the near-total kill switch fixed in
+                    # 0.5.2). UNDETERMINED is in LIABILITY_CLASSES, so a run with no transcript
+                    # index still gates correctly.
                     if hit_class not in LIABILITY_CLASSES:
                         continue
 
@@ -5638,7 +5622,7 @@ class SiRNAWorkflow:
                         transcriptome_human_total += 1
 
                     # Membership, not `nm <= 2`: the two dicts are keyed {0, 1, 2}, so a negative
-                    # or absent nm falls through here exactly as it did under the equality chain.
+                    # or absent nm falls through both.
                     if nm in transcriptome_totals:
                         transcriptome_totals[nm] += 1
                         if treated_as_query:
@@ -5731,9 +5715,9 @@ class SiRNAWorkflow:
         # per-candidate loop above visits a deduplicated guide's rows once per candidate carrying it.
         alignment_rows = self._alignment_rows(results)
         stats["hit_classes"] = count_persisted_classes(alignment_rows)
-        # per_species is the same quantity decomposed by species, so it is counted the same way.
-        # Filled from the loop it read 2x on the frozen baseline's deduplicated guides, which put
-        # two contradicting decompositions of one number side by side in workflow_summary.json.
+        # per_species is the same quantity decomposed by species, so it is counted the same way,
+        # from this list rather than the per-candidate loop -- which would double-count a
+        # deduplicated guide's rows once per candidate carrying it.
         self._tally_per_species(alignment_rows, per_species, query_species)
 
         # Re-ranking (excluding repeat-flagged candidates) happens in step5_offtarget_analysis,
@@ -5816,8 +5800,8 @@ class SiRNAWorkflow:
         """Score one screened candidate, then apply the gates that need post-screen evidence.
 
         Both the no-hits and the with-hits branches above go through here, so the isoform-coverage
-        gate cannot be wired into only one of them -- which it was, leaving the clean-screen case
-        (the common one) ungated.
+        gate is never wired into only one of them -- leaving the clean-screen case, the common
+        one, ungated.
         """
         if not self._score_candidate_post_screen(
             candidate, hit_counts, conservation_denominator, unresolved_orthology_species
@@ -6466,8 +6450,8 @@ async def run_sirna_workflow(
             screen_species=screen_species or (),
             # The same fact the CLI reports, derived from the same inputs: an input FASTA with no
             # transcriptome argument resolves no transcriptome reference, so this run cannot complete
-            # that channel. Without it the API and the CLI resolved the same inputs differently, and
-            # the API kept requiring evidence it could never obtain.
+            # that channel. Without it the API would resolve the same inputs differently from the
+            # CLI and keep requiring evidence it could never obtain.
             transcriptome_reference_available=(
                 False if (input_fasta and not transcriptome_fasta and not transcriptome_indices) else None
             ),
@@ -6493,7 +6477,7 @@ async def run_sirna_workflow(
             transcriptome_argument=transcriptome_fasta,
             default_transcriptomes=default_transcriptome_sources,
             # check_off_targets=False means "do not screen", so there is nothing to resolve a
-            # reference for. Hardcoding design_only=False here made the flag download and index
+            # reference for -- hardcoding design_only=False here would download and index
             # multi-gigabyte references before announcing that screening was skipped.
             design_only=not check_off_targets,
             allow_transcriptome_for_input_fasta=allow_transcriptome_with_input_fasta,
