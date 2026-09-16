@@ -44,7 +44,8 @@ from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, u
 #: Bump when the payload's shape changes, so a report and the run it describes can never be
 #: silently mismatched. 1.2.0 moved the guide cap here, published as counts (``guides_total``/
 #: ``guides_dropped``/``guides_dropped_by_status``), and added per-filter ``rejects``/
-#: ``sole_rejects``/``inert`` and per-guide ``liability_by_species``.
+#: ``sole_rejects``/``inert``, per-guide ``liability_by_species``, and ``length``/``canonical`` on
+#: isoform and transcript rows. CHANGELOG.md carries what 1.1.0 added.
 PAYLOAD_SCHEMA_VERSION = "1.2.0"
 
 #: Hit rows embedded per guide. Everything outside this scope is carried as counts only -- a

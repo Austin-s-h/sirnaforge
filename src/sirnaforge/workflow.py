@@ -5800,8 +5800,8 @@ class SiRNAWorkflow:
         """Score one screened candidate, then apply the gates that need post-screen evidence.
 
         Both the no-hits and the with-hits branches above go through here, so the isoform-coverage
-        gate is never wired into only one of them -- leaving the clean-screen case, the common
-        one, ungated.
+        gate cannot be wired into only one of them; wiring it into the with-hits branch alone leaves
+        the clean-screen case, the common one, ungated.
         """
         if not self._score_candidate_post_screen(
             candidate, hit_counts, conservation_denominator, unresolved_orthology_species

@@ -73,8 +73,10 @@ EMPIRICAL_SCORE_MAX = 0.6
 # meant to grade: on 2,816 siRNAs with measured knockdown, A/U at guide positions 1-5 tracks
 # efficacy (rho +0.378), while at positions 17-21 -- where this rubric actually scores -- it is
 # null (rho -0.017, p = 0.37). C at guide position 19 in fact associates with MORE knockdown
-# (0.735 vs 0.668, p = 2.4e-13), the opposite of what the rubric rewards there. Raise this only
-# once the rubric is rescored at the guide end that carries the signal.
+# (0.735 vs 0.668, p = 2.4e-13) and the A/U the rubric rewards there with LESS (0.650 vs 0.719,
+# p = 3.7e-17), the opposite of the rubric's direction. At 0.5 the gate rejects every candidate
+# carrying C at guide position 19: 12.9% of the passing pool on a reference TP53 run (264 -> 230).
+# Raise this only once the rubric is rescored at the guide end that carries the signal.
 DEFAULT_MIN_EMPIRICAL_SCORE = 0.4
 
 # Every scored term name, in reporting order: a *union* over the three weight vectors below, for
