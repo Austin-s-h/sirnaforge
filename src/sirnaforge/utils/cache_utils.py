@@ -91,35 +91,29 @@ def stable_cache_key(payload: Mapping[str, Any]) -> str:
 # Producer versions
 # ---------------------------------------------------------------------------
 #
-# A checksum recorded when a file is written can only prove the bytes did not rot
-# afterwards; it can never prove the bytes were *right*, because a buggy writer
-# stamps its own bad output. So each artifact class also records the version of
-# the code that produced it, and that version is compared on load: bump the entry
-# below in the same change that fixes a producer, and every artifact the old
-# producer wrote becomes a cache miss and is regenerated exactly once.
+# A checksum proves bytes didn't rot after writing; it can never prove a buggy
+# writer's output was right to begin with. So each artifact class also records
+# the producer version that wrote it, compared on load: bump an entry in the
+# same change that fixes a producer, and every artifact the old producer wrote
+# becomes a one-time cache miss.
 #
-# Classes are deliberately fine-grained. Invalidation is scoped to the artifact
-# class whose producer actually moved, so a miRNA parsing fix (a few MB to
-# re-download) never forces a user to re-fetch a multi-GB transcriptome, and an
-# index rebuild never forces a re-download of the FASTA it was built from.
+# Classes are fine-grained so invalidation stays scoped to the producer that
+# moved: a miRNA parsing fix never forces a re-fetch of a multi-GB transcriptome,
+# and an index rebuild never forces a re-download of the FASTA it came from.
 
 LEGACY_PRODUCER_VERSION = "1.0"
-"""Version attributed to artifacts written before producer stamping existed.
+"""Version attributed to artifacts predating producer stamping.
 
-`CacheMetadata.version` has always defaulted to this string, so pre-existing
-metadata reads back as "produced by the pre-versioning writer" without needing a
-migration step.
+`CacheMetadata.version` defaults to this string, so old metadata reads as
+"pre-versioning" with no migration step needed.
 """
 
 PRODUCER_VERSION_FIELD = "producer_version"
-"""Key under which an artifact stamp records the version that produced it.
+"""Key under which a sidecar artifact stamp records its producer version.
 
-Manager-backed caches keep the same value in `CacheMetadata.version`; sidecar
-stamps have no such document, so they carry this field. Naming it once keeps the
-writer (`write_artifact_stamp`) and the reader (`is_artifact_stamp_current`) from
-drifting apart. Only artifact classes that are actually validated somewhere are
-registered below - a constant nobody checks would read as a guarantee we do not
-give.
+Manager-backed caches keep the same value in `CacheMetadata.version`. Only
+artifact classes actually validated somewhere are registered below - a constant
+nobody checks would read as a guarantee we do not give.
 """
 
 # Derived-artifact classes have no cache subdirectory to name them, so they get
@@ -128,24 +122,19 @@ ARTIFACT_MIRNA_COMBINED = "mirna_combined"
 ARTIFACT_TRANSCRIPTOME_INDEX = "transcriptome_index"
 
 PRODUCER_VERSIONS: dict[str, str] = {
-    # Per-species filtered miRNA FASTAs. Bumped because the pre-2.0 writer parsed
-    # miRBase with Biopython's "fasta-blast" reader, which copies the first
-    # record's id/description onto every record, so cached "species-filtered"
-    # FASTAs can hold the wrong sequences entirely.
+    # Bumped: the pre-2.0 writer parsed miRBase with Biopython's "fasta-blast"
+    # reader, which copies the first record's id/description onto every record -
+    # cached "species-filtered" FASTAs can hold the wrong sequences entirely.
     "mirna": "2.0",
-    # combined_*.fa, derived from the above and therefore contaminated by the
-    # same parsing defect.
+    # combined_*.fa, derived from the above; same contamination.
     ARTIFACT_MIRNA_COMBINED: "2.0",
-    # Raw transcriptome downloads are upstream bytes: no producer of ours shapes
-    # their content, so they stay at the legacy version and are never discarded
-    # by a version bump. Re-downloading tens of GB must be a deliberate act.
+    # Raw upstream bytes we don't shape, so a version bump never forces
+    # re-downloading tens of GB by accident.
     "transcriptomes": LEGACY_PRODUCER_VERSION,
-    # Genome/annotation downloads are raw upstream bytes for the same reason.
     "genomes": LEGACY_PRODUCER_VERSION,
     "annotations": LEGACY_PRODUCER_VERSION,
-    # BWA-MEM2 indices. These are bound to the checksum of the FASTA they were
-    # built from via an artifact stamp, so a version bump here is only needed if
-    # the way we *build* indices changes; rebuilding costs CPU, not bandwidth.
+    # BWA-MEM2 indices bind to their FASTA's checksum via an artifact stamp; a
+    # version bump here is only needed if index *building* itself changes.
     ARTIFACT_TRANSCRIPTOME_INDEX: LEGACY_PRODUCER_VERSION,
 }
 
@@ -196,18 +185,18 @@ def log_discarded_artifact(artifact_class: str, artifact: Path | str, reason: st
 # ---------------------------------------------------------------------------
 #
 # Derived artifacts (a combined FASTA, a BWA-MEM2 index) have no entry in a
-# manager's metadata document, so they carry a sidecar JSON stamp instead. The
-# stamp records three independent things, because each answers a question the
+# manager's metadata document, so they carry a sidecar JSON stamp instead,
+# recording three independent things because each answers a question the
 # others cannot:
 #
 #   producer version - "was this written by code we have since fixed?"
 #   input fingerprint - "was this built from the content we hold now?"
 #   output fingerprint - "are the artifact's own bytes still the bytes we wrote?"
 #
-# The output fingerprint is what stops a stamp vouching for an artifact that was
-# truncated or corrupted *after* stamping (an interrupted copy, a full disk, a
-# half-written rebuild): input-only fingerprints match happily in that case, and a
-# stamped-but-broken artifact is then served for its whole TTL.
+# The output fingerprint stops a stamp vouching for an artifact truncated or
+# corrupted *after* stamping (an interrupted copy, a full disk, a half-written
+# rebuild): input-only fingerprints match happily in that case, and a
+# stamped-but-broken artifact would be served for its whole TTL.
 
 ARTIFACT_STAMP_SUFFIX = ".sirnaforge-cache.json"
 

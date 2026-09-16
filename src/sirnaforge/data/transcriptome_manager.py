@@ -66,9 +66,8 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     UNREMOVABLE_INDEX_KEY = "unremovable_stale_index"
 
     # Common transcriptome sources, generated from the shared Ensembl assembly table
-    # (sirnaforge.data.ensembl_references) so cDNA and genome references stay in lockstep
-    # and adding a species is a single table entry. Keys/URLs are unchanged from the
-    # previously hand-written entries (ensembl_human_cdna, ensembl_mouse_cdna, ...).
+    # (sirnaforge.data.ensembl_references) so cDNA and genome references stay in
+    # lockstep and adding a species is a single table entry.
     SOURCES = build_transcriptome_sources()
 
     def __init__(
@@ -119,14 +118,12 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     def _cache_key_for_remote_uri(self, uri: str) -> str | None:
         """Resolve a remote URI to a cache key, never to a derived (filtered) artifact.
 
-        Deciding this at resolution time rather than by rewriting `uri_index` on load is
-        deliberate: `ReferenceManager._load_metadata` backfills the index from each
-        entry's own `source.url`, so metadata written before filtered entries got their
-        own filter-qualified URI re-adds the bad mapping on *every* load and a one-off
-        repair would only hold for one process. A filtered FASTA is a subset of the base
-        download, so only a URI carrying the filter fragment may resolve to it - an
-        unfiltered request resolving here would screen off-targets against a subset and
-        report false negatives.
+        Checked at resolution time rather than fixed by rewriting `uri_index` on load:
+        `ReferenceManager._load_metadata` backfills the index from each entry's own
+        `source.url` on every load, so a one-off repair would not hold. A filtered
+        FASTA is a subset of the base download, so only a URI carrying the filter
+        fragment may resolve to it - an unfiltered request resolving here would screen
+        off-targets against a subset and report false negatives.
         """
         cache_key = super()._cache_key_for_remote_uri(uri)
         if cache_key is None:
@@ -356,12 +353,9 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     def _ensure_index_marker(self, index_prefix: Path) -> None:
         """Ensure the index prefix path exists as a filesystem entry.
 
-        BWA(-MEM2) produces multiple files that share a prefix (e.g. <prefix>.amb,
-        <prefix>.ann, ...). The prefix itself is not a file created by the tool.
-
-        Some higher-level code/tests treat the prefix as a `Path` and call
-        `.exists()`. Creating a tiny marker file at the prefix path makes that
-        check meaningful without changing the prefix semantics.
+        BWA(-MEM2) writes files sharing a prefix (<prefix>.amb, <prefix>.ann, ...) but
+        never the prefix itself; some higher-level code/tests call `.exists()` on it as
+        a `Path`, so a tiny marker file there makes that check meaningful.
         """
         try:
             index_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -372,10 +366,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     def _remove_index_files(self, index_prefix: Path) -> None:
         """Delete the marker and all bwa-mem2 files sharing an index prefix.
 
-        This now runs on the hot path of every re-download, where the cache parent is
-        not guaranteed writable (the reason `_resolve_remote_cache_file` exists). A
-        stale index we cannot delete must not abort the run that replaced its FASTA, so
-        failures are reported per file and the caller re-checks the prefix.
+        Runs on the hot path of every re-download, where the cache parent may not be
+        writable (see `_resolve_remote_cache_file`). A stale index that cannot be
+        deleted must not abort the run that replaced its FASTA, so failures are
+        reported per file and the caller re-checks the prefix.
         """
         candidates = [index_prefix, *(index_prefix.parent / f"{index_prefix.name}{ext}" for ext in self.INDEX_SUFFIXES)]
         for candidate in candidates:
@@ -391,10 +385,9 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         Index files are named from the cache key, which hashes a release-agnostic URL
         (ENSEMBL_FTP_BASE points at `current_fasta`), so a refreshed reference lands on
-        the same prefix. bwa-mem2 aligns against the index alone and never reads the
-        FASTA, so an index left over from the previous content would silently report
-        hits with the previous release's transcript IDs and coordinates. Identical bytes
-        are the only case where the existing index remains trustworthy.
+        the same prefix. Left over, that index would silently serve stale hits (see
+        `_index_is_trustworthy`). Identical bytes are the only case where the existing
+        index remains trustworthy.
         """
         if previous is not None and previous.checksum == current.checksum:
             # `_record_cache_entry` replaces metadata wholesale; keep index bookkeeping.
@@ -584,9 +577,9 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         else:
             cache_key = hashlib.md5(f"local_{cache_name}_{file_path}".encode()).hexdigest()[:12]
         # Name the index from the cache key, not the file stem: the stem is stable while
-        # the file's contents are not, so a rewritten FASTA sitting in the cache dir used
-        # to be handed the previous content's index. bwa-mem2 never reads the FASTA back,
-        # so that mismatch surfaces only as hits with the previous content's IDs.
+        # the file's contents are not, so a rewritten FASTA sitting in the cache dir
+        # would otherwise get handed the previous content's index, silently surfacing
+        # as hits with the previous content's IDs (see `_index_is_trustworthy`).
         index_prefix = file_path.parent / f"{cache_key}_index"
 
         # Re-record on every call. The recorded checksum is what tells us whether the
@@ -726,11 +719,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             filtered_fasta.unlink(missing_ok=True)
             return None
 
-        # Cache metadata. The filtered artifact must not be recorded under the bare
-        # source URL: that URL indexes the *unfiltered* download, and a later
-        # get_transcriptome() would resolve to this filtered FASTA and screen
-        # off-targets against a subset of the transcriptome. `base_checksum` records
-        # which base bytes these are a subset of.
+        # The filtered artifact must not be recorded under the bare source URL, which
+        # indexes the unfiltered download (see FILTER_URI_FRAGMENT /
+        # `_cache_key_for_remote_uri`). `base_checksum` records which base bytes these
+        # are a subset of.
         previous = self.metadata.get(filtered_cache_key)
         current = self._record_cache_entry(
             filtered_cache_key,
@@ -755,14 +747,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     def _identity_view(self, cache_key: str) -> dict[str, Any] | None:
         """A frozen view of this entry's cache metadata: which bytes these actually are.
 
-        The result dict has always carried paths only, so the url, checksum, size and download date
-        died with the manager that fetched them -- which is why a manifest could name the *source* of
-        a screening reference but never the bytes. Optional and additive because this return shape is
-        shared with :class:`~sirnaforge.data.genome_manager.GenomeManager`.
+        Lets a manifest name the actual bytes of a screening reference, not just its
+        source. Optional and additive because this return shape is shared with
+        :class:`~sirnaforge.data.genome_manager.GenomeManager`.
 
-        ``checksum_algorithm`` and ``size_scope`` are stated rather than implied: the checksum is md5
-        while manifest file digests are sha256, and the recorded size is of the file on disk after any
-        decompression, which is not the remote Content-Length.
+        ``checksum_algorithm`` and ``size_scope`` are stated rather than implied: the
+        checksum is md5 while manifest file digests are sha256, and the recorded size
+        is of the file on disk after any decompression, not the remote Content-Length.
         """
         meta = self.metadata.get(cache_key)
         if meta is None:
@@ -824,11 +815,11 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             self._save_metadata()
             return {"fasta": fasta, "index": index_prefix, "identity": identity}
 
-        # A failed build is a completeness fact about this reference, not a downgrade to the FASTA.
-        # Returning the FASTA where an index is expected made bwa-mem2 align nothing, which Nextflow
-        # reported as success: a screen that examined no sequence published as a clean one.
-        # The cause is quoted, not guessed: the build fails the same way for a missing bwa-mem2 as
-        # for an OOM kill, and naming only the memory case sends the reader after the wrong remedy.
+        # A failed build is a completeness fact about this reference, not a downgrade to
+        # the FASTA: returning the FASTA where an index is expected would let bwa-mem2
+        # align nothing while Nextflow reports success. The cause is quoted, not
+        # guessed: the build fails the same way for a missing bwa-mem2 as for an OOM
+        # kill, and naming only the memory case sends the reader after the wrong remedy.
         cause = self._last_index_build_exception or "the build reported failure without an exception"
         error = (
             f"BWA-MEM2 index build failed for {fasta.name} (prefix {index_prefix.name}): {cause}. "
@@ -868,10 +859,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         if index_path is None:
             return
 
-        # `_remove_index_files` supersedes the inline extension list it replaces: it covers `.0123`
-        # (which bwa-mem2 writes), builds paths by concatenation so dotted prefixes work where
-        # `with_suffix` silently did not, and guards each unlink because this runs on the hot path
-        # of every re-download.
+        # `_remove_index_files` covers `.0123` (which bwa-mem2 writes), builds paths by
+        # concatenation so dotted prefixes work where `with_suffix` would silently
+        # fail, and guards each unlink because this runs on the hot path of every
+        # re-download.
         self._remove_index_files(index_path)
         # Leave no stamp behind to vouch for an index that is gone.
         discard_artifact_stamp(index_path)

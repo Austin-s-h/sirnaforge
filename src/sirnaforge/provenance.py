@@ -1,21 +1,17 @@
 """Build and artifact identity for ``manifest.json``: what produced this run, or why we cannot say.
 
-The manifest recorded ``tool_version: "0.7.1"`` -- a release string, not a build identity -- and no
-digest at all for ``report.html``, the artifact everyone actually reads. This module supplies both
-under one rule: **never assert an identity that cannot be verified.** Anything unverifiable is a
-``{value, state, reason}`` triple whose ``state`` names the reason-class, which is the shape
-:meth:`~sirnaforge.config.reference_policy.ReferenceChoice.to_metadata` already emits. The bare
-string ``"unknown"`` is forbidden, ``runner.py``'s synthesised ``nogit-<mtime_ns>`` fingerprint may
-never surface under a key that reads like a revision, and neither may a HEAD read from a repository
-that cannot be shown to hold what it is being asked to name -- the package for ``build.vcs``, the
-pipeline for ``build.pipeline_revision``. That is #100's rule for screening evidence, applied to the
-build.
+**Never assert an identity that cannot be verified.** Anything unverifiable is a ``{value, state,
+reason}`` triple whose ``state`` names the reason-class -- the same shape
+:meth:`~sirnaforge.config.reference_policy.ReferenceChoice.to_metadata` emits. The bare string
+``"unknown"`` is forbidden, ``runner.py``'s synthesised ``nogit-<mtime_ns>`` fingerprint may never
+surface under a key that reads like a revision, and neither may a HEAD read from a repository that
+cannot be shown to hold what it is being asked to name -- the package for ``build.vcs``, the pipeline
+for ``build.pipeline_revision``. That is #100's rule for screening evidence, applied to the build.
 
-Two corollaries, each learned from a field here that broke the rule while stating it. An **inference**
-is published with the comparison it rests on, never as the thing it approximates: a cache stamp dated
-after this process started bounds a build to the process, not to a run. And an absence is **tested for
-rather than declared**: ``uv.lock`` really is missing from the wheel, but saying so permanently made a
-dev worktree that has the lock at its verified root report it as unobtainable.
+Two corollaries. An **inference** is published with the comparison it rests on, never as the thing it
+approximates: a cache stamp dated after this process started bounds a build to the process, not to a
+run. An absence is **tested for rather than declared**: ``uv.lock`` is missing from the wheel but
+present at a verified dev-worktree root, so its absence must be checked, not assumed.
 
 Imports stay stdlib-only apart from ``__version__`` and one leaf cache util, so the manifest builder
 can reach this module without pulling ``sirnaforge.data`` into a fresh import cycle.
@@ -53,12 +49,11 @@ ALIGNER_NAME = "bwa-mem2"
 #: one beside the other without naming the algorithm invites a false mismatch.
 CACHE_DIGEST_ALGORITHM = "md5"
 
-#: Metrics the report renders per candidate that no weight vector can score, because they carry no
-#: ``TermRecord``, mapped to the manifest path that does define each one. They belong in
-#: ``reported_not_scored`` all the same: it is a claim about what is reported, not about the scoring
-#: vocabulary, and deriving the list from ``TERM_REGISTRY`` alone made ``paired_fraction`` vanish from
-#: both manifest lists. Add a term here rather than to a literal, and ``reported_term_partition``
-#: keeps it accounted for.
+#: Metrics the report renders per candidate that no weight vector can score (no ``TermRecord``),
+#: mapped to the manifest path that defines each one. They belong in ``reported_not_scored``: it is a
+#: claim about what is reported, not about the scoring vocabulary, so deriving the list from
+#: ``TERM_REGISTRY`` alone would miss them. Add a term here rather than to a literal, and
+#: ``reported_term_partition`` keeps it accounted for.
 REPORTED_TERMS_WITHOUT_TERM_RECORD: dict[str, str] = {
     "paired_fraction": "design_parameters.filters.max_paired_fraction",
 }
@@ -79,8 +74,8 @@ _PIPELINE_TRACKED_FILE = "main.nf"
 #: it feeds is named ``built_in_this_process`` and states its own basis.
 _PROCESS_START = datetime.now()
 
-#: ``uv.lock``, present at a verified repo root and absent from the wheel. The absence is conditional,
-#: so it is tested for rather than declared permanent.
+#: ``uv.lock``: present at a verified repo root, absent from the wheel. Tested for, not declared
+#: permanently absent (see module docstring and ``_lock_identity``).
 _LOCK_FILENAME = "uv.lock"
 
 _DESCRIBE_DISTANCE = re.compile(r"-(\d+)-g[0-9a-f]+")
@@ -136,12 +131,12 @@ def fasta_header_assembly(fasta: Path | None, *, max_records: int = 20) -> str |
 def assembly_identity(*, tabled: str | None, url: str | None, fasta: Path | None) -> dict[str, Any]:
     """Which genome build these bytes are against, preferring the artifact over the source table.
 
-    ``tabled`` is ``ENSEMBL_ASSEMBLIES``' answer for the source *name*, which is an association and
-    not an observation -- it was published as a plain fact in the same dict that admits the release
-    floated and is unpinned. So the bytes are asked first (their headers carry the assembly), the URL
-    second (it contains the assembly for every bundled source), and only then does the table speak,
-    under a state that says nothing checked it. A header that contradicts the table is published as
-    the header's value: the disagreement is the signal, and the bytes are what was screened.
+    ``tabled`` is ``ENSEMBL_ASSEMBLIES``' answer for the source *name* -- an association, not an
+    observation, since the release floats and is unpinned. So the bytes are asked first (their headers
+    carry the assembly), the URL second (it names the assembly for every bundled source), and only
+    then does the table speak, under a state that says nothing checked it. A header that contradicts
+    the table is published as the header's value: the disagreement is the signal, and the bytes are
+    what was screened.
     """
     observed = fasta_header_assembly(fasta)
     if observed and tabled and observed != tabled:
@@ -183,9 +178,8 @@ def assembly_identity(*, tabled: str | None, url: str | None, fasta: Path | None
 def digest_scope(size_scope: str | None, *, filtered: bool) -> str:
     """What the recorded digest covers, derived from the same evidence as ``size_scope``.
 
-    It was the literal ``decompressed_fasta_full`` beside a derived ``size_scope``, so the two labels
-    contradicted each other for any uncompressed reference and the digest said "full" for a filtered
-    subset -- while the digest is in fact computed over whatever file the cache entry points at.
+    The digest is computed over whatever file the cache entry points at, so its scope must track
+    ``size_scope`` and whether that file is a filtered subset -- never asserted as a literal.
     """
     if not size_scope or size_scope == "not_recorded":
         return "not_recorded"
@@ -196,14 +190,13 @@ def reported_term_partition(registry_terms: Iterable[str], scored_terms: Contain
     """Split every reported term into the scored and the reported-but-unscored, over one total universe.
 
     Derived, never hand-listed: whether a term is scored is a per-run property, and promoting one is
-    invisible to a literal (#96). But the scoring registry is not the whole universe of what a reader
-    sees, and deriving the lists from ``TERM_REGISTRY`` alone dropped ``paired_fraction`` out of *both*
-    of them -- a metric the report renders beside the structure it came from, gating EXCESS_PAIRING,
-    reported and unscored and recorded nowhere. ``reported_not_scored`` is a claim about what is
-    reported, so a term qualifies whether or not the scoring vocabulary has a record for it.
+    invisible to a literal (#96). The scoring registry alone is not the whole universe of what a
+    reader sees -- see ``REPORTED_TERMS_WITHOUT_TERM_RECORD`` -- so ``reported_not_scored`` is a claim
+    about what is *reported*, and a term qualifies whether or not the scoring vocabulary has a record
+    for it.
 
-    The two lists are a partition of that universe by construction, so nothing can fall out of both
-    again. Registry order first, so both lists are deterministic.
+    The two lists are a partition of that universe by construction, so nothing can fall out of both.
+    Registry order first, so both lists are deterministic.
     """
     universe = list(registry_terms)
     universe += [term for term in REPORTED_TERMS_WITHOUT_TERM_RECORD if term not in universe]
@@ -392,12 +385,10 @@ def _declared_dependencies() -> list[str]:
 def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
     """The resolution lock's digest and revision when it is on disk, or why it is not.
 
-    Both were declared *permanently* absent as "uv.lock is not shipped in the wheel", which is true of
-    a wheel or container run and false of the dev worktree the manifest under review came from: the
-    lock sits at the repo root this module already verified, readable. A permanent excuse for a
-    conditional absence is its own fabrication, so the file is tested for. ``lock_root`` is None
-    whenever no repository could be *verified* to hold this package -- an unverified root's lock is
-    some other project's resolution.
+    The absence is conditional (present at a dev-worktree root, absent from the wheel), so the file is
+    tested for rather than declared permanently missing. ``lock_root`` is None whenever no repository
+    could be *verified* to hold this package -- an unverified root's lock is some other project's
+    resolution.
     """
     if lock_root is None:
         return {
@@ -652,7 +643,7 @@ def pipeline_revision_identity(recorded: str | None, *, workflow_dir: Path | Non
     ``_vcs_identity`` guards against with ``repo_verified``, and three ancestors of an installed package
     carry ``.git``. A well-formed SHA1 is therefore only published as ``commit`` when a repository
     verified to track ``pipeline/nextflow/workflows/main.nf`` is at that HEAD. Otherwise it is some
-    repository's HEAD and appears under ``ancestor_repo_head``, which is what it is.
+    repository's HEAD and appears under ``ancestor_repo_head`` instead.
     """
     if recorded and _SHA1_HEX.fullmatch(recorded):
         verified, state, detail = _pipeline_repo_verification(recorded, workflow_dir or _PIPELINE_WORKFLOW_DIR)
@@ -758,10 +749,10 @@ def _stamped_input_digest(inputs: dict[str, Any], reference_fasta_name: str | No
 def _stamped_in_this_process(stamped_at: Any) -> dict[str, Any]:
     """Date the stamp against this process, and say that that is all the comparison establishes.
 
-    A timestamp inequality is not authorship. It was published as ``built_by_this_run``, a positive
-    claim no comparison against a module-import time can support -- one process may run more than one
-    workflow -- and an unparseable timestamp fell out as a bare ``null`` with no reason-class. So the
-    field is named for the process, and the reason states the inequality it rests on.
+    A timestamp inequality is not authorship: a positive ``built_by_this_run`` claim is not supported
+    by comparison against a module-import time, since one process may run more than one workflow. So
+    the field is named for the process, the reason states the inequality it rests on, and an
+    unparseable timestamp gets its own reason-class rather than a bare ``null``.
     """
     try:
         stamp_time = datetime.fromisoformat(str(stamped_at))
@@ -796,9 +787,8 @@ def report_html_artifact(*, expected: bool, path: str = "report.html") -> dict[s
     all, "not attested" is the wrong word -- nothing was asked for.
 
     ``expected`` is the caller's *intent*, which is all this manifest can know: it is written before
-    the render runs. So the claim is stated as pending and the outcome is the sidecar's to record --
-    an earlier version keyed this on the caller merely passing a path, which left manifest.json
-    asserting a report.html that a failed render never wrote.
+    the render runs. So the claim is stated as pending, and the outcome -- including a failed render
+    that left no report.html -- is the sidecar's to record.
     """
     if not expected:
         return {
