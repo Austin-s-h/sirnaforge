@@ -1,16 +1,13 @@
 """Pure gate evaluator: one place that turns (threshold, action, observed, evidence) into a verdict.
 
-``workflow.py::_check_offtarget_filters`` / ``_apply_isoform_coverage_gate`` and
-``core/design.py::_record_enumeration_verdicts`` / ``_flag_excess_pairing`` / ``_apply_score_filters``
-each re-derive the same five rules independently: an off filter never decides, a filter with no
-threshold cannot decide either, a missing measurement is unknown rather than a pass, a lower-bound
-count that would otherwise pass is undecidable, and only a ``FAIL``-action gate rejects. This module
-is that evaluator, so every call site applies the rules once instead of five times.
+Five rules, applied once instead of scattered across call sites: an off filter never decides, a
+filter with no threshold cannot decide either, a missing measurement is unknown rather than a pass, a
+lower-bound count that would otherwise pass is undecidable on incomplete evidence, and only a
+``FAIL``-action gate rejects.
 
-Pure by construction: it imports only :mod:`sirnaforge.models.policy`, takes plain values in and
-returns plain records out, and mutates nothing. The candidate is still mutated by
-``SiRNACandidate.record_filter_verdict``, which stays the single writer -- this module decides what
-to write, not where.
+Pure by construction: imports only :mod:`sirnaforge.models.policy`, takes plain values in, returns
+plain records out, mutates nothing. ``SiRNACandidate.record_filter_verdict`` stays the single writer
+to the candidate -- this module decides what to write, not where.
 """
 
 from collections.abc import Mapping, Sequence
@@ -19,9 +16,9 @@ from typing import TypeVar
 
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation, ScreeningChannel
 
-#: Display/precedence order for the four verdicts. Not read by anything in this module -- it exists
-#: because a consumer sorting or grouping verdicts needs one canonical order instead of inventing its
-#: own, and NOT_EVALUATED/UNKNOWN sit before the two decided outcomes because neither is a claim.
+#: Display/precedence order for the four verdicts. Not read within this module -- exists so a
+#: consumer sorting/grouping verdicts has one canonical order. NOT_EVALUATED/UNKNOWN sit first since
+#: neither is a claim.
 EVALUATION_ORDER: tuple[FilterEvaluation, ...] = (
     FilterEvaluation.NOT_EVALUATED,
     FilterEvaluation.UNKNOWN,
@@ -34,10 +31,10 @@ EVALUATION_ORDER: tuple[FilterEvaluation, ...] = (
 class GateSpec:
     """One gate as configured, independent of any candidate.
 
-    ``channels``/``evidence_pairs`` are the evidence a pass claim depends on: the channel x species
-    pairs whose completion this gate's count requires before a "did not exceed the threshold" reading
-    may be trusted. A design-stage gate (no screening input) declares neither, so its evaluation never
-    depends on ``complete_pairs``.
+    ``evidence_pairs`` is the evidence a pass claim depends on: channel x species pairs whose
+    completion a "did not exceed the threshold" reading must have before it can be trusted. A
+    design-stage gate (no screening input) declares none, so evaluation never depends on
+    ``complete_pairs``.
 
     Attributes:
         filter_id: Stable machine identity, also the key ``observed``/``status_for`` are read by.
@@ -87,13 +84,12 @@ def evaluate_gate(
 ) -> FilterOutcome:
     """Apply one gate's rules to one observation.
 
-    Four ways to not reach a decided PASS/FAIL, checked in order: no threshold or an OFF action
-    means the gate makes no claim (``NOT_EVALUATED``); no measurement means nothing to compare
-    (``UNKNOWN``); a naively-passing count whose required evidence is incomplete is a lower bound,
-    which cannot show a ceiling was respected (``UNKNOWN``, observed cleared); everything else is
-    decided from the comparator, and only a decided ``FAIL`` on a ``FAIL``-action gate rejects. A
-    naively-*failing* count is decided even on incomplete evidence -- a known failure is still a
-    failure regardless of what else was never measured.
+    Four ways to not reach a decided PASS/FAIL, checked in order: no threshold or an OFF action means
+    no claim (``NOT_EVALUATED``); no measurement means nothing to compare (``UNKNOWN``); a
+    naively-passing count whose required evidence is incomplete is a lower bound that cannot show a
+    ceiling was respected (``UNKNOWN``, observed cleared); everything else is decided from the
+    comparator, and only a decided ``FAIL`` on a ``FAIL``-action gate rejects. A naively-*failing*
+    count is decided even on incomplete evidence -- a known failure is still a failure.
     """
     if spec.threshold is None or spec.action is FilterAction.OFF:
         return FilterOutcome(spec.filter_id, FilterEvaluation.NOT_EVALUATED, observed, spec.action, False, False)
@@ -118,9 +114,8 @@ def evaluate_gates(
 ) -> tuple[FilterOutcome, ...]:
     """Evaluate every gate against its own observation, in declared order.
 
-    Every gate is evaluated regardless of an earlier rejection -- returning early on the first
-    rejection is the defect this module exists to retire, since it left every later gate's reported
-    count a function of list order rather than of what actually happened.
+    Every gate is evaluated regardless of an earlier rejection: returning early would make a later
+    gate's reported count depend on list order rather than what actually happened.
     """
     return tuple(evaluate_gate(spec, observed.get(spec.filter_id), complete_pairs=complete_pairs) for spec in specs)
 
@@ -144,10 +139,10 @@ def derive_passes_filters(
 ) -> _S | bool:
     """Reproduce ``record_filter_verdict``'s first-label-wins rule over a batch of outcomes.
 
-    ``passes_filters`` is a single label, not a count, so the first ``FAIL``-action gate to reject
-    owns it and every later rejection is recorded only in ``filter_verdicts``. ``current`` is returned
-    unchanged when nothing rejects, and is only ever overwritten while it is still a passing label --
-    a gate cannot demote a candidate that an earlier gate already demoted.
+    ``passes_filters`` is a single label, not a count: the first ``FAIL``-action gate to reject owns
+    it, and every later rejection is recorded only in ``filter_verdicts``. ``current`` is unchanged
+    when nothing rejects, and is overwritten only while still passing -- a gate cannot demote a
+    candidate an earlier gate already demoted.
     """
     label: _S | bool = current
     for outcome in outcomes:
@@ -164,10 +159,9 @@ def derive_passes_filters(
 def is_passing(passes_filters: object) -> bool:
     """Whether a ``passes_filters`` value is a passing representation.
 
-    Three spellings must all read as passing: the bare bool ``True``, ``SiRNACandidate.FilterStatus
-    .PASS``, and the CSV string ``"PASS"``. ``FilterStatus`` is a ``str`` subclass, so its ``PASS``
-    member already compares equal to the literal ``"PASS"`` -- comparing against the string covers
-    both without importing ``models.sirna``, which would break this module's purity.
+    Three spellings must read as passing: bare ``True``, ``SiRNACandidate.FilterStatus.PASS``, and
+    the CSV string ``"PASS"``. ``FilterStatus`` is a ``str`` subclass, so comparing against the
+    literal covers both without importing ``models.sirna`` (this module's purity constraint).
     """
     return passes_filters is True or passes_filters == "PASS"
 
