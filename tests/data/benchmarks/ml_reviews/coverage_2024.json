@@ -1,0 +1,1282 @@
+{
+  "review": {
+    "title": "Machine learning for siRNA efficiency prediction: A systematic review",
+    "url": "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+    "doi": "10.1016/j.hsr.2024.100157",
+    "full_review_accessed": true,
+    "full_text_sha256": "43bd4fcc6b40789579d33f15d7655388ebf547f24b75b1df70b15e979b9ecbe3"
+  },
+  "source_entry_count": 39,
+  "entries": [
+    {
+      "id": "sirecords",
+      "name": "siRecords",
+      "review_references": [
+        20,
+        55,
+        67
+      ],
+      "review_location": "Table 2; older model training",
+      "availability": "public_database_original_url_timed_out",
+      "orientation": "sense",
+      "endpoint": "Four ordinal experimental efficacy ratings",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC4379720/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2686443/fullTextXML",
+        "http://siRecords.umn.edu/siRecords/"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "heterogeneous_lengths_and_constructs",
+        "categorical_not_continuous"
+      ],
+      "notes": "Table 2 is a snapshot, not a count of downloaded compatible duplexes. BiLTR used a filtered 19-nt labeled subset; no copy of that subset was retrieved. Preserve efficacy categories rather than fabricate numerical inhibition. Live original database tested overHTTP andHTTPS; both timed out.",
+      "evidence_files": [
+        "sirecords_original.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "katoh",
+      "name": "Katoh / Takayuki / Suzuki EGFP",
+      "review_references": [
+        43,
+        44,
+        55,
+        67
+      ],
+      "review_location": "Table 2; reused model datasets",
+      "availability": "retrieved_original_supplement",
+      "orientation": "sense/passenger 5prime_to_3prime",
+      "endpoint": "Measured normalized EGFP knockdown activity; exclude separate Our prediction column",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1851635/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1851635/supplementaryFiles",
+        "https://github.com/BCB4PM/GNN4siRNA"
+      ],
+      "verified_download_count": 702,
+      "flags": [
+        "natural_19nt_duplex_core_with_2nt_overhangs"
+      ],
+      "notes": "Verified 702 numerical activity rows in original Table S1. Original siRNAs generated from in-vitro transcribed shRNA by limited RNase T1 digestion into complete duplexes; not a shRNA expression assay. GNN FASTA remains SENSE despite mixed orientations in combined files.",
+      "evidence_files": [
+        "nar_gkl1120_nar-02060-met-g-2006-File012.xls",
+        "gnn_data_raw_dataset_2_mRNA_2.fas",
+        "gnn_data_raw_dataset_2_sirna_mrna_efficacy.csv",
+        "gnn_data_raw_dataset_2_siRNA_2.fas"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "amarzguioui",
+      "name": "Amarzguioui / Prydz",
+      "review_references": [
+        55,
+        67
+      ],
+      "review_location": "Table 2; meta-dataset",
+      "availability": "partial_public_reused_subset_only",
+      "orientation": "sense in table/meta-dataset; target cDNA in MG3",
+      "endpoint": "Experimental efficacy; binary class subset retrieved",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://doi.org/10.1016/j.bbrc.2004.02.157",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles",
+        "http://csbl.bmb.uga.edu/publications/materials/qiliu/siRNA.html"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "full_table2_collection_not_retrieved",
+        "overlap_with_compendia"
+      ],
+      "notes": "MG3 contains 46 measured-classified sequences; do not claim the review/meta-dataset full Amarzguioui collection is downloadable from MG3. The full cross-platform download site timed out.",
+      "evidence_files": [
+        "1471-2105-7-S5-S22-S1.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "huesken",
+      "name": "Huesken / Novartis / BIOPREDsi",
+      "review_references": [
+        9,
+        13,
+        14,
+        17,
+        23,
+        26,
+        27,
+        33,
+        34,
+        35,
+        43,
+        44,
+        51,
+        60,
+        61,
+        67
+      ],
+      "review_location": "Table 2; throughout",
+      "availability": "retrieved_complete_assay_collection",
+      "orientation": "antisense/guide 5prime_to_3prime",
+      "endpoint": "Measured inhibition; not ANN predicted scores",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://doi.org/10.1038/nbt1118",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1698581/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1885645/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2760777/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1524998/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3213166/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2794195/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1906837/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC5357899/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC10338369/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1802606/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2241856/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://ftp.ncbi.nih.gov/pub/shabalin/siRNA/supplementary_materials/NatBio_siRNA.csv",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles"
+      ],
+      "verified_download_count": 2431,
+      "flags": [
+        "2nt_deoxyribose_overhang_metadata_required",
+        "multiple_transformed_duplicates"
+      ],
+      "notes": "2431 source rows independently verified in Ichihara and NCBI FTP. Use NatBio_Eff not Predicted_eff in FTP file and % Inhibition not model score columns in Ichihara. Training/test/downsized partitions and full genome-wide predicted library are not new measurements.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls",
+        "huesken_ftp.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "jagla",
+      "name": "Jagla / Sloan-Kettering",
+      "review_references": [
+        14,
+        55,
+        67
+      ],
+      "review_location": "Table 2; older reused meta-dataset",
+      "availability": "public_article_retrieved_no_downloaded_row_collection",
+      "orientation": "sense in original paper; antisense in review Table 2/meta-dataset",
+      "endpoint": "Gene-specific normalized measured protein-level activity",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1885645/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC1370771/",
+        "https://doi.org/10.1261/rna.7275905",
+        "http://csbl.bmb.uga.edu/publications/materials/qiliu/siRNA.html"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "orientation_conflict_between_original_and_reuse",
+        "full_row_collection_not_retrieved"
+      ],
+      "notes": "Primary article is publicly readable but EuropePMC supplementary endpoint returns an XML not-open-access error despite HTTP200. It is NOT a valid ZIP. No complete sequence-efficacy source file retrieved.",
+      "evidence_files": [
+        "jagla_original.txt",
+        "jagla_pmc.html"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "shabalina",
+      "name": "Shabalina thermodynamic/composition compendium",
+      "review_references": [
+        19,
+        36,
+        61
+      ],
+      "review_location": "Table 2; reused cross-platform experiments",
+      "availability": "retrieved_complete_compendium",
+      "orientation": "antisense 5prime_to_3prime",
+      "endpoint": "Activ = residual target expression percent of untreated control",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2873531/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2241856/fullTextXML",
+        "https://ftp.ncbi.nih.gov/pub/shabalin/siRNA/supplementary_materials/BMC_bio_NCBI_dataset.csv",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/supplementaryFiles"
+      ],
+      "verified_download_count": 653,
+      "flags": [
+        "overlap_with_named_older_datasets",
+        "heterogeneous_conditions",
+        "chemistry_of_some_primary_studies_unresolved"
+      ],
+      "notes": "653 19-nt sequences with numerical Activ values verified; trailing dinucleotide-analysis rows are not samples. Per-row reference markers partition original studies; source strings retained in extracted CSV.",
+      "original_subcollections": [
+        {
+          "citation_as_in_source": "Cell. 2003;115(2):209-16. ",
+          "verified_rows_in_download": 179,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "J Biol Chem. 2003;278(9):7108-18.",
+          "verified_rows_in_download": 67,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Antisense Nucleic Acid Drug Dev. 2003;13(2):83-105.",
+          "verified_rows_in_download": 44,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Mol Cell. 2003;12(3):627-37",
+          "verified_rows_in_download": 50,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nucleic Acids Res. 2002;30(8):1757-66",
+          "verified_rows_in_download": 18,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nat Biotechnol. 2004;22(3):326-30 ",
+          "verified_rows_in_download": 50,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Genome Res. 2003;13(10):2333-40.",
+          "verified_rows_in_download": 19,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nucleic Acids Res. 2004;32(3):893-901.",
+          "verified_rows_in_download": 103,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nucleic Acids Res. 2004;32(3):936-48.",
+          "verified_rows_in_download": 34,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nat Biotechnol. 2003;21(6):635-7. ",
+          "verified_rows_in_download": 24,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nucleic Acids Res. 2003;31(3):981-7",
+          "verified_rows_in_download": 20,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "PNAS, 2003, 100(11), 6347-52",
+          "verified_rows_in_download": 5,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        },
+        {
+          "citation_as_in_source": "Nucleic Acids Res. 2004;32(15):4609-17",
+          "verified_rows_in_download": 40,
+          "not_new_disjoint_dataset": true,
+          "full_primary_collection_count": null
+        }
+      ],
+      "evidence_files": [
+        "shabalina_full.csv",
+        "1471-2105-7-65-S4.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "saetrom",
+      "name": "Saetrom / Satron / Snove pooled data",
+      "review_references": [
+        26,
+        34,
+        46,
+        47,
+        58,
+        60
+      ],
+      "review_location": "Table 2; pooled dataset variants",
+      "availability": "retrieved_variant_not_proven_complete_table2_snapshot",
+      "orientation": "antisense according to review; Jia XLS orientation must retain source attribution",
+      "endpoint": "Experimental activity; Jia field named inhibitory activity but values may represent residual expression",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1524998/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1906837/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/bth364",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2999347/fullTextXML",
+        "https://doi.org/10.1016/j.bbrc.2004.06.116",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1802606/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1524998/supplementaryFiles"
+      ],
+      "verified_download_count": 561,
+      "flags": [
+        "variant_counts_differ",
+        "endpoint_polarity_requires_primary_check",
+        "overlap_with_compendia"
+      ],
+      "notes": "Downloaded Jia Satron sheet has 561 valid sequence/numeric rows, not the review Table2 snapshot. Do not confuse 537, 561, 581, 579, or Wang280 subsets; no equality or full coverage is asserted.",
+      "evidence_files": [
+        "1471-2105-7-271-S1.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "amgen_dharmacon",
+      "name": "Amgen-Dharmacon / Reynolds",
+      "review_references": [
+        14,
+        20,
+        35,
+        43,
+        51,
+        55,
+        60,
+        67
+      ],
+      "review_location": "Table 2; reused external validation",
+      "availability": "retrieved_overlapping_variants",
+      "orientation": "antisense in compendium; sense in some original descriptions",
+      "endpoint": "Measured inhibition or residual activity, source-dependent",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1885645/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC4379720/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC5357899/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC10338369/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1802606/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles",
+        "https://ftp.ncbi.nih.gov/pub/shabalin/siRNA/supplementary_materials/BMC_bio_NCBI_dataset.csv",
+        "http://gesteland.genetics.utah.edu/members/olgaM/siRNA_database_September_2006.xls"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "review_and_primary_subset_counts_differ",
+        "overlap_with_named_compendia"
+      ],
+      "notes": "Reynolds-labeled rows exist in Ichihara; shared-author tags must also be retained. Review239, later240/244/248 and original180 denote different filtering/compilation variants and must not be assumed interchangeable.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls",
+        "shabalina_full.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "vickers",
+      "name": "Vickers / Isis",
+      "review_references": [
+        17,
+        20,
+        35,
+        43,
+        44,
+        55,
+        67
+      ],
+      "review_location": "Table 2; reused validation",
+      "availability": "retrieved_reused_variants",
+      "orientation": "antisense in Ichihara",
+      "endpoint": "Measured % inhibition in Ichihara",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC4379720/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC5357899/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles",
+        "https://github.com/BCB4PM/GNN4siRNA",
+        "https://doi.org/10.1074/jbc.M210326200"
+      ],
+      "verified_download_count": 76,
+      "flags": [
+        "review80_vs_retrieved76",
+        "antisense_oligonucleotides_in_primary_paper_not_siRNA_subset"
+      ],
+      "notes": "76 rows explicitly labeled Vickers in Ichihara source verified. The original publication compares siRNAs and RNase-H antisense agents; do not import ASO arms as siRNA.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "khvorova",
+      "name": "Khvorova / Khovorova",
+      "review_references": [
+        17,
+        44,
+        55,
+        67
+      ],
+      "review_location": "Table 2; reused validation",
+      "availability": "retrieved_named_subset",
+      "orientation": "antisense in Ichihara",
+      "endpoint": "Measured % inhibition",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles",
+        "https://doi.org/10.1016/S0092-8674(03)00801-8"
+      ],
+      "verified_download_count": 10,
+      "flags": [
+        "overlap_with_reynolds_and_shabalina"
+      ],
+      "notes": "10 rows labeled Khovorova verified; further shared labels exist and are not included in this count.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "hsieh",
+      "name": "Hsieh PI3K-pathway library",
+      "review_references": [
+        55,
+        67
+      ],
+      "review_location": "Table 2; reused cross-platform data",
+      "availability": "retrieved_partial_compendium_subset",
+      "orientation": "antisense in Shabalina",
+      "endpoint": "Residual target expression Activ",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://doi.org/10.1093/nar/gkh238",
+        "https://ftp.ncbi.nih.gov/pub/shabalin/siRNA/supplementary_materials/BMC_bio_NCBI_dataset.csv"
+      ],
+      "verified_download_count": 103,
+      "flags": [
+        "review108_vs_compendium103",
+        "possible_pooled_assay_arms_excluded_or_unresolved"
+      ],
+      "notes": "103 Shabalina rows carry the publication reference NAR2004;32(3):893-901. This is a verified reused subset, not verified full108 dataset.",
+      "evidence_files": [
+        "shabalina_full.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "harborth",
+      "name": "Harborth (review spelling Haborth)",
+      "review_references": [
+        17,
+        20,
+        35,
+        43,
+        44,
+        55,
+        67
+      ],
+      "review_location": "Table 2; reused validation",
+      "availability": "retrieved_named_subset",
+      "orientation": "antisense in Ichihara",
+      "endpoint": "Measured % inhibition",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC4379720/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC5357899/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles",
+        "https://doi.org/10.1089/108729003321629638"
+      ],
+      "verified_download_count": 44,
+      "flags": [
+        "original_paper_also_modified_and_shRNA",
+        "chemistry_metadata_requires_row_level_review"
+      ],
+      "notes": "44 Harborth-labeled rows verified; cannot infer every duplex in the original sequence/chemical/structural variation paper is unmodified from base strings alone.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ui_tei",
+      "name": "Ui-Tei",
+      "review_references": [
+        17,
+        39,
+        43,
+        44,
+        55,
+        67
+      ],
+      "review_location": "Table 2; reused validation",
+      "availability": "retrieved_multiple_subsets",
+      "orientation": "antisense in Ichihara; sense/target cDNA in MG2",
+      "endpoint": "Measured inhibition or measured binary class",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles",
+        "https://doi.org/10.1093/nar/gkh247"
+      ],
+      "verified_download_count": 62,
+      "flags": [
+        "subset_orientation_differs",
+        "overlap_with_compendia"
+      ],
+      "notes": "62 MG2 measured-classified sense/target sequences verified; numerical Ichihara source has 37 pure Ui-Tei tags plus3 shared Ui-Tei/Reynolds. Do not synthesize missing numerical efficacies for categorical MG2 rows.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls",
+        "1471-2105-7-S5-S22-S1.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ichihara_compendium",
+      "name": "Ichihara / i-Score datasets A+B",
+      "review_references": [
+        17,
+        27
+      ],
+      "review_location": "Refs17 and27; older data reused by siPRED",
+      "availability": "retrieved_complete_file",
+      "orientation": "Both explicit antisense21mer and sense19mer columns",
+      "endpoint": "% Inhibition measured, plus clearly separate predicted model scores",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3213166/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles"
+      ],
+      "verified_download_count": 2850,
+      "flags": [
+        "not_independent_of_huesken_and_older_datasets"
+      ],
+      "notes": "Partition A2431+B419 verified. All predicted columns must stay out of labels. Author and accession columns preserve origin.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ichihara_vector_validation",
+      "name": "Ichihara new HEK293 pSELL/pDual validation",
+      "review_references": [
+        17
+      ],
+      "review_location": "Experimental validation in reviewed i-Score paper",
+      "availability": "retrieved",
+      "orientation": "Both explicitly provided 19-nt strands",
+      "endpoint": "Measured luciferase inhibition",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles"
+      ],
+      "verified_download_count": 86,
+      "flags": [
+        "vector_expressed_RNAi",
+        "physical_duplex_structure_not_established"
+      ],
+      "notes": "Not 86 synthetic siRNA duplex drug assays: paper uses pDual vector to express interfering RNA and pSELL target vector. Keep construct provenance and do not silently admit to synthetic standard-complementary benchmark.",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File008.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "shabalina_low_concentration",
+      "name": "Shabalina independent low-concentration validation",
+      "review_references": [
+        19,
+        36
+      ],
+      "review_location": "Reviewed model external data",
+      "availability": "retrieved_complete_supplement",
+      "orientation": "antisense 19nt",
+      "endpoint": "Activ residual expression percent",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2873531/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/supplementaryFiles"
+      ],
+      "verified_download_count": 32,
+      "flags": [],
+      "notes": "Two independent experiments at low concentration, not part of the653 training compendium. Source publication refs retained.",
+      "evidence_files": [
+        "1471-2105-7-65-S7.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "takasaki_measured_validation",
+      "name": "Takasaki MG1-MG5 measured test collection",
+      "review_references": [
+        39
+      ],
+      "review_location": "Ref39 validation datasets",
+      "availability": "retrieved",
+      "orientation": "cDNA sense/target 5prime_to_3prime",
+      "endpoint": "Effective/Ineffective classes from measured silencing",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles"
+      ],
+      "verified_download_count": 196,
+      "flags": [
+        "categorical_not_continuous",
+        "overlaps_other_named_datasets"
+      ],
+      "notes": "Verified per-sheet MG1=50, MG2=62, MG3=46, MG4=14, MG5=24. This is a measured test file, not the synthetic negative training set.",
+      "evidence_files": [
+        "1471-2105-7-S5-S22-S1.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "takasaki_cyclin_b1",
+      "name": "Takasaki cyclin B1 measured MG4 collection",
+      "review_references": [
+        37,
+        38,
+        39,
+        52
+      ],
+      "review_location": "Older test set reused by reviewed RBF work",
+      "availability": "retrieved_subset",
+      "orientation": "target/sense cDNA",
+      "endpoint": "Measured binary efficacy",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://doi.org/10.1016/j.csda.2007.02.027",
+        "https://doi.org/10.1016/j.compbiomed.2009.11.011",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/fullTextXML",
+        "https://doi.org/10.1016/j.compbiolchem.2006.02.003",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles"
+      ],
+      "verified_download_count": 14,
+      "flags": [],
+      "notes": "MG4 contains7 effective and7 ineffective measured test examples. Do not duplicate separately if MG1-MG5 aggregate is loaded.",
+      "evidence_files": [
+        "1471-2105-7-S5-S22-S1.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "takasaki_training",
+      "name": "Takasaki literature positives plus random negative training",
+      "review_references": [
+        37,
+        38,
+        39,
+        52
+      ],
+      "review_location": "Reviewed RBF/SOM training",
+      "availability": "not_retrieved",
+      "orientation": "sequence",
+      "endpoint": "Mixture of literature efficacies and empirically assumed random-sequence negative labels",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://doi.org/10.1016/j.csda.2007.02.027",
+        "https://doi.org/10.1016/j.compbiomed.2009.11.011",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/fullTextXML",
+        "https://doi.org/10.1016/j.compbiolchem.2006.02.003"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "partially_synthetic_or_predicted_only",
+        "do_not_treat_random_negatives_as_measured"
+      ],
+      "notes": "Ref39 states860 effective literature siRNAs and860 randomly generated presumed ineffective sequences. No complete860-positive source file retrieved. Random negative sequences do not have measured labels.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "peek_dataset579",
+      "name": "Peek corrected heterogeneous dataset579",
+      "review_references": [
+        34,
+        23
+      ],
+      "review_location": "Reviewed feature-combination model",
+      "availability": "not_retrieved_as_complete_raw_collection",
+      "orientation": "antisense19nt",
+      "endpoint": "Experimental activity with source sequences altered for target correspondence",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1906837/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2760777/fullTextXML",
+        "https://scitoolsftp.idtdna.com/SEQ2SVM/",
+        "https://sourceforge.net/projects/seq2svm/"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "three_sequences_changed_after_measurement",
+        "two_ambiguous_sequences_removed",
+        "overlap_with_saetrom"
+      ],
+      "notes": "Ref34 describes starting from a581 compilation, discarding2 and altering3 at1-2 positions. Do not attach original experimental labels to corrected sequences without preserving this distinction.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "wang280",
+      "name": "Wang/Huang/Yang nonredundant280 benchmark",
+      "review_references": [
+        47,
+        46
+      ],
+      "review_location": "Reviewed random forest paper",
+      "availability": "not_retrieved",
+      "orientation": "antisense19nt",
+      "endpoint": "Measured residual mRNA level; binary cutoff",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2999347/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/bth364"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "overlaps_older_saetrom_compilation"
+      ],
+      "notes": "Ref47 provides assay counts and derives source from Saetrom2004, but no sequence-label supplementary file. No verified downloaded sample count.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "wang2009_validation",
+      "name": "Wang/Applied Biosystems hyperfunctional-siRNA wet-lab validation",
+      "review_references": [
+        33
+      ],
+      "review_location": "Review explicitly discusses wet-lab validation",
+      "availability": "retrieved_supplementary_table3",
+      "orientation": "Explicit guide and passenger21nt 5prime_to_3prime",
+      "endpoint": "Measured remaining target expression at3nM and30nM",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2794195/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2794195/supplementaryFiles"
+      ],
+      "verified_download_count": 140,
+      "flags": [
+        "135_distinct_duplexes_in140_design_rows",
+        "deoxyribonucleotide_overhangs",
+        "chemistry_standard_overhang_metadata_required"
+      ],
+      "notes": "140 design rows parsed,135 distinct guide/passenger pairs. Two measured concentrations per row. SupplementaryTable4 provides additional algorithm comparisons but no sequence identifiers in table; cannot invent missing sequences.",
+      "verified_first19_guide_passenger_complementary": true,
+      "evidence_files": [
+        "gkp864_3.pdf",
+        "wang2009_validation_rows.json"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "wang2009_table4",
+      "name": "Wang2009 additional algorithm-comparison assay",
+      "review_references": [
+        33
+      ],
+      "review_location": "Reviewed wet-lab model evaluation",
+      "availability": "downloaded_efficacy_table_without_sequences",
+      "orientation": "unknown from table",
+      "endpoint": "Remaining mRNA percent at two concentrations",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2794195/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2794195/supplementaryFiles"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "missing_sequence_mapping"
+      ],
+      "notes": "Not a reusable sequence-efficacy collection until corresponding sequences are located.",
+      "evidence_files": [
+        "gkp864_4.pdf"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "virsirnapred",
+      "name": "VIRsiRNApred quantitative viral-siRNA compendium",
+      "review_references": [
+        30
+      ],
+      "review_location": "Reviewed virus efficacy model",
+      "availability": "public_download_page_located_server_timeout",
+      "orientation": "19nt; exact orientation not verified from downloaded rows",
+      "endpoint": "Experimental numeric viral inhibition",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3878835/fullTextXML",
+        "http://crdd.osdd.net/servers/virsirnapred/dataset.php",
+        "http://crdd.osdd.net/servers/virsirnapred/help.php"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "orientation_unresolved",
+        "server_inaccessible",
+        "source_measurement_heterogeneity"
+      ],
+      "notes": "Paper combines VIRsiRNAdb,HIVsirDB,patents,and literature. TrainingT1380 and validationV345 are partitions, not new assays. Downloaded count is null; do not claim every public viral example was retrieved.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "virsirnadb",
+      "name": "VIRsiRNAdb",
+      "review_references": [
+        30
+      ],
+      "review_location": "Underlying sources explicitly named by reviewed VIRsiRNApred",
+      "availability": "not_retrieved",
+      "orientation": "unresolved",
+      "endpoint": "Measured efficacy subset, not every catalog entry",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3878835/fullTextXML",
+        "http://crdd.osdd.net/servers/virsirnadb/"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "subset_quantitative_labels_only",
+        "possible_shRNA_constructs_or_modified_rows_require_filtering"
+      ],
+      "notes": "Bibliographic databases and patents are source collections, not proof that every entry has a compatible numeric efficacy label. This subset overlaps VIRsiRNApred.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "hivsir",
+      "name": "HIVsirDB",
+      "review_references": [
+        30
+      ],
+      "review_location": "Underlying sources explicitly named by reviewed VIRsiRNApred",
+      "availability": "not_retrieved",
+      "orientation": "unresolved",
+      "endpoint": "Measured efficacy subset, not every catalog entry",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3878835/fullTextXML",
+        "http://crdd.osdd.net/raghava/hivsir/"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "subset_quantitative_labels_only",
+        "possible_shRNA_constructs_or_modified_rows_require_filtering"
+      ],
+      "notes": "Bibliographic databases and patents are source collections, not proof that every entry has a compatible numeric efficacy label. This subset overlaps VIRsiRNApred.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "viral_patents",
+      "name": "VIRsiRNApred patent-derived experimental sequences",
+      "review_references": [
+        30
+      ],
+      "review_location": "Underlying sources explicitly named by reviewed VIRsiRNApred",
+      "availability": "not_retrieved",
+      "orientation": "unresolved",
+      "endpoint": "Measured efficacy subset, not every catalog entry",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3878835/fullTextXML",
+        "http://crdd.osdd.net/servers/virsirnapred/dataset.php"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "subset_quantitative_labels_only",
+        "possible_shRNA_constructs_or_modified_rows_require_filtering"
+      ],
+      "notes": "Bibliographic databases and patents are source collections, not proof that every entry has a compatible numeric efficacy label. This subset overlaps VIRsiRNApred.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "viral_literature",
+      "name": "VIRsiRNApred additional literature examples",
+      "review_references": [
+        30
+      ],
+      "review_location": "Underlying sources explicitly named by reviewed VIRsiRNApred",
+      "availability": "not_retrieved",
+      "orientation": "unresolved",
+      "endpoint": "Measured efficacy subset, not every catalog entry",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3878835/fullTextXML",
+        "http://crdd.osdd.net/servers/virsirnapred/dataset.php"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "subset_quantitative_labels_only",
+        "possible_shRNA_constructs_or_modified_rows_require_filtering"
+      ],
+      "notes": "Bibliographic databases and patents are source collections, not proof that every entry has a compatible numeric efficacy label. This subset overlaps VIRsiRNApred.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sirnadb",
+      "name": "siRNAdb",
+      "review_references": [
+        43,
+        44
+      ],
+      "review_location": "Older pooled CNN data and GNN attempted reuse",
+      "availability": "original_database_unavailable_no_data_in_archived_code",
+      "orientation": "unresolved",
+      "endpoint": "Measured efficacy",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://github.com/prioberoi/siRNAdb"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "defunct_original_database",
+        "code_only_repository",
+        "unverified_full_sample_recovery"
+      ],
+      "notes": "GNN2022 explicitly reports inability to recover siRNAdb. Archive repository verified contains README,JavaScript,Perl only, no dataset.",
+      "evidence_files": [
+        "sirnadb_tree.json"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "klingelhoefer_meta",
+      "name": "Klingelhoefer/Liu cross-platform meta-dataset",
+      "review_references": [
+        18,
+        55,
+        67,
+        68
+      ],
+      "review_location": "Older large meta-dataset reused in several models",
+      "availability": "article_description_retrieved_full_source_site_timeout",
+      "orientation": "mixed original sense/antisense; standardized antisense in analysis",
+      "endpoint": "Continuous residual product levels except categorical siRecords",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3528743/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://doi.org/10.1093/bib/bbs073",
+        "http://csbl.bmb.uga.edu/publications/materials/qiliu/siRNA.html",
+        "https://academic.oup.com/bioinformatics/article/25/13/1594/196518"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "full_source_download_unresolved",
+        "combination_not_new_independent_data"
+      ],
+      "notes": "Contains Huesken,Jagla,Katoh,Amgen-Dharmacon,Harborth,Hsieh,Khvorova,Vickers,Ui-Tei,Amarzguioui. Ref67 claims all datasets downloadable from supplementary information, but available PMC supplements are feature-ranking documents; actual dataset link is separate and timed out.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "gnn_collection",
+      "name": "GNN4siRNA datasets1/2/3",
+      "review_references": [
+        44
+      ],
+      "review_location": "Reviewed graph-model data reuse",
+      "availability": "retrieved_version_pinned_repository",
+      "orientation": "mixed: dataset1 antisense; dataset2 sense",
+      "endpoint": "Measured efficacy numerical values as represented by reuse repository",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://github.com/BCB4PM/GNN4siRNA"
+      ],
+      "verified_download_count": 3518,
+      "flags": [
+        "not_independent_new_measurements",
+        "orientation_mixed",
+        "precision_and_normalization_changes_possible"
+      ],
+      "notes": "Verified raw efficacy CSV3518 and source partitions2431 A,385 B,702 T. Includes3518 sequence IDs, not proof of3518 unique duplex sequences. Must reverse complement only T sense rows, not all rows.",
+      "evidence_files": [
+        "gnn_data_raw_dataset_3_sirna_mrna_efficacy.csv",
+        "gnn_data_raw_dataset_3_siRNA_3.fas",
+        "gnn_data_raw_dataset_3_mRNA_3.fas"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "han4067",
+      "name": "Han2018 pooled deep-architecture collection",
+      "review_references": [
+        43
+      ],
+      "review_location": "Reviewed CNN training/testing",
+      "availability": "source_description_retrieved_no_full_4067_file",
+      "orientation": "mixed per primary sources",
+      "endpoint": "Measured efficacy",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "collection_not_recovered_complete",
+        "siRNAdb_component_missing",
+        "overlaps_gnn_and_older_named_sources"
+      ],
+      "notes": "Huesken,Reynolds,Vickers,Harborth,Katoh,Ui-Tei,siRNAdb. No full pooled source file retrieved; do not equate GNN3518 with full Han collection.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "holens_compilation",
+      "name": "Holen additional siRNA compilation",
+      "review_references": [
+        60
+      ],
+      "review_location": "Older OptiRNA/SVM evaluation",
+      "availability": "not_retrieved",
+      "orientation": "unresolved",
+      "endpoint": "Measured siRNA activity",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1802606/fullTextXML"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "no_verified_source_file"
+      ],
+      "notes": "Ladunga states Holen collection and Saetrom database also analyzed, but no corresponding sequence-efficacy file retrieved.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "shmushkovich_modified",
+      "name": "Shmushkovich2018 cholesterol-conjugated self-deliverable training set",
+      "review_references": [
+        51
+      ],
+      "review_location": "Reviewed Monopoli model training",
+      "availability": "public_primary_source_identified_existing_parent_dataset",
+      "orientation": "20nt target site;15nt sense/20nt antisense",
+      "endpoint": "Measured dual-luciferase remaining reporter expression",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC10338369/fullTextXML",
+        "https://doi.org/10.1093/nar/gky745",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC6237813/"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "chemically_modified",
+        "asymmetric15_20",
+        "exclude_standard19_23paired_scope"
+      ],
+      "notes": "2primeOMe/2primeF,phosphorothioates,cholesterol; modified guide5prime base fixedU. Not standard unmodified complementary19-23paired siRNA.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "monopoli2023_new_validation",
+      "name": "Monopoli2023 new four-gene measured validation",
+      "review_references": [
+        51
+      ],
+      "review_location": "Reviewed model wet-lab evaluation",
+      "availability": "retrieved_supplement_tableS3",
+      "orientation": "20nt target regions; guide reverse complement must respect fixed terminalU chemistry",
+      "endpoint": "Measured mean and SD of remaining reporter expression",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC10338369/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC10338369/supplementaryFiles"
+      ],
+      "verified_download_count": 20,
+      "flags": [
+        "chemically_modified",
+        "length_scaffold_differs_from_training",
+        "chemical_compatibility_not_unmodified",
+        "fixed_guide5primeU_may_break_terminal_target_complementarity"
+      ],
+      "notes": "20 measured rows verified TableS3. Model confidence scores and predicted classes are not efficacy labels. FigureS19 describes fully modified sense/antisense scaffold and cholesterol, not the training15/20 scaffold.",
+      "chemistry": {
+        "sense_length": 20,
+        "antisense_length": 20,
+        "blunt": true,
+        "sense_cholesterol_3prime": true,
+        "sugar_modifications": [
+          "2primeOMe",
+          "2primeF"
+        ],
+        "linkages": [
+          "phosphorothioate"
+        ],
+        "guide_first_base": "fixed 2primeOMe U",
+        "source": "Figure S19 in saved mmc1.pdf"
+      },
+      "evidence_files": [
+        "mmc1.pdf",
+        "mmc1.txt",
+        "monopoli2023_validation_rows.json"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "industry_proprietary",
+      "name": "Industry-generated therapeutic siRNA efficacy data",
+      "review_references": [
+        51
+      ],
+      "review_location": "Reviewed modified-siRNA scarcity discussion",
+      "availability": "nonpublic_proprietary",
+      "orientation": "not_available",
+      "endpoint": "Measured efficacy not publicly provided",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC10338369/fullTextXML"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "nonpublic_proprietary"
+      ],
+      "notes": "Generic class, not a named downloaded dataset; no examples invented.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "predicted_genomewide_libraries",
+      "name": "Genome-wide predicted siRNA libraries and model-output candidates",
+      "review_references": [
+        9,
+        36,
+        56,
+        64
+      ],
+      "review_location": "Review library-generation/model design discussion",
+      "availability": "not_a_measured_source",
+      "orientation": "various",
+      "endpoint": "Predicted activity or calculated design features only",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://doi.org/10.1038/nbt1118",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9589171/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2447759/fullTextXML"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "predicted_only",
+        "exclude_efficacy_benchmark"
+      ],
+      "notes": "Separate measured Huesken2431 and Shabalina653 from genome-wide ANN predictions,human-transcript candidate parameters,TREAT candidates,and OligoWalk ranking outputs.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "non_efficacy_networks",
+      "name": "TREAT biological networks and structural/thermodynamic resources",
+      "review_references": [
+        56,
+        62,
+        63,
+        64
+      ],
+      "review_location": "Reviewed featurization/target-design tools",
+      "availability": "not_a_measured_siRNA_collection",
+      "orientation": "not_applicable",
+      "endpoint": "GTEx/TCGA expression,PPI,TF networks,structure predictions,thermodynamic parameters",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9589171/fullTextXML",
+        "https://doi.org/10.1093/nar/gkg595",
+        "https://doi.org/10.1093/nar/gkh449",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2447759/fullTextXML"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "non_efficacy",
+        "do_not_import_as_siRNA_labels"
+      ],
+      "notes": "TREAT siRNA component is21nt sliding-window rule-based candidate design, not a new measured siRNA assay dataset. Review language describing random-walk design should not turn network data into efficacy labels.",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "katoh_other_assays",
+      "name": "Katoh additional endogenous-gene validation and TRBP binding",
+      "review_references": [
+        43,
+        44,
+        55,
+        67
+      ],
+      "review_location": "Older primary data behind Table2 Katoh reuse",
+      "availability": "primary_article_available_tables_not_numeric_sequence_efficiencies",
+      "orientation": "sense/target positions forGAPDH and beta-catenin",
+      "endpoint": "Measured gene knockdown plotted in figures; separate TRBP binding endpoint",
+      "source_urls": [
+        "https://www.sciencedirect.com/science/article/pii/S2772632024000102",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC6157246/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9696923/fullTextXML",
+        "https://doi.org/10.1093/bioinformatics/btp284",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3360065/fullTextXML",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1851635/fullTextXML"
+      ],
+      "verified_download_count": null,
+      "flags": [
+        "extra_validation_values_only_in_figures",
+        "TRBP_binding_non_efficacy",
+        "TAMRA_labeled_binding_assay_modified"
+      ],
+      "notes": "Original paper reports75 GAPDH and10 beta-catenin validation siRNAs; these are not extra downloadable702 TableS1 rows. No digitized label invention. TRBP diffusion/binding experiments are not knockdown efficacy labels.",
+      "evidence_files": [
+        "katoh_original.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    }
+  ],
+  "all_compatible_examples_recovered": false
+}
