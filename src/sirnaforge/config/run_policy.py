@@ -18,7 +18,7 @@ Two properties are the point of the module:
 
 What this module deliberately does **not** do: resolve the screening *reference* (that is the
 transcriptome resolver, tracked separately), decide candidate eligibility from evidence (#100), or
-promote any number. Every threshold below is the pre-production 0.7.1 policy baseline. The old
+promote any number. Every threshold below is the experimental 0.7.1 policy baseline. The old
 ``legacy`` name remains only as a compatibility alias for previously recorded runs.
 """
 
@@ -69,9 +69,9 @@ from sirnaforge.models.sirna import (
     TargetAccessibilityConfig,
 )
 
-PREPRODUCTION_PROFILE_NAME = "preproduction"
+EXPERIMENTAL_PROFILE_NAME = "experimental"
 LEGACY_PROFILE_NAME = "legacy"  # compatibility alias for old manifests and API callers
-DEFAULT_PROFILE_NAME = PREPRODUCTION_PROFILE_NAME
+DEFAULT_PROFILE_NAME = EXPERIMENTAL_PROFILE_NAME
 POLICY_SCHEMA_VERSION = "0.7.1"
 
 
@@ -167,7 +167,7 @@ _MODEL_FOR_TARGET: Mapping[str, type[BaseModel]] = {
     "design": DesignParameters,
 }
 
-# The one place the pre-production policy baseline knowingly differs from a model field default. The CLI has
+# The one place the experimental policy baseline knowingly differs from a model field default. The CLI has
 # always sent 30.0, so 30.0 is what "today's numbers verbatim" means for a resolved run; the
 # FilterCriteria field default of 35.0 applies only to code that constructs the model directly.
 # Which of the two is biologically right is a filter-default decision and is not settled here.
@@ -224,18 +224,18 @@ class RunPolicyProfile:
     exceptions: Mapping[str, str]
 
     @staticmethod
-    def preproduction() -> RunPolicyProfile:
-        """The active pre-production 0.7.1 policy baseline."""
+    def experimental_defaults() -> RunPolicyProfile:
+        """The active experimental 0.7.1 policy baseline."""
         baseline = {spec.key: _model_default(spec) for spec in SETTING_SPECS}
         exceptions: dict[str, str] = {}
         for key, (value, reason) in LEGACY_DEFAULT_EXCEPTIONS.items():
             baseline[key] = value
             exceptions[key] = reason
         return RunPolicyProfile(
-            name=PREPRODUCTION_PROFILE_NAME,
+            name=EXPERIMENTAL_PROFILE_NAME,
             version=POLICY_SCHEMA_VERSION,
             description=(
-                "The active 0.7.1 pre-production thresholds, carried verbatim. Not calibrated: most "
+                "The active 0.7.1 experimental thresholds, carried verbatim. Not calibrated: most "
                 "numbers are expert priors, and the two that were measured were measured on one target."
             ),
             experimental=True,
@@ -246,13 +246,13 @@ class RunPolicyProfile:
     @staticmethod
     def legacy() -> RunPolicyProfile:
         """Compatibility alias for the former ``legacy`` policy name."""
-        baseline = RunPolicyProfile.preproduction()
+        baseline = RunPolicyProfile.experimental_defaults()
         return RunPolicyProfile(
             name=LEGACY_PROFILE_NAME,
             version=baseline.version,
             description=(
-                "Compatibility alias for the pre-production 0.7.1 policy baseline. New runs should "
-                "use the preproduction name."
+                "Compatibility alias for the experimental 0.7.1 policy baseline. New runs should "
+                "use the experimental name."
             ),
             experimental=baseline.experimental,
             baseline=baseline.baseline,
@@ -290,7 +290,7 @@ class RunPolicyProfile:
 
 
 BUILTIN_PROFILES: Mapping[str, RunPolicyProfile] = {
-    PREPRODUCTION_PROFILE_NAME: RunPolicyProfile.preproduction(),
+    EXPERIMENTAL_PROFILE_NAME: RunPolicyProfile.experimental_defaults(),
     LEGACY_PROFILE_NAME: RunPolicyProfile.legacy(),
 }
 
@@ -1399,7 +1399,7 @@ def describe_parameters(
 
 
 def default_for(key: str) -> Any:
-    """The active pre-production policy value for one setting, for CLI help and tables.
+    """The active experimental policy value for one setting, for CLI help and tables.
 
     Help text and parameter tables read this instead of restating a number, which is what stopped
     the documented off-target cap (3) and the documented design weights (0.40/0.35) from drifting
@@ -1445,7 +1445,7 @@ def switchable_filter_ids() -> tuple[str, ...]:
 __all__ = [
     "BUILTIN_PROFILES",
     "DEFAULT_PROFILE_NAME",
-    "PREPRODUCTION_PROFILE_NAME",
+    "EXPERIMENTAL_PROFILE_NAME",
     "EntryPoint",
     "FILTER_SPECS",
     "LEGACY_PROFILE_NAME",

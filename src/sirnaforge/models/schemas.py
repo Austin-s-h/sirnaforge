@@ -234,7 +234,7 @@ class SiRNACandidateSchema(DataFrameModel):
     design_score: Series[float] = Field(
         ge=0.0,
         le=100.0,
-        description="Design-stage score on the active pre-production design vector (null if a term could not be computed)",
+        description="Design-stage score on the active experimental design vector (null if a term could not be computed)",
         nullable=True,
         coerce=True,
     )

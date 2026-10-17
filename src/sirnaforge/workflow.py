@@ -459,6 +459,7 @@ class WorkflowConfig:
         validation_config: ValidationConfig | None = None,
         log_file: str | None = None,
         write_json_summary: bool = True,
+        quilt_summarize: bool = False,
         num_threads: int | None = None,
         input_source: InputSource | None = None,
         keep_nextflow_work: bool = False,
@@ -481,6 +482,7 @@ class WorkflowConfig:
         to refuse the 0.7.0 ``genome_*`` spellings with the new name rather than a bare TypeError.
         """
         refuse_renamed_arguments(renamed)
+        self.quilt_summarize = quilt_summarize
         self.output_dir = Path(output_dir)
         self.input_source = input_source
         self.zfn_config = zfn_config
@@ -1629,7 +1631,7 @@ class SiRNAWorkflow:
             logger.warning(f"Failed to write self-contained HTML report: {e}")
 
         summarize_path: Path | None = None
-        if payload is not None and report_path is not None:
+        if self.config.quilt_summarize and payload is not None and report_path is not None:
             self._report_registration = (payload, report_path)
             summarize_path = self._write_quilt_summarize(payload, report_path)
 

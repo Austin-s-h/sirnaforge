@@ -10,9 +10,9 @@ weights had applied.
 
 Which vector applies is decided by stage and design mode, never combined (`ScoringWeights.vector_for`):
 
-    design_preproduction_v1             design stage, both modes -> SiRNACandidate.design_score
-    postscreen_sirna_preproduction_v1   post-screen, siRNA mode  -> SiRNACandidate.composite_score
-    postscreen_mirna_preproduction_v1   post-screen, miRNA mode  -> SiRNACandidate.composite_score
+    design_experimental_v1             design stage, both modes -> SiRNACandidate.design_score
+    postscreen_sirna_experimental_v1   post-screen, siRNA mode  -> SiRNACandidate.composite_score
+    postscreen_mirna_experimental_v1   post-screen, miRNA mode  -> SiRNACandidate.composite_score
 
 `design_score` and `composite_score` are different vectors over different term sets and are not
 comparable with each other. Every vector sums to 1.0, so every score spans the same [0, 100] and its
@@ -46,8 +46,8 @@ Version history:
       weight and the former baseline miRNA vector had six terms. No 3.x score is comparable with a
       4.x one.
       Bump this version whenever any DEFAULT weight or any vector's term set changes.
-    - 4.1.0: pre-production OligoGym weight investigation. The vector term sets remain unchanged,
-      but the named default vectors move to the pre-production namespace and the siRNA post-screen
+    - 4.1.0: experimental OligoGym weight investigation. The vector term sets remain unchanged,
+      but the named default vectors move to the experimental namespace and the siRNA post-screen
       efficacy allocation becomes 0.25 / 0.10 / 0.30 / 0.35 for off-target / accessibility /
       asymmetry / GC. The miRNA shared terms remain 0.80x that siRNA vector.
 

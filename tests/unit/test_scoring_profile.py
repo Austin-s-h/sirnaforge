@@ -207,6 +207,7 @@ def test_nothing_in_the_registry_is_promoted() -> None:
     """D1: 0.7.1 ships registry and audits, and promotes no weight or threshold."""
     assert all(record.evidence_status is not EvidenceStatus.VALIDATED for record in TERM_REGISTRY.values())
     assert all(profile.status is EvidenceStatus.EXPERIMENTAL for profile in PROFILES.values())
+    assert set(PROFILES) == {"experimental_efficacy_v1"}
     assert SHIPPED_PROFILE.ships_as_default is True
     assert EXPERIMENTAL_AU_PROFILE.ships_as_default is False
 
@@ -219,17 +220,17 @@ def test_the_shipped_profile_is_the_actual_default_vectors() -> None:
     `ScoringWeights` both default-construct the same three classes, so comparing the two to each
     other is an identity that no weight change can break -- the first draft of this test did exactly
     that and stayed green under a mutated `PostScreenSiRNAWeights`. Both sides are now compared
-    against the active pre-production numbers instead.
+    against the active experimental numbers instead.
     """
-    preproduction_v1 = {
-        "design_preproduction_v1": {"target_accessibility": 0.35, "asymmetry": 0.40, "gc_content": 0.25},
-        "postscreen_sirna_preproduction_v1": {
+    experimental_v1 = {
+        "design_experimental_v1": {"target_accessibility": 0.35, "asymmetry": 0.40, "gc_content": 0.25},
+        "postscreen_sirna_experimental_v1": {
             "off_target": 0.25,
             "target_accessibility": 0.10,
             "asymmetry": 0.30,
             "gc_content": 0.35,
         },
-        "postscreen_mirna_preproduction_v1": {
+        "postscreen_mirna_experimental_v1": {
             "off_target": 0.20,
             "target_accessibility": 0.08,
             "asymmetry": 0.24,
@@ -238,8 +239,8 @@ def test_the_shipped_profile_is_the_actual_default_vectors() -> None:
             "supp_13_16": 0.10,
         },
     }
-    assert {vector.name: vector.as_mapping() for vector in SHIPPED_PROFILE.vectors} == preproduction_v1
-    assert ScoringWeights().as_manifest() == preproduction_v1
+    assert {vector.name: vector.as_mapping() for vector in SHIPPED_PROFILE.vectors} == experimental_v1
+    assert ScoringWeights().as_manifest() == experimental_v1
 
 
 @pytest.mark.unit

@@ -355,7 +355,7 @@ def report_mirna_variance_reweighting(candidates_csv: Path) -> bool:
     features = pd.DataFrame(
         {term: scored["score_" + term].astype(float) / weight for term, weight in PRE_102_MIRNA_WEIGHTS.items()}
     )
-    mirna_vector = next(v for v in SHIPPED_PROFILE.vectors if v.name == "postscreen_mirna_v4")
+    mirna_vector = next(v for v in SHIPPED_PROFILE.vectors if v.name.startswith("postscreen_mirna"))
     shipped_weights = dict(mirna_vector.as_mapping())
     old = _variance_shares(features, PRE_102_MIRNA_WEIGHTS)
     new = _variance_shares(features, shipped_weights)
@@ -431,7 +431,7 @@ def _score_panel(panel: pd.DataFrame, vector: WeightVector, accessibility: float
 def report_profile_comparison(panel: pd.DataFrame) -> None:
     """Rank agreement and panel association for the shipped and experimental post-screen vectors."""
     print("\n6. Profile comparison on the predeclared splits")
-    shipped = next(v for v in SHIPPED_PROFILE.vectors if v.name == "postscreen_sirna_v4")
+    shipped = next(v for v in SHIPPED_PROFILE.vectors if v.name.startswith("postscreen_sirna"))
     experimental = next(v for v in EXPERIMENTAL_AU_PROFILE.vectors if v.name.startswith("postscreen_sirna"))
     print(f"    {shipped.name:<40} {shipped.as_mapping()}")
     print(f"    {experimental.name:<40} {experimental.as_mapping()}")

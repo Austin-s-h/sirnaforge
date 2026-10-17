@@ -332,13 +332,13 @@ class WeightVector(BaseModel):
 
 
 class DesignWeights(WeightVector):
-    """The pre-production design-stage vector over the three terms computable before screening.
+    """The experimental design-stage vector over the three terms computable before screening.
 
     Not comparable with the post-screen vectors below -- different term set, different weights on
     shared terms -- see the comparability note on ``SiRNACandidate.design_score``/``composite_score``.
     """
 
-    VECTOR_NAME: ClassVar[str] = "design_preproduction_v1"
+    VECTOR_NAME: ClassVar[str] = "design_experimental_v1"
     TERM_NAMES: ClassVar[tuple[str, ...]] = ("target_accessibility", "asymmetry", "gc_content")
 
     # asymmetry takes the top slot rather than target_accessibility. On 900 benchmark siRNAs with
@@ -366,7 +366,7 @@ class DesignWeights(WeightVector):
 
 
 class PostScreenSiRNAWeights(WeightVector):
-    """The active pre-production siRNA post-screen vector: design terms plus ``off_target``.
+    """The active experimental siRNA post-screen vector: design terms plus ``off_target``.
 
     Experimental: the OligoGym panel fit is small, Martinelli is not target-identity-qualified, and
     no held-out replication has promoted it. ``off_target`` is fixed at 0.25 as a specificity policy
@@ -376,7 +376,7 @@ class PostScreenSiRNAWeights(WeightVector):
     not the vector name, says which vectors are active for a given build.
     """
 
-    VECTOR_NAME: ClassVar[str] = "postscreen_sirna_preproduction_v1"
+    VECTOR_NAME: ClassVar[str] = "postscreen_sirna_experimental_v1"
     TERM_NAMES: ClassVar[tuple[str, ...]] = ("off_target", "target_accessibility", "asymmetry", "gc_content")
 
     off_target: float = Field(
@@ -397,10 +397,10 @@ class PostScreenSiRNAWeights(WeightVector):
 
 
 class PostScreenMiRNAWeights(WeightVector):
-    """The pre-production miRNA-biogenesis-aware post-screen vector, with 6 declared terms.
+    """The experimental miRNA-biogenesis-aware post-screen vector, with 6 declared terms.
 
     Hand-authored, not derived from the siRNA post-screen vector by scaling. The shared terms are
-    exactly ``0.80 x postscreen_sirna_preproduction_v1`` (0.20 / 0.08 / 0.24 / 0.28); ``ago_start``
+    exactly ``0.80 x postscreen_sirna_experimental_v1`` (0.20 / 0.08 / 0.24 / 0.28); ``ago_start``
     and ``supp_13_16`` hold 0.10 each, so the biogenesis budget is 0.20 and the shared budget 0.80.
 
     ``pos1_mismatch`` (removed, issue #102) held 0.05 while scoring **exactly 0.0** for every one of
@@ -415,7 +415,7 @@ class PostScreenMiRNAWeights(WeightVector):
     SCORING_WEIGHT_SET_VERSION if these numbers change.
     """
 
-    VECTOR_NAME: ClassVar[str] = "postscreen_mirna_preproduction_v1"
+    VECTOR_NAME: ClassVar[str] = "postscreen_mirna_experimental_v1"
     TERM_NAMES: ClassVar[tuple[str, ...]] = (
         "off_target",
         "target_accessibility",
@@ -440,7 +440,7 @@ class PostScreenMiRNAWeights(WeightVector):
 
 
 class ScoringWeights(BaseModel):
-    """The named pre-production weight vectors this run may score with, one per stage and mode.
+    """The named experimental weight vectors this run may score with, one per stage and mode.
 
     A vector is chosen, never combined: ``vector_for`` returns exactly one, its name is stamped on
     the candidate and written to the manifest, and the scorer requires every term it declares. There
@@ -922,8 +922,8 @@ class SiRNACandidate(BaseModel):
     )
 
     # Composite scoring. Two scores on two declared vectors, deliberately not one field:
-    #   design_score    -- active pre-production design vector, 3 terms, available before screening
-    #   composite_score -- active pre-production post-screen vector, available only after screening
+    #   design_score    -- active experimental design vector, 3 terms, available before screening
+    #   composite_score -- active experimental post-screen vector, available only after screening
     # NOT comparable: different term sets, weighted differently even on shared terms, so neither is
     # systematically the larger (#102) -- all features at 0.5 with off_target=1.0 score 50.0 on the
     # design vector vs 62.5 on the siRNA post-screen vector.
@@ -933,7 +933,7 @@ class SiRNACandidate(BaseModel):
         ge=0,
         le=100,
         description=(
-            "Design-stage score on the active pre-production vector (target_accessibility, asymmetry, "
+            "Design-stage score on the active experimental vector (target_accessibility, asymmetry, "
             "gc_content). None when a term could not be computed. Not comparable with composite_score."
         ),
     )
@@ -988,7 +988,7 @@ class SiRNACandidate(BaseModel):
         default="",
         description=(
             "Name of the hand-authored weight vector that produced the score, so a row traces to "
-            "the exact pre-production weights used"
+            "the exact experimental weights used"
         ),
     )
 

@@ -140,7 +140,7 @@ class TestComputeComposite:
     """Tests for the scorer: one named vector, its exact term set, no arithmetic on weights."""
 
     def test_known_features_and_weights_yield_known_score(self) -> None:
-        """A hand-computed score, term by term, against the pre-production siRNA vector.
+        """A hand-computed score, term by term, against the experimental siRNA vector.
 
         The anchor test: the arithmetic is written out by hand rather than by calling the function
         twice, so a scorer that returned a constant would fail here.
@@ -162,7 +162,7 @@ class TestComputeComposite:
 
         assert result.score == pytest.approx(87.5, abs=1e-9)
         assert result.weight_set_version == SCORING_WEIGHT_SET_VERSION
-        assert result.vector_name == "postscreen_sirna_preproduction_v1"
+        assert result.vector_name == "postscreen_sirna_experimental_v1"
         assert result.terms == ("off_target", "target_accessibility", "asymmetry", "gc_content")
         assert len(result.contributions) == 4
 
@@ -174,7 +174,7 @@ class TestComputeComposite:
         result = compute_composite(features, DesignWeights())
 
         assert result.score == pytest.approx(57.5, abs=1e-9)
-        assert result.vector_name == "design_preproduction_v1"
+        assert result.vector_name == "design_experimental_v1"
         assert result.terms == ("target_accessibility", "asymmetry", "gc_content")
 
     def test_extra_features_are_ignored_not_scored(self) -> None:
@@ -301,9 +301,9 @@ class TestWeightVectors:
         """The reason the single global COMPOSITE_TERM_NAMES tuple could no longer validate."""
         sizes = {vector.name: len(vector.terms) for vector in ScoringWeights().all_vectors()}
         assert sizes == {
-            "design_preproduction_v1": 3,
-            "postscreen_sirna_preproduction_v1": 4,
-            "postscreen_mirna_preproduction_v1": 6,
+            "design_experimental_v1": 3,
+            "postscreen_sirna_experimental_v1": 4,
+            "postscreen_mirna_experimental_v1": 6,
         }
 
     def test_a_mis_summed_vector_is_a_construction_error(self) -> None:
@@ -346,21 +346,21 @@ class TestWeightVectors:
         """Hand-authoring your own vector is supported -- it just has to sum to 1.0."""
         vector = DesignWeights(target_accessibility=0.5, asymmetry=0.3, gc_content=0.2)
         assert vector.as_mapping() == {"target_accessibility": 0.5, "asymmetry": 0.3, "gc_content": 0.2}
-        assert vector.name == "design_preproduction_v1"
+        assert vector.name == "design_experimental_v1"
 
     def test_vector_selection_is_by_stage_and_mode(self) -> None:
         """A vector is chosen, never combined."""
         weights = ScoringWeights()
 
-        assert weights.vector_for(post_screen=False).name == "design_preproduction_v1"
-        assert weights.vector_for(post_screen=False, design_mode=DesignMode.MIRNA).name == "design_preproduction_v1"
+        assert weights.vector_for(post_screen=False).name == "design_experimental_v1"
+        assert weights.vector_for(post_screen=False, design_mode=DesignMode.MIRNA).name == "design_experimental_v1"
         assert (
             weights.vector_for(post_screen=True, design_mode=DesignMode.SIRNA).name
-            == "postscreen_sirna_preproduction_v1"
+            == "postscreen_sirna_experimental_v1"
         )
         assert (
             weights.vector_for(post_screen=True, design_mode=DesignMode.MIRNA).name
-            == "postscreen_mirna_preproduction_v1"
+            == "postscreen_mirna_experimental_v1"
         )
 
     def test_manifest_records_name_alongside_weights(self) -> None:
@@ -368,11 +368,11 @@ class TestWeightVectors:
         manifest = ScoringWeights().as_manifest()
 
         assert set(manifest) == {
-            "design_preproduction_v1",
-            "postscreen_sirna_preproduction_v1",
-            "postscreen_mirna_preproduction_v1",
+            "design_experimental_v1",
+            "postscreen_sirna_experimental_v1",
+            "postscreen_mirna_experimental_v1",
         }
-        assert manifest["postscreen_mirna_preproduction_v1"]["ago_start"] == 0.10
+        assert manifest["postscreen_mirna_experimental_v1"]["ago_start"] == 0.10
 
 
 @pytest.mark.unit
@@ -397,4 +397,4 @@ class TestVersionConstant:
         result = compute_composite(features, DesignWeights())
 
         assert result.weight_set_version == "4.1.0"
-        assert result.vector_name == "design_preproduction_v1"
+        assert result.vector_name == "design_experimental_v1"

@@ -158,7 +158,10 @@ def test_workflow_csv_emits_every_issue80_column_and_matches_save_csv(tmp_path: 
 
 
 @pytest.mark.unit
-def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("quilt_summarize", [False, True])
+def test_workflow_writes_html_report_beside_candidate_csvs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quilt_summarize: bool
+) -> None:
     """The completed workflow publishes its self-contained report, and registers it for Quilt.
 
     The summarize file goes to the **run root**, not beside the report in ``sirnaforge/``: Quilt reads
@@ -166,6 +169,7 @@ def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monke
     without this showed nothing at all in a package view (#103).
     """
     workflow = _minimal_workflow(tmp_path, "report_out")
+    workflow.config.quilt_summarize = quilt_summarize
     candidate = _full_candidate("cand_report")
     design_result = DesignResult(
         input_file="<test>",
@@ -208,6 +212,10 @@ def test_workflow_writes_html_report_beside_candidate_csvs(tmp_path: Path, monke
     asyncio.run(workflow.step6_generate_reports(design_result))
 
     assert (workflow.config.output_dir / "sirnaforge" / "report.html").read_text() == "<html>report</html>"
+    if not quilt_summarize:
+        assert not registered
+        assert not (workflow.config.output_dir / "quilt_summarize.json").exists()
+        return
     assert registered["out_path"] == workflow.config.output_dir / "quilt_summarize.json", (
         "the summarize file must land at the run root Quilt reads, not beside the report"
     )
@@ -280,6 +288,7 @@ def test_completed_workflow_registers_its_own_run_summary(tmp_path: Path, monkey
     only then: a run that writes no summary must not name one.
     """
     workflow = _minimal_workflow(tmp_path, "summary_out")
+    workflow.config.quilt_summarize = True
     design_result = _single_candidate_design_result(workflow, "cand_summary")
 
     async def _no_transcripts(self: SiRNAWorkflow, progress: object) -> list[object]:
@@ -330,6 +339,7 @@ def test_workflow_without_a_json_summary_registers_no_summary_path(
         gene_query="TP53",
         design_params=DesignParameters(),
         write_json_summary=False,
+        quilt_summarize=True,
     )
     workflow = SiRNAWorkflow(config)
     workflow._gene_transcript_ids = {"ENST00000000001"}
@@ -377,6 +387,7 @@ def test_a_failed_quilt_registration_neither_blames_the_report_nor_claims_a_file
     on disk.
     """
     workflow = _minimal_workflow(tmp_path, "split_handlers_out")
+    workflow.config.quilt_summarize = True
     design_result = _single_candidate_design_result(workflow, "cand_split")
 
     def _registration_fails(*args: object, **kwargs: object) -> Path:

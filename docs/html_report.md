@@ -268,8 +268,8 @@ from logic re-derived in the browser:
 
 ## Registering with Quilt
 
-`sirnaforge report` also writes `quilt_summarize.json` beside the HTML file by default (`--quilt-summarize`;
-turn it off with `--no-quilt-summarize`). Quilt's package view renders exactly what a package's own
+Quilt registration is off by default. Use `sirnaforge report RUN_DIR --quilt-summarize`
+to write `quilt_summarize.json` beside the HTML file. Quilt's package view renders exactly what a package's own
 `quilt_summarize.json` names and nothing else, so a run published as a package without this file shows
 no report at all in its package view.
 
@@ -286,8 +286,8 @@ unconditionally would give the catalog a path it can never render, which shows a
 rather than an absent one. `sirnaforge.reporting.quilt_summarize_entries(payload, report_path, run_dir)`
 builds the array without writing it; `write_quilt_summarize(payload, report_path, run_dir)` writes it.
 
-A full `sirnaforge workflow` run writes both files itself, and puts the summarize file at the **run
-root** rather than beside the report: the report lands in `sirnaforge/report.html`, but the run
+A Python workflow configured with `WorkflowConfig(quilt_summarize=True, ...)` writes both files
+itself and puts the summarize file at the **run root** rather than beside the report: the report lands in `sirnaforge/report.html`, but the run
 directory is what gets published as a package, and Quilt reads a summarize file only at the package
 root. Every path in the document is therefore relative to the summarize file's own directory, not the
 report's -- `write_quilt_summarize(..., out_path=...)` is what tells the two apart. The `.nf` pipeline

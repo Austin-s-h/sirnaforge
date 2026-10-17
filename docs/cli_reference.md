@@ -75,7 +75,7 @@ records it under `run_policy`.
 
 Precedence, applied exactly once and in this order:
 
-1. the built-in versioned run-policy baseline (`preproduction` today; the old `legacy` name remains
+1. the built-in versioned run-policy baseline (`experimental` today; the old `legacy` name remains
    only as a compatibility alias, and **experimental**: its numbers are expert priors, with the two
    measured thresholds measured on one target);
 2. the design-mode preset, for `--design-mode mirna`, applied **only where you said nothing**;

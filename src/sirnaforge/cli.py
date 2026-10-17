@@ -3439,7 +3439,7 @@ def report(
     run_dir: Path = typer.Argument(..., help="A completed run output directory"),
     output: Path = typer.Option(Path("report.html"), "--output", "-o", help="Where to write the report"),
     quilt_summarize: bool = typer.Option(
-        True,
+        False,
         "--quilt-summarize/--no-quilt-summarize",
         help="Also write quilt_summarize.json beside the report, registering it and its evidence "
         "files so a published package renders the report in its package view",

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.1] - 2026-10-17
 
+### Release cleanup
+
+- Quilt registration is opt-in: `sirnaforge report --quilt-summarize` writes the
+  package summary; automatic workflows omit it unless `WorkflowConfig.quilt_summarize` is enabled.
+- The shipped scoring bundle is `experimental_efficacy_v1`, with stage/mode vectors
+  `design_experimental_v1`, `postscreen_sirna_experimental_v1`, and
+  `postscreen_mirna_experimental_v1`. Numerical weights are unchanged. Superseded
+  baseline vectors are removed from the runtime registry; offline A/U comparisons
+  remain available in the validation script. The run-policy default is `experimental`.
+- Removed the historical release-readiness checkpoint from the documentation;
+  release validation history remains in GitHub.
+
 ### Mature miRNA reference coverage
 
 - Added `--mirna-db mirgenedb+mirbase` for the mature-sequence union, deduplicated after case and U/T normalization. Both sources are required; combined cache fingerprints include both component references.
@@ -360,8 +372,7 @@ where the two defects removed here were first written down as outstanding.)
   _Changed_).
 - **`quilt_summarize.json` is written beside the report (#103).** Quilt's package view renders exactly
   what a package's own summarize file names and nothing else, so until now a run published as a package
-  showed **no report at all** in its package view. `sirnaforge report` writes it by default
-  (`--no-quilt-summarize` opts out) as the JSON **array** quiltdata/quilt's schema actually defines —
+  showed **no report at all** in its package view. `sirnaforge report --quilt-summarize` writes it on request as the JSON **array** quiltdata/quilt's schema actually defines —
   not the dict shape some tooling hands back — with `report.html` alone in the first row (which is how
   a row spans the full width), expanded, and described from the run's own gene, guide count, verdict
   tally, embedded off-target scope and report-vs-run agreement. Then the candidate CSVs, manifest and

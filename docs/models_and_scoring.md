@@ -210,11 +210,10 @@ There are three related but distinct terms:
 
 - A **WeightVector** is one exact stage/mode vector and the unit recorded on each scored candidate.
 - A **ScoringProfile** is a named bundle of weight vectors plus its evidence status; the active
-  bundle is `preproduction_efficacy_v1` and the historical comparison bundle is
-  `baseline_efficacy_4_0_0`.
+  bundle is `experimental_efficacy_v1`. Historical comparison bundles are not runtime profiles.
 - A **RunPolicyProfile** is unrelated to scoring: it is the baseline for thresholds, filter actions,
   run mode and other workflow settings. The old `legacy` name is retained only as a compatibility
-  alias; new runs use `preproduction`.
+  alias; new runs use `experimental`.
 
 `ScoringWeights` is a **container of three hand-authored vectors**, not a flat weight list. Each
 vector subclasses `WeightVector`, declares its own `VECTOR_NAME` and `TERM_NAMES`, and refuses to
@@ -222,19 +221,19 @@ construct unless it is named and already sums to 1.0 (tolerance 1e-9 — enough 
 representation of two-decimal literals, not enough to be approximately normalised):
 
 ```python
-class DesignWeights(WeightVector):            # design_preproduction_v1 -> design_score
+class DesignWeights(WeightVector):            # design_experimental_v1 -> design_score
     target_accessibility: float = 0.35
     asymmetry: float = 0.40
     gc_content: float = 0.25
 
-class PostScreenSiRNAWeights(WeightVector):   # postscreen_sirna_preproduction_v1 -> composite_score
+class PostScreenSiRNAWeights(WeightVector):   # postscreen_sirna_experimental_v1 -> composite_score
     off_target: float = 0.25
     target_accessibility: float = 0.10
     asymmetry: float = 0.30
     gc_content: float = 0.35
 
-class PostScreenMiRNAWeights(WeightVector):   # postscreen_mirna_preproduction_v1 -> composite_score
-    off_target: float = 0.20      # exactly 0.80 x postscreen_sirna_preproduction_v1
+class PostScreenMiRNAWeights(WeightVector):   # postscreen_mirna_experimental_v1 -> composite_score
+    off_target: float = 0.20      # exactly 0.80 x postscreen_sirna_experimental_v1
     target_accessibility: float = 0.08
     asymmetry: float = 0.24
     gc_content: float = 0.28
@@ -245,7 +244,7 @@ class PostScreenMiRNAWeights(WeightVector):   # postscreen_mirna_preproduction_v
 Issue #102 removed a seventh term, `pos1_mismatch` at 0.05: it is **exactly constant at 0.0** for the
 exact-reverse-complement passenger every design uses, so it ranked nothing while consuming weight. Its
 0.05 was not reassigned by judgement — the four shared terms were restored to exactly
-`0.80 x postscreen_sirna_preproduction_v1`, the proportional-scaling rule the vector already declared, which lands
+`0.80 x postscreen_sirna_experimental_v1`, the proportional-scaling rule the vector already declared, which lands
 on two decimal places without rounding. `pos1_mismatch` is still computed, and the pairing state it
 derives from stays on the row as `guide_pos1_base` and `pos1_pairing_state`, so the removal is
 auditable and reversible if mismatched passengers are ever designed. `score_pos1_mismatch` is a
@@ -258,7 +257,7 @@ and 6 different terms, and one global tuple made a missing term look like a lice
 
 `ScoringWeights.vector_for(post_screen=..., design_mode=...)` returns exactly one vector; there is no
 API for combining them and no runtime arithmetic on their values. `off_target` cannot be evaluated
-until off-target screening has run, so the design stage scores `design_preproduction_v1` into `design_score` and
+until off-target screening has run, so the design stage scores `design_experimental_v1` into `design_score` and
 `composite_score` stays `None`. The two fields are **different vectors over different term sets and
 are not comparable**; `ranking_score(candidate)` is the single place that decides which number a
 candidate currently has.
@@ -785,19 +784,19 @@ class MiRNADesignConfig(BaseModel):
     asymmetry_min: float = 0.65
 
     # Thresholds and format defaults only -- the miRNA scoring weights live in
-    # PostScreenMiRNAWeights (postscreen_mirna_preproduction_v1), see 1.5.
+    # PostScreenMiRNAWeights (postscreen_mirna_experimental_v1), see 1.5.
 ```
 
 ### 5.2 miRNA-Specific Scoring
 
-Two of the three biogenesis quantities are **ordinary declared terms** of `postscreen_mirna_preproduction_v1`
+Two of the three biogenesis quantities are **ordinary declared terms** of `postscreen_mirna_experimental_v1`
 (`ago_start` 0.10, `supp_13_16` 0.10), each a feature in [0, 1] like every other term. The third,
 `pos1_mismatch`, is computed and reported and scored by nothing — issue #102 measured it exactly
 constant. `biogenesis_features(guide, passenger)` derives all three from sequence alone, so they
 are available for any candidate — including rows that never passed through `MiRNADesigner`, such as
 the dirty controls cloned from rejected candidates.
 
-The design stage scores `design_preproduction_v1` in **both** modes, so a design-stage miRNA score is bit-identical
+The design stage scores `design_experimental_v1` in **both** modes, so a design-stage miRNA score is bit-identical
 to the siRNA one; the biogenesis terms enter only once `off_target` exists.
 
 > Before issue #96 the three were bonuses folded into `composite_score` and the result divided by
@@ -1020,11 +1019,11 @@ post-screen against the genuine off-target count (see 1.4 and 3.3).
 
 ## Appendix B: Scoring Weight Defaults
 
-Weight-set version `4.1.0`. Three hand-authored pre-production vectors, each summing to exactly 1.0, never rescaled
+Weight-set version `4.1.0`. Three hand-authored experimental vectors, each summing to exactly 1.0, never rescaled
 at runtime. These are **declared expert priors**: only `target_accessibility` and `off_target` have
 benchmark evidence behind them.
 
-**`design_preproduction_v1`** → `design_score` (design stage, both modes)
+**`design_experimental_v1`** → `design_score` (design stage, both modes)
 
 | Term                 | Weight | Rationale                                                                                                                            |
 | -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1035,7 +1034,7 @@ benchmark evidence behind them.
 ⚠️ These three numbers are round numbers **awaiting sign-off** — they are the one part of the weight
 set not chosen by the repo owner.
 
-**`postscreen_sirna_preproduction_v1`** → `composite_score` (post-screen, siRNA mode). Design terms plus one.
+**`postscreen_sirna_experimental_v1`** → `composite_score` (post-screen, siRNA mode). Design terms plus one.
 
 | Term                 | Weight | Rationale                                                                                          |
 | -------------------- | ------ | -------------------------------------------------------------------------------------------------- |
@@ -1047,7 +1046,7 @@ set not chosen by the repo owner.
 > `off_target` remains at 0.25 deliberately as a specificity policy term. The OligoGym activity labels
 > were used to rebalance efficacy terms, not to reduce the specificity allocation.
 
-**`postscreen_mirna_preproduction_v1`** → `composite_score` (post-screen, `--design-mode mirna`)
+**`postscreen_mirna_experimental_v1`** → `composite_score` (post-screen, `--design-mode mirna`)
 
 | Term                 | Weight | Rationale                                                              |
 | -------------------- | ------ | ---------------------------------------------------------------------- |

@@ -279,8 +279,8 @@ def _fake_write_report(payload: ReportPayload, out: Path | str) -> Path:
 
 
 @pytest.mark.unit
-def test_cli_writes_quilt_summarize_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``sirnaforge report`` writes ``quilt_summarize.json`` beside the HTML unless told not to."""
+def test_cli_skips_quilt_summarize_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``sirnaforge report`` does not write ``quilt_summarize.json`` unless requested."""
     monkeypatch.setattr("sirnaforge.cli.build_payload", lambda _run_dir: _payload())
     monkeypatch.setattr("sirnaforge.cli.write_report", _fake_write_report)
     run_dir = tmp_path / "run"
@@ -290,7 +290,7 @@ def test_cli_writes_quilt_summarize_by_default(tmp_path: Path, monkeypatch: pyte
     result = CliRunner().invoke(app, ["report", str(run_dir), "-o", str(output)])
 
     assert result.exit_code == 0, result.output
-    assert (output.parent / "quilt_summarize.json").exists()
+    assert not (output.parent / "quilt_summarize.json").exists()
 
 
 @pytest.mark.unit

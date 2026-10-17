@@ -19,10 +19,10 @@ from sirnaforge.cli import _fail_if_nothing_could_qualify, app
 from sirnaforge.config.run_policy import (
     BUILTIN_PROFILES,
     DEFAULT_PROFILE_NAME,
+    EXPERIMENTAL_PROFILE_NAME,
     LEGACY_DEFAULT_EXCEPTIONS,
     LEGACY_PROFILE_NAME,
     PASSTHROUGH_FIELDS,
-    PREPRODUCTION_PROFILE_NAME,
     SELECTABLE_ACTIONS,
     SETTING_SPECS,
     EntryPoint,
@@ -970,12 +970,12 @@ def test_the_legacy_profile_is_derived_from_the_model_defaults_with_one_declared
 
 
 @pytest.mark.unit
-def test_new_runs_use_the_preproduction_policy_name_and_legacy_is_only_an_alias():
+def test_new_runs_use_the_experimental_policy_name_and_legacy_is_only_an_alias():
     """Run-policy baselines and scoring profiles must not be conflated by the old name."""
-    assert DEFAULT_PROFILE_NAME == PREPRODUCTION_PROFILE_NAME == "preproduction"
+    assert DEFAULT_PROFILE_NAME == EXPERIMENTAL_PROFILE_NAME == "experimental"
     assert BUILTIN_PROFILES[LEGACY_PROFILE_NAME].name == LEGACY_PROFILE_NAME
-    assert BUILTIN_PROFILES[PREPRODUCTION_PROFILE_NAME].name == PREPRODUCTION_PROFILE_NAME
-    assert BUILTIN_PROFILES[LEGACY_PROFILE_NAME].baseline == BUILTIN_PROFILES[PREPRODUCTION_PROFILE_NAME].baseline
+    assert BUILTIN_PROFILES[EXPERIMENTAL_PROFILE_NAME].name == EXPERIMENTAL_PROFILE_NAME
+    assert BUILTIN_PROFILES[LEGACY_PROFILE_NAME].baseline == BUILTIN_PROFILES[EXPERIMENTAL_PROFILE_NAME].baseline
 
 
 @pytest.mark.unit

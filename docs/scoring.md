@@ -1,6 +1,7 @@
 # Scoring Overview
 
-siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. Higher composite scores indicate better predicted efficacy.
+siRNAforge ranks candidates with experimental scoring weights. Higher scores indicate a stronger
+ranking under the declared weights; they do not predict a knockdown level or establish safety.
 
 ## Quick Reference
 
@@ -15,13 +16,14 @@ siRNAforge uses research-backed thermodynamic metrics to rank siRNA candidates. 
 | `duplex_stability_dg`    | -32 to -43 kcal/mol for a 21mer | Guide:passenger duplex ΔG                                   |
 | `target_accessibility_p` | higher is better, log-scaled    | P(mRNA site's seed-paired 8-mer open)                       |
 
-## Two scores, three named pre-production weight vectors
+## Two scores, three named experimental weight vectors
 
 Terminology is intentionally split. A **WeightVector** is one exact set of terms and weights used
 for one stage/mode. A **ScoringProfile** is a named bundle of those vectors plus evidence status;
-the active bundle is `preproduction_efficacy_v1`, while `baseline_efficacy_4_0_0` is historical.
+the shipped bundle is `experimental_efficacy_v1`. Historical comparison bundles are not registered
+as runtime profiles.
 A **RunPolicyProfile** is separate and contains workflow defaults such as thresholds, filter actions,
-and run mode. New runs use its `preproduction` name; `legacy` is only a compatibility alias for old
+and run mode. New runs use its `experimental` name; `legacy` is only a compatibility alias for old
 manifests and API callers.
 
 Since issue #96 every weight vector is **hand-authored, named, sums to 1.0 and is written to the run
@@ -29,7 +31,7 @@ manifest**, and nothing rescales one at runtime. There is no renormalisation and
 is _chosen_ by stage and design mode, never combined:
 
 ```
-design_preproduction_v1           postscreen_sirna_preproduction_v1  postscreen_mirna_preproduction_v1
+design_experimental_v1           postscreen_sirna_experimental_v1  postscreen_mirna_experimental_v1
   asymmetry             0.40       off_target           0.25    off_target            0.20
   target_accessibility  0.35       target_accessibility 0.10    target_accessibility  0.08
   gc_content            0.25       asymmetry            0.30    asymmetry             0.24
@@ -40,8 +42,8 @@ design_preproduction_v1           postscreen_sirna_preproduction_v1  postscreen_
                                                                                       1.00
 ```
 
-`postscreen_mirna_preproduction_v1`'s four shared terms are exactly `0.80 x
-postscreen_sirna_preproduction_v1`; its two
+`postscreen_mirna_experimental_v1`'s four shared terms are exactly `0.80 x
+postscreen_sirna_experimental_v1`; its two
 biogenesis terms hold the remaining 0.20. It had a seventh term, `pos1_mismatch` at 0.05, until
 issue #102 measured it **exactly constant at 0.0** on all 13,415 scored candidates of the public
 baseline — constant by construction, because the passenger is the exact reverse complement of the
@@ -50,16 +52,15 @@ was removed from the vector. It is still computed, and the pairing state stays o
 `guide_pos1_base` and `pos1_pairing_state` — but `score_pos1_mismatch` is a _contribution_ column, so
 with the term in no vector that column is now **always null**.
 
-`postscreen_sirna_preproduction_v1` is the design terms plus `off_target` — one extra term, cleanly
+`postscreen_sirna_experimental_v1` is the design terms plus `off_target` — one extra term, cleanly
 interpretable. Every row records the exact vector that produced it in `weight_vector`, and the
 manifest's `scoring.vectors` block maps that name to the numbers, so any score is traceable to the
-weights that made it. The previous 4.0.0 vectors are retained under the explicit historical
-`baseline_efficacy_4_0_0` scoring profile; they are not called `legacy` or `current`.
+weights that made it. Superseded weights remain in version history, rather than as runtime profiles.
 
 | Field             | Vector                                        | Available                                                                                         |
 | ----------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `design_score`    | `design_preproduction_v1`                                           | at design time, from the three terms computable before screening                                  |
-| `composite_score` | `postscreen_sirna_preproduction_v1` / `postscreen_mirna_preproduction_v1` | only after off-target screening produced usable evidence for that candidate; **null before that** |
+| `design_score`    | `design_experimental_v1`                                           | at design time, from the three terms computable before screening                                  |
+| `composite_score` | `postscreen_sirna_experimental_v1` / `postscreen_mirna_experimental_v1` | only after off-target screening produced usable evidence for that candidate; **null before that** |
 
 **The two are not comparable.** They are different vectors over different term sets, and they also
 weight their _shared_ terms differently, so **neither is systematically the larger**. Issue #102
@@ -337,8 +338,8 @@ The `candidates_pass.csv` and `candidates_all.csv` files include:
 | `guide_sequence`                                                  | 21nt guide strand (5'→3')                                                                                                                                                    |
 | `passenger_sequence`                                              | Passenger/sense strand                                                                                                                                                       |
 | `position`                                                        | Start position in transcript                                                                                                                                                 |
-| `design_score`                                                    | Design-stage score on `design_preproduction_v1` (3 terms), available without screening                                                                                         |
-| `composite_score`                                                 | Post-screen score on the active pre-production vector; empty before screening                                                                                                  |
+| `design_score`                                                    | Design-stage score on `design_experimental_v1` (3 terms), available without screening                                                                                         |
+| `composite_score`                                                 | Post-screen score on the active experimental vector; empty before screening                                                                                                  |
 | `asymmetry_score`                                                 | Thermodynamic asymmetry                                                                                                                                                      |
 | `gc_content`                                                      | GC percentage                                                                                                                                                                |
 | `melting_temp_c`                                                  | Melting temperature (°C)                                                                                                                                                     |

@@ -521,7 +521,7 @@ class SiRNADesigner:
         gc_score: float,
         access_score: float | None,
     ) -> None:
-        """Write ``design_score`` on the active pre-production design vector, and contributions.
+        """Write ``design_score`` on the active experimental design vector, and contributions.
 
         ``composite_score`` stays None: it needs ``off_target``, which does not exist until
         screening has run. A NaN sub-score (a ViennaRNA failure) or a None accessibility means "no
@@ -789,7 +789,7 @@ class SiRNADesigner:
 # The three miRNA biogenesis features `biogenesis_features` produces. All three are pure functions
 # of the guide and passenger sequences, so they are computable for every candidate -- including
 # dirty controls, which never pass through MiRNADesigner. Two of them are scored terms of
-# the active pre-production miRNA vector; `pos1_mismatch` is computed and reported only, because issue #102 measured it
+# the active experimental miRNA vector; `pos1_mismatch` is computed and reported only, because issue #102 measured it
 # exactly constant. Read a vector's own TERM_NAMES for what is scored -- this tuple is what is
 # *computed*, and the two are deliberately not the same list.
 MIRNA_TERM_NAMES = ("ago_start", "pos1_mismatch", "supp_13_16")
