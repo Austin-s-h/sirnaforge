@@ -120,6 +120,7 @@ exclude = [
 # Ruff configuration
 [tool.ruff]
 exclude = [
+  "tests/data/external", # Downloaded upstream datasets and their bundled source code
   # Genomic file formats (glob patterns)
   "**/*.fasta",
   "**/*.fa",
