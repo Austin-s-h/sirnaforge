@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0.0",
+  "collections": [
+    {
+      "id": "ichihara_2007",
+      "extract": "source_extracts/ichihara_2007.jsonl",
+      "expected_rows": 2850,
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gkm699",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2094068/supplementaryFiles"
+      ],
+      "license": "CC BY-NC 2.0 UK",
+      "notes": "2850 pooled assay views include2431Huesken measurements; not2850new observations. Passenger column is reported19nt core, not full passenger.",
+      "original_files": [
+        {
+          "name": "nar_gkm699_nar-01617-met-s-2007-File007.xls",
+          "sha256": "d85dee68260fda2be18b1f9c221d1cdb84c982dfa77b3b127c2642d628ab2971"
+        },
+        {
+          "name": "ichihara2007_measured_source_rows.csv",
+          "sha256": "485563457198782f0e351dfcc9e34506a75ca215f426c7465806c8f615a954de"
+        }
+      ]
+    },
+    {
+      "id": "katoh_2007",
+      "extract": "source_extracts/katoh_2007.jsonl",
+      "expected_rows": 702,
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gkl1120",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1851635/supplementaryFiles"
+      ],
+      "license": "CC BY-NC 2.0 UK",
+      "notes": "Primary TableS1 Activity, not Ourprediction. Reported sense19 core is reverse-complemented; full strands/overhangs not fabricated.",
+      "original_files": [
+        {
+          "name": "nar_gkl1120_nar-02060-met-g-2006-File012.xls",
+          "sha256": "07bebf8440652346da0cf1d33c19529330c37011f1f7b8362bdd0e4a8903d1ba"
+        }
+      ]
+    },
+    {
+      "id": "shabalina_2006",
+      "extract": "source_extracts/shabalina_2006.jsonl",
+      "expected_rows": 653,
+      "source_urls": [
+        "https://doi.org/10.1186/1471-2105-7-65",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/supplementaryFiles"
+      ],
+      "license": "CC BY 2.0",
+      "notes": "Activ is remaining expression. Preserve source coordinates as unverified source annotations; core-only records are not full duplex/native accessibility evidence.",
+      "original_files": [
+        {
+          "name": "1471-2105-7-65-S4.csv",
+          "sha256": "ee8d0727c9fc49f404de0855a8c20b5d1950cac27447f950846f0a6156757cc5"
+        },
+        {
+          "name": "shabalina2006_measured_source_rows.csv",
+          "sha256": "747dba689d48c1531a9da295696f71b542597164f5a98a043d7e33e863156677"
+        }
+      ]
+    },
+    {
+      "id": "shabalina_independent",
+      "extract": "source_extracts/shabalina_independent.jsonl",
+      "expected_rows": 32,
+      "source_urls": [
+        "https://doi.org/10.1186/1471-2105-7-65",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1431570/supplementaryFiles"
+      ],
+      "license": "CC BY 2.0",
+      "notes": "Activ is remaining expression. Preserve source coordinates as unverified source annotations; core-only records are not full duplex/native accessibility evidence.",
+      "original_files": [
+        {
+          "name": "1471-2105-7-65-S7.csv",
+          "sha256": "b42e539aa010ae2c0892a67cb1723cea979d8b3f62c17947961817ba409a0e92"
+        },
+        {
+          "name": "shabalina2006_independent_measured_source_rows.csv",
+          "sha256": "9ee54b8ecefe306a1a53795094562f3521363c60333b1654f1abfeaa68ee1bc9"
+        }
+      ]
+    },
+    {
+      "id": "wang_2009",
+      "extract": "source_extracts/wang_2009.jsonl",
+      "expected_rows": 280,
+      "source_urls": [
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2794195/supplementaryFiles"
+      ],
+      "license": "CC BY-NC 2.5",
+      "notes": "140designrows/135distinctduplexes at two doses; do not collapse dose observations or assume algorithm choice is efficacy.",
+      "original_files": [
+        {
+          "name": "wang2009_validation_rows.json",
+          "sha256": "99825706bc462d0c951555dda288a0dc810f67a848394c5fef51850b0338ab96"
+        },
+        {
+          "name": "gkp864_3.pdf",
+          "sha256": "ed010ceee1858d06b0881a5c2348c2a432180548a9d054050a47aa092ca7f255"
+        }
+      ]
+    },
+    {
+      "id": "sirnaefficacydb",
+      "extract": "source_extracts/sirnaefficacydb.jsonl",
+      "expected_rows": 3544,
+      "source_urls": [
+        "https://doi.org/10.1049/syb2.12102",
+        "https://cellknowledge.com.cn/siRNAEfficacy/download/siRNA_all.txt"
+      ],
+      "license": "CC BY-NC 2.0 UK",
+      "notes": "Complete downloaded3544 rows overlap Huesken/Katoh/Ichihara. Huesken cell/assay metadata conflicts with primary paper; no assertion that database metadata is verified.",
+      "original_files": [
+        {
+          "name": "siRNA_all.txt",
+          "sha256": "f45c7c9437ed126ada32bd90bf4c5ab4edce2a4752d4dbd095b36760f297779c"
+        }
+      ]
+    },
+    {
+      "id": "kliuchnikov_2024",
+      "extract": "source_extracts/kliuchnikov_2024.jsonl",
+      "expected_rows": 30,
+      "source_urls": [
+        "https://doi.org/10.1016/j.omtn.2024.102415"
+      ],
+      "license": "CC BY 4.0",
+      "notes": "IC50 censoring retained; modified chemistry not implicitly eligible for unmodified potency validation.",
+      "original_files": [
+        {
+          "name": "kliuchnikov_table1_raw.json",
+          "sha256": "a75b859aa832700d25b06d132f344325cec26150326767848ed3468a8eb0cfc0"
+        },
+        {
+          "name": "paper_36.xml",
+          "sha256": "b68828e563db68ad5fe2ec2bb0296d88fec96af2c2967abbc1e768dc671ba901"
+        }
+      ]
+    },
+    {
+      "id": "takasaki_measured",
+      "extract": "source_extracts/takasaki_measured.jsonl",
+      "expected_rows": 196,
+      "source_urls": [
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles"
+      ],
+      "license": "CC BY 2.0",
+      "notes": "Measured categorical testcollection only; excluded presumed syntheticnegative training data. Reuses other original datasets.",
+      "original_files": [
+        {
+          "name": "1471-2105-7-S5-S22-S1.xls",
+          "sha256": "1ad1c001b6ee36a66220d2ade91a071caa94218db4704d1aebdb446a51fc0586"
+        }
+      ]
+    }
+  ]
+}

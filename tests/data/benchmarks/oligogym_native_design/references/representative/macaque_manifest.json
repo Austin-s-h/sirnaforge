@@ -1,0 +1,12 @@
+{
+  "input_fasta": "/ref/88bd00fd63e9.fa",
+  "output_fasta": "tests/data/benchmarks/oligogym_native_design/references/representative/macaque_protein_coding_gene_representatives.fa",
+  "input_records": 49537,
+  "input_protein_coding_records": 48600,
+  "selected_records": 21591,
+  "selected_genes": 21591,
+  "preserved_mapping_genes": 15,
+  "preserved_mapping_transcripts_seen": 0,
+  "profile": "all protein-coding transcripts for mapped genes; longest protein-coding transcript per other gene",
+  "sha256": "1c8650ed513fa726540eb377f851febe11d0bc54f122b0ce1f6e6852a6b98aed"
+}

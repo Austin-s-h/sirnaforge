@@ -6,7 +6,6 @@ normalises them into local paths that the workflow can consume.
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import urllib.request
 from collections.abc import Callable
@@ -16,6 +15,7 @@ from urllib.parse import ParseResult, urlparse
 
 import httpx
 
+from sirnaforge.utils.hashing import file_sha256
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -38,14 +38,6 @@ class InputSource:
         return self.local_path.stem
 
 
-def _hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _ensure_destination(destination_root: Path) -> Path:
     destination_root.mkdir(parents=True, exist_ok=True)
     return destination_root
@@ -59,7 +51,7 @@ def _build_input_source(
     downloaded: bool,
 ) -> InputSource:
     size_bytes = path.stat().st_size
-    sha_value = _hash_file(path)
+    sha_value = file_sha256(path)
     return InputSource(
         original=original,
         local_path=path.resolve(),

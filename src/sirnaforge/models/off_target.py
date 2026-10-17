@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -108,10 +108,19 @@ class BaseAlignmentHit(BaseModel, ABC):
             raise ValueError(f"Invalid CIGAR string format: {v}")
         return v
 
+    #: The TSV column order, declared once per subclass. ``to_dict`` is keyed on it and
+    #: :meth:`tsv_header` is joined from it, so a header cannot drift from the row beneath it --
+    #: both are written to the same file by ``core/off_target.py``.
+    TSV_COLUMNS: ClassVar[tuple[str, ...]]
+
     @abstractmethod
+    def _tsv_values(self) -> dict[str, Any]:
+        """Serialised value per column name; ordering is :attr:`TSV_COLUMNS`'s job, not this one's."""
+
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for TSV/JSON serialization."""
-        pass
+        """Convert to dictionary for TSV/JSON serialization, in :attr:`TSV_COLUMNS` order."""
+        values = self._tsv_values()
+        return {column: values[column] for column in self.TSV_COLUMNS}
 
     def to_tsv_row(self) -> str:
         """Convert to TSV row format."""
@@ -119,10 +128,9 @@ class BaseAlignmentHit(BaseModel, ABC):
         return "\t".join(str(d[k]) for k in d)
 
     @classmethod
-    @abstractmethod
     def tsv_header(cls) -> str:
         """Get TSV header line."""
-        pass
+        return "\t".join(cls.TSV_COLUMNS)
 
 
 class OffTargetHit(BaseAlignmentHit):
@@ -136,8 +144,23 @@ class OffTargetHit(BaseAlignmentHit):
     species: str = Field(description="Reference species identifier for this hit")
     rname: str = Field(description="Reference sequence identifier (chromosome, transcript, etc.)")
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for TSV/JSON serialization."""
+    TSV_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "qname",
+        "qseq",
+        "species",
+        "rname",
+        "coord",
+        "strand",
+        "cigar",
+        "mapq",
+        "as_score",
+        "nm",
+        "seed_mismatches",
+        "offtarget_score",
+    )
+
+    def _tsv_values(self) -> dict[str, Any]:
+        """Serialised value per column name."""
         return {
             "qname": self.qname,
             "qseq": self.qseq,
@@ -152,11 +175,6 @@ class OffTargetHit(BaseAlignmentHit):
             "seed_mismatches": self.seed_mismatches,
             "offtarget_score": self.offtarget_score,
         }
-
-    @classmethod
-    def tsv_header(cls) -> str:
-        """Get TSV header line."""
-        return "qname\tqseq\tspecies\trname\tcoord\tstrand\tcigar\tmapq\tas_score\tnm\tseed_mismatches\tofftarget_score"
 
 
 class MiRNAHit(BaseAlignmentHit):
@@ -173,8 +191,24 @@ class MiRNAHit(BaseAlignmentHit):
     )
     mirna_id: str = Field(description="miRNA identifier (e.g., hsa-miR-21-5p)")
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for TSV/JSON serialization."""
+    TSV_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "qname",
+        "qseq",
+        "species",
+        "database",
+        "mirna_id",
+        "coord",
+        "strand",
+        "cigar",
+        "mapq",
+        "as_score",
+        "nm",
+        "seed_mismatches",
+        "offtarget_score",
+    )
+
+    def _tsv_values(self) -> dict[str, Any]:
+        """Serialised value per column name."""
         return {
             "qname": self.qname,
             "qseq": self.qseq,
@@ -190,14 +224,6 @@ class MiRNAHit(BaseAlignmentHit):
             "seed_mismatches": self.seed_mismatches,
             "offtarget_score": self.offtarget_score,
         }
-
-    @classmethod
-    def tsv_header(cls) -> str:
-        """Get TSV header line."""
-        return (
-            "qname\tqseq\tspecies\tdatabase\tmirna_id\tcoord\tstrand\tcigar\tmapq\tas_score\t"
-            "nm\tseed_mismatches\tofftarget_score"
-        )
 
 
 class BaseSummary(BaseModel):
@@ -215,6 +241,13 @@ class BaseSummary(BaseModel):
     # Common metadata
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Analysis timestamp")
     status: str = Field(default="completed", description="Analysis status")
+    # Kept separate from `status`, which `aggregate_offtarget_results` already reads as a free-text
+    # value ("completed"/"failed"/"partial"): this carries the #100 four-value ExecutionOutcome
+    # vocabulary (complete/failed/not_requested/censored) so a censored-but-technically-completed
+    # run is distinguishable from a clean one without repurposing a field another reader depends on.
+    evidence_status: str | None = Field(
+        default=None, description="ExecutionOutcome.status value (complete/failed/not_requested/censored), if known"
+    )
 
 
 class AnalysisSummary(BaseSummary):
@@ -288,7 +321,10 @@ class BaseAggregatedSummary(BaseModel):
 
     # Common file paths
     combined_tsv: Path | None = Field(default=None, description="Path to combined TSV file")
-    combined_json: Path | None = Field(default=None, description="Path to combined JSON file")
+    combined_json: Path | None = Field(
+        default=None,
+        description="Deprecated: no longer written. Kept so an archived run's summary still parses.",
+    )
     summary_file: Path | None = Field(default=None, description="Path to summary file")
 
     # Common metadata
@@ -320,15 +356,40 @@ class AggregatedOffTargetSummary(BaseAggregatedSummary):
     )
     species_file_counts: dict[str, int] = Field(
         default_factory=dict,
-        description="Count of *_analysis.tsv files discovered per requested species",
+        description="Count of *_analysis.tsv files DISCOVERED per requested species (not necessarily usable)",
+    )
+    usable_species_file_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of *_analysis.tsv files per species that were read and validated",
+    )
+    rejected_species_files: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per species, one 'filename: reason' entry for every discovered analysis file that could "
+            "not be read or validated. The field a per-species rejection is carried in"
+        ),
+    )
+    species_screened: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Species with at least one usable alignment file. The positive evidence that a search ran: "
+            "a species absent from this list has no hit count, not a hit count of zero"
+        ),
+    )
+    unscreened_species: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Species requested for analysis with no usable alignment evidence, whether because no file "
+            "was produced or because every file was rejected (superset of missing_species)"
+        ),
     )
     missing_species: list[str] = Field(
         default_factory=list,
-        description="Species requested for analysis that produced no transcriptome alignment files",
+        description="Species requested for analysis that produced no transcriptome alignment files at all",
     )
     status: str = Field(
         default="completed",
-        description="Aggregation status (completed, partial, or failed)",
+        description="Aggregation status: completed only when every requested species was screened",
     )
 
 
@@ -352,3 +413,21 @@ class AggregatedMiRNASummary(BaseAggregatedSummary):
     )
 
     total_candidates: int = Field(ge=0, description="Total candidates analyzed")
+
+    # Mirrors AggregatedOffTargetSummary's positive-evidence pair, so a species with no rows in
+    # combined_mirna_hits.tsv is distinguishable from a species that was never actually screened.
+    # Unlike the transcriptome side, one candidate's *_mirna_analysis.tsv already spans every
+    # requested species, so file presence carries no per-species signal here -- the #100 evidence
+    # envelope is the only positive signal available. No envelope is therefore no signal: a run that
+    # never wrote one (pre-#100, or run_mirna_seed_analysis called without evidence_dir) claims
+    # nothing screened rather than everything. The permissive reading was removed with #100 because
+    # it was reached on every real pipeline run -- the envelopes were never staged where this
+    # aggregate searched -- so absence of evidence was being reported as a complete screen.
+    species_screened: list[str] = Field(
+        default_factory=list,
+        description="Species with a COMPLETE mirna_seed evidence envelope from at least one candidate",
+    )
+    unscreened_species: list[str] = Field(
+        default_factory=list,
+        description="Requested species with no COMPLETE mirna_seed evidence envelope from any candidate",
+    )

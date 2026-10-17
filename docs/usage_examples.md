@@ -34,7 +34,7 @@ uv run sirnaforge workflow TP53 \
 
 - `--input-fasta` feeds the enumerator exactly the sequences you supply while still naming outputs with the positional gene argument.
 - `--transcriptome-fasta` reindexes the transcriptome reference used by off-target analysis (local path, URL, or preset). Presets map to the cache registry defined in `sirnaforge/data/species_registry.py`.
-- Pair with `--offtarget-indices human:/refs/hg38 mouse:/refs/mm39` when you maintain your own BWA-MEM2 indices.
+- Pair with `--transcriptome-indices human:/refs/hs_cdna,mouse:/refs/mm_cdna` when you maintain your own cDNA BWA-MEM2 indices (the cDNA FASTA must be readable beside each prefix, and these are screened *in addition to* whatever `--species` resolves).
 
 ## Gene Search & Design Automations
 
@@ -169,7 +169,7 @@ uv run sirnaforge offtarget \
 ```
 
 - `off_target/input_candidates.fasta` contains both high-confidence and dirty-control guides.
-- Override indices with `--offtarget-indices human:/refs/hg38 mouse:/refs/mm39` for custom BWA-MEM2 builds.
+- Name your own indices with `--transcriptome-indices human:/refs/hs_cdna,mouse:/refs/mm_cdna` for custom BWA-MEM2 builds (readable cDNA FASTA required beside each prefix; the Ensembl defaults are still resolved unless `--transcriptome-fasta` narrows them).
 
 ## Docker-Friendly Pattern
 

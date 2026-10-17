@@ -8,31 +8,15 @@ separately.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.data.transcriptome_filter import TranscriptFilter
+from sirnaforge.utils.ensembl_ids import strip_version
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
-
-
-def _strip_version(identifier: str) -> str:
-    """Strip Ensembl version suffixes (e.g., .9) for comparison.
-
-    Args:
-        identifier: Ensembl ID with optional version suffix
-
-    Returns:
-        ID without version suffix
-
-    Note:
-        This is a local implementation to keep the module dependency-light.
-        An equivalent exists in workflow.py as _normalize_transcript_id.
-    """
-    return re.sub(r"\.\d+$", "", identifier.strip())
 
 
 @dataclass(frozen=True)
@@ -101,7 +85,7 @@ class SpeciesTranscriptIndex:
         Returns:
             Version-stripped gene ID, or None if not found
         """
-        stripped_tid = _strip_version(transcript_id)
+        stripped_tid = strip_version(transcript_id)
         record = self.records.get(stripped_tid)
         return record.gene_id if record else None
 
@@ -114,7 +98,7 @@ class SpeciesTranscriptIndex:
         Returns:
             Uppercase gene symbol, or None if not found
         """
-        stripped_tid = _strip_version(transcript_id)
+        stripped_tid = strip_version(transcript_id)
         record = self.records.get(stripped_tid)
         return record.gene_symbol if record else None
 
@@ -127,7 +111,7 @@ class SpeciesTranscriptIndex:
         Returns:
             Biotype string, or None if not found
         """
-        stripped_tid = _strip_version(transcript_id)
+        stripped_tid = strip_version(transcript_id)
         record = self.records.get(stripped_tid)
         return record.biotype if record else None
 
@@ -199,10 +183,10 @@ class TranscriptGeneIndex:
 
                     # Extract and strip versions from IDs
                     raw_transcript_id = description.split()[0]
-                    transcript_id = _strip_version(raw_transcript_id)
+                    transcript_id = strip_version(raw_transcript_id)
 
                     gene_id_raw = metadata.get("gene")
-                    gene_id = _strip_version(gene_id_raw) if gene_id_raw else None
+                    gene_id = strip_version(gene_id_raw) if gene_id_raw else None
 
                     # Uppercase symbol for case-insensitive comparison
                     gene_symbol_raw = metadata.get("gene_symbol")

@@ -1,0 +1,59 @@
+{
+  "dataset": "ichihara_2007_2",
+  "query_key": "benchmark_oligogym_ichihara_2007_2",
+  "query_species": "human",
+  "target_species": [
+    "macaque",
+    "mouse",
+    "rat"
+  ],
+  "source_gene_ids": [
+    "ENSG00000111640.17",
+    "ENSG00000160789.27",
+    "ENSG00000228284.8"
+  ],
+  "per_gene": {
+    "ENSG00000111640.17": {
+      "macaque": [
+        "ENSMMUG00000018679"
+      ],
+      "mouse": [
+        "ENSMUSG00000057666",
+        "ENSMUSG00000097148",
+        "ENSMUSG00000110469"
+      ],
+      "rat": [
+        "ENSRNOG00000071205"
+      ]
+    },
+    "ENSG00000160789.27": {
+      "macaque": [
+        "ENSMMUG00000016096"
+      ],
+      "mouse": [
+        "ENSMUSG00000028063"
+      ],
+      "rat": [
+        "ENSRNOG00000019638"
+      ]
+    },
+    "ENSG00000228284.8": {}
+  },
+  "merged_mapping": {
+    "macaque": [
+      "ENSMMUG00000016096",
+      "ENSMMUG00000018679"
+    ],
+    "mouse": [
+      "ENSMUSG00000028063",
+      "ENSMUSG00000057666",
+      "ENSMUSG00000097148",
+      "ENSMUSG00000110469"
+    ],
+    "rat": [
+      "ENSRNOG00000019638",
+      "ENSRNOG00000071205"
+    ]
+  },
+  "provenance": "Ensembl Compara via sirnaforge.data.orthology.resolve_orthologues"
+}

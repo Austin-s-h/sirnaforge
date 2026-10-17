@@ -13,6 +13,11 @@ process MIRNA_SEED_ANALYSIS {
     output:
     path "mirna_analysis.tsv", emit: analysis
     path "mirna_summary.json", emit: summary
+    // #100: one envelope per species this batch actually attempted, written from inside
+    // run_mirna_seed_analysis's own per-species loop via its evidence_dir seam. Non-optional: a
+    // caller that reaches this process requested at least one species (the subworkflow gates on
+    // that), so at least one envelope is always expected.
+    path "mirna_seed_*_evidence.json", emit: evidence
     path "versions.yml", emit: versions
 
     when:
@@ -39,7 +44,8 @@ output_path = run_mirna_seed_analysis(
     candidate_id='batch',
     mirna_db='${mirna_db}',
     mirna_species=species_list,
-    output_dir='.'
+    output_dir='.',
+    evidence_dir='.',
 )
 
 # Rename output files for consistency
@@ -63,6 +69,34 @@ PYEOF
     """
     touch mirna_analysis.tsv
     echo '{"total_candidates": 0, "total_hits": 0}' > mirna_summary.json
+
+    # #100: mirror the non-optional evidence glob. Nothing actually ran, so status is "failed"
+    # and producer "stub" -- never "complete" -- and one file is enough to satisfy the glob
+    # regardless of how many species were requested.
+    cat <<-'EVIDENCE' > mirna_seed_stub_evidence.json
+    {
+      "schema_version": "2",
+      "producer": "stub",
+      "source": "synthesized",
+      "entry": {
+        "channel": "mirna_seed",
+        "species": "stub",
+        "reference_id": null,
+        "guide_set_digest": "0000000000000000",
+        "status": "failed",
+        "counts": {
+          "sites": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false},
+          "distinct_transcripts": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false},
+          "distinct_genes": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false},
+          "unresolved_gene_sites": {"value": null, "is_lower_bound": false, "cap": null, "truncated": false}
+        },
+        "submitted_guide_digest": null,
+        "submitted_guides": null,
+        "processed_guides": null,
+        "detail": "stub run: no aligner executed"
+      }
+    }
+    EVIDENCE
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

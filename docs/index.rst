@@ -17,8 +17,12 @@ siRNAforge Documentation
    cli_reference
    usage_examples
    workflows
+   html_report
+   public_benchmarks
+   benchmark_artifacts
    zfn_module
    gene_search
+   annotation_providers
    scoring
    zfn_ranking
    ccr5_zfn_benchmark

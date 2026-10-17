@@ -92,20 +92,23 @@ class GeneSearcher:
             )
         return self.get_client(database or DatabaseType.ENSEMBL).query_species
 
-    async def search_gene_with_fallback(self, query: str, include_sequence: bool = True) -> GeneSearchResult:
+    async def search_gene_with_fallback(
+        self, query: str, include_sequence: bool = True, preferred_database: DatabaseType = DatabaseType.ENSEMBL
+    ) -> GeneSearchResult:
         """Search for a gene with automatic fallback to other databases.
 
-        Tries databases in order: Ensembl -> RefSeq -> GENCODE
-        Falls back to next database only if access is blocked (not if gene is not found).
+        Tries the selected database first, then the remaining registered providers.
+        Unavailable providers and unresolved queries continue through the remaining providers.
 
         Args:
             query: Gene ID, gene name, or transcript ID
             include_sequence: Whether to fetch transcript sequences
+            preferred_database: Provider to try before falling back
 
         Returns:
             GeneSearchResult from the first accessible database
         """
-        databases_to_try = [DatabaseType.ENSEMBL, DatabaseType.REFSEQ, DatabaseType.GENCODE]
+        databases_to_try = [preferred_database, *(db for db in DatabaseType if db != preferred_database)]
 
         for db in databases_to_try:
             logger.info(f"Searching for '{query}' in {get_database_display_name(db)}")
@@ -261,10 +264,12 @@ def search_gene_sync(
     return asyncio.run(searcher.search_gene(query, database, include_sequence))
 
 
-def search_gene_with_fallback_sync(query: str, include_sequence: bool = True) -> GeneSearchResult:
+def search_gene_with_fallback_sync(
+    query: str, include_sequence: bool = True, database: DatabaseType = DatabaseType.ENSEMBL
+) -> GeneSearchResult:
     """Synchronous wrapper for gene search with fallback."""
     searcher = GeneSearcher()
-    return asyncio.run(searcher.search_gene_with_fallback(query, include_sequence))
+    return asyncio.run(searcher.search_gene_with_fallback(query, include_sequence, preferred_database=database))
 
 
 def search_multiple_databases_sync(

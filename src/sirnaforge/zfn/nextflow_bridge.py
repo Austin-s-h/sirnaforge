@@ -26,6 +26,7 @@ from sirnaforge.models.zfn import (
     ZFNSpacerConstraints,
 )
 from sirnaforge.utils.fasta import load_fasta_contig_lengths
+from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.zfn.design import ZFNDesigner
 from sirnaforge.zfn.rank import rank_sites
 from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher, build_zfn_shard_specs
@@ -51,11 +52,6 @@ def _parse_bool(value: str | bool) -> bool:
     if isinstance(value, bool):
         return value
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _parse_csv_tokens(value: str) -> list[str]:
-    """Split comma-delimited values, dropping empty tokens."""
-    return [token.strip() for token in value.split(",") if token.strip()]
 
 
 def make_zfn_shard_manifest(
@@ -84,13 +80,13 @@ def make_zfn_shard_manifest(
         search_space_reference=None,
         half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=max_mismatches),
         spacer_constraints=ZFNSpacerConstraints(
-            allowed_spacer_lengths=[int(value) for value in _parse_csv_tokens(spacer_lengths)]
+            allowed_spacer_lengths=[int(value) for value in parse_csv(spacer_lengths)]
         ),
         sharding=ZFNShardingConfig(
             enabled=_parse_bool(sharding_enabled),
             chunk_size_bp=max(1, int(float(shard_chunk_mb) * 1_000_000)),
             overlap_bp=int(shard_overlap_bp),
-            chromosomes=_parse_csv_tokens(shard_chromosomes),
+            chromosomes=parse_csv(shard_chromosomes),
         ),
     )
     shard_specs = build_zfn_shard_specs(contig_lengths, params_obj)
@@ -179,7 +175,7 @@ def run_zfn_shard_search(
     """
     effective_core_start = core_start_1 if core_start_1 is not None else scan_start_1
     effective_core_end = core_end_1 if core_end_1 is not None else scan_end_1
-    spacer_list = [int(s) for s in _parse_csv_tokens(spacer_lengths)]
+    spacer_list = [int(s) for s in parse_csv(spacer_lengths)]
 
     params_obj = ZFNDesignParameters(
         left_half_site=left_half_site,

@@ -20,7 +20,6 @@ Simple Usage Examples:
 
 import math
 import os
-import shutil
 import subprocess  # nosec B404
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.subprocess_utils import _get_executable_path, _validate_command_args
 
 logger = get_logger(__name__)
 
@@ -64,28 +64,6 @@ class EnvironmentInfo(BaseModel):
             summary += f" | Using Docker image: {self.docker_image}"
 
         return summary
-
-
-def _get_executable_path(tool_name: str) -> str | None:
-    """Get the full path to an executable, ensuring it exists."""
-    path = shutil.which(tool_name)
-    if path is None:
-        logger.warning(f"Tool '{tool_name}' not found in PATH")
-    return path
-
-
-def _validate_command_args(cmd: list[str]) -> None:
-    """Validate command arguments for subprocess execution."""
-    if not cmd:
-        raise ValueError("Command list cannot be empty")
-
-    executable = cmd[0]
-    if not executable:
-        raise ValueError("Executable path cannot be empty")
-
-    # Ensure we have an absolute path to the executable
-    if not Path(executable).is_absolute():
-        raise ValueError(f"Executable must be an absolute path: {executable}")
 
 
 class NextflowConfig:
@@ -245,7 +223,7 @@ class NextflowConfig:
         self,
         input_file: Path,
         output_dir: Path,
-        genome_species: list[str],
+        screen_species: list[str],
         additional_params: dict[str, Any] | None = None,
         include_test_profile: bool = False,
     ) -> list[str]:
@@ -254,7 +232,7 @@ class NextflowConfig:
         Args:
             input_file: Input FASTA file path
             output_dir: Output directory
-            genome_species: List of species for miRNA genome lookups (not genomic DNA)
+            screen_species: Species the screen covers, as resolved from its references
             additional_params: Additional parameters to pass
             include_test_profile: Whether to include 'test' profile for integration testing
 
@@ -265,13 +243,21 @@ class NextflowConfig:
         abs_input_file = input_file.resolve()
         abs_output_dir = output_dir.resolve()
         abs_work_dir = self.work_dir.resolve()
+        # The resolver may also state the species it resolved. Emitted once either way: two
+        # --transcriptome_species flags with different values leave the pipeline reporting whichever
+        # came last, which need not be the set actually handed to the aligner.
+        species_value = (
+            str(additional_params["transcriptome_species"])
+            if additional_params and "transcriptome_species" in additional_params
+            else ",".join(screen_species)
+        )
         args = [
             "--input",
             str(abs_input_file),
             "--outdir",
             str(abs_output_dir),
-            "--genome_species",
-            ",".join(genome_species),
+            "--transcriptome_species",
+            species_value,
             "-profile",
             self.profile,
             "-w",
@@ -310,6 +296,8 @@ class NextflowConfig:
         # Add additional runtime parameters
         if additional_params:
             for key, value in additional_params.items():
+                if key == "transcriptome_species":
+                    continue  # already emitted once above
                 if isinstance(value, bool):
                     if value:
                         args.append(f"--{key}")

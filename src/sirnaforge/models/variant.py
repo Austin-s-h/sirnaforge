@@ -175,7 +175,7 @@ class VariantRecord(BaseModel):
             return None
         return max(self.population_afs.values())
 
-    def get_effective_af_for_mode(self, mode: "VariantMode") -> float | None:  # noqa: F821
+    def get_effective_af_for_mode(self, mode: "VariantMode") -> float | None:
         """Get the effective allele frequency based on variant mode.
 
         For 'avoid' mode: Use max population AF if available (to avoid SNPs

@@ -29,8 +29,16 @@ All commands were executed with `uv run`.
 ## uv invocation guidance
 
 - From repository root: `uv run sirnaforge ...`
-- From outside the repository (for example, staged Nextflow work dirs under `/tmp`):
-  `uv run --project /home/hovland/sirnaforge/sirnaforge sirnaforge ...`
+- From outside the repository (for example, staged Nextflow work dirs under `/tmp`), point `--project`
+  at your clone. Record it once from inside the clone, so nothing is hard-coded to one machine:
+
+  ```bash
+  # inside the clone
+  export SIRNAFORGE_PROJECT="$(git rev-parse --show-toplevel)"
+
+  # anywhere afterwards, e.g. in a Nextflow work dir
+  cd /tmp && uv run --project "$SIRNAFORGE_PROJECT" sirnaforge _internal zfn-make-shards --help
+  ```
 
 Without `--project` outside the workspace, `uv` cannot resolve the `sirnaforge` entrypoint.
 

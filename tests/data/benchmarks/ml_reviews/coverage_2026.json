@@ -1,0 +1,1314 @@
+{
+  "review": {
+    "title": "From rules to foundation models: a comprehensive review of machine learning approaches for siRNA design",
+    "doi": "10.1093/nargab/lqag099",
+    "publisher_url": "https://academic.oup.com/nargab/article/8/3/lqag099/8776214",
+    "publisher_pdf_url": "https://academic.oup.com/nargab/article-pdf/8/3/lqag099/70877388/lqag099.pdf",
+    "fulltext_recovered_url": "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC13527166/fullTextXML",
+    "pmcid": "PMC13527166",
+    "pmid": "42676509",
+    "license": "CC BY4.0",
+    "fulltext_status": "complete JATS XML recovered and entire extracted text read; figures themselves not OCRed; mathematical graphic substitutions may be absent in plain text",
+    "xml_reference_count": 100,
+    "xml_section_count": 80,
+    "xml_table_count": 11
+  },
+  "source_entry_count": 53,
+  "entries": [
+    {
+      "id": "huesken_2005",
+      "name": "Huesken / BIOPREDsi / Novartis",
+      "review_references": [
+        13,
+        15,
+        20,
+        23,
+        25,
+        26,
+        28,
+        63,
+        64
+      ],
+      "counts": {
+        "review": 2431,
+        "primary": 2431,
+        "siRNAEfficacyDB_download": 2431,
+        "OligoFormer_current_download": 2361,
+        "original_train": 2182,
+        "original_test": 249
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "21-nt antisense full strand, first 19 paired; 19-nt sense core available. Preserve overhang case.",
+      "access": "downloaded",
+      "notes": "Reuse across models is not new measurement. OligoFormer drops 70 original records; exact filtered identities not established.",
+      "source_urls": [
+        "https://doi.org/10.1038/nbt1118",
+        "https://doi.org/10.1186/1471-2105-7-520",
+        "https://doi.org/10.1186/s12864-018-5028-8",
+        "https://doi.org/10.1093/bioinformatics/btae577",
+        "https://doi.org/10.1016/j.gene.2024.148330",
+        "https://doi.org/10.1093/bib/bbae563",
+        "https://doi.org/10.3390/ijms232214211",
+        "https://arxiv.org/abs/2503.04200",
+        "https://doi.org/10.1101/2025.08.11.667724"
+      ],
+      "license": "siRNAEfficacyDB data CC BY-NC 2.0 UK; Ichihara article/supplement CC BY-NC 2.0 UK; OligoFormer repository proprietary/restricted",
+      "evidence_files": [
+        "siRNA_all.txt",
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls",
+        "Hu.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "katoh_2007",
+      "name": "Takayuki Katoh and Tsutomu Suzuki (NOT Ichihara): Specific residues at every third position of siRNA shape its efficient RNAi activity",
+      "review_references": [
+        23,
+        26,
+        28,
+        63
+      ],
+      "counts": {
+        "review_table9": 583,
+        "primary_OligoFormer_table": 702,
+        "download": 702,
+        "mRNA_targets_primary": 1,
+        "review_mRNA_targets": 4
+      },
+      "measurement_kind": "measured reporter inhibition",
+      "geometry": "19-nt sense/passenger core in OligoFormer Taka and GNN4siRNA Taka FASTA; reverse-complement to guide. siRNAEfficacyDB provides explicit antisense core.",
+      "access": "downloaded",
+      "notes": "Review table count/targets conflict with primary article/repository. All 702 OligoFormer sequences match DB sense, zero match DB guide.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae577",
+        "https://doi.org/10.1093/bib/bbae563",
+        "https://doi.org/10.3390/ijms232214211",
+        "https://arxiv.org/abs/2503.04200",
+        "https://doi.org/10.1093/nar/gkl1120",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC1851635/"
+      ],
+      "license": "DB non-commercial; OligoFormer restricted; GNN4siRNA no explicit repository license",
+      "evidence_files": [
+        "siRNA_all.txt",
+        "Taka.csv",
+        "siRNA_2.fas"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "mixset",
+      "name": "OligoFormer Mixset (seven-study merged collection)",
+      "review_references": [
+        23,
+        63
+      ],
+      "counts": {
+        "review_table9": 700,
+        "primary_supplement1_1": 473,
+        "current_download": 472
+      },
+      "measurement_kind": "merged measured inhibition",
+      "geometry": "19-nt sequences, orientation must be mapped to underlying source; preserve reported strand convention.",
+      "access": "downloaded",
+      "notes": "Primary table lists constituent counts totaling 581; supplementary Mixset is 473, current CSV 472. Do not count original studies plus Mixset as disjoint.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae577",
+        "https://arxiv.org/abs/2503.04200"
+      ],
+      "license": "OligoFormer GitHub proprietary; journal supplement article CC BY 4.0",
+      "evidence_files": [
+        "Mix.csv",
+        "btae577_supplementary_data.zip"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "amarzguioui_2003",
+      "name": "Amarzguioui/Holen/Babaie 2003 mutation and chemical-modification collection",
+      "review_references": [
+        23
+      ],
+      "counts": {
+        "primary_OligoFormer_table": 46
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "Contains mutation/modification experiments, not interchangeable with Amarzguioui/Prydz 2004 rules set. Source DOI 10.1093/nar/gkg147; inspect geometry/chemistry per record.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae577"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "Mix.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "harborth_2003",
+      "name": "Harborth 2003",
+      "review_references": [
+        23
+      ],
+      "counts": {
+        "primary_OligoFormer_table": 44,
+        "DB_download": 44
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "Reused in Ichihara dataset B, Mixset, HUVK, GNN4siRNA and DB.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae577"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "siRNA_all.txt"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "hsieh_2004",
+      "name": "Hsieh/Bo/Manola PI3K-pathway library",
+      "review_references": [
+        23
+      ],
+      "counts": {
+        "primary_OligoFormer_table": 108
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "Source DOI 10.1093/nar/gkh238; original sequences/labels may occur in Mixset and Shabalina training set.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae577"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "Mix.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "khvorova_2003",
+      "name": "Khvorova/Reynolds/Jayasena functional strand-bias examples",
+      "review_references": [
+        5
+      ],
+      "counts": {
+        "primary_OligoFormer_table": 14,
+        "DB_download": 10
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "Subset counts differ across collections; keep exact source and strand.",
+      "source_urls": [
+        "https://doi.org/10.1016/s0092-8674(03)00801-8"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "siRNA_all.txt"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "reynolds_2004",
+      "name": "Reynolds/Leake/Boese rational-design collection",
+      "review_references": [
+        9
+      ],
+      "counts": {
+        "rules_paper_systematic_subset": 180,
+        "primary_OligoFormer_table": 240,
+        "DB_download": 244,
+        "Han_2018_reported": 248,
+        "siRNABERT_related_repo_download": 252
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "Several selected views; counts are not synonymous. Related siRNABERT data is not established as cited BERT-siRNA implementation.",
+      "source_urls": [
+        "https://doi.org/10.1038/nbt936"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "siRNA_all.txt"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "vickers_2003",
+      "name": "Vickers/Wyatt Isis Pharmaceuticals",
+      "review_references": [
+        23
+      ],
+      "counts": {
+        "primary_OligoFormer_table": 76,
+        "DB_download": 76,
+        "Han_2018_reported": 80,
+        "Matveeva_2007_view": 67
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "Different curation views of original measurements.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae577"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "siRNA_all.txt"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "uitei_2004",
+      "name": "Ui-Tei/Naito/Takahashi mammalian/chick experiments",
+      "review_references": [
+        8
+      ],
+      "counts": {
+        "primary_OligoFormer_table": 53,
+        "DB_download": 37,
+        "rules_paper_subset_reported_elsewhere": 62
+      },
+      "measurement_kind": "measured inhibition",
+      "geometry": "19-nt cores / 21-nt full duplexes in reused subsets; only import geometry-supported records.",
+      "access": "downloaded pooled subset; complete original view not independently recovered",
+      "notes": "No single universal count; curation/geometry subsets differ.",
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gkh247"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "siRNA_all.txt"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "amarzguioui_prydz_2004",
+      "name": "Amarzguioui and Prydz algorithm-development collection",
+      "review_references": [
+        10
+      ],
+      "counts": {
+        "reported_by_DSIR_primary": 80,
+        "targets": 4
+      },
+      "measurement_kind": "measured functional siRNA",
+      "geometry": "Unmodified standard cores expected; raw record geometry not inspected.",
+      "access": "original source not downloaded",
+      "notes": "Separate from Amarzguioui 2003 modification experiments.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.bbrc.2004.02.157"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ichihara_2007",
+      "name": "Ichihara i-Score dataset A+B",
+      "review_references": [
+        12
+      ],
+      "counts": {
+        "A_Huesken": 2431,
+        "B_other_studies": 419,
+        "pooled": 2850
+      },
+      "measurement_kind": "reused measured inhibition",
+      "geometry": "Antisense 21/full and sense 19/core explicitly provided in supplementary Table3; use only % Inhibition as experimental label, not algorithm-score columns.",
+      "access": "downloaded original XLS",
+      "notes": "Matches existing OligoGym Ichihara 2850 in task context; not 2850 new measurements.",
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gkm699"
+      ],
+      "license": "CC BY-NC 2.0 UK",
+      "evidence_files": [
+        "nar_gkm699_nar-01617-met-s-2007-File007.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "shabalina_2006",
+      "name": "Shabalina/Spiridonov/Ogurtsov ThermoComposition training set",
+      "review_references": [
+        11
+      ],
+      "counts": {
+        "primary_training": 653,
+        "parsed_download_with_numeric_Activ": 653,
+        "validation_Huesken": 2431
+      },
+      "measurement_kind": "measured residual target expression",
+      "geometry": "All 653 are 19-nt antisense cores in CSV column index 3. Activ is residual expression, smaller is stronger; values 0..127.8.",
+      "access": "downloaded original CSV",
+      "notes": "Use 100-Activ only if reporting inhibition, retain unbounded raw label and do not clamp. First four headers blank; Activ at zero-based index23; exclude miRNA-only S5.",
+      "source_urls": [
+        "https://doi.org/10.1186/1471-2105-7-65"
+      ],
+      "license": "article CC BY 2.0",
+      "evidence_files": [
+        "1471-2105-7-65-S4.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "matveeva_2007",
+      "name": "Matveeva Nechipurenko rational-design comparison pools",
+      "review_references": [
+        16
+      ],
+      "counts": {
+        "primary_table1_Isis": 67,
+        "primary_table1_Amgen_Dharmacon": 238,
+        "primary_table1_Sloan_Kettering": 601,
+        "primary_table1_Novartis": 2430
+      },
+      "measurement_kind": "reused measured silencing",
+      "geometry": "Different views/assays of standard siRNAs; original XLS geometry not inspected.",
+      "access": "original XLS URL identified, not downloaded",
+      "notes": "Original source counts differ from canonical study counts. Source source link extracted from primary article.",
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gkm088",
+        "http://gesteland.genetics.utah.edu/members/olgaM/siRNA_database_September_2006.xls"
+      ],
+      "license": "article CC BY-NC 2.0 UK",
+      "evidence_files": [
+        "paper_16.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "shao_2007",
+      "name": "Shao/Chan/Maliyekkel target-secondary-structure experiments",
+      "review_references": [
+        17
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "measured on-target accessibility response",
+      "geometry": "Raw full duplex/core conventions not recovered.",
+      "access": "EuropePMC XML and supplement unavailable (500/non-zip)",
+      "notes": "Do not fill missing count from model memory.",
+      "source_urls": [
+        "https://doi.org/10.1261/rna.546207",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC1986803/"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "tafer_2008",
+      "name": "Tafer/Ameres/Obernosterer accessibility validation",
+      "review_references": [
+        18
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "measured on-target silencing",
+      "geometry": "Per-record geometry not inspected.",
+      "access": "reviewed reference only; original supplement not retrieved",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1038/nbt1404"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "schwarz_2003",
+      "name": "Schwarz/Hutvagner/Du RISC-assembly/strand-selection experiments",
+      "review_references": [
+        6
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "mechanistic strand-loading and cleavage assays",
+      "geometry": "Experimental modified/mismatched duplexes; not ordinary efficacy benchmark.",
+      "access": "reviewed reference only",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1016/s0092-8674(03)00759-1"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "elbashir_2001",
+      "name": "Elbashir/Harborth/Lendeckel synthetic duplex examples",
+      "review_references": [
+        2
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "early measured cellular silencing",
+      "geometry": "21-nt duplex with 2-nt 3-prime overhang, 19-bp core; primary individual labels not recovered.",
+      "access": "reviewed reference only",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1038/35078107"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "han_2018",
+      "name": "Han CNN combined public benchmark",
+      "review_references": [
+        20
+      ],
+      "counts": {
+        "primary_reported_total": 4067,
+        "Huesken": 2431,
+        "Reynolds": 248,
+        "Vickers": 80,
+        "Harborth": 44,
+        "Takayuki": 702,
+        "UiTei": 62,
+        "siRNAdb": 500
+      },
+      "measurement_kind": "reused measured efficacy",
+      "geometry": "Mixed curated unmodified sets; siRNAdb geometry/content not recovered.",
+      "access": "primary fulltext downloaded; not entire original collection",
+      "notes": "Do not add a CNN/model copy as new measurement origin; siRNAdb contribution remains unrecovered.",
+      "source_urls": [
+        "https://doi.org/10.1186/s12864-018-5028-8"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "paper_20.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sirnadb_500",
+      "name": "siRNAdb component retained by Han 2018",
+      "review_references": [
+        20
+      ],
+      "counts": {
+        "Han_component": 500
+      },
+      "measurement_kind": "reused measured efficacy",
+      "geometry": "Unknown per-record geometry.",
+      "access": "not recovered; GNN4siRNA primary says original siRNAdb no longer available",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1186/s12864-018-5028-8"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "huvk",
+      "name": "Dataset_HUVK / GNN4siRNA dataset_1",
+      "review_references": [
+        26,
+        28
+      ],
+      "counts": {
+        "download_rows": 2816,
+        "mRNA_targets": 44
+      },
+      "measurement_kind": "reused measured efficacy",
+      "geometry": "All FASTA strands 21 nt with 2-nt overhang; guides from first19. GNN fasta preserves original case.",
+      "access": "downloaded with sequence FASTA and label CSV",
+      "notes": "Includes Huesken/Harborth/Ui-Tei/Vickers/Khvorova pooled views; not 2816 new measurements.",
+      "source_urls": [
+        "https://doi.org/10.1093/bib/bbae563",
+        "https://doi.org/10.3390/ijms232214211"
+      ],
+      "license": "No explicit GitHub license; seek primary-source license before redistribution",
+      "evidence_files": [
+        "siRNA_HUVK.fas",
+        "siRNA_mRNA_Efficacy.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "gnn4sirna_dataset3",
+      "name": "GNN4siRNA dataset_3 = HUVK + Katoh",
+      "review_references": [
+        28
+      ],
+      "counts": {
+        "download_rows": 3518
+      },
+      "measurement_kind": "reused measured efficacy",
+      "geometry": "2816 full guide21 plus 702 sense19; orientation differs across components.",
+      "access": "downloaded label CSV; constituent FASTAs downloaded",
+      "notes": "Do not import combined rows without joining identifiers to correct sequence and strand metadata.",
+      "source_urls": [
+        "https://doi.org/10.3390/ijms232214211"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "sirna_mrna_efficacy.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sciabola_simone_2013",
+      "name": "Sciabola/Cao/Orozco 2013 (Simone) measured sequence collection",
+      "review_references": [
+        26
+      ],
+      "counts": {
+        "model_repository_view": 322,
+        "repository_targets": 6,
+        "primary_total_standard_siRNAs": 352,
+        "primary_dicer_substrates": 591,
+        "primary_initial_target21mer_panel": 300
+      },
+      "measurement_kind": "measured branched-DNA knockdown",
+      "geometry": "Simone FASTA all full guide21, first19 paired core; primary confirms target-matching overhangs at positions20,21. Dicer 25/27 asymmetric molecules incompatible with standard core adapter.",
+      "access": "downloaded 322 sequence+labels and primary supplemental archive",
+      "notes": "352 standard original siRNAs larger than reused 322 view. Primary supplemental DOC contains full collections; not yet parsed. Concentrations and times vary; preserve assay units.",
+      "source_urls": [
+        "https://doi.org/10.1093/bib/bbae563",
+        "https://doi.org/10.1093/nar/gks1191",
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3561943/supplementaryFiles"
+      ],
+      "license": "primary article explicitly CC BY-NC 3.0, confirmed XML; repository no license",
+      "evidence_files": [
+        "sirna_Simone.fas",
+        "Simone_efficacy.csv",
+        "all.zip"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sirnadiscovery_acon",
+      "name": "siRNADiscovery in-house ACON laboratory measurements",
+      "review_references": [
+        26
+      ],
+      "counts": {
+        "primary_table1": 102,
+        "target_mRNAs": 1
+      },
+      "measurement_kind": "new measured efficacy",
+      "geometry": "Original fullstrand sequences not exposed in inspected GitHub tree.",
+      "access": "primary paper discusses set; no raw collection retrieved",
+      "notes": "Review does not give exact count. Do not fabricate sequences from candidate prediction figures.",
+      "source_urls": [
+        "https://doi.org/10.1093/bib/bbae563"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "paper_26.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sirnaefficacydb",
+      "name": "siRNAEfficacyDB",
+      "review_references": [
+        97
+      ],
+      "counts": {
+        "paper": 3544,
+        "download_verified": 3544,
+        "website_home_claim": 3545,
+        "source_studies": 7
+      },
+      "measurement_kind": "reused experimental percent inhibition",
+      "geometry": "Every record has antisense full21 or core19 plus sense19. Verified reverse complement of sense19 equals guide first19 for all3544.",
+      "access": "downloaded complete original TSV",
+      "notes": "Measured %Inhibition range -27.8..134.1; do not confuse predicted algorithm scores with measurements or clip labels. Metadata claims Huesken HeLa/luciferase conflict with primary H1299 fluorescence assay.",
+      "source_urls": [
+        "https://doi.org/10.1049/syb2.12102",
+        "https://cellknowledge.com.cn/siRNAEfficacy/download/siRNA_all.txt",
+        "https://cellknowledge.com.cn/siRNAEfficacy/download/Gene_all.txt"
+      ],
+      "license": "Data explicitly CC BY-NC 2.0 UK; article CC BY4.0 is not data license",
+      "evidence_files": [
+        "siRNA_all.txt",
+        "Gene_all.txt"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ensirna_unmodified",
+      "name": "ENsiRNA reused HUVK+Katoh benchmark",
+      "review_references": [
+        27
+      ],
+      "counts": {
+        "train1": 2252,
+        "valid1": 564,
+        "test": 702,
+        "train_plus_valid": 2816
+      },
+      "measurement_kind": "reused measured efficacy, dataset-specific normalized labels",
+      "geometry": "Explicit anti seq and sense seq, all19 cores in inspected CSV.",
+      "access": "downloaded one full fold and independent Taka test",
+      "notes": "Other four folds duplicate same source records; do not append fold views as new measurements. Labels 0..1 normalized, not raw percentage.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.jmb.2025.169131",
+        "https://github.com/tanwenchong/ENsiRNA"
+      ],
+      "license": "README claims Apache2.0; no repository license file/API license found",
+      "evidence_files": [
+        "train_1.csv",
+        "valid_1.csv",
+        "test.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ensirna_patent_232",
+      "name": "ENsiRNA patent AD-59xxx validation set",
+      "review_references": [
+        27
+      ],
+      "counts": {
+        "download_rows": 232
+      },
+      "measurement_kind": "measured efficacy labels as exposed by model repo",
+      "geometry": "Explicit anti/sense 19-nt complementary core; full chemical modification pattern and original strand lengths absent from CSV.",
+      "access": "downloaded",
+      "notes": "Unknown chemistry/provenance; do not silently treat as unmodified or invent standard overhangs. All sequences have efficacy scalar 0..0.888; original dose missing.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.jmb.2025.169131",
+        "https://github.com/tanwenchong/ENsiRNA/blob/main/ENsiRNA/dataset/patent.csv"
+      ],
+      "license": "Apache2.0 claimed in repository README; patent rights/source license not established",
+      "evidence_files": [
+        "patent.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sirnamod",
+      "name": "siRNAmod database",
+      "review_references": [
+        62
+      ],
+      "counts": {
+        "review_primary_entries": 4894,
+        "modification_types": 128,
+        "primary_source_articles": 96,
+        "additional_unmodified_controls": 435
+      },
+      "measurement_kind": "measured inhibition, IC50 and some qualitative efficacy",
+      "geometry": "Full double-strand chemistry and lengths vary; canonicalization alone loses chemical identity.",
+      "access": "primary article/supplement retrieved; full DB export not retrieved",
+      "notes": "Separate unmodified435 controls may be eligible if retrieved. Do not transform qualitative high/low into invented percentages.",
+      "source_urls": [
+        "https://doi.org/10.1038/srep20031",
+        "http://crdd.osdd.net/servers/sirnamod"
+      ],
+      "license": "article CC BY4.0; data-specific license not checked",
+      "evidence_files": [
+        "paper_62.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "smepred_3031",
+      "name": "SMEpred siRNAmod-selected benchmark",
+      "review_references": [
+        91
+      ],
+      "counts": {
+        "review_reported": 3031
+      },
+      "measurement_kind": "reused chemically modified measured efficacy",
+      "geometry": "Geometry and modification annotation per record required.",
+      "access": "fulltext and supplement not available through attempted EuropePMC (500/non-zip)",
+      "notes": "Likely overlaps ENsiRNA-mod siRNAmod subsets; do not count as independent measurement source.",
+      "source_urls": [
+        "https://doi.org/10.1080/15476286.2016.1229733"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "bramsen_2009",
+      "name": "Bramsen/Laursen/Nielsen large-scale chemical-modification screen",
+      "review_references": [
+        93
+      ],
+      "counts": {
+        "primary_duplex_screen": 2160,
+        "antisense_strands": 48,
+        "sense_strands": 45,
+        "high_activity_subset": 134
+      },
+      "measurement_kind": "measured eGFP and viability",
+      "geometry": "Modified duplexes and overhangs, plus segmented sisiRNA passenger examples in study; must preserve pair and chemistry.",
+      "access": "downloaded original XLS supplement",
+      "notes": "48 x45 duplex combinations are assays, not 2160 unique canonical sequences. Do not add model-derived48 panel as distinct experiment.",
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gkp106"
+      ],
+      "license": "CC BY-NC 2.0 UK",
+      "evidence_files": [
+        "gkp106_nar-02440-c-2008-File010.xls"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "dong_zheng_2022",
+      "name": "Dong/Zheng Bramsen 48-modified subset and Huesken2431",
+      "review_references": [
+        92
+      ],
+      "counts": {
+        "modified_subset": 48,
+        "Huesken_reused": 2431
+      },
+      "measurement_kind": "reused measured eGFP remaining / normalized activity",
+      "geometry": "Modified21nt antisense with overhangs; modified-nucleotide symbols and chemical structures preserved in archive.",
+      "access": "downloaded primary supplemental archive",
+      "notes": "Bramsen smaller panel is not new original measurements. HueskenDataSet/Huesken_ID-21ntSeq-NormAct_2431.txt inside ZIP verified 2431 measured records with original numeric IDs, full antisense21 and Act fraction. Overhangs include lowercase DNA t; preserve original notation. This is a complete raw Huesken source alternative to restricted OligoFormer, but upstream data rights still need attention.",
+      "source_urls": [
+        "https://doi.org/10.3390/molecules27196412"
+      ],
+      "license": "primary article CC BY4.0",
+      "evidence_files": [
+        "molecules-27-06412-s001.zip"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "shmushkovich_monopoli_356",
+      "name": "Shmushkovich 2018 / Monopoli2023 / Martinelli2024 shared modified corpus",
+      "review_references": [
+        94,
+        37
+      ],
+      "counts": {
+        "review_primary": 356,
+        "target_genes": 17
+      },
+      "measurement_kind": "measured dual-luciferase reporter expression remaining",
+      "geometry": "EXPLICIT ASYMMETRIC 15-nt sense /20-nt antisense, cholesterol-conjugated, chemically modified; only15 paired bases. Not compatible19–23bp standard duplex.",
+      "access": "primary article+supplement downloaded; existing task OligoGym Shmushkovich356",
+      "notes": "Review/model reuse does NOT create356 additional experiments. Original target20 feature sequence is NOT a20bp duplex core.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.omtn.2023.06.010",
+        "https://doi.org/10.1016/j.ygeno.2024.110815"
+      ],
+      "license": "primary article license not yet verified",
+      "evidence_files": [
+        "paper_94.xml",
+        "mmc1.pdf"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "monopoli_prospective",
+      "name": "Monopoli prospective validation against four genes",
+      "review_references": [
+        94
+      ],
+      "counts": {
+        "top_ranked_tested": 10,
+        "potent": 7
+      },
+      "measurement_kind": "new measured prospective reporter silencing",
+      "geometry": "Same asymmetric15/20 modification pattern; incompatible standard core.",
+      "access": "downloaded primary supplement",
+      "notes": "Other lower-ranked validation/control sequences may exist; total panel beyond10 not established.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.omtn.2023.06.010"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "mmc1.pdf"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "cmsirpred",
+      "name": "Cm-siRPred multiview benchmark",
+      "review_references": [
+        95
+      ],
+      "counts": {
+        "exact_training_count_review": null,
+        "approved_drug_validation": 5
+      },
+      "measurement_kind": "chemically modified measured efficacy reused from curated sources",
+      "geometry": "Both strands, explicit chemical modifications; raw collection not independently recovered.",
+      "access": "webserver available; original dataset/supplement not recovered",
+      "notes": "Do not use server-predicted efficacy as measured label.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.ijbiomac.2024.130638",
+        "https://cellknowledge.com.cn/CMsiRNAdb/CmsiRPred.html"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ensirna_modified",
+      "name": "ENsiRNA-mod siRNAmod-selected full fold",
+      "review_references": [
+        27
+      ],
+      "counts": {
+        "download_train1": 2528,
+        "download_valid1": 632,
+        "download_test": 352,
+        "pooled_rows": 3512,
+        "train_unique_ID": 2527
+      },
+      "measurement_kind": "reused chemically modified measured PCT",
+      "geometry": "Heterogeneous21/21,21/22,22/21,22/22,19/19,18/21,24/24 etc; explicit per-strand modification positions. Do not infer paired core from raw length.",
+      "access": "downloaded one fold and heldout XLSX",
+      "notes": "Source fields SM IDs and PMID/patents; preserve dose cc and modification pattern. At least one duplicated ID in train. Additional folds are same measurements.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.jmb.2025.169131"
+      ],
+      "license": "README Apache2.0 claim; original dataset redistribution license unknown",
+      "evidence_files": [
+        "train_88_1.xlsx",
+        "valid_88_1.xlsx",
+        "test_88.xlsx",
+        "modified_geometry_audit.json"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "ensirna_mod_patent15",
+      "name": "ENsiRNA-mod fully modified patent panel",
+      "review_references": [
+        27
+      ],
+      "counts": {
+        "download_rows": 15
+      },
+      "measurement_kind": "measured PCT",
+      "geometry": "All full guide23 and passenger21 (asymmetric ends); need pairing/overhang confirmation before claiming19–23bp core.",
+      "access": "downloaded XLSX",
+      "notes": "Retains modification positions and source identifiers; do not silently drop chemistry.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.jmb.2025.169131"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "patent.xlsx"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "kliuchnikov_2024",
+      "name": "Kliuchnikov/Maksudov/Zuber parent/modification molecular-modeling panel",
+      "review_references": [
+        36
+      ],
+      "counts": {
+        "sequence_pairs": 15,
+        "measured_duplexes": 30,
+        "AGT_pairs": 4,
+        "SERPINA6_pairs": 11
+      },
+      "measurement_kind": "experimental IC50 nM and melting temperature",
+      "geometry": "Each duplex19bp core plus dTdT on both strands; parent15unmodified and15modified2OMe/2F.",
+      "access": "downloaded fulltext+supplement; primary Table1 raw structured data accessible",
+      "notes": "Do not convert IC50 to percent inhibition. >100nM values are censored, not100. Chemical notation lowercase=2OMe, Nf=2F.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.omtn.2024.102415"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "paper_36.xml",
+        "mmc1.pdf"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "cmsirnadb",
+      "name": "CMsiRNAdb patent collection",
+      "review_references": [
+        96
+      ],
+      "counts": {
+        "review_primary_entries": 43153,
+        "unique_sequences": 15760,
+        "patents": 90,
+        "modification_types": 36,
+        "target_genes": 13
+      },
+      "measurement_kind": "patent-curated experimentally measured inhibition",
+      "geometry": "Full before/after modified double strands and modification-site annotations; heterogeneous geometry must be filtered.",
+      "access": "download URLs verified; full69,550,545-byte dataset not downloaded",
+      "notes": "Site/paper non-commercial academic use. Patent rights not equivalent to dataset license. New server prediction0.8061 is not a new measurement.",
+      "source_urls": [
+        "https://doi.org/10.1186/s12859-025-06359-y",
+        "https://cellknowledge.com.cn/CMsiRNAdb/download/CMsiRNA_data_update.tsv",
+        "https://cellknowledge.com.cn/CMsiRNAdb/download.html"
+      ],
+      "license": "free non-commercial academic research; paper CC BY-NC-ND4.0",
+      "evidence_files": [
+        "modified_database_download_page.json",
+        "modified_database_download_sizes.json"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sidpt_patents",
+      "name": "siDPT high-confidence patent benchmark",
+      "review_references": [
+        65
+      ],
+      "counts": {
+        "CTNNB1": 248,
+        "TMPRSS6": 212,
+        "KHK": 72,
+        "total": 532
+      },
+      "measurement_kind": "patent measured inhibition, Hep3B24h",
+      "geometry": "Full original strand/chemistry details unavailable in inspected release.",
+      "access": "paper fulltext recovered; linked repository currently README-only",
+      "notes": "Primary code/data promise not met in inspected repository tree; preference pairs are derived training examples, not independent measurements.",
+      "source_urls": [
+        "https://arxiv.org/abs/2509.15664",
+        "https://github.com/honggen-zhang/siDPT",
+        "https://arxiv.org/html/2509.15664v1"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "siDPT_fulltext.html"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "rnagene_rnatx",
+      "name": "RNAGenesis RNATx-Bench therapeutic benchmark",
+      "review_references": [
+        44
+      ],
+      "counts": {
+        "review_total_all_RNA_modalities": ">100000",
+        "siRNA_specific_count": null,
+        "modalities": 6
+      },
+      "measurement_kind": "reused experimental therapeutic RNA labels",
+      "geometry": "siRNA portion geometry unspecified; many other modalities not siRNA.",
+      "access": "repository available but siRNA raw data not found in inspected tree/README",
+      "notes": "DO NOT claim>100000 siRNAs. No new measurements identified; availability/siRNA count remains gap.",
+      "source_urls": [
+        "https://doi.org/10.1101/2024.12.30.630826",
+        "https://github.com/zaixizhang/RNAGenesis"
+      ],
+      "license": "MIT code; task-specific data license unresolved",
+      "evidence_files": [
+        "repo_zaixizhang_RNAGenesis.json"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "mandelli_crippa",
+      "name": "Mandelli/Crippa intrinsic-feature Huesken view",
+      "review_references": [
+        64
+      ],
+      "counts": {
+        "search_result_reported": 2428
+      },
+      "measurement_kind": "reused experimental Huesken efficacy",
+      "geometry": "Full guide21 reported; exact filtered identities not independently checked.",
+      "access": "search-result evidence only; original data not retrieved",
+      "notes": "2428 count is search snippet, not audited source-file count. No new measurements known.",
+      "source_urls": [
+        "https://doi.org/10.1101/2025.08.11.667724"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "bert_related_test_views",
+      "name": "siRNABERT related public measured test views",
+      "review_references": [
+        25
+      ],
+      "counts": {
+        "katoh_download_rows": 662,
+        "reynold_download_rows": 252
+      },
+      "measurement_kind": "reused labeled efficacy",
+      "geometry": "All sequences21; guide/sense/fullstrand convention not verified for this repo.",
+      "access": "downloaded; relationship to cited BERT-siRNA paper NOT verified",
+      "notes": "Review nxu1/BERT-siRNA is404. Similar name ChengkuiZhao/siRNABERT is NOT automatically same paper.",
+      "source_urls": [
+        "https://doi.org/10.1016/j.gene.2024.148330",
+        "https://github.com/ChengkuiZhao/siRNABERT"
+      ],
+      "license": "No explicit repository license",
+      "evidence_files": [
+        "katoh.csv",
+        "reynold.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "seedmatchr_ttr",
+      "name": "SeedMatchR example rat-liver Ttr D1/D4 RNA-seq",
+      "review_references": [
+        85
+      ],
+      "counts": {
+        "review_dataset_compendium": ">50 RNA-seq datasets",
+        "replicates_per_condition_primary": 4,
+        "exact_condition_count": null
+      },
+      "measurement_kind": "transcriptome differential expression/off-target labels",
+      "geometry": "D1 full guide23 UUAUAGAGCAAGAACACUGUUUU; modifiedGalNAc/GNA examples, not scalar on-target label collection.",
+      "access": "example test differential-expression TSV downloaded; raw fullRNAseq not downloaded",
+      "notes": "More than50 studies is review claim, no manifest in inspected primary. Test TSV179rows may be package test fixture, not entire experiment. Do not fabricate knockdown scalar.",
+      "source_urls": [
+        "https://doi.org/10.1093/bioinformatics/btae011",
+        "https://github.com/tacazares/SeedMatchR",
+        "https://doi.org/10.1093/nar/gkac539"
+      ],
+      "license": "MIT code (LICENSE.md); experimental data specific terms unresolved",
+      "evidence_files": [
+        "DESEQ2_results.tsv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "richter_admasu_2025",
+      "name": "Richter/Admasu siRNA-Features (Pal/Richter/Harasgama/Rozners underlying RNAseq)",
+      "review_references": [
+        61
+      ],
+      "counts": {
+        "review_siRNA_gene_points": ">30000",
+        "primary_modeled_structures": 30000,
+        "download_gene_alignment_rows": 11296,
+        "feature_views": 9
+      },
+      "measurement_kind": "measured RNAseq log2FC per siRNA–gene interaction; structural features computational",
+      "geometry": "Modified guide21, common chemistryvariants; many genes for few siRNAs, not30000independent siRNA efficacy measurements.",
+      "access": "public rawcount+alignment files downloaded",
+      "notes": "Nine feature representations reuse same experimental data. Chai predicted structures are not measured efficacy. Original source doi10.1021/acschembio.4c00824.",
+      "source_urls": [
+        "https://doi.org/10.3390/ijms26146795",
+        "https://github.com/mrichter0/siRNA-Features",
+        "https://doi.org/10.1021/acschembio.4c00824"
+      ],
+      "license": "MIT repository; original experimental data license not verified",
+      "evidence_files": [
+        "6048D_rawCounts.txt",
+        "gene_alignments3.csv"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "jackson_2003",
+      "name": "Jackson/Bartz/Schelter classic off-target microarray profiles",
+      "review_references": [
+        34
+      ],
+      "counts": {
+        "exact_siRNA_count": null
+      },
+      "measurement_kind": "measured transcriptome off-target expression",
+      "geometry": "Per-siRNA geometry not inspected.",
+      "access": "original study identified; raw expression archive not retrieved",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1038/nbt831"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "jackson_2006",
+      "name": "Jackson/Burchard/Schelter seed-mediated microarray profiles",
+      "review_references": [
+        35
+      ],
+      "counts": {
+        "exact_siRNA_count": null
+      },
+      "measurement_kind": "measured transcriptome off-target expression",
+      "geometry": "Per-siRNA geometry not inspected.",
+      "access": "review identified source; original sequence/expression archive not retrieved",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1261/rna.25706"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "birmingham_2006",
+      "name": "Birmingham/Anderson/Reynolds 3UTR seed-match microarray collection",
+      "review_references": [
+        33
+      ],
+      "counts": {
+        "exact_siRNA_count": null
+      },
+      "measurement_kind": "measured transcriptome off-target expression",
+      "geometry": "Per-siRNA geometry not inspected.",
+      "access": "review identified source; raw expression archive not retrieved",
+      "notes": "",
+      "source_urls": [
+        "https://doi.org/10.1038/nmeth854"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "kobayashi_2022",
+      "name": "Kobayashi/Tian/Ui-Tei dual on-target/off-target reporter panel",
+      "review_references": [
+        71
+      ],
+      "counts": {
+        "primary_siRNAs": 26,
+        "assay_doses_nM": [
+          0.05,
+          0.5,
+          5,
+          50
+        ]
+      },
+      "measurement_kind": "measured CM-target and SM-target luciferase remaining",
+      "geometry": "Guide/passenger sequences in SupplementalTableS1; paired-core conventions require inspection.",
+      "access": "primary fulltext and supplement ZIP downloaded",
+      "notes": "Labels distinguish on-target and seed off-target; dose-response rows not independent sequences. Supplemental XLSX S3–S6 insideZIP exposes values.",
+      "source_urls": [
+        "https://doi.org/10.3390/genes13020319"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "genes-13-00319-s001.zip"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "boudreau_2011",
+      "name": "Boudreau/Spengler/Davidson Huntington therapeutic specificity experiments",
+      "review_references": [
+        86
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "measured on/off-target effects",
+      "geometry": "unknown/unverified per-record geometry",
+      "access": "primary source identified; raw collection not parsed. Check local_paths and primary_xml_access_error for actual fulltext availability.",
+      "notes": "Raw duplexes and labels not inspected.",
+      "source_urls": [
+        "https://doi.org/10.1038/mt.2011.185"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sispotr_validation",
+      "name": "siSPOTR experimentally benchmarked safety candidates",
+      "review_references": [
+        87
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "measured validation of sequence-based safety scores",
+      "geometry": "unknown/unverified per-record geometry",
+      "access": "primary source identified; raw collection not parsed. Check local_paths and primary_xml_access_error for actual fulltext availability.",
+      "notes": "Not an independent trained off-target dataset; study-level labels not retrieved.",
+      "source_urls": [
+        "https://doi.org/10.1093/nar/gks797"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "paper_87.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "c911_controls",
+      "name": "C911 seed-preserving central-mismatch control collection",
+      "review_references": [
+        88
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "measured sequence-specific phenotype/control assay",
+      "geometry": "unknown/unverified per-record geometry",
+      "access": "primary source identified; raw collection not parsed. Check local_paths and primary_xml_access_error for actual fulltext availability.",
+      "notes": "Mismatches positions9-11 must be retained; do not reverse-complement full sequence to invent passenger or interpret phenotype as on-target percent.",
+      "source_urls": [
+        "https://doi.org/10.1371/journal.pone.0051942"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "paper_88.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "pssrnait_validation",
+      "name": "pssRNAit plant validation examples",
+      "review_references": [
+        89
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "experimental validation of computational plant candidate selection",
+      "geometry": "unknown/unverified per-record geometry",
+      "access": "primary source identified; raw collection not parsed. Check local_paths and primary_xml_access_error for actual fulltext availability.",
+      "notes": "No reviewed fixed-size measured sequence collection count; not raw on-target efficacy benchmark.",
+      "source_urls": [
+        "https://doi.org/10.1104/pp.20.00293"
+      ],
+      "license": "not independently established",
+      "evidence_files": [],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    },
+    {
+      "id": "sifi_validation",
+      "name": "si-Fi RNAi-target validation examples",
+      "review_references": [
+        90
+      ],
+      "counts": {
+        "exact_count": null
+      },
+      "measurement_kind": "experimental validation of computational off-target mapping",
+      "geometry": "unknown/unverified per-record geometry",
+      "access": "primary source identified; raw collection not parsed. Check local_paths and primary_xml_access_error for actual fulltext availability.",
+      "notes": "Frequently long dsRNA precursor/agricultural geometry; verify before treating individual predicted windows as measured siRNAs.",
+      "source_urls": [
+        "https://doi.org/10.3389/fpls.2019.01023"
+      ],
+      "license": "not independently established",
+      "evidence_files": [
+        "paper_90.xml"
+      ],
+      "coverage_status": "audited_source_gap_or_partial_view"
+    }
+  ],
+  "all_compatible_examples_recovered": false
+}

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,18 +52,6 @@ class AnnotationManager(TranscriptomeManager):
             source_label=self.SOURCE_LABEL,
         )
 
-    @staticmethod
-    def _cache_dir_is_writable(cache_dir: Path) -> bool:
-        """Return whether a cache directory can be created and written to."""
-        try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            probe = cache_dir / f".sirnaforge_write_probe_{uuid.uuid4().hex}"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return True
-        except OSError:
-            return False
-
     def get_custom_annotation(self, annotation_path_or_url: str | Path, cache_name: str | None = None) -> Path | None:
         """Resolve and cache a user-supplied annotation resource.
 
@@ -81,7 +68,8 @@ class AnnotationManager(TranscriptomeManager):
         )
         if result is None:
             return None
-        return result["fasta"]
+        # The shared result dict now also carries the cache-identity view, so it is keyed to `Any`.
+        return Path(result["fasta"])
 
     def _handle_url_annotation(self, url: str, cache_name: str | None = None) -> Path | None:
         """Download/cache remote annotation as-is (keep .gz compressed payloads)."""

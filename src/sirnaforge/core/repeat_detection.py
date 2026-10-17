@@ -400,16 +400,17 @@ class RepeatDetector:
             if positions.size == 0:
                 continue
 
-            # Attribute every match to its transcript in one searchsorted, then collapse to
-            # distinct (transcript, code) pairs -- a transcript counts once however many windows
-            # matched, so the Python loop below is over pairs, not over windows.
+            # Positions, and therefore owners, are ordered. Deduplicate codes within each
+            # contiguous transcript slice instead of sorting millions of two-column rows.
             owners = np.searchsorted(transcript_starts, positions, side="right") - 1
-            pairs = np.unique(np.stack((owners, codes), axis=1), axis=0)
-            for owner_idx, code in pairs.tolist():
+            boundaries = np.concatenate(([0], np.flatnonzero(np.diff(owners)) + 1, [len(owners)]))
+            for start, end in zip(boundaries[:-1], boundaries[1:], strict=True):
+                owner_idx = owners[start]
                 if 0 <= owner_idx < len(transcript_map):
                     transcript_id = transcript_map[owner_idx][0]
-                    for needle in codes_to_needles[code]:
-                        transcript_hits[needle].add(transcript_id)
+                    for code in np.unique(codes[start:end]).tolist():
+                        for needle in codes_to_needles[code]:
+                            transcript_hits[needle].add(transcript_id)
 
     def _find_match_positions(
         self,
