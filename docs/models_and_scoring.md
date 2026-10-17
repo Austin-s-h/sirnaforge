@@ -1079,3 +1079,24 @@ accessibility in the 0.13 slot (issue #95), and `1.x` denotes the pre-issue-#80 
 _Document version: 1.0_
 _Last updated: Auto-generated from source code_
 _Review status: Initial draft - Expert review recommended_
+
+### Selecting mature miRNA reference coverage
+
+MirGeneDB remains the default, using its mature-only export. Select full miRBase
+mature sequences with `--mirna-db mirbase`, or screen their deduplicated union
+with `--mirna-db mirgenedb+mirbase`. Both sources must load successfully for the
+combined option; it does not silently continue with a partial reference. Identical
+sequences are deduplicated after normalizing case and U/T, with the first source's
+identifier retained and its source recorded in the FASTA description. The combined
+cache fingerprint includes both component files.
+
+The union does not request MirGeneDB's separate star-strand export. Full miRBase
+can contain sequences from either arm, so this is not a biological exclusion of
+all passenger strands. More reference seeds broaden screening but do not establish
+that every additional entry is biologically valid. Compare hits and candidate
+rankings before interpreting differences as improved specificity.
+
+Default screening species are chicken, rat, mouse, human, and rhesus macaque.
+Pig remains available explicitly, but its MirGeneDB endpoint must return a valid
+reference to complete a screen. Full miRBase supports all canonical screening
+species, with species-specific filtering before combination.

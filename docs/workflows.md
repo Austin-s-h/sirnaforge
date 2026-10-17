@@ -161,7 +161,7 @@ flowchart TD
 
     subgraph MIRNA["miRNA seed scan — ALWAYS runs (MIRNA_SEED_ANALYSIS)"]
         direction TB
-        MIR["run_mirna_seed_analysis()<br/>default db: mirgenedb<br/>default species: chicken,pig,rat,mouse,human,macaque"]
+        MIR["run_mirna_seed_analysis()<br/>default db: mirgenedb<br/>default species: chicken,rat,mouse,human,macaque"]
         MIR --> SEED["Extract guide seed = guide positions 2-8"]
         SEED --> SCAN["Scan seed across every miRNA<br/>backend: pyahocorasick (exhaustive_python oracle)"]
         SCAN --> RAW["RAW alignments: seed match at any offset<br/>(*_mirna_analysis_raw.tsv)"]

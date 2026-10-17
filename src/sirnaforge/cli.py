@@ -1198,7 +1198,7 @@ def workflow(  # noqa: PLR0912
         "--species",
         help=(
             "Comma-separated canonical species identifiers. This single parameter drives "
-            "all off-target analysis: miRNA database lookups (default: 7 species) and "
+            "all off-target analysis: miRNA database lookups (default: 5 species) and "
             "transcriptome fetching from Ensembl (default: 4 species). "
             "Override specific layers with --mirna-species or --transcriptome-fasta. "
             "Supported: human, mouse, macaque, rat, chicken, pig, rhesus"
@@ -1219,7 +1219,7 @@ def workflow(  # noqa: PLR0912
     mirna_db: str = typer.Option(
         "mirgenedb",
         "--mirna-db",
-        help="miRNA reference database to use for seed analysis",
+        help="miRNA reference: mirgenedb (default), mirbase, or mirgenedb+mirbase (mature-only union)",
     ),
     mirna_species: str | None = typer.Option(
         None,
@@ -1906,7 +1906,7 @@ def offtarget(
     mirna_db: str = typer.Option(
         "mirgenedb",
         "--mirna-db",
-        help="miRNA reference database to use for seed analysis",
+        help="miRNA reference: mirgenedb (default), mirbase, or mirgenedb+mirbase (mature-only union)",
     ),
     mirna_species: str | None = typer.Option(
         None,

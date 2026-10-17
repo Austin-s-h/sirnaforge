@@ -35,7 +35,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // A caller that wants the channel off must supply a value that is non-empty (so elvis leaves
     // it alone) but resolves to zero species after splitting -- e.g. a bare comma.
     //
-    def ch_mirna_species_list = (params.mirna_species ?: 'chicken,pig,rat,mouse,human,macaque')
+    def ch_mirna_species_list = (params.mirna_species ?: 'chicken,rat,mouse,human,macaque')
         .split(',')
         .collect { it.trim() }
         .findAll { it }

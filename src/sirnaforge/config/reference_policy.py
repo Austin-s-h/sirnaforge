@@ -42,11 +42,9 @@ DEFAULT_TRANSCRIPTOME_SOURCE = DEFAULT_TRANSCRIPTOME_SOURCES[0]
 DEFAULT_MIRNA_SOURCE = "mirgenedb"
 DEFAULT_MIRNA_CANONICAL_SPECIES: tuple[str, ...] = (
     "chicken",
-    "pig",
     "rat",
     "mouse",
     "human",
-    "rhesus",
     "macaque",
 )
 

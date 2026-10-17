@@ -126,8 +126,8 @@ PRODUCER_VERSIONS: dict[str, str] = {
     # reader, which copies the first record's id/description onto every record -
     # cached "species-filtered" FASTAs can hold the wrong sequences entirely.
     "mirna": "2.0",
-    # combined_*.fa, derived from the above; same contamination.
-    ARTIFACT_MIRNA_COMBINED: "2.0",
+    # Combined references now deduplicate RNA and DNA representations of the same sequence.
+    ARTIFACT_MIRNA_COMBINED: "2.1",
     # Raw upstream bytes we don't shape, so a version bump never forces
     # re-downloading tens of GB by accident.
     "transcriptomes": LEGACY_PRODUCER_VERSION,

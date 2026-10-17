@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-17
+
+### Mature miRNA reference coverage
+
+- Added `--mirna-db mirgenedb+mirbase` for the mature-sequence union, deduplicated after case and U/T normalization. Both sources are required; combined cache fingerprints include both component references.
+- Extended full miRBase support to every canonical screening species, including rhesus macaque. MirGeneDB remains the default; default screening species are chicken, rat, mouse, human, and rhesus macaque, with pig available explicitly.
+
 - **The asymmetry floor could be loosened but never opened** (#101). `min_asymmetry_score` was bounded
   `ge=0.3` on the model and `min=0.3` on both CLI options, so no caller could set a floor every candidate
   satisfies. The bound was harder to defend than the number it bounds: this gate's own declared definition

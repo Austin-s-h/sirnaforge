@@ -14,8 +14,10 @@ from pathlib import Path
 import pytest
 from Bio import SeqIO
 
+from sirnaforge.config.reference_policy import DEFAULT_MIRNA_CANONICAL_SPECIES
 from sirnaforge.data import mirna_manager
 from sirnaforge.data.mirna_manager import FASTA_PARSE_FORMAT, MiRNADatabaseManager
+from sirnaforge.utils.cli_inputs import resolve_species_inputs
 
 
 @pytest.fixture
@@ -637,3 +639,41 @@ class TestMiRNAManagerSmoke:
             info = manager.cache_info()
             assert isinstance(info, dict)
             assert "cache_directory" in info
+
+
+@pytest.mark.unit
+def test_combined_source_resolves_default_species():
+    """The combined CLI selection supports every default species without pig."""
+    result = resolve_species_inputs(
+        species=",".join(DEFAULT_MIRNA_CANONICAL_SPECIES), mirna_db="mirgenedb+mirbase", mirna_species=None
+    )
+    assert set(result.mirna_species) == {"human", "mouse", "rat", "rhesus", "chicken"}
+    assert "pig" not in DEFAULT_MIRNA_CANONICAL_SPECIES
+    assert MiRNADatabaseManager.get_source_configuration("mirbase", "macaque").species == "rhesus"
+
+
+@pytest.mark.unit
+def test_combined_provider_requires_both_sources_and_deduplicates_rna_dna(manager_with_temp_cache, monkeypatch):
+    """The public combined provider screens the union and never silently loses a source."""
+    manager = manager_with_temp_cache
+    payloads = {
+        "mirgenedb": ">Hsa-Mir-test\nAUGCAUGC\n",
+        "mirbase": ">hsa-shared\nATGCATGC\n>hsa-extra\nCCCCAAAA\n>mmu-other\nGGGGAAAA\n",
+    }
+    monkeypatch.setattr(manager, "_download_available_source", lambda name, _source: payloads[name])
+    combined = manager.get_database("mirgenedb+mirbase", "human")
+    records = list(SeqIO.parse(combined, FASTA_PARSE_FORMAT))
+    assert len(records) == 2
+    assert {str(record.seq).upper().replace("U", "T") for record in records} == {"ATGCATGC", "CCCCAAAA"}
+    assert all("source:" in record.description for record in records)
+    payloads["mirbase"] = None
+    assert manager.get_database("mirgenedb+mirbase", "human", force_refresh=True) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("species,prefix", [("rhesus", "mml"), ("chicken", "gga"), ("pig", "ssc")])
+def test_expanded_mirbase_species_filter(manager_with_temp_cache, species, prefix):
+    """New source registrations retain only records belonging to their organism."""
+    payload = f">{prefix}-test\nACGUACGU\n>hsa-other\nCCCCAAAA\n"
+    filtered = manager_with_temp_cache._filter_species_sequences(payload, species)
+    assert [record.id for record in SeqIO.parse(StringIO(filtered), FASTA_PARSE_FORMAT)] == [f"{prefix}-test"]
