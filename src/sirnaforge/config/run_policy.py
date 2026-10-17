@@ -27,13 +27,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, get_args
 
-import tomllib
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from sirnaforge.data.species_registry import normalize_species_name
