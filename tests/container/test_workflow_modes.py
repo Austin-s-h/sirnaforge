@@ -124,7 +124,7 @@ def test_full_workflow_with_gene_search(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
-        timeout=600,  # Gene search + design takes longer
+        timeout=1800,  # Allow 30 minutes for live gene retrieval, design, and screening.
         check=False,
     )
 
@@ -186,7 +186,7 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
-        timeout=600,  # Transcriptome download + index build
+        timeout=1800,  # Allow 30 minutes for a cold reference download, indexing, and screening.
         check=False,
     )
 
