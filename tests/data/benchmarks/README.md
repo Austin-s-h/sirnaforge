@@ -1,5 +1,10 @@
 # Runnable benchmark inputs
 
+See the [public benchmark guide](../../../docs/public_benchmarks.md) for the consolidated
+source catalog, interpretation limits, download instructions, native workflow runbook, and
+historical scoring findings. Large downloads and experiment outputs are disposable local data;
+checked-in fixtures remain available for offline regression tests.
+
 The original synthetic FASTA adapter is retained for design-only smoke tests, but it must not be
 used as the target input to the full biological workflow. OligoGym's `fasta` field contains two
 oligo strands, not an mRNA transcript; unequal strand lengths encode overhangs or asymmetric

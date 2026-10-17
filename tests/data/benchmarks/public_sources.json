@@ -1,0 +1,540 @@
+{
+  "description": "Public review downloads; hashes describe local copies reviewed on 2026-09-13; pinned source revisions resolved on 2026-10-17. The fetcher verifies each file before installation.",
+  "revisions": {
+    "oligogym": "029279fabfe9bd2a80da62c0270e427b43cf7066",
+    "aso_atlas_2": "b947db330a3bf1e194ac190d0f188f7693660852",
+    "txbench_oligo_discovery": "2ca404140b322f96713f140b275e99a02a038222"
+  },
+  "files": [
+    {
+      "path": "oligogym/README.md",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/README.md",
+      "sha256": "82394563a3179ca4d204b75e1087294a6ed9748bbaa179aa7bfba3a504c4ff96",
+      "size_bytes": 5854
+    },
+    {
+      "path": "oligogym/alharbi_2020_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/alharbi_2020_1.csv.gz",
+      "sha256": "7d8f4c22925a9664f4b972259dec38d03958cb97a3f6e1faf22fd524ef0c5b22",
+      "size_bytes": 11164
+    },
+    {
+      "path": "oligogym/alharbi_2020_2.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/alharbi_2020_2.csv.gz",
+      "sha256": "1639222a05b39b6cecc123d6eedf85f388a8b369cee6d8fc9350a23d87125934",
+      "size_bytes": 11465
+    },
+    {
+      "path": "oligogym/hagedorn_2022_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/hagedorn_2022_1.csv.gz",
+      "sha256": "c7d4268c7f57ec707e8c8561ce9da0c0b7eefbb3c1c6463965874ce49d4ba6dc",
+      "size_bytes": 101688
+    },
+    {
+      "path": "oligogym/hwang_2024_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/hwang_2024_1.csv.gz",
+      "sha256": "9508beacae39f58b33a87cec0837ef6029102b82497782b83eb734dbcf4bfc79",
+      "size_bytes": 1646123
+    },
+    {
+      "path": "oligogym/ichihara_2007_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/ichihara_2007_1.csv.gz",
+      "sha256": "737f8e4b8d908f9663f8cc84a96c52945891d9d201f7e2de53e3e6f784ee568d",
+      "size_bytes": 213655
+    },
+    {
+      "path": "oligogym/ichihara_2007_2.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/ichihara_2007_2.csv.gz",
+      "sha256": "8e1eb1436869150888202d3d4eb745fc309517932e766f2eda7110230f43518c",
+      "size_bytes": 38933
+    },
+    {
+      "path": "oligogym/knott_2014_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/knott_2014_1.csv.gz",
+      "sha256": "a3849a9af2b634d90d160a2e2829589b25e41ad25e5b54dbcd6b72fefab0f89e",
+      "size_bytes": 15909520
+    },
+    {
+      "path": "oligogym/martinelli_2023_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/martinelli_2023_1.csv.gz",
+      "sha256": "322e589a1372162ff15062bd93077f1279f788d5bd9f41c0e4fe82a94d551d9e",
+      "size_bytes": 93154
+    },
+    {
+      "path": "oligogym/mcquisten_2007_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/mcquisten_2007_1.csv.gz",
+      "sha256": "e6bd0de1f01552d4a4fbc018cba6f73c73961e372e10d089cbabee2a8bc73896",
+      "size_bytes": 175208
+    },
+    {
+      "path": "oligogym/metadata.csv",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/metadata.csv",
+      "sha256": "a52b4839c528216eef4a98cce66a7dd52c473d4ef5b12df83e95f705507abc9a",
+      "size_bytes": 5926
+    },
+    {
+      "path": "oligogym/moe_neurotox_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/moe_neurotox_1.csv.gz",
+      "sha256": "edc615a6642656e0faeef478711b4453376da8981744bedfa60544ff124a9f50",
+      "size_bytes": 115842
+    },
+    {
+      "path": "oligogym/papargyri_2020_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/papargyri_2020_1.csv.gz",
+      "sha256": "e2a131f8a10f84d1402ee2fa9f998b6c82ba26032d38efee9a71c3082b27d1bb",
+      "size_bytes": 33903
+    },
+    {
+      "path": "oligogym/shmushkovich_2018_1.csv.gz",
+      "url": "https://huggingface.co/datasets/CollageBio/oligogym/resolve/029279fabfe9bd2a80da62c0270e427b43cf7066/shmushkovich_2018_1.csv.gz",
+      "sha256": "89c213c372fe50d5296e8733b2bb3e1ecca24560ed524226309a0989018dd873",
+      "size_bytes": 33961
+    },
+    {
+      "path": "aso_atlas_2/README.md",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/README.md",
+      "sha256": "78d54cdea5c64ee5e0f8a9def53e8cd0685df22f65884e53772df73fc9a14eaf",
+      "size_bytes": 12331
+    },
+    {
+      "path": "aso_atlas_2/croissant.json",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/croissant.json",
+      "sha256": "599395f0a4fa42798b06c688c88897a566d8cd1c4d55a594ee8243be41b8c7a2",
+      "size_bytes": 39371
+    },
+    {
+      "path": "aso_atlas_2/dose_response.parquet",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/dose_response.parquet",
+      "sha256": "0492e31f172951d0210e2aaa510dcdd7574075568fc248f46b81c4a0aa40d002",
+      "size_bytes": 2363540
+    },
+    {
+      "path": "aso_atlas_2/folds/README.md",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/README.md",
+      "sha256": "e0daebcf06300b1dbd89396e387e0ee5b5ce01d8e26ae11a8955e4ad8c04946d",
+      "size_bytes": 1768
+    },
+    {
+      "path": "aso_atlas_2/folds/in_vitro_inhibition_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/in_vitro_inhibition_folds.csv.gz",
+      "sha256": "ef8ba96295980c4083fd98637980e7143e23e23d57f6ee931240b40d9c71adc2",
+      "size_bytes": 1368204
+    },
+    {
+      "path": "aso_atlas_2/folds/mouse_hepatic_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/mouse_hepatic_folds.csv.gz",
+      "sha256": "ba2110b24cd2b97925ababeff74f1f5ab2446b3308f90d594286179040406310",
+      "size_bytes": 21228
+    },
+    {
+      "path": "aso_atlas_2/folds/mouse_neuro_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/mouse_neuro_folds.csv.gz",
+      "sha256": "875e092307e48379b69896e63158ac9719e7367b90e59ce941becdcff1c186dd",
+      "size_bytes": 31084
+    },
+    {
+      "path": "aso_atlas_2/folds/oligoai_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/oligoai_folds.csv.gz",
+      "sha256": "b036d1d26f5454f1dd9f565a2792b4d41f785cd2221f0fe8a3ebc71f1c6d3eed",
+      "size_bytes": 1148007
+    },
+    {
+      "path": "aso_atlas_2/folds/potency_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/potency_folds.csv.gz",
+      "sha256": "9b8ed5697312d31359d6871808724f3865f596119c65af687924451e468160d9",
+      "size_bytes": 92387
+    },
+    {
+      "path": "aso_atlas_2/folds/rat_hepatic_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/rat_hepatic_folds.csv.gz",
+      "sha256": "845f39141a51317f26a9380feeb4355a2c510937f266547b3581447a3828aeb9",
+      "size_bytes": 6513
+    },
+    {
+      "path": "aso_atlas_2/folds/rat_neuro_folds.csv.gz",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/folds/rat_neuro_folds.csv.gz",
+      "sha256": "c385052dad804a40b0455b6c2378e87b32a1cbbcedb1c625f43513ef6b754c73",
+      "size_bytes": 20740
+    },
+    {
+      "path": "aso_atlas_2/hepatotoxicity.parquet",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/hepatotoxicity.parquet",
+      "sha256": "16c30ef6882d0a2e018dbc997b42bd9de411d0a1f9fd8872a5e486c618be3c34",
+      "size_bytes": 182535
+    },
+    {
+      "path": "aso_atlas_2/in_vitro_inhibition.parquet",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/in_vitro_inhibition.parquet",
+      "sha256": "447426f598d3c1763efd0eb31786cc8fdf3daecbcf594c5aa96a95964c367e7f",
+      "size_bytes": 9024462
+    },
+    {
+      "path": "aso_atlas_2/neurotoxicity.parquet",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/neurotoxicity.parquet",
+      "sha256": "62b40fc65031a286f54419f7ea27a1840db0418e638dbc68c7234394fb982ca8",
+      "size_bytes": 197775
+    },
+    {
+      "path": "aso_atlas_2/release_manifest.json",
+      "url": "https://huggingface.co/datasets/barneyhill/aso-atlas-2/resolve/b947db330a3bf1e194ac190d0f188f7693660852/release_manifest.json",
+      "sha256": "1cde1282c404e5326b10403623999c16093e65cd093726d9ff5ce3eaaa764e66",
+      "size_bytes": 4888
+    },
+    {
+      "path": "txbench_oligo_discovery/LICENSE",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/LICENSE",
+      "sha256": "50b0cebe913b20a035c7862c084d78868e2af5fcbdee78e87a2be1d5631b19a6",
+      "size_bytes": 271
+    },
+    {
+      "path": "txbench_oligo_discovery/README.md",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/README.md",
+      "sha256": "5417dc6674201755829ce69c2a9e0e0f17453a2c45a5cc7dbfccfac96ed56cd9",
+      "size_bytes": 765
+    },
+    {
+      "path": "txbench_oligo_discovery/evals/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/eval.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/evals/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/eval.json",
+      "sha256": "ab3fec7f1d4c961aff892e271abe0bcf94911d0eee5c1f172d2756e48a032c60",
+      "size_bytes": 1593
+    },
+    {
+      "path": "txbench_oligo_discovery/evals/eval_0012_s8_hepatic_biomarker_panel/eval.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/evals/eval_0012_s8_hepatic_biomarker_panel/eval.json",
+      "sha256": "3657b1ba3b49ffd94a3c037fdc07361465c6642eb10dece3e5bbbe32e7858cf8",
+      "size_bytes": 2376
+    },
+    {
+      "path": "txbench_oligo_discovery/evals/eval_0056_prion_s8_pk/eval.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/evals/eval_0056_prion_s8_pk/eval.json",
+      "sha256": "6a4adfd0e6e383bae4835114362d32c3156b581767e1b732664300494b148e03",
+      "size_bytes": 2384
+    },
+    {
+      "path": "txbench_oligo_discovery/evals/manifest.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/evals/manifest.json",
+      "sha256": "a61ee7587681622e6f4bb6951d28f4f90dec7b631831856afde18206dca71340",
+      "size_bytes": 1586
+    },
+    {
+      "path": "txbench_oligo_discovery/evals/meta_ev0570_depletion_depth_sets_the_loss/eval.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/evals/meta_ev0570_depletion_depth_sets_the_loss/eval.json",
+      "sha256": "afb58a720a00ca83082029180ddb7d16ab5081fd818f51b92882f938242d08eb",
+      "size_bytes": 1608
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/.gitignore",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/.gitignore",
+      "sha256": "b33eb9e624a0dcec90a774607039d6b837fac9ef0f27dc5d109bb25922c2e68b",
+      "size_bytes": 95
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/README.md",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/README.md",
+      "sha256": "b033e5b4df1220c1a61cf643a2988fd6a3ef91cb9968c297347f1f1aa8f43db9",
+      "size_bytes": 2620
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-assaytype.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-assaytype.png",
+      "sha256": "8d83085983d7ab50d3a653dc1f0ecea3ed25e486875909116664424c41e86cd5",
+      "size_bytes": 35605
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-complexity.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-complexity.png",
+      "sha256": "71a78289a013e52a556d60ffb225ae8b6b151ff5b71ba5a125397dcc8f40deb0",
+      "size_bytes": 47323
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-disease.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-disease.png",
+      "sha256": "2dde6b782e616ec395e8ebe95b22584fb545661fe42ab9056d6bd7bb0eea025a",
+      "size_bytes": 58254
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-failuremode-pr.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-failuremode-pr.png",
+      "sha256": "85a72112a7e096afc2ec7d8bfd725edc86302f1b52761be486f77417d21a1aa1",
+      "size_bytes": 58777
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-failuremode.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-failuremode.png",
+      "sha256": "087774e6f302691cee6aee2f8a37bab6063c1daf89d9bd5831d7bdd38160c605",
+      "size_bytes": 53348
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-fig3-passrate.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-fig3-passrate.png",
+      "sha256": "7f305969e1884b5c2f2f308a5d257585ab2d7ff8ac7e230c175d899bca1428d4",
+      "size_bytes": 178926
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-fig3-repeat.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-fig3-repeat.png",
+      "sha256": "c053248b1580528aba2b393dd5bc132f7eea78a79e5b9265341cd44814b661b1",
+      "size_bytes": 181584
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-full-assay.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-full-assay.png",
+      "sha256": "e97907b94da39a43bf25521f66a89067ba33746689902af0bf4f1dcf16c84cac",
+      "size_bytes": 219885
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-full-cost.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-full-cost.png",
+      "sha256": "ca338e9acdf250d914bafc22e50d796b4c0eec7c068c46d011b05c7ce5cd4ce1",
+      "size_bytes": 46789
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-full-harnessdelta.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-full-harnessdelta.png",
+      "sha256": "9c48505ccb3f1daee728370711c248a030f8fe59c929ca221b281b5ea48cf830",
+      "size_bytes": 92079
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-full-stage.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-full-stage.png",
+      "sha256": "ee502e179e5660183fad9cae774f2ebaee0941075c6d75b41b2e30481f994bea",
+      "size_bytes": 171318
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-full-tokens.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-full-tokens.png",
+      "sha256": "c5f0bde3a52113383ef067008f3e37f7a8480be4f66300caf21c4707832b1d54",
+      "size_bytes": 38922
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-genetarget.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-genetarget.png",
+      "sha256": "df897c1311f9f9a361fe286d390460927e01337524d33ca5853d1cd7781fb156",
+      "size_bytes": 48448
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-gradertype.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-gradertype.png",
+      "sha256": "dc099bcbd78e6bc5b6d66ceb2248bccc7c19f78406d0f51a3be08c56df1a7108",
+      "size_bytes": 34993
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-h2h-1.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-h2h-1.png",
+      "sha256": "b7c347d96d017047b5178a66591ac28bd5e5b567f95fe25b743016e51b1739f9",
+      "size_bytes": 60313
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-h2h-2.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-h2h-2.png",
+      "sha256": "0af4747cde079994eceb2130535cd177e563054a64d49c3967d29b0e74b5da1e",
+      "size_bytes": 55444
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-h2h-3.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-h2h-3.png",
+      "sha256": "fe021a01c08d817d4fd4672ffbd6c89c65c657daf7cc6bc15f675bdd3949e5c7",
+      "size_bytes": 57884
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-kjd.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-kjd.png",
+      "sha256": "0efea7ed9603a9445c2775910a74826224724955299f360b04f5712d38203b3f",
+      "size_bytes": 56546
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-lens-pipeline.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-lens-pipeline.png",
+      "sha256": "9ec09c6d3735f3a089ebefad47dcc842ca934f0fea8588e8e0a2afcbcf7f4919",
+      "size_bytes": 99756
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-lens.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-lens.png",
+      "sha256": "52fd6a0734835b7feb5990e6092b0bdce04a408f27dd9bfbe5a9dfa0f8cd53f6",
+      "size_bytes": 39522
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-sim-matrix.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-sim-matrix.png",
+      "sha256": "660edffddea87f92f32d17436d7685ba324d5d26c0ea1af5cf6a4d06f73bbef1",
+      "size_bytes": 160212
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-sim-mds.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-sim-mds.png",
+      "sha256": "67671b3b6ec29d2a84720dec50f7b55ef17e88112063caf1d18702a3b01d705a",
+      "size_bytes": 73676
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-tasktype.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-tasktype.png",
+      "sha256": "0e8a20dc2910646350a03ac35096426a8b3b0e453e5c62f2ec5e600b0e1be6b7",
+      "size_bytes": 31405
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-taxonomy.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-taxonomy.png",
+      "sha256": "f84f3b99bf0fa8b699df044bdeae1d7e9c22633fece1f961e47c4b732415d1b8",
+      "size_bytes": 69233
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-timehorizon.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-timehorizon.png",
+      "sha256": "9ef526d5c97679959b1a55732700e610ee5ca8973ecf28bb2b05e138fb2569b7",
+      "size_bytes": 21851
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/figures/chart-tissue.png",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/figures/chart-tissue.png",
+      "sha256": "97048106cd5c96864ce3bcc96364300015f300ff8928df9afb22aac696588ef4",
+      "size_bytes": 60184
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/main.pdf",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/main.pdf",
+      "sha256": "87305ad9fde0afd0ef1eee51be13c1d32dd41d6faee5ece29bb8005b77662d1e",
+      "size_bytes": 1941235
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/main.tex",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/main.tex",
+      "sha256": "49d7aa6e77401f4d3537281d2921bbd4df4f7423c2a7e5e42da3419be20bab1d",
+      "size_bytes": 49996
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/scripts/app-script.js",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/scripts/app-script.js",
+      "sha256": "398c22d73531ed2ba6c3795cb12dca11c7926753caa349549044d7b4c35319a4",
+      "size_bytes": 142182
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/scripts/generate_tex.py",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/scripts/generate_tex.py",
+      "sha256": "08ac9b016d5484316564c7d5c17a9cbd7b59f3d0b13ecb8fe4ab57d1d1657dee",
+      "size_bytes": 10934,
+      "note": "Upstream bytes retained; local review copy had formatting changes only."
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/scripts/html2latex.py",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/scripts/html2latex.py",
+      "sha256": "c7ec4a4896f3d19253bacfacafd28331c3612e8b3e3fcf6f6fdc687c1b7eff24",
+      "size_bytes": 2885,
+      "note": "Upstream bytes retained; local review copy had formatting changes only."
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/scripts/render.js",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/scripts/render.js",
+      "sha256": "f88acf8cc390c08fa339a880a8c2423f82e0732da36a8c5c0acdaea9260e7c6c",
+      "size_bytes": 5464
+    },
+    {
+      "path": "txbench_oligo_discovery/paper/scripts/state.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/paper/scripts/state.json",
+      "sha256": "9010d3f8789907b9cdd3f761fd91163d616b26abf8b40cfe72e916700ea2f7ff",
+      "size_bytes": 47397
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/claude-opus-5__claude-code__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/claude-opus-5__claude-code__r1.json",
+      "sha256": "f905dff40e46fece1cfad9994546946423e68e0f3283b866622e779f94e63c8a",
+      "size_bytes": 54446
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/gemini-3.7-flash__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/gemini-3.7-flash__pi__r1.json",
+      "sha256": "d4ec43fd1f572c0546bce7043ce787bd2fcdd5fb0cc684e802dda5f97f304010",
+      "size_bytes": 90872
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/gpt-5.6-sol__openai-codex__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/gpt-5.6-sol__openai-codex__r1.json",
+      "sha256": "796f1198f98d1c4d0aa132f4d0bc1d5c703c8df03a9726f6945b022b18666d01",
+      "size_bytes": 28594
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/grok-4.6__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/burdick2014_s8_aso_hepatotoxicity_sequence_screen_0007/grok-4.6__pi__r1.json",
+      "sha256": "8da9e43f2289a273f49a1320a2660318475fb33d047e886b8a735b623a7b6e02",
+      "size_bytes": 69892
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0012_s8_hepatic_biomarker_panel/claude-opus-5__claude-code__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0012_s8_hepatic_biomarker_panel/claude-opus-5__claude-code__r1.json",
+      "sha256": "b5b86e04455a5eed7aff9163a972dba548849f97a308fae6d34df86b70707fb6",
+      "size_bytes": 142952
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0012_s8_hepatic_biomarker_panel/gemini-3.7-flash__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0012_s8_hepatic_biomarker_panel/gemini-3.7-flash__pi__r1.json",
+      "sha256": "49d9bebc0ea77e777c9625b88f56ad5d8aa04bec6397a2ebe927d54464f89661",
+      "size_bytes": 128250
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0012_s8_hepatic_biomarker_panel/gpt-5.6-sol__openai-codex__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0012_s8_hepatic_biomarker_panel/gpt-5.6-sol__openai-codex__r1.json",
+      "sha256": "66698aeb9496f10055bfe4670e4a138d93371eaddc12450649cb4a2866cb511c",
+      "size_bytes": 42909
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0012_s8_hepatic_biomarker_panel/grok-4.6__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0012_s8_hepatic_biomarker_panel/grok-4.6__pi__r1.json",
+      "sha256": "023274622a8576b8d69be8909013631abf0d3b6e6c2d9cccab803c66fc13ee22",
+      "size_bytes": 80593
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0056_prion_s8_pk/claude-opus-5__claude-code__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0056_prion_s8_pk/claude-opus-5__claude-code__r1.json",
+      "sha256": "818eed9e7eb651cbcd497832b128b82ae08df3d92030ea60933fddb36405c1bf",
+      "size_bytes": 61379
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0056_prion_s8_pk/gemini-3.7-flash__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0056_prion_s8_pk/gemini-3.7-flash__pi__r1.json",
+      "sha256": "0f9df2463efad6130e2353c471b2cd6375efcffed4b0604a37bef75254f5b30e",
+      "size_bytes": 124151
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0056_prion_s8_pk/gpt-5.6-sol__openai-codex__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0056_prion_s8_pk/gpt-5.6-sol__openai-codex__r1.json",
+      "sha256": "72b2389ea88f4a7743ec7bab3300abea6527cd98904c6bb7ea811e49f63bf07e",
+      "size_bytes": 35144
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/eval_0056_prion_s8_pk/grok-4.6__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/eval_0056_prion_s8_pk/grok-4.6__pi__r1.json",
+      "sha256": "39fc39086053a7d05981d9dc3a546402a1aec4a28337c2e8ce6e1cfca397e1ae",
+      "size_bytes": 83037
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/manifest.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/manifest.json",
+      "sha256": "8bbdec90c4fbd4cbeca006137589323d20a04459b4d197b23d323528a4fe8830",
+      "size_bytes": 4839
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/meta_ev0570_depletion_depth_sets_the_loss/claude-opus-5__claude-code__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/meta_ev0570_depletion_depth_sets_the_loss/claude-opus-5__claude-code__r1.json",
+      "sha256": "d6647a21e7e5401decf95a1c008a1f3eebaa9eb70f0deaca7335acd9e120dc61",
+      "size_bytes": 92996
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/meta_ev0570_depletion_depth_sets_the_loss/gemini-3.7-flash__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/meta_ev0570_depletion_depth_sets_the_loss/gemini-3.7-flash__pi__r1.json",
+      "sha256": "bcb0de558acc2d0975a7140ae03063a962b1da86c89632a76e71fc9b8db44c46",
+      "size_bytes": 109958
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/meta_ev0570_depletion_depth_sets_the_loss/gpt-5.6-sol__openai-codex__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/meta_ev0570_depletion_depth_sets_the_loss/gpt-5.6-sol__openai-codex__r1.json",
+      "sha256": "3ad63c11049493dac6ccc05fe1d140c98732a937e5d2e69dbf52c91768a6cbbf",
+      "size_bytes": 29922
+    },
+    {
+      "path": "txbench_oligo_discovery/trajectories/meta_ev0570_depletion_depth_sets_the_loss/grok-4.6__pi__r1.json",
+      "url": "https://raw.githubusercontent.com/latchbio/txbench-oligo-discovery/2ca404140b322f96713f140b275e99a02a038222/trajectories/meta_ev0570_depletion_depth_sets_the_loss/grok-4.6__pi__r1.json",
+      "sha256": "5854302fe953ad5671cd89613ca8dd98be4fcdaf2d4ccd93a972d95792fb1944",
+      "size_bytes": 110480
+    }
+  ]
+}

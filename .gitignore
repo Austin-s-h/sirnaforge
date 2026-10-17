@@ -131,3 +131,12 @@ safety-report.json
 .nextflow/
 .sirnaforge-cache/
 .sirnaforge_cache/
+
+# Public benchmark downloads and regenerable local experiments
+/benchmark_results/
+/workflow_results/
+/tests/data/external/
+/tests/data/benchmarks/oligogym_native_smoke/
+/tests/data/benchmarks/oligogym_native_smoke2/
+/tests/data/benchmarks/oligogym_native_design/references/representative/*.fa
+/docs/_static/oligogym_scoring/

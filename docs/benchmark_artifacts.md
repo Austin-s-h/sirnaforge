@@ -1,5 +1,8 @@
 # Benchmark artifacts
 
+For the consolidated public-source inventory, download recipes, native workflow runbook, and
+historical findings, see the [public benchmark guide](public_benchmarks.md).
+
 The `sirnaforge benchmark` surface turns a published siRNA efficacy panel into a **versioned,
 checksummed artifact** that the existing fixed-length design path consumes with no new execution
 path, and records what every filter did to every measured observation under **two** policies at once.
@@ -78,7 +81,7 @@ members rather than stamping one architecture on the file. Prepare a member pane
 Every placeholder citation is gone, and each one is now something this repository can be made to
 show. What it can show is a DOI per row, a per-dataset row count, and the sequences and labels
 themselves. What it cannot: `tests/data/external/oligogym/*.csv.gz`, the upstream extract every row
-names in `source_file`, is **not** vendored here (verified absent), and no primary-source full text
+names in `source_file`, is **not** vendored here (fetchable with the pinned public-source manifest), and no primary-source full text
 has been read here either.
 
 - **`ichihara`** — the Ichihara _et al._ 2007 _Nucleic Acids Research_ citation already vetted in
@@ -89,9 +92,9 @@ has been read here either.
   dataset name says 2023 while the DOI string says 2024; **this repository holds nothing that
   resolves which is the publication year**, and the descriptor says so rather than picking one.
 - **`shmushkovich`** — the same shape, over `https://doi.org/10.1093/nar/gky745`.
-- **`oligogym`** — this repository holds **no citation for OligoGym itself**: no DOI, no URL, no
-  upstream extract. What it holds is the adapter that wrote the vendored table,
-  `scripts/prepare_oligo_benchmarks.py`, and the three member DOIs above.
+- **`oligogym`** — the [public benchmark guide](public_benchmarks.md) records the upstream
+  collection URLs and pinned download manifest. The adapter and member DOIs identify the
+  retained table; an upstream collection link does not independently verify primary assay values.
 - **`huesken_subset`** — unchanged, and still the only panel with a predeclared
   development/held-out split. Its citation, redistribution, SHA-256 and an explicit statement of what
   it does and does not prove are in
