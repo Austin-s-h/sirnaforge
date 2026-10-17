@@ -53,6 +53,7 @@ from sirnaforge.config import (
     WorkflowInputSpec,
     render_reference_selection_label,
 )
+from sirnaforge.config.reference_policy import ReferenceChoice
 from sirnaforge.config.run_policy import (
     EntryPoint,
     ResolvedRunPolicy,
@@ -72,6 +73,7 @@ from sirnaforge.data.gene_search import (
     search_gene_with_fallback_sync,
     search_multiple_databases_sync,
 )
+from sirnaforge.data.local_annotation import LocalTranscriptModelClient
 from sirnaforge.models.policy import ExitCode, RunMode, RunStatus
 from sirnaforge.models.sirna import (
     DesignMode,
@@ -953,7 +955,9 @@ def search(  # noqa: PLR0912
                 )
             elif fallback:
                 progress.add_task("Searching with fallback...", total=None)
-                results = [search_gene_with_fallback_sync(query=query, include_sequence=not no_sequence)]
+                results = [
+                    search_gene_with_fallback_sync(query=query, include_sequence=not no_sequence, database=db_type)
+                ]
             else:
                 progress.add_task(f"Searching {database}...", total=None)
                 results = [search_gene_sync(query=query, database=db_type, include_sequence=not no_sequence)]
@@ -965,7 +969,7 @@ def search(  # noqa: PLR0912
             console.print(f"❌ [red]No results found for:[/red] {query}")
             for result in results:
                 if result.error:
-                    db_name = result.database.value
+                    db_name = DatabaseType(result.database).value
                     console.print(f"  {db_name}: {result.error}")
             raise typer.Exit(1)
 
@@ -1008,7 +1012,7 @@ def search(  # noqa: PLR0912
                 transcript_count = 0
                 status = f"❌ {result.error}"
 
-            db_name = result.database.value
+            db_name = DatabaseType(result.database).value
             summary_table.add_row(db_name, gene_id, gene_name, str(transcript_count), status)
 
         console.print(summary_table)
@@ -1023,7 +1027,7 @@ def search(  # noqa: PLR0912
             transcript_table.add_column("Canonical", style="magenta")
 
             for transcript in all_transcripts[:10]:  # Show first 10
-                db_name = transcript.database.value
+                db_name = DatabaseType(transcript.database).value
                 transcript_table.add_row(
                     transcript.transcript_id,
                     db_name,
@@ -2681,6 +2685,36 @@ def version() -> None:
 
     except ImportError:
         console.print("❌ [red]Could not determine version[/red]")
+        raise typer.Exit(1)
+
+
+@app_command()
+def annotate(
+    query: list[str] = typer.Argument(..., help="Transcript IDs, gene IDs/symbols, or regions"),
+    provider: str = typer.Option(..., "--provider", help="Local annotation provider: gencode or refseq"),
+    annotation_file: Path = typer.Option(..., "--annotation-file", exists=True, dir_okay=False),
+    assembly: str = typer.Option(..., "--assembly", help="Exact assembly of the local annotation file"),
+    species: str = typer.Option("human", "--species"),
+    regions: bool = typer.Option(False, "--regions", help="Interpret queries as 1-based inclusive chrom:start-end"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write annotations and source checksum as JSON"),
+) -> None:
+    """Resolve transcript structure from local GENCODE or RefSeq GTF/GFF3 files."""
+    try:
+        client = LocalTranscriptModelClient(annotation_file, provider=provider, assembly=assembly, species=species)
+        reference = ReferenceChoice.explicit(assembly, reason="CLI local annotation source")
+        lookup = client.fetch_by_regions if regions else client.fetch_by_ids
+        bundle = asyncio.run(lookup(query, species=species, reference=reference))
+        payload = {"source": client.source_metadata(), **bundle.model_dump(mode="json")}
+        rendered = json.dumps(payload, indent=2) + "\n"
+        if output:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered, encoding="utf-8")
+        else:
+            typer.echo(rendered, nl=False)
+    except (OSError, ValueError) as exc:
+        console.print(f"Annotation failed: {exc}")
+        raise typer.Exit(2) from exc
+    if bundle.unresolved:
         raise typer.Exit(1)
 
 

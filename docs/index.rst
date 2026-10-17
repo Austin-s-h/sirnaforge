@@ -22,6 +22,7 @@ siRNAforge Documentation
    benchmark_artifacts
    zfn_module
    gene_search
+   annotation_providers
    scoring
    zfn_ranking
    ccr5_zfn_benchmark

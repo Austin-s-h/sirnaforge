@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -20,6 +21,7 @@ from sirnaforge.utils.typed_decorators import field_validator_typed
 
 if TYPE_CHECKING:
     from sirnaforge.config.reference_policy import ReferenceChoice
+    from sirnaforge.data.local_annotation import LocalTranscriptModelClient
     from sirnaforge.models.transcript_annotation import TranscriptAnnotationBundle
 
 logger = get_logger(__name__)
@@ -956,34 +958,129 @@ class RefSeqClient(AbstractDatabaseClient):
 class GencodeClient(AbstractDatabaseClient):
     """Client for GENCODE database."""
 
-    def __init__(self, timeout: int = 30):
-        """Initialize GENCODE client."""
+    def __init__(
+        self,
+        timeout: int = 30,
+        *,
+        gtf_path: str | Path | None = None,
+        fasta_path: str | Path | None = None,
+        assembly: str | None = None,
+    ):
+        """Configure human GENCODE files explicitly or through SIRNAFORGE_GENCODE_*."""
         super().__init__(timeout)
-        self.base_url = "https://www.gencodegenes.org"
-        self.version = "44"  # GENCODE version
+        self.gtf_path = gtf_path or os.environ.get("SIRNAFORGE_GENCODE_GTF")
+        self.fasta_path = fasta_path or os.environ.get("SIRNAFORGE_GENCODE_FASTA")
+        self.assembly = assembly or os.environ.get("SIRNAFORGE_GENCODE_ASSEMBLY")
+        self._annotation_client: LocalTranscriptModelClient | None = None
 
     @property
     def database_type(self) -> DatabaseType:
-        """Return the database type this client handles."""
+        """Return the database represented by the local release."""
         return DatabaseType.GENCODE
+
+    def annotation_client(self) -> LocalTranscriptModelClient:
+        """Resolve a local structural annotation client without downloading a release."""
+        from sirnaforge.data.local_annotation import LocalTranscriptModelClient  # noqa: PLC0415 - base/provider cycle
+
+        if not self.gtf_path or not self.assembly:
+            raise DatabaseAccessError(
+                "GENCODE requires SIRNAFORGE_GENCODE_GTF and SIRNAFORGE_GENCODE_ASSEMBLY "
+                "(or explicit gtf_path and assembly arguments)",
+                "GENCODE",
+            )
+        if self._annotation_client is None:
+            self._annotation_client = LocalTranscriptModelClient(
+                self.gtf_path, provider="gencode", species="human", assembly=self.assembly
+            )
+        return self._annotation_client
 
     async def search_gene(
         self,
         query: str,
         include_sequence: bool = True,
     ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
-        """Search for a gene and return gene info and transcripts."""
-        # GENCODE doesn't have a simple REST API like Ensembl
-        # This would typically require parsing GTF/GFF files or using their FTP download
-        # For now, this is a placeholder implementation
-        logger.info(f"GENCODE search for '{query}:{include_sequence}' not implemented")
-        raise DatabaseAccessError("GENCODE search not yet implemented - requires GTF file parsing", "GENCODE")
+        """Find a human gene, symbol, or transcript in a local GENCODE release."""
+        from sirnaforge.config.reference_policy import ReferenceChoice  # noqa: PLC0415 - lazy data models
 
-    async def get_sequence(self, _identifier: str, _sequence_type: SequenceType = SequenceType.CDNA) -> str:
-        """Get sequence for a specific identifier from GENCODE."""
-        # GENCODE sequences are typically accessed via FASTA files
-        # This would require downloading and indexing GENCODE FASTA files
-        raise DatabaseAccessError("GENCODE sequence retrieval not yet implemented", "GENCODE")
+        client = self.annotation_client()
+        bundle = await client.fetch_by_ids(
+            [query], species="human", reference=ReferenceChoice.explicit(client.assembly)
+        )
+        if not bundle.transcripts:
+            raise GeneNotFoundError(query, "GENCODE")
+        models = list(bundle.transcripts.values())
+        if len({model.gene_id for model in models}) != 1:
+            raise DatabaseAccessError(f"Ambiguous GENCODE gene query: {query}; use a versioned gene ID", "GENCODE")
+        sequences = await asyncio.to_thread(self._read_sequences, set(bundle.transcripts)) if include_sequence else {}
+        transcripts = [
+            TranscriptInfo(
+                transcript_id=model.transcript_id,
+                transcript_name=model.transcript_name,
+                is_canonical=model.is_canonical,
+                gene_id=model.gene_id,
+                gene_name=model.symbol,
+                transcript_type=model.biotype,
+                sequence=sequences.get(model.transcript_id),
+                length=len(sequences[model.transcript_id]) if model.transcript_id in sequences else None,
+                database=DatabaseType.GENCODE,
+            )
+            for model in models
+        ]
+        first = models[0]
+        span = first.gene_interval
+        gene = GeneInfo(
+            gene_id=first.gene_id,
+            gene_name=first.symbol,
+            gene_type=first.biotype,
+            chromosome=first.seq_region_name,
+            start=span.start if span else min(m.start for m in models),
+            end=span.end if span else max(m.end for m in models),
+            strand=first.strand,
+            database=DatabaseType.GENCODE,
+            description=f"GENCODE local annotation: {client.base_url}; assembly={client.assembly}",
+        )
+        return gene, transcripts
+
+    def _read_sequences(self, identifiers: set[str]) -> dict[str, str]:
+        from sirnaforge.data.local_annotation import open_annotation  # noqa: PLC0415 - base/provider cycle
+
+        if not self.fasta_path or not Path(self.fasta_path).is_file():
+            raise DatabaseAccessError("GENCODE sequence retrieval requires SIRNAFORGE_GENCODE_FASTA", "GENCODE")
+        # GENCODE transcript FASTA headers use accession.version|gene.version|...
+        # Keep exact versions to prevent mixing transcript sequence and coordinate releases.
+        sequences: dict[str, str] = {}
+        with open_annotation(Path(self.fasta_path)) as handle:
+            identifier = ""
+            chunks: list[str] = []
+            for line in handle:
+                if line.startswith(">"):
+                    if identifier in identifiers:
+                        if identifier in sequences:
+                            raise DatabaseAccessError(f"Duplicate FASTA transcript: {identifier}", "GENCODE")
+                        sequences[identifier] = "".join(chunks)
+                    identifier = line[1:].split()[0].split("|")[0]
+                    chunks = []
+                elif identifier in identifiers:
+                    chunks.append(line.strip().upper())
+            if identifier in identifiers:
+                if identifier in sequences:
+                    raise DatabaseAccessError(f"Duplicate FASTA transcript: {identifier}", "GENCODE")
+                sequences[identifier] = "".join(chunks)
+        missing = identifiers - sequences.keys()
+        if missing:
+            raise DatabaseAccessError(
+                f"GENCODE FASTA lacks exact annotation accessions: {', '.join(sorted(missing))}", "GENCODE"
+            )
+        return sequences
+
+    async def get_sequence(self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA) -> str:
+        """Retrieve exact-version cDNA from the configured transcript FASTA."""
+        if sequence_type != SequenceType.CDNA:
+            raise ValueError("GENCODE transcript FASTA supports cDNA only; CDS/protein retrieval is unavailable")
+        _, transcripts = await self.search_gene(identifier, include_sequence=True)
+        if len(transcripts) != 1:
+            raise ValueError("Sequence retrieval requires a unique transcript accession")
+        return transcripts[0].sequence or ""
 
 
 class SequenceUtils:

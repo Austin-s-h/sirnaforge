@@ -117,9 +117,10 @@ from sirnaforge.core.selection import (
     select,
 )
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
-from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
+from sirnaforge.data.base import AbstractTranscriptAnnotationClient, DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.ensembl_references import ENSEMBL_ASSEMBLIES, infer_species_from_cdna_headers
 from sirnaforge.data.gene_search import GeneSearcher
+from sirnaforge.data.local_annotation import LocalTranscriptModelClient, annotation_client_from_environment
 from sirnaforge.data.orf_analysis import ORFAnalyzer
 from sirnaforge.data.orthology import (
     ENSEMBL_BASE_URL,
@@ -135,7 +136,6 @@ from sirnaforge.data.species_registry import (
     MIRGENEDB_SPECIES_TABLE,
     normalize_species_name,
 )
-from sirnaforge.data.transcript_annotation import EnsemblTranscriptModelClient
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
 from sirnaforge.models.evidence import (
@@ -720,12 +720,9 @@ class SiRNAWorkflow:
         self._guide_to_transcripts: dict[str, frozenset[str]] = {}
         self._repeat_summary: dict[str, Any] = {"status": "not_run"}
 
-        # Optional: Initialize transcript annotation client (not used by default yet)
-        # This can be enabled via environment variable or config flag in the future
-        try:
-            self._annotation_client: EnsemblTranscriptModelClient | None = EnsemblTranscriptModelClient()
-        except Exception:
-            self._annotation_client = None
+        self._annotation_client: AbstractTranscriptAnnotationClient | None = annotation_client_from_environment(
+            self.config.database.value, self._query_species
+        )
         self._dirty_controls_added: int = 0
         # The payload and report path step 6 registered with Quilt, kept so the registration can be
         # re-issued once logs/workflow_summary.json exists. None until a report has been written, which
@@ -1055,6 +1052,8 @@ class SiRNAWorkflow:
             # Quiet transcript validation (no verbose console warnings)
             _ = self.validation.validate_transcripts(transcripts)
 
+            if isinstance(self._annotation_client, LocalTranscriptModelClient):
+                await self._enrich_transcript_annotations(transcripts)
             return transcripts
 
         # Otherwise perform a gene search
@@ -1122,30 +1121,39 @@ class SiRNAWorkflow:
         if not self._annotation_client:
             return
 
-        # Only try to annotate if we have Ensembl transcript IDs
-        transcript_ids = [t.transcript_id for t in transcripts if t.transcript_id.startswith("ENST")]
+        local_client = (
+            self._annotation_client if isinstance(self._annotation_client, LocalTranscriptModelClient) else None
+        )
+        transcript_ids = [t.transcript_id for t in transcripts if local_client or t.transcript_id.startswith("ENST")]
         if not transcript_ids:
             return
 
         try:
             # Use default reference for annotation
-            reference = ReferenceChoice.default("GRCh38", reason="auto-selected for annotation")
+            reference = (
+                ReferenceChoice.explicit(local_client.assembly, reason="configured local annotation")
+                if local_client
+                else ReferenceChoice.default("GRCh38", reason="auto-selected for annotation")
+            )
 
             bundle = await self._annotation_client.fetch_by_ids(
                 ids=transcript_ids[:10],  # Limit to first 10 to avoid excessive API calls
-                species="human",
+                species=self._query_species,
                 reference=reference,
             )
 
             # Store summary for workflow output
             self._annotation_summary = {
                 "enabled": True,
-                "provider": "ensembl_rest",
+                "provider": local_client.provider if local_client else "ensembl_rest",
                 "transcripts_queried": len(transcript_ids[:10]),
                 "transcripts_resolved": bundle.resolved_count,
                 "transcripts_unresolved": bundle.unresolved_count,
                 "reference": reference.to_metadata(),
             }
+
+            if local_client:
+                self._annotation_summary["source"] = local_client.source_metadata()
 
             if bundle.resolved_count > 0:
                 console.print(
@@ -2083,7 +2091,7 @@ class SiRNAWorkflow:
         }
 
     def _annotation_provenance(self) -> dict[str, Any]:
-        """The REST annotation surface, but only as far as a call was actually made.
+        """Annotation provenance, limited to the provider calls this run actually made.
 
         ``EnsemblTranscriptModelClient`` is constructed unconditionally in ``__init__``, so keying this
         block on the client merely *existing* published ``provider: ensembl_rest``, an endpoint and an
@@ -2098,7 +2106,7 @@ class SiRNAWorkflow:
                 "attempted": False,
                 "provider": absent(
                     "annotation_client_not_configured",
-                    "no Ensembl REST annotation client was constructed, so nothing was annotated",
+                    "no transcript annotation client was constructed, so nothing was annotated",
                 ),
                 "endpoint": absent(
                     "annotation_client_not_configured",
@@ -2116,7 +2124,7 @@ class SiRNAWorkflow:
 
         summary = self._annotation_summary
         endpoint = present(
-            client.base_url,
+            getattr(client, "base_url", None),
             "client_configuration",
             "the base URL of the client this run constructed; a URL is not evidence that it was called",
         )
@@ -2124,9 +2132,11 @@ class SiRNAWorkflow:
             "not_probed",
             "this run made no /info/data call, and the endpoint serves whatever release is current",
         )
+        if isinstance(client, LocalTranscriptModelClient):
+            rest_release = absent("not_applicable", "local file annotations do not use Ensembl REST releases")
         if not summary:
             unattempted = (
-                "an Ensembl REST client was constructed, but this run reached no annotation call: nothing was "
+                "an annotation client was constructed, but this run reached no annotation call: nothing was "
                 "annotated and no provider supplied anything"
             )
             return {
@@ -2156,6 +2166,7 @@ class SiRNAWorkflow:
         requested = reference.get("value")
         return {
             "attempted": True,
+            **({"source": summary["source"]} if "source" in summary else {}),
             "provider": present(
                 summary.get("provider"),
                 "annotation_call_record",

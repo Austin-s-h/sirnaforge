@@ -3,7 +3,7 @@
 TL;DR
 -----
 
-- Retrieve transcript sequences (FASTA + metadata) from Ensembl today; RefSeq and GENCODE are planned.
+- Retrieve transcript sequences from Ensembl REST, NCBI RefSeq, or a local GENCODE release.
 - Use `sirnaforge search <QUERY>` from the CLI or the Python API for programmatic use.
 - Output plays nicely with the `sirnaforge design` step and the full `sirnaforge workflow`.
 
@@ -120,15 +120,19 @@ results = asyncio.run(search_genes())
 - **Features**: Gene lookup, transcript retrieval, sequence fetching
 - **Data**: Human genome (homo_sapiens)
 
-### RefSeq 🚧 (Planned)
-- **Base URL**: https://eutils.ncbi.nlm.nih.gov/entrez/eutils
-- **Status**: Placeholder implementation
-- **Features**: Will support NCBI E-utilities integration
+### RefSeq
 
-### GENCODE 🚧 (Planned)
-- **Base URL**: https://www.gencodegenes.org
-- **Status**: Placeholder implementation
-- **Features**: Will support GENCODE release data
+Gene and transcript retrieval uses NCBI E-utilities, independently of Ensembl.
+Structural annotations can use local RefSeq GTF/GFF3 files.
+
+### GENCODE
+
+Gene/symbol/transcript lookup and cDNA retrieval use explicitly configured local GTF and
+transcript FASTA files. No REST service or automatic large download is involved.
+Versions must match exactly between annotations and FASTA records.
+
+See [annotation providers](annotation_providers.md) for setup, assembly validation,
+offline queries, workflow enrichment, and provenance.
 
 ## Data Models
 
