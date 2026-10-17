@@ -172,7 +172,7 @@ test-release-report: ## Generate coverage rollups used for release verification 
 	@uv run coverage report --format=total 2>/dev/null | awk '{printf "      Total Coverage: %.1f%%\n", $$1}' || echo "      (see above)"
 
 test: ## Run all tests (shows what passes/skips/fails)
-	$(PYTEST_V) || true
+	$(PYTEST_V)
 
 #==============================================================================
 # TESTING - SPECIAL CATEGORIES

@@ -8,6 +8,8 @@ evidence shortfall is now ``PROVISIONAL``, not indistinguishable from a fully ev
 one.
 """
 
+import pytest
+
 from sirnaforge.core.selection import (
     CandidateView,
     SelectionInputs,
@@ -23,6 +25,22 @@ from sirnaforge.models.policy import (
     UnknownEvidenceAction,
 )
 from sirnaforge.models.sirna import SelectionState
+
+
+def test_default_design_input_shortfalls_are_empty_and_immutable() -> None:
+    """Omitting shortfalls works on Python 3.11+ and retains a read-only default."""
+    inputs = SelectionInputs(
+        run_mode=None,
+        requirements=None,
+        completed_pairs=None,
+        query_species="human",
+        filter_channels={},
+        repeat_rejects=False,
+        top_n=None,
+    )
+    assert dict(inputs.design_input_shortfalls) == {}
+    with pytest.raises(TypeError):
+        inputs.design_input_shortfalls["transcript"] = "failed"
 
 
 def _make_view(

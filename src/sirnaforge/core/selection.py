@@ -15,7 +15,7 @@ values in, mutates nothing. Takes ``completed_pairs`` rather than reading a ``Sc
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
@@ -86,7 +86,7 @@ class SelectionInputs:
     filter_channels: Mapping[str, frozenset[ScreeningChannel]]
     repeat_rejects: bool
     top_n: int | None
-    design_input_shortfalls: Mapping[str, str] = MappingProxyType({})
+    design_input_shortfalls: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True, slots=True)

@@ -170,29 +170,45 @@ class TestMiRNADatabaseManager:
         assert result["files_deleted"] > 0
         assert not test_file.exists()  # File should be deleted
 
+    @pytest.mark.unit
+    def test_high_confidence_download_reports_retired_source(self, manager_with_temp_cache, monkeypatch, caplog):
+        """Do not replace an unavailable high-confidence reference with unfiltered sequences."""
+
+        def unexpected_download(*_args, **_kwargs):
+            pytest.fail("retired high-confidence source must not be downloaded")
+
+        monkeypatch.setattr(MiRNADatabaseManager, "_download_file", unexpected_download)
+        assert manager_with_temp_cache.get_database("mirbase_high_conf", "human") is None
+        assert "no longer distributes" in caplog.text
+        assert manager_with_temp_cache.metadata == {}
+
     @pytest.mark.slow
     @pytest.mark.integration
     @pytest.mark.requires_network
-    def test_download_mirbase_high_conf(self, manager_with_temp_cache):
-        """A real miRBase download yields a non-empty FASTA of human sequences.
-
-        `requires_network` is what makes this test mean something. `integration` promotes it to the
-        release tier (`tests/conftest.py`) but carries no capability gate, so without the network
-        marker the probe could not reach it: on a host with no verified TLS route it spent 108s
-        failing to reach mirbase.org and then passed anyway, because every assertion sat inside
-        `if db_file:`. Two of these were 73% of `make test-release-host`'s runtime and asserted
-        nothing. The assertions are now unconditional -- once the probe says the network works, a
-        source this repository declares failing to download is a result, not a reason to shrug.
-        """
-        db_file = manager_with_temp_cache.get_database("mirbase_high_conf", "human")
-
-        assert db_file is not None, "mirbase_high_conf/human returned no file on a verified network"
+    def test_download_mirbase_mature(self, manager_with_temp_cache):
+        """A supported miRBase download yields a non-empty human FASTA."""
+        db_file = manager_with_temp_cache.get_database("mirbase", "human")
+        assert db_file is not None, "mirbase/human returned no file on a verified network"
         assert db_file.exists()
-        assert db_file.stat().st_size > 0
-
         content = db_file.read_text()
         assert content.startswith(">"), "downloaded database is not FASTA"
-        assert content.count(">") > 0
+        records = list(SeqIO.parse(StringIO(content), FASTA_PARSE_FORMAT))
+        assert records
+        assert all(record.id.startswith("hsa-") for record in records)
+
+    @pytest.mark.unit
+    def test_high_confidence_source_reuses_valid_legacy_cache(self, manager_with_temp_cache, monkeypatch):
+        """Retiring downloads must not prevent use of an existing validated confidence subset."""
+        source = manager_with_temp_cache.SOURCES["mirbase_high_conf"]["human"]
+        cache_file = manager_with_temp_cache.cache_dir / f"{source.cache_key()}.fa"
+        cache_file.write_text(">hsa-test\nACGUACGU\n")
+        monkeypatch.setattr(manager_with_temp_cache, "_is_cache_valid", lambda _key: True)
+
+        def unexpected_download(*_args, **_kwargs):
+            pytest.fail("a valid cached reference must not be downloaded")
+
+        monkeypatch.setattr(manager_with_temp_cache, "_download_file", unexpected_download)
+        assert manager_with_temp_cache.get_database("mirbase_high_conf", "human") == cache_file
 
     @pytest.mark.unit
     def test_get_combined_database_empty(self, manager_with_temp_cache, monkeypatch, caplog):
@@ -225,14 +241,10 @@ class TestMiRNADatabaseManager:
     def test_get_combined_database_downloads_and_merges_sources(self, manager_with_temp_cache):
         """Two real sources combine into one FASTA carrying human sequences.
 
-        Renamed from `test_get_combined_database_with_mock_files`, which mocked nothing: it
-        downloads. Same defect as `test_download_mirbase_high_conf` above -- `integration` with no
-        `requires_network`, and every assertion inside `if result:`, so a dead network made it a
-        108s no-op that reported PASSED. `test_get_combined_database_empty` is the unit-tier test
-        that covers the unreachable-source path with `_download_file` stubbed.
+        Both supported sources must download and produce a combined human FASTA.
         """
         result = manager_with_temp_cache.get_combined_database(
-            sources=["mirbase_high_conf", "mirgenedb"], species="human", output_name="test_combined.fa"
+            sources=["mirbase", "mirgenedb"], species="human", output_name="test_combined.fa"
         )
 
         assert result is not None, "combining two declared sources returned nothing on a verified network"

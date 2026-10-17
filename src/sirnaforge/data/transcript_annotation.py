@@ -295,11 +295,19 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
                 )
             except DatabaseAccessError as e:
                 logger.debug(f"Gene metadata lookup failed for {chunk} ({e})")
-                continue
+                payload = None
 
             for gene_id, data in (payload or {}).items():
                 if isinstance(data, Mapping):
                     metadata[gene_id] = self._parse_gene_metadata(data)
+
+        # A failed or partial batch must not leave resolvable parent genes unqueried.
+        for gene_id in gene_ids:
+            if gene_id not in metadata:
+                try:
+                    metadata[gene_id] = await self._fetch_gene_metadata(gene_id, species, session)
+                except (DatabaseAccessError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning("Failed to fetch parent gene %s: %s", gene_id, exc)
 
         for annotation in needing:
             symbol, interval = metadata.get(annotation.gene_id or "", (None, None))

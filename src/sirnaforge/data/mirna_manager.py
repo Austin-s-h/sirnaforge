@@ -84,7 +84,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         "mirbase": {
             "human": MiRNASource(
                 name="mirbase_mature",
-                url="https://www.mirbase.org/download/CURRENT/mature.fa",
+                url="https://www.mirbase.org/download/mature.fa",
                 species="human",
                 format="fasta",
                 compressed=False,
@@ -92,7 +92,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ),
             "mouse": MiRNASource(
                 name="mirbase_mature",
-                url="https://www.mirbase.org/download/CURRENT/mature.fa",
+                url="https://www.mirbase.org/download/mature.fa",
                 species="mouse",
                 format="fasta",
                 compressed=False,
@@ -100,7 +100,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ),
             "rat": MiRNASource(
                 name="mirbase_mature",
-                url="https://www.mirbase.org/download/CURRENT/mature.fa",
+                url="https://www.mirbase.org/download/mature.fa",
                 species="rat",
                 format="fasta",
                 compressed=False,
@@ -136,7 +136,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         "mirbase_hairpin": {
             "human": MiRNASource(
                 name="mirbase_hairpin",
-                url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
+                url="https://www.mirbase.org/download/hairpin.fa",
                 species="human",
                 format="fasta",
                 compressed=False,
@@ -144,7 +144,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ),
             "mouse": MiRNASource(
                 name="mirbase_hairpin",
-                url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
+                url="https://www.mirbase.org/download/hairpin.fa",
                 species="mouse",
                 format="fasta",
                 compressed=False,
@@ -152,7 +152,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ),
             "rat": MiRNASource(
                 name="mirbase_hairpin",
-                url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
+                url="https://www.mirbase.org/download/hairpin.fa",
                 species="rat",
                 format="fasta",
                 compressed=False,
@@ -443,6 +443,17 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         logger.info(f"Filtered to {filtered_count} {species} sequences")
         return output_handle.getvalue().strip()
 
+    def _download_available_source(self, source_name: str, source: MiRNASource) -> str | None:
+        """Download supported references without substituting for a retired confidence subset."""
+        if source_name == "mirbase_high_conf":
+            logger.error(
+                "miRBase no longer distributes the configured high-confidence FASTA. "
+                "An existing valid cache can be reused; otherwise choose mirbase (all mature "
+                "sequences), mirgenedb, or supply a reference FASTA explicitly."
+            )
+            return None
+        return self._download_file(source)
+
     def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
         """Get miRNA database, downloading and filtering if needed.
 
@@ -484,7 +495,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         # Download and process
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
 
-        content: str | None = self._download_file(source)
+        content = self._download_available_source(source_name, source)
         failure = False
 
         if content is None:

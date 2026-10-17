@@ -1,5 +1,8 @@
 # Public benchmark catalog and regeneration guide
 
+> **ZFN is EXPERIMENTAL** and requires independent validation before use in decisions.
+> Known defects are tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82).
+
 This is the entry point for public benchmarking in siRNAforge. Keep provenance, curated extracts,
 regression fixtures, scripts, and compact historical findings in Git. Fetch upstream downloads and
 regenerate large references, candidate tables, reports, and figures locally.
@@ -17,8 +20,8 @@ regenerate large references, candidate tables, reports, and figures locally.
 | TxBench-Oligo Discovery | Pinned download recipe | Public prompts, trajectories, paper, and taxonomy; underlying data, graders, and most evaluations withheld. |
 
 Detailed contracts and attribution remain in the [artifact guide](benchmark_artifacts.md),
-[ML-review README](../tests/data/benchmarks/ml_reviews/README.md),
-[Huesken README](../tests/unit/data/README.md), and [CCR5 guide](ccr5_zfn_benchmark.md).
+[ML-review README](https://github.com/Austin-s-h/sirnaforge/blob/main/tests/data/benchmarks/ml_reviews/README.md),
+[Huesken README](https://github.com/Austin-s-h/sirnaforge/blob/main/tests/unit/data/README.md), and [CCR5 guide](ccr5_zfn_benchmark.md).
 Preserve the curated ML-review source extracts: upstream extraction scripts are not all vendored.
 Checked-in fixtures stay in Git so tests work offline.
 

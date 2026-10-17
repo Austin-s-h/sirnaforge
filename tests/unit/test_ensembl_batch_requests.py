@@ -223,3 +223,52 @@ async def test_fetch_by_ids_resolves_annotations_and_symbols_in_two_posts():
     assert bundle.unresolved_count == 0
     assert {a.symbol for a in bundle.transcripts.values()} == {"TP53"}
     assert bundle.transcripts["ENST1"].gene_interval is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch_status", [200, 403])
+async def test_missing_gene_batch_metadata_falls_back_to_one_get_per_parent(batch_status: int):
+    """Partial or failed gene batches must still resolve shared parent symbols and coordinates."""
+    transcripts = {
+        identifier: {
+            "id": identifier,
+            "Parent": "ENSG1",
+            "biotype": "protein_coding",
+            "seq_region_name": "17",
+            "start": 100,
+            "end": 200,
+            "strand": -1,
+        }
+        for identifier in ["ENST1", "ENST2"]
+    }
+    parent = {
+        "id": "ENSG1",
+        "display_name": "TP53",
+        "seq_region_name": "17",
+        "start": 90,
+        "end": 400,
+        "strand": -1,
+    }
+
+    def handler(method: str, url: str) -> _FakeResponse:
+        if method == "POST":
+            return (
+                _FakeResponse(200, payload=transcripts)
+                if "expand=1" in url
+                else _FakeResponse(batch_status, payload={})
+            )
+        assert "/lookup/id/ENSG1?" in url
+        return _FakeResponse(200, payload=parent)
+
+    session = _FakeSession(handler)
+    with _patch_session(session):
+        bundle = await EnsemblTranscriptModelClient().fetch_by_ids(
+            ["ENST1", "ENST2"],
+            species="human",
+            reference=ReferenceChoice.explicit("GRCh38", reason="test"),
+        )
+    assert bundle.resolved_count == 2
+    assert {annotation.symbol for annotation in bundle.transcripts.values()} == {"TP53"}
+    assert all(annotation.gene_interval is not None for annotation in bundle.transcripts.values())
+    assert len([method for method, _ in session.calls if method == "GET"]) == 1

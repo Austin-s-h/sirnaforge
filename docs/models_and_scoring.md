@@ -904,7 +904,7 @@ class MiRNAHit(BaseModel):
 | ------------------- | --------------------------------- |
 | `mirgenedb`         | High-confidence, manually curated |
 | `mirbase`           | Comprehensive, all mature miRNAs  |
-| `mirbase_high_conf` | miRBase high-confidence subset    |
+| `mirbase_high_conf` | Legacy high-confidence cache only; current upstream download unavailable |
 | `targetscan`        | miRNA family conservation data    |
 
 ---
