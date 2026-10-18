@@ -392,3 +392,27 @@ docker run --rm sirnaforge:latest sirnaforge version
 **📋 For Docker operations and deployment:** See the Docker documentation in the `docker/` directory
 
 This guide focuses on testing workflows across development phases and CI/CD environments.
+
+### Reproduce a small Docker CI runner
+
+```bash
+make docker-test DOCKER_TEST_RESOURCE_FLAGS="--cpus=4 --memory=8g --memory-swap=8g"
+```
+
+The dev-image workflow uses these limits on pushes and relevant pull requests against `dev`.
+Pull requests build and test locally in CI; registry login and image publication run only for
+non-PR events. The CPU quota is deliberate: affinity can still expose
+the host's full CPU set while Nextflow sees only four processors. Reference indexing and alignment
+must complete using automatic resource detection; no test-only `max_cpus` override is supplied.
+
+The container gate exercises variant CLI integration with synthetic cached records and a local
+transcript FASTA, including avoid/target/both modes and repeated coordinate inputs. These fixtures
+validate integration and reporting, not allele-specific biological performance. Live TP53 and rsID
+service checks are retained separately:
+
+```bash
+uv run pytest tests/integration/test_variant_live.py -v
+```
+
+Those tests require working Ensembl/NCBI endpoints, not just a successful TLS handshake. They are
+not part of the image publication gate. Failures include both captured stdout and stderr.

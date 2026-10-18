@@ -21,6 +21,7 @@ Simple Usage Examples:
 import math
 import os
 import subprocess  # nosec B404
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +81,7 @@ class NextflowConfig:
         profile: str = "docker",
         work_dir: Path | None = None,
         nxf_home: Path | None = None,
-        max_cpus: int = 16,
+        max_cpus: int | None = None,
         max_memory: str = "128.GB",
         max_time: str = "240.h",
         **kwargs: Any,
@@ -92,7 +93,7 @@ class NextflowConfig:
             profile: Nextflow profile (docker, singularity, conda, local)
             work_dir: Working directory for Nextflow execution
             nxf_home: Nextflow home cache
-            max_cpus: Maximum CPU cores
+            max_cpus: Maximum CPU cores (defaults to available CPUs, capped at 16)
             max_memory: Maximum memory allocation
             max_time: Maximum execution time
             **kwargs: Additional configuration parameters
@@ -101,10 +102,35 @@ class NextflowConfig:
         self.profile = profile
         self.work_dir = work_dir or Path.cwd() / "nextflow_work"
         self.nxf_home = nxf_home or Path.home() / ".nextflow"
-        self.max_cpus = max_cpus
+        self.max_cpus = self._autodetect_max_cpus() if max_cpus is None else max_cpus
+        if self.max_cpus < 1:
+            raise ValueError("max_cpus must be at least 1")
         self.max_memory = max_memory
         self.max_time = max_time
         self.extra_params = kwargs
+
+    @classmethod
+    def _autodetect_max_cpus(cls) -> int:
+        """Respect CPU affinity and container quotas rather than assuming a 16-core host."""
+        limits = [16, os.cpu_count() or 1]
+        with suppress(AttributeError, OSError):
+            limits.append(len(os.sched_getaffinity(0)))
+
+        # Docker --cpus limits quota without necessarily restricting affinity.
+        try:
+            quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+            if quota != "max" and int(quota) > 0 and int(period) > 0:
+                limits.append(max(1, int(quota) // int(period)))
+        except (OSError, ValueError):
+            pass
+        try:
+            quota_v1 = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+            period_v1 = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+            if quota_v1 > 0 and period_v1 > 0:
+                limits.append(max(1, quota_v1 // period_v1))
+        except (OSError, ValueError):
+            pass
+        return max(1, min(limits))
 
     @classmethod
     def _autodetect_max_memory(cls) -> str | None:
@@ -556,14 +582,14 @@ process {{
         Returns:
             NextflowConfig instance with production settings
         """
-        return cls(
-            docker_image="ghcr.io/austin-s-h/sirnaforge:latest",
-            profile="docker",
-            max_cpus=16,
-            max_memory="128.GB",
-            max_time="240.h",
-            **kwargs,
-        )
+        defaults: dict[str, Any] = {
+            "docker_image": DEFAULT_SIRNAFORGE_DOCKER_IMAGE,
+            "profile": "docker",
+            "max_memory": "128.GB",
+            "max_time": "240.h",
+        }
+        defaults.update(kwargs)
+        return cls(**defaults)
 
     @classmethod
     def auto_configure(cls, **kwargs: Any) -> "NextflowConfig":

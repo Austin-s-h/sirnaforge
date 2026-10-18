@@ -3,6 +3,16 @@ name: 🐳 Docker (dev)
 on:
   push:
     branches: [ dev ]
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'docker/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Makefile'
+      - '.github/workflows/docker-dev.yml'
   workflow_dispatch:
 
 env:
@@ -14,7 +24,7 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build & push dev image
+    name: Build & test image
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -32,6 +42,7 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: 🔐 Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -92,9 +103,10 @@ jobs:
           docker tag "$REGISTRY_IMAGE" sirnaforge:${{ steps.buildargs.outputs.version }}
 
       - name: 🧪 Container suite (Make target)
-        run: make docker-test
+        run: make docker-test DOCKER_TEST_RESOURCE_FLAGS="--cpus=4 --memory=8g --memory-swap=8g"
 
       - name: 🐳 Push Docker image
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -109,6 +121,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: ✅ Summary
+        if: github.event_name != 'pull_request'
         run: |
           echo "## 🐳 Dev Docker Image Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
