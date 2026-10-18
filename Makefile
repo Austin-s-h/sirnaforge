@@ -47,6 +47,7 @@ DOCKER_RUN = docker run --rm $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_
 # container are owned by the host user (avoids root-owned debug artifacts).
 DOCKER_TEST_USER = $(DOCKER_HOST_USER)
 # Optional Docker resource constraints for reproducible small-runner validation.
+DOCKER_TEST_MARKERS ?= runs_in_container and not requires_network
 DOCKER_TEST_RESOURCE_FLAGS ?=
 
 # Pytest command shortcuts
@@ -242,7 +243,7 @@ docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (va
 		"shopt -s nullglob; \
 		pip install --quiet pytest --target /workspace/.pip; \
 		set +e; \
-		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m 'runs_in_container' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
+		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m '$(DOCKER_TEST_MARKERS)' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
 		status=\$$?; \
 		set -e; \
 		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \

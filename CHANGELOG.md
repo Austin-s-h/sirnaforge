@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Explicit production configuration overrides are accepted without duplicate-keyword errors.
 - The container variant gate uses local transcripts and synthetic cached variants; live TP53/rsID
   checks remain in a separate integration suite instead of depending on public endpoint uptime
-  during image publication.
+  during image publication. The default image gate excludes all `requires_network` checks;
+  live container checks remain opt-in through `DOCKER_TEST_MARKERS=runs_in_container`.
 
 ## [0.7.1] - 2026-10-17
 

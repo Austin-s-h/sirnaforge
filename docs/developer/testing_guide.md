@@ -414,5 +414,8 @@ service checks are retained separately:
 uv run pytest tests/integration/test_variant_live.py -v
 ```
 
-Those tests require working Ensembl/NCBI endpoints, not just a successful TLS handshake. They are
-not part of the image publication gate. Failures include both captured stdout and stderr.
+Those tests require working Ensembl/NCBI endpoints, not just a successful TLS handshake. The
+`make docker-test` image gate excludes every `requires_network` test by default, including the
+legacy full-TP53 smoke; its real indexing/alignment coverage uses the chromosome 21 fixture.
+To explicitly include live container checks, run
+`make docker-test DOCKER_TEST_MARKERS=runs_in_container`. Failures include both captured stdout and stderr.
