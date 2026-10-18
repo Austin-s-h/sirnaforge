@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- RefSeq gene lookup reads nested NCBI ELink `nuccore` groups and selects RefSeq RNA links,
+  fixing empty transcript results for genes such as TP53. E-utilities calls are paced and
+  retry HTTP 429 with bounded backoff. The README now documents existing
+  local GENCODE and miRBase/combined-source support instead of marking them TODO.
+
 - Host and container release gates exclude live-network tests. Remote functionality remains
   available locally through `make test-requires-network` / `pytest --run-network`; normal test
   runs skip it and CI refuses the opt-in, so public API outages cannot block releases.
