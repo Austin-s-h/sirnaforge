@@ -86,6 +86,11 @@ digest for reproducible deployments. Inside a full container, select the outer c
 digest instead; the tasks execute locally inside it. Native Conda/Singularity deployments require
 their own installation validation; the container test suite validates the full Docker image.
 
+The automatic CPU ceiling is the available host/affinity/container-quota count, capped at 16.
+Direct Nextflow runs use the JVM-detected processor count with the same cap. Process resource
+requests are bounded by `max_cpus`, `max_memory` and `max_time`; retries stay within those ceilings.
+Python callers can set explicit ceilings through `WorkflowConfig(nextflow_config={"max_cpus": 2})`.
+
 Pipeline-built indices live in the Nextflow work cache and can be reused with resume. Keep that
 cache if you want to avoid rebuilding; an incomplete or failed build is not reused as a valid index.
 The low-level Python `build_bwa_index()` helper intentionally remains a native-tool API.

@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import tempfile
+from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,33 @@ def test_nextflow_available():
     version_match = re.search(r"version\s+(\d+)\.(\d+)\.(\d+)", result.stdout, re.IGNORECASE)
     assert version_match, f"No Nextflow version reported: {result.stdout}"
     assert int(version_match.group(1)) >= 25, f"Nextflow version too old: {version_match.group(0)}"
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+def test_default_cpu_ceiling_fits_the_nextflow_runtime(tmp_path):
+    """The local profile must inherit the actual JVM CPU count, including Docker quotas."""
+    probe = tmp_path / "cpu-probe.config"
+    probe.write_text("params.detected_cpu_count = Runtime.getRuntime().availableProcessors()\n")
+    result = subprocess.run(
+        [
+            "nextflow",
+            "-c",
+            str(probe),
+            "config",
+            str(distribution("sirnaforge").locate_file("sirnaforge/pipeline/nextflow/workflows")),
+            "-profile",
+            "local",
+            "-flat",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    values = dict(re.findall(r"^params\.(max_cpus|detected_cpu_count) = (\d+)$", result.stdout, re.MULTILINE))
+    assert int(values["max_cpus"]) == min(16, int(values["detected_cpu_count"]))
 
 
 @pytest.mark.integration
