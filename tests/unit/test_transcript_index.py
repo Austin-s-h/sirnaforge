@@ -4,11 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from sirnaforge.data.transcript_index import (
-    TranscriptGeneIndex,
-    TranscriptRecord,
-    _strip_version,
-)
+from sirnaforge.data.transcript_index import TranscriptGeneIndex, TranscriptRecord
+from sirnaforge.utils.ensembl_ids import strip_version
 
 
 @pytest.fixture
@@ -80,12 +77,12 @@ def multi_species_fasta(tmp_path: Path) -> dict[str, Path]:
 
 
 @pytest.mark.unit
-def test_strip_version():
+def teststrip_version():
     """Version suffix stripping utility."""
-    assert _strip_version("ENST00000269305.9") == "ENST00000269305"
-    assert _strip_version("ENSG00000141510.16") == "ENSG00000141510"
-    assert _strip_version("ENST00000269305") == "ENST00000269305"
-    assert _strip_version("  ENST00000269305.9  ") == "ENST00000269305"
+    assert strip_version("ENST00000269305.9") == "ENST00000269305"
+    assert strip_version("ENSG00000141510.16") == "ENSG00000141510"
+    assert strip_version("ENST00000269305") == "ENST00000269305"
+    assert strip_version("  ENST00000269305.9  ") == "ENST00000269305"
 
 
 @pytest.mark.unit

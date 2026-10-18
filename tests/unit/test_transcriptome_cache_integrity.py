@@ -198,6 +198,26 @@ def _fake_index_builder(manager: TranscriptomeManager, monkeypatch: pytest.Monke
 
 
 @pytest.mark.unit
+def test_deferred_indexing_reuses_a_complete_trusted_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disabling automatic builds must retain the fast path for already prepared indices."""
+    source = tmp_path / "source.fa"
+    source.write_text(OLD_CONTENT)
+    builder = TranscriptomeManager(cache_dir=tmp_path / "cache")
+    _fake_index_builder(builder, monkeypatch)
+    built = builder.get_custom_transcriptome(source)
+    assert built and built.get("index")
+
+    deferred = TranscriptomeManager(cache_dir=tmp_path / "cache", auto_build_indices=False)
+    result = deferred.get_custom_transcriptome(source)
+    assert result and result.get("index") == built["index"]
+
+    source.write_text(NEW_CONTENT)
+    changed = deferred.get_custom_transcriptome(source)
+    assert changed and "index" not in changed
+    assert not deferred.index_build_errors
+
+
+@pytest.mark.unit
 def test_refreshed_transcriptome_rebuilds_stale_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A re-download must invalidate the index built from the previous content."""
     manager = TranscriptomeManager(cache_dir=tmp_path)

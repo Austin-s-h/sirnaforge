@@ -196,15 +196,17 @@ class TestDatabaseSpecificMethods:
             pass
 
     @pytest.mark.asyncio
-    async def test_gencode_placeholder(self):
-        """Test GENCODE search placeholder."""
+    async def test_gencode_requires_local_configuration(self, monkeypatch):
+        """An unconfigured local provider must request files rather than contact Ensembl."""
+        monkeypatch.delenv("SIRNAFORGE_GENCODE_GTF", raising=False)
+        monkeypatch.delenv("SIRNAFORGE_GENCODE_ASSEMBLY", raising=False)
         searcher = GeneSearcher()
 
-        # GENCODE should raise an error since it's not implemented
+        # GENCODE requires an explicit, pinned local release.
         result = await searcher.search_gene("TP53", DatabaseType.GENCODE)
         assert result.database == DatabaseType.GENCODE
         assert result.error is not None
-        assert "not yet implemented" in result.error
+        assert "requires SIRNAFORGE_GENCODE_GTF" in result.error
 
 
 if __name__ == "__main__":

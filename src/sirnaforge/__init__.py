@@ -59,19 +59,8 @@ def _get_version() -> str:
 
 __version__ = _get_version()
 
-# Core imports will be added as modules are implemented
-# from .core.design import SiRNADesigner
-# from .core.scoring import ScoringEngine
-# from .core.filters import FilterEngine
-# from .models.sirna import SiRNACandidate, DesignParameters
-
 __all__ = [
     "__version__",
     "__author__",
     "__email__",
-    # "SiRNADesigner",
-    # "ScoringEngine",
-    # "FilterEngine",
-    # "SiRNACandidate",
-    # "DesignParameters",
 ]

@@ -51,6 +51,36 @@ class MiRNASource(ReferenceSource):
     pass
 
 
+def _build_mirbase_sources() -> dict[str, MiRNASource]:
+    """Register mature miRBase sequences for every canonical screening species."""
+    return {
+        entry["genome"]: MiRNASource(
+            name="mirbase_mature",
+            url="https://www.mirbase.org/download/mature.fa",
+            species=entry["genome"],
+            format="fasta",
+            compressed=False,
+            description=f"All mature miRBase sequences, filtered for {species}",
+        )
+        for species, entry in CANONICAL_SPECIES_REGISTRY.items()
+    }
+
+
+def _build_combined_sources() -> dict[str, MiRNASource]:
+    """Describe the explicit mature-only union of MirGeneDB and miRBase."""
+    return {
+        species: MiRNASource(
+            name="mirgenedb+mirbase",
+            url="combined:mirgenedb+mirbase",
+            species=species,
+            format="fasta",
+            compressed=False,
+            description="MirGeneDB mature plus full miRBase mature sequences (no star-only export)",
+        )
+        for species in _build_mirbase_sources()
+    }
+
+
 def _build_mirgenedb_sources() -> dict[str, MiRNASource]:
     """Construct MirGeneDB source map from the slug-based metadata table."""
     sources: dict[str, MiRNASource] = {}
@@ -81,32 +111,8 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
 
     # Database source configurations
     SOURCES = {
-        "mirbase": {
-            "human": MiRNASource(
-                name="mirbase_mature",
-                url="https://www.mirbase.org/download/CURRENT/mature.fa",
-                species="human",
-                format="fasta",
-                compressed=False,
-                description="miRBase mature miRNA sequences (all species, filtered for Homo sapiens - hsa)",
-            ),
-            "mouse": MiRNASource(
-                name="mirbase_mature",
-                url="https://www.mirbase.org/download/CURRENT/mature.fa",
-                species="mouse",
-                format="fasta",
-                compressed=False,
-                description="miRBase mature miRNA sequences (all species, filtered for Mus musculus - mmu)",
-            ),
-            "rat": MiRNASource(
-                name="mirbase_mature",
-                url="https://www.mirbase.org/download/CURRENT/mature.fa",
-                species="rat",
-                format="fasta",
-                compressed=False,
-                description="miRBase mature miRNA sequences (all species, filtered for Rattus norvegicus - rno)",
-            ),
-        },
+        "mirbase": _build_mirbase_sources(),
+        "mirgenedb+mirbase": _build_combined_sources(),
         "mirbase_high_conf": {
             "human": MiRNASource(
                 name="mirbase_mature_hc",
@@ -136,7 +142,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         "mirbase_hairpin": {
             "human": MiRNASource(
                 name="mirbase_hairpin",
-                url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
+                url="https://www.mirbase.org/download/hairpin.fa",
                 species="human",
                 format="fasta",
                 compressed=False,
@@ -144,7 +150,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ),
             "mouse": MiRNASource(
                 name="mirbase_hairpin",
-                url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
+                url="https://www.mirbase.org/download/hairpin.fa",
                 species="mouse",
                 format="fasta",
                 compressed=False,
@@ -152,7 +158,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ),
             "rat": MiRNASource(
                 name="mirbase_hairpin",
-                url="https://www.mirbase.org/download/CURRENT/hairpin.fa",
+                url="https://www.mirbase.org/download/hairpin.fa",
                 species="rat",
                 format="fasta",
                 compressed=False,
@@ -345,6 +351,10 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         """Normalize user-provided species identifiers to canonical keys."""
         if source_name == "mirgenedb":
             return cls._normalize_mirgenedb_species(species)
+        if source_name in {"mirbase", "mirgenedb+mirbase"}:
+            canonical = cls.canonicalize_species_name(species)
+            if canonical:
+                return str(CANONICAL_SPECIES_REGISTRY[canonical]["genome"])
         return species
 
     @classmethod
@@ -406,6 +416,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             "chicken": "gga-",
             "dog": "cfa-",
             "pig": "ssc-",
+            "rhesus": "mml-",
         }
 
         code = species_codes.get(species)
@@ -443,7 +454,42 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         logger.info(f"Filtered to {filtered_count} {species} sequences")
         return output_handle.getvalue().strip()
 
+    def _download_available_source(self, source_name: str, source: MiRNASource) -> str | None:
+        """Download supported references without substituting for a retired confidence subset."""
+        if source_name == "mirbase_high_conf":
+            logger.error(
+                "miRBase no longer distributes the configured high-confidence FASTA. "
+                "An existing valid cache can be reused; otherwise choose mirbase (all mature "
+                "sequences), mirgenedb, or supply a reference FASTA explicitly."
+            )
+            return None
+        return self._download_file(source)
+
     def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
+        """Resolve a single source or the explicit mature-only union.
+
+        Args:
+            source_name: Registered source name or mirgenedb+mirbase.
+            species: Target organism identifier.
+            force_refresh: Refresh both component references when combining.
+
+        Returns:
+            Validated reference path, or None if any required source failed.
+        """
+        if source_name != "mirgenedb+mirbase":
+            return self._get_single_database(source_name, species, force_refresh)
+        normalized = self.normalize_species(source_name, species)
+        if normalized not in self.SOURCES[source_name]:
+            logger.error("Unknown combined reference species '%s'", species)
+            return None
+        sources = ["mirgenedb", "mirbase"]
+        if force_refresh:
+            for component in sources:
+                if self.get_database(component, normalized, force_refresh=True) is None:
+                    return None
+        return self.get_combined_database(sources, normalized)
+
+    def _get_single_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
         """Get miRNA database, downloading and filtering if needed.
 
         Simplified caching: each species+source combination gets its own cache file.
@@ -484,7 +530,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         # Download and process
         logger.info(f"🔄 Downloading {source.name} ({source.species})...")
 
-        content: str | None = self._download_file(source)
+        content = self._download_available_source(source_name, source)
         failure = False
 
         if content is None:
@@ -601,7 +647,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         with combined_file.open("w") as outfile:
             for source_name, source_file in zip(sources, source_files, strict=True):
                 for record in SeqIO.parse(source_file, FASTA_PARSE_FORMAT):
-                    sequence = str(record.seq).upper()
+                    sequence = str(record.seq).upper().replace("U", "T")
                     if sequence in seen_sequences:
                         continue
                     seen_sequences.add(sequence)

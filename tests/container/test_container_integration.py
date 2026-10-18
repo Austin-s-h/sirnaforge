@@ -43,8 +43,27 @@ def test_docker_version():
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 def test_docker_command_structure():
-    """Test that main commands are available in container."""
-    commands = ["search", "workflow", "design"]
+    """Test that every top-level command is available in container.
+
+    The list was `[search, workflow, design]` and had not grown in three releases, so 0.7.1's
+    `report` and `benchmark` -- and `offtarget`, `config`, `cache` before them -- had no image-level
+    guard at all: a Typer registration error or a missing import inside one of those command modules
+    would ship green. `--help` on a command imports its module, which is the cheap part of the check.
+    """
+    commands = [
+        "search",
+        "workflow",
+        "offtarget",
+        "design",
+        "validate",
+        "version",
+        "config",
+        "cache",
+        "report",
+        "benchmark",
+        "sequences",
+        "zfn",
+    ]
 
     for cmd in commands:
         try:
@@ -82,35 +101,55 @@ def test_docker_python_environment():
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 def test_docker_sirnaforge_imports():
-    """Test that siRNAforge modules can be imported in container."""
-    # Test that basic modules can be imported
-    try:
-        importlib.import_module("sirnaforge.core.design")
-        importlib.import_module("sirnaforge.models")
-    except ImportError as e:
-        pytest.skip(f"siRNAforge core modules not available: {e}")
+    """Every module the release ships must import inside the image.
 
-    # Test instantiation if imports work
-    try:
-        # Use importlib to avoid linter issues with conditional imports
-        design_module = importlib.import_module("sirnaforge.core.design")
-        models_module = importlib.import_module("sirnaforge.models")
+    This used to `pytest.skip` on ImportError -- the precise failure the container tier exists to
+    catch, so a missing runtime dependency shipped green. An ImportError here is now a failure.
 
-        designer_class = design_module.SiRNADesigner
-        params_class = models_module.DesignParameters
+    The list is the modules 0.7.1 added plus the pre-existing core, because a wheel that builds and
+    a wheel that imports are different claims: `reporting` pulls the render stack, `benchmark` and
+    `provenance` were new entry points in this release, and each is only reachable from a command
+    that no host test runs as an installed program.
+    """
+    modules = [
+        "sirnaforge.core.design",
+        "sirnaforge.models",
+        "sirnaforge.models.policy",
+        "sirnaforge.models.evidence",
+        "sirnaforge.core.screening_evidence",
+        "sirnaforge.core.selection",
+        "sirnaforge.data.orthology",
+        "sirnaforge.provenance",
+        "sirnaforge.reporting.payload",
+        "sirnaforge.reporting.render",
+        "sirnaforge.reporting.quilt",
+        "sirnaforge.benchmark.prepare",
+        "sirnaforge.benchmark.design",
+    ]
+    failures: list[str] = []
+    for name in modules:
+        try:
+            importlib.import_module(name)
+        except ImportError as exc:
+            failures.append(f"{name}: {exc}")
+    assert not failures, "modules the image ships but cannot import: " + "; ".join(failures)
 
-        params = params_class()
-        designer = designer_class(params)
-        assert designer is not None
-
-    except (ImportError, AttributeError) as e:
-        pytest.skip(f"siRNAforge classes not available: {e}")
+    # An importable package is not a working one; instantiate the pair every command depends on.
+    design_module = importlib.import_module("sirnaforge.core.design")
+    models_module = importlib.import_module("sirnaforge.models")
+    designer = design_module.SiRNADesigner(models_module.DesignParameters())
+    assert designer is not None
 
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 def test_docker_minimal_workflow():
-    """Test minimal siRNA design workflow in container with test data."""
+    """`sirnaforge design` on a valid FASTA succeeds in the image and writes candidates.
+
+    Every branch of this test used to end in `pytest.skip` -- on a non-zero exit it did not
+    recognise, on a timeout, on the CLI being absent. Inside the image (which `runs_in_container`
+    guarantees) each of those is a defect in the artifact, not an environment gap.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         work_dir = Path(tmpdir)
 
@@ -133,21 +172,49 @@ def test_docker_minimal_workflow():
                 check=False,
             )
 
-            # Command should run without crashing (may have warnings/errors about design parameters)
-            # but shouldn't have import errors or missing tools
-            if result.returncode != 0:
-                # Check if it's an expected design-related issue vs environment issue
-                error_text = result.stderr.lower()
-                if any(term in error_text for term in ["import", "not found", "command not found", "no module"]):
-                    pytest.fail(f"Environment issue in container: {result.stderr}")
-                else:
-                    # Design-related issues are okay for this test
-                    pytest.skip(f"Design workflow issue (expected): {result.stderr}")
+            # `design` on a valid FASTA in the release image has no honest reason to fail. This used
+            # to skip on any non-zero exit whose stderr it did not recognise, which is how a real
+            # regression would have been recorded as "expected".
+            assert result.returncode == 0, (
+                f"design failed in the image:\nSTDOUT: {result.stdout[-2000:]}\nSTDERR: {result.stderr[-2000:]}"
+            )
+            output_tsv = work_dir / "output.tsv"
+            assert output_tsv.is_file(), f"design exited 0 but wrote no output: {sorted(work_dir.iterdir())}"
+            assert output_tsv.read_text().strip(), "design wrote an empty output file"
 
         except FileNotFoundError:
-            pytest.skip("sirnaforge CLI not available - run this test in Docker container")
+            pytest.fail("sirnaforge CLI is not on PATH inside the image")
         except subprocess.TimeoutExpired:
-            pytest.skip("Command timed out - may indicate missing dependencies")
+            pytest.fail("sirnaforge design did not finish within 30s on a single short transcript")
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+def test_docker_benchmark_prepare_explains_that_vendored_panels_need_a_checkout():
+    """#109's `benchmark prepare` refuses a vendored panel in the image, and says why.
+
+    The vendored panel tables live under `tests/`, which the wheel and the image do not carry, so
+    every data-bearing panel is checkout-only by design. Before this was fenced the command exited 1
+    with `panel csv not found: /opt/conda/lib/python3.12/tests/unit/data/...` -- a path that reads as
+    a broken build. Nothing in dev, ci, release or container noticed, in either direction.
+
+    This is the only test that runs `benchmark` as the installed program: the six host test files
+    drive it in-process from the checkout, where the vendored bytes are always present, so this
+    branch is unreachable there.
+    """
+    result = subprocess.run(
+        ["sirnaforge", "benchmark", "prepare", "--panel", "huesken_subset", "--out-dir", "/tmp/benchmark_probe"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode != 0, "a vendored panel cannot be prepared from an installed package"
+
+    # Rich wraps the message at the terminal width, so compare on collapsed whitespace.
+    message = " ".join((result.stdout + result.stderr).split())
+    assert "checkout" in message, f"refusal does not name the checkout requirement: {message[-400:]}"
+    assert "panel csv not found" not in message, f"still reporting a site-packages path as missing: {message[-400:]}"
 
 
 @pytest.mark.integration

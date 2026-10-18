@@ -187,17 +187,13 @@ def get_modification_summary(candidate: "SiRNACandidate") -> dict[str, str]:
     if candidate.guide_metadata:
         summary["guide_overhang"] = candidate.guide_metadata.overhang or ""
 
-        mods = []
-        for mod in candidate.guide_metadata.chem_mods:
-            mods.append(f"{mod.type}({len(mod.positions)})")
+        mods = [f"{mod.type}({len(mod.positions)})" for mod in candidate.guide_metadata.chem_mods]
         summary["guide_modifications"] = "+".join(mods) if mods else "none"
 
     if candidate.passenger_metadata:
         summary["passenger_overhang"] = candidate.passenger_metadata.overhang or ""
 
-        mods = []
-        for mod in candidate.passenger_metadata.chem_mods:
-            mods.append(f"{mod.type}({len(mod.positions)})")
+        mods = [f"{mod.type}({len(mod.positions)})" for mod in candidate.passenger_metadata.chem_mods]
         summary["passenger_modifications"] = "+".join(mods) if mods else "none"
 
     return summary

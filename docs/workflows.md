@@ -148,8 +148,9 @@ siRNAforge runs off-target analysis via an embedded Nextflow workflow.
 The `SIRNA_OFFTARGET_ANALYSIS` subworkflow runs two independent scans over the same
 candidate FASTA and aggregates them into a single report. The **miRNA seed scan always
 runs** (lightweight, no reference download beyond the miRNA database); the
-**transcriptome/genome scan is conditional** on a reference being supplied via
-`--genome_fastas`, `--genome_indices`, or `--transcriptome_indices`.
+**transcriptome scan is conditional** on a reference being supplied via
+`--transcriptome_fastas` or `--transcriptome_indices`. There is no genomic scan for siRNA/miRNA:
+siRNA acts on mRNA, so the transcriptome is the reference for on- and off-target alike (#99).
 
 ```{mermaid}
 flowchart TD
@@ -160,7 +161,7 @@ flowchart TD
 
     subgraph MIRNA["miRNA seed scan — ALWAYS runs (MIRNA_SEED_ANALYSIS)"]
         direction TB
-        MIR["run_mirna_seed_analysis()<br/>default db: mirgenedb<br/>default species: chicken,pig,rat,mouse,human,macaque"]
+        MIR["run_mirna_seed_analysis()<br/>default db: mirgenedb<br/>default species: chicken,rat,mouse,human,macaque"]
         MIR --> SEED["Extract guide seed = guide positions 2-8"]
         SEED --> SCAN["Scan seed across every miRNA<br/>backend: pyahocorasick (exhaustive_python oracle)"]
         SCAN --> RAW["RAW alignments: seed match at any offset<br/>(*_mirna_analysis_raw.tsv)"]
@@ -169,11 +170,11 @@ flowchart TD
         FILT -->|"no (e.g. 3' region)"| RAWONLY["Retained in *_raw only,<br/>NOT a hit"]
     end
 
-    GATE{"--genome_fastas /<br/>--genome_indices /<br/>--transcriptome_indices<br/>provided?"}
+    GATE{"--transcriptome_fastas /<br/>--transcriptome_indices<br/>provided?"}
     GATE -->|no| SKIP["Transcriptome scan skipped<br/>(miRNA-only run)"]
-    GATE -->|yes| GENOME
+    GATE -->|yes| TXSCAN
 
-    subgraph GENOME["Transcriptome/genome scan — CONDITIONAL"]
+    subgraph TXSCAN["Transcriptome scan — CONDITIONAL"]
         direction TB
         BIDX["BUILD_BWA_INDEX<br/>(only for FASTA inputs; indices reused as-is)"]
         BIDX --> OT["OFFTARGET_ANALYSIS per species<br/>run_bwa_alignment_analysis()<br/>one BWA-MEM2 session, all candidates"]

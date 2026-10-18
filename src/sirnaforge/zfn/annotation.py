@@ -91,10 +91,7 @@ class GTFZFNAnnotationProvider:
 
     @staticmethod
     def _normalize_chrom(chrom: str) -> str:
-        token = chrom.strip().lower()
-        if token.startswith("chr"):
-            token = token[3:]
-        return token
+        return chrom.strip().lower().removeprefix("chr")
 
     def _find_chrom_index(self, feature_index: dict[str, _ChromFeatureIndex], chrom: str) -> _ChromFeatureIndex | None:
         if chrom in feature_index:

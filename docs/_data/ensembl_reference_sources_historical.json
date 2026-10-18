@@ -1,0 +1,61 @@
+{
+  "note": "Original downloads used mutable current_fasta URLs, not pinned releases. Fresh downloads need new checksum manifests.",
+  "sources": [
+    {
+      "source": {
+        "name": "ensembl_cdna",
+        "url": "https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz",
+        "species": "human",
+        "format": "fasta",
+        "compressed": true,
+        "description": "Ensembl human cDNA sequences (GRCh38)"
+      },
+      "downloaded_at": "2026-09-13T19:36:35.680915",
+      "file_size": 1416494395,
+      "checksum": "8456e030fc60ce4e3f6ee20fd198b9d0",
+      "version": "1.0"
+    },
+    {
+      "source": {
+        "name": "ensembl_cdna",
+        "url": "https://ftp.ensembl.org/pub/current_fasta/mus_musculus/cdna/Mus_musculus.GRCm39.cdna.all.fa.gz",
+        "species": "mouse",
+        "format": "fasta",
+        "compressed": true,
+        "description": "Ensembl mouse cDNA sequences (GRCm39)"
+      },
+      "downloaded_at": "2026-09-13T11:16:36.139364",
+      "file_size": 1009631764,
+      "checksum": "8a6f221c2486689fb4deebdf8e88ca94",
+      "version": "1.0"
+    },
+    {
+      "source": {
+        "name": "ensembl_cdna",
+        "url": "https://ftp.ensembl.org/pub/current_fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
+        "species": "rat",
+        "format": "fasta",
+        "compressed": true,
+        "description": "Ensembl rat cDNA sequences (GRCr8)"
+      },
+      "downloaded_at": "2026-09-13T11:16:43.123681",
+      "file_size": 182006242,
+      "checksum": "05ae7aac933ab5c5f70983da3044b145",
+      "version": "1.0"
+    },
+    {
+      "source": {
+        "name": "ensembl_cdna",
+        "url": "https://ftp.ensembl.org/pub/current_fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
+        "species": "macaque",
+        "format": "fasta",
+        "compressed": true,
+        "description": "Ensembl rhesus macaque cDNA sequences (Mmul_10)"
+      },
+      "downloaded_at": "2026-09-13T11:16:47.357145",
+      "file_size": 154219476,
+      "checksum": "74bb6a56b40120657cc11254312e10da",
+      "version": "1.0"
+    }
+  ]
+}

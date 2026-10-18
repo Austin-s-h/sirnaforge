@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +21,7 @@ from sirnaforge.utils.typed_decorators import field_validator_typed
 
 if TYPE_CHECKING:
     from sirnaforge.config.reference_policy import ReferenceChoice
+    from sirnaforge.data.local_annotation import LocalTranscriptModelClient
     from sirnaforge.models.transcript_annotation import TranscriptAnnotationBundle
 
 logger = get_logger(__name__)
@@ -45,6 +49,99 @@ class GeneNotFoundError(DatabaseError):
         """Initialize gene not found error."""
         super().__init__(f"Gene '{query}' not found", database)
         self.query = query
+
+
+#: Ensembl REST accepts at most 50 identifiers per POST body on its id endpoints.
+ENSEMBL_POST_CHUNK_SIZE = 50
+#: 429 is Ensembl's per-IP rate limit and the 5xx family is a saturated or wedged backend.
+#: All of them are transient -- a plain sequence fetch draws 503s under load -- so retry them.
+ENSEMBL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+ENSEMBL_MAX_ATTEMPTS = 3
+#: Statuses that mean the host answered but will not serve this request -- access denied, or a
+#: gateway with nothing behind it. A 404 is not one of them: that is an answer.
+ENSEMBL_UNAVAILABLE_STATUSES = (403, 502, 503, 504)
+
+
+def ensembl_unavailable_error(status: int) -> DatabaseAccessError:
+    """The error every caller raises for :data:`ENSEMBL_UNAVAILABLE_STATUSES`, worded once."""
+    return DatabaseAccessError(f"HTTP {status}: Access denied or server unavailable", "Ensembl")
+
+
+@asynccontextmanager
+async def ensembl_session(session: aiohttp.ClientSession | None, timeout: int) -> AsyncIterator[aiohttp.ClientSession]:
+    """Yield ``session`` when the caller owns one, else open one for this operation.
+
+    Retrieving a gene means several requests to one host, so they share a connection
+    instead of paying a TLS handshake each.
+    """
+    if session is not None:
+        yield session
+        return
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(timeout), trust_env=True) as owned:
+        yield owned
+
+
+def _ensembl_retry_delay(response: aiohttp.ClientResponse, attempt: int, cap: int) -> float:
+    """Seconds to wait before retrying, honouring Retry-After when Ensembl sends it."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return min(float(retry_after), float(cap))
+        except ValueError:
+            pass
+    return float(2**attempt)
+
+
+async def ensembl_request_json(
+    session: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: dict[str, Any] | None = None,
+    retry_cap: int = 30,
+) -> Any:
+    """Issue a JSON request to Ensembl, retrying its transient statuses.
+
+    Args:
+        session: Session to issue the request on
+        method: HTTP method ("GET" or "POST")
+        url: Fully-formed request URL
+        headers: Request headers
+        json_body: JSON body for POST requests
+        retry_cap: Upper bound in seconds on a Retry-After the server asks for
+
+    Returns:
+        Parsed JSON payload, or None when Ensembl answers 404.
+
+    Raises:
+        DatabaseAccessError: For network errors, and for 429/5xx that outlive the retries
+    """
+    last_status: int | None = None
+
+    for attempt in range(ENSEMBL_MAX_ATTEMPTS):
+        try:
+            async with session.request(method, url, headers=headers, json=json_body) as response:
+                if response.status == 200:
+                    return await response.json()
+                if response.status == 404:
+                    return None
+
+                last_status = response.status
+                if response.status in ENSEMBL_RETRY_STATUSES and attempt < ENSEMBL_MAX_ATTEMPTS - 1:
+                    delay = _ensembl_retry_delay(response, attempt, retry_cap)
+                    logger.debug(f"Ensembl returned HTTP {response.status} for {url}; retrying in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+
+                raise DatabaseAccessError(f"HTTP {response.status}", "Ensembl")
+        except aiohttp.ClientConnectorError as e:
+            raise DatabaseAccessError(f"Connection failed: {e}", "Ensembl") from e
+        except asyncio.TimeoutError as e:
+            raise DatabaseAccessError(f"Request timeout: {e}", "Ensembl") from e
+
+    raise DatabaseAccessError(f"HTTP {last_status} after {ENSEMBL_MAX_ATTEMPTS} attempts", "Ensembl")
 
 
 class DatabaseType(str, Enum):
@@ -285,8 +382,70 @@ class EnsemblClient(AbstractDatabaseClient):
 
         return gene_info, transcripts
 
+    async def get_sequences(
+        self,
+        identifiers: list[str],
+        sequence_type: SequenceType = SequenceType.CDNA,
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict[str, str]:
+        """Get sequences for many identifiers, one POST per chunk of identifiers.
+
+        ``POST /sequence/id`` serves exactly what the per-id GET serves, but in one round
+        trip: all 40 TP53 transcripts come back in ~13s, where fetching them one at a time
+        takes ~350s and loses several to transient 503s.
+
+        Args:
+            identifiers: Identifiers to fetch
+            sequence_type: Type of sequence to retrieve
+            session: Session to reuse; one is opened for this call when omitted
+
+        Returns:
+            Mapping of identifier to sequence. Identifiers Ensembl does not know are absent
+            from the mapping rather than raising -- the POST endpoint simply omits them.
+
+        Raises:
+            DatabaseAccessError: For network/server access issues
+        """
+        if not identifiers:
+            return {}
+
+        seq_type = self._sequence_type_param(sequence_type)
+        url = f"{self.base_url}/sequence/id?species={self.species}&type={seq_type}"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        sequences: dict[str, str] = {}
+
+        async with ensembl_session(session, self.timeout) as active:
+            for start in range(0, len(identifiers), ENSEMBL_POST_CHUNK_SIZE):
+                chunk = identifiers[start : start + ENSEMBL_POST_CHUNK_SIZE]
+                payload = await ensembl_request_json(
+                    active, "POST", url, headers=headers, json_body={"ids": chunk}, retry_cap=self.timeout
+                )
+
+                for record in payload if isinstance(payload, list) else []:
+                    identifier = record.get("query") or record.get("id")
+                    sequence = record.get("seq")
+                    if identifier and sequence:
+                        sequences[identifier] = str(sequence).replace("\n", "").upper()
+
+        return sequences
+
+    @staticmethod
+    def _sequence_type_param(sequence_type: SequenceType) -> str:
+        """Map a sequence type onto Ensembl's ``type`` query parameter."""
+        type_mapping = {
+            SequenceType.CDNA: "cdna",
+            SequenceType.CDS: "cds",
+            SequenceType.PROTEIN: "protein",
+            SequenceType.GENOMIC: "genomic",
+        }
+        return type_mapping.get(sequence_type, "cdna")
+
     async def get_sequence(
-        self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA, headers: dict | None = None
+        self,
+        identifier: str,
+        sequence_type: SequenceType = SequenceType.CDNA,
+        headers: dict | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> str:
         """Get sequence from Ensembl REST API.
 
@@ -294,6 +453,7 @@ class EnsemblClient(AbstractDatabaseClient):
             identifier: Gene ID, transcript ID, etc.
             sequence_type: Type of sequence to retrieve
             headers: Optional HTTP headers
+            session: Session to reuse; one is opened for this call when omitted
 
         Returns:
             Sequence string
@@ -302,15 +462,7 @@ class EnsemblClient(AbstractDatabaseClient):
             DatabaseAccessError: For network/server access issues
             GeneNotFoundError: When identifier is not found in database
         """
-        # Map sequence type to Ensembl API parameter
-        type_mapping = {
-            SequenceType.CDNA: "cdna",
-            SequenceType.CDS: "cds",
-            SequenceType.PROTEIN: "protein",
-            SequenceType.GENOMIC: "genomic",
-        }
-
-        seq_type = type_mapping.get(sequence_type, "cdna")
+        seq_type = self._sequence_type_param(sequence_type)
         url = f"{self.base_url}/sequence/id/{identifier}?species={self.species}&type={seq_type}"
 
         if headers is None:
@@ -318,8 +470,8 @@ class EnsemblClient(AbstractDatabaseClient):
 
         try:
             async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, headers=headers) as response,
+                ensembl_session(session, self.timeout) as active,
+                active.get(url, headers=headers) as response,
             ):
                 if response.status == 200:
                     sequence_text: str = str(await response.text())
@@ -329,9 +481,8 @@ class EnsemblClient(AbstractDatabaseClient):
                     return sequence_text.replace("\n", "").upper()
                 if response.status == 404:
                     raise GeneNotFoundError(identifier, "Ensembl")
-                if response.status in (403, 502, 503, 504):
-                    # Server errors or access denied - likely firewall/access issue
-                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                    raise ensembl_unavailable_error(response.status)
                 logger.debug(f"Failed to get {seq_type} for {identifier}: HTTP {response.status}")
                 raise DatabaseAccessError(f"HTTP {response.status}", "Ensembl")
         except aiohttp.ClientConnectorError as e:
@@ -388,27 +539,17 @@ class EnsemblClient(AbstractDatabaseClient):
 
         last_error = None
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session:
+        async with ensembl_session(None, self.timeout) as session:
             for url in lookup_urls:
                 try:
-                    async with session.get(url, headers=headers) as response:
-                        if response.status == 200:
-                            return cast(dict, await response.json())
-                        if response.status == 404:
-                            # Continue to next URL, gene might be found there
-                            continue
-                        if response.status in (403, 502, 503, 504):
-                            # Access denied or server error - raise immediately
-                            raise DatabaseAccessError(
-                                f"HTTP {response.status}: Access denied or server unavailable", "Ensembl"
-                            )
-                except aiohttp.ClientConnectorError as e:
-                    last_error = DatabaseAccessError(f"Connection failed: {e}", "Ensembl")
-                except asyncio.TimeoutError as e:
-                    last_error = DatabaseAccessError(f"Request timeout: {e}", "Ensembl")
-                except DatabaseAccessError:
-                    # Re-raise access errors immediately
-                    raise
+                    # None means 404 here: continue to the next URL, the gene may be found there.
+                    payload = await ensembl_request_json(session, "GET", url, headers=headers, retry_cap=self.timeout)
+                    if payload is not None:
+                        return cast(dict, payload)
+                except DatabaseAccessError as e:
+                    # Keep the error but let the remaining endpoint try; a transient failure on
+                    # one lookup form should not hide a working answer from the other.
+                    last_error = e
                 except Exception as e:
                     logger.debug(f"Failed lookup at {url}: {e}")
                     last_error = DatabaseAccessError(f"Unexpected error: {e}", "Ensembl")
@@ -430,19 +571,17 @@ class EnsemblClient(AbstractDatabaseClient):
 
             transcript_data = data.get("Transcript", [])
 
+            sequences: dict[str, str] = {}
+            if include_sequence:
+                transcript_ids = [t["id"] for t in transcript_data if t.get("id")]
+                sequences = await self._get_sequences_with_fallback(transcript_ids)
+
             for transcript in transcript_data:
                 transcript_id = transcript.get("id")
                 if not transcript_id:
                     continue
 
-                sequence = None
-                if include_sequence:
-                    try:
-                        sequence = await self.get_sequence(transcript_id)
-                    except (DatabaseAccessError, GeneNotFoundError):
-                        # If we can't get the sequence, log and continue without it
-                        logger.warning(f"Could not retrieve sequence for transcript {transcript_id}")
-                        sequence = None
+                sequence = sequences.get(transcript_id)
 
                 transcripts.append(
                     TranscriptInfo(
@@ -466,6 +605,31 @@ class EnsemblClient(AbstractDatabaseClient):
             raise DatabaseAccessError(f"Failed to get transcripts: {e}", "Ensembl") from e
 
         return transcripts
+
+    async def _get_sequences_with_fallback(self, identifiers: list[str]) -> dict[str, str]:
+        """Batch-fetch sequences, then retry per id for whatever the batch did not return.
+
+        The batch is the fast path; the per-id retry covers ids the POST endpoint omits and
+        the case where the batch request itself fails. An id that fails both ways is dropped
+        with a warning, as before -- the transcript is still reported, without a sequence.
+        """
+        if not identifiers:
+            return {}
+
+        async with ensembl_session(None, self.timeout) as session:
+            try:
+                sequences = await self.get_sequences(identifiers, session=session)
+            except DatabaseAccessError as e:
+                logger.warning(f"Batch sequence request failed ({e}); falling back to per-transcript requests")
+                sequences = {}
+
+            for identifier in [i for i in identifiers if i not in sequences]:
+                try:
+                    sequences[identifier] = await self.get_sequence(identifier, session=session)
+                except (DatabaseAccessError, GeneNotFoundError):
+                    logger.warning(f"Could not retrieve sequence for transcript {identifier}")
+
+        return sequences
 
 
 class RefSeqClient(AbstractDatabaseClient):
@@ -794,34 +958,129 @@ class RefSeqClient(AbstractDatabaseClient):
 class GencodeClient(AbstractDatabaseClient):
     """Client for GENCODE database."""
 
-    def __init__(self, timeout: int = 30):
-        """Initialize GENCODE client."""
+    def __init__(
+        self,
+        timeout: int = 30,
+        *,
+        gtf_path: str | Path | None = None,
+        fasta_path: str | Path | None = None,
+        assembly: str | None = None,
+    ):
+        """Configure human GENCODE files explicitly or through SIRNAFORGE_GENCODE_*."""
         super().__init__(timeout)
-        self.base_url = "https://www.gencodegenes.org"
-        self.version = "44"  # GENCODE version
+        self.gtf_path = gtf_path or os.environ.get("SIRNAFORGE_GENCODE_GTF")
+        self.fasta_path = fasta_path or os.environ.get("SIRNAFORGE_GENCODE_FASTA")
+        self.assembly = assembly or os.environ.get("SIRNAFORGE_GENCODE_ASSEMBLY")
+        self._annotation_client: LocalTranscriptModelClient | None = None
 
     @property
     def database_type(self) -> DatabaseType:
-        """Return the database type this client handles."""
+        """Return the database represented by the local release."""
         return DatabaseType.GENCODE
+
+    def annotation_client(self) -> LocalTranscriptModelClient:
+        """Resolve a local structural annotation client without downloading a release."""
+        from sirnaforge.data.local_annotation import LocalTranscriptModelClient  # noqa: PLC0415 - base/provider cycle
+
+        if not self.gtf_path or not self.assembly:
+            raise DatabaseAccessError(
+                "GENCODE requires SIRNAFORGE_GENCODE_GTF and SIRNAFORGE_GENCODE_ASSEMBLY "
+                "(or explicit gtf_path and assembly arguments)",
+                "GENCODE",
+            )
+        if self._annotation_client is None:
+            self._annotation_client = LocalTranscriptModelClient(
+                self.gtf_path, provider="gencode", species="human", assembly=self.assembly
+            )
+        return self._annotation_client
 
     async def search_gene(
         self,
         query: str,
-        include_sequence: bool = True,  # noqa: ARG002
+        include_sequence: bool = True,
     ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
-        """Search for a gene and return gene info and transcripts."""
-        # GENCODE doesn't have a simple REST API like Ensembl
-        # This would typically require parsing GTF/GFF files or using their FTP download
-        # For now, this is a placeholder implementation
-        logger.info(f"GENCODE search for '{query}:{include_sequence}' not implemented")
-        raise DatabaseAccessError("GENCODE search not yet implemented - requires GTF file parsing", "GENCODE")
+        """Find a human gene, symbol, or transcript in a local GENCODE release."""
+        from sirnaforge.config.reference_policy import ReferenceChoice  # noqa: PLC0415 - lazy data models
 
-    async def get_sequence(self, _identifier: str, _sequence_type: SequenceType = SequenceType.CDNA) -> str:
-        """Get sequence for a specific identifier from GENCODE."""
-        # GENCODE sequences are typically accessed via FASTA files
-        # This would require downloading and indexing GENCODE FASTA files
-        raise DatabaseAccessError("GENCODE sequence retrieval not yet implemented", "GENCODE")
+        client = self.annotation_client()
+        bundle = await client.fetch_by_ids(
+            [query], species="human", reference=ReferenceChoice.explicit(client.assembly)
+        )
+        if not bundle.transcripts:
+            raise GeneNotFoundError(query, "GENCODE")
+        models = list(bundle.transcripts.values())
+        if len({model.gene_id for model in models}) != 1:
+            raise DatabaseAccessError(f"Ambiguous GENCODE gene query: {query}; use a versioned gene ID", "GENCODE")
+        sequences = await asyncio.to_thread(self._read_sequences, set(bundle.transcripts)) if include_sequence else {}
+        transcripts = [
+            TranscriptInfo(
+                transcript_id=model.transcript_id,
+                transcript_name=model.transcript_name,
+                is_canonical=model.is_canonical,
+                gene_id=model.gene_id,
+                gene_name=model.symbol,
+                transcript_type=model.biotype,
+                sequence=sequences.get(model.transcript_id),
+                length=len(sequences[model.transcript_id]) if model.transcript_id in sequences else None,
+                database=DatabaseType.GENCODE,
+            )
+            for model in models
+        ]
+        first = models[0]
+        span = first.gene_interval
+        gene = GeneInfo(
+            gene_id=first.gene_id,
+            gene_name=first.symbol,
+            gene_type=first.biotype,
+            chromosome=first.seq_region_name,
+            start=span.start if span else min(m.start for m in models),
+            end=span.end if span else max(m.end for m in models),
+            strand=first.strand,
+            database=DatabaseType.GENCODE,
+            description=f"GENCODE local annotation: {client.base_url}; assembly={client.assembly}",
+        )
+        return gene, transcripts
+
+    def _read_sequences(self, identifiers: set[str]) -> dict[str, str]:
+        from sirnaforge.data.local_annotation import open_annotation  # noqa: PLC0415 - base/provider cycle
+
+        if not self.fasta_path or not Path(self.fasta_path).is_file():
+            raise DatabaseAccessError("GENCODE sequence retrieval requires SIRNAFORGE_GENCODE_FASTA", "GENCODE")
+        # GENCODE transcript FASTA headers use accession.version|gene.version|...
+        # Keep exact versions to prevent mixing transcript sequence and coordinate releases.
+        sequences: dict[str, str] = {}
+        with open_annotation(Path(self.fasta_path)) as handle:
+            identifier = ""
+            chunks: list[str] = []
+            for line in handle:
+                if line.startswith(">"):
+                    if identifier in identifiers:
+                        if identifier in sequences:
+                            raise DatabaseAccessError(f"Duplicate FASTA transcript: {identifier}", "GENCODE")
+                        sequences[identifier] = "".join(chunks)
+                    identifier = line[1:].split()[0].split("|")[0]
+                    chunks = []
+                elif identifier in identifiers:
+                    chunks.append(line.strip().upper())
+            if identifier in identifiers:
+                if identifier in sequences:
+                    raise DatabaseAccessError(f"Duplicate FASTA transcript: {identifier}", "GENCODE")
+                sequences[identifier] = "".join(chunks)
+        missing = identifiers - sequences.keys()
+        if missing:
+            raise DatabaseAccessError(
+                f"GENCODE FASTA lacks exact annotation accessions: {', '.join(sorted(missing))}", "GENCODE"
+            )
+        return sequences
+
+    async def get_sequence(self, identifier: str, sequence_type: SequenceType = SequenceType.CDNA) -> str:
+        """Retrieve exact-version cDNA from the configured transcript FASTA."""
+        if sequence_type != SequenceType.CDNA:
+            raise ValueError("GENCODE transcript FASTA supports cDNA only; CDS/protein retrieval is unavailable")
+        _, transcripts = await self.search_gene(identifier, include_sequence=True)
+        if len(transcripts) != 1:
+            raise ValueError("Sequence retrieval requires a unique transcript accession")
+        return transcripts[0].sequence or ""
 
 
 class SequenceUtils:

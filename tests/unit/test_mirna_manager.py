@@ -14,8 +14,10 @@ from pathlib import Path
 import pytest
 from Bio import SeqIO
 
+from sirnaforge.config.reference_policy import DEFAULT_MIRNA_CANONICAL_SPECIES
 from sirnaforge.data import mirna_manager
 from sirnaforge.data.mirna_manager import FASTA_PARSE_FORMAT, MiRNADatabaseManager
+from sirnaforge.utils.cli_inputs import resolve_species_inputs
 
 
 @pytest.fixture
@@ -170,34 +172,45 @@ class TestMiRNADatabaseManager:
         assert result["files_deleted"] > 0
         assert not test_file.exists()  # File should be deleted
 
+    @pytest.mark.unit
+    def test_high_confidence_download_reports_retired_source(self, manager_with_temp_cache, monkeypatch, caplog):
+        """Do not replace an unavailable high-confidence reference with unfiltered sequences."""
+
+        def unexpected_download(*_args, **_kwargs):
+            pytest.fail("retired high-confidence source must not be downloaded")
+
+        monkeypatch.setattr(MiRNADatabaseManager, "_download_file", unexpected_download)
+        assert manager_with_temp_cache.get_database("mirbase_high_conf", "human") is None
+        assert "no longer distributes" in caplog.text
+        assert manager_with_temp_cache.metadata == {}
+
     @pytest.mark.slow
     @pytest.mark.integration
-    @pytest.mark.skipif(
-        not pytest.importorskip("requests", reason="requests not available"), reason="Network tests require requests"
-    )
-    def test_download_mirbase_high_conf(self, manager_with_temp_cache):
-        """Test downloading miRBase high confidence database."""
-        # This is a real network test - marked as slow/integration
-        try:
-            db_file = manager_with_temp_cache.get_database("mirbase_high_conf", "human")
+    @pytest.mark.requires_network
+    def test_download_mirbase_mature(self, manager_with_temp_cache):
+        """A supported miRBase download yields a non-empty human FASTA."""
+        db_file = manager_with_temp_cache.get_database("mirbase", "human")
+        assert db_file is not None, "mirbase/human returned no file on a verified network"
+        assert db_file.exists()
+        content = db_file.read_text()
+        assert content.startswith(">"), "downloaded database is not FASTA"
+        records = list(SeqIO.parse(StringIO(content), FASTA_PARSE_FORMAT))
+        assert records
+        assert all(record.id.startswith("hsa-") for record in records)
 
-            if db_file:
-                assert db_file.exists()
-                assert db_file.stat().st_size > 0
+    @pytest.mark.unit
+    def test_high_confidence_source_reuses_valid_legacy_cache(self, manager_with_temp_cache, monkeypatch):
+        """Retiring downloads must not prevent use of an existing validated confidence subset."""
+        source = manager_with_temp_cache.SOURCES["mirbase_high_conf"]["human"]
+        cache_file = manager_with_temp_cache.cache_dir / f"{source.cache_key()}.fa"
+        cache_file.write_text(">hsa-test\nACGUACGU\n")
+        monkeypatch.setattr(manager_with_temp_cache, "_is_cache_valid", lambda _key: True)
 
-                # Check FASTA format
-                with db_file.open("r") as f:
-                    first_line = f.readline().strip()
-                    assert first_line.startswith(">")
+        def unexpected_download(*_args, **_kwargs):
+            pytest.fail("a valid cached reference must not be downloaded")
 
-                    # Count sequences
-                    f.seek(0)
-                    content = f.read()
-                    seq_count = content.count(">")
-                    assert seq_count > 0
-
-        except Exception as e:
-            pytest.skip(f"Network download failed: {e}")
+        monkeypatch.setattr(manager_with_temp_cache, "_download_file", unexpected_download)
+        assert manager_with_temp_cache.get_database("mirbase_high_conf", "human") == cache_file
 
     @pytest.mark.unit
     def test_get_combined_database_empty(self, manager_with_temp_cache, monkeypatch, caplog):
@@ -226,26 +239,22 @@ class TestMiRNADatabaseManager:
         assert manager_with_temp_cache.metadata == {}
 
     @pytest.mark.integration
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib", reason="urllib not available"), reason="Network tests require urllib"
-    )
-    def test_get_combined_database_with_mock_files(self, manager_with_temp_cache):
-        """Test combining databases - this is an integration test that uses network."""
-        # Note: This test actually downloads from internet, not from mock files
-        # The get_combined_database method downloads from URLs, not local files
+    @pytest.mark.requires_network
+    def test_get_combined_database_downloads_and_merges_sources(self, manager_with_temp_cache):
+        """Two real sources combine into one FASTA carrying human sequences.
 
+        Both supported sources must download and produce a combined human FASTA.
+        """
         result = manager_with_temp_cache.get_combined_database(
-            sources=["mirbase_high_conf", "mirgenedb"], species="human", output_name="test_combined.fa"
+            sources=["mirbase", "mirgenedb"], species="human", output_name="test_combined.fa"
         )
 
-        if result:
-            assert result.exists()
+        assert result is not None, "combining two declared sources returned nothing on a verified network"
+        assert result.exists()
 
-            with result.open("r") as f:
-                content = f.read()
-                # Should contain miRNA sequences in FASTA format
-                assert content.count(">") > 0  # Has at least one sequence
-                assert "hsa-" in content or "human" in content.lower()  # Contains human sequences
+        content = result.read_text()
+        assert content.count(">") > 0
+        assert "hsa-" in content or "human" in content.lower()
 
 
 class TestFilterSpeciesSequences:
@@ -630,3 +639,41 @@ class TestMiRNAManagerSmoke:
             info = manager.cache_info()
             assert isinstance(info, dict)
             assert "cache_directory" in info
+
+
+@pytest.mark.unit
+def test_combined_source_resolves_default_species():
+    """The combined CLI selection supports every default species without pig."""
+    result = resolve_species_inputs(
+        species=",".join(DEFAULT_MIRNA_CANONICAL_SPECIES), mirna_db="mirgenedb+mirbase", mirna_species=None
+    )
+    assert set(result.mirna_species) == {"human", "mouse", "rat", "rhesus", "chicken"}
+    assert "pig" not in DEFAULT_MIRNA_CANONICAL_SPECIES
+    assert MiRNADatabaseManager.get_source_configuration("mirbase", "macaque").species == "rhesus"
+
+
+@pytest.mark.unit
+def test_combined_provider_requires_both_sources_and_deduplicates_rna_dna(manager_with_temp_cache, monkeypatch):
+    """The public combined provider screens the union and never silently loses a source."""
+    manager = manager_with_temp_cache
+    payloads = {
+        "mirgenedb": ">Hsa-Mir-test\nAUGCAUGC\n",
+        "mirbase": ">hsa-shared\nATGCATGC\n>hsa-extra\nCCCCAAAA\n>mmu-other\nGGGGAAAA\n",
+    }
+    monkeypatch.setattr(manager, "_download_available_source", lambda name, _source: payloads[name])
+    combined = manager.get_database("mirgenedb+mirbase", "human")
+    records = list(SeqIO.parse(combined, FASTA_PARSE_FORMAT))
+    assert len(records) == 2
+    assert {str(record.seq).upper().replace("U", "T") for record in records} == {"ATGCATGC", "CCCCAAAA"}
+    assert all("source:" in record.description for record in records)
+    payloads["mirbase"] = None
+    assert manager.get_database("mirgenedb+mirbase", "human", force_refresh=True) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("species,prefix", [("rhesus", "mml"), ("chicken", "gga"), ("pig", "ssc")])
+def test_expanded_mirbase_species_filter(manager_with_temp_cache, species, prefix):
+    """New source registrations retain only records belonging to their organism."""
+    payload = f">{prefix}-test\nACGUACGU\n>hsa-other\nCCCCAAAA\n"
+    filtered = manager_with_temp_cache._filter_species_sequences(payload, species)
+    assert [record.id for record in SeqIO.parse(StringIO(filtered), FASTA_PARSE_FORMAT)] == [f"{prefix}-test"]

@@ -10,38 +10,47 @@ This module provides clients for fetching genomic transcript annotations
 
 **Caching Strategy:**
 
-Uses in-memory LRU cache with TTL rather than ReferenceManager's persistent file cache.
-This design choice is intentional because:
-
-1. **Data Size**: Annotation JSON responses are small (KB) vs. sequence files (GB)
-2. **Volatility**: Annotations may update with new releases; TTL provides freshness
-3. **Access Pattern**: High frequency, low latency requirements during workflow execution
-4. **Scope**: Transient metadata enrichment vs. permanent reference datasets
-
-The cache automatically evicts oldest entries when reaching max_cache_entries,
-and entries expire after cache_ttl seconds.
+In-memory LRU cache with TTL rather than ReferenceManager's persistent file cache: annotation JSON
+is KB and versioned by release, unlike GB sequence files. The cache evicts oldest entries when
+reaching max_cache_entries, and entries expire after cache_ttl seconds.
 
 **Relationship to GeneSearcher:**
 
-- GeneSearcher: Discovers transcripts by gene name, fetches cDNA/protein sequences
-- This module: Enriches known transcript IDs with genomic structural metadata
-- Both can use Ensembl, but query different API endpoints for different purposes
-- No redundancy: complementary data types that don't overlap
+GeneSearcher discovers transcripts and fetches sequences; this module enriches known transcript IDs
+with genomic structure -- different Ensembl endpoints, no overlap.
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from time import time
 from typing import Any, cast
 
 import aiohttp
 
 from sirnaforge.config.reference_policy import ReferenceChoice
-from sirnaforge.data.base import AbstractTranscriptAnnotationClient, DatabaseAccessError
+from sirnaforge.data.base import (
+    ENSEMBL_POST_CHUNK_SIZE,
+    ENSEMBL_UNAVAILABLE_STATUSES,
+    AbstractTranscriptAnnotationClient,
+    DatabaseAccessError,
+    ensembl_request_json,
+    ensembl_session,
+    ensembl_unavailable_error,
+)
 from sirnaforge.models.transcript_annotation import Interval, TranscriptAnnotation, TranscriptAnnotationBundle
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _interval_from(record: Mapping[str, Any], *, seq_region_name: str, strand: int) -> Interval:
+    """One exon or CDS record from an Ensembl response, falling back to its transcript's placement."""
+    return Interval(
+        seq_region_name=str(record.get("seq_region_name", seq_region_name)),
+        start=int(record.get("start", 0)),
+        end=int(record.get("end", 0)),
+        strand=int(record.get("strand", strand)),
+    )
 
 
 class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
@@ -65,16 +74,12 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
     **Caching Implementation:**
 
     - Cache key format: "id:{species}:{identifier}:{reference}" or "region:{species}:{region}:{reference}"
-    - TTL: Configurable, default 1 hour (3600 seconds)
-    - Eviction: LRU when max_cache_entries reached (default 1000)
-    - Thread-safe: Single-process use only (workflow orchestration context)
+    - Single-process use only (workflow orchestration context); not thread-safe
 
     **Error Handling:**
 
-    - 404: ID not found → added to unresolved list, no exception raised
-    - 403/503: Server unavailable → DatabaseAccessError raised
-    - Network errors: Wrapped in DatabaseAccessError with context
-    - Timeout: Configurable via timeout parameter
+    - 404 is not an error: the ID joins the unresolved list, no exception raised
+    - Everything else becomes a DatabaseAccessError carrying its context
 
     **Example Usage:**
 
@@ -117,9 +122,6 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
         Returns:
             Cached value if present and not expired, None otherwise
-
-        Side Effects:
-            Removes expired entries from cache during lookup
         """
         if key not in self._cache:
             return None
@@ -140,9 +142,6 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         Args:
             key: Cache key (format: "type:species:identifier:reference")
             value: Value to cache (TranscriptAnnotation, dict, or None for unresolved)
-
-        Side Effects:
-            May evict up to 10% of oldest cache entries if at capacity
         """
         # Simple LRU eviction: remove oldest entries when cache is full
         if len(self._cache) >= self.max_cache_entries:
@@ -159,6 +158,9 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
     ) -> TranscriptAnnotationBundle:
         """Fetch transcript annotations by stable IDs using Ensembl lookup endpoint.
 
+        Ids that miss the cache are looked up with one ``POST /lookup/id`` per chunk rather
+        than one GET each: enriching 10 transcripts took ~100s serially and ~7s batched.
+
         Args:
             ids: List of transcript or gene IDs
             species: Species name (e.g., 'homo_sapiens', 'human')
@@ -173,40 +175,146 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         # Normalize species name for Ensembl (convert 'human' to 'homo_sapiens')
         normalized_species = self._normalize_species(species)
 
+        def cache_key_for(identifier: str) -> str:
+            return f"id:{normalized_species}:{identifier}:{reference.value or 'default'}"
+
+        pending: list[str] = []
         for identifier in ids:
-            # Check cache first
-            cache_key = f"id:{normalized_species}:{identifier}:{reference.value or 'default'}"
-            cached = self._get_cached(cache_key)
-            if cached is not None:
-                if isinstance(cached, TranscriptAnnotation):
-                    transcripts[identifier] = cached
-                else:
-                    unresolved.append(identifier)
-                continue
-
-            try:
-                annotation = await self._fetch_annotation_by_id(identifier, normalized_species)
-                if annotation:
-                    # Update source metadata
-                    annotation.provider = "ensembl_rest"
-                    annotation.endpoint = f"{self.base_url}/lookup/id/{identifier}"
-                    annotation.reference_choice = reference.value
-
-                    transcripts[identifier] = annotation
-                    self._set_cache(cache_key, annotation)
-                else:
-                    unresolved.append(identifier)
-                    self._set_cache(cache_key, None)
-            except DatabaseAccessError:
-                logger.warning(f"Failed to fetch annotation for {identifier}")
+            cached = self._get_cached(cache_key_for(identifier))
+            if cached is None:
+                pending.append(identifier)
+            elif isinstance(cached, TranscriptAnnotation):
+                transcripts[identifier] = cached
+            else:
                 unresolved.append(identifier)
-                self._set_cache(cache_key, None)
+
+        resolved = await self._fetch_annotations_by_ids(pending, normalized_species)
+
+        for identifier in pending:
+            annotation = resolved.get(identifier)
+            if annotation:
+                # Update source metadata
+                annotation.provider = "ensembl_rest"
+                annotation.endpoint = f"{self.base_url}/lookup/id/{identifier}"
+                annotation.reference_choice = reference.value
+
+                transcripts[identifier] = annotation
+                self._set_cache(cache_key_for(identifier), annotation)
+            else:
+                unresolved.append(identifier)
+                self._set_cache(cache_key_for(identifier), None)
 
         return TranscriptAnnotationBundle(
             transcripts=transcripts,
             unresolved=unresolved,
             reference_choice=reference,
         )
+
+    async def _fetch_annotations_by_ids(self, ids: list[str], species: str) -> dict[str, TranscriptAnnotation]:
+        """Look up annotations for many ids, one POST per chunk.
+
+        Ensembl's POST lookup silently omits ids it does not know and answers the whole
+        request with a single status, so anything missing from the response is retried
+        individually -- that per-id retry is where a genuine 404 is distinguished from a
+        transient failure of the batch.
+
+        Args:
+            ids: Transcript or gene IDs to resolve
+            species: Ensembl species name
+
+        Returns:
+            Mapping of identifier to annotation for the ids that resolved.
+        """
+        if not ids:
+            return {}
+
+        url = f"{self.base_url}/lookup/id?species={species}&expand=1"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        resolved: dict[str, TranscriptAnnotation] = {}
+
+        async with ensembl_session(None, self.timeout) as session:
+            for start in range(0, len(ids), ENSEMBL_POST_CHUNK_SIZE):
+                chunk = ids[start : start + ENSEMBL_POST_CHUNK_SIZE]
+
+                try:
+                    payload = await ensembl_request_json(
+                        session,
+                        "POST",
+                        url,
+                        headers=headers,
+                        json_body={"ids": chunk},
+                        retry_cap=self.timeout,
+                    )
+                except DatabaseAccessError as e:
+                    logger.warning(f"Batch annotation lookup failed ({e}); falling back to per-id requests")
+                    payload = None
+
+                for identifier, data in (payload or {}).items():
+                    if isinstance(data, Mapping):
+                        resolved[identifier] = self._parse_transcript_data(data)
+
+                for identifier in [i for i in chunk if i not in resolved]:
+                    try:
+                        annotation = await self._fetch_annotation_by_id(identifier, species)
+                    except DatabaseAccessError:
+                        logger.warning(f"Failed to fetch annotation for {identifier}")
+                        continue
+                    if annotation:
+                        resolved[identifier] = annotation
+
+            await self._enrich_gene_metadata(resolved.values(), species, session)
+
+        return resolved
+
+    async def _enrich_gene_metadata(
+        self,
+        annotations: Iterable[TranscriptAnnotation],
+        species: str,
+        session: aiohttp.ClientSession,
+    ) -> None:
+        """Fill in gene symbol and gene interval from the parent gene records.
+
+        A transcript lookup carries no gene symbol, so the parent genes are resolved in one
+        POST for the whole set instead of one GET per transcript. Annotations that already
+        have a symbol (the per-id path resolves its own) are left alone.
+        """
+        needing = [a for a in annotations if not a.symbol and a.gene_id]
+        gene_ids = sorted({a.gene_id for a in needing if a.gene_id})
+        if not gene_ids:
+            return
+
+        url = f"{self.base_url}/lookup/id?species={species}"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        metadata: dict[str, tuple[str | None, Interval | None]] = {}
+
+        for start in range(0, len(gene_ids), ENSEMBL_POST_CHUNK_SIZE):
+            chunk = gene_ids[start : start + ENSEMBL_POST_CHUNK_SIZE]
+            try:
+                payload = await ensembl_request_json(
+                    session, "POST", url, headers=headers, json_body={"ids": chunk}, retry_cap=self.timeout
+                )
+            except DatabaseAccessError as e:
+                logger.debug(f"Gene metadata lookup failed for {chunk} ({e})")
+                payload = None
+
+            for gene_id, data in (payload or {}).items():
+                if isinstance(data, Mapping):
+                    metadata[gene_id] = self._parse_gene_metadata(data)
+
+        # A failed or partial batch must not leave resolvable parent genes unqueried.
+        for gene_id in gene_ids:
+            if gene_id not in metadata:
+                try:
+                    metadata[gene_id] = await self._fetch_gene_metadata(gene_id, species, session)
+                except (DatabaseAccessError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning("Failed to fetch parent gene %s: %s", gene_id, exc)
+
+        for annotation in needing:
+            symbol, interval = metadata.get(annotation.gene_id or "", (None, None))
+            if symbol:
+                annotation.symbol = symbol
+            if interval:
+                annotation.gene_interval = interval
 
     async def fetch_by_regions(
         self, regions: list[str], *, species: str, reference: ReferenceChoice
@@ -312,8 +420,8 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
                     return annotation
 
-                if response.status in (403, 502, 503, 504):
-                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                    raise ensembl_unavailable_error(response.status)
 
                 logger.warning(f"Unexpected response status {response.status} for {identifier}")
                 return None
@@ -399,8 +507,8 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 
                     return annotations
 
-                if response.status in (403, 502, 503, 504):
-                    raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                    raise ensembl_unavailable_error(response.status)
 
                 logger.warning(f"Unexpected response status {response.status} for region {region}")
                 return {}
@@ -429,24 +537,28 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             if response.status == 404:
                 return None, None
             if response.status == 200:
-                data = cast(dict[str, Any], await response.json())
-                symbol = data.get("display_name") or data.get("external_name")
-                interval: Interval | None = None
-                seq_region_name = data.get("seq_region_name")
-                start = data.get("start")
-                end = data.get("end")
-                strand = data.get("strand")
-                if seq_region_name and start and end:
-                    interval = Interval(
-                        seq_region_name=str(seq_region_name),
-                        start=int(start),
-                        end=int(end),
-                        strand=int(strand) if strand is not None else None,
-                    )
-                return (str(symbol) if symbol else None), interval
-            if response.status in (403, 502, 503, 504):
-                raise DatabaseAccessError(f"HTTP {response.status}: Access denied or server unavailable", "Ensembl")
+                return self._parse_gene_metadata(cast(dict[str, Any], await response.json()))
+            if response.status in ENSEMBL_UNAVAILABLE_STATUSES:
+                raise ensembl_unavailable_error(response.status)
             return None, None
+
+    @staticmethod
+    def _parse_gene_metadata(data: Mapping[str, Any]) -> tuple[str | None, Interval | None]:
+        """Pull gene symbol and gene interval out of an Ensembl gene lookup response."""
+        symbol = data.get("display_name") or data.get("external_name")
+        interval: Interval | None = None
+        seq_region_name = data.get("seq_region_name")
+        start = data.get("start")
+        end = data.get("end")
+        strand = data.get("strand")
+        if seq_region_name and start and end:
+            interval = Interval(
+                seq_region_name=str(seq_region_name),
+                start=int(start),
+                end=int(end),
+                strand=int(strand) if strand is not None else None,
+            )
+        return (str(symbol) if symbol else None), interval
 
     def _parse_transcript_data(self, data: Mapping[str, Any]) -> TranscriptAnnotation:
         """Parse Ensembl lookup/id response into TranscriptAnnotation.
@@ -484,15 +596,11 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
         # Parse exons
         exons: list[Interval] = []
         if "Exon" in data and isinstance(data["Exon"], list):
-            for exon_data in data["Exon"]:
-                if isinstance(exon_data, dict):
-                    exon = Interval(
-                        seq_region_name=str(exon_data.get("seq_region_name", seq_region_name)),
-                        start=int(exon_data.get("start", 0)),
-                        end=int(exon_data.get("end", 0)),
-                        strand=int(exon_data.get("strand", strand)),
-                    )
-                    exons.append(exon)
+            exons = [
+                _interval_from(exon_data, seq_region_name=seq_region_name, strand=strand)
+                for exon_data in data["Exon"]
+                if isinstance(exon_data, dict)
+            ]
 
         # Parse CDS (coding sequence intervals)
         cds_intervals: list[Interval] = []
@@ -646,26 +754,15 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
             strand = int(transcript_data.get("strand", 1))
 
             # Build exon intervals
-            exons: list[Interval] = []
-            for exon_data in grouped["exons"]:
-                exon = Interval(
-                    seq_region_name=str(exon_data.get("seq_region_name", seq_region_name)),
-                    start=int(exon_data.get("start", 0)),
-                    end=int(exon_data.get("end", 0)),
-                    strand=int(exon_data.get("strand", strand)),
-                )
-                exons.append(exon)
+            exons: list[Interval] = [
+                _interval_from(exon_data, seq_region_name=seq_region_name, strand=strand)
+                for exon_data in grouped["exons"]
+            ]
 
             # Build CDS intervals
-            cds_intervals: list[Interval] = []
-            for cds_data in grouped["cds"]:
-                cds = Interval(
-                    seq_region_name=str(cds_data.get("seq_region_name", seq_region_name)),
-                    start=int(cds_data.get("start", 0)),
-                    end=int(cds_data.get("end", 0)),
-                    strand=int(cds_data.get("strand", strand)),
-                )
-                cds_intervals.append(cds)
+            cds_intervals: list[Interval] = [
+                _interval_from(cds_data, seq_region_name=seq_region_name, strand=strand) for cds_data in grouped["cds"]
+            ]
 
             annotation = TranscriptAnnotation(
                 transcript_id=transcript_id,
@@ -730,31 +827,12 @@ class EnsemblTranscriptModelClient(AbstractTranscriptAnnotationClient):
 class VepConsequenceClient:
     """Optional VEP (Variant Effect Predictor) consequence enrichment client.
 
-    Provides additional functional annotation for transcript variants.
-    This is an optional enhancement and not required for base functionality.
+    **Current Status: PLACEHOLDER** -- `enrich_annotations` returns the input bundle unchanged. When
+    activated it would query the Ensembl VEP REST API for consequence predictions and enrich each
+    TranscriptAnnotation with them.
 
-    **Current Status: PLACEHOLDER**
-
-    This client exists as a stub for future VEP integration. The `enrich_annotations`
-    method currently returns the input bundle unchanged.
-
-    **Future Implementation:**
-
-    When activated (via config flag), this client will:
-
-    1. Query Ensembl VEP REST API for consequence predictions
-    2. Enrich TranscriptAnnotation objects with variant consequence types (missense, nonsense, etc.),
-       conservation scores, regulatory feature overlaps, and population frequency data
-    3. Maintain consistent caching strategy with EnsemblTranscriptModelClient
-
-    **Design Rationale:**
-
-    Separated from EnsemblTranscriptModelClient because:
-
-    - VEP queries are expensive (rate-limited, slower)
-    - Not all workflows need consequence predictions
-    - Allows independent caching strategies
-    - Can be enabled/disabled via configuration
+    Separate from EnsemblTranscriptModelClient because VEP queries are rate-limited and slower, not
+    every workflow needs them, and the two can then cache and be switched on independently.
     """
 
     def __init__(self, timeout: int = 30, base_url: str = "https://rest.ensembl.org"):

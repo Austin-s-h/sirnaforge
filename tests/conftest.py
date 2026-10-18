@@ -1,5 +1,8 @@
 """Shared pytest fixtures for all test modules."""
 
+import gzip
+import hashlib
+import json
 import os
 import shutil
 import socket
@@ -93,7 +96,7 @@ def _network_available() -> bool:
 
 
 @pytest.fixture
-def toy_genome_path():
+def toy_transcriptome_path():
     """Path to toy transcriptome database for testing off-target analysis.
 
     This provides a small transcriptome database suitable for testing
@@ -101,31 +104,55 @@ def toy_genome_path():
     Note: This is transcriptome (cDNA) alignment, not genomic DNA.
     """
     test_data_dir = Path(__file__).parent / "unit" / "data"
-    genome_path = test_data_dir / "toy_transcriptome_db.fasta"
+    transcriptome_db_path = test_data_dir / "toy_transcriptome_db.fasta"
 
-    if not genome_path.exists():
-        pytest.skip(f"Toy genome database not found: {genome_path}")
+    if not transcriptome_db_path.exists():
+        pytest.skip(f"Toy transcriptome database not found: {transcriptome_db_path}")
 
-    return genome_path
+    return transcriptome_db_path
 
 
 @pytest.fixture(scope="session")
-def toy_genome_index_prefix(tmp_path_factory):
-    """Build a BWA index for the toy transcriptome database once per test session."""
-    test_data_dir = Path(__file__).parent / "unit" / "data"
-    genome_fasta = test_data_dir / "toy_transcriptome_db.fasta"
+def human_chr21_transcriptome(tmp_path_factory):
+    """A real single-chromosome cDNA reference, without a live download in CI."""
+    fixture = Path(__file__).parent / "container" / "data" / "human_grch38_chr21.cdna.fa.gz"
+    provenance = json.loads(fixture.with_suffix(".json").read_text())
+    compressed = fixture.read_bytes()
+    assert hashlib.sha256(compressed).hexdigest() == provenance["gzip_sha256"]
+    fasta = gzip.decompress(compressed)
+    assert hashlib.sha256(fasta).hexdigest() == provenance["fasta_sha256"]
+    headers = [line for line in fasta.splitlines() if line.startswith(b">")]
+    assert len(headers) == provenance["records"]
+    assert all(b" chromosome:GRCh38:21:" in header for header in headers)
+    destination = tmp_path_factory.mktemp("human_chr21") / "human_grch38_chr21.cdna.fa"
+    destination.write_bytes(fasta)
+    return destination
 
-    if not genome_fasta.exists():
-        pytest.skip(f"Toy genome database not found: {genome_fasta}")
+
+@pytest.fixture(scope="session")
+def toy_transcriptome_index_prefix(tmp_path_factory):
+    """Build a BWA index for the toy transcriptome database once per test session.
+
+    The cDNA FASTA is copied beside the index prefix because a caller-supplied index is only accepted
+    with one there: the reference resolver needs readable cDNA to build the transcript index that
+    resolves a hit to a gene, and an index whose sequences cannot be resolved aligned fine and then
+    classified against nothing. A fixture that omits it is asserting the pre-#99 contract.
+    """
+    test_data_dir = Path(__file__).parent / "unit" / "data"
+    transcriptome_fasta = test_data_dir / "toy_transcriptome_db.fasta"
+
+    if not transcriptome_fasta.exists():
+        pytest.skip(f"Toy transcriptome database not found: {transcriptome_fasta}")
 
     index_dir = tmp_path_factory.mktemp("toy_transcriptome_index")
     index_prefix = Path(index_dir) / "toy_transcriptome"
+    shutil.copyfile(transcriptome_fasta, index_prefix.with_suffix(".fa"))
 
     if not all(index_prefix.with_suffix(suffix).exists() for suffix in (".amb", ".ann", ".bwt.2bit.64", ".pac", ".sa")):
         try:
-            build_bwa_index(genome_fasta, index_prefix)
+            build_bwa_index(transcriptome_fasta, index_prefix)
         except Exception as exc:  # pragma: no cover - requires bwa tooling
-            pytest.skip(f"Unable to build toy genome index: {exc}")
+            pytest.skip(f"Unable to build toy transcriptome index: {exc}")
 
     return index_prefix
 
@@ -142,19 +169,18 @@ def realistic_transcripts_fasta():
 
 
 @pytest.fixture
-def genome_config_for_nextflow(toy_genome_path):
+def transcriptome_config_for_nextflow(toy_transcriptome_path):
     """Nextflow-compatible transcriptome configuration for tests.
 
     Enables the optional resource-intensive transcriptome off-target analysis
     (BWA alignment against cDNA sequences). Without this, only lightweight
     miRNA seed match analysis runs.
 
-    Returns a dict with genome parameters that can be passed to Nextflow workflows.
-    Note: 'genome' in parameter names refers to the Nextflow convention, not genomic DNA.
+    Returns a dict with the transcriptome parameters passed to Nextflow workflows.
     """
     return {
-        "--genome_species": "test_species",
-        "--genome_fastas": f"test_species:{toy_genome_path}",
+        "--transcriptome_species": "test_species",
+        "--transcriptome_fastas": f"test_species:{toy_transcriptome_path}",
     }
 
 
@@ -162,7 +188,7 @@ def genome_config_for_nextflow(toy_genome_path):
 def mirna_only_config_for_nextflow():
     """Nextflow configuration for lightweight miRNA-only analysis.
 
-    This skips the resource-intensive genome/transcriptome analysis (8-60GB RAM)
+    This skips the resource-intensive transcriptome analysis (8-60GB RAM)
     and only runs lightweight miRNA seed match comparison (<1GB RAM).
 
     Returns a dict with minimal parameters for miRNA-only mode.

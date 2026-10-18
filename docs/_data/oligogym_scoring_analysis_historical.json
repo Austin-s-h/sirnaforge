@@ -1,0 +1,673 @@
+{
+  "analysis": "Exploratory OligoGym scoring analysis",
+  "source": {
+    "candidate_links": "/workspace/tests/data/benchmarks/oligogym_native_design/candidate_benchmark_links.csv",
+    "observations": "/workspace/tests/data/benchmarks/oligogym_native_design/observations.csv",
+    "completed_runs": {
+      "ichihara_2007_1": "/workspace/workflow_results/oligogym_native_design/ichihara_2007_1_qualified_all_representative_orthologs",
+      "ichihara_2007_2": "/workspace/workflow_results/oligogym_native_design/ichihara_2007_2_qualified_all_representative_orthologs",
+      "martinelli_2023_1": "/workspace/workflow_results/oligogym_native_design/martinelli_2023_1_qualified_all_representative_unqualified_target"
+    }
+  },
+  "observation_counts": {
+    "ichihara_2007_1": 186,
+    "ichihara_2007_2": 55,
+    "martinelli_2023_1": 35
+  },
+  "aggregation": {
+    "primary": "median across exact native transcript-site candidate rows per benchmark observation",
+    "sensitivity": "maximum across exact native transcript-site candidate rows",
+    "candidate_rows_linked": 10060
+  },
+  "baseline_weights": {
+    "off_target": 0.25,
+    "target_accessibility": 0.3,
+    "asymmetry": 0.25,
+    "gc_content": 0.2
+  },
+  "panel_correlations_median": {
+    "ichihara_2007_1": {
+      "current_score": {
+        "n": 186,
+        "spearman_rho": 0.2647665476103093,
+        "pearson_r": 0.25450978407435704
+      },
+      "off_target": {
+        "n": 186,
+        "spearman_rho": -0.1797360474520748,
+        "pearson_r": -0.13658465172939455
+      },
+      "target_accessibility": {
+        "n": 186,
+        "spearman_rho": 0.10441117713334125,
+        "pearson_r": 0.1216546846414402
+      },
+      "asymmetry": {
+        "n": 186,
+        "spearman_rho": 0.1848156803117525,
+        "pearson_r": 0.18173115570122295
+      },
+      "gc_content": {
+        "n": 186,
+        "spearman_rho": 0.30293079508837134,
+        "pearson_r": 0.24460238451624292
+      }
+    },
+    "ichihara_2007_2": {
+      "current_score": {
+        "n": 55,
+        "spearman_rho": 0.22754972179636926,
+        "pearson_r": 0.025248673954557085
+      },
+      "off_target": {
+        "n": 55,
+        "spearman_rho": null,
+        "pearson_r": null
+      },
+      "target_accessibility": {
+        "n": 55,
+        "spearman_rho": 0.014777363641587014,
+        "pearson_r": 0.003278886319033153
+      },
+      "asymmetry": {
+        "n": 55,
+        "spearman_rho": 0.1215261069685463,
+        "pearson_r": 0.015479579280834902
+      },
+      "gc_content": {
+        "n": 55,
+        "spearman_rho": 0.2311238263362152,
+        "pearson_r": 0.022502734170334708
+      }
+    },
+    "martinelli_2023_1": {
+      "current_score": {
+        "n": 35,
+        "spearman_rho": -0.3173471820664335,
+        "pearson_r": -0.21363401076158475
+      },
+      "off_target": {
+        "n": 35,
+        "spearman_rho": null,
+        "pearson_r": null
+      },
+      "target_accessibility": {
+        "n": 35,
+        "spearman_rho": 0.08277584979482766,
+        "pearson_r": 0.06020242009609262
+      },
+      "asymmetry": {
+        "n": 35,
+        "spearman_rho": -0.005327552292270369,
+        "pearson_r": -0.11708309971587119
+      },
+      "gc_content": {
+        "n": 35,
+        "spearman_rho": -0.0857952448361746,
+        "pearson_r": -0.16731861868064785
+      }
+    },
+    "pooled": {
+      "current_score": {
+        "n": 276,
+        "spearman_rho": 0.09766929817962333,
+        "pearson_r": 0.03198863595939153
+      },
+      "off_target": {
+        "n": 276,
+        "spearman_rho": -0.05466719475127749,
+        "pearson_r": -0.06302094576771151
+      },
+      "target_accessibility": {
+        "n": 276,
+        "spearman_rho": 0.06363908450060436,
+        "pearson_r": 0.021595886638859252
+      },
+      "asymmetry": {
+        "n": 276,
+        "spearman_rho": 0.030485572926587847,
+        "pearson_r": -0.009411603055617421
+      },
+      "gc_content": {
+        "n": 276,
+        "spearman_rho": 0.17654852115475836,
+        "pearson_r": 0.0790474988401772
+      }
+    }
+  },
+  "panel_correlations_maximum": {
+    "ichihara_2007_1": {
+      "current_score": {
+        "n": 186,
+        "spearman_rho": 0.278783391697053,
+        "pearson_r": 0.2655115481416821
+      },
+      "off_target": {
+        "n": 186,
+        "spearman_rho": -0.1797360474520748,
+        "pearson_r": -0.13658465172939455
+      },
+      "target_accessibility": {
+        "n": 186,
+        "spearman_rho": 0.12524809464221967,
+        "pearson_r": 0.14385263413609134
+      },
+      "asymmetry": {
+        "n": 186,
+        "spearman_rho": 0.1848156803117525,
+        "pearson_r": 0.18173115570122295
+      },
+      "gc_content": {
+        "n": 186,
+        "spearman_rho": 0.30293079508837134,
+        "pearson_r": 0.24460238451624292
+      }
+    },
+    "ichihara_2007_2": {
+      "current_score": {
+        "n": 55,
+        "spearman_rho": 0.15666173288489316,
+        "pearson_r": -0.02230424599382478
+      },
+      "off_target": {
+        "n": 55,
+        "spearman_rho": null,
+        "pearson_r": null
+      },
+      "target_accessibility": {
+        "n": 55,
+        "spearman_rho": -0.11699047303535148,
+        "pearson_r": -0.09272117043035913
+      },
+      "asymmetry": {
+        "n": 55,
+        "spearman_rho": 0.1215261069685463,
+        "pearson_r": 0.015479579280834902
+      },
+      "gc_content": {
+        "n": 55,
+        "spearman_rho": 0.2311238263362152,
+        "pearson_r": 0.022502734170334708
+      }
+    },
+    "martinelli_2023_1": {
+      "current_score": {
+        "n": 35,
+        "spearman_rho": -0.3173471820664335,
+        "pearson_r": -0.2516864962325197
+      },
+      "off_target": {
+        "n": 35,
+        "spearman_rho": null,
+        "pearson_r": null
+      },
+      "target_accessibility": {
+        "n": 35,
+        "spearman_rho": 0.1505232311831016,
+        "pearson_r": 0.0651217463946875
+      },
+      "asymmetry": {
+        "n": 35,
+        "spearman_rho": -0.005327552292270369,
+        "pearson_r": -0.11708309971587119
+      },
+      "gc_content": {
+        "n": 35,
+        "spearman_rho": -0.0857952448361746,
+        "pearson_r": -0.16731861868064785
+      }
+    },
+    "pooled": {
+      "current_score": {
+        "n": 276,
+        "spearman_rho": 0.1031303864259316,
+        "pearson_r": 0.034314964385134206
+      },
+      "off_target": {
+        "n": 276,
+        "spearman_rho": -0.05466719475127749,
+        "pearson_r": -0.06302094576771151
+      },
+      "target_accessibility": {
+        "n": 276,
+        "spearman_rho": 0.07070441788986533,
+        "pearson_r": 0.027519234911322934
+      },
+      "asymmetry": {
+        "n": 276,
+        "spearman_rho": 0.030485572926587847,
+        "pearson_r": -0.009411603055617421
+      },
+      "gc_content": {
+        "n": 276,
+        "spearman_rho": 0.17654852115475836,
+        "pearson_r": 0.0790474988401772
+      }
+    }
+  },
+  "component_variation_median": {
+    "ichihara_2007_1": {
+      "off_target": {
+        "n": 186,
+        "unique_values": 12,
+        "sd": 16.372463193018437
+      },
+      "target_accessibility": {
+        "n": 186,
+        "unique_values": 185,
+        "sd": 18.59164903869309
+      },
+      "asymmetry": {
+        "n": 186,
+        "unique_values": 121,
+        "sd": 27.352385925594763
+      },
+      "gc_content": {
+        "n": 186,
+        "unique_values": 14,
+        "sd": 37.445816113417436
+      }
+    },
+    "ichihara_2007_2": {
+      "off_target": {
+        "n": 55,
+        "unique_values": 1,
+        "sd": 0.0
+      },
+      "target_accessibility": {
+        "n": 55,
+        "unique_values": 55,
+        "sd": 23.477987218166067
+      },
+      "asymmetry": {
+        "n": 55,
+        "unique_values": 39,
+        "sd": 30.43740648757163
+      },
+      "gc_content": {
+        "n": 55,
+        "unique_values": 8,
+        "sd": 39.123481029641894
+      }
+    },
+    "martinelli_2023_1": {
+      "off_target": {
+        "n": 35,
+        "unique_values": 1,
+        "sd": 0.0
+      },
+      "target_accessibility": {
+        "n": 35,
+        "unique_values": 5,
+        "sd": 6.229671535740046
+      },
+      "asymmetry": {
+        "n": 35,
+        "unique_values": 5,
+        "sd": 15.316820462350197
+      },
+      "gc_content": {
+        "n": 35,
+        "unique_values": 4,
+        "sd": 15.660455707670543
+      }
+    }
+  },
+  "bootstrap_current_score_median": {
+    "ichihara_2007_1": {
+      "iterations": 2000,
+      "valid_iterations": 2000,
+      "rho_median": 0.26764485791748815,
+      "rho_p025": 0.13161222682694157,
+      "rho_p975": 0.3998193831796863
+    },
+    "ichihara_2007_2": {
+      "iterations": 2000,
+      "valid_iterations": 2000,
+      "rho_median": 0.22436428573716177,
+      "rho_p025": -0.041229848033991524,
+      "rho_p975": 0.4723185819101811
+    },
+    "martinelli_2023_1": {
+      "iterations": 2000,
+      "valid_iterations": 2000,
+      "rho_median": -0.32210365822537457,
+      "rho_p025": -0.6696583848707063,
+      "rho_p975": 0.08517868889633938
+    }
+  },
+  "calibration_median_current_score": {
+    "ichihara_2007_1": {
+      "n": 186,
+      "intercept": 44.26643844578767,
+      "slope": 0.34210076230655906,
+      "rmse": 16.269417116750684,
+      "r_squared": 0.06477523018957565,
+      "activity_mean": 66.11989247311827,
+      "activity_sd": 16.868816007707505,
+      "score_mean": 63.880167585676325,
+      "score_sd": 12.549749058625173
+    },
+    "ichihara_2007_2": {
+      "n": 55,
+      "intercept": 78.48222618315077,
+      "slope": 0.044878526076457675,
+      "rmse": 22.1026570127822,
+      "r_squared": 0.0006374955364633061,
+      "activity_mean": 81.49681512812096,
+      "activity_sd": 22.313485951485077,
+      "score_mean": 67.17219143593029,
+      "score_sd": 12.553574745722047
+    },
+    "martinelli_2023_1": {
+      "n": 35,
+      "intercept": 180.30396280700387,
+      "slope": -1.6127602991867613,
+      "rmse": 29.25691558463999,
+      "r_squared": 0.0456394905540809,
+      "activity_mean": 50.68571428571428,
+      "activity_sd": 30.385533930949897,
+      "score_mean": 80.37043606954484,
+      "score_sd": 4.02501443399515
+    }
+  },
+  "weight_optimization": {
+    "fit_panels": [
+      "ichihara_2007_1",
+      "ichihara_2007_2"
+    ],
+    "objective": "equal-weight mean of panel Spearman correlations; nonnegative weights summing to 1",
+    "grid": {
+      "objective_mean_panel_spearman": 0.29641579916375543,
+      "weights": {
+        "off_target": 0.06,
+        "target_accessibility": 0.16,
+        "asymmetry": 0.3,
+        "gc_content": 0.4799999999999999
+      },
+      "panel_rho": {
+        "ichihara_2007_1": 0.32098591607983185,
+        "ichihara_2007_2": 0.271845682247679
+      },
+      "grid_step": 0.02
+    },
+    "fixed_off_target_grid": {
+      "objective_mean_panel_spearman": 0.2827081962532858,
+      "weights": {
+        "off_target": 0.25,
+        "target_accessibility": 0.06,
+        "asymmetry": 0.34,
+        "gc_content": 0.3499999999999999
+      },
+      "panel_rho": {
+        "ichihara_2007_1": 0.29389588451995446,
+        "ichihara_2007_2": 0.2715205079866172
+      },
+      "grid_step": 0.02,
+      "fixed_off_target": 0.25
+    },
+    "leave_one_panel_out": [
+      {
+        "fit_panels": [
+          "ichihara_2007_1"
+        ],
+        "holdout_panel": "ichihara_2007_2",
+        "fit": {
+          "objective_mean_panel_spearman": 0.32615028408515245,
+          "weights": {
+            "off_target": 0.0,
+            "target_accessibility": 0.0,
+            "asymmetry": 0.02,
+            "gc_content": 0.98
+          },
+          "panel_rho": {
+            "ichihara_2007_1": 0.32615028408515245
+          },
+          "grid_step": 0.02
+        },
+        "holdout_spearman_rho": 0.24013031353964243
+      },
+      {
+        "fit_panels": [
+          "ichihara_2007_2"
+        ],
+        "holdout_panel": "ichihara_2007_1",
+        "fit": {
+          "objective_mean_panel_spearman": 0.2733631621326341,
+          "weights": {
+            "off_target": 0.4,
+            "target_accessibility": 0.06,
+            "asymmetry": 0.26,
+            "gc_content": 0.28
+          },
+          "panel_rho": {
+            "ichihara_2007_2": 0.2733631621326341
+          },
+          "grid_step": 0.02
+        },
+        "holdout_spearman_rho": 0.26377999751426257
+      }
+    ]
+  },
+  "candidate_profiles": {
+    "current": {
+      "weights": {
+        "off_target": 0.25,
+        "target_accessibility": 0.3,
+        "asymmetry": 0.25,
+        "gc_content": 0.2
+      },
+      "panel_rho": {
+        "ichihara_2007_1": 0.2647665476103093,
+        "ichihara_2007_2": 0.22754972179636926,
+        "martinelli_2023_1": -0.3173471820664335
+      }
+    },
+    "fixed_off_target_rounded": {
+      "weights": {
+        "off_target": 0.25,
+        "target_accessibility": 0.1,
+        "asymmetry": 0.3,
+        "gc_content": 0.35
+      },
+      "panel_rho": {
+        "ichihara_2007_1": 0.2958363483667156,
+        "ichihara_2007_2": 0.2592000165397194,
+        "martinelli_2023_1": -0.22335961774608154
+      }
+    },
+    "unconstrained_rounded": {
+      "weights": {
+        "off_target": 0.1,
+        "target_accessibility": 0.2,
+        "asymmetry": 0.3,
+        "gc_content": 0.4
+      },
+      "panel_rho": {
+        "ichihara_2007_1": 0.32052434491013126,
+        "ichihara_2007_2": 0.2409541274468064,
+        "martinelli_2023_1": -0.22335961774608154
+      }
+    }
+  },
+  "gc_sensitivity": {
+    "gc_0_100": {
+      "lower": 0,
+      "upper": 100,
+      "panels": {
+        "ichihara_2007_1": {
+          "candidate_rows": 5205,
+          "observations_with_candidate": 186,
+          "observations_total_mapped": 186,
+          "observation_retention_fraction": 1.0,
+          "median_candidates_per_observation": 33.0,
+          "current_score_spearman": {
+            "n": 186,
+            "spearman_rho": 0.2647665476103093,
+            "pearson_r": 0.25450978407435704
+          }
+        },
+        "ichihara_2007_2": {
+          "candidate_rows": 3270,
+          "observations_with_candidate": 55,
+          "observations_total_mapped": 55,
+          "observation_retention_fraction": 1.0,
+          "median_candidates_per_observation": 64.0,
+          "current_score_spearman": {
+            "n": 55,
+            "spearman_rho": 0.22754972179636926,
+            "pearson_r": 0.025248673954557085
+          }
+        },
+        "martinelli_2023_1": {
+          "candidate_rows": 1585,
+          "observations_with_candidate": 35,
+          "observations_total_mapped": 35,
+          "observation_retention_fraction": 1.0,
+          "median_candidates_per_observation": 27.0,
+          "current_score_spearman": {
+            "n": 35,
+            "spearman_rho": -0.3173471820664335,
+            "pearson_r": -0.21363401076158475
+          }
+        }
+      }
+    },
+    "gc_25_70": {
+      "lower": 25,
+      "upper": 70,
+      "panels": {
+        "ichihara_2007_1": {
+          "candidate_rows": 4929,
+          "observations_with_candidate": 176,
+          "observations_total_mapped": 186,
+          "observation_retention_fraction": 0.946236559139785,
+          "median_candidates_per_observation": 33.0,
+          "current_score_spearman": {
+            "n": 176,
+            "spearman_rho": 0.2404960265494637,
+            "pearson_r": 0.23913526300925864
+          }
+        },
+        "ichihara_2007_2": {
+          "candidate_rows": 3162,
+          "observations_with_candidate": 53,
+          "observations_total_mapped": 55,
+          "observation_retention_fraction": 0.9636363636363636,
+          "median_candidates_per_observation": 64.0,
+          "current_score_spearman": {
+            "n": 53,
+            "spearman_rho": 0.18843797317990452,
+            "pearson_r": 0.00274660055857445
+          }
+        },
+        "martinelli_2023_1": {
+          "candidate_rows": 1585,
+          "observations_with_candidate": 35,
+          "observations_total_mapped": 35,
+          "observation_retention_fraction": 1.0,
+          "median_candidates_per_observation": 27.0,
+          "current_score_spearman": {
+            "n": 35,
+            "spearman_rho": -0.3173471820664335,
+            "pearson_r": -0.21363401076158475
+          }
+        }
+      }
+    },
+    "gc_30_65": {
+      "lower": 30,
+      "upper": 65,
+      "panels": {
+        "ichihara_2007_1": {
+          "candidate_rows": 4631,
+          "observations_with_candidate": 166,
+          "observations_total_mapped": 186,
+          "observation_retention_fraction": 0.8924731182795699,
+          "median_candidates_per_observation": 33.0,
+          "current_score_spearman": {
+            "n": 166,
+            "spearman_rho": 0.22434682807163872,
+            "pearson_r": 0.2248376964734625
+          }
+        },
+        "ichihara_2007_2": {
+          "candidate_rows": 2925,
+          "observations_with_candidate": 49,
+          "observations_total_mapped": 55,
+          "observation_retention_fraction": 0.8909090909090909,
+          "median_candidates_per_observation": 64.0,
+          "current_score_spearman": {
+            "n": 49,
+            "spearman_rho": 0.17392674404783748,
+            "pearson_r": 0.012341339714158664
+          }
+        },
+        "martinelli_2023_1": {
+          "candidate_rows": 1585,
+          "observations_with_candidate": 35,
+          "observations_total_mapped": 35,
+          "observation_retention_fraction": 1.0,
+          "median_candidates_per_observation": 27.0,
+          "current_score_spearman": {
+            "n": 35,
+            "spearman_rho": -0.3173471820664335,
+            "pearson_r": -0.21363401076158475
+          }
+        }
+      }
+    },
+    "gc_35_60": {
+      "lower": 35,
+      "upper": 60,
+      "panels": {
+        "ichihara_2007_1": {
+          "candidate_rows": 4053,
+          "observations_with_candidate": 144,
+          "observations_total_mapped": 186,
+          "observation_retention_fraction": 0.7741935483870968,
+          "median_candidates_per_observation": 33.0,
+          "current_score_spearman": {
+            "n": 144,
+            "spearman_rho": 0.1792324580698185,
+            "pearson_r": 0.19080044659422837
+          }
+        },
+        "ichihara_2007_2": {
+          "candidate_rows": 2429,
+          "observations_with_candidate": 41,
+          "observations_total_mapped": 55,
+          "observation_retention_fraction": 0.7454545454545455,
+          "median_candidates_per_observation": 64.0,
+          "current_score_spearman": {
+            "n": 41,
+            "spearman_rho": 0.15367867923919198,
+            "pearson_r": 0.06321027041286556
+          }
+        },
+        "martinelli_2023_1": {
+          "candidate_rows": 781,
+          "observations_with_candidate": 29,
+          "observations_total_mapped": 35,
+          "observation_retention_fraction": 0.8285714285714286,
+          "median_candidates_per_observation": 27.0,
+          "current_score_spearman": {
+            "n": 29,
+            "spearman_rho": -0.4394989698768358,
+            "pearson_r": -0.40718967891080415
+          }
+        }
+      }
+    }
+  },
+  "expanded_reference_comparison": {
+    "status": "not_estimable",
+    "reason": "No successful full-expanded-isoform off-target run was retained; the final runs used deterministic representative references."
+  },
+  "caveats": [
+    "The analysis is observation-level after transcript-site aggregation; it is not a candidate-row test.",
+    "The two Ichihara panels are the primary fitting data because Martinelli target identity is unavailable and its off-target orthology is intentionally unqualified.",
+    "The weight search is exploratory and uses a coarse 0.02 grid; it is not a validated production fit.",
+    "Calibration is descriptive in-sample linear calibration, not an independently validated activity predictor."
+  ]
+}

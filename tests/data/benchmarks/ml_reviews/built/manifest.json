@@ -1,0 +1,77 @@
+{
+  "collections": {
+    "ichihara_2007": {
+      "compatible_declared_core": 2850
+    },
+    "katoh_2007": {
+      "compatible_core_only": 702
+    },
+    "kliuchnikov_2024": {
+      "compatible_full_duplex": 30
+    },
+    "shabalina_2006": {
+      "compatible_core_only": 653
+    },
+    "shabalina_independent": {
+      "compatible_core_only": 32
+    },
+    "sirnaefficacydb": {
+      "compatible_core_only": 702,
+      "compatible_declared_core": 2842
+    },
+    "takasaki_measured": {
+      "compatible_core_only": 196
+    },
+    "wang_2009": {
+      "compatible_full_duplex": 280
+    }
+  },
+  "counts": {
+    "compatible_rows": 8287,
+    "excluded_rows": 0,
+    "sequence_clusters": 4091,
+    "source_rows": 8287
+  },
+  "existing_sequence_overlap_rows": 6158,
+  "inputs": [
+    {
+      "path": "source_extracts/ichihara_2007.jsonl",
+      "sha256": "bcaaa0891f6083586cc4de431749dab507e9ec8d8a29d9a2fb6ba2d589b99291"
+    },
+    {
+      "path": "source_extracts/katoh_2007.jsonl",
+      "sha256": "1f11ee0b1cb6f7c852b22cc367547de7e40222187ffd41ecaa6728ad339f4866"
+    },
+    {
+      "path": "source_extracts/shabalina_2006.jsonl",
+      "sha256": "0e7b3a4e10f1b57b765dd7c1bedcd29c908a9b43ae773db257a043f1aee6c303"
+    },
+    {
+      "path": "source_extracts/shabalina_independent.jsonl",
+      "sha256": "12ef44b301d40aa68331a09495e2ef191dfd739b4a729369a0202c9a7093d3b9"
+    },
+    {
+      "path": "source_extracts/wang_2009.jsonl",
+      "sha256": "911580093b52462391dd0a7abe3f0eeab9c2ffb7b693044c8dfa5523f53693eb"
+    },
+    {
+      "path": "source_extracts/sirnaefficacydb.jsonl",
+      "sha256": "37cd17f6e09c0c2fa0e372f4b016cb675d307bcd8359317a4e24b1f001a49fdc"
+    },
+    {
+      "path": "source_extracts/kliuchnikov_2024.jsonl",
+      "sha256": "98a3e5d689419467c7c3b616ca5c371f0320442af8890d942de82014f94ab22a"
+    },
+    {
+      "path": "source_extracts/takasaki_measured.jsonl",
+      "sha256": "f0513f1000d7b035729a715ca002c23f2afe48fa1b16e852e53150ce80831e15"
+    }
+  ],
+  "interpretation": "Source rows are overlapping assay views, not independent new measurements. No validation split assigned.",
+  "outputs": {
+    "excluded.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "observations.jsonl": "66042929c005fe4d961b91db526493115b91c1c82683381436437a6d031812a4",
+    "records.csv": "32838dfd207da8ea8b05d2426ebb8186f8f84c8464718055f2fca4ed722da7a1"
+  },
+  "schema_version": "1.0.0"
+}

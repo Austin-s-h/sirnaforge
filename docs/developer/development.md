@@ -51,9 +51,9 @@ siRNAforge uses a comprehensive `Makefile` for common development tasks. Run `ma
 
 #### By Tier (Recommended)
 ```bash
-make test-dev        # Fast unit tests (~15s) - development iteration
-make test-ci         # Smoke tests for CI/CD with coverage
-make test-release    # Comprehensive validation (all tests + coverage)
+make test-dev        # Fast unit tests (1,788 tests, ~36s) - development iteration
+make test-ci         # Smoke tests for CI/CD with coverage (40 tests, ~13s)
+make test-release    # Comprehensive validation, host + container (~6.5min)
 make test            # All tests (may have skips/failures)
 ```
 
@@ -82,7 +82,7 @@ make lint       # Check code quality (ruff + mypy)
 make format     # Auto-format code (ruff format + fixes)
 make check      # Quick validation: format + test-dev
 make pre-commit # Run pre-commit hooks on all files
-make security   # Run security scans (bandit + safety)
+make security   # Run security scans (bandit + pip-audit; advisory, never fails the build)
 ```
 
 ### Docker Commands
@@ -216,7 +216,7 @@ git pull
 git checkout -b feature/my-feature
 
 # 2. Make changes and iterate quickly
-make test-dev          # Fast feedback (~15s)
+make test-dev          # Fast feedback (~36s)
 
 # 3. Format and check quality
 make format            # Auto-format code
@@ -266,7 +266,6 @@ uv run pytest -m "integration"   # Integration tests
 uv run pytest -m "smoke"         # Quick gate tests
 
 # By requirements
-uv run pytest -m "requires_docker"    # Needs Docker
 uv run pytest -m "requires_network"   # Needs internet
 uv run pytest -m "requires_nextflow"  # Needs Nextflow
 

@@ -44,6 +44,9 @@ class TranscriptAnnotation(BaseModel):
     symbol: str | None = Field(default=None, description="Gene symbol (e.g., TP53)")
     biotype: str | None = Field(default=None, description="Transcript biotype (e.g., protein_coding)")
 
+    transcript_name: str | None = Field(default=None, description="Source transcript display name")
+    is_canonical: bool = Field(default=False, description="Explicit canonical or MANE Select source tag")
+
     # Genomic coordinates
     seq_region_name: str = Field(description="Chromosome or contig name (e.g., '17', 'chr17')")
     start: int = Field(ge=1, description="Genomic start position (1-based)")
@@ -73,11 +76,13 @@ class TranscriptAnnotation(BaseModel):
 
     @property
     def chr(self) -> str:
-        """Return a chr-prefixed chromosome label (e.g., 'chr17')."""
+        """Prefix canonical chromosome labels while retaining accession-based contig names."""
         value = (self.seq_region_name or "").strip()
         if not value:
             return value
-        return value if value.lower().startswith("chr") else f"chr{value}"
+        if value.isdigit() or value.upper() in {"X", "Y", "M", "MT"}:
+            return f"chr{value}"
+        return value
 
 
 class TranscriptAnnotationBundle(BaseModel):

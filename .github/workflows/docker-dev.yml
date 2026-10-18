@@ -3,6 +3,16 @@ name: 🐳 Docker (dev)
 on:
   push:
     branches: [ dev ]
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'docker/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Makefile'
+      - '.github/workflows/docker-dev.yml'
   workflow_dispatch:
 
 env:
@@ -14,7 +24,7 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build & push dev image
+    name: Build & test image
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -32,6 +42,7 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: 🔐 Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -50,18 +61,67 @@ jobs:
             type=raw,value=dev
             type=raw,value=sha-${{ steps.repo.outputs.short_sha }}
 
-      - name: 🐳 Build & push Docker image
+      # uv is needed only so the Makefile can read the project version; the build itself does not use it.
+      - name: 🐍 Install uv CLI
+        uses: astral-sh/setup-uv@v6
+        with:
+          activate-environment: false
+          enable-cache: true
+          cache-suffix: docker-dev
+
+      - name: 🧮 Compute image build args
+        id: buildargs
+        run: |
+          echo "version=$(uv run python -c 'from sirnaforge import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+          echo "src-fingerprint=$(make -s print-src-fingerprint)" >> "$GITHUB_OUTPUT"
+
+      # Built and tested before it is pushed. The container tier is the only place the installed CLI,
+      # the report (#103) and the .nf evidence emission (#100) run for real, and until now it ran in no
+      # workflow at all: this job pushed an untested image, and the only automated `make test-release`
+      # is tag-triggered. The second build-push step below is a cache hit, so testing first is cheap.
+      - name: 🐳 Build Docker image (load locally, do not push yet)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: false
+          load: true
+          build-args: |
+            VERSION=${{ steps.buildargs.outputs.version }}
+            SRC_FINGERPRINT=${{ steps.buildargs.outputs.src-fingerprint }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # `docker-ensure` compares BUILD_VERSION and BUILD_SRC_FINGERPRINT against the tree, so the
+      # build-args above are what stop it rebuilding the image we just built.
+      - name: 🏷️ Tag as sirnaforge:latest for the container suite
+        run: |
+          REGISTRY_IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}:dev"
+          docker tag "$REGISTRY_IMAGE" sirnaforge:latest
+          docker tag "$REGISTRY_IMAGE" sirnaforge:${{ steps.buildargs.outputs.version }}
+
+      - name: 🧪 Container suite (Make target)
+        run: make docker-test DOCKER_TEST_RESOURCE_FLAGS="--cpus=4 --memory=8g --memory-swap=8g"
+
+      - name: 🐳 Push Docker image
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
           push: true
+          build-args: |
+            VERSION=${{ steps.buildargs.outputs.version }}
+            SRC_FINGERPRINT=${{ steps.buildargs.outputs.src-fingerprint }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: ✅ Summary
+        if: github.event_name != 'pull_request'
         run: |
           echo "## 🐳 Dev Docker Image Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

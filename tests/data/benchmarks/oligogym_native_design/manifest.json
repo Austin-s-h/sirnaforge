@@ -1,0 +1,80 @@
+{
+  "description": "Target-aware native Ensembl design artifacts for OligoGym siRNA panels",
+  "source_directory": "tests/data/external/oligogym",
+  "native_reference": {
+    "species": "human",
+    "assembly": "GRCh38",
+    "fasta": "/ref/152cb327e903.fa"
+  },
+  "species_for_separate_offtarget_screen": [
+    "human",
+    "mouse",
+    "rat",
+    "macaque"
+  ],
+  "dataset_summary": {
+    "ichihara_2007_1": {
+      "observations": 2431,
+      "design_basis": "paired_target_sequence",
+      "design_length": 19,
+      "paired_lengths": [
+        19
+      ],
+      "mapped_observations": 216,
+      "unmapped_observations": 2215,
+      "mapping_rows": 6022,
+      "native_transcripts": 64,
+      "native_input_fasta": "tests/data/benchmarks/oligogym_native_design/inputs/ichihara_2007_1_native_len19.fasta",
+      "workflow_status": "runnable"
+    },
+    "ichihara_2007_2": {
+      "observations": 419,
+      "design_basis": "paired_target_sequence",
+      "design_length": 19,
+      "paired_lengths": [
+        19
+      ],
+      "mapped_observations": 65,
+      "unmapped_observations": 354,
+      "mapping_rows": 3784,
+      "native_transcripts": 141,
+      "native_input_fasta": "tests/data/benchmarks/oligogym_native_design/inputs/ichihara_2007_2_native_len19.fasta",
+      "workflow_status": "runnable"
+    },
+    "martinelli_2023_1": {
+      "observations": 907,
+      "design_basis": "full_passenger_sequence_nominal_21nt",
+      "design_length": 21,
+      "paired_lengths": [
+        0,
+        1,
+        19,
+        21
+      ],
+      "mapped_observations": 35,
+      "unmapped_observations": 872,
+      "mapping_rows": 1585,
+      "native_transcripts": 245,
+      "native_input_fasta": "tests/data/benchmarks/oligogym_native_design/inputs/martinelli_2023_1_native_len21.fasta",
+      "workflow_status": "runnable_unqualified_target_identity"
+    },
+    "shmushkovich_2018_1": {
+      "observations": 356,
+      "design_basis": "paired_target_sequence",
+      "design_length": 15,
+      "paired_lengths": [
+        15
+      ],
+      "mapped_observations": 0,
+      "unmapped_observations": 356,
+      "mapping_rows": 0,
+      "native_transcripts": 0,
+      "native_input_fasta": "",
+      "workflow_status": "review_only_unsupported_length"
+    }
+  },
+  "total_observations": 4113,
+  "total_mapping_rows": 11391,
+  "mapping_join": "mappings.csv is keyed directly by benchmark_id; native FASTA headers retain Ensembl transcript/gene metadata",
+  "offtarget_note": "This preparer creates design inputs only; run the separate siRNAforge off-target screen against all four species."
+}

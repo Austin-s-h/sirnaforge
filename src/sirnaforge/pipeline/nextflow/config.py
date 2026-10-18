@@ -20,14 +20,15 @@ Simple Usage Examples:
 
 import math
 import os
-import shutil
 import subprocess  # nosec B404
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from sirnaforge.utils.logging_utils import get_logger
+from sirnaforge.utils.subprocess_utils import _get_executable_path, _validate_command_args
 
 logger = get_logger(__name__)
 
@@ -66,28 +67,6 @@ class EnvironmentInfo(BaseModel):
         return summary
 
 
-def _get_executable_path(tool_name: str) -> str | None:
-    """Get the full path to an executable, ensuring it exists."""
-    path = shutil.which(tool_name)
-    if path is None:
-        logger.warning(f"Tool '{tool_name}' not found in PATH")
-    return path
-
-
-def _validate_command_args(cmd: list[str]) -> None:
-    """Validate command arguments for subprocess execution."""
-    if not cmd:
-        raise ValueError("Command list cannot be empty")
-
-    executable = cmd[0]
-    if not executable:
-        raise ValueError("Executable path cannot be empty")
-
-    # Ensure we have an absolute path to the executable
-    if not Path(executable).is_absolute():
-        raise ValueError(f"Executable must be an absolute path: {executable}")
-
-
 class NextflowConfig:
     """Configuration manager for Nextflow workflows."""
 
@@ -102,7 +81,7 @@ class NextflowConfig:
         profile: str = "docker",
         work_dir: Path | None = None,
         nxf_home: Path | None = None,
-        max_cpus: int = 16,
+        max_cpus: int | None = None,
         max_memory: str = "128.GB",
         max_time: str = "240.h",
         **kwargs: Any,
@@ -114,7 +93,7 @@ class NextflowConfig:
             profile: Nextflow profile (docker, singularity, conda, local)
             work_dir: Working directory for Nextflow execution
             nxf_home: Nextflow home cache
-            max_cpus: Maximum CPU cores
+            max_cpus: Maximum CPU cores (defaults to available CPUs, capped at 16)
             max_memory: Maximum memory allocation
             max_time: Maximum execution time
             **kwargs: Additional configuration parameters
@@ -123,10 +102,35 @@ class NextflowConfig:
         self.profile = profile
         self.work_dir = work_dir or Path.cwd() / "nextflow_work"
         self.nxf_home = nxf_home or Path.home() / ".nextflow"
-        self.max_cpus = max_cpus
+        self.max_cpus = self._autodetect_max_cpus() if max_cpus is None else max_cpus
+        if self.max_cpus < 1:
+            raise ValueError("max_cpus must be at least 1")
         self.max_memory = max_memory
         self.max_time = max_time
         self.extra_params = kwargs
+
+    @classmethod
+    def _autodetect_max_cpus(cls) -> int:
+        """Respect CPU affinity and container quotas rather than assuming a 16-core host."""
+        limits = [16, os.cpu_count() or 1]
+        with suppress(AttributeError, OSError):
+            limits.append(len(os.sched_getaffinity(0)))
+
+        # Docker --cpus limits quota without necessarily restricting affinity.
+        try:
+            quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+            if quota != "max" and int(quota) > 0 and int(period) > 0:
+                limits.append(max(1, int(quota) // int(period)))
+        except (OSError, ValueError):
+            pass
+        try:
+            quota_v1 = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+            period_v1 = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+            if quota_v1 > 0 and period_v1 > 0:
+                limits.append(max(1, quota_v1 // period_v1))
+        except (OSError, ValueError):
+            pass
+        return max(1, min(limits))
 
     @classmethod
     def _autodetect_max_memory(cls) -> str | None:
@@ -245,7 +249,7 @@ class NextflowConfig:
         self,
         input_file: Path,
         output_dir: Path,
-        genome_species: list[str],
+        screen_species: list[str],
         additional_params: dict[str, Any] | None = None,
         include_test_profile: bool = False,
     ) -> list[str]:
@@ -254,7 +258,7 @@ class NextflowConfig:
         Args:
             input_file: Input FASTA file path
             output_dir: Output directory
-            genome_species: List of species for miRNA genome lookups (not genomic DNA)
+            screen_species: Species the screen covers, as resolved from its references
             additional_params: Additional parameters to pass
             include_test_profile: Whether to include 'test' profile for integration testing
 
@@ -265,13 +269,21 @@ class NextflowConfig:
         abs_input_file = input_file.resolve()
         abs_output_dir = output_dir.resolve()
         abs_work_dir = self.work_dir.resolve()
+        # The resolver may also state the species it resolved. Emitted once either way: two
+        # --transcriptome_species flags with different values leave the pipeline reporting whichever
+        # came last, which need not be the set actually handed to the aligner.
+        species_value = (
+            str(additional_params["transcriptome_species"])
+            if additional_params and "transcriptome_species" in additional_params
+            else ",".join(screen_species)
+        )
         args = [
             "--input",
             str(abs_input_file),
             "--outdir",
             str(abs_output_dir),
-            "--genome_species",
-            ",".join(genome_species),
+            "--transcriptome_species",
+            species_value,
             "-profile",
             self.profile,
             "-w",
@@ -310,6 +322,8 @@ class NextflowConfig:
         # Add additional runtime parameters
         if additional_params:
             for key, value in additional_params.items():
+                if key == "transcriptome_species":
+                    continue  # already emitted once above
                 if isinstance(value, bool):
                     if value:
                         args.append(f"--{key}")
@@ -425,19 +439,7 @@ process {{
             return False
 
     def _is_conda_available(self) -> bool:
-        """Check if Conda or uv is available for environment management."""
-        # First check for uv (preferred for this project)
-        try:
-            uv_path = _get_executable_path("uv")
-            if uv_path:
-                cmd = [uv_path, "--version"]
-                _validate_command_args(cmd)
-                subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
-                return True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        # Fallback to conda
+        """Check for Conda itself; uv does not provide Conda environments or native tools."""
         try:
             conda_path = _get_executable_path("conda")
             if not conda_path:
@@ -580,14 +582,14 @@ process {{
         Returns:
             NextflowConfig instance with production settings
         """
-        return cls(
-            docker_image="ghcr.io/austin-s-h/sirnaforge:latest",
-            profile="docker",
-            max_cpus=16,
-            max_memory="128.GB",
-            max_time="240.h",
-            **kwargs,
-        )
+        defaults: dict[str, Any] = {
+            "docker_image": DEFAULT_SIRNAFORGE_DOCKER_IMAGE,
+            "profile": "docker",
+            "max_memory": "128.GB",
+            "max_time": "240.h",
+        }
+        defaults.update(kwargs)
+        return cls(**defaults)
 
     @classmethod
     def auto_configure(cls, **kwargs: Any) -> "NextflowConfig":

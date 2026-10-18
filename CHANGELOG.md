@@ -5,6 +5,154 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Automatic Nextflow CPU ceilings respect available processors, affinity and container quotas,
+  preventing index/alignment tasks from requesting more CPUs than a small CI runner provides.
+  Explicit production configuration overrides are accepted without duplicate-keyword errors.
+- The container variant gate uses local transcripts and synthetic cached variants; live TP53/rsID
+  checks remain in a separate integration suite instead of depending on public endpoint uptime
+  during image publication. The default image gate excludes all `requires_network` checks;
+  live container checks remain opt-in through `DOCKER_TEST_MARKERS=runs_in_container`.
+
+## [0.7.1] - 2026-10-17
+
+This release adds explicit screening evidence, transparent experimental scoring, interactive
+reports, offline transcript annotation, and traceable benchmark preparation. It includes the
+previously unreleased 0.7.0 work. Scores are not comparable with 0.6.x or intermediate 0.7.x builds.
+
+### Added
+
+- **Screening evidence and qualified selection.** Each requested channel/species pair is recorded
+  before reference resolution and reconciled against producer evidence tied to the submitted guide
+  set. Failed, missing, censored, and unrequested evidence remain distinct. Required unknowns
+  withhold candidates from the qualified shortlist; an unperformed screen never becomes a clean zero.
+- **Run policies.** `--run-mode design_only|exploratory|qualified`, repeatable
+  `--filter-action FILTER=off|warn|fail`, and JSON/TOML `--policy-config` share one resolver across
+  design, workflow, and off-target-only commands. Manifests record resolved values and their source;
+  candidate tables retain each gate's verdict and observation plus the candidate's selection state.
+- **Self-contained HTML reports.** `sirnaforge report <run_dir>` and workflow reports include
+  candidate inspection, threshold controls, preset views, a guide cart, and exports carrying the
+  reader's thresholds. Unknown verdicts remain unknown when thresholds move. Quilt package summaries
+  are opt-in through `--quilt-summarize` or `WorkflowConfig.quilt_summarize`.
+- **Offline annotation.** `sirnaforge annotate` supports local GENCODE GTF and NCBI RefSeq GFF3/GTF,
+  including exon/CDS structure, strand, versioned IDs, assembly/species checks, and source checksums.
+  Human GENCODE gene search/design accepts a matching local transcript FASTA. No liftover or
+  cross-provider ID conversion is performed. See [annotation providers](docs/annotation_providers.md).
+- **Mature miRNA references.** `--mirna-db mirgenedb+mirbase` combines both required sources and
+  deduplicates mature sequences after case and U/T normalization. miRBase covers every canonical
+  screening species, including rhesus macaque. MirGeneDB remains the default; default screening
+  species are chicken, rat, mouse, human, and rhesus macaque, with pig available explicitly.
+- **Hit classification and provenance.** Published hit tables distinguish on-target, ortholog,
+  repeat, off-target, and undetermined alignments, with gene annotations and evidence tiers.
+  `hit_symbol` supplies the per-hit gene name; `matched_symbol` records classification evidence.
+  `--ortholog-mapping` supplies offline orthology; Compara lookup uses stable gene IDs, and symbol
+  fallback is labelled. `screen_query_id` joins deduplicated screening results back to candidates.
+  Run summaries distinguish alignment totals from candidate-weighted totals and point to detail files.
+- **Benchmark preparation and review data.** `sirnaforge benchmark prepare` and `benchmark design`
+  preserve measured sequences, fixed duplex geometry, labels, checksums, and row-level exclusions.
+  Checked-in Huesken/OligoGym fixtures, native-mapping review artifacts, ML-review collections, and
+  pinned public-source download/regeneration scripts support offline review. These are preparation
+  and regression tools, not a claim of predictive validation. See
+  [benchmark artifacts](docs/benchmark_artifacts.md) and [public benchmarks](docs/public_benchmarks.md).
+
+### Changed
+
+- **Experimental scoring with declared weights.** The shipped bundle is `experimental_efficacy_v1`,
+  containing `design_experimental_v1`, `postscreen_sirna_experimental_v1`, and
+  `postscreen_mirna_experimental_v1`. Every vector sums to 1.0, is recorded in the manifest, and is
+  named on scored rows. Hidden active-term renormalization and the miRNA biogenesis divisor are
+  removed. The run-policy default is `experimental`; `legacy` remains a compatibility alias.
+- **Target accessibility measures the mRNA site.** RNAplfold replaces guide self-folding as the
+  scored accessibility feature, using the target site's eight bases paired to guide positions 1–8.
+  `--plfold-window`, `--plfold-max-bp-span`, and `--accessibility-log-floor` are configurable and
+  recorded. Guide MFE, structure, and paired fraction remain reported separately.
+- **Separate design and post-screen scores.** `design_score` is available before screening;
+  `composite_score` stays null until usable post-screen features exist. They use different vectors
+  and must not be pooled into one ranking. Empirical score, conservation, and isoform coverage are
+  reported outside the composite; isoform coverage has an optional gate, off by default.
+  `pos1_mismatch` is unscored, so its contribution column is null.
+- **Migration for score consumers.** `compute_composite(features, vector)` requires every declared
+  term. Use `weights.design`, `weights.postscreen_sirna`, or `weights.vector_for(...)` instead of
+  flat weight fields. `score_accessibility` becomes `score_target_accessibility`; removed
+  contribution columns are `score_empirical`, `score_isoform_coverage`, and `score_conservation`.
+  The empirical rubric maximum is now 0.6. Removed `MiRNADesignConfig.scoring_weights` bonuses no
+  longer imply unused scoring inputs. See [scoring](docs/scoring.md) for the current vectors.
+- **Transcriptome reference vocabulary.** siRNA/miRNA screening uses cDNA, while genomic references
+  remain ZFN-only. Pipeline parameters use `transcriptome_indices`, `transcriptome_fastas`, and
+  `transcriptome_species`; published alignments live under `off_target/results/transcriptome/`.
+  Legacy genome parameters are rejected with replacement names. Python callers use `screen_species`
+  and `transcriptome_indices`; `--offtarget-indices` remains a CLI alias. Prebuilt indices require
+  readable neighboring cDNA for transcript-to-gene annotation.
+- **API defaults follow the resolved policy.** Unstated workflow arguments use `None`, allowing the
+  design-mode preset to apply. Explicit settings, including miRNA GC limits, are preserved.
+  Asymmetry, paired-fraction, empirical, repeat, and optional isoform thresholds reach their gates;
+  the asymmetry floor can be set to zero. Invalid or conflicting configuration is rejected early.
+- **Output and exit contracts.** `candidates_all.csv` retains candidate-level decisions;
+  `candidates_pass.csv/.fasta` retain gate-passing candidates with their selection state.
+  `candidates_qualified.csv/.fasta` and `candidates_provisional.csv` separate selection outcomes.
+  `selection_summary` explains exclusions. CLI exit codes are 0 for success (including a complete
+  empty result), 1 for execution/configuration errors, 2 when missing required evidence prevents
+  any qualification, and optionally 3 for no eligible candidates with `--fail-on-no-eligible`.
+- Removed unused module-level helpers `validate_and_write_sequences`, `validate_sirna_sequences`,
+  `write_fasta_file`, and `check_tool_availability` from `core.off_target`; use the supported
+  `FastaUtils` interfaces. Their return contracts are not necessarily identical.
+
+### Fixed
+
+- Missing or rejected alignment files, failed reference/index builds, and entirely unscreened
+  batches no longer publish a completed clean screen or an unsupported qualified shortlist.
+  Every off-target gate is evaluated on completed zero-hit screens and records unknowns without
+  evidence. Resolved `warn` actions record findings without rejecting candidates.
+- Deduplicated candidates receive their representative's actual screening counts. miRNA aggregate
+  fallback parsing no longer counts the same table twice. Persisted classifications, candidate
+  liability counts, summary counts, and detail-file pointers now reconcile.
+- Ensembl transcript retrieval batches sequence/annotation requests, reuses connections, retries
+  rate limits and transient server errors, and retries omitted records individually.
+- Report rendering preserves unknowns, records threshold provenance in exports, safely embeds
+  payload strings, and reports rendering failures separately from metadata-write failures.
+- **Docker/CI runtime.** Preserve conda's Nextflow launcher during pip installation so it matches
+  the packaged framework JAR. Builds verify startup without networking, and container tests fail
+  on an unavailable runtime. The custom-reference CI test uses all human GRCh38 chromosome 21
+  cDNAs with checksummed provenance instead of indexing a full mouse transcriptome. Image freshness
+  checks compare source fingerprints as well as versions.
+- **Index preparation follows the execution provider.** Valid cached indices are reused; new
+  indices are built by Nextflow using the same profile and image as alignment. Index files are
+  staged as task inputs for Docker/Singularity. Explicit `--transcriptome-indices` suppresses
+  automatic reference downloads while retaining any explicit `--transcriptome-fasta`.
+- **Removed unused design input.** `design --genome-index`, `DesignParameters.genome_index`, and
+  its policy/provenance placeholders are removed. Use `workflow` or `offtarget` with
+  `--transcriptome-indices` for screening; unsupported old inputs fail explicitly.
+- **Filtering logs are summarized.** Routine off-target and isoform-coverage rejections no longer
+  emit a line per candidate. One log summary carries the reason counts and points to candidate
+  outputs; console summaries include excess off-target hits and zero-hit coverage failures.
+- Restored CLI startup and documentation/test gates, including TOML policy loading on Python 3.10.
+
+### Known limitations
+
+- Scoring weights and thresholds are experimental expert priors, not fitted or independently
+  validated efficacy/safety models. A completed configured search does not establish exhaustive
+  biological off-target coverage. RNAplfold settings and screening scope affect score interpretation.
+- miRNA completion is recorded per species, but some hit-count summaries remain batch-level. The
+  batch roll-up cannot express `censored`; per-species evidence envelopes and lower-bound markers
+  are authoritative. Do not infer per-candidate/per-species counts from batch totals.
+- Repeat-classified alignments do not count as off-target liabilities. Retaining repeat-flagged
+  candidates with a warning also retains that counting rule. Isoform-coverage thresholds remain
+  uncalibrated, and the optional gate is off by default.
+- A qualified screen does not require a potency composite for pre-designed guides. Batches with no
+  post-screen scores can retain design-time ranking; qualification alone is not a potency claim.
+- Raw Nextflow parameter passthroughs can bypass reference annotation. Low-level
+  `build_bwa_index()` remains a native-tool API; workflow index preparation uses Nextflow.
+- Species inference from custom FASTA headers is limited to supported Ensembl conventions; declare
+  ambiguous references explicitly. Orthology fallback by matching symbols remains a heuristic.
+- Benchmark synthetic flanks are not native transcript context. Some prepared artifacts omit
+  recoverable local target coordinates, and benchmark commands do not compare predictions with
+  measured efficacy. Dataset overlap, chemistry, and endpoint differences require separate review.
+- Chromosome-scoped CI screens validate integration within runner resources; they do not substitute
+  for full-transcriptome or cross-species biological evaluation.
+
 ## [0.6.0] - 2026-09-03
 
 Correctness release for the off-target arm, from the audit in
@@ -27,7 +175,7 @@ is now **uncapped**. A 0.5.x command re-run unchanged will return more candidate
   `DesignParameters` had no `offtarget_filters` field and is `extra="forbid"`, so the `getattr`
   that read it in `_check_offtarget_filters` could never resolve — the ceiling was hard-wired at 3
   with no route in from the CLI, the environment or the Python API. The field now exists and is
-  exposed as `--max-off-targets`. 15 is calibrated against the 94-design MSH3 reference set: it is
+  exposed as `--max-off-targets`. 15 is calibrated against one internal 94-design reference set: it is
   the lowest ceiling at which the gate enriches for expert-chosen guides rather than depleting them
   (at 3 the gate was depleted, at 10 it carried no information). Single-target calibration —
   revisit if a second reference set disagrees. Anything relying on the old ceiling must now pass
