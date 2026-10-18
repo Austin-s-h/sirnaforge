@@ -33,6 +33,33 @@ def test_nextflow_available():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+def test_default_cpu_ceiling_fits_the_nextflow_runtime(tmp_path):
+    """The local profile must inherit the actual JVM CPU count, including Docker quotas."""
+    probe = tmp_path / "cpu-probe.config"
+    probe.write_text("params.detected_cpu_count = Runtime.getRuntime().availableProcessors()\n")
+    result = subprocess.run(
+        [
+            "nextflow",
+            "config",
+            str(NextflowRunner().get_main_workflow().parent),
+            "-profile",
+            "local",
+            "-flat",
+            "-c",
+            str(probe),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    values = dict(re.findall(r"^params\.(max_cpus|detected_cpu_count) = (\d+)$", result.stdout, re.MULTILINE))
+    assert int(values["max_cpus"]) == min(16, int(values["detected_cpu_count"]))
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_nextflow_local_profile():
     """Test that Nextflow can use local profiles correctly."""
     try:
