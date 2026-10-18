@@ -37,6 +37,7 @@ previously unreleased 0.7.0 work. Scores are not comparable with 0.6.x or interm
   species are chicken, rat, mouse, human, and rhesus macaque, with pig available explicitly.
 - **Hit classification and provenance.** Published hit tables distinguish on-target, ortholog,
   repeat, off-target, and undetermined alignments, with gene annotations and evidence tiers.
+  `hit_symbol` supplies the per-hit gene name; `matched_symbol` records classification evidence.
   `--ortholog-mapping` supplies offline orthology; Compara lookup uses stable gene IDs, and symbol
   fallback is labelled. `screen_query_id` joins deduplicated screening results back to candidates.
   Run summaries distinguish alignment totals from candidate-weighted totals and point to detail files.
