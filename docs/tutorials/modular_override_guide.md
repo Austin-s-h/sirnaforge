@@ -34,8 +34,8 @@ sirnaforge workflow TP53
 ```
 
 **What happens:**
-1. **Species**: Uses `DEFAULT_MIRNA_CANONICAL_SPECIES` (7 species: chicken, pig, rat, mouse, human, rhesus, macaque)
-2. **miRNA Database**: MirGeneDB lookups for all 7 species
+1. **Species**: Uses `DEFAULT_MIRNA_CANONICAL_SPECIES` (5 species: chicken, rat, mouse, human, rhesus)
+2. **miRNA Database**: MirGeneDB lookups for all 5 species
 3. **Transcriptome**: Ensembl cDNA auto-fetched for 4 species (human, mouse, rat, macaque)
 4. **Genomic DNA**: never. siRNA acts on mRNA, so screening is transcriptome-only (#99)
 
@@ -71,27 +71,22 @@ sirnaforge workflow TP53 \
 The system **automatically**:
 - Downloads remote files to cache
 - Decompresses `.gz` archives
-- Builds BWA-MEM2 indices
-- Reuses indices on subsequent runs
+- Reuses valid cached BWA-MEM2 indices, or builds missing indices through the selected Nextflow provider
+- Reuses pipeline-built indices through the Nextflow work cache / resume
 
-### Add Custom Sequences to Defaults
+### Multiple Explicit References
 
-**Current behavior**: `--transcriptome-fasta` *replaces* defaults.
-
-**Additive capability** (implementation detail): The `transcriptome_selection.choices` tuple can hold multiple `ReferenceChoice` objects, allowing future support for comma-separated lists:
+Provide comma-separated, species-labelled references to select them explicitly:
 
 ```bash
-# Future enhancement:
 sirnaforge workflow TP53 \
-  --transcriptome-fasta ensembl_human_cdna,/path/to/custom_contig.fa
+  --transcriptome-fasta human:/data/human_cdna.fa,mouse:/data/mouse_cdna.fa
 ```
 
-**Current workaround**: Manually concatenate FASTA files:
-
-```bash
-cat ensembl_human_cdna.fa custom_sequences.fa > combined.fa
-sirnaforge workflow TP53 --transcriptome-fasta combined.fa
-```
+This replaces automatic defaults. To add custom sequences to one species' reference, concatenate
+those sequences into that species' FASTA before indexing; do not label a mixed-species reference
+as one organism. New indices are built by the selected Nextflow provider, using the same runtime
+as alignment. See {ref}`execution modes <execution-modes-and-index-preparation>`.
 
 ### Override BWA Indices Directly
 
@@ -103,9 +98,9 @@ sirnaforge workflow TP53 \
 ```
 
 **Format**: `species:/absolute/path/to/index_prefix` (`--offtarget-indices` is the same option)
-**Effect**: adds your existing BWA-MEM2 index as a screening reference. It does **not** suppress the
-references `--species` resolves — those are still fetched and indexed alongside it, so pass
-`--transcriptome-fasta` (or `--run-mode design_only`) when you want no Ensembl download at all.
+**Effect**: replaces automatic transcriptome reference selection with the provided indices. No default
+Ensembl transcriptome is fetched. If you also supply `--transcriptome-fasta`, that explicit reference
+is screened alongside the indices. `--species` / `--mirna-species` still control the miRNA layer.
 **Requirement**: the cDNA FASTA the index was built from must be readable as plain text beside the
 prefix (the prefix itself, or `<prefix>.fa`/`.fasta`/`.fna`; a gzipped or binary neighbour does not
 count). Hits are resolved to genes from its headers, so a species whose sequence cannot be read is
@@ -150,11 +145,11 @@ belongs to `sirnaforge zfn`, which targets DNA.
 
 When multiple parameters affect the same resource:
 
-1. **Explicit references are added, not substituted**: `--transcriptome-indices` and
-   `--transcriptome-fasta` name references of their own; only `--transcriptome-fasta` replaces what
-   `--species` would resolve. An index override is screened *in addition to* those defaults.
+1. **Explicit references replace automatic transcriptome selection**: `--transcriptome-indices`
+   suppresses default downloads. `--transcriptome-fasta` also replaces defaults; if both are supplied,
+   both explicit references are screened.
 2. **miRNA overrides are independent**: `--mirna-species` doesn't affect transcriptomes
-3. **Defaults are smart**: System auto-detects what's available (e.g., only 4/7 species have Ensembl cDNA)
+3. **Defaults are smart**: System auto-detects what's available (e.g., only four of the default species have Ensembl cDNA)
 
 ### Example: Mixed Override
 
@@ -369,7 +364,7 @@ results = await workflow.run()
 
 | Parameter | Scope | Default | Override Example |
 |-----------|-------|---------|------------------|
-| `--species` | All layers | 7 species (miRNA) | `--species human,mouse` |
+| `--species` | All layers | 5 species (miRNA) | `--species human,mouse` |
 | `--mirna-species` | miRNA only | Maps from `--species` | `--mirna-species hsa,mmu` |
 | `--transcriptome-fasta` | Transcriptome only | Ensembl cDNA (4 species) | `--transcriptome-fasta custom.fa` |
 | `--transcriptome-indices` | cDNA BWA indices | Auto-build from transcriptome | `--transcriptome-indices human:/data/hs_cdna` |

@@ -413,19 +413,7 @@ process {{
             return False
 
     def _is_conda_available(self) -> bool:
-        """Check if Conda or uv is available for environment management."""
-        # First check for uv (preferred for this project)
-        try:
-            uv_path = _get_executable_path("uv")
-            if uv_path:
-                cmd = [uv_path, "--version"]
-                _validate_command_args(cmd)
-                subprocess.run(cmd, capture_output=True, timeout=10, check=True)  # nosec B603
-                return True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        # Fallback to conda
+        """Check for Conda itself; uv does not provide Conda environments or native tools."""
         try:
             conda_path = _get_executable_path("conda")
             if not conda_path:

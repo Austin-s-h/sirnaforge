@@ -1,5 +1,8 @@
 """Shared pytest fixtures for all test modules."""
 
+import gzip
+import hashlib
+import json
 import os
 import shutil
 import socket
@@ -107,6 +110,23 @@ def toy_transcriptome_path():
         pytest.skip(f"Toy transcriptome database not found: {transcriptome_db_path}")
 
     return transcriptome_db_path
+
+
+@pytest.fixture(scope="session")
+def human_chr21_transcriptome(tmp_path_factory):
+    """A real single-chromosome cDNA reference, without a live download in CI."""
+    fixture = Path(__file__).parent / "container" / "data" / "human_grch38_chr21.cdna.fa.gz"
+    provenance = json.loads(fixture.with_suffix(".json").read_text())
+    compressed = fixture.read_bytes()
+    assert hashlib.sha256(compressed).hexdigest() == provenance["gzip_sha256"]
+    fasta = gzip.decompress(compressed)
+    assert hashlib.sha256(fasta).hexdigest() == provenance["fasta_sha256"]
+    headers = [line for line in fasta.splitlines() if line.startswith(b">")]
+    assert len(headers) == provenance["records"]
+    assert all(b" chromosome:GRCh38:21:" in header for header in headers)
+    destination = tmp_path_factory.mktemp("human_chr21") / "human_grch38_chr21.cdna.fa"
+    destination.write_bytes(fasta)
+    return destination
 
 
 @pytest.fixture(scope="session")

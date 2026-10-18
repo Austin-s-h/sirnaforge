@@ -1003,7 +1003,7 @@ def _evidence_requirements(
     )
 
 
-PASSTHROUGH_FIELDS: frozenset[str] = frozenset({"snp_file", "genome_index", "scoring"})
+PASSTHROUGH_FIELDS: frozenset[str] = frozenset({"snp_file", "scoring"})
 
 
 def _build_design_parameters(
@@ -1016,7 +1016,7 @@ def _build_design_parameters(
     run, and it happens before any caller has created a directory or downloaded a reference.
 
     ``passthrough`` carries the DesignParameters fields that are inputs rather than policy -- a SNP
-    file path, a prebuilt index, an explicit weight set. They are not resolved and not overridable
+    file path or an explicit weight set. They are not resolved and not overridable
     by a profile; they are forwarded so a resolved run does not silently drop them.
     """
     unknown = sorted(set(passthrough) - PASSTHROUGH_FIELDS)
@@ -1169,8 +1169,8 @@ def resolve_run_policy(
         stated: Settings the caller *actually stated* -- a field set, not a value comparison. Keys
             must be declared in :data:`SETTING_SPECS`; a value of ``None`` is a stated ``None``.
         filter_actions: ``filter_id -> off|warn|fail``.
-        passthrough: DesignParameters fields that are inputs rather than policy (``snp_file``,
-            ``genome_index``, an explicit ``scoring`` weight set). Forwarded, never defaulted.
+        passthrough: DesignParameters fields that are inputs rather than policy (``snp_file``
+            or an explicit ``scoring`` weight set). Forwarded, never defaulted.
         legacy_skip_screening: The legacy skip flag. True maps visibly to design-only.
         require_screening_completeness: Set False to keep incomplete evidence; incompatible with an
             explicit qualified mode, and on its own it resolves to exploratory.
@@ -1380,7 +1380,6 @@ def describe_parameters(
         stated=stated,
         passthrough={
             "snp_file": parameters.snp_file,
-            "genome_index": parameters.genome_index,
             "scoring": parameters.scoring,
         },
         query_species=query_species,

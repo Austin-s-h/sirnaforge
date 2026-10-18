@@ -1261,9 +1261,8 @@ def workflow(  # noqa: PLR0912
         help=(
             "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
             "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is that "
-            "reference's species and is added to the screen; it does NOT suppress the references "
-            "--species resolves, so pass --transcriptome-fasta (or --run-mode design_only) if you "
-            "do not want the Ensembl defaults fetched as well. The cDNA FASTA the index was built "
+            "reference's species. Explicit indices replace automatic transcriptome downloads; "
+            "--transcriptome-fasta can explicitly add another reference. The cDNA FASTA the index was built "
             "from must be readable beside the prefix (the prefix itself, or <prefix>.fa) so hits "
             "can be resolved to genes."
         ),
@@ -1660,6 +1659,7 @@ def workflow(  # noqa: PLR0912
         input_fasta=input_fasta,
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+        index_overrides=bool(transcriptome_indices),
         design_only=design_only_run,
         allow_transcriptome_for_input_fasta=False,
     )
@@ -1938,8 +1938,8 @@ def offtarget(
         "--offtarget-indices",
         help=(
             "Transcriptome BWA-MEM2 indices you have already built, as species:prefix entries: "
-            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. The species named here is added to "
-            "the screen and does not suppress the references --species resolves. The cDNA FASTA the "
+            "human:/abs/path/hs_cdna,mouse:/abs/path/mm_cdna. Explicit indices replace automatic "
+            "transcriptome downloads; --transcriptome-fasta can explicitly add another reference. The cDNA FASTA the "
             "index was built from must be readable beside the prefix so hits can be resolved to genes."
         ),
     ),
@@ -2040,6 +2040,7 @@ def offtarget(
         input_fasta=None,  # Not using input transcripts for off-target-only
         transcriptome_argument=transcriptome_fasta,
         default_transcriptomes=DEFAULT_TRANSCRIPTOME_SOURCES,
+        index_overrides=bool(transcriptome_indices),
         design_only=False,
     )
     transcriptome_selection = ReferencePolicyResolver(transcriptome_spec).resolve_transcriptomes()
@@ -2407,11 +2408,6 @@ def design(
             f"(default: {default_for('accessibility_log_floor')})"
         ),
     ),
-    genome_index: Path | None = typer.Option(
-        None,
-        "--genome-index",
-        help="Genome index for off-target analysis",
-    ),
     snp_file: Path | None = typer.Option(
         None,
         "--snp-file",
@@ -2486,7 +2482,6 @@ def design(
         filter_actions=actions,
         legacy_skip_screening=skip_off_targets or None,
         passthrough={
-            "genome_index": str(genome_index) if genome_index else None,
             "snp_file": str(snp_file) if snp_file else None,
         },
     )

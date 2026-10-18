@@ -82,10 +82,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         // Add built indices to channel
         ch_reference_indices = ch_reference_indices.mix(
             BUILD_BWA_INDEX.out.index
-                .map { species, index_files ->
-                    def index_prefix = index_files[0].toString().replaceAll(/\.[^.]+$/, '')
-                    [species, index_prefix]
-                }
+                .map { species, index_prefix, index_files -> [species, index_prefix, index_files] }
         )
     }
 
@@ -93,7 +90,12 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     ch_reference_indices = ch_reference_indices.mix(
         references
             .filter { _species, _path, type -> type == 'index' }
-            .map { species, index_path, _type -> [species, index_path] }
+            .map { species, index_path, _type ->
+                def index_files = ['.0123', '.amb', '.ann', '.bwt.2bit.64', '.pac']
+                    .collect { suffix -> file("${index_path}${suffix}") }
+                    .findAll { it.exists() }
+                [species, file(index_path).name, index_files]
+            }
     )
 
     //
@@ -104,8 +106,8 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Combine the reference indices with the candidates FASTA file
     ch_reference_analysis_input = ch_reference_indices
         .combine(candidates_fasta)
-        .map { species, index_path, fasta_file ->
-            [species, index_path, fasta_file]
+        .map { species, index_path, index_files, fasta_file ->
+            [species, index_path, index_files, fasta_file]
         }
 
     //

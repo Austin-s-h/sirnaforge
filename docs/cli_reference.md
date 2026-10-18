@@ -51,13 +51,13 @@ Use the `workflow` command for transcript-centric siRNA/miRNA runs.
 
 siRNAforge accepts complementary inputs when you need to bypass gene search or control the reference used for transcriptome off-target analysis:
 
-- `--input-fasta` replaces the transcript retrieval step. Point it at a local FASTA file, HTTP(S) URL, or FTP location. The positional argument (`GENE_QUERY`) still names the outputs, while the workflow designs guides from the supplied sequences. **When you pass `--input-fasta` without `--transcriptome-fasta`, transcriptome off-target analysis is disabled** (design-only mode).
+- `--input-fasta` replaces the transcript retrieval step. Point it at a local FASTA file, HTTP(S) URL, or FTP location. The positional argument (`GENE_QUERY`) still names the outputs, while the workflow designs guides from the supplied sequences. **When you pass `--input-fasta` without `--transcriptome-fasta` or `--transcriptome-indices`, transcriptome off-target analysis is disabled** (design-only mode).
 - `--transcriptome-fasta` selects the dataset used for transcriptome off-target analysis. It accepts local paths, remote URLs, or presets such as `ensembl_human_cdna` and `ensembl_mouse_cdna` (see `sirnaforge cache --info`). **Provide this flag to re-enable transcriptome off-target analysis when running from a custom FASTA.**
 - `--transcriptome-indices` (also spelled `--offtarget-indices`) names transcriptome BWA-MEM2 indices you have already
   built, as `species:/path/to/index_prefix` entries. The species you declare is the label that reference carries and is
-  added to the screen; it must be one the registry recognises (the same set `--species` accepts), and it does **not**
-  suppress the references `--species` resolves — pass `--transcriptome-fasta` if you do not want the Ensembl defaults
-  fetched alongside it. The cDNA FASTA the index was built from must be readable as plain text beside the prefix (the
+  screened instead of automatic Ensembl references. No default transcriptomes are downloaded when indices are
+  supplied. The declared species must be recognised (the same set `--species` accepts). An explicitly supplied
+  `--transcriptome-fasta` adds that reference alongside the indices; miRNA species selection stays independent. The cDNA FASTA the index was built from must be readable as plain text beside the prefix (the
   prefix itself, or `<prefix>.fa`/`.fasta`/`.fna`; a gzipped or binary neighbour does not count), or that species is
   reported unscreened rather than screened against a reference its hits cannot be classified with.
 

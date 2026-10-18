@@ -63,6 +63,19 @@ from sirnaforge.models.sirna import (
 FASTA = ">t1\n" + "ATGCGCATGCATCGATCGATCGGCATCGATCGATCGACTAGCATCGACTGACTGCATCAGCATCAGCATCAGCTACGATCAG\n"
 
 
+@pytest.mark.unit
+def test_unused_genome_index_is_rejected_at_every_design_interface(tmp_path: Path) -> None:
+    """A removed option cannot keep accepting an index that constrains no screening."""
+    result = CliRunner().invoke(app, ["design", str(tmp_path / "input.fa"), "--genome-index", "/refs/index"])
+    assert result.exit_code == 2
+    assert "No such option: --genome-index" in result.output
+    with pytest.raises(ValidationError, match="genome_index"):
+        DesignParameters(genome_index="/refs/index")
+    with pytest.raises(RunPolicyError, match="genome_index"):
+        resolve_run_policy(entry_point=EntryPoint.DESIGN_COMMAND, passthrough={"genome_index": "/refs/index"})
+    assert "genome_index" not in DesignParameters().model_dump()
+
+
 def _fasta(tmp_path: Path) -> Path:
     path = tmp_path / "toy.fa"
     path.write_text(FASTA)

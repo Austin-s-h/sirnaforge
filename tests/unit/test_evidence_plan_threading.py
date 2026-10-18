@@ -50,6 +50,16 @@ _MAIN_NF = _WORKFLOWS_DIR / "main.nf"
 _NEXTFLOW_CONFIG = _WORKFLOWS_DIR / "nextflow.config"
 
 
+@pytest.mark.unit
+def test_uv_alone_does_not_select_a_conda_runtime(monkeypatch):
+    """A Python package manager is not evidence of a configured Conda toolchain."""
+    monkeypatch.setattr(
+        "sirnaforge.pipeline.nextflow.config._get_executable_path",
+        lambda tool: "/usr/bin/uv" if tool == "uv" else None,
+    )
+    assert NextflowConfig()._is_conda_available() is False
+
+
 def _stub_block(text: str) -> str:
     """The ``stub:`` half of one process/module's source, as a plain string."""
     return text.split("stub:", 1)[1]

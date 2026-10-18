@@ -87,6 +87,48 @@ def _resolve(workflow: SiRNAWorkflow) -> tuple[bool, dict[str, Any]]:
 
 
 @pytest.mark.unit
+def test_reference_preparation_defers_indexing_to_the_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preparing a reference must not need a BWA executable in the orchestrator's environment."""
+    monkeypatch.setenv("SIRNAFORGE_CACHE_DIR", str(tmp_path / "cache"))
+    fasta = _mouse_cdna(tmp_path)
+    workflow = _workflow(tmp_path, "deferred", transcriptome_fasta=str(fasta))
+
+    def _no_host_build(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("indexing must execute through Nextflow")
+
+    monkeypatch.setattr(TranscriptomeManager, "_build_index", _no_host_build)
+    configured, params = _resolve(workflow)
+    assert configured is True
+    reference = workflow._screening_references.references[0]
+    assert reference.needs_index_build is True
+    assert params["transcriptome_fastas"] == f"mouse:{reference.fasta}"
+    assert not params.get("transcriptome_indices")
+    assert workflow._transcript_index.for_species("mouse") is not None
+
+
+@pytest.mark.unit
+def test_index_overrides_suppress_defaults_but_keep_explicit_fastas(tmp_path: Path) -> None:
+    """A provided index defines the automatic reference set without discarding an explicit FASTA."""
+    from sirnaforge.config import ReferenceChoice, ReferenceSelection  # noqa: PLC0415
+
+    config = WorkflowConfig(
+        output_dir=tmp_path / "indices_only",
+        gene_query="TP53",
+        screen_species=["human", "rat"],
+        transcriptome_indices="mouse:/refs/mouse",
+        transcriptome_selection=ReferenceSelection(
+            choices=(ReferenceChoice.default("ensembl_human_cdna"), ReferenceChoice.explicit("rat:/refs/rat.fa"))
+        ),
+    )
+    assert [(r.value, r.declared_species) for r in config.screening_requests] == [
+        ("/refs/mouse", "mouse"),
+        ("/refs/rat.fa", "rat"),
+    ]
+    assert all(choice.state is ReferenceState.EXPLICIT for choice in config.transcriptome_selection.choices)
+    assert config.screen_species == ["mouse"]
+
+
+@pytest.mark.unit
 def test_an_explicit_index_override_builds_the_classifier_metadata_too(tmp_path: Path) -> None:
     """The override used to skip the only place a transcript index was ever built."""
     fasta = _mouse_cdna(tmp_path)

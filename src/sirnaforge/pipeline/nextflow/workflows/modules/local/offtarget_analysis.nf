@@ -4,7 +4,7 @@ process OFFTARGET_ANALYSIS {
     publishDir "${params.outdir}/transcriptome", mode: params.publish_dir_mode
 
     input:
-    tuple val(species), val(index_path), path(candidates_fasta)
+    tuple val(species), val(index_path), path(index_files), path(candidates_fasta)
     val max_hits
     val bwa_k
     val bwa_T

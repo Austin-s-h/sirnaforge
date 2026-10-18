@@ -38,6 +38,7 @@ from sirnaforge.config import (
     ReferenceRejection,
     ReferenceRequest,
     ReferenceSelection,
+    ReferenceState,
     ScreeningReference,
     ScreeningReferenceSet,
     SpeciesAuthority,
@@ -566,6 +567,15 @@ class WorkflowConfig:
         self.transcriptome_selection = transcriptome_selection or ReferenceSelection.disabled(
             "no transcriptome configured"
         )
+        if index_requests and any(
+            choice.state is ReferenceState.DEFAULT for choice in self.transcriptome_selection.choices
+        ):
+            self.transcriptome_selection = ReferenceSelection(
+                choices=tuple(
+                    choice for choice in self.transcriptome_selection.choices if choice.state is ReferenceState.EXPLICIT
+                ),
+                disabled_reason="explicit transcriptome indices replace automatic references",
+            )
         self.transcriptome_references = [
             choice.value for choice in self.transcriptome_selection.choices if choice.value
         ]
@@ -2772,32 +2782,9 @@ class SiRNAWorkflow:
         }
 
     def _design_input_provenance(self) -> dict[str, Any]:
-        """The two ``design_parameters`` inputs that are bare nulls, and what a null there means.
-
-        ``genome_index`` and ``snp_file`` are CLI options forwarded onto ``DesignParameters`` and read
-        by nothing in 0.7.1, so ``model_dump`` emits them as bare nulls that read exactly like "not
-        applicable". Each is stated here as a named absence, with the manifest path where the bare
-        null lives, the way ``reported_not_scored_definitions`` names where a term is defined.
-        """
+        """Record whether the legacy SNP-file input was supplied and whether it was used."""
         parameters = self.config.design_params
         return {
-            "genome_index": {
-                "design_parameters_path": "design_parameters.genome_index",
-                **(
-                    present(
-                        parameters.genome_index,
-                        "supplied_but_unread",
-                        "--genome-index was recorded on design_parameters, but no 0.7.1 code path reads it: the "
-                        "screen aligns against provenance.references.screening, so this constrained nothing",
-                    )
-                    if parameters.genome_index
-                    else absent(
-                        "not_supplied",
-                        "no --genome-index was given, and no 0.7.1 code path reads the field either; the indexes "
-                        "actually aligned against are named per species in provenance.references.screening",
-                    )
-                ),
-            },
             "snp_file": {
                 "design_parameters_path": "design_parameters.snp_file",
                 **(
@@ -3297,7 +3284,9 @@ class SiRNAWorkflow:
             and it is the only thing that ever knew the url, size, md5 and download date.
         """
         try:
-            manager = TranscriptomeManager()
+            # Indexing belongs to the same Nextflow provider/image as alignment.
+            # Reuse a valid cached index, otherwise hand the pipeline the FASTA.
+            manager = TranscriptomeManager(auto_build_indices=False)
 
             # Check if it's a pre-configured source
             if transcriptome_ref in manager.SOURCES:
@@ -4566,23 +4555,36 @@ class SiRNAWorkflow:
         output_dir: Path,
     ) -> None:
         """Emit structured console logs for off-target statistics."""
+        rejections = {
+            status.value: stats[key] for status, key in _OFFTARGET_REJECTION_STATS.items() if stats.get(key, 0)
+        }
+        if stats.get("failed_isoform_coverage", 0):
+            rejections[SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE.value] = stats["failed_isoform_coverage"]
+        logger.info(
+            "Off-target filter summary (%s candidates): %s. "
+            "Candidate verdicts: sirnaforge/candidates_all.csv; counts: logs/workflow_summary.json",
+            stats.get("candidates_analyzed", 0),
+            ", ".join(f"{reason}={count}" for reason, count in rejections.items()) or "no rejecting verdicts",
+        )
         candidates_with_hits = stats.get("candidates_with_offtargets", 0)
         if candidates_with_hits:
             console.print(f"📊 Off-target analysis: {candidates_with_hits} candidates with hits")
-            summaries = (
-                ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
-                ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
-                ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
-                ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
-                ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
-                ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
-                ("failed_isoform_coverage", "❌ {} failed: protein-coding isoform coverage floor"),
-            )
-            for key, template in summaries:
-                count = stats.get(key, 0)
-                if count:
-                    console.print(f"   {template.format(count)}")
+        summaries = (
+            ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
+            ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
+            ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
+            ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
+            ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
+            ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
+            ("failed_excess_off_targets", "❌ {} failed: excess off-target hits"),
+            ("failed_isoform_coverage", "❌ {} failed: protein-coding isoform coverage floor"),
+        )
+        for key, template in summaries:
+            count = stats.get(key, 0)
+            if count:
+                console.print(f"   {template.format(count)}")
 
+        if candidates_with_hits:
             human_tx = stats.get("human_transcriptome_hits", 0)
             other_tx = stats.get("other_transcriptome_hits", 0)
             if human_tx or other_tx:
@@ -4956,7 +4958,6 @@ class SiRNAWorkflow:
         )
         if not should_fail or fail_status is None:
             return
-        logger.info(f"Candidate {candidate.id} failed off-target filter: {fail_status.value}")
         stat_key = _OFFTARGET_REJECTION_STATS.get(fail_status)
         if stat_key is not None:
             stats[stat_key] += 1
@@ -5862,10 +5863,6 @@ class SiRNAWorkflow:
         record_gate_outcome(candidate, outcome, status=SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE)
         if outcome.evaluation is not FilterEvaluation.FAIL:
             return False
-        # A decided FAIL means both numbers exist, so the message can quote the comparison it made.
-        logger.info(
-            f"Candidate {candidate.id} failed isoform coverage ({spec.action.value}): {coverage:.3f} < {floor:.3f}"
-        )
         return outcome.rejects
 
     def _score_candidate_post_screen(
@@ -6344,8 +6341,8 @@ async def run_sirna_workflow(
             gene-query database serves (human), which is also the species of the default
             transcriptome; set it when designing against an input FASTA from another organism.
         transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
-            caller has already built. Resolved by the same resolver as the defaults, so an override
-            and a default differ only in provenance (#99).
+            caller has already built. Replaces automatic transcriptome references; explicitly
+            supplied transcriptome FASTAs are screened alongside these indices.
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -6489,6 +6486,7 @@ async def run_sirna_workflow(
             input_fasta=input_fasta,
             transcriptome_argument=transcriptome_fasta,
             default_transcriptomes=default_transcriptome_sources,
+            index_overrides=bool(transcriptome_indices),
             # check_off_targets=False means "do not screen", so there is nothing to resolve a
             # reference for -- hardcoding design_only=False here would download and index
             # multi-gigabyte references before announcing that screening was skipped.
@@ -6595,7 +6593,7 @@ async def run_offtarget_only_workflow(
         screen_species: Species to screen against for off-target liabilities
         query_species: Organism the input guides were designed against (defaults to human)
         transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
-            caller has already built
+            caller has already built. Replaces automatic references while retaining explicit FASTAs.
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis

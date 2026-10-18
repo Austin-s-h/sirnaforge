@@ -34,6 +34,17 @@ def test_resolver_respects_explicit_argument() -> None:
     assert choice.state is ReferenceState.EXPLICIT
 
 
+def test_prebuilt_indices_replace_automatic_reference_selection() -> None:
+    """Indices suppress default downloads, while an explicit FASTA remains an opt-in."""
+    selection = ReferencePolicyResolver(WorkflowInputSpec(index_overrides=True)).resolve_transcriptomes()
+    assert not selection.enabled
+    assert "indices replace" in (selection.disabled_reason or "")
+    explicit = ReferencePolicyResolver(
+        WorkflowInputSpec(index_overrides=True, transcriptome_argument="mouse:/refs/mouse.fa")
+    ).resolve_transcriptomes()
+    assert [choice.value for choice in explicit.choices] == ["mouse:/refs/mouse.fa"]
+
+
 def test_resolver_disables_when_input_fasta_without_override() -> None:
     """Input FASTA without transcriptome override disables transcriptome analysis."""
     spec = WorkflowInputSpec(input_fasta="custom.fasta")
