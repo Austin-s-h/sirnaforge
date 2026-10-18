@@ -21,6 +21,7 @@ All fixtures are synthetic. TP53 is the documented public example gene.
 import asyncio
 import csv
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -127,6 +128,46 @@ def _workflow(
 # ---------------------------------------------------------------------------------------------
 # #105: the isoform coverage gate obeys its resolved action
 # ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_filtering_logs_one_summary_and_keeps_candidate_verdicts(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A batch keeps its exported decisions while routine logging stays constant in size."""
+    workflow = _workflow(
+        tmp_path,
+        "filter_summary",
+        stated={"max_off_target_count": 0, "min_isoform_coverage": 0.8},
+    )
+    candidates = [_candidate(f"filtered_{i}", isoform_coverage=0.2) for i in range(200)]
+    stats = {"candidates_analyzed": len(candidates), "failed_excess_off_targets": 0, "failed_isoform_coverage": 0}
+    with caplog.at_level(logging.INFO, logger="sirnaforge.workflow"):
+        for candidate in candidates:
+            workflow._gate_offtarget_counts(
+                candidate,
+                counts=OffTargetGateCounts(genuine_off_target_count=1),
+                filter_criteria=workflow.config.design_params.offtarget_filters,
+                complete_pairs=workflow.config.resolved_policy.evidence_requirements.required_pairs,
+                stats=stats,
+            )
+            stats["failed_isoform_coverage"] += workflow._apply_isoform_coverage_gate(candidate)
+        workflow._log_offtarget_statistics(stats, {}, tmp_path)
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "sirnaforge.workflow"]
+    assert len(messages) == 1, "normal filtering must not emit one log entry per candidate"
+    assert "EXCESS_OFF_TARGETS=200" in messages[0]
+    assert "LOW_ISOFORM_COVERAGE=200" in messages[0]
+    assert "sirnaforge/candidates_all.csv" in messages[0]
+    console_output = capsys.readouterr().out
+    assert "200 failed: excess off-target hits" in console_output
+    # Coverage failures can occur without any alignment hits.
+    assert "200 failed: protein-coding isoform coverage floor" in console_output
+    for candidate in candidates:
+        row = build_candidate_row(candidate)
+        assert row["max_off_target_count_verdict"] == "fail"
+        assert row["min_isoform_coverage_verdict"] == "fail"
+        assert candidate.passes_filters == SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS
 
 
 @pytest.mark.unit

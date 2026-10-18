@@ -4566,23 +4566,36 @@ class SiRNAWorkflow:
         output_dir: Path,
     ) -> None:
         """Emit structured console logs for off-target statistics."""
+        rejections = {
+            status.value: stats[key] for status, key in _OFFTARGET_REJECTION_STATS.items() if stats.get(key, 0)
+        }
+        if stats.get("failed_isoform_coverage", 0):
+            rejections[SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE.value] = stats["failed_isoform_coverage"]
+        logger.info(
+            "Off-target filter summary (%s candidates): %s. "
+            "Candidate verdicts: sirnaforge/candidates_all.csv; counts: logs/workflow_summary.json",
+            stats.get("candidates_analyzed", 0),
+            ", ".join(f"{reason}={count}" for reason, count in rejections.items()) or "no rejecting verdicts",
+        )
         candidates_with_hits = stats.get("candidates_with_offtargets", 0)
         if candidates_with_hits:
             console.print(f"📊 Off-target analysis: {candidates_with_hits} candidates with hits")
-            summaries = (
-                ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
-                ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
-                ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
-                ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
-                ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
-                ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
-                ("failed_isoform_coverage", "❌ {} failed: protein-coding isoform coverage floor"),
-            )
-            for key, template in summaries:
-                count = stats.get(key, 0)
-                if count:
-                    console.print(f"   {template.format(count)}")
+        summaries = (
+            ("failed_perfect_match", "❌ {} failed: perfect transcriptome matches"),
+            ("failed_transcriptome_1mm", "❌ {} failed: 1mm transcriptome threshold"),
+            ("failed_transcriptome_2mm", "❌ {} failed: 2mm transcriptome threshold"),
+            ("failed_transcriptome_seed_perfect", "❌ {} failed: perfect transcriptome seed matches"),
+            ("failed_mirna_seed", "❌ {} failed: miRNA perfect seed matches"),
+            ("failed_high_risk_mirna", "❌ {} failed: high-risk miRNA hits"),
+            ("failed_excess_off_targets", "❌ {} failed: excess off-target hits"),
+            ("failed_isoform_coverage", "❌ {} failed: protein-coding isoform coverage floor"),
+        )
+        for key, template in summaries:
+            count = stats.get(key, 0)
+            if count:
+                console.print(f"   {template.format(count)}")
 
+        if candidates_with_hits:
             human_tx = stats.get("human_transcriptome_hits", 0)
             other_tx = stats.get("other_transcriptome_hits", 0)
             if human_tx or other_tx:
@@ -4956,7 +4969,6 @@ class SiRNAWorkflow:
         )
         if not should_fail or fail_status is None:
             return
-        logger.info(f"Candidate {candidate.id} failed off-target filter: {fail_status.value}")
         stat_key = _OFFTARGET_REJECTION_STATS.get(fail_status)
         if stat_key is not None:
             stats[stat_key] += 1
@@ -5862,10 +5874,6 @@ class SiRNAWorkflow:
         record_gate_outcome(candidate, outcome, status=SiRNACandidate.FilterStatus.LOW_ISOFORM_COVERAGE)
         if outcome.evaluation is not FilterEvaluation.FAIL:
             return False
-        # A decided FAIL means both numbers exist, so the message can quote the comparison it made.
-        logger.info(
-            f"Candidate {candidate.id} failed isoform coverage ({spec.action.value}): {coverage:.3f} < {floor:.3f}"
-        )
         return outcome.rejects
 
     def _score_candidate_post_screen(

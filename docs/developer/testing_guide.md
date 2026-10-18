@@ -102,7 +102,7 @@ The two test stages answer different questions and are not interchangeable:
 Expect **7 of the 46 container tests to skip** without a verified TLS route: the TP53
 full workflow, the five variant/SNP modes and the gene-symbol search.
 The custom-transcriptome test uses the checked-in human GRCh38 chromosome 21 cDNA reference
-([provenance and regeneration](../../tests/container/data/README.md)), builds a fresh index and
+([provenance and regeneration](https://github.com/Austin-s-h/sirnaforge/blob/dev/tests/container/data/README.md)), builds a fresh index and
 requires completed transcriptome evidence. It needs no full-transcriptome download or index build.
 The network tests exercise live retrieval, so a green container stage on a
 proxied network is a statement about the packaged artifact and the toy-reference screen, not about the
