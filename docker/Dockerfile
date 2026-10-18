@@ -90,7 +90,13 @@ WORKDIR /home/sirnauser
 
 # Copy and install the application wheel
 COPY --from=builder --chown=sirnauser:sirnauser /app/dist/*.whl /tmp/
-RUN /opt/conda/bin/pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
+# The PyPI nextflow dependency also installs a launcher. Its version can be newer
+# than conda's bundled framework JAR, forcing a runtime download even with NXF_DIST
+# set. Keep the conda launcher and JAR together while installing the Python package.
+RUN cp /opt/conda/bin/nextflow /tmp/nextflow-conda && \
+    /opt/conda/bin/pip install --no-cache-dir /tmp/*.whl && \
+    cp /tmp/nextflow-conda /opt/conda/bin/nextflow && \
+    rm -f /tmp/nextflow-conda /tmp/*.whl
 
 # Switch to the non-root user for installing the application wheel so files
 # created during installation are owned by sirnauser.
@@ -130,6 +136,10 @@ ENV NXF_CONDA_CLI="micromamba"
 RUN mkdir -p /home/sirnauser/.nextflow && \
     chown -R sirnauser:sirnauser /home/sirnauser/.nextflow && \
     chmod -R a+rwX /home/sirnauser/.nextflow
+
+# A launcher on PATH is insufficient: prove the installed runtime starts using
+# only the packaged JAR, after pip has finished modifying the environment.
+RUN --network=none nextflow -version
 
 # Copy and setup entrypoint script
 COPY --chown=sirnauser:sirnauser docker/entrypoint.sh /usr/local/bin/entrypoint.sh

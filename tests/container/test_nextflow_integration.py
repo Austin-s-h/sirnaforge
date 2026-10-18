@@ -21,23 +21,14 @@ from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 @pytest.mark.runs_in_container
 def test_nextflow_available():
     """Test that Nextflow is available in the Docker container."""
-    try:
-        result = subprocess.run(["nextflow", "-version"], capture_output=True, text=True, timeout=30, check=True)
-        assert "nextflow" in result.stdout.lower()
-
-        # Check version compatibility (should be 25.x or higher)
-        lines = result.stdout.strip().split("\n")
-        for line in lines:
-            if "version" in line.lower():
-                # Extract version number
-                version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", line)
-                if version_match:
-                    major = int(version_match.group(1))
-                    assert major >= 25, f"Nextflow version too old: {line}"
-                break
-
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pytest.skip("Nextflow not available - run this test in Docker container with Nextflow")
+    # This is an image requirement, so a broken launcher must fail the container
+    # tier instead of being hidden by a capability skip.
+    result = subprocess.run(["nextflow", "-version"], capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, f"Nextflow cannot start:\n{result.stdout}\n{result.stderr}"
+    assert "nextflow" in result.stdout.lower()
+    version_match = re.search(r"version\s+(\d+)\.(\d+)\.(\d+)", result.stdout, re.IGNORECASE)
+    assert version_match, f"No Nextflow version reported: {result.stdout}"
+    assert int(version_match.group(1)) >= 25, f"Nextflow version too old: {version_match.group(0)}"
 
 
 @pytest.mark.integration

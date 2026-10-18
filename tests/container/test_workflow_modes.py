@@ -90,6 +90,15 @@ def _seed_mirna_cache(cache_root: Path, *, source_name: str, species: str, fasta
     return cache_file
 
 
+@pytest.fixture
+def human_mirna_env(tmp_path: Path) -> dict[str, str]:
+    """Keep reference-path tests independent of the live miRNA service."""
+    cache_root = tmp_path / "cache"
+    mirna_fixture = Path(__file__).resolve().parents[1] / "unit" / "data" / "toy_mirna_db.fasta"
+    _seed_mirna_cache(cache_root, source_name="mirgenedb", species="hsa", fasta_path=mirna_fixture)
+    return {**os.environ, "SIRNAFORGE_CACHE_DIR": str(cache_root)}
+
+
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.requires_network
@@ -155,9 +164,10 @@ def test_full_workflow_with_gene_search(tmp_path: Path):
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
-@pytest.mark.requires_network
 @pytest.mark.slow
-def test_custom_transcriptome_offtarget(tmp_path: Path):
+def test_custom_transcriptome_offtarget(
+    tmp_path: Path, human_chr21_transcriptome: Path, human_mirna_env: dict[str, str]
+):
     """Test workflow with explicit transcriptome off-target reference.
 
     Validates:
@@ -178,23 +188,20 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
             "--input-fasta",
             str(input_fasta),
             "--transcriptome-fasta",
-            "ensembl_mouse_cdna",  # Explicit transcriptome
+            str(human_chr21_transcriptome),
             "--output-dir",
             str(output_dir),
             "--species",
-            "mouse",
+            "human",
         ],
         capture_output=True,
         text=True,
-        timeout=1800,  # Allow 30 minutes for a cold reference download, indexing, and screening.
+        timeout=300,
         check=False,
+        env=human_mirna_env,
     )
 
-    # Network issues during transcriptome download are skippable
     if result.returncode != 0:
-        error_lower = result.stderr.lower()
-        if any(term in error_lower for term in ["connection", "network", "timeout", "download", "ssl"]):
-            pytest.skip(f"Network issue during transcriptome download: {result.stderr[:300]}")
         _print_failure_location(output_dir)
         pytest.fail(f"Custom transcriptome workflow failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
 
@@ -202,21 +209,23 @@ def test_custom_transcriptome_offtarget(tmp_path: Path):
     off_target_dir = output_dir / "off_target"
     assert off_target_dir.exists(), "Missing off-target directory"
 
-    # Verify summary mentions transcriptome
-    summary = json.loads((output_dir / "logs" / "workflow_summary.json").read_text())
-    offtarget = summary.get("offtarget_summary", {})
-    # Accept both completed and skipped (transcriptome off-target may be skipped in container)
-    assert offtarget.get("status") in [
-        "completed",
-        "skipped",
-    ], f"Off-target status should be completed or skipped, got: {offtarget.get('status')}"
+    # This run must build and screen the chromosome reference, rather than pass
+    # merely because an output directory exists after a skipped screen.
+    assert offtarget_status(output_dir) == "completed"
+    evidence = assert_evidence_reconciled(output_dir, expect_channels={"transcriptome", "mirna_seed"})
+    transcriptome = [e for e in evidence["evidence"]["entries"] if e["channel"] == "transcriptome"]
+    assert [(e["species"], e["status"]) for e in transcriptome] == [("human", "complete")]
+    assert_report_rendered(output_dir)
 
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
 @pytest.mark.slow
 def test_transcriptome_index_override(
-    tmp_path: Path, toy_transcriptome_index_prefix: Path, realistic_transcripts_fasta: Path
+    tmp_path: Path,
+    toy_transcriptome_index_prefix: Path,
+    realistic_transcripts_fasta: Path,
+    human_mirna_env: dict[str, str],
 ):
     """Test workflow with --offtarget-indices override.
 
@@ -246,6 +255,7 @@ def test_transcriptome_index_override(
         text=True,
         timeout=180,
         check=False,
+        env=human_mirna_env,
     )
 
     if result.returncode != 0:

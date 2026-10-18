@@ -75,6 +75,9 @@ executable on `PATH` both lie.
   `shutil.which("nextflow")` returns a path even on an image where no real invocation can
   succeed. This probe mirrors `NextflowRunner.validate_installation`, so a test skips exactly
   when the pipeline itself would report `nextflow_unavailable`.
+  Inside the image, `test_nextflow_available` separately **fails** if this required runtime cannot
+  start. The Docker build also runs `nextflow -version` with networking disabled, after pip
+  installation, to verify that the launcher matches the bundled framework JAR.
 - **`requires_network`** — skipped unless a _verified_ TLS handshake with `rest.ensembl.org`
   succeeds. The probe handshakes through Python's own trust store rather than merely opening
   a TCP socket, because interception proxies accept the connection and then fail verification
@@ -96,9 +99,12 @@ The two test stages answer different questions and are not interchangeable:
   Assert the artifacts instead (`tests/container/release_artifacts.py`), which is how the tier
   distinguishes "screened clean" from "never screened".
 
-Expect **8 of the 46 container tests to skip** without a verified TLS route, and know which 8: the TP53
-full workflow, the five variant/SNP modes, the gene-symbol search and the custom-transcriptome
-off-target run. They are the most realistic tests in the repository, so a green container stage on a
+Expect **7 of the 46 container tests to skip** without a verified TLS route: the TP53
+full workflow, the five variant/SNP modes and the gene-symbol search.
+The custom-transcriptome test uses the checked-in human GRCh38 chromosome 21 cDNA reference
+([provenance and regeneration](../../tests/container/data/README.md)), builds a fresh index and
+requires completed transcriptome evidence. It needs no full-transcriptome download or index build.
+The network tests exercise live retrieval, so a green container stage on a
 proxied network is a statement about the packaged artifact and the toy-reference screen, not about the
 gene name → Ensembl → transcripts → screen path.
 

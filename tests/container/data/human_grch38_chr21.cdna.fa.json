@@ -1,0 +1,17 @@
+{
+  "source_url": "https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz",
+  "source_snapshot_downloaded_at": "2026-09-13T19:36:35.680915",
+  "source_release": null,
+  "source_uncompressed_sha256": "bd85494fb64766200ec18bae873f3196b451c6eecbcfbedadd72684f19692ff8",
+  "source_uncompressed_bytes": 1416494395,
+  "selection": "FASTA header contains chromosome:GRCh38:21:; preserve all matching records in source order",
+  "assembly": "GRCh38",
+  "species": "human",
+  "chromosome": "21",
+  "records": 4564,
+  "sequence_bases": 12534162,
+  "fasta_bytes": 13913411,
+  "fasta_sha256": "d886680c39dd67e7a752ca398add1cbdf706d577e8105e79557c3e9e8b194faa",
+  "gzip_bytes": 1488183,
+  "gzip_sha256": "a675fddb1847edd2780c53162f350da6b9ef1085ce65ba2237f1343cf5d3dba9"
+}
