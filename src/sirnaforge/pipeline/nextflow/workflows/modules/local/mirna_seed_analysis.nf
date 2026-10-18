@@ -58,10 +58,10 @@ print(f'Batch miRNA analysis completed for all candidates')
 PYEOF
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        biopython: \$(python -c "import Bio; print(Bio.__version__)")
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    biopython: \$(python -c "import Bio; print(Bio.__version__)")
+END_VERSIONS
     """
 
     stub:
@@ -95,12 +95,12 @@ PYEOF
         "detail": "stub run: no aligner executed"
       }
     }
-    EVIDENCE
+EVIDENCE
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        biopython: \$(python -c "import Bio; print(Bio.__version__)")
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    biopython: \$(python -c "import Bio; print(Bio.__version__)")
+END_VERSIONS
     """
 }

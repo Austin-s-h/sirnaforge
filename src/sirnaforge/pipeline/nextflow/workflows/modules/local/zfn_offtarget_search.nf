@@ -55,10 +55,10 @@ process ZFN_OFFTARGET_SEARCH {
       --output-summary-json candidate_summary_${shard_id}.json
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        sirnaforge: \$(python -c 'import sirnaforge; print(sirnaforge.__version__)' 2>/dev/null || echo 'dev')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    sirnaforge: \$(python -c 'import sirnaforge; print(sirnaforge.__version__)' 2>/dev/null || echo 'dev')
+END_VERSIONS
     """
 
     stub:
@@ -67,9 +67,9 @@ process ZFN_OFFTARGET_SEARCH {
     echo '{"candidates": [], "summary": {"candidates": 0, "off_target_sites": 0}}' > candidate_summary_${shard_id}.json
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        sirnaforge: \$(python -c 'import sirnaforge; print(sirnaforge.__version__)' 2>/dev/null || echo 'dev')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    sirnaforge: \$(python -c 'import sirnaforge; print(sirnaforge.__version__)' 2>/dev/null || echo 'dev')
+END_VERSIONS
     """
 }

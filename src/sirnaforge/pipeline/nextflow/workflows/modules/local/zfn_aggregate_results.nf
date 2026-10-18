@@ -28,9 +28,9 @@ process ZFN_AGGREGATE_RESULTS {
       --output-summary-json candidate_summary.json
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+END_VERSIONS
     """
 
     stub:
@@ -39,8 +39,8 @@ process ZFN_AGGREGATE_RESULTS {
     echo '{"candidates": [], "summary": {"off_target_sites": 0, "shards": 0}}' > candidate_summary.json
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+END_VERSIONS
     """
 }

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -1293,7 +1294,7 @@ REGISTER_NEIGHBOUR_NT = 2
 
 
 def _register_index(candidates: pd.DataFrame) -> dict[str, list[int]]:
-    """Transcript -> every enumerated position, across **all** guides.
+    """Transcript -> sorted enumerated positions, across **all** guides.
 
     Register neighbours are cross-guide by nature: the point is that two *different* designs one
     nucleotide apart share a window. Built once from the whole candidate table; a per-guide map would
@@ -1304,6 +1305,8 @@ def _register_index(candidates: pd.DataFrame) -> dict[str, list[int]]:
         p = _num(pos)
         if p is not None:
             index[str(tx or "")].append(int(p))
+    for positions in index.values():
+        positions.sort()
     return index
 
 
@@ -1381,11 +1384,15 @@ def _isoform_table(
         tx = str(r.get("transcript_id") or "")
         pos = _num(r.get("position"))
         cid = str(r.get("id") or "")
-        neighbours = [
-            p
-            for p in register.get(tx, [])
-            if pos is not None and p != int(pos) and abs(p - int(pos)) <= REGISTER_NEIGHBOUR_NT
-        ]
+        # Query the sorted position window rather than scanning the whole transcript
+        # for every candidate row. Native benchmark panels can contain hundreds of
+        # thousands of rows, making the repeated full scan quadratic per transcript.
+        positions = register.get(tx, [])
+        neighbours: list[int] = []
+        if pos is not None:
+            start = bisect_left(positions, int(pos) - REGISTER_NEIGHBOUR_NT)
+            end = bisect_right(positions, int(pos) + REGISTER_NEIGHBOUR_NT)
+            neighbours = [p for p in positions[start:end] if p != int(pos)]
         # A candidate absent from `clusters` (no numeric position) is trivially its own cluster: never
         # dropped from a register-deduplicated view for want of a flag.
         cluster = clusters.get(cid, {"register_cluster": None, "register_representative": True})

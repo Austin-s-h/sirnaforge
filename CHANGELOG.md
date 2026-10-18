@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native benchmark review preserves unpublished post-screen scores as missing and uses the
+  supplied source weights for the current-profile comparison. Report register-neighbour lookup
+  uses sorted position windows instead of repeatedly scanning entire transcripts. Nextflow
+  version artifacts terminate their heredocs correctly and record the numeric BWA-MEM2 version.
+
 - RefSeq gene lookup reads nested NCBI ELink `nuccore` groups and selects RefSeq RNA links,
   fixing empty transcript results for genes such as TP53. E-utilities calls are paced and
   retry HTTP 429 with bounded backoff. The README now documents existing

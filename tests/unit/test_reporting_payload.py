@@ -430,6 +430,17 @@ def test_a_register_neighbour_is_flagged_rather_than_looking_like_a_duplicate(tm
 
 
 @pytest.mark.unit
+def test_register_neighbours_preserve_boundaries_duplicates_and_transcript_scope(tmp_path: Path) -> None:
+    """Unsorted rows retain both +/-2 neighbours, excluding the same register and other transcripts."""
+    positions = [104, 100, 102, 100, 97]
+    rows = [_candidate_row(f"c{i}", GUIDE, "tx1", position) for i, position in enumerate(positions)]
+    rows.append(_candidate_row("other_tx", GUIDE, "tx2", 101))
+    payload = build_payload(_write_run(tmp_path, rows, []))
+    neighbours = {row["candidate_id"]: row["register_neighbours"] for g in payload.guides for row in g.isoforms}
+    assert neighbours == {"c0": [102], "c1": [102], "c2": [100, 100, 104], "c3": [102], "c4": [], "other_tx": []}
+
+
+@pytest.mark.unit
 def test_the_report_contradicts_no_run_pass_verdict(tmp_path: Path) -> None:
     """The agreement check is published so a reader can see the gate panel matches the pipeline."""
     run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
