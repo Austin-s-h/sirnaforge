@@ -495,7 +495,7 @@ def test_the_provenance_block_fabricates_nothing(tmp_path, shape):
     """The recursive no-fabrication walk: absent evidence must not read like present evidence.
 
     One test, applied to every leaf, is what stops the *next* field from regressing to silence --
-    which is how ``design_parameters.genome_index: null`` and a bare ``tool_version: "0.7.1"``
+    which is how ``design_parameters.snp_file: null`` and a bare ``tool_version: "0.7.1"``
     survived this long.
     """
     workflow = _qualified_workflow(tmp_path, f"walk_{shape}")
@@ -556,7 +556,7 @@ def test_the_no_fabrication_walk_can_see_the_dicts_most_likely_to_fabricate(tmp_
         "provenance.references.screening.resolved[0].assembly",
         "provenance.references.screening.resolved[0].bytes.digest",
         "provenance.databases.orthology.conservation_scope.is_lower_bound",
-        "provenance.design_inputs.genome_index",
+        "provenance.design_inputs.snp_file",
         "provenance.build.dependencies.lock_sha256",
     ):
         assert path in inspected, f"{path} is an attestation the no-fabrication walk cannot see"
@@ -1602,9 +1602,9 @@ def test_a_missing_lock_is_still_the_packaged_absence(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("field", ["genome_index", "snp_file"])
-def test_the_two_unread_design_inputs_are_named_rather_than_bare_nulls(tmp_path, field):
-    """``design_parameters.genome_index: null`` and ``snp_file: null`` were named in the gap itself.
+@pytest.mark.parametrize("field", ["snp_file"])
+def test_the_unread_snp_input_is_named_rather_than_a_bare_null(tmp_path, field):
+    """``design_parameters.snp_file: null`` was named in the gap itself.
 
     Both are CLI options forwarded onto ``DesignParameters`` and read by no 0.7.1 code path, so the
     dump emits nulls that read exactly like "not applicable". They stay nulls in ``design_parameters``
@@ -1629,14 +1629,14 @@ def test_the_two_unread_design_inputs_are_named_rather_than_bare_nulls(tmp_path,
 def test_a_supplied_design_input_says_that_nothing_read_it(tmp_path):
     """Supplying one does not make it an input to anything: no code path reads either field."""
     parameters = DesignParameters()
-    parameters.genome_index = str(tmp_path / "grch38_index")
+    parameters.snp_file = str(tmp_path / "variants.vcf")
     config = WorkflowConfig(output_dir=tmp_path / "supplied", gene_query="TP53", design_params=parameters)
 
-    record = _provenance(SiRNAWorkflow(config))["design_inputs"]["genome_index"]
+    record = _provenance(SiRNAWorkflow(config))["design_inputs"]["snp_file"]
 
-    assert record["value"] == str(tmp_path / "grch38_index")
+    assert record["value"] == str(tmp_path / "variants.vcf")
     assert record["state"] == "supplied_but_unread"
-    assert "no 0.7.1 code path reads it" in record["reason"]
+    assert "avoid_snps is unimplemented" in record["reason"]
 
 
 # ---------------------------------------------------------------------------------------------

@@ -3,7 +3,6 @@ process MIRNA_SEED_ANALYSIS {
     label 'process_low'
     publishDir "${params.outdir}/mirna", mode: params.publish_dir_mode
 
-    conda "${moduleDir}/environment.yml"
 
     input:
     path candidates_fasta

@@ -6,7 +6,7 @@ process BUILD_BWA_INDEX {
     tuple val(species), path(transcriptome_fasta)
 
     output:
-    tuple val(species), path("${species}_index*"), emit: index
+    tuple val(species), val("${species}_index"), path("${species}_index*"), emit: index
     path "versions.yml", emit: versions
 
     when:

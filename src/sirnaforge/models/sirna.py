@@ -639,8 +639,6 @@ class DesignParameters(BaseModel):
     # File paths (optional)
     # TODO: review snp incorporation feature
     snp_file: str | None = Field(default=None, description="Path to SNP VCF file for avoidance")
-    # Review genome index passing / FASTA selection
-    genome_index: str | None = Field(default=None, description="Path to BWA genome index for off-target search")
 
 
 class SequenceType(str, Enum):

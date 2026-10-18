@@ -133,6 +133,7 @@ class WorkflowInputSpec:
     # downloads and indexes multi-gigabyte cDNA references they never requested. Callers that
     # want that must opt in, and naming a reference via transcriptome_argument always wins.
     allow_transcriptome_for_input_fasta: bool = False
+    index_overrides: bool = False
 
 
 class ReferencePolicyResolver:
@@ -155,6 +156,9 @@ class ReferencePolicyResolver:
                 if value.strip()
             )
             return ReferenceSelection(choices=choices)
+
+        if self.spec.index_overrides:
+            return ReferenceSelection.disabled("explicit transcriptome indices replace automatic references")
 
         if self.spec.input_fasta and not self.spec.allow_transcriptome_for_input_fasta:
             return ReferenceSelection.disabled(
@@ -613,7 +617,7 @@ def build_screening_requests(
     """
     requests = list(index_requests)
     for choice in selection.choices:
-        if not choice.value:
+        if not choice.value or (index_requests and choice.state is ReferenceState.DEFAULT):
             continue
         requests.append(
             ReferenceRequest(

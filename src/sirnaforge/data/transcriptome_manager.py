@@ -780,7 +780,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     ) -> dict[str, Any]:
         """Helper to prepare result dict with optional index building."""
         identity = self._identity_view(cache_key)
-        if not (build_index and self.auto_build_indices):
+        if not build_index:
             self._save_metadata()
             return {"fasta": fasta, "identity": identity}
 
@@ -798,6 +798,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             self._ensure_index_marker(index_path)
             logger.info(f"✅ Using cached BWA-MEM2 index: {index_path}")
             return {"fasta": fasta, "index": index_path, "identity": identity}
+
+        if not self.auto_build_indices:
+            self._save_metadata()
+            return {"fasta": fasta, "identity": identity}
 
         logger.info(f"⚠️  Building index: {index_prefix}")
         # Drop any stamp first so a build that dies half-way cannot leave a stamp

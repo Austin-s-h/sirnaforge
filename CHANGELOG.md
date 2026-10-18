@@ -108,6 +108,13 @@ previously unreleased 0.7.0 work. Scores are not comparable with 0.6.x or interm
   on an unavailable runtime. The custom-reference CI test uses all human GRCh38 chromosome 21
   cDNAs with checksummed provenance instead of indexing a full mouse transcriptome. Image freshness
   checks compare source fingerprints as well as versions.
+- **Index preparation follows the execution provider.** Valid cached indices are reused; new
+  indices are built by Nextflow using the same profile and image as alignment. Index files are
+  staged as task inputs for Docker/Singularity. Explicit `--transcriptome-indices` suppresses
+  automatic reference downloads while retaining any explicit `--transcriptome-fasta`.
+- **Removed unused design input.** `design --genome-index`, `DesignParameters.genome_index`, and
+  its policy/provenance placeholders are removed. Use `workflow` or `offtarget` with
+  `--transcriptome-indices` for screening; unsupported old inputs fail explicitly.
 - **Filtering logs are summarized.** Routine off-target and isoform-coverage rejections no longer
   emit a line per candidate. One log summary carries the reason counts and points to candidate
   outputs; console summaries include excess off-target hits and zero-hit coverage failures.
@@ -126,10 +133,8 @@ previously unreleased 0.7.0 work. Scores are not comparable with 0.6.x or interm
   uncalibrated, and the optional gate is off by default.
 - A qualified screen does not require a potency composite for pre-designed guides. Batches with no
   post-screen scores can retain design-time ranking; qualification alone is not a potency claim.
-- Raw Nextflow parameter passthroughs can bypass reference annotation. Reference preparation still
-  requires host-accessible `bwa-mem2`; a missing host executable does not automatically route index
-  building into Docker. Extra transcriptome indices add references rather than replacing the
-  species selection. `design --genome-index` remains an unused legacy option.
+- Raw Nextflow parameter passthroughs can bypass reference annotation. Low-level
+  `build_bwa_index()` remains a native-tool API; workflow index preparation uses Nextflow.
 - Species inference from custom FASTA headers is limited to supported Ensembl conventions; declare
   ambiguous references explicitly. Orthology fallback by matching symbols remains a heuristic.
 - Benchmark synthetic flanks are not native transcript context. Some prepared artifacts omit
