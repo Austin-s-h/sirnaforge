@@ -86,7 +86,7 @@ sirnaforge workflow TP53 \
 This replaces automatic defaults. To add custom sequences to one species' reference, concatenate
 those sequences into that species' FASTA before indexing; do not label a mixed-species reference
 as one organism. New indices are built by the selected Nextflow provider, using the same runtime
-as alignment. See [execution modes](../installation.md#execution-modes-and-index-preparation).
+as alignment. See {ref}`execution modes <execution-modes-and-index-preparation>`.
 
 ### Override BWA Indices Directly
 
