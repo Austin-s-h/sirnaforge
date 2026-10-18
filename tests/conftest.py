@@ -208,6 +208,26 @@ def nextflow_test_work_dir(tmp_path):
     return work_dir
 
 
+def pytest_addoption(parser):
+    """Keep live service checks behind an explicit local opt-in."""
+    parser.addoption(
+        "--run-network",
+        action="store_true",
+        default=False,
+        help="Run live-network tests locally; unavailable in CI and release gates.",
+    )
+
+
+def _running_in_ci() -> bool:
+    return any(os.getenv(name, "").strip().lower() not in {"", "0", "false", "no"} for name in ("CI", "GITHUB_ACTIONS"))
+
+
+def pytest_configure(config):
+    """Reject accidental live-service opt-in in automated environments."""
+    if config.getoption("--run-network") and _running_in_ci():
+        raise pytest.UsageError("--run-network is local-only; live service tests cannot run in CI")
+
+
 def pytest_runtest_setup(item):
     """Enforce the requirement markers so unmet requirements skip, not fail.
 
@@ -221,6 +241,12 @@ def pytest_runtest_setup(item):
     nominally present -- a resolvable hostname or an executable on PATH both lie.
     """
     marker_names = {mark.name for mark in item.iter_markers()}
+
+    if "requires_network" in marker_names:
+        if _running_in_ci():
+            pytest.skip("requires_network test: live service checks are local-only")
+        if not item.config.getoption("--run-network"):
+            pytest.skip("requires_network test: opt in locally with --run-network or 'make test-requires-network'")
 
     if "runs_in_container" in marker_names and not _running_in_container():
         pytest.skip("runs_in_container test: only valid inside the sirnaforge image - use 'make docker-test'")
