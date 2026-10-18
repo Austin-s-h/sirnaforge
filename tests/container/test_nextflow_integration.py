@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import tempfile
+from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
@@ -40,13 +41,13 @@ def test_default_cpu_ceiling_fits_the_nextflow_runtime(tmp_path):
     result = subprocess.run(
         [
             "nextflow",
+            "-c",
+            str(probe),
             "config",
-            str(NextflowRunner().get_main_workflow().parent),
+            str(distribution("sirnaforge").locate_file("sirnaforge/pipeline/nextflow/workflows")),
             "-profile",
             "local",
             "-flat",
-            "-c",
-            str(probe),
         ],
         capture_output=True,
         text=True,
