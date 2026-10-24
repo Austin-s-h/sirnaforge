@@ -9,6 +9,7 @@ This section contains documentation for developers working on or extending siRNA
    architecture
    development
    testing_guide
+   performance_review
    chemical_modification_review
    zfn_backend_tuning
    zfn_nextflow_bridge_validation

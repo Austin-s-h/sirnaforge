@@ -1,0 +1,75 @@
+{
+  "fixture": {
+    "candidate_rows": 12000,
+    "offtarget_rows": 24000,
+    "unused_columns_each": 32
+  },
+  "full_read_process": {
+    "peak_rss_bytes": 265498624,
+    "candidate_dataframe_bytes": 36325022,
+    "hit_dataframe_bytes": 70248132
+  },
+  "projected_builder_process": {
+    "peak_rss_bytes": 250064896,
+    "phases_seconds": {
+      "input_discovery": 0.001286077000258956,
+      "candidate_read": 0.2111636340014229,
+      "hit_read": 0.6869425469994894,
+      "mirna_read": 0.00016441299885627814,
+      "input_normalization_and_indexing": 0.1670295059993805,
+      "guide_aggregation_and_payload": 10.180526042000565
+    },
+    "inputs": {
+      "candidates": {
+        "path": "candidates_all.csv",
+        "file_bytes": 32821547,
+        "rows": 12000,
+        "source_column_count": 45,
+        "selected_columns": [
+          "id",
+          "guide_sequence",
+          "passenger_sequence",
+          "transcript_id",
+          "position",
+          "gc_content",
+          "asymmetry_score",
+          "empirical_score",
+          "paired_fraction",
+          "design_score",
+          "composite_score",
+          "weight_vector",
+          "passes_filters"
+        ],
+        "excluded_column_count": 32,
+        "chunksize_rows": 50000,
+        "dataframe_bytes": 2149022
+      },
+      "offtargets": {
+        "path": "combined_offtargets.tsv",
+        "file_bytes": 61968850,
+        "rows": 24000,
+        "source_column_count": 51,
+        "selected_columns": [
+          "qseq",
+          "species",
+          "rname",
+          "strand",
+          "cigar",
+          "nm",
+          "seed_mismatches",
+          "hit_class",
+          "matched_symbol",
+          "symbol_lookup_missing",
+          "hit_symbol",
+          "hit_symbol_missing",
+          "species_index_missing",
+          "ortholog_evidence"
+        ],
+        "excluded_column_count": 37,
+        "chunksize_rows": 50000,
+        "dataframe_bytes": 5352132
+      }
+    },
+    "build_seconds": 11.24725157300054
+  }
+}

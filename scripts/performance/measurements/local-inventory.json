@@ -1,0 +1,182 @@
+{
+  "kind": "inventory",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "c7734f395f5bbd7b16c2872665a49513a1e601b6"
+  },
+  "tools": {
+    "pixi": {
+      "path": "/home/hovland/.pixi/bin/pixi",
+      "command": [
+        "/home/hovland/.pixi/bin/pixi",
+        "--version"
+      ],
+      "timeout_seconds": 5.0,
+      "status": "ok",
+      "returncode": 0,
+      "stdout": "pixi 0.76.1\n",
+      "stderr": "",
+      "cpu_user_seconds": 0.0,
+      "cpu_system_seconds": 0.01,
+      "peak_rss_kib": 9728,
+      "wall_seconds": 0.010915719999957219
+    },
+    "uv": {
+      "path": "/home/hovland/.local/bin/uv",
+      "command": [
+        "/home/hovland/.local/bin/uv",
+        "--version"
+      ],
+      "timeout_seconds": 5.0,
+      "status": "ok",
+      "returncode": 0,
+      "stdout": "uv 0.12.2 (x86_64-unknown-linux-gnu)\n",
+      "stderr": "",
+      "cpu_user_seconds": 0.0,
+      "cpu_system_seconds": 0.0,
+      "peak_rss_kib": 13440,
+      "wall_seconds": 0.016549375000067812
+    },
+    "micromamba": {
+      "path": "/home/hovland/.local/bin/micromamba",
+      "command": [
+        "/home/hovland/.local/bin/micromamba",
+        "--version"
+      ],
+      "timeout_seconds": 5.0,
+      "status": "ok",
+      "returncode": 0,
+      "stdout": "2.3.2\n",
+      "stderr": "",
+      "cpu_user_seconds": 0.0,
+      "cpu_system_seconds": 0.01,
+      "peak_rss_kib": 10880,
+      "wall_seconds": 0.018468375999873388
+    },
+    "nextflow": {
+      "path": "/usr/local/bin/nextflow",
+      "command": [
+        "/usr/local/bin/nextflow",
+        "-version"
+      ],
+      "timeout_seconds": 5.0,
+      "status": "ok",
+      "returncode": 0,
+      "stdout": "\n      N E X T F L O W\n      version 26.04.2 build 12216\n      created 21-05-2026 21:22 UTC (17:22 EDT)\n      cite doi:10.1038/nbt.3820\n      http://nextflow.io\n\n",
+      "stderr": "",
+      "cpu_user_seconds": 1.62,
+      "cpu_system_seconds": 0.64,
+      "peak_rss_kib": 124100,
+      "wall_seconds": 1.6454642240000794
+    },
+    "java": {
+      "path": "/usr/bin/java",
+      "command": [
+        "/usr/bin/java",
+        "-version"
+      ],
+      "timeout_seconds": 5.0,
+      "status": "ok",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "openjdk version \"21.0.12.1\" 2026-08-18\nOpenJDK Runtime Environment (build 21.0.12.1+1-1-24.04.4-Ubuntu)\nOpenJDK 64-Bit Server VM (build 21.0.12.1+1-1-24.04.4-Ubuntu, mixed mode, sharing)\n",
+      "cpu_user_seconds": 0.01,
+      "cpu_system_seconds": 0.03,
+      "peak_rss_kib": 39852,
+      "wall_seconds": 0.053235908000033305
+    },
+    "bwa-mem2": {
+      "path": null,
+      "status": "unavailable"
+    },
+    "bwa-mem3": {
+      "path": null,
+      "status": "unavailable"
+    },
+    "samtools": {
+      "path": null,
+      "status": "unavailable"
+    },
+    "RNAfold": {
+      "path": null,
+      "status": "unavailable"
+    }
+  },
+  "files": {
+    "pyproject.toml": {
+      "sha256": "736de5f890c82c81871a619a33816fde4c433ad01deef445e4ca45d3e0f06ad4"
+    },
+    "uv.lock": {
+      "sha256": "b47baffe297ec760b1eb661a8b50a0eebcc50c2763b92252bb18a15bcc1fe8ad"
+    },
+    "environment-dev.yml": {
+      "sha256": "e88de5f08c2bc23eb018a46d980abafad8efbdb9a1757e04640e5ce70e32375b"
+    },
+    "docker/environment-nextflow.yml": {
+      "sha256": "f3e43f31f8561939255f6fadfd32ab9e6e09c056ec4f5f593dc8052416b5862f"
+    },
+    "docker/Dockerfile": {
+      "sha256": "b0b411436f56f80163509a8b46efad6295cdf30b8821dbdf65b07351daeada42"
+    }
+  },
+  "python_dependencies": [
+    "biopython>=1.84",
+    "pandas>=2.3.0",
+    "numpy>=1.26.0,<2.5",
+    "requests>=2.32.0",
+    "pysam>=0.23.0",
+    "pyahocorasick>=2.1.0",
+    "fm-index>=2.3.4",
+    "click>=8.0.0",
+    "pydantic>=2.11.0",
+    "rich>=14.0.0",
+    "typer>=0.17.0",
+    "ViennaRNA>=2.7.0",
+    "aiohttp>=3.12.0",
+    "httpx>=0.28.0",
+    "nextflow>=25.04.0",
+    "pandera>=0.26.0",
+    "psutil>=6.0.0",
+    "pyarrow>=18.0.0",
+    "jinja2>=3.1.0",
+    "tomli>=2.0.1 ; python_full_version < '3.11'"
+  ],
+  "dev_dependencies": [
+    "uv>=0.4.0",
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "pytest-mock>=3.15",
+    "pytest-asyncio>=1.1.0",
+    "pytest-xdist>=3.8",
+    "jsonschema>=4.0",
+    "ruff>=0.12.0",
+    "mypy>=1.10",
+    "pre-commit>=3.8",
+    "types-requests>=2.32.0",
+    "pandas-stubs>=2.1.0",
+    "codespell>=2.4.0",
+    "bandit[toml]>=1.7.0",
+    "sphinx>=7.3.0",
+    "sphinx-rtd-theme>=2.0.0",
+    "myst-parser>=2.0.0",
+    "sphinx-autodoc-typehints>=2.0.0",
+    "linkify-it-py>=2.0.3",
+    "sphinx-autobuild>=2024.9.19",
+    "sphinx-design>=0.6.0",
+    "sphinxcontrib-mermaid>=1.0.0",
+    "jupyter>=1.0.0",
+    "jupyter-server>=2.14.1",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "plotly>=5.15.0",
+    "sphinxcontrib-programoutput>=0.18"
+  ],
+  "conda_environment_sources": {
+    "environment-dev.yml": "# siRNAforge Local Development Environment\n# This environment includes both bioinformatics tools and Python dependencies\n# for complete local development without Docker\n\nname: sirnaforge-dev\nchannels:\n- conda-forge\n- bioconda\n- nodefaults\ndependencies:\n# Python runtime\n- python=3.12\n\n# Core bioinformatics tools (from Docker environment)\n- openjdk >=17,<25\n- nextflow >=25.04.0\n- bwa-mem2 >=2.2.1\n- samtools >=1.19.2\n- viennarna >=2.7.0\n- awscli >=2.0\n- curl\n- wget\n- jq\n- pigz\n- htslib\n- pysam\n\n# Python scientific stack\n- numpy >=1.26.0\n- pandas >=2.3.0\n- matplotlib >=3.7.0\n- seaborn >=0.12.0\n- jupyter >=1.0.0\n- plotly >=5.15.0\n\n# Python bioinformatics and data libraries\n- biopython >=1.84\n- requests >=2.32.0\n- aiohttp >=3.12.0\n- httpx >=0.28.0\n\n# Python development and CLI tools\n- click >=8.0.0\n- rich >=14.0.0\n- typer >=0.17.0\n- pydantic >=2.11.0\n- pandera >=0.26.0\n\n# Development tools\n- pytest >=8.0\n- pytest-cov >=6.0\n- pytest-mock >=3.15\n- pytest-asyncio >=1.1.0\n- pytest-xdist >=3.8\n- ruff >=0.12.0\n- mypy >=1.10\n- pre-commit >=3.8\n- codespell >=2.4.0\n- bandit[toml] >=1.7.0\n- safety >=3.0.0,<4.0.0\n\n# Documentation tools\n- sphinx >=7.3.0\n- sphinx-rtd-theme >=2.0.0\n- myst-parser >=2.0.0\n- sphinx-autodoc-typehints >=2.0.0\n- linkify-it-py >=2.0.3\n- sphinx-autobuild >=2024.9.19\n- sphinx-design >=0.6.0\n- sphinxcontrib-mermaid >=1.0.0\n\n# Type stubs for better development experience\n- types-requests >=2.32.0\n- pandas-stubs >=2.1.0\n\n# Additional utilities\n- git\n- htop\n- tree\n- tmux\n- vim\n- nano\n",
+    "docker/environment-nextflow.yml": "# siRNAforge Docker environment\nchannels:\n- conda-forge\n- bioconda\n- defaults\ndependencies:\n# Java runtime (required for Nextflow)\n- openjdk >=17,<25\n\n# Workflow management\n- nextflow >=25.04.0\n\n# Sequence alignment tools\n- bwa-mem2 >=2.2.1\n- samtools >=1.19.2\n\n# RNA analysis\n- viennarna >=2.7.0\n\n# Cloud storage and utilities\n- awscli >=2.0\n- curl\n- wget\n\n# JSON processing\n- jq\n\n# Compression utilities\n- pigz\n- htslib\n# Keep Python runtime and native/binary packages in conda. Pure-Python\n# dependencies will be installed by pip from wheels during the wheel\n# installation step (pip will skip packages already installed here).\n- python=3.12\n- pysam\n"
+  },
+  "caveat": "Tool version probes are PATH observations, not successful workflow execution. Nextflow may try network access; probe is bounded by timeout."
+}

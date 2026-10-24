@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "mem3": {
+    "upstream": "https://github.com/fg-labs/bwa-mem3/releases/tag/v0.15.0",
+    "version": "v0.15.0",
+    "source_sha256": "ec6926716b9169018dca75064a08a5020c4a9eaff98a86f944cb0c8484c4670d",
+    "upstream_checksum_verified": true,
+    "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "build_command": [
+      "make",
+      "CXX=g++",
+      "CC=gcc",
+      "ALLOW_UNSUPPORTED_COMPILER=1",
+      "-j2"
+    ],
+    "supported_compiler": false,
+    "limitation": "GCC 13 is below upstream recommendation GCC 15+/Clang19+. Timings are exploratory compatibility measurements, not representative upstream performance."
+  },
+  "mem2": {
+    "upstream": "https://github.com/bwa-mem2/bwa-mem2/releases/tag/v2.2.1",
+    "version": "v2.2.1",
+    "distribution": "official x64 Linux prebuilt",
+    "archive_sha256": "b4cfdbce8cc07cdf3f6a920facabc29c976cf77dd53573369508111d6d1c555b"
+  }
+}
