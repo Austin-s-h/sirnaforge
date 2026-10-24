@@ -261,9 +261,18 @@ def _load_native_assets(  # noqa: PLR0912 - validates a closed multi-file native
     with Path(observations_csv).open(newline="") as handle:
         reader = csv.DictReader(handle)
         required = {
-            "benchmark_id", "dataset", "source_row", "full_guide_sequence", "paired_guide_sequence",
-            "passenger_sequence", "paired_length", "duplex_pairing_status", "guide_overhang_sequence",
-            "passenger_overhang_sequence", "native_reference_species", "native_reference_assembly",
+            "benchmark_id",
+            "dataset",
+            "source_row",
+            "full_guide_sequence",
+            "paired_guide_sequence",
+            "passenger_sequence",
+            "paired_length",
+            "duplex_pairing_status",
+            "guide_overhang_sequence",
+            "passenger_overhang_sequence",
+            "native_reference_species",
+            "native_reference_assembly",
             "native_mapping_count",
         }
         missing = required - set(reader.fieldnames or ())
@@ -273,7 +282,10 @@ def _load_native_assets(  # noqa: PLR0912 - validates a closed multi-file native
             key = row["benchmark_id"]
             if not key or key in native_rows:
                 raise BenchmarkPrepareError(f"duplicate or empty native observation identity {key!r}")
-            if row["native_reference_species"].lower() != reference["species"] or row["native_reference_assembly"] != reference["assembly"]:
+            if (
+                row["native_reference_species"].lower() != reference["species"]
+                or row["native_reference_assembly"] != reference["assembly"]
+            ):
                 raise BenchmarkPrepareError(f"native observation {key!r} reference provenance conflicts with manifest")
             native_rows[key] = row
     native_hits: dict[str, list[BenchmarkNativeMapping]] = {}
@@ -281,8 +293,16 @@ def _load_native_assets(  # noqa: PLR0912 - validates a closed multi-file native
     with Path(mappings_csv).open(newline="") as handle:
         reader = csv.DictReader(handle)
         required = {
-            "mapping_id", "benchmark_id", "mapping_status", "mapping_transcript_id", "mapping_gene_id",
-            "mapping_assembly", "site_start_1based", "site_end_1based", "site_sequence", "mapping_strand",
+            "mapping_id",
+            "benchmark_id",
+            "mapping_status",
+            "mapping_transcript_id",
+            "mapping_gene_id",
+            "mapping_assembly",
+            "site_start_1based",
+            "site_end_1based",
+            "site_sequence",
+            "mapping_strand",
             "query_sequence",
         }
         missing = required - set(reader.fieldnames or ())
@@ -317,7 +337,9 @@ def _load_native_assets(  # noqa: PLR0912 - validates a closed multi-file native
             except (ValueError, TypeError) as exc:
                 raise BenchmarkPrepareError(f"invalid native mapping {row.get('mapping_id')!r}: {exc}") from exc
             if hit.assembly != reference["assembly"] or hit.site_sequence != row["query_sequence"].upper():
-                raise BenchmarkPrepareError(f"native mapping {hit.source_mapping_id} conflicts with its query/reference")
+                raise BenchmarkPrepareError(
+                    f"native mapping {hit.source_mapping_id} conflicts with its query/reference"
+                )
             native_hits.setdefault(key, []).append(hit)
     for key, native_row in native_rows.items():
         try:
@@ -374,25 +396,37 @@ def _apply_native_geometry(  # noqa: PLR0912 - validates measured geometry befor
                 "architecture": "unsupported",
                 "paired_guide_sequence": paired_guide if paired_guide else observation.full_guide_sequence,
                 "paired_length": measured_length,
-                "guide_3p_overhang": native_row.get("guide_3p_overhang", native_row.get("guide_overhang_sequence")) or None,
-                "passenger_3p_overhang": native_row.get("passenger_3p_overhang", native_row.get("passenger_overhang_sequence")) or None,
-                "duplex_pairing_status": "non_complementary" if pairing == "non_complementary" else "partial_unresolved",
+                "guide_3p_overhang": native_row.get("guide_3p_overhang", native_row.get("guide_overhang_sequence"))
+                or None,
+                "passenger_3p_overhang": native_row.get(
+                    "passenger_3p_overhang", native_row.get("passenger_overhang_sequence")
+                )
+                or None,
+                "duplex_pairing_status": "non_complementary"
+                if pairing == "non_complementary"
+                else "partial_unresolved",
                 "compatibility_status": "incompatible",
                 "compatibility_reason": "review_only_unsupported_or_unresolved_measured_duplex_architecture",
                 "native_mapping_review_reason": "review_only_unsupported_or_unresolved_measured_duplex_architecture",
             }
         )
     if len(paired_guide) != measured_length or paired_guide != observation.full_guide_sequence[:measured_length]:
-        raise BenchmarkPrepareError(f"native source identity {native_key!r} does not preserve the measured paired guide")
+        raise BenchmarkPrepareError(
+            f"native source identity {native_key!r} does not preserve the measured paired guide"
+        )
     if pairing == "fully_complementary":
         if measured_length == observation.guide_length and len(native_passenger) == measured_length:
             if native_passenger != str(Seq(native_guide).reverse_complement()):
-                raise BenchmarkPrepareError(f"native source identity {native_key!r} falsely declares a fully paired duplex")
+                raise BenchmarkPrepareError(
+                    f"native source identity {native_key!r} falsely declares a fully paired duplex"
+                )
             architecture = "fully_complementary"
             guide_tail = passenger_tail = ""
         elif measured_length < observation.guide_length and len(native_passenger) == measured_length:
             if str(Seq(paired_guide).reverse_complement()).replace("U", "T") != native_passenger.replace("U", "T"):
-                raise BenchmarkPrepareError(f"native source identity {native_key!r} falsely declares a fully paired core")
+                raise BenchmarkPrepareError(
+                    f"native source identity {native_key!r} falsely declares a fully paired core"
+                )
             architecture = "paired_core_with_overhang"
             guide_tail = observation.full_guide_sequence[measured_length:]
             passenger_tail = ""
@@ -402,15 +436,21 @@ def _apply_native_geometry(  # noqa: PLR0912 - validates measured geometry befor
     else:
         if measured_length >= observation.guide_length:
             raise BenchmarkPrepareError(f"native source identity {native_key!r} has an invalid paired-core length")
-        if str(Seq(paired_guide).reverse_complement()).replace("U", "T") != native_passenger[:measured_length].replace("U", "T"):
+        if str(Seq(paired_guide).reverse_complement()).replace("U", "T") != native_passenger[:measured_length].replace(
+            "U", "T"
+        ):
             raise BenchmarkPrepareError(f"native source identity {native_key!r} paired core does not match passenger")
         architecture = "paired_core_with_overhang"
         guide_tail = observation.full_guide_sequence[measured_length:]
         passenger_tail = (observation.passenger_sequence or "")[measured_length:]
         measured_guide_tail = native_row.get("guide_3p_overhang", native_row.get("guide_overhang_sequence", guide_tail))
-        measured_passenger_tail = native_row.get("passenger_3p_overhang", native_row.get("passenger_overhang_sequence", passenger_tail))
+        measured_passenger_tail = native_row.get(
+            "passenger_3p_overhang", native_row.get("passenger_overhang_sequence", passenger_tail)
+        )
         if measured_guide_tail != guide_tail or measured_passenger_tail != passenger_tail:
-            raise BenchmarkPrepareError(f"native source identity {native_key!r} overhangs disagree with measured strands")
+            raise BenchmarkPrepareError(
+                f"native source identity {native_key!r} overhangs disagree with measured strands"
+            )
     compatible = measured_length == requested_length
     return observation.model_copy(
         update={
@@ -421,7 +461,9 @@ def _apply_native_geometry(  # noqa: PLR0912 - validates measured geometry befor
             "passenger_3p_overhang": passenger_tail,
             "duplex_pairing_status": pairing,
             "compatibility_status": "compatible" if compatible else "incompatible",
-            "compatibility_reason": "" if compatible else f"measured paired length {measured_length} differs from requested artifact length {requested_length}",
+            "compatibility_reason": ""
+            if compatible
+            else f"measured paired length {measured_length} differs from requested artifact length {requested_length}",
         }
     )
 
@@ -704,11 +746,15 @@ def prepare_artifact(  # noqa: PLR0912 - the optional native import is a separat
         if native_reference is not None:
             native_key = row.get("benchmark_id", "")
             if not native_key:
-                native_key = f"{row.get('dataset', descriptor.panel_id)}__row_{int(row.get('source_row', index + 1)):06d}"
+                native_key = (
+                    f"{row.get('dataset', descriptor.panel_id)}__row_{int(row.get('source_row', index + 1)):06d}"
+                )
             native_row = native_rows.get(native_key)
             if native_row is None:
                 raise BenchmarkPrepareError(f"native observations are missing source identity {native_key!r}")
-            if native_row["dataset"] != row.get("dataset", descriptor.panel_id) or int(native_row["source_row"]) != int(row.get("source_row", index + 1)):
+            if native_row["dataset"] != row.get("dataset", descriptor.panel_id) or int(native_row["source_row"]) != int(
+                row.get("source_row", index + 1)
+            ):
                 raise BenchmarkPrepareError(f"native source identity {native_key!r} conflicts with panel row order")
             observation = _apply_native_geometry(observation, native_row, length, native_key=native_key)
             hits = native_hits.get(native_key, [])
@@ -792,9 +838,13 @@ def prepare_artifact(  # noqa: PLR0912 - the optional native import is a separat
         observations_kept=kept,
         observations_incompatible=incompatible,
         mapped_native=sum(1 for observation in observations if observation.target_identity_status == "confirmed"),
-        mapped_native_ambiguous=sum(1 for observation in observations if observation.target_identity_status == "ambiguous"),
+        mapped_native_ambiguous=sum(
+            1 for observation in observations if observation.target_identity_status == "ambiguous"
+        ),
         mapped_panel_local=0,
-        mapping_unavailable=sum(1 for observation in observations if observation.target_identity_status == "unavailable"),
+        mapping_unavailable=sum(
+            1 for observation in observations if observation.target_identity_status == "unavailable"
+        ),
         entered_design=0,
         no_candidate=0,
         default_pass=0,

@@ -211,10 +211,16 @@ def generate_species_mappings(
         except (TypeError, ValueError):
             paired_length = 0
         pairing = str(row.get("duplex_pairing_status", ""))
-        if query and len(query) == paired_length and paired_length >= 19 and pairing in {
-            "fully_complementary",
-            "paired_core_with_overhang",
-        }:
+        if (
+            query
+            and len(query) == paired_length
+            and paired_length >= 19
+            and pairing
+            in {
+                "fully_complementary",
+                "paired_core_with_overhang",
+            }
+        ):
             paired_guide = _dna(row.get("paired_guide_sequence", ""))
             full_guide = _dna(row.get("full_guide_sequence", ""))
             passenger = _dna(row.get("passenger_sequence", ""))
@@ -286,9 +292,9 @@ def generate_species_mappings(
         benchmark_id = str(obs.get("benchmark_id", ""))
         hits = hits_by_observation.get(benchmark_id, [])
         paired_length = int(obs.get("paired_length", 0) or 0)
-        is_searchable = any(obs is query_row for query_row in queries.get(
-            _dna(obs.get("paired_target_sequence", "")), []
-        ))
+        is_searchable = any(
+            obs is query_row for query_row in queries.get(_dna(obs.get("paired_target_sequence", "")), [])
+        )
         status = "mapped" if hits else "no_exact_site" if is_searchable else "unavailable_unsupported_geometry"
         observation_results.append(
             {

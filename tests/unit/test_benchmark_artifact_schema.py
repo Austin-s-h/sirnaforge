@@ -388,18 +388,18 @@ def test_manifest_default_schema_versions_are_not_restated() -> None:
 def test_manifest_mapped_native_count_is_supported_in_110() -> None:
     """The versioned schema now records native transcript mappings and ambiguity separately."""
     counts = BenchmarkArtifactCounts(
-            observations_in_source=1,
-            observations_kept=1,
-            observations_incompatible=0,
-            mapped_native=1,
-            mapped_native_ambiguous=2,
-            mapped_panel_local=0,
-            mapping_unavailable=0,
-            entered_design=0,
-            no_candidate=1,
-            default_pass=0,
-            benchmark_pass=0,
-        )
+        observations_in_source=1,
+        observations_kept=1,
+        observations_incompatible=0,
+        mapped_native=1,
+        mapped_native_ambiguous=2,
+        mapped_panel_local=0,
+        mapping_unavailable=0,
+        entered_design=0,
+        no_candidate=1,
+        default_pass=0,
+        benchmark_pass=0,
+    )
     assert counts.mapped_native == 1
     assert counts.mapped_native_ambiguous == 2
 

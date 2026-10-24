@@ -112,7 +112,12 @@ def artifact_dir_name(panel_id: str, paired_length: int) -> str:
 
 ArchitectureId = Literal["paired_core_with_overhang", "fully_complementary", "asymmetric", "unsupported"]
 DuplexPairingStatus = Literal[
-    "fully_complementary", "paired_core_with_overhang", "asymmetric", "unstated", "non_complementary", "partial_unresolved"
+    "fully_complementary",
+    "paired_core_with_overhang",
+    "asymmetric",
+    "unstated",
+    "non_complementary",
+    "partial_unresolved",
 ]
 CompatibilityStatus = Literal["compatible", "incompatible"]
 #: ``synthetic_context_local`` is the honest state for a site
@@ -178,7 +183,9 @@ class BenchmarkObservation(BaseModel):
     native_reference_assembly: str | None = Field(default=None, description="Assembly of the mapped reference")
     native_reference_sha256: str | None = Field(default=None, description="Checksum of reference FASTA used")
     native_mapping_count: int = Field(default=0, ge=0, description="Number of exact native transcript hits")
-    native_mapping_review_reason: str | None = Field(default=None, description="Why imported native mapping was withheld")
+    native_mapping_review_reason: str | None = Field(
+        default=None, description="Why imported native mapping was withheld"
+    )
     design_context_id: str = Field(min_length=1, description="Record id in design_inputs.fasta")
     design_context_source: DesignContextSource = Field(description="panel_transcript or measured_target_site")
     split: SplitLabel | None = Field(description="Only when the descriptor declares a split rule")
@@ -380,7 +387,9 @@ class BenchmarkArtifactOutputs(BaseModel):
     design_inputs_fasta: ManifestOutputEntry
     candidates_all_csv: ManifestOutputEntry | None = Field(default=None, description="Set once design has run")
     accounting_csv: ManifestOutputEntry | None = Field(default=None, description="Set once design has run")
-    native_mappings_csv: ManifestOutputEntry | None = Field(default=None, description="Set when native mapping is imported")
+    native_mappings_csv: ManifestOutputEntry | None = Field(
+        default=None, description="Set when native mapping is imported"
+    )
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

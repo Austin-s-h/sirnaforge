@@ -240,7 +240,9 @@ def test_the_subworkflow_aborts_when_neither_screening_channel_can_run():
     assert "error(" in guard_block, "the guard must abort the run, not warn"
     assert "Nothing to screen" in guard_block
     # The guard must sit upstream of the process it protects, or the run reaches aggregation first.
-    assert text.index("if (!ch_mirna_species_list && !ch_transcript_seed_species_list) {") < text.index("OFFTARGET_ANALYSIS(\n")
+    assert text.index("if (!ch_mirna_species_list && !ch_transcript_seed_species_list) {") < text.index(
+        "OFFTARGET_ANALYSIS(\n"
+    )
 
 
 # ---------------------------------------------------------------------------

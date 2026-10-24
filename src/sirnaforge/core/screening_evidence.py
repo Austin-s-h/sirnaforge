@@ -336,31 +336,35 @@ def build_plan(
     lets ``NOT_REQUESTED`` be distinguished from ``FAILED`` downstream.
     """
     settings = dict(search_settings or {})
-    entries = tuple(
-        ScreeningPlanEntry(
-            channel=ScreeningChannel.TRANSCRIPTOME,
-            species=species,
-            reference_id=reference_id,
-            guide_set_digest=guide_set_digest,
-            search_settings=settings,
+    entries = (
+        tuple(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.TRANSCRIPTOME,
+                species=species,
+                reference_id=reference_id,
+                guide_set_digest=guide_set_digest,
+                search_settings=settings,
+            )
+            for species, reference_id in transcriptome
         )
-        for species, reference_id in transcriptome
-    ) + tuple(
-        ScreeningPlanEntry(
-            channel=ScreeningChannel.MIRNA_SEED,
-            species=species,
-            guide_set_digest=guide_set_digest,
-            search_settings=settings,
+        + tuple(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.MIRNA_SEED,
+                species=species,
+                guide_set_digest=guide_set_digest,
+                search_settings=settings,
+            )
+            for species in mirna_species
         )
-        for species in mirna_species
-    ) + tuple(
-        ScreeningPlanEntry(
-            channel=ScreeningChannel.TRANSCRIPT_SEED,
-            species=species,
-            guide_set_digest=guide_set_digest,
-            search_settings=settings,
+        + tuple(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.TRANSCRIPT_SEED,
+                species=species,
+                guide_set_digest=guide_set_digest,
+                search_settings=settings,
+            )
+            for species in transcript_seed_species
         )
-        for species in transcript_seed_species
     )
     return ScreeningPlan(entries=entries)
 

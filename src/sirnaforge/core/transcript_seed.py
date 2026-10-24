@@ -94,7 +94,9 @@ def scan_transcript_seed_sites(
     scope = TranscriptSequenceScope(scope)
     if len({transcript.transcript_id for transcript in transcripts}) != len(transcripts):
         raise ValueError("transcript_id values must be unique within one scan")
-    prepared_guides = {guide_id: _patterns(_normalize(seq, label=f"guide {guide_id}")) for guide_id, seq in guides.items()}
+    prepared_guides = {
+        guide_id: _patterns(_normalize(seq, label=f"guide {guide_id}")) for guide_id, seq in guides.items()
+    }
     if not prepared_guides:
         raise ValueError("at least one guide sequence is required")
 
@@ -132,7 +134,12 @@ def scan_transcript_seed_sites(
                     target_sequence=pattern.sequence,
                 )
 
-    ordered = tuple(sorted(sites.values(), key=lambda site: (site.transcript_id, site.start, site.guide_id, _SITE_PRIORITY[site.site_class])))
+    ordered = tuple(
+        sorted(
+            sites.values(),
+            key=lambda site: (site.transcript_id, site.start, site.guide_id, _SITE_PRIORITY[site.site_class]),
+        )
+    )
     transcripts_with_sites = {site.transcript_id for site in ordered}
     genes_with_sites = {site.gene_id for site in ordered if site.gene_id is not None}
     unresolved_transcripts = {site.transcript_id for site in ordered if site.gene_id is None}
@@ -212,9 +219,7 @@ def run_transcript_seed_analysis(
         detail = "transcriptome FASTA contained no transcripts"
     elif unavailable:
         status = EvidenceStatus.FAILED
-        detail = (
-            f"{unavailable} transcript(s) lack explicit 3′UTR annotations; no zero-site result was inferred"
-        )
+        detail = f"{unavailable} transcript(s) lack explicit 3′UTR annotations; no zero-site result was inferred"
     scan_complete = status is EvidenceStatus.COMPLETE
 
     per_guide: dict[str, dict[str, object]] = {}

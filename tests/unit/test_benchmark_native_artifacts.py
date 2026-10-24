@@ -17,7 +17,9 @@ NATIVE = Path(__file__).parents[1] / "data" / "benchmarks" / "oligogym_native_de
 def test_prepare_imports_all_native_hits_and_keeps_measured_overhangs(tmp_path: Path) -> None:
     """Imported evidence keeps exact coordinates and both measured OligoGym tails."""
     reference = tmp_path / "reference.json"
-    reference.write_text(json.dumps({"species": "human", "assembly": "GRCh38", "release": "Ensembl 110", "sha256": "a" * 64}))
+    reference.write_text(
+        json.dumps({"species": "human", "assembly": "GRCh38", "release": "Ensembl 110", "sha256": "a" * 64})
+    )
 
     manifest = prepare_artifact(
         panel_id="ichihara",
@@ -35,7 +37,9 @@ def test_prepare_imports_all_native_hits_and_keeps_measured_overhangs(tmp_path: 
     assert manifest.artifact_schema_version == "1.1"
     assert manifest.native_reference.species == "human"
     assert manifest.counts.mapped_native == sum(row.target_identity_status == "confirmed" for row in observations)
-    assert manifest.counts.mapped_native_ambiguous == sum(row.target_identity_status == "ambiguous" for row in observations)
+    assert manifest.counts.mapped_native_ambiguous == sum(
+        row.target_identity_status == "ambiguous" for row in observations
+    )
     assert len(mappings) == sum(row.native_mapping_count for row in observations)
     assert any(row.guide_3p_overhang == "AT" for row in observations)
     for hit in mappings:
@@ -49,7 +53,9 @@ def test_prepare_imports_all_native_hits_and_keeps_measured_overhangs(tmp_path: 
 def test_native_import_rejects_mapping_outside_measured_paired_core(tmp_path: Path) -> None:
     """A mapping whose reported span exceeds its sequence cannot become confirmed evidence."""
     reference = tmp_path / "reference.json"
-    reference.write_text(json.dumps({"species": "human", "assembly": "GRCh38", "release": "Ensembl 110", "sha256": "a" * 64}))
+    reference.write_text(
+        json.dumps({"species": "human", "assembly": "GRCh38", "release": "Ensembl 110", "sha256": "a" * 64})
+    )
     altered = tmp_path / "mappings.csv"
     with (NATIVE / "mappings.csv").open(newline="") as source, altered.open("w", newline="") as target:
         reader = csv.DictReader(source)
@@ -77,7 +83,9 @@ def test_native_import_rejects_mapping_outside_measured_paired_core(tmp_path: Pa
 def test_martinelli_mixed_measured_lengths_partition_into_fixed_length_artifacts(tmp_path: Path) -> None:
     """Measured 19-nt and 21-nt rows enter only their matching fixed-length artifacts."""
     reference = tmp_path / "reference.json"
-    reference.write_text(json.dumps({"species": "human", "assembly": "GRCh38", "release": "Ensembl 110", "sha256": "a" * 64}))
+    reference.write_text(
+        json.dumps({"species": "human", "assembly": "GRCh38", "release": "Ensembl 110", "sha256": "a" * 64})
+    )
     results = {}
     for requested_length in (19, 21):
         manifest = prepare_artifact(

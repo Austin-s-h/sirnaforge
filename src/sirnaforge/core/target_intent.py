@@ -138,7 +138,9 @@ def resolve_target_intent(
             raise ValueError(f"duplicate/version conflict in {label} transcript IDs")
         unknown = resolved - normalized_universe.keys()
         if unknown:
-            raise ValueError(f"{label} transcript IDs are absent from annotation universe: {', '.join(sorted(unknown))}")
+            raise ValueError(
+                f"{label} transcript IDs are absent from annotation universe: {', '.join(sorted(unknown))}"
+            )
         return resolved
 
     required_declared = resolve_declared_ids(request.required_transcript_ids, "required")
@@ -148,7 +150,11 @@ def resolve_target_intent(
     enumeration_inputs = resolve_declared_ids(enumeration_input_ids, "enumeration")
     if not enumeration_inputs:
         raise ValueError("at least one enumeration input transcript is required")
-    required = frozenset(normalized_universe) - excluded if request.selectivity is TargetSelectivity.PAN_ISOFORM else required_declared
+    required = (
+        frozenset(normalized_universe) - excluded
+        if request.selectivity is TargetSelectivity.PAN_ISOFORM
+        else required_declared
+    )
     if not required:
         raise ValueError("target intent resolves to no required transcripts")
     if request.selectivity is TargetSelectivity.ISOFORM_SELECTIVE and not required:
@@ -204,11 +210,7 @@ def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIn
     forbidden = excluded | selective_liabilities
     uncovered_required = required - covered
     excluded_hits = forbidden & covered
-    missing = frozenset(
-        identifier
-        for identifier in required | forbidden
-        if sequences.get(identifier) is None
-    )
+    missing = frozenset(identifier for identifier in required | forbidden if sequences.get(identifier) is None)
     if excluded_hits or uncovered_required - missing:
         verdict = TargetIntentVerdict.FAIL
     elif missing:

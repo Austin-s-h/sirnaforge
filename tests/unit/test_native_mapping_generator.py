@@ -108,9 +108,10 @@ def test_four_species_sidecars_keep_projection_status_and_all_exact_hits(tmp_pat
 
     assert tuple(references) == SUPPORTED_SPECIES
     assert summaries["human"]["mapping_status_counts"] == {"mapped": 1, "unavailable_unsupported_geometry": 1}
-    assert summaries["mouse"]["mappings_sha256"] == hashlib.sha256(
-        (tmp_path / "out" / "mouse" / "mappings.csv").read_bytes()
-    ).hexdigest()
+    assert (
+        summaries["mouse"]["mappings_sha256"]
+        == hashlib.sha256((tmp_path / "out" / "mouse" / "mappings.csv").read_bytes()).hexdigest()
+    )
     assert summaries["mouse"]["mapping_status_counts"] == {"mapped": 1, "unavailable_unsupported_geometry": 1}
     assert summaries["rat"]["mapping_status_counts"] == {"no_exact_site": 1, "unavailable_unsupported_geometry": 1}
     assert summaries["macaque"]["mapping_status_counts"] == {"mapped": 1, "unavailable_unsupported_geometry": 1}
@@ -163,10 +164,15 @@ def test_native_search_rejects_a_paired_target_that_disagrees_with_the_strands(t
         "GRCh38",
         f">ENSTH cdna chromosome:GRCh38:1:100:500:1 gene:ENSGH\n{QUERY}\n",
     )
-    reference = load_reference_manifests([manifest, *[
-        _reference(tmp_path, species, assembly, ">tx\nACGT\n")
-        for species, assembly in (("mouse", "GRCm39"), ("rat", "GRCr8"), ("macaque", "Mmul_10"))
-    ]])["human"]
+    reference = load_reference_manifests(
+        [
+            manifest,
+            *[
+                _reference(tmp_path, species, assembly, ">tx\nACGT\n")
+                for species, assembly in (("mouse", "GRCm39"), ("rat", "GRCr8"), ("macaque", "Mmul_10"))
+            ],
+        ]
+    )["human"]
     row = _observations()[0]
     row["paired_target_sequence"] = "T" + QUERY[1:]
     with pytest.raises(NativeMappingInputError, match="geometry inconsistent"):
@@ -189,7 +195,9 @@ def test_four_species_mapper_cli_writes_reproducible_species_directories(
         _reference(tmp_path, "human", "GRCh38", f">ENSTH cdna chromosome:GRCh38:1:100:500:1 gene:ENSGH\n{QUERY}\n"),
         _reference(tmp_path, "mouse", "GRCm39", f">ENSTM cdna chromosome:GRCm39:2:100:500:-1 gene:ENSGM\n{QUERY}\n"),
         _reference(tmp_path, "rat", "GRCr8", f">ENSRT cdna primary_assembly:GRCr8:4:100:500:1 gene:ENSRG\n{QUERY}\n"),
-        _reference(tmp_path, "macaque", "Mmul_10", f">ENSMM cdna primary_assembly:Mmul_10:5:100:500:-1 gene:ENSGMM\n{QUERY}\n"),
+        _reference(
+            tmp_path, "macaque", "Mmul_10", f">ENSMM cdna primary_assembly:Mmul_10:5:100:500:-1 gene:ENSGMM\n{QUERY}\n"
+        ),
     ]
     arguments = [
         "map_oligo_benchmarks_to_ensembl",

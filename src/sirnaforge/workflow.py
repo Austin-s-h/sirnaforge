@@ -599,10 +599,11 @@ class WorkflowConfig:
                     Requiredness.REQUIRED if species in required_seed_species else Requiredness.EXPLORATORY
                 )
                 if existing_entry is not None:
-                    if transcript_seed_species is not None and existing_entry.requiredness is not requested_requiredness:
-                        raise ValueError(
-                            f"transcript-seed requiredness for {species} conflicts with resolved policy"
-                        )
+                    if (
+                        transcript_seed_species is not None
+                        and existing_entry.requiredness is not requested_requiredness
+                    ):
+                        raise ValueError(f"transcript-seed requiredness for {species} conflicts with resolved policy")
                     continue
                 requirements.append(
                     ChannelRequirement(
@@ -878,7 +879,9 @@ class SiRNAWorkflow:
                 self._resolved_target_intent = resolve_target_intent(
                     self.config.target_intent_request,
                     self._annotation_transcripts,
-                    annotation_transcript_ids=[t.transcript_id for t in self._annotation_transcripts if t.transcript_id],
+                    annotation_transcript_ids=[
+                        t.transcript_id for t in self._annotation_transcripts if t.transcript_id
+                    ],
                     annotation_provenance=(
                         f"database:{self.config.database.value};query:{self.config.gene_query};"
                         f"source:{'input_fasta' if self.config.input_fasta else 'gene_search'}"
@@ -3189,7 +3192,9 @@ class SiRNAWorkflow:
             # Resolve the screening references once; repeat detection and Nextflow both reuse them
             # instead of each fetching/indexing their own copy.
             additional_params: dict[str, Any] = dict(self.config.nextflow_config)
-            if self.config.transcript_seed_species and not getattr(self.config.design_params, "check_off_targets", True):
+            if self.config.transcript_seed_species and not getattr(
+                self.config.design_params, "check_off_targets", True
+            ):
                 additional_params["skip_transcriptome_alignment"] = True
             # Before resolution, so a reference that cannot be fetched is still a planned unit that
             # reconciles as failed rather than a species that was never mentioned again (#100).
@@ -4553,18 +4558,19 @@ class SiRNAWorkflow:
                 "verdict": candidate.filter_verdicts.get("max_transcript_seed_sites"),
             }
 
-        status = "complete" if set(requested) <= set(summaries) and all(
-            (ScreeningChannel.TRANSCRIPT_SEED.value, species) in completed for species in requested
-        ) else "partial"
+        status = (
+            "complete"
+            if set(requested) <= set(summaries)
+            and all((ScreeningChannel.TRANSCRIPT_SEED.value, species) in completed for species in requested)
+            else "partial"
+        )
         result = {
             "status": status,
             "scope": self.config.transcript_seed_scope.value,
             "species": list(requested),
             "required_species": sorted(required),
             "exploratory_species": sorted(set(requested) - required),
-            "reference_checksums": {
-                species: summaries[species].get("reference_sha256") for species in summaries
-            },
+            "reference_checksums": {species: summaries[species].get("reference_sha256") for species in summaries},
             "reference_statuses": {
                 species: {
                     "status": "complete"
