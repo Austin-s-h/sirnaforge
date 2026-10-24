@@ -86,7 +86,9 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     assert diagnostics["phases_seconds"]["normalized_table_build"] >= 0
     assert diagnostics["output_html_bytes"] == output.stat().st_size
     html = output.read_text()
-    assert "GENE1199" not in html
+    # Gene labels belong to the summary/identity metadata; detailed hit rows belong in shards.
+    detailed_hit_is_inline = "ENSTH1199" in html
+    assert not detailed_hit_is_inline
     assert len(manifest["detail_shards"]) == 10
 
     node = shutil.which("node")
