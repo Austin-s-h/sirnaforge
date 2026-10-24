@@ -66,8 +66,8 @@ class ZFNDesigner:
         pass_status: bool | str = self._apply_filters(filters, concerning, exonic, promoter)
 
         if concerning:
-            worst_score = min(site.score for site in concerning)
-            best_score = max(site.score for site in concerning)
+            worst_score = max(site.score for site in concerning)
+            best_score = min(site.score for site in concerning)
         else:
             worst_score = None
             best_score = None

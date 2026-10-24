@@ -245,16 +245,14 @@ def test_experimental_warning_text_states_scope_and_required_action() -> None:
 
 @pytest.mark.unit
 def test_experimental_warning_names_the_defects_that_bite_silently() -> None:
-    """The two defects with no visible symptom must be named, not just alluded to.
-
-    A user can notice a crash or an empty result set. They cannot notice that
-    `best_offtarget_score` means the opposite of its name, so the warning has to say so.
-    """
+    """Warn about legacy inverted artifacts without claiming corrected defects persist."""
     assert "worst_site_score" in ZFN_EXPERIMENTAL_WARNING
     assert "best_offtarget_score" in ZFN_EXPERIMENTAL_WARNING
     assert "inverted" in ZFN_EXPERIMENTAL_WARNING
+    assert "Older v1" in ZFN_EXPERIMENTAL_WARNING
+    assert "maximum (highest risk)" in ZFN_EXPERIMENTAL_WARNING
 
-    # The hard failure on the *default* backend at the documented CCR5 mismatch budget.
+    # A general safety limit remains; canonical 12bp/mm4 is supported now.
     assert "pyahocorasick" in ZFN_EXPERIMENTAL_WARNING
     assert "ValueError" in ZFN_EXPERIMENTAL_WARNING
     assert "exhaustive_python" in ZFN_EXPERIMENTAL_WARNING

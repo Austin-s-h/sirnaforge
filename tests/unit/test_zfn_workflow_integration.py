@@ -15,6 +15,7 @@ from Bio.Seq import Seq
 
 from sirnaforge.models.sirna import DesignMode, DesignParameters
 from sirnaforge.models.zfn import (
+    ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
     ZFNDefaultSubfingerMutationConstraint,
     ZFNDesignParameters,
     ZFNDesignResult,
@@ -398,7 +399,8 @@ class TestZFNDesignerEvaluatePair:
 
     def test_evaluate_pair_rejects_overly_degenerate_half_site(self, tmp_path: Path) -> None:
         """Highly degenerate half-sites should fail fast with a clear user-facing error."""
-        left = "NNNNNNNNN"
+        # A canonical alphabet has 4^9 < 1M patterns; 4^12 still exceeds the cap.
+        left = "NNNNNNNNNNNN"
         right = "GCCGCCGCC"
         spacer = "AAAAA"
         target = f"{left}{spacer}{str(Seq(right).reverse_complement())}"
@@ -451,7 +453,7 @@ async def test_zfn_workflow_outputs_include_contract_and_provenance(tmp_path: Pa
 
     candidate_path = cfg.output_dir / "sirnaforge" / "candidate_summary.json"
     payload = json.loads(candidate_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "zfn_candidate_summary.v1"
+    assert payload["schema_version"] == ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION
     assert payload["search_contract"]["allowed_spacer_lengths"] == [5, 6]
     assert "on_target_result" in payload["candidates"][0]
     assert (

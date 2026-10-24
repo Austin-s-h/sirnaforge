@@ -6,6 +6,7 @@ import gzip
 import re
 from bisect import bisect_right
 from dataclasses import dataclass
+from itertools import accumulate
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -48,8 +49,10 @@ class _GeneRecord:
 class _ChromFeatureIndex:
     exons: list[_IntervalRecord]
     exon_starts: list[int]
+    exon_max_ends: list[int]
     genes: list[_GeneRecord]
     gene_starts: list[int]
+    gene_max_ends: list[int]
     tss_positions: list[int]
     tss_records: list[_GeneRecord]
 
@@ -112,7 +115,9 @@ class GTFZFNAnnotationProvider:
         start_1based = site.start_1based
         end_1based = site.end_1based
 
-        overlapping_exons = self._find_overlaps(start_1based, end_1based, chrom_index.exons, chrom_index.exon_starts)
+        overlapping_exons = self._find_overlaps(
+            start_1based, end_1based, chrom_index.exons, chrom_index.exon_starts, chrom_index.exon_max_ends
+        )
         exon_genes = [record.gene for record in overlapping_exons if record.gene]
         if overlapping_exons:
             return "exon", exon_genes[0] if exon_genes else self._nearest_gene_for_interval(
@@ -123,7 +128,9 @@ class GTFZFNAnnotationProvider:
         if promoter_gene is not None:
             return "promoter", promoter_gene
 
-        overlapping_genes = self._find_overlaps(start_1based, end_1based, chrom_index.genes, chrom_index.gene_starts)
+        overlapping_genes = self._find_overlaps(
+            start_1based, end_1based, chrom_index.genes, chrom_index.gene_starts, chrom_index.gene_max_ends
+        )
         gene_names = [record.gene for record in overlapping_genes if record.gene]
         if overlapping_genes:
             return "intron", gene_names[0] if gene_names else self._nearest_gene_for_interval(
@@ -138,18 +145,21 @@ class GTFZFNAnnotationProvider:
         query_end_1based: int,
         records: list[_TInterval],
         starts: list[int],
+        prefix_max_ends: list[int] | None = None,
     ) -> list[_TInterval]:
         if not records:
             return []
 
         right = bisect_right(starts, query_end_1based)
+        if prefix_max_ends is None:
+            prefix_max_ends = list(accumulate((record.end_1based for record in records), max))
         overlaps: list[_TInterval] = []
         idx = right - 1
         while idx >= 0:
-            record = records[idx]
-            if record.end_1based < query_start_1based:
+            if prefix_max_ends[idx] < query_start_1based:
                 break
-            if record.start_1based <= query_end_1based:
+            record = records[idx]
+            if record.end_1based >= query_start_1based:
                 overlaps.append(record)
             idx -= 1
         return overlaps
@@ -248,8 +258,10 @@ class GTFZFNAnnotationProvider:
             output[chrom] = _ChromFeatureIndex(
                 exons=exons,
                 exon_starts=[r.start_1based for r in exons],
+                exon_max_ends=list(accumulate((r.end_1based for r in exons), max)),
                 genes=genes,
                 gene_starts=[r.start_1based for r in genes],
+                gene_max_ends=list(accumulate((r.end_1based for r in genes), max)),
                 tss_positions=[r.tss_1based for r in tss_records],
                 tss_records=tss_records,
             )

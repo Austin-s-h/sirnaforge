@@ -6,12 +6,16 @@ These helpers keep domain logic in Python while Nextflow handles process orchest
 from __future__ import annotations
 
 import csv
+import glob
 import json
+from ast import literal_eval
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
 from sirnaforge.models.zfn import (
+    ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
+    ZFN_OFFTARGET_CSV_COLUMNS,
     DimerMode,
     GenomicAnnotationConfig,
     MatchOrientation,
@@ -164,12 +168,13 @@ def run_zfn_shard_search(
     annotation_file: Path | None,
     output_sites_csv: Path,
     output_summary_json: Path,
+    params: ZFNDesignParameters | None = None,
 ) -> dict[str, int | str]:
     """Execute one shard search and persist shard-scoped outputs.
 
     The search scans ``scan_start_1..scan_end_1`` (1-based, inclusive) for
-    sequence context, but only sites whose coordinates fall entirely within the
-    *core* window (``core_start_1..core_end_1``) are written to output.  This
+    sequence context, but only sites whose start lies within the *core* window
+    (``core_start_1..core_end_1``) are written to output. This
     prevents duplicate sites across overlapping shards.  When ``core_start_1``
     or ``core_end_1`` are not provided they default to the scan boundaries.
     """
@@ -177,7 +182,7 @@ def run_zfn_shard_search(
     effective_core_end = core_end_1 if core_end_1 is not None else scan_end_1
     spacer_list = [int(s) for s in parse_csv(spacer_lengths)]
 
-    params_obj = ZFNDesignParameters(
+    params_obj = params or ZFNDesignParameters(
         left_half_site=left_half_site,
         right_half_site=right_half_site,
         search_space_fasta=str(genome_fasta),
@@ -230,7 +235,16 @@ def run_zfn_shard_search(
 
     output_summary_json.parent.mkdir(parents=True, exist_ok=True)
     output_summary_json.write_text(
-        json.dumps({"candidates": candidates, "summary": summary}, indent=2, default=str),
+        json.dumps(
+            {
+                "schema_version": ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
+                "search_contract": params_obj.model_dump(mode="json"),
+                "candidates": candidates,
+                "summary": summary,
+            },
+            indent=2,
+            default=str,
+        ),
         encoding="utf-8",
     )
 
@@ -245,6 +259,18 @@ def _site_from_row(row: dict[str, str]) -> ZFNOffTargetSite:
     if raw_region not in {"exon", "promoter", "intron", "intergenic", "unknown"}:
         raw_region = "unknown"
     typed_region: RegionLiteral = cast(RegionLiteral, raw_region)
+    raw_components = row.get("score_components") or "{}"
+    try:
+        components = json.loads(raw_components)
+    except json.JSONDecodeError:
+        # Pre-v2 CSVs used Python's dict representation. Never evaluate code.
+        components = literal_eval(raw_components)
+    if not isinstance(components, dict):
+        raise ValueError("score_components must be a JSON object")
+
+    def positions(name: str) -> list[int]:
+        raw = row.get(name) or ""
+        return [int(value) for value in raw.split(",") if value.strip()]
 
     return ZFNOffTargetSite(
         site_id=row["site_id"],
@@ -257,8 +283,14 @@ def _site_from_row(row: dict[str, str]) -> ZFNOffTargetSite:
         sequence=row["sequence"],
         left_mismatches=int(row["left_mismatches"]),
         right_mismatches=int(row["right_mismatches"]),
+        left_seed_mismatches=int(row.get("left_seed_mismatches") or 0),
+        right_seed_mismatches=int(row.get("right_seed_mismatches") or 0),
+        left_mismatch_positions=positions("left_mismatch_positions"),
+        right_mismatch_positions=positions("right_mismatch_positions"),
         total_mismatches=int(row["total_mismatches"]),
         score=float(row["score"]),
+        score_components=components,
+        dimer_compatible=_parse_bool(row.get("dimer_compatible") or "true"),
         region=typed_region,
         nearest_gene=nearest_gene,
         left_aligned=row["left_aligned"],
@@ -268,48 +300,11 @@ def _site_from_row(row: dict[str, str]) -> ZFNOffTargetSite:
 
 def _write_sites_csv(path: Path, sites: list[ZFNOffTargetSite]) -> None:
     """Write ranked sites to canonical CSV schema."""
-    fieldnames = [
-        "site_id",
-        "chrom",
-        "start_1based",
-        "end_1based",
-        "strand",
-        "orientation",
-        "spacer_len",
-        "sequence",
-        "left_mismatches",
-        "right_mismatches",
-        "total_mismatches",
-        "score",
-        "region",
-        "nearest_gene",
-        "left_aligned",
-        "right_aligned",
-    ]
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=ZFN_OFFTARGET_CSV_COLUMNS)
         writer.writeheader()
         for site in sites:
-            writer.writerow(
-                {
-                    "site_id": site.site_id,
-                    "chrom": site.chrom,
-                    "start_1based": site.start_1based,
-                    "end_1based": site.end_1based,
-                    "strand": site.strand.value,
-                    "orientation": site.orientation.value,
-                    "spacer_len": site.spacer_len,
-                    "sequence": site.sequence,
-                    "left_mismatches": site.left_mismatches,
-                    "right_mismatches": site.right_mismatches,
-                    "total_mismatches": site.total_mismatches,
-                    "score": site.score,
-                    "region": site.region,
-                    "nearest_gene": site.nearest_gene,
-                    "left_aligned": site.left_aligned,
-                    "right_aligned": site.right_aligned,
-                }
-            )
+            writer.writerow(site.to_csv_record())
 
 
 def aggregate_zfn_shard_results(
@@ -317,9 +312,10 @@ def aggregate_zfn_shard_results(
     shard_csv_glob: str,
     output_sites_csv: Path,
     output_summary_json: Path,
+    params: ZFNDesignParameters | None = None,
 ) -> dict[str, int]:
     """Merge shard CSVs, deduplicate coordinate/orientation collisions, and rank globally."""
-    files = sorted(Path().glob(shard_csv_glob))
+    files = [Path(name) for name in sorted(glob.glob(shard_csv_glob))]  # noqa: PTH207 - accepts absolute glob paths
 
     all_sites: list[ZFNOffTargetSite] = []
     for file_path in files:
@@ -334,7 +330,9 @@ def aggregate_zfn_shard_results(
         if key not in deduped_by_key:
             deduped_by_key[key] = site
 
-    ranked = rank_sites(list(deduped_by_key.values()))
+    ranked = rank_sites(list(deduped_by_key.values()), params)
+    if params is not None and params.top_n_sites is not None:
+        ranked = ranked[: params.top_n_sites]
 
     output_sites_csv.parent.mkdir(parents=True, exist_ok=True)
     _write_sites_csv(output_sites_csv, ranked)
