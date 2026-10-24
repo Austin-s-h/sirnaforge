@@ -311,6 +311,13 @@ appearance:textfield;-moz-appearance:textfield}
     </details>
     {% endif %}
   </div>
+  {% if p.run.mirna_unresolved_guides %}
+  <details class="sub" style="margin-top:6px" id="mirna-unresolved">
+    <summary>{{ p.run.mirna_unresolved_guides }} guides with unresolved miRNA screening — show evidence status</summary>
+    <p>miRNA screening completion is not established for these guides. Inspect the miRNA seed
+      resemblance panel for source-specific diagnostics; missing matches do not establish zero hits.</p>
+  </details>
+  {% endif %}
   {# Only ever seen on paper (`.printonly`), where the controls are dropped because they cannot be
      operated there. What a printed copy cannot show, it says. #}
   <div class="printonly sub" style="margin-top:6px"><b>Printed copy.</b> The thresholds and filters are
@@ -332,6 +339,7 @@ appearance:textfield;-moz-appearance:textfield}
     <div id="frows"></div>
     <div class="fsec">Reader filters <i>— these only select among rows; no verdict changes</i></div>
     <div id="rrows"></div>
+    <div id="genefilters"></div>
     <div class="fstat" id="fcons" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
     </div>
     {# The number box was INSIDE the button: invalid markup, an accessible name that read "Add top  to
@@ -405,6 +413,11 @@ appearance:textfield;-moz-appearance:textfield}
      <button class="cartbtn" id="txfollow" style="display:none">Show an isoform carrying it</button>
      {% if not p.run.canonical_source %}
      <div>This run recorded no canonical transcript, so none of these is marked as one.</div>
+     {% else %}
+     <div>Canonical authority/evidence: {{ p.run.canonical_source }}.
+       {% for tid, info in p.run.canonical_provenance.items() %}
+       {{ tid }} · release {{ info.canonical_release or 'unknown' }}{{ '; ' if not loop.last }}
+       {% endfor %}</div>
      {% endif %}</div>
      <div id="maplegend"></div>
      <div id="mapwrap"><div id="mapbase"></div><svg id="mapover"></svg></div>
@@ -415,6 +428,11 @@ appearance:textfield;-moz-appearance:textfield}
 </main>
 <script>
 const G = GUIDES_JSON_PLACEHOLDER;
+const MIRNA_EVIDENCE = MIRNA_EVIDENCE_JSON_PLACEHOLDER;
+const EVIDENCE_WARNINGS = EVIDENCE_WARNINGS_JSON_PLACEHOLDER;
+const CONSERVATION_EVIDENCE = CONSERVATION_EVIDENCE_JSON_PLACEHOLDER;
+const TARGET_GENES = TARGET_GENES_JSON_PLACEHOLDER;
+const GENE_FILTER_AVAILABLE = GENE_FILTER_AVAILABLE_JSON_PLACEHOLDER;
 const FILTERS = FILTERS_JSON_PLACEHOLDER;
 const MAPS = MAPS_JSON_PLACEHOLDER;
 const MAP_LEGEND = MAP_LEGEND_JSON_PLACEHOLDER;
@@ -429,6 +447,17 @@ const GENE = GENE_JSON_PLACEHOLDER;
 const REGISTER_NT = REGISTER_NT_PLACEHOLDER;
 const fmt = n => n===null||n===undefined ? '—' : (typeof n==='number' ? (Number.isInteger(n)?n.toLocaleString():n.toFixed(3)) : n);
 const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function sourceAnchor(link,label){
+  if(!link||!link.url) return esc(label);
+  try{
+    const url=new URL(link.url), host=url.hostname;
+    if(url.protocol!=='https:'||url.username||url.password||url.port
+      ||!(/^(?:(?:www|e[0-9]+|[a-z]{3}[0-9]{4}\.archive)\.)?ensembl\.org$/.test(host)
+           ||/^(?:www\.)?mirgenedb\.org$/.test(host))) return esc(label);
+  }catch(e){return esc(label);}
+  return `<a class="source-link" href="${esc(link.url)}" target="_blank" rel="noopener noreferrer"
+    title="Open source record${link.release?' · release '+esc(link.release):' · release unknown'}">${esc(label)}</a>`;
+}
 let view = G.slice(), sortK='composite', sortAsc=false, selected=null;
 
 // Each guide's own place in this file, stashed once. `renderIndex` read `G.indexOf(g)` INSIDE the row
@@ -694,6 +723,8 @@ function isoformCard(g){
   const pct=(n!==null&&n!==undefined&&d)?` (${(100*n/d).toFixed(0)}%)`:'';
   const extra=g.isoforms.length-(n||0);
   return `<div class="card"><h2>Isoform coverage</h2>
+   <p><b>Canonical transcript:</b> ${g.canonical_hit==='hit'?'hit':g.canonical_hit==='not_hit'?'not hit':'not established'}
+     <span class="empty">(within the transcripts this run enumerated)</span></p>
    <div class="kv" style="margin-bottom:12px">
      <div><b>Isoforms carrying this guide</b><span class="big" style="font-size:17px">${isoformFrac(g)}</span>${pct}</div>
      <div><b>Enumerations</b>${g.isoforms.length}${extra>0?` <span class="pill v-not_evaluated">${extra} repeat site${extra===1?'':'s'}</span>`:''}</div>
@@ -705,8 +736,11 @@ function isoformCard(g){
    ${any?`<div class="warn"><b>Register neighbour.</b> Another design starts within
      ${REGISTER_NT} nt on the same transcript. The two overlap and can score identically; they are
      still distinct designs and are not interchangeable.</div>`:''}
-   <table><thead><tr><th>Candidate id</th><th>Transcript</th><th>Position</th><th>Register neighbours</th></tr></thead>
-   <tbody>${g.isoforms.map(i=>`<tr><td class="mono">${esc(i.candidate_id)}</td><td class="mono">${esc(i.transcript)}</td>
+   <table><thead><tr><th>Candidate id</th><th>Transcript / gene</th><th>Canonical status / source</th><th>Position</th><th>Register neighbours</th></tr></thead>
+   <tbody>${g.isoforms.map(i=>`<tr><td class="mono">${esc(i.candidate_id)}</td><td class="mono">${sourceAnchor(i.transcript_link,i.transcript)}</td>
+     <td>${i.canonical===true?'Canonical':i.canonical===false?'Other isoform':'Unknown'}
+       · ${esc(i.canonical_source||'authority unknown')} · release ${esc(i.canonical_release||'unknown')}
+       ${i.gene_symbol||i.gene_id?`<br>${esc(i.gene_symbol||'symbol unknown')} · ${sourceAnchor(i.gene_link,i.gene_id||'gene ID unknown')}`:''}</td>
      <td>${fmt(i.position)}</td><td>${i.register_neighbours.length?`<span class="pill v-unknown">${i.register_neighbours.join(', ')}</span>`:'—'}</td></tr>`).join('')}</tbody></table></div>`;
 }
 function offtargetCard(g,idx){
@@ -752,25 +786,65 @@ function offtargetCard(g,idx){
         Non-liability classes are grouped above and counted completely in the chart.</p>`}</div>`;
 }
 function mirnaCard(g){
-  if(!g.mirna.length) return `<div class="card"><h2>miRNA seed resemblance</h2>
-    <p class="empty">No named miRNA seed hit at 0 or 1 seed mismatch.</p></div>`;
+  const evidence=g.mirna_evidence||{state:'unknown',warning_id:'MIRNA_EVIDENCE_UNKNOWN'};
+  const warning=EVIDENCE_WARNINGS[evidence.warning_id];
+  const diagnostic=warning ? `<div class="warn" data-warning-id="${esc(evidence.warning_id)}">
+    <b>${esc(warning.title)}.</b> ${esc(warning.body)}
+    <p>${esc(warning.remediation)}</p></div>` : '';
+  const source=MIRNA_EVIDENCE.source;
+  const sources=(MIRNA_EVIDENCE.sources||[]).map(s=>{
+    const acquisition=s.acquisition||{}, screening=s.screening||{};
+    const reason=screening.reason||acquisition.reason;
+    const references=(s.references||[]).map(r=>`<li>${esc(r.source||'unknown source')}
+      ${r.release?` · release ${esc(r.release)}`:''}${r.acquisition_mode?` · ${esc(r.acquisition_mode)}`:''}
+      ${r.acquired_at?` · acquired ${esc(r.acquired_at)}`:''}
+      ${r.filtered_sha256?` · filtered SHA-256 <code>${esc(r.filtered_sha256)}</code>`:''}
+      ${r.raw_sha256?` · raw SHA-256 <code>${esc(r.raw_sha256)}</code>`:''}</li>`).join('');
+    return `<li>${esc(s.species||'unspecified species')} · ${esc(s.source||source||'unknown source')}
+      ${s.release?` · release ${esc(s.release)}`:''} · ${esc(s.state)}
+      ${reason?` · ${esc(reason)}`:''}${references?`<ul>${references}</ul>`:''}</li>`;
+  }).join('');
+  const reason=(MIRNA_EVIDENCE.screening||{}).reason||(MIRNA_EVIDENCE.acquisition||{}).reason;
+  const provenance=`${source?`<p class="empty">Reference: ${esc(source)}${MIRNA_EVIDENCE.release?` · release ${esc(MIRNA_EVIDENCE.release)}`:''}.</p>`:''}
+    ${reason?`<p class="empty">Recorded reason: ${esc(reason)}</p>`:''}
+    ${sources?`<details><summary>Reference evidence by species</summary><ul>${sources}</ul></details>`:''}`;
+  if(!g.mirna.length) return `<div class="card"><h2>miRNA seed resemblance</h2>${diagnostic}${provenance}
+    ${evidence.state==='complete'
+      ? '<p class="empty">Screening completed for this guide. No named miRNA seed hit at 0 or 1 seed mismatch.</p>'
+      : '<p class="empty">No named miRNA seed matches are published for this guide; screening is unresolved.</p>'}</div>`;
   const perfect=g.mirna.filter(m=>m.seed_mismatches===0);
   const offset=g.mirna.filter(m=>m.coord!==null&&m.coord!==undefined&&m.coord!==1);
   return `<div class="card"><h2>miRNA seed resemblance — ${perfect.length} perfect,
     ${g.mirna.length-perfect.length} at 1 mismatch</h2>
+   ${diagnostic}${provenance}
    ${offset.length?`<div class="warn"><b>${offset.length} hit(s) do not start at seed position 1.</b>
      A guide-seed motif matching elsewhere on a miRNA is not a seed match; that was a real defect in
      this scanner once, so the coordinate is shown rather than assumed.</div>`:''}
    <table><thead><tr><th>miRNA</th><th>Seed mm</th><th>nm</th><th>Coord</th><th>Species</th>
    <th>Database</th></tr></thead>
-   <tbody>${g.mirna.map(m=>`<tr><td class="mono">${esc(m.mirna)||'<span class="empty">unnamed</span>'}</td>
+   <tbody>${g.mirna.map(m=>`<tr><td class="mono">${sourceAnchor(m.source_link,m.mirna)||'<span class="empty">unnamed</span>'}</td>
      <td>${m.seed_mismatches===0?'<span class="pill v-fail">0</span>':fmt(m.seed_mismatches)}</td>
      <td>${fmt(m.nm)}</td><td>${fmt(m.coord)}</td><td>${esc(m.source)}</td>
      <td>${esc(m.database)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 // ---- cross-species conservation: the ortholog class, read as evidence rather than discarded ----
-const CONS_SPECIES = ['mouse','macaque','rat'];
+const CONS_SPECIES = [...new Set(['mouse','macaque','rat',
+  ...Object.keys(CONSERVATION_EVIDENCE.per_species||{})])];
+const ORTHOLOGY_REASON_LABELS = {
+  no_orthologue:'no orthologue found',
+  unrecognized_identifier:'target identifier not recognized',
+  mapping_not_supplied:'orthology mapping not supplied',
+  unsupported_target_species:'target species is unsupported by the mapping source',
+  unsupported_query_species:'query species is unsupported by the mapping source',
+  budget_exhausted:'orthology lookup budget was exhausted',
+  transport_error:'orthology service transport failed',
+  error_response:'orthology service returned an error response',
+  http_error:'orthology service returned an HTTP error',
+  request_error:'orthology request failed',
+  invalid_response:'orthology service returned an invalid response',
+  orthologues_found:'orthologues were found, but no completed alignment was published'
+};
 
 function consOf(g, sp){ return (g.ortholog||{})[sp] || null; }
 
@@ -782,18 +856,42 @@ function consTier(d){
   return `${d.nm} mm`;
 }
 
+function conservationDiagnostic(g,sp){
+  if(consOf(g,sp)) return {state:'matched',label:'ortholog alignment published',unavailable:false};
+  const info=(CONSERVATION_EVIDENCE.per_species||{})[sp];
+  if(CONSERVATION_EVIDENCE.attempted===false)
+    return {state:'skipped',label:'orthology mapping intentionally skipped',unavailable:true};
+  if(!info) return {state:'unknown',label:'orthology evidence not established',unavailable:true};
+  if(info.state==='unavailable') return {state:'unavailable',
+    label:ORTHOLOGY_REASON_LABELS[info.reason]||'orthology unavailable',unavailable:true};
+  if(!info.screening_complete || !g.off_target_screened)
+    return {state:'unknown',label:'screening completion not established for this guide',unavailable:true};
+  if(info.state==='resolved_empty') return {state:'negative',label:'no ortholog mapping found',unavailable:false};
+  if(info.state==='resolved') return {state:'negative',label:'no conserved site found in completed screen',unavailable:false};
+  return {state:'unknown',label:'orthology evidence not established',unavailable:true};
+}
+
+function conservationFilterDiagnostic(){
+  if(!F.cons.size || G.some(g=>passesConservation(g))) return '';
+  const unavailable=[...F.cons].map(sp=>{
+    const n=G.filter(g=>conservationDiagnostic(g,sp).unavailable).length;
+    return n?`${sp}: evidence unavailable or not established for ${n} guides`:'';
+  }).filter(Boolean);
+  return unavailable.length ? 'No guides match the selected conservation filters. '+unavailable.join('; ')
+    +'. This does not establish biological absence.' : 'No guides match the selected conservation filters in the published evidence.';
+}
+
 function conservationCard(g){
-  const seen=CONS_SPECIES.filter(sp=>consOf(g,sp));
-  if(!seen.length) return `<div class="card"><h2>Cross-species conservation</h2>
-    <p class="empty">No ortholog alignment for this guide in any screened species. Either the site is
-    human-specific, or no ortholog index was available — the screen cannot tell those apart.</p></div>`;
   const cell=sp=>{const d=consOf(g,sp), t=consTier(d);
-    if(!d) return `<div><b>${sp}</b><span class="empty">no ortholog hit</span></div>`;
+    if(!d){const diagnostic=conservationDiagnostic(g,sp);
+      return `<div><b>${esc(sp)}</b><span class="empty" data-evidence-state="${esc(diagnostic.state)}">${esc(diagnostic.label)}</span></div>`;}
     const cls = t==='perfect' ? 'v-pass' : (t&&t.startsWith('seed-intact') ? 'v-warn' : 'v-fail');
     return `<div><b>${sp}</b><span class="pill ${cls}">${esc(t)}</span>
       <span class="empty"> nm ${fmt(d.nm)}, seed ${fmt(d.seed_mismatches)}</span></div>`;};
   return `<div class="card"><h2>Cross-species conservation</h2>
     <div class="kv">${CONS_SPECIES.map(cell).join('')}</div>
+    <p class="empty">Orthology source: ${esc(CONSERVATION_EVIDENCE.source||'not established')}
+      · release ${esc(CONSERVATION_EVIDENCE.release||'unknown')}.</p>
     <p class="empty" style="margin:10px 0 0">Best ortholog alignment per species, from the off-target
     screen's own <code>ortholog</code> class. This is transcript-level conservation of the target site,
     not a genomic claim, and it depends on the ortholog gene mapping. A mismatch outside guide
@@ -842,7 +940,7 @@ function mapY(geo,v){
 // legend belongs, with nothing failing.
 function txLabel(t){
   const mp=MAPS[t];
-  return esc(mp.label) + (mp.canonical===true ? ' \u2022 canonical' : (mp.canonical===null ? '' : ' \u2022 not canonical'));
+  return esc(mp.label) + (mp.canonical===true ? ' \u2022 Canonical' : (mp.canonical===null ? ' \u2022 Unknown' : ' \u2022 Other isoform'));
 }
 
 function renderMap(){
@@ -1050,7 +1148,7 @@ const DEFAULT_STATUS = ['pass','warn'];
 // conservation species and the seed tolerance. `q` lives here rather than being read off the input on
 // demand, so there is one source of truth for it and the fragment can restore it -- reading the DOM
 // meant a URL could carry a search the box did not show, or a box the URL did not carry.
-const F = {status:new Set(DEFAULT_STATUS), cons:new Set(), consSeedIntact:true, q:''};
+const F = {status:new Set(DEFAULT_STATUS), cons:new Set(), consSeedIntact:true, q:'', geneEnabled:false, gene:''};
 
 // A filter a reader may move: payload.py's own `evaluable` (payload.py's _filter_view), decided from
 // this run's output -- applied, thresholded, and this run measured at least one value for it. Read
@@ -1240,6 +1338,7 @@ function markControl(el, ok){
 }
 
 function passesFilters(g){
+  if(F.geneEnabled && F.gene && !(g.target_genes||[]).includes(F.gene)) return false;
   const live = g._live;
   if(F.status.size && !F.status.has(live.status)) return false;
   if(!passesConservation(g)) return false;
@@ -1457,12 +1556,20 @@ function buildFilterUI(){
     applyFilters(); syncHash(); });
   buildGateControls();
   buildReaderFilters();
+  const geneBox=document.getElementById('genefilters');
+  if(geneBox){
+    geneBox.innerHTML=geneFilterMarkup();
+    const toggle=document.getElementById('geneenable'), select=document.getElementById('targetgene');
+    if(toggle) toggle.onchange=e=>{F.geneEnabled=e.target.checked; buildFilterUI(); applyFilters(); syncHash();};
+    if(select) select.onchange=e=>{F.gene=e.target.value; applyFilters(); syncHash();};
+  }
   labelLiabColumn();
   document.getElementById('fcons').innerHTML =
     '<span style="color:var(--mut)">conserved in</span> ' +
     CONS_SPECIES.map(sp=>`<label><input type="checkbox" data-cons="${sp}"${F.cons.has(sp)?' checked':''}> ${sp}</label>`).join('') +
     `<label title="accept one mismatch outside guide positions 2-8">
-      <input type="checkbox" id="consseed"${F.consSeedIntact?' checked':''}> allow 1 mm outside the seed</label>`;
+      <input type="checkbox" id="consseed"${F.consSeedIntact?' checked':''}> allow 1 mm outside the seed</label>
+      <div id="consdiagnostic" role="status" aria-live="polite"></div>`;
   document.querySelectorAll('#fcons input[data-cons]').forEach(cb=>cb.onchange=()=>{
     cb.checked ? F.cons.add(cb.dataset.cons) : F.cons.delete(cb.dataset.cons); applyFilters(); syncHash(); });
   document.getElementById('consseed').onchange = e => {
@@ -1483,6 +1590,7 @@ function buildFilterUI(){
 // can rebuild. A fragment is a different matter -- see applyFragmentState.
 function resetControls(){
   F.status = new Set(DEFAULT_STATUS); F.cons = new Set(); F.consSeedIntact = true; F.q = '';
+  F.geneEnabled=false; F.gene='';
   FILTERS.forEach(f => { if(evaluable(f)) T[f.filter_id] = f.threshold; });
   READER_FILTERS.forEach(f => { R[f.k] = null; });
   liabScope = null;                        // back to the gate's own all-species scope
@@ -1514,6 +1622,16 @@ function renderStatusPills(){
 
 function matching(){ return G.filter(passesFilters); }
 
+function geneFilterMarkup(){
+  if(!GENE_FILTER_AVAILABLE) return '';
+  return `<label><input type="checkbox" id="geneenable" aria-controls="targetgene"
+    aria-expanded="${F.geneEnabled?'true':'false'}"${F.geneEnabled?' checked':''}> Enable target gene filtering</label>
+    <div${F.geneEnabled?'':' hidden'}><label for="targetgene">Target gene</label>
+    <select id="targetgene" aria-label="Target gene"${F.geneEnabled?'':' disabled'}>
+      <option value="">All target genes</option>${TARGET_GENES.map(g=>`<option value="${esc(g.key)}"${F.gene===g.key?' selected':''}>${esc(g.label)}</option>`).join('')}
+    </select><p class="empty">Unknown target gene means identity was not recorded; it is not a new gene assignment.</p></div>`;
+}
+
 // Reads F.q, not the input: the search text is reader state that the fragment carries and Reset clears,
 // so the box is a view of it rather than its home.
 function applyFilters(){
@@ -1523,6 +1641,8 @@ function applyFilters(){
     || g.isoforms.some(i=>String(i.candidate_id).toLowerCase().includes(id)
                         || String(i.transcript).toLowerCase().includes(id)));
   document.getElementById('fcount').textContent = `${view.length.toLocaleString()} of ${G.length.toLocaleString()} guides`;
+  const diagnostic=document.getElementById('consdiagnostic');
+  if(diagnostic) diagnostic.textContent=conservationFilterDiagnostic();
   renderIndex();
 }
 
@@ -1652,6 +1772,7 @@ function encodeHash(){
   // Canonical order for each set -- the status keys' own order, the species' own order, the index's own
   // order -- so two readers looking at the same view copy the same URL, and a fragment round-trips.
   if(F.q) parts.push('q='+encodeURIComponent(F.q));
+  if(F.geneEnabled) parts.push('gene='+encodeURIComponent(F.gene||'*'));
   if(!statusIsDefault()) parts.push('s='+STATUS_KEYS.filter(k=>F.status.has(k)).join(','));
   const cons=CONS_SPECIES.filter(sp=>F.cons.has(sp));
   if(cons.length || !F.consSeedIntact)
@@ -1719,6 +1840,12 @@ function applyHashFragment(raw){
       if(SCREENED_SPECIES.includes(sp)) liabScope=sp; else refused.push(sp);
     } else if(k==='preset'){ controls=true; if(PRESETS[v]) activePreset=v; }
     else if(k==='q'){ controls=true; F.q=decodeURIComponent(v); }
+    else if(k==='gene'){
+      controls=true;
+      const key=decodeURIComponent(v);
+      if(GENE_FILTER_AVAILABLE && (key==='*'||TARGET_GENES.some(g=>g.key===key))){F.geneEnabled=true;F.gene=key==='*'?'':key;}
+      else refused.push(key);
+    }
     else if(k==='s'){
       // A set, so the key REPLACES it rather than adding to it -- and `s=` with nothing after it is a
       // reader who unchecked all four, which is a real view (every guide) and not a missing key.
@@ -2000,6 +2127,11 @@ def render_html(payload: ReportPayload) -> str:
     maps = _design_maps(payload)
     for placeholder, value in (
         ("GUIDES_JSON_PLACEHOLDER", guides),
+        ("MIRNA_EVIDENCE_JSON_PLACEHOLDER", payload.run.get("mirna_evidence") or {}),
+        ("EVIDENCE_WARNINGS_JSON_PLACEHOLDER", payload.run.get("evidence_warning_registry") or {}),
+        ("CONSERVATION_EVIDENCE_JSON_PLACEHOLDER", payload.run.get("conservation_evidence") or {}),
+        ("TARGET_GENES_JSON_PLACEHOLDER", payload.run.get("target_genes") or []),
+        ("GENE_FILTER_AVAILABLE_JSON_PLACEHOLDER", bool(payload.run.get("gene_filter_available"))),
         ("FILTERS_JSON_PLACEHOLDER", payload.filters),
         ("MAPS_JSON_PLACEHOLDER", maps),
         ("MAP_LEGEND_JSON_PLACEHOLDER", _MAP_LEGEND),
@@ -2111,7 +2243,16 @@ def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
             for key, label in _MAP_SERIES
         ]
         gaps = [(int(a), int(b)) for a, b in entry.get("gaps") or []]
-        title = f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidate windows"
+        identity = " · ".join(str(entry[k]) for k in ("gene_symbol", "gene_id") if entry.get(k))
+        canonical = (
+            "Canonical"
+            if entry.get("canonical") is True
+            else "Other isoform"
+            if entry.get("canonical") is False
+            else "Unknown"
+        )
+        context = f"{identity} · " if identity else "Gene identity unknown · "
+        title = f"{context}{regions.transcript_id} · {canonical} - {regions.length:,} nt, {entry['windows']:,} candidate windows"
         value_label = entry.get("value_column") or "composite score"
         # Drawn twice on purpose: the first call is the only public way to learn the value bounds the
         # primitive rounds its own gridlines to, and the second draws the same backdrop with those
@@ -2138,7 +2279,7 @@ def _design_maps(payload: ReportPayload) -> dict[str, dict[str, Any]]:
             for p, v in entry["series"].get(key, [])
         ]
         out[regions.transcript_id] = {
-            "label": f"{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidates",
+            "label": f"{context}{regions.transcript_id} - {regions.length:,} nt, {entry['windows']:,} candidates",
             "canonical": entry.get("canonical"),
             "svg": svg,
             # ``[position, value, guide index or -1]``. The run's own class is deliberately absent: it

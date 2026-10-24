@@ -16,11 +16,14 @@ count of those guides: see :data:`DEFAULT_MAX_EMBEDDED_GUIDES` and :func:`_selec
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
+import sys
+import time
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Container, Mapping, Sequence
+from collections.abc import Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +42,8 @@ from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, hit_class_of,
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
 from sirnaforge.models.sirna import FilterCriteria, OffTargetFilterCriteria
+from sirnaforge.reporting.evidence import WARNING_REGISTRY, conservation_evidence, guide_mirna_evidence, mirna_evidence
+from sirnaforge.reporting.links import source_link
 from sirnaforge.reporting.structure import layouts_for
 from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, uncovered_stretches
 
@@ -46,8 +51,9 @@ from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, u
 #: silently mismatched. 1.2.0 moved the guide cap here, published as counts (``guides_total``/
 #: ``guides_dropped``/``guides_dropped_by_status``), and added per-filter ``rejects``/
 #: ``sole_rejects``/``inert``, per-guide ``liability_by_species``, and ``length``/``canonical`` on
-#: isoform and transcript rows. CHANGELOG.md carries what 1.1.0 added.
-PAYLOAD_SCHEMA_VERSION = "1.2.0"
+#: isoform and transcript rows. 1.3.0 adds producer-backed miRNA evidence states and warning metadata.
+#: CHANGELOG.md carries what 1.1.0 added.
+PAYLOAD_SCHEMA_VERSION = "1.3.0"
 
 #: Hit rows embedded per guide. Everything outside this scope is carried as counts only -- a
 #: deliberate scope decision, not a limitation, so a guide with hits only outside it must render its
@@ -115,6 +121,10 @@ class GuideEntry:
     #: The query id this guide's rows were screened under (``screen_query_id``, #103's join key).
     #: Carried for provenance; None when the candidate was never submitted to the aligner.
     screen_query_id: str | None = None
+    #: Producer-recorded miRNA screening state; independent of transcriptome submission.
+    mirna_evidence: dict[str, Any] = field(default_factory=dict)
+    canonical_hit: str = "not_established"
+    target_genes: list[str] = field(default_factory=list)
 
     @property
     def undeclared_run_rejection(self) -> bool:
@@ -177,6 +187,7 @@ class ReportPayload:
     guides: list[GuideEntry]
     provenance: dict[str, Any]
     caveats: list[str] = field(default_factory=list)
+    diagnostics: dict[str, Any] | None = None
 
 
 def _normalise_guide(seq: object) -> str:
@@ -742,6 +753,9 @@ class _TranscriptFacts:
     canonical_ids: frozenset[str] = frozenset()
     #: Which file said so, or None when this run recorded canonical status nowhere.
     source: str | None = None
+    metadata: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    explicit_identity: bool = False
+    resolvers: Mapping[str, Any] = field(default_factory=dict)
 
     def length(self, transcript: str) -> int | None:
         """Transcript length as the run recorded it, or None."""
@@ -749,10 +763,38 @@ class _TranscriptFacts:
 
     def canonical(self, transcript: str) -> bool | None:
         """True/False when the run recorded canonical status, None when it recorded none at all."""
+        if self.explicit_identity:
+            info = self.metadata.get(transcript, {})
+            value = info.get("is_canonical")
+            if not info.get("canonical_source") or info.get("canonical_status") in {
+                "not_established",
+                "unresolved_input",
+                "unknown",
+            }:
+                return None
+            return value if isinstance(value, bool) else None
         return None if self.source is None else transcript in self.canonical_ids
 
+    def identity(self, transcript: str) -> dict[str, Any]:
+        """Explicit recorded identity/provenance; missing authority and release remain unknown."""
+        info = self.metadata.get(transcript, {})
+        identity = {
+            key: info.get(key)
+            for key in ("gene_id", "gene_symbol", "transcript_biotype", "canonical_source", "canonical_release")
+        }
+        identity["transcript_link"] = source_link(
+            transcript, "ensembl", release=info.get("canonical_release"), resolver=self.resolvers.get("ensembl")
+        )
+        gene = info.get("gene_id")
+        identity["gene_link"] = source_link(
+            str(gene or ""), "ensembl", release=info.get("canonical_release"), resolver=self.resolvers.get("ensembl")
+        )
+        return identity
 
-def _transcript_facts(run_dir: Path, regions: Mapping[str, TranscriptRegions]) -> _TranscriptFacts:
+
+def _transcript_facts(
+    run_dir: Path, regions: Mapping[str, TranscriptRegions], manifest: Mapping[str, Any] | None = None
+) -> _TranscriptFacts:
     """Transcript lengths and canonical ids, from the run's own ORF report and transcript FASTAs."""
     lengths = {tid: r.length for tid, r in regions.items()}
     canonical: set[str] = set()
@@ -778,6 +820,37 @@ def _transcript_facts(run_dir: Path, regions: Mapping[str, TranscriptRegions]) -
                     named_here = True
         if named_here or by_filename:
             sources.append(path.name)
+    target_identity = (manifest or {}).get("target_identity")
+    if isinstance(target_identity, Mapping) and target_identity.get("schema_version") == 1:
+        entries = target_identity.get("transcripts")
+        metadata = (
+            {
+                entry["transcript_id"]: entry
+                for entry in entries
+                if isinstance(entry, Mapping) and isinstance(entry.get("transcript_id"), str)
+            }
+            if isinstance(entries, list)
+            else {}
+        )
+        canonical = {
+            tid
+            for tid, info in metadata.items()
+            if info.get("is_canonical") is True
+            and info.get("canonical_source")
+            and info.get("canonical_status") not in {"not_established", "unresolved_input", "unknown"}
+        }
+        authorities = sorted(
+            {str(info["canonical_source"]) for info in metadata.values() if info.get("canonical_source")}
+        )
+        resolvers = target_identity.get("resolvers")
+        return _TranscriptFacts(
+            lengths,
+            frozenset(canonical),
+            ", ".join(authorities) or None,
+            metadata,
+            True,
+            resolvers if isinstance(resolvers, Mapping) else {},
+        )
     return _TranscriptFacts(lengths, frozenset(canonical), ", ".join(sources) or None)
 
 
@@ -838,26 +911,175 @@ def _verdict_agreement(candidates: pd.DataFrame, guides: list[GuideEntry]) -> di
     }
 
 
-def _read_hits(path: Path, caveats: list[str]) -> pd.DataFrame:
-    """Read a published hit table, requiring the classification columns the report displays."""
+REPORT_READ_CHUNK_ROWS = 50_000
+_CANDIDATE_REPORT_COLUMNS = {
+    "id",
+    "guide_sequence",
+    "transcript_id",
+    "position",
+    "passes_filters",
+    "transcript_hit_count",
+    "off_target_screened",
+    "screen_query_id",
+    "structure",
+    "passenger_sequence",
+    "passenger_overhang",
+    "passenger_modifications",
+    "design_score",
+    "composite_score",
+    "weight_vector",
+    "gc_content",
+    "asymmetry_score",
+    "paired_fraction",
+    "mfe",
+    "empirical_score",
+    "target_accessibility_p",
+    "melting_temperature",
+    "off_target_count",
+    "undetermined_hits",
+    "transcriptome_hits_total",
+    "mirna_hits_0mm_seed",
+    "total_offtarget_hits_query",
+    "transcriptome_hits_0mm_query",
+    "transcriptome_hits_1mm_query",
+    "transcriptome_hits_2mm_query",
+    "transcriptome_hits_seed_0mm",
+    "mirna_hits_0mm_seed_query",
+    "mirna_hits_high_risk_query",
+    "gene_name",
+    "gene_symbol",
+    "gene_id",
+}
+_HIT_REPORT_COLUMNS = set(CLASSIFICATION_COLUMNS) | {
+    "qseq",
+    "nm",
+    "species",
+    "rname",
+    "seed_mismatches",
+    "cigar",
+    "strand",
+}
+_MIRNA_REPORT_COLUMNS = {
+    "qseq",
+    "mirna_id",
+    "rname",
+    "mirna",
+    "name",
+    "nm",
+    "seed_mismatches",
+    "coord",
+    "species",
+    "source",
+    "database",
+}
+
+
+def _read_projected_table(path: Path, *, sep: str, columns: set[str]) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Read only report-used columns in bounded parser chunks, then retain the projected table."""
+    header = pd.read_csv(path, sep=sep, nrows=0).columns.tolist()
+    selected = [column for column in header if column in columns]
+    frames = list(
+        pd.read_csv(
+            path,
+            sep=sep,
+            usecols=selected,
+            chunksize=REPORT_READ_CHUNK_ROWS,
+            low_memory=False,
+        )
+    )
+    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=selected)
+    return frame, {
+        "path": path.name,
+        "file_bytes": path.stat().st_size,
+        "rows": len(frame),
+        "source_column_count": len(header),
+        "selected_columns": selected,
+        "excluded_column_count": len(header) - len(selected),
+        "chunksize_rows": REPORT_READ_CHUNK_ROWS,
+        "dataframe_bytes": int(frame.memory_usage(index=True, deep=True).sum()),
+    }
+
+
+def _candidate_projection(columns: Sequence[str], filters: Sequence[Any]) -> set[str]:
+    """Keep report fields and every present gate value/verdict column, preserving evaluator semantics."""
+    selected = set(_CANDIDATE_REPORT_COLUMNS)
+    for descriptor in filters:
+        selected.update((f"{descriptor.filter_id}_observed", descriptor.column, f"{descriptor.filter_id}_verdict"))
+    available = set(columns)
+    return selected & available
+
+
+def _read_hits(path: Path, caveats: list[str]) -> tuple[pd.DataFrame, dict[str, Any] | None]:
+    """Read only off-target fields consumed by report summaries and row details."""
     empty: pd.DataFrame = pd.DataFrame()
     if not path.exists():
         caveats.append(f"no hit table at {path.name}; every off-target panel is empty for want of input")
-        return empty
-    hits: pd.DataFrame = pd.read_csv(path, sep="\t", low_memory=False)
-    missing = [c for c in CLASSIFICATION_COLUMNS if c not in hits.columns]
+        return empty, None
+    columns = pd.read_csv(path, sep="\t", nrows=0).columns.tolist()
+    missing = [c for c in CLASSIFICATION_COLUMNS if c not in columns]
     if missing:
         raise ReportInputError(
             f"{path.name} is missing {missing}. The report will not classify hits itself -- it would then "
             "be able to disagree with the run. Re-publish the table through the workflow, which writes "
             "these columns, and report again."
         )
-        # Deliberately fatal: a table without hit_class would render on-target isoform alignments as
-        # off-targets -- 50.1% of rows on the public baseline.
+    hits, stats = _read_projected_table(path, sep="\t", columns=_HIT_REPORT_COLUMNS)
     unannotated = int((~hits.apply(is_annotated, axis=1)).sum()) if len(hits) else 0
     if unannotated:
         caveats.append(f"{unannotated} hit rows carry no classification and are shown as undetermined")
-    return hits
+    return hits, stats
+
+
+def _peak_rss_bytes() -> int | None:
+    """Return the process-lifetime RSS high-water mark where the platform exposes it."""
+    try:
+        resource_module = importlib.import_module("resource")
+    except ImportError:  # pragma: no cover - resource is unavailable on Windows
+        return None
+    peak = int(resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss)
+    return peak if sys.platform == "darwin" else peak * 1024
+
+
+def _read_optional_projected_table(
+    path: Path, *, sep: str, columns: set[str]
+) -> tuple[pd.DataFrame, dict[str, Any] | None]:
+    """Read an optional report table when present."""
+    if not path.exists():
+        return pd.DataFrame(), None
+    return _read_projected_table(path, sep=sep, columns=columns)
+
+
+def _build_diagnostics(
+    *,
+    phase_seconds: dict[str, float],
+    read_stats: dict[str, Any],
+    peak_rss_start: int | None,
+    build_started: float,
+) -> dict[str, Any]:
+    """Return the separate, machine-readable report builder metrics artifact."""
+    return {
+        "schema_version": 1,
+        "phases_seconds": phase_seconds,
+        "peak_rss_bytes": _peak_rss_bytes(),
+        "peak_memory_scope": "process_lifetime",
+        "peak_rss_bytes_at_build_start": peak_rss_start,
+        "inputs": read_stats,
+        "read_strategy": {"column_projection": True, "chunksize_rows": REPORT_READ_CHUNK_ROWS},
+        "build_seconds": time.perf_counter() - build_started,
+    }
+
+
+def _read_manifest(run_dir: Path, caveats: list[str]) -> tuple[Path | None, dict[str, Any]]:
+    """Read manifest provenance; a damaged manifest costs metadata but does not hide reportable tables."""
+    path = next(iter(sorted(run_dir.glob("**/manifest.json"))), None)
+    if path is None:
+        return None, {}
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        caveats.append(f"manifest.json could not be read ({exc}); the header shows less provenance")
+        return path, {}
+    return path, manifest
 
 
 @dataclass(frozen=True)
@@ -928,11 +1150,49 @@ def _has_transcript_context(manifest: Mapping[str, Any], caveats: list[str]) -> 
     return False
 
 
+def _target_gene_index(
+    candidates: pd.DataFrame, facts: _TranscriptFacts
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Index declared gene identities once; transcript count never stands in for gene count."""
+    gene_index: dict[str, dict[str, Any]] = {}
+    genes_by_transcript: dict[str, str] = {}
+    target_groups: Iterable[tuple[Any, pd.DataFrame]] = (
+        candidates.groupby("transcript_id", sort=True) if "transcript_id" in candidates else []
+    )
+    for transcript_key, target_rows in target_groups:
+        transcript = str(transcript_key)
+        info = facts.metadata.get(transcript, {})
+        gene_id = str(info.get("gene_id") or "").strip()
+        symbol = str(info.get("gene_symbol") or "").strip()
+        for column in ("gene_id", "gene_symbol"):
+            values: list[str] = (
+                list(target_rows[column].dropna().astype(str).str.strip().unique()) if column in target_rows else []
+            )
+            value = values[0] if len(values) == 1 else ""
+            if column == "gene_id" and not gene_id:
+                gene_id = value
+            if column == "gene_symbol" and not symbol:
+                symbol = value
+        key = gene_id or (f"symbol:{symbol}" if symbol else "__unresolved__")
+        genes_by_transcript[transcript] = key
+        gene_index.setdefault(
+            key,
+            {
+                "key": key,
+                "gene_id": gene_id or None,
+                "gene_symbol": symbol or None,
+                "label": " · ".join(v for v in (symbol, gene_id) if v) or "Unknown target gene",
+            },
+        )
+    return gene_index, genes_by_transcript
+
+
 def build_payload(
     run_dir: Path | str,
     *,
     policy: ResolvedRunPolicy | None = None,
     max_guides: int | None = DEFAULT_MAX_EMBEDDED_GUIDES,
+    diagnostics: bool = False,
 ) -> ReportPayload:
     """Build the payload for a finished run directory.
 
@@ -946,6 +1206,7 @@ def build_payload(
             ``manifest.json`` when omitted.
         max_guides: Guides to embed, worst verdicts dropped first
             (:data:`DEFAULT_MAX_EMBEDDED_GUIDES`). ``None`` embeds the run whole.
+        diagnostics: Include JSON-ready builder timings, peak RSS, and projected-input statistics.
 
     Returns:
         A :class:`ReportPayload`.
@@ -956,28 +1217,44 @@ def build_payload(
     """
     run_dir = Path(run_dir)
     caveats: list[str] = []
+    phase_seconds: dict[str, float] = {}
+    read_stats: dict[str, Any] = {}
+    build_started = time.perf_counter()
+    peak_rss_start = _peak_rss_bytes()
 
+    phase_started = time.perf_counter()
     candidates_csv = next(iter(sorted(run_dir.glob("**/candidates_all.csv"))), None)
     if candidates_csv is None:
         raise ReportInputError(f"no candidates_all.csv under {run_dir}")
-    candidates = pd.read_csv(candidates_csv, low_memory=False)
-
-    agg = run_dir / "off_target" / "results" / "aggregated"
-    hits = _read_hits(agg / "combined_offtargets.tsv", caveats)
-    mirna_path = agg / "combined_mirna_hits.tsv"
-    mirna = pd.read_csv(mirna_path, sep="\t", low_memory=False) if mirna_path.exists() else pd.DataFrame()
-
-    manifest_path = next(iter(sorted(run_dir.glob("**/manifest.json"))), None)
-    manifest: dict[str, Any] = {}
-    if manifest_path is not None:
-        try:
-            manifest = json.loads(manifest_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:  # a bad manifest costs provenance, not the report
-            caveats.append(f"manifest.json could not be read ({exc}); the header shows less provenance")
+    manifest_path, manifest = _read_manifest(run_dir, caveats)
 
     panel = _gate_panel(policy, manifest, caveats)
     transcript_context = _has_transcript_context(manifest, caveats)
+    phase_seconds["input_discovery"] = time.perf_counter() - phase_started
 
+    phase_started = time.perf_counter()
+    candidate_header = pd.read_csv(candidates_csv, nrows=0).columns.tolist()
+    candidate_columns = _candidate_projection(candidate_header, [f.descriptor for f in panel.filters])
+    candidates, candidate_stats = _read_projected_table(candidates_csv, sep=",", columns=set(candidate_columns))
+    read_stats["candidates"] = candidate_stats
+    phase_seconds["candidate_read"] = time.perf_counter() - phase_started
+
+    agg = run_dir / "off_target" / "results" / "aggregated"
+    phase_started = time.perf_counter()
+    hits, hit_stats = _read_hits(agg / "combined_offtargets.tsv", caveats)
+    if hit_stats is not None:
+        read_stats["offtargets"] = hit_stats
+    phase_seconds["hit_read"] = time.perf_counter() - phase_started
+
+    mirna_status = mirna_evidence(manifest)
+    mirna_path = agg / "combined_mirna_hits.tsv"
+    phase_started = time.perf_counter()
+    mirna, mirna_stats = _read_optional_projected_table(mirna_path, sep="\t", columns=_MIRNA_REPORT_COLUMNS)
+    if mirna_stats is not None:
+        read_stats["mirna"] = mirna_stats
+    phase_seconds["mirna_read"] = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
     candidates["_guide"] = candidates["guide_sequence"].map(_normalise_guide)
     if not hits.empty:
         hits["_guide"] = hits["qseq"].map(_normalise_guide)
@@ -995,8 +1272,12 @@ def build_payload(
     register = _register_index(candidates)
     clusters = _register_clusters(candidates)
     regions = transcript_regions(run_dir) if transcript_context else {}
-    facts = _transcript_facts(run_dir, regions) if transcript_context else _TranscriptFacts()
+    facts = _transcript_facts(run_dir, regions, manifest) if transcript_context else _TranscriptFacts()
+    gene_index, genes_by_transcript = _target_gene_index(candidates, facts)
     guides: list[GuideEntry] = []
+    phase_seconds["input_normalization_and_indexing"] = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
 
     # Sorted so `best` is the guide's best-scoring enumeration rather than whichever row the CSV
     # happens to list first; the gates read constant-per-guide columns either way.
@@ -1018,6 +1299,19 @@ def build_payload(
                 transcript_context=transcript_context,
             )
         )
+        guides[-1].mirna_evidence = guide_mirna_evidence(mirna_status, str(guide))
+        guides[-1].target_genes = sorted(
+            {genes_by_transcript.get(str(tx), "__unresolved__") for tx in rows.get("transcript_id", [])}
+        )
+        for match in guides[-1].mirna:
+            match["source_link"] = source_link(
+                str(match.get("mirna") or ""), "mirgenedb", resolver=facts.resolvers.get("mirgenedb")
+            )
+        carried = {str(i["transcript"]) for i in guides[-1].isoforms}
+        if carried & facts.canonical_ids:
+            guides[-1].canonical_hit = "hit"
+        elif facts.canonical_ids and facts.canonical_ids <= set(register):
+            guides[-1].canonical_hit = "not_hit"
 
     guides.sort(key=lambda g: (-(g.composite_score or g.design_score or -1), g.guide))
 
@@ -1072,6 +1366,10 @@ def build_payload(
             else set()
         ),
         "mirna_rows": int(len(mirna)),
+        "mirna_evidence": {k: v for k, v in mirna_status.items() if k != "guide_sequences"},
+        "conservation_evidence": conservation_evidence(manifest),
+        "mirna_unresolved_guides": sum(g.mirna_evidence["state"] != "complete" for g in embedded),
+        "evidence_warning_registry": WARNING_REGISTRY,
         "embed_scope": f"{EMBED_SPECIES}, nm<={EMBED_MAX_NM}",
         "gene_query": _gene_query(manifest, candidates),
         "status_counts": {s: sum(1 for g in embedded if g.status == s) for s in STATUSES},
@@ -1086,11 +1384,25 @@ def build_payload(
         # None means this run recorded canonical status nowhere, so every `canonical` field is unknown
         # rather than false. Nothing here guesses it from length or from sequence presence.
         "canonical_source": facts.source,
+        "canonical_provenance": {tid: facts.identity(tid) for tid in sorted(facts.canonical_ids)},
+        "target_genes": list(gene_index.values()),
+        "gene_filter_available": len(gene_index) > 1 or "__unresolved__" in gene_index,
         "transcripts": _transcript_maps(candidates, guides, regions, facts, caveats) if transcript_context else [],
         # Keyed by dot-bracket and computed once per distinct structure, which is what makes the
         # layouts small enough to embed: 40,079 candidates carry 1,333 distinct structures.
         "structure_layouts": layouts_for(g.structure for g in embedded),
     }
+    phase_seconds["guide_aggregation_and_payload"] = time.perf_counter() - phase_started
+    diagnostics_data = (
+        _build_diagnostics(
+            phase_seconds=phase_seconds,
+            read_stats=read_stats,
+            peak_rss_start=peak_rss_start,
+            build_started=build_started,
+        )
+        if diagnostics
+        else None
+    )
     return ReportPayload(
         schema_version=PAYLOAD_SCHEMA_VERSION,
         run=run,
@@ -1118,6 +1430,7 @@ def build_payload(
             "payload_schema_version": PAYLOAD_SCHEMA_VERSION,
         },
         caveats=caveats,
+        diagnostics=diagnostics_data,
     )
 
 
@@ -1192,6 +1505,7 @@ def _transcript_maps(
                 "length": int(length),
                 "length_stated": facts.length(str(tid)) is not None,
                 "canonical": facts.canonical(str(tid)),
+                **facts.identity(str(tid)),
                 "cds_start": region.cds_start if region else None,
                 "cds_end": region.cds_end if region else None,
                 "windows": int(len(group)),
@@ -1403,6 +1717,7 @@ def _isoform_table(
                 "position": pos,
                 "length": facts.length(tx),
                 "canonical": facts.canonical(tx),
+                **facts.identity(tx),
                 "register_neighbours": sorted(neighbours),
                 "register_cluster": cluster["register_cluster"],
                 "register_representative": cluster["register_representative"],
