@@ -1,6 +1,6 @@
 """Benchmark artifact/manifest schema and lossless CSV/JSON round trip (#109, bm-artifact slice).
 
-An artifact is one directory per (compatible panel x paired length):
+An artifact is one directory per (panel x requested paired length):
 ``<panel_id>__len<paired_length>/`` holding ``manifest.json``, ``observations.csv`` (written by
 ``benchmark prepare``) and, once ``benchmark design`` has run, ``design_inputs.fasta``,
 ``candidates_all.csv`` and ``accounting.csv``. This module owns the three row/manifest schemas
@@ -37,14 +37,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from sirnaforge.config.run_policy import POLICY_SCHEMA_VERSION
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation, SettingSource
 
-#: The two CSV column contracts (``observations.csv``, ``accounting.csv``). Bump on any column
+#: The CSV column contracts (``observations.csv``, ``accounting.csv``, optional ``native_mappings.csv``). Bump on any column
 #: addition, removal, reorder or type change -- a reader keys its parsing off this, not off
 #: sniffing the header.
-BENCHMARK_ARTIFACT_SCHEMA_VERSION = "1.0"
+BENCHMARK_ARTIFACT_SCHEMA_VERSION = "1.1"
 
 #: ``manifest.json``'s own shape. Separate from the above because #110 is expected to add fields
 #: to one without the other.
-BENCHMARK_MANIFEST_SCHEMA_VERSION = "1.0"
+BENCHMARK_MANIFEST_SCHEMA_VERSION = "1.1"
 
 #: Fixed inner filenames. ``manifest.json`` matches the name ``workflow.py::_build_fair_manifest``
 #: already writes, so a reader has one habit across both artifact kinds.
@@ -53,6 +53,7 @@ OBSERVATIONS_FILENAME = "observations.csv"
 DESIGN_INPUTS_FASTA_FILENAME = "design_inputs.fasta"
 CANDIDATES_ALL_FILENAME = "candidates_all.csv"
 ACCOUNTING_FILENAME = "accounting.csv"
+NATIVE_MAPPINGS_FILENAME = "native_mappings.csv"
 
 #: The design length range ``sirnaforge design`` already accepts; an artifact outside it could
 #: never be consumed by the fixed-length path it exists to feed.
@@ -109,16 +110,17 @@ def artifact_dir_name(panel_id: str, paired_length: int) -> str:
 # spell the same closed set of strings slightly differently.
 # --------------------------------------------------------------------------------------------------
 
-ArchitectureId = Literal["paired_core_with_overhang", "fully_complementary", "asymmetric"]
-DuplexPairingStatus = Literal["fully_complementary", "paired_core_with_overhang", "asymmetric", "unstated"]
+ArchitectureId = Literal["paired_core_with_overhang", "fully_complementary", "asymmetric", "unsupported"]
+DuplexPairingStatus = Literal[
+    "fully_complementary", "paired_core_with_overhang", "asymmetric", "unstated", "non_complementary", "partial_unresolved"
+]
 CompatibilityStatus = Literal["compatible", "incompatible"]
-#: Deliberately has no ``confirmed`` member: #110 owns native transcript mapping, and #109 must be
-#: structurally unable to claim it. ``synthetic_context_local`` is the honest third state for a site
+#: ``synthetic_context_local`` is the honest state for a site
 #: whose coordinates are real and reproducible but locate it inside a FABRICATED context -- the
 #: OligoGym design inputs are 70 A + revcomp(guide) + 70 A with the site at 1-based 71. ``panel_local``
 #: would read as a coordinate in the panel's own measured target, which overclaims; ``unavailable``
 #: would discard a coordinate the artifact can honestly reproduce, which underclaims.
-TargetIdentityStatus = Literal["unavailable", "panel_local", "synthetic_context_local"]
+TargetIdentityStatus = Literal["unavailable", "panel_local", "synthetic_context_local", "confirmed", "ambiguous"]
 DesignContextSource = Literal["panel_transcript", "measured_target_site"]
 SplitLabel = Literal["development", "held_out"]
 GuideMatch = Literal["exact", "paired_core_exact", "none"]
@@ -155,7 +157,7 @@ class BenchmarkObservation(BaseModel):
     guide_length: int = Field(ge=1, description="len(full_guide_sequence)")
     paired_guide_sequence: str = Field(min_length=1, description="A slice of full_guide_sequence")
     paired_slice_start_1based: int = Field(ge=1, description="1-based start of the slice, for auditability")
-    paired_length: int = Field(description="len(paired_guide_sequence); equals the artifact directory's len tag")
+    paired_length: int = Field(description="len(paired_guide_sequence); measured for this observation")
     passenger_sequence: str | None = Field(description="None = the panel measured only a guide")
     guide_3p_overhang: str | None = Field(description='"" = measured and blunt; None = panel states no overhang')
     passenger_3p_overhang: str | None = Field(description="Same convention as guide_3p_overhang")
@@ -164,13 +166,19 @@ class BenchmarkObservation(BaseModel):
     source_redistribution: str | None = Field(description="None only when obtained from the primary source")
     source_file: str = Field(min_length=1, description="Path of the source table as given")
     source_sha256: str = Field(min_length=1, description="SHA-256 of the source table's bytes")
-    target_transcript_id: str | None = Field(description="#110 placeholder; None in #109")
+    target_transcript_id: str | None = Field(description="Native or panel-local transcript when established")
     target_identity_status: TargetIdentityStatus = Field(
-        description="unavailable, panel_local or synthetic_context_local; never confirmed -- #110 owns native"
+        description="unavailable, panel_local, synthetic_context_local, confirmed, or ambiguous"
     )
-    target_start_1based: int | None = Field(description="Populated only for panel_local")
-    target_end_1based: int | None = Field(description="Populated only for panel_local")
-    target_strand: str | None = Field(description="Populated only for panel_local")
+    target_start_1based: int | None = Field(description="1-based start in the target transcript")
+    target_end_1based: int | None = Field(description="1-based end in the target transcript")
+    target_strand: str | None = Field(description="Transcript strand")
+    target_gene_id: str | None = Field(default=None, description="Native Ensembl gene ID when imported")
+    native_reference_species: str | None = Field(default=None, description="Species of the mapped reference")
+    native_reference_assembly: str | None = Field(default=None, description="Assembly of the mapped reference")
+    native_reference_sha256: str | None = Field(default=None, description="Checksum of reference FASTA used")
+    native_mapping_count: int = Field(default=0, ge=0, description="Number of exact native transcript hits")
+    native_mapping_review_reason: str | None = Field(default=None, description="Why imported native mapping was withheld")
     design_context_id: str = Field(min_length=1, description="Record id in design_inputs.fasta")
     design_context_source: DesignContextSource = Field(description="panel_transcript or measured_target_site")
     split: SplitLabel | None = Field(description="Only when the descriptor declares a split rule")
@@ -204,6 +212,22 @@ class BenchmarkObservation(BaseModel):
             raise ValueError("compatibility_reason must be '' when compatibility_status is 'compatible'")
         if self.compatibility_status == "incompatible" and self.compatibility_reason == "":
             raise ValueError("compatibility_reason must be non-empty when compatibility_status is 'incompatible'")
+        native_metadata = (
+            self.native_reference_species,
+            self.native_reference_assembly,
+            self.native_reference_sha256,
+        )
+        if self.target_identity_status in ("confirmed", "ambiguous"):
+            if not all(native_metadata) or self.native_mapping_count < 1:
+                raise ValueError("native identity requires reference provenance and at least one exact mapping")
+            if self.target_transcript_id is None or self.target_start_1based is None or self.target_end_1based is None:
+                raise ValueError("native identity requires representative transcript coordinates")
+            if self.target_gene_id is None or self.target_strand not in {"+", "-"}:
+                raise ValueError("native identity requires an Ensembl gene ID and transcript strand")
+            if self.target_end_1based - self.target_start_1based + 1 != self.paired_length:
+                raise ValueError("native representative coordinates must span the measured paired length")
+        elif self.native_mapping_count:
+            raise ValueError("native_mapping_count requires confirmed or ambiguous identity")
         return self
 
 
@@ -256,6 +280,29 @@ class BenchmarkAccountingRow(BaseModel):
             ):
                 if status is not FilterEvaluation.NOT_EVALUATED or reasons != "":
                     raise ValueError("entered_design=False must carry not_evaluated statuses and empty reason columns")
+        return self
+
+
+class BenchmarkNativeMapping(BaseModel):
+    """One exact transcript hit imported from the native mapping sidecar."""
+
+    observation_id: str = Field(min_length=1)
+    transcript_id: str = Field(min_length=1)
+    gene_id: str = Field(min_length=1)
+    gene_symbol: str | None = None
+    start_1based: int = Field(ge=1)
+    end_1based: int = Field(ge=1)
+    strand: Literal["+", "-"]
+    site_sequence: str = Field(min_length=1)
+    assembly: str = Field(min_length=1)
+    source_mapping_id: str = Field(min_length=1)
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="after")
+    def _span_matches_sequence(self) -> BenchmarkNativeMapping:
+        if self.end_1based - self.start_1based + 1 != len(self.site_sequence):
+            raise ValueError("native mapping coordinates must span site_sequence exactly")
         return self
 
 
@@ -333,6 +380,7 @@ class BenchmarkArtifactOutputs(BaseModel):
     design_inputs_fasta: ManifestOutputEntry
     candidates_all_csv: ManifestOutputEntry | None = Field(default=None, description="Set once design has run")
     accounting_csv: ManifestOutputEntry | None = Field(default=None, description="Set once design has run")
+    native_mappings_csv: ManifestOutputEntry | None = Field(default=None, description="Set when native mapping is imported")
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -347,17 +395,13 @@ class FilterExclusionCounts(BaseModel):
 
 
 class BenchmarkArtifactCounts(BaseModel):
-    """Observation/mapping/design/exclusion counts, the manifest's audit summary of the whole run.
-
-    ``mapped_native`` is pinned to 0: native transcript mapping is explicitly out of scope for #109
-    (only the placeholder fields exist), and #110 is what gets to make that count real. A non-zero
-    value here would be a claim this build cannot back up.
-    """
+    """Observation/mapping/design/exclusion counts, the manifest's audit summary of the whole run."""
 
     observations_in_source: int = Field(ge=0)
     observations_kept: int = Field(ge=0)
     observations_incompatible: int = Field(ge=0)
-    mapped_native: int = Field(ge=0, le=0, description="Always 0 in #109; #110 owns native mapping")
+    mapped_native: int = Field(ge=0, description="Rows with exactly one exact native transcript mapping")
+    mapped_native_ambiguous: int = Field(default=0, ge=0, description="Rows with multiple exact native mappings")
     mapped_panel_local: int = Field(ge=0)
     mapping_unavailable: int = Field(ge=0)
     entered_design: int = Field(ge=0)
@@ -365,6 +409,17 @@ class BenchmarkArtifactCounts(BaseModel):
     default_pass: int = Field(ge=0)
     benchmark_pass: int = Field(ge=0)
     excluded_by_filter: dict[str, FilterExclusionCounts] = Field(default_factory=dict)
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class NativeReferenceBlock(BaseModel):
+    """Species and immutable reference identity used by imported native mappings."""
+
+    species: Literal["human", "mouse", "rat", "macaque"]
+    assembly: str = Field(min_length=1)
+    release: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -436,6 +491,9 @@ class BenchmarkArtifactManifest(BaseModel):
     created_utc: str = Field(min_length=1, description="The only nondeterministic field; not in any CSV")
     invoked_command: tuple[str, ...] = Field(description="sys.argv verbatim")
     panel: ManifestPanelBlock
+    native_reference: NativeReferenceBlock | None = Field(
+        default=None, description="Reference metadata for imported exact mapping evidence"
+    )
     paired_length: int = Field(description="Equal to requested_length in #109; #110 separates them")
     requested_length: int
     split_rule: str | None = Field(description="e.g. sha256_accession_parity_v1, or None")
@@ -458,6 +516,7 @@ class BenchmarkArtifactManifest(BaseModel):
 
 OBSERVATION_COLUMNS: tuple[str, ...] = tuple(BenchmarkObservation.model_fields)
 ACCOUNTING_COLUMNS: tuple[str, ...] = tuple(BenchmarkAccountingRow.model_fields)
+NATIVE_MAPPING_COLUMNS: tuple[str, ...] = tuple(BenchmarkNativeMapping.model_fields)
 
 
 def _enc_identity(value: Any) -> str:
@@ -545,7 +604,19 @@ _OBSERVATION_CODECS: dict[str, _Codec] = {
     "target_start_1based": (_enc_optional_int, _dec_optional_int),
     "target_end_1based": (_enc_optional_int, _dec_optional_int),
     "target_strand": (_enc_optional, _dec_optional),
+    "target_gene_id": (_enc_optional, _dec_optional),
+    "native_reference_species": (_enc_optional, _dec_optional),
+    "native_reference_assembly": (_enc_optional, _dec_optional),
+    "native_reference_sha256": (_enc_optional, _dec_optional),
+    "native_mapping_count": (_enc_int, _dec_int),
+    "native_mapping_review_reason": (_enc_optional, _dec_optional),
     "split": (_enc_optional, _dec_optional),
+}
+
+_NATIVE_MAPPING_CODECS: dict[str, _Codec] = {
+    "gene_symbol": (_enc_optional, _dec_optional),
+    "start_1based": (_enc_int, _dec_int),
+    "end_1based": (_enc_int, _dec_int),
 }
 
 _ACCOUNTING_CODECS: dict[str, _Codec] = {
@@ -648,6 +719,22 @@ def read_observations(path: Path | str) -> list[BenchmarkObservation]:
     return _read_rows(path, model=BenchmarkObservation, columns=OBSERVATION_COLUMNS, codecs=_OBSERVATION_CODECS)
 
 
+def write_native_mappings(rows: Sequence[BenchmarkNativeMapping], path: Path | str) -> Path:
+    """Write all imported exact native transcript hits in stable order."""
+    return _write_rows(
+        rows,
+        path,
+        columns=NATIVE_MAPPING_COLUMNS,
+        codecs=_NATIVE_MAPPING_CODECS,
+        sort_key=lambda row: (row.observation_id, row.transcript_id, row.start_1based, row.source_mapping_id),
+    )
+
+
+def read_native_mappings(path: Path | str) -> list[BenchmarkNativeMapping]:
+    """Read and validate all imported exact native transcript hits."""
+    return _read_rows(path, model=BenchmarkNativeMapping, columns=NATIVE_MAPPING_COLUMNS, codecs=_NATIVE_MAPPING_CODECS)
+
+
 def write_accounting(rows: Sequence[BenchmarkAccountingRow], path: Path | str) -> Path:
     """Write ``BenchmarkAccountingRow`` rows to ``accounting.csv``, sorted by (observation_id, candidate_id)."""
     return _write_rows(
@@ -681,6 +768,12 @@ def read_manifest(path: Path | str) -> BenchmarkArtifactManifest:
         payload = json.loads(in_path.read_text())
     except json.JSONDecodeError as exc:
         raise BenchmarkArtifactError(f"{in_path} is not valid JSON: {exc}") from exc
+    if isinstance(payload, dict) and payload.get("artifact_schema_version") == "1.0":
+        raise BenchmarkArtifactError(
+            f"{in_path} uses benchmark artifact schema 1.0, which predates measured per-observation "
+            "duplex geometry and native mapping provenance; re-prepare this artifact with the current "
+            "`sirnaforge benchmark prepare` command"
+        )
     try:
         return BenchmarkArtifactManifest.model_validate(payload)
     except ValidationError as exc:
@@ -699,6 +792,7 @@ __all__ = [
     "BenchmarkArtifactManifest",
     "BenchmarkArtifactOutputs",
     "BenchmarkObservation",
+    "BenchmarkNativeMapping",
     "CANDIDATES_ALL_FILENAME",
     "CompatibilityStatus",
     "DESIGN_INPUTS_FASTA_FILENAME",
@@ -709,9 +803,12 @@ __all__ = [
     "GCWideningEntry",
     "GuideMatch",
     "MANIFEST_FILENAME",
+    "NATIVE_MAPPINGS_FILENAME",
+    "NATIVE_MAPPING_COLUMNS",
     "ManifestInputEntry",
     "ManifestOutputEntry",
     "ManifestPanelBlock",
+    "NativeReferenceBlock",
     "OBSERVATIONS_FILENAME",
     "OBSERVATION_COLUMNS",
     "PAIRED_LENGTH_BOUNDS",
@@ -722,7 +819,9 @@ __all__ = [
     "read_accounting",
     "read_manifest",
     "read_observations",
+    "read_native_mappings",
     "write_accounting",
     "write_manifest",
     "write_observations",
+    "write_native_mappings",
 ]

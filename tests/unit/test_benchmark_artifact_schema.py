@@ -385,14 +385,14 @@ def test_manifest_default_schema_versions_are_not_restated() -> None:
     assert manifest.policy_schema_version == POLICY_SCHEMA_VERSION
 
 
-def test_manifest_mapped_native_must_be_zero_in_109() -> None:
-    """#110, not #109, owns native transcript mapping; a non-zero count here is a false claim."""
-    with pytest.raises(ValidationError):
-        BenchmarkArtifactCounts(
+def test_manifest_mapped_native_count_is_supported_in_110() -> None:
+    """The versioned schema now records native transcript mappings and ambiguity separately."""
+    counts = BenchmarkArtifactCounts(
             observations_in_source=1,
             observations_kept=1,
             observations_incompatible=0,
             mapped_native=1,
+            mapped_native_ambiguous=2,
             mapped_panel_local=0,
             mapping_unavailable=0,
             entered_design=0,
@@ -400,6 +400,8 @@ def test_manifest_mapped_native_must_be_zero_in_109() -> None:
             default_pass=0,
             benchmark_pass=0,
         )
+    assert counts.mapped_native == 1
+    assert counts.mapped_native_ambiguous == 2
 
 
 def test_manifest_output_entry_absent_file_carries_no_measurement() -> None:
@@ -427,6 +429,16 @@ def test_read_manifest_invalid_json_raises_artifact_error(tmp_path: Path) -> Non
     path.write_text("{not json")
 
     with pytest.raises(BenchmarkArtifactError):
+        read_manifest(path)
+
+
+def test_read_manifest_refuses_v10_with_explicit_reprepare_migration(tmp_path: Path) -> None:
+    """The 1.0 observation table cannot be read losslessly under measured 1.1 geometry."""
+    path = write_manifest(_manifest(), tmp_path / "manifest.json")
+    payload = path.read_text().replace('"artifact_schema_version": "1.1"', '"artifact_schema_version": "1.0"')
+    path.write_text(payload)
+
+    with pytest.raises(BenchmarkArtifactError, match="predates measured per-observation duplex geometry.*re-prepare"):
         read_manifest(path)
 
 
