@@ -8,10 +8,13 @@ process MIRNA_SEED_ANALYSIS {
     path candidates_fasta
     val mirna_db
     val mirna_species
+    path reference_manifest
+    path reference_fastas
 
     output:
     path "mirna_analysis.tsv", emit: analysis
     path "mirna_summary.json", emit: summary
+    path "mirna_reference_evidence.json", emit: reference_evidence
     // #100: one envelope per species this batch actually attempted, written from inside
     // run_mirna_seed_analysis's own per-species loop via its evidence_dir seam. Non-optional: a
     // caller that reaches this process requested at least one species (the subworkflow gates on
@@ -23,6 +26,7 @@ process MIRNA_SEED_ANALYSIS {
     task.ext.when == null || task.ext.when
 
     script:
+    def pinned_manifest = reference_manifest ? reference_manifest.toString() : ""
     """
     # Run miRNA analysis for ALL candidates in one batch - efficient!
     python3 <<'PYEOF'
@@ -37,6 +41,16 @@ print(f'miRNA species: ${mirna_species}')
 # Parse species list
 species_list = [s.strip() for s in '${mirna_species}'.split(',') if s.strip()]
 
+# Resolve staged immutable FASTAs inside this task, including container execution.
+import json
+from pathlib import Path
+pinned_manifest = '${pinned_manifest}'
+if pinned_manifest:
+    pinned = json.loads(Path(pinned_manifest).read_text())
+    for reference in pinned["references"]:
+        reference["path"] = Path(reference["path"]).name
+    Path("staged_references.json").write_text(json.dumps(pinned))
+
 # Run batch miRNA analysis - all candidates in one session
 output_path = run_mirna_seed_analysis(
     candidates_file='${candidates_fasta}',
@@ -45,6 +59,7 @@ output_path = run_mirna_seed_analysis(
     mirna_species=species_list,
     output_dir='.',
     evidence_dir='.',
+    reference_manifest='staged_references.json' if pinned_manifest else None,
 )
 
 # Rename output files for consistency
@@ -68,6 +83,7 @@ END_VERSIONS
     """
     touch mirna_analysis.tsv
     echo '{"total_candidates": 0, "total_hits": 0}' > mirna_summary.json
+    echo '{"schema_version":1,"mirna":{"screening":{"status":"failed","reason":"stub_run","guide_sequences":[]}}}' > mirna_reference_evidence.json
 
     # #100: mirror the non-optional evidence glob. Nothing actually ran, so status is "failed"
     # and producer "stub" -- never "complete" -- and one file is enough to satisfy the glob

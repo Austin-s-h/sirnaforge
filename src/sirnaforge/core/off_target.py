@@ -32,7 +32,7 @@ from sirnaforge.core.screening_evidence import (
     write_evidence,
 )
 from sirnaforge.data.base import FastaUtils
-from sirnaforge.data.mirna_manager import MiRNADatabaseManager
+from sirnaforge.data.mirna_manager import MiRNADatabaseManager, load_pinned_references
 from sirnaforge.models.evidence import EvidenceStatus, ObservedCount, ObservedCounts, ScreeningEvidenceEntry
 from sirnaforge.models.off_target import (
     AggregatedMiRNASummary,
@@ -2280,6 +2280,7 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
     seed_end: int = 8,
     *,
     evidence_dir: str | Path | None = None,
+    reference_manifest: str | Path | None = None,
 ) -> Path:
     """Run miRNA seed match analysis for candidate sequences.
 
@@ -2308,6 +2309,7 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
         backend: miRNA seed backend to use for analysis (pyahocorasick by default)
         seed_start: Seed region start position (1-based, default 2)
         seed_end: Seed region end position (1-based, default 8)
+        reference_manifest: Optional versioned manifest of pinned local mature FASTA references.
         evidence_dir: When given, write a per-species #100 mirna_seed evidence envelope for every
             species this run actually attempted, additive and keyword-only so the ``.nf`` script
             block that calls this function by name is unaffected.
@@ -2318,8 +2320,11 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Initialize miRNA database manager
-    manager = MiRNADatabaseManager()
+    # References must be resolved inside the task that performs screening.
+    if reference_manifest is not None:
+        manager = MiRNADatabaseManager(pinned_references=load_pinned_references(reference_manifest))
+    else:
+        manager = MiRNADatabaseManager()
 
     # Parse input sequences
     sequences = parse_fasta_file(candidates_file)
@@ -2329,6 +2334,7 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
     species_filtered_stats = {}
     unavailable_backend_species: dict[str, str] = {}
     species_failures: dict[str, str] = {}  # Every species that did not complete, for any reason.
+    reference_sources: list[dict[str, Any]] = []
 
     resolved_backend = MiRNASeedBackend(backend)
 
@@ -2339,6 +2345,8 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
         outcome: ExecutionOutcome | None = None
         # Decided below, written after the guarded block: see ``_SpeciesEvidence``.
         pending_evidence: _SpeciesEvidence | None = None
+        acquisition: dict[str, Any] = {"status": "failed", "reason": "reference_unavailable"}
+        reference_metadata: dict[str, Any] | None = None
         try:
             # Get or download miRNA database for this species
             logger.info(f"Processing miRNA database for species: {species}")
@@ -2355,6 +2363,11 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
                     f"miRNA database '{mirna_db}' is unavailable for species {species}: "
                     "it could not be resolved or downloaded"
                 )
+
+            acquisition = {"status": "complete", "reason": None}
+            metadata_reader = getattr(manager, "get_reference_metadata", None)
+            if metadata_reader is not None:
+                reference_metadata = metadata_reader(mirna_db, species)
 
             if resolved_backend == MiRNASeedBackend.BWA:
                 mirna_sequences = parse_fasta_file(db_fasta_path)
@@ -2458,9 +2471,54 @@ def run_mirna_seed_analysis(  # noqa: PLR0912
             species_failures[species] = str(e)
             pending_evidence = _SpeciesEvidence.failed(submitted_guides=len(sequences), detail=str(e))
 
+        status = pending_evidence.status.value if pending_evidence is not None else "unknown"
+        reference_sources.append(
+            {
+                "source": mirna_db,
+                "species": species,
+                "acquisition": acquisition,
+                "screening": {"status": status, "reason": None if status == "complete" else f"screening_{status}"},
+                "references": reference_metadata,
+                "artifact": f"mirna_seed_{species}_evidence.json",
+            }
+        )
+
         # Outside every handler, so a rejection by the envelope's own model surfaces as itself.
         if evidence_dir is not None and pending_evidence is not None:
             _write_mirna_species_evidence(evidence_dir, candidates_file, species, pending_evidence)
+
+    # Persist actual corpus identity and submitted guide membership alongside the producer output.
+    all_acquired = bool(reference_sources) and all(r["acquisition"]["status"] == "complete" for r in reference_sources)
+    all_complete = bool(reference_sources) and all(r["screening"]["status"] == "complete" for r in reference_sources)
+    screening_status = (
+        "complete"
+        if all_complete
+        else (
+            "failed"
+            if species_failures
+            else ("censored" if any(r["screening"]["status"] == "censored" for r in reference_sources) else "unknown")
+        )
+    )
+    reference_evidence = {
+        "schema_version": 1,
+        "mirna": {
+            "source": mirna_db,
+            "requested_species": list(mirna_species),
+            "sources": reference_sources,
+            "acquisition": {
+                "status": "complete" if all_acquired else "failed",
+                "reason": None if all_acquired else "reference_unavailable",
+            },
+            "screening": {
+                "status": screening_status,
+                "reason": None if all_complete else "screening_incomplete",
+                "guide_sequences": sorted({seq.upper().replace("U", "T") for seq in sequences.values()}),
+                "guide_set_digest": guide_set_digest(candidates_file),
+                "submitted_guides": len(sequences),
+            },
+        },
+    }
+    (output_path / "mirna_reference_evidence.json").write_text(json.dumps(reference_evidence, indent=2))
 
     # An unavailable backend that hit every requested species leaves nothing to report -- that is
     # the historical hard-failure signal a solely-affected run raised on directly. A species

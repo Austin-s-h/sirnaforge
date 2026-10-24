@@ -7,8 +7,14 @@ automatic cache management and species-specific organization.
 """
 
 import argparse
+import hashlib
+import json
 import logging
+import math
+import os
 import re
+import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +45,18 @@ logger = logging.getLogger(__name__)
 # record's id/description, which silently collapses miRBase's ~270 species prefixes into
 # one, and it does not exist at all below Biopython 1.85.
 FASTA_PARSE_FORMAT = "fasta"
+_MIRBASE_SPECIES_CODES = {
+    "human": "hsa-",
+    "mouse": "mmu-",
+    "rat": "rno-",
+    "zebrafish": "dre-",
+    "fly": "dme-",
+    "worm": "cel-",
+    "chicken": "gga-",
+    "dog": "cfa-",
+    "pig": "ssc-",
+    "rhesus": "mml-",
+}
 
 
 @dataclass
@@ -49,6 +67,46 @@ class MiRNASource(ReferenceSource):
     """
 
     pass
+
+
+@dataclass(frozen=True)
+class PinnedMiRNAReference:
+    """Explicit local mature FASTA with independently supplied release and SHA-256.
+
+    The checksum covers the original file, before species filtering. A pin never
+    refreshes from an upstream endpoint and is not advertised as the latest release.
+    """
+
+    path: str | Path
+    release: str
+    sha256: str
+    original_url: str | None = None
+
+    def __post_init__(self) -> None:
+        """Require explicit release identity and a full digest."""
+        if not isinstance(self.release, str) or not self.release.strip():
+            raise ValueError("Pinned miRNA reference requires a release")
+        if not isinstance(self.sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", self.sha256):
+            raise ValueError("Pinned miRNA reference requires a SHA-256 checksum (64 hex characters)")
+        if not isinstance(self.path, str | Path) or not str(self.path).strip():
+            raise ValueError("Pinned miRNA reference requires a local FASTA path")
+        if self.original_url is not None and not isinstance(self.original_url, str):
+            raise ValueError("Pinned miRNA reference original_url must be a string")
+
+
+def _atomic_write_text(destination: Path, content: str) -> None:
+    """Install validated bytes without truncating an existing reference on failure."""
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _build_mirbase_sources() -> dict[str, MiRNASource]:
@@ -383,14 +441,148 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         """Expose the MirGeneDB species metadata table."""
         return {key: dict(value) for key, value in MIRGENEDB_SPECIES_TABLE.items()}
 
-    def __init__(self, cache_dir: str | Path | None = None, cache_ttl_days: int = 30):
+    def __init__(
+        self,
+        cache_dir: str | Path | None = None,
+        cache_ttl_days: int = 30,
+        *,
+        pinned_references: dict[str, dict[str, PinnedMiRNAReference]] | None = None,
+        download_timeout: int = 30,
+        download_attempts: int = 2,
+        retry_backoff_seconds: float = 0.25,
+    ):
         """Initialize the miRNA database manager.
 
         Args:
             cache_dir: Directory for caching databases (default: ~/.cache/sirnaforge/mirna)
             cache_ttl_days: Cache time-to-live in days
+            pinned_references: Explicit mature FASTA pins keyed by source and species.
+            download_timeout: Socket timeout per live request, from 1 to 300 seconds.
+            download_attempts: Maximum acquisition attempts, from 1 to 3.
+            retry_backoff_seconds: Base exponential backoff, from 0 to 5 seconds.
         """
+        if type(download_timeout) is not int or not 1 <= download_timeout <= 300:
+            raise ValueError("miRNA download_timeout must be an integer from 1 to 300 seconds")
+        if type(download_attempts) is not int or not 1 <= download_attempts <= 3:
+            raise ValueError("miRNA download_attempts must be an integer from 1 to 3")
+        if not math.isfinite(retry_backoff_seconds) or not 0 <= retry_backoff_seconds <= 5:
+            raise ValueError("miRNA retry_backoff_seconds must be from 0 to 5 seconds")
+        self.download_timeout = download_timeout
+        self.download_attempts = download_attempts
+        self.retry_backoff_seconds = retry_backoff_seconds
         super().__init__(cache_subdir="mirna", cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
+        self.pinned_references: dict[str, dict[str, PinnedMiRNAReference]] = {}
+        self._resolved_reference_metadata: dict[tuple[str, str], dict[str, Any]] = {}
+        for source_name, species_pins in (pinned_references or {}).items():
+            if source_name not in {"mirbase", "mirgenedb"}:
+                raise ValueError(f"Pinned mature references require mirbase or mirgenedb, got {source_name!r}")
+            for species, pin in species_pins.items():
+                normalized = self.normalize_species(source_name, species)
+                if normalized is None or not self.is_supported_species(source_name, normalized):
+                    raise ValueError(f"Unsupported pinned miRNA source/species: {source_name}/{species}")
+                if normalized in self.pinned_references.setdefault(source_name, {}):
+                    raise ValueError(f"Duplicate pinned miRNA source/species: {source_name}/{normalized}")
+                self.pinned_references[source_name][normalized] = pin
+
+    def get_reference_metadata(self, source_name: str, species: str) -> dict[str, Any] | None:
+        """Return provenance of a reference resolved by this manager in this run.
+
+        Call after ``get_database``. None means acquisition failed or was never
+        attempted. This never inspects a different process's or host's cache.
+        """
+        import copy  # noqa: PLC0415
+
+        normalized = self.normalize_species(source_name, species)
+        return copy.deepcopy(self._resolved_reference_metadata.get((source_name, normalized or species)))
+
+    @staticmethod
+    def _validate_mature_fasta(content: str) -> None:
+        """Reject malformed payloads before they can replace a usable reference."""
+        if (
+            not content.strip().startswith(">")
+            or "<" in content
+            or ">" in "\n".join(line for line in content.splitlines() if not line.startswith(">"))
+        ):
+            raise ValueError("Expected plain mature FASTA, not HTML or malformed content")
+        records = list(SeqIO.parse(StringIO(content), FASTA_PARSE_FORMAT))
+        if not records or len({record.id for record in records}) != len(records):
+            raise ValueError("Mature FASTA must contain records with unique identifiers")
+        for record in records:
+            if not record.seq or not re.fullmatch(r"[ACGTUNacgtun]+", str(record.seq)):
+                raise ValueError(f"Invalid mature FASTA sequence: {record.id}")
+
+    def _get_pinned_database(
+        self, source_name: str, species: str, pin: PinnedMiRNAReference, force_refresh: bool
+    ) -> Path | None:
+        source = MiRNASource(
+            name=source_name,
+            url=f"pinned:sha256:{pin.sha256.lower()}:release:{pin.release}",
+            species=species,
+            description=f"Pinned mature {source_name} release {pin.release}",
+        )
+        key = source.cache_key()
+        cache_file = self.cache_dir / f"{key}.fa"
+        meta = self.metadata.get(key)
+        # Explicit immutable pins do not expire by age. Integrity and producer
+        # checks still apply; force_refresh explicitly reimports the local file.
+        if (
+            not force_refresh
+            and meta is not None
+            and self.is_producer_version_current(meta)
+            and cache_file.is_file()
+            and cache_file.stat().st_size > 0
+            and self._compute_file_checksum(cache_file) == meta.checksum
+            and meta.extra is not None
+            and hashlib.sha256(cache_file.read_bytes()).hexdigest() == meta.extra.get("filtered_sha256")
+        ):
+            self._resolved_reference_metadata[source_name, species] = {**meta.extra, "acquisition_mode": "pinned_cache"}
+            return cache_file
+        try:
+            raw = Path(pin.path).read_bytes()
+            raw_sha256 = hashlib.sha256(raw).hexdigest()
+            if raw_sha256 != pin.sha256.lower():
+                raise ValueError("Pinned mature FASTA SHA-256 checksum mismatch")
+            content = raw.decode("utf-8")
+            self._validate_mature_fasta(content)
+            if source_name == "mirbase":
+                content = self._filter_species_sequences(content, species)
+                if not all(
+                    record.id.lower().startswith(_MIRBASE_SPECIES_CODES[species])
+                    for record in SeqIO.parse(StringIO(content), FASTA_PARSE_FORMAT)
+                ):
+                    raise ValueError(f"Pinned miRBase FASTA contains mismatched species identifiers for {species}")
+            # MirGeneDB exports are already species-specific. Verify record
+            # IDs against the configured species instead of trusting the label.
+            elif not all(
+                record.id.lower().startswith(f"{species.lower()}-")
+                for record in SeqIO.parse(StringIO(content), FASTA_PARSE_FORMAT)
+            ):
+                raise ValueError(f"Pinned MirGeneDB FASTA contains records outside species {species}")
+            self._validate_mature_fasta(content)
+            provenance = {
+                "source": source_name,
+                "release": pin.release,
+                "original_url": pin.original_url,
+                "acquisition_url": Path(pin.path).resolve().as_uri(),
+                "raw_sha256": raw_sha256,
+                "filtered_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "acquired_at": self._get_current_timestamp(),
+                "species": species,
+                "species_filtered": source_name == "mirbase",
+                "acquisition_mode": "pinned_import",
+            }
+            _atomic_write_text(cache_file, content)
+            self._record_cache_entry(key, source, cache_file, extra=provenance, persist=True)
+            self._resolved_reference_metadata[source_name, species] = provenance
+            return cache_file
+        except (OSError, ValueError, UnicodeError) as exc:
+            logger.error(
+                "Pinned miRNA reference %s/%s unavailable: %s; supply the verified mature FASTA",
+                source_name,
+                species,
+                exc,
+            )
+            return None
 
     def _metadata_from_dict(self, data: dict) -> CacheMetadata:
         """Create CacheMetadata from dictionary using MiRNASource."""
@@ -406,18 +598,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             ValueError: if no miRBase code is known for `species`.
         """
         # Species prefix mapping - simplified and clear
-        species_codes = {
-            "human": "hsa-",
-            "mouse": "mmu-",
-            "rat": "rno-",
-            "zebrafish": "dre-",
-            "fly": "dme-",
-            "worm": "cel-",
-            "chicken": "gga-",
-            "dog": "cfa-",
-            "pig": "ssc-",
-            "rhesus": "mml-",
-        }
+        species_codes = _MIRBASE_SPECIES_CODES
 
         code = species_codes.get(species)
         if not code:
@@ -463,7 +644,22 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 "sequences), mirgenedb, or supply a reference FASTA explicitly."
             )
             return None
-        return self._download_file(source)
+        for attempt in range(self.download_attempts):
+            content = self._download_file(source, self.download_timeout)
+            if content:
+                return content
+            if attempt + 1 < self.download_attempts:
+                time.sleep(self.retry_backoff_seconds * (2**attempt))
+        logger.error(
+            "miRNA source %s/%s unavailable at %s after %s attempts (socket timeout %ss); "
+            "supply a verified pinned mature FASTA through a reference manifest",
+            source_name,
+            source.species,
+            source.url,
+            self.download_attempts,
+            self.download_timeout,
+        )
+        return None
 
     def get_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
         """Resolve a single source or the explicit mature-only union.
@@ -476,6 +672,8 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         Returns:
             Validated reference path, or None if any required source failed.
         """
+        normalized = self.normalize_species(source_name, species)
+        self._resolved_reference_metadata.pop((source_name, normalized or species), None)
         if source_name != "mirgenedb+mirbase":
             return self._get_single_database(source_name, species, force_refresh)
         normalized = self.normalize_species(source_name, species)
@@ -489,7 +687,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                     return None
         return self.get_combined_database(sources, normalized)
 
-    def _get_single_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:
+    def _get_single_database(self, source_name: str, species: str, force_refresh: bool = False) -> Path | None:  # noqa: PLR0911, PLR0912
         """Get miRNA database, downloading and filtering if needed.
 
         Simplified caching: each species+source combination gets its own cache file.
@@ -512,12 +710,27 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             return None
 
         source = self.SOURCES[source_name][normalized_species]
+        pin = self.pinned_references.get(source_name, {}).get(normalized_species)
+        if pin is not None:
+            return self._get_pinned_database(source_name, normalized_species, pin, force_refresh)
         cache_key = source.cache_key()
         cache_file = self.cache_dir / f"{cache_key}.fa"
 
         # Check if we can use cached version
         if not force_refresh and self._is_cache_valid(cache_key):
             logger.info(f"✅ Using cached {source.name} ({source.species}): {cache_file}")
+            meta = self.metadata[cache_key]
+            self._resolved_reference_metadata[source_name, normalized_species] = {
+                **(meta.extra or {}),
+                "source": source_name,
+                "release": (meta.extra or {}).get("release"),
+                "original_url": source.url,
+                "acquisition_url": source.url,
+                "filtered_sha256": hashlib.sha256(cache_file.read_bytes()).hexdigest(),
+                "acquired_at": meta.downloaded_at,
+                "species": normalized_species,
+                "acquisition_mode": "cached_reuse",
+            }
             return cache_file
 
         def cleanup_cache() -> None:
@@ -558,14 +771,23 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 failure = True
 
         if failure:
-            cleanup_cache()
+            # Failed acquisition is not permission to destroy a previous
+            # reference. Return failure explicitly; no implicit stale fallback.
             return None
 
         assert content is not None
+        try:
+            self._validate_mature_fasta(content)
+        except ValueError as exc:
+            logger.error("Invalid miRNA reference %s/%s: %s", source_name, normalized_species, exc)
+            return None
 
         # Save to cache
-        with cache_file.open("w", encoding="utf-8") as f:
-            f.write(content)
+        try:
+            _atomic_write_text(cache_file, content)
+        except OSError as exc:
+            logger.error("Cannot install miRNA reference %s/%s: %s", source_name, normalized_species, exc)
+            return None
 
         if cache_file.stat().st_size == 0:
             logger.error(
@@ -577,9 +799,19 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             return None
 
         # Update metadata
-        self._record_cache_entry(
-            cache_key, source, cache_file, downloaded_at=self._get_current_timestamp(), persist=True
-        )
+        provenance = {
+            "source": source_name,
+            "release": None,
+            "original_url": source.url,
+            "acquisition_url": source.url,
+            "filtered_sha256": hashlib.sha256(cache_file.read_bytes()).hexdigest(),
+            "acquired_at": self._get_current_timestamp(),
+            "species": normalized_species,
+            "species_filtered": source_name.startswith("mirbase"),
+            "acquisition_mode": "successful_refresh",
+        }
+        self._record_cache_entry(cache_key, source, cache_file, extra=provenance, persist=True)
+        self._resolved_reference_metadata[source_name, normalized_species] = provenance
 
         logger.info(f"✅ Cached {source.name} ({source.species}): {cache_file} ({cache_file.stat().st_size:,} bytes)")
         return cache_file
@@ -607,6 +839,8 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             Path to combined FASTA file
         """
         canonical_species = self._canonical_species_for_sources(sources, species)
+        combined_species = self.normalize_species("mirgenedb+mirbase", species) or species
+        self._resolved_reference_metadata.pop(("mirgenedb+mirbase", combined_species), None)
 
         if output_name is None:
             output_name = f"combined_{canonical_species}_{'_'.join(sources)}.fa"
@@ -619,6 +853,13 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
                 logger.error(f"Failed to get {source_name} database")
                 return None
             source_files.append(source_file)
+
+        combined_provenance = {
+            "source": "mirgenedb+mirbase",
+            "species": combined_species,
+            "acquisition_mode": "combined",
+            "sources": [self.get_reference_metadata(source_name, species) for source_name in sources],
+        }
 
         # The combined file is derived, so it inherits every defect of the FASTAs it was built
         # from -- and, being an ordinary file, it can also be truncated or corrupted *after* it was
@@ -637,6 +878,10 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             max_age_days=self.cache_ttl.days,
         ):
             logger.info(f"✅ Using existing combined database: {combined_file}")
+            self._resolved_reference_metadata["mirgenedb+mirbase", combined_species] = {
+                **combined_provenance,
+                "filtered_sha256": hashlib.sha256(combined_file.read_bytes()).hexdigest(),
+            }
             return combined_file
 
         logger.info(f"🔄 Combining {len(sources)} databases for {canonical_species}...")
@@ -671,6 +916,10 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         )
 
         logger.info(f"✅ Combined database created: {combined_file} ({total_sequences} unique sequences)")
+        self._resolved_reference_metadata["mirgenedb+mirbase", combined_species] = {
+            **combined_provenance,
+            "filtered_sha256": hashlib.sha256(combined_file.read_bytes()).hexdigest(),
+        }
         return combined_file
 
     def list_available_databases(self) -> dict[str, dict[str, MiRNASource]]:
@@ -680,6 +929,56 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
     def clear_cache(self, confirm: bool = False) -> dict[str, Any]:
         """Clear miRNA cache using the shared reference-manager implementation."""
         return super().clear_cache(confirm=confirm)
+
+
+def load_pinned_references(manifest_path: str | Path) -> dict[str, dict[str, PinnedMiRNAReference]]:
+    """Read a version 1 local reference manifest, resolving paths relative to it.
+
+    ``references`` is a nonempty list of source, species, release, sha256, path
+    entries, optionally carrying original_url. This validates configuration only;
+    acquisition verifies the actual FASTA bytes and never silently substitutes a source.
+    """
+    path = Path(manifest_path).resolve()
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read miRNA reference manifest {path}: {exc}") from exc
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != 1
+    ):
+        raise ValueError("miRNA reference manifest requires schema_version: 1")
+    entries = manifest.get("references")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("miRNA reference manifest requires a nonempty references list")
+    result: dict[str, dict[str, PinnedMiRNAReference]] = {}
+    required = {"source", "species", "release", "sha256", "path"}
+    for entry in entries:
+        if not isinstance(entry, dict) or not required.issubset(entry):
+            raise ValueError("Each miRNA reference requires source, species, release, sha256 and path")
+        if set(entry) - required - {"original_url"}:
+            raise ValueError("Unknown miRNA reference manifest entry fields")
+        if not all(isinstance(entry[key], str) and entry[key].strip() for key in required):
+            raise ValueError("miRNA reference manifest fields must be nonempty strings")
+        source = entry["source"]
+        if source not in {"mirbase", "mirgenedb"}:
+            raise ValueError(f"Unsupported pinned mature source: {source}")
+        species = MiRNADatabaseManager.normalize_species(source, entry["species"])
+        if species is None or not MiRNADatabaseManager.is_supported_species(source, species):
+            raise ValueError(f"Unsupported pinned miRNA source/species: {source}/{entry['species']}")
+        if species in result.setdefault(source, {}):
+            raise ValueError(f"Duplicate pinned miRNA source/species: {source}/{species}")
+        local_path = Path(entry["path"])
+        if not local_path.is_absolute():
+            local_path = path.parent / local_path
+        result[source][species] = PinnedMiRNAReference(
+            path=local_path.resolve(),
+            release=entry["release"],
+            sha256=entry["sha256"],
+            original_url=entry.get("original_url"),
+        )
+    return result
 
 
 def _create_parser() -> argparse.ArgumentParser:

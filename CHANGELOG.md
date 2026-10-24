@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pinned local mature miRNA reference manifests for workflow and off-target commands,
+  with staged Nextflow inputs, checksum validation and task-produced reference evidence.
+  See [local miRNA references](docs/mirna_references.md).
+
+
 ### Fixed
 
 - Native benchmark review preserves unpublished post-screen scores as missing and uses the

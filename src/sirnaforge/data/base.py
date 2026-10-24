@@ -189,6 +189,8 @@ class TranscriptInfo(BaseModel):
     length: int | None = None
     database: DatabaseType
     is_canonical: bool = False
+    canonical_source: str | None = None
+    canonical_release: str | None = None
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -594,6 +596,8 @@ class EnsemblClient(AbstractDatabaseClient):
                         length=len(sequence) if sequence else None,
                         database=DatabaseType.ENSEMBL,
                         is_canonical=transcript.get("is_canonical", False),
+                        canonical_source="Ensembl REST lookup" if "is_canonical" in transcript else None,
+                        canonical_release=str(data["ensembl_release"]) if data.get("ensembl_release") else None,
                     )
                 )
 
@@ -1035,6 +1039,9 @@ class GencodeClient(AbstractDatabaseClient):
                 transcript_id=model.transcript_id,
                 transcript_name=model.transcript_name,
                 is_canonical=model.is_canonical,
+                canonical_source="GENCODE explicit canonical/MANE tags"
+                if any(m.is_canonical for m in models)
+                else None,
                 gene_id=model.gene_id,
                 gene_name=model.symbol,
                 transcript_type=model.biotype,
