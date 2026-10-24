@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -186,14 +187,16 @@ def test_workflow_writes_html_report_beside_candidate_csvs(
     # default thresholds and publish gates this run never applied.
     monkeypatch.setattr(
         "sirnaforge.workflow.build_payload",
-        lambda run_dir, *, policy: {"run_dir": run_dir, "policy": policy},
+        lambda run_dir, *, policy, diagnostics: SimpleNamespace(
+            run_dir=run_dir, policy=policy, diagnostics={} if diagnostics else None
+        ),
     )
 
     def _write_report(payload: object, output: Path) -> Path:
-        assert payload == {
-            "run_dir": workflow.config.output_dir,
-            "policy": workflow.config.resolved_policy,
-        }
+        assert isinstance(payload, SimpleNamespace)
+        assert payload.run_dir == workflow.config.output_dir
+        assert payload.policy is workflow.config.resolved_policy
+        payload.diagnostics["phases_seconds"] = {}
         assert (workflow.config.output_dir / "sirnaforge" / "manifest.json").exists()
         output.write_text("<html>report</html>")
         return output
