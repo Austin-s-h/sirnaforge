@@ -40,9 +40,17 @@ are local; no push, merge or default package-manager/backend migration is implie
 
 ## Validation and commands
 
-The early integrated offline checkpoint passed **2,024 tests, 61 deselected**.
-Later focused groups passed benchmark, reporting, variant, orthology, miRNA and
-ZFN checks; full integrated validation must use the latest source snapshot.
+The final integrated offline host checkpoint passed **2,073 tests, 61 deselected
+in 123.71 seconds**, after code commit `f08bf24`. Results are in
+`/tmp/sirnaforge-124-checkpoint.xml` and `/tmp/sirnaforge-124-checkpoint.log`.
+This excludes network/container tests; the user's earlier opt-in run predates
+these changes. Ruff and formatting checks pass; mypy passes 106 source files.
+
+The earlier full run exposed missing transcript-seed policy/schema registration.
+Those integration gaps are fixed in `cba0599` and `f08bf24`; the policy/gate
+focused run passed 152 tests and schema focused run passed 14 tests. The report
+mock/documentation focused run passed 48 tests. No known failing test remains
+in the final offline host checkpoint.
 
 The sandbox hangs on asyncio thread shutdown; the same offline host command
 works outside that restriction. A writable temporary cache is required here:
