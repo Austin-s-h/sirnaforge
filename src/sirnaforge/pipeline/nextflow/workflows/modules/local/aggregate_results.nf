@@ -75,10 +75,10 @@ print(f"Evidence reconciliation: {result.get('reconciliation_file', 'none')}")
 PYEOF
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        biopython: \$(python -c "import Bio; print(Bio.__version__)")
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    biopython: \$(python -c "import Bio; print(Bio.__version__)")
+END_VERSIONS
     """
 
     stub:
@@ -104,12 +104,12 @@ PYEOF
       "sources": {},
       "unplanned": []
     }
-    EVIDENCE
+EVIDENCE
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        biopython: \$(python -c "import Bio; print(Bio.__version__)")
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    biopython: \$(python -c "import Bio; print(Bio.__version__)")
+END_VERSIONS
     """
 }

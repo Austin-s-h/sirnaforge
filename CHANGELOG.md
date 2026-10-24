@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pinned local mature miRNA reference manifests for workflow and off-target commands,
+  with staged Nextflow inputs, checksum validation and task-produced reference evidence.
+  See [local miRNA references](docs/mirna_references.md).
+
+
 ### Fixed
+
+- Native benchmark review preserves unpublished post-screen scores as missing and uses the
+  supplied source weights for the current-profile comparison. Report register-neighbour lookup
+  uses sorted position windows instead of repeatedly scanning entire transcripts. Nextflow
+  version artifacts terminate their heredocs correctly and record the numeric BWA-MEM2 version.
+
+- RefSeq gene lookup reads nested NCBI ELink `nuccore` groups and selects RefSeq RNA links,
+  fixing empty transcript results for genes such as TP53. E-utilities calls are paced and
+  retry HTTP 429 with bounded backoff. The README now documents existing
+  local GENCODE and miRBase/combined-source support instead of marking them TODO.
+
+- Host and container release gates exclude live-network tests. Remote functionality remains
+  available locally through `make test-requires-network` / `pytest --run-network`; normal test
+  runs skip it and CI refuses the opt-in, so public API outages cannot block releases.
 
 - Automatic Nextflow CPU ceilings respect available processors, affinity and container quotas,
   preventing index/alignment tasks from requesting more CPUs than a small CI runner provides.
@@ -15,7 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The container variant gate uses local transcripts and synthetic cached variants; live TP53/rsID
   checks remain in a separate integration suite instead of depending on public endpoint uptime
   during image publication. The default image gate excludes all `requires_network` checks;
-  live container checks remain opt-in through `DOCKER_TEST_MARKERS=runs_in_container`.
+  live container checks remain local-only and require `DOCKER_TEST_MARKERS=runs_in_container`
+  plus `DOCKER_TEST_PYTEST_ARGS=--run-network`.
 
 ## [0.7.1] - 2026-10-17
 

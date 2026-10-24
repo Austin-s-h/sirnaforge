@@ -1,0 +1,34 @@
+{
+  "kind": "command_measurement",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "c7734f395f5bbd7b16c2872665a49513a1e601b6"
+  },
+  "cache_state": "isolated initially empty /tmp Pixi cache; lock only, no installation",
+  "trials": [
+    {
+      "command": [
+        "env",
+        "PIXI_CACHE_DIR=/tmp/sirnaforge-pixi-review-cache",
+        "pixi",
+        "lock",
+        "--manifest-path",
+        "scripts/performance/pixi/pixi.toml"
+      ],
+      "timeout_seconds": 30.0,
+      "status": "failed",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": " WARN Retry attempt #0. Sleeping 228.961916ms before the next attempt\n WARN Retry attempt #0. Sleeping 616.670525ms before the next attempt\n WARN Retry attempt #0. Sleeping 588.321311ms before the next attempt\n WARN Retry attempt #0. Sleeping 300.828573ms before the next attempt\n WARN Retry attempt #1. Sleeping 720.315524ms before the next attempt\n WARN Retry attempt #1. Sleeping 1.24918936s before the next attempt\n WARN Retry attempt #1. Sleeping 197.98476ms before the next attempt\n WARN Retry attempt #1. Sleeping 537.442364ms before the next attempt\n WARN Retry attempt #2. Sleeping 1.400730251s before the next attempt\n WARN Retry attempt #2. Sleeping 3.814222852s before the next attempt\n WARN Retry attempt #2. Sleeping 526.469181ms before the next attempt\n WARN Retry attempt #2. Sleeping 421.958962ms before the next attempt\nError:   \u00d7 failed to solve requirements of environment 'application' for platform\n  \u2502 'linux-64'\n  \u251c\u2500\u25b6   \u00d7 Request failed after 3 retries\n  \u2502   \n  \u251c\u2500\u25b6 error sending request for url (https://conda.anaconda.org/bioconda/\n  \u2502   linux-64/repodata_shards.msgpack.zst)\n  \u251c\u2500\u25b6 client error (Connect)\n  \u251c\u2500\u25b6 dns error\n  \u2570\u2500\u25b6 Operation not permitted (os error 1)\n\n",
+      "cpu_user_seconds": 0.04,
+      "cpu_system_seconds": 0.05,
+      "peak_rss_kib": 35072,
+      "wall_seconds": 1.792963951000047
+    }
+  ],
+  "wall_median_seconds": null,
+  "complete": false
+}

@@ -1130,7 +1130,7 @@ def test_seed_positions_and_evaluate_window_edge_branches() -> None:
     assert searcher._seed_positions("L", seq_len=10, seed_len=None) == set()
     assert searcher._seed_positions("R", seq_len=10, seed_len=0) == set()
     assert searcher._seed_positions("L", seq_len=6, seed_len=10) == {0, 1, 2, 3, 4, 5}
-    assert searcher._seed_positions("R", seq_len=6, seed_len=2) == {0, 1}
+    assert searcher._seed_positions("R", seq_len=6, seed_len=2) == {4, 5}
 
     assert (
         searcher._evaluate_window(

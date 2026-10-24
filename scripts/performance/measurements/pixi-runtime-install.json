@@ -1,0 +1,37 @@
+{
+  "kind": "command_measurement",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "c7734f395f5bbd7b16c2872665a49513a1e601b6"
+  },
+  "cache_state": "new isolated runtime environment; metadata cache populated by lock; no prior runtime install",
+  "trials": [
+    {
+      "command": [
+        "env",
+        "PIXI_CACHE_DIR=/tmp/sirnaforge-pixi-review/cache",
+        "pixi",
+        "install",
+        "--manifest-path",
+        "/tmp/sirnaforge-pixi-review/pixi.toml",
+        "--environment",
+        "runtime",
+        "--locked"
+      ],
+      "timeout_seconds": 300.0,
+      "status": "ok",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\u2714 The runtime environment has been installed.\n",
+      "cpu_user_seconds": 0.5,
+      "cpu_system_seconds": 3.01,
+      "peak_rss_kib": 243288,
+      "wall_seconds": 1.055015588997776
+    }
+  ],
+  "wall_median_seconds": 1.055015588997776,
+  "complete": true
+}

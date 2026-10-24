@@ -42,6 +42,8 @@ workflow SIRNAFORGE_OFFTARGET {
         transcriptome_fastas : ${params.transcriptome_fastas ?: 'Not provided'}
         transcriptome_indices: ${params.transcriptome_indices ?: 'Not provided'}
         transcriptome_species: ${params.transcriptome_species ?: 'N/A'}
+        transcript_seed_species: ${params.transcript_seed_species ?: 'Not enabled'}
+        transcript_seed_scope  : ${params.transcript_seed_scope ?: 'full_cdna'}
         evidence_plan        : ${params.evidence_plan ?: 'Not provided'}
 
         ANALYSIS PARAMETERS
@@ -137,7 +139,7 @@ workflow SIRNAFORGE_OFFTARGET {
         log.info "=" * 80
         log.info "NOTE: No transcriptome FASTAs or indices provided"
         log.info "Transcriptome off-target analysis: DISABLED"
-        log.info "Running lightweight miRNA seed match analysis only (< 1GB RAM)"
+        log.info "Running enabled lightweight seed analysis channels only (< 1GB RAM)"
         log.info ""
         log.info "To enable transcriptome off-target analysis, provide either:"
         log.info "  --transcriptome_fastas 'species:path,species2:path2' OR"

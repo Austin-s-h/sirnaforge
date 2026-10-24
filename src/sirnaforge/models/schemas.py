@@ -489,6 +489,9 @@ class SiRNACandidateSchema(DataFrameModel):
     max_transcriptome_seed_perfect_observed: Optional[Series[float]] = Field(  # noqa: UP045
         description="Observed value max_transcriptome_seed_perfect was compared against", nullable=True, coerce=True
     )
+    max_transcript_seed_sites_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed complementary transcript-seed site count", nullable=True, coerce=True
+    )
     max_mirna_perfect_seed_observed: Optional[Series[float]] = Field(  # noqa: UP045
         description="Observed value max_mirna_perfect_seed was compared against", nullable=True, coerce=True
     )

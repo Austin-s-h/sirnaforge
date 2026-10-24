@@ -41,37 +41,25 @@ logger = get_logger(__name__)
 
 ZFN_EXPERIMENTAL_ISSUE_URL = "https://github.com/Austin-s-h/sirnaforge/issues/82"
 
-# The right half-site that actually matches the published CCR5 on-target locus, i.e. the
-# reverse complement of the plus-strand text every ZFN doc and notebook still passes.
+# The right query in 5′→3′ orientation on its own strand, i.e. the reverse
+# complement of the CCR5 right half's published plus-strand genomic text.
 # Named so docs, warnings and tests cannot drift from each other.
 ZFN_CCR5_WORKING_RIGHT_HALF_SITE = "CTTTTGCAGTTT"
 
-# Deliberately enumerates the defects a user cannot notice from the output alone: a wrong
-# number that looks plausible is more dangerous than a crash, and the two "silent" entries
-# below (field inversion, orientation) both produce artifacts that read as successful runs.
 ZFN_EXPERIMENTAL_WARNING = (
-    "The ZFN module is EXPERIMENTAL and has known unfixed defects, tracked in "
+    "The ZFN module is EXPERIMENTAL; remaining integration and validation work is tracked in "
     f"{ZFN_EXPERIMENTAL_ISSUE_URL}. Do not use ZFN results for decisions without "
     "independent validation.\n"
-    "Wrong without saying so:\n"
-    "  * Half-site orientation. With the default require_opposite_strands=True the right "
-    "half-site must be supplied as the reverse complement of its published plus-strand "
-    "text. The CCR5 pair used throughout the docs (GTCATCCTCATC / AAACTGCAAAAG) therefore "
-    "matches nothing at all, including its own on-target site; pass "
+    "  * Supply each half-site 5′→3′ on its own strand. For CCR5, the right query is the "
+    "reverse complement of the published plus-strand text AAACTGCAAAAG; pass "
     f"--zfn-right-half-site {ZFN_CCR5_WORKING_RIGHT_HALF_SITE} instead.\n"
-    "  * FokI seed-region and polarity weighting are applied at the wrong end of the right "
-    "half-site, so the strict seed budget guards the bases farthest from FokI rather than "
-    "the nearest.\n"
-    "  * Off-target region classification can report a site inside a large containing gene "
-    "as 'intergenic', so the exonic/promoter tallies behind the pass/fail filters "
-    "undercount and a pair can PASS filters it should fail.\n"
-    "  * worst_site_score and best_offtarget_score are inverted in every exported "
-    "artifact: worst_site_score holds the minimum and best_offtarget_score the maximum "
-    "site score, but among off-targets the highest-scoring site is the most dangerous one.\n"
-    "Fails loudly:\n"
-    "  * The default pyahocorasick backend rejects --zfn-max-mismatches 4 on a 12 bp "
-    "half-site (5,498,165 candidate patterns against a 1,000,000 safety limit) and raises "
-    "ValueError. Use --zfn-search-backend exhaustive_python for mismatch budgets above 3."
+    "  * New worst_site_score is the maximum (highest risk), best_offtarget_score the "
+    "minimum. Older v1 artifacts used inverted values and need regeneration.\n"
+    "  * pyahocorasick now supports canonical 12 bp / 4-mismatch searches. Highly "
+    "degenerate inputs can still exceed the pattern safety limit and raise ValueError; "
+    "exhaustive_python remains the comparison baseline.\n"
+    "  * The public workflow still uses the in-process engine. Nextflow integration and "
+    "representative genomic validation remain incomplete."
 )
 
 _notice_emitted = False

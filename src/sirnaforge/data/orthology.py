@@ -29,10 +29,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import socket
 import ssl
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,20 @@ ORTHOLOGY_BUDGET_SECONDS = 60.0
 #: Provenance labels for :meth:`OrthologueMapping.summary`.
 SOURCE_COMPARA = "ensembl_compara"
 SOURCE_MAPPING_FILE = "ortholog_mapping_file"
+
+# Stable per-species outcome codes written to ``OrthologueMapping.summary``.
+REASON_ORTHOLOGUES_FOUND = "orthologues_found"
+REASON_NO_ORTHOLOGUE = "no_orthologue"
+REASON_UNRECOGNIZED_IDENTIFIER = "unrecognized_identifier"
+REASON_UNSUPPORTED_QUERY_SPECIES = "unsupported_query_species"
+REASON_UNSUPPORTED_TARGET_SPECIES = "unsupported_target_species"
+REASON_MAPPING_NOT_SUPPLIED = "mapping_not_supplied"
+REASON_BUDGET_EXHAUSTED = "budget_exhausted"
+REASON_TRANSPORT_ERROR = "transport_error"
+REASON_ERROR_RESPONSE = "error_response"
+REASON_HTTP_ERROR = "http_error"
+REASON_REQUEST_ERROR = "request_error"
+REASON_INVALID_RESPONSE = "invalid_response"
 
 #: A user-supplied mapping, keyed on the uppercased version-stripped query gene ID or symbol.
 OrthologTable = dict[str, dict[str, frozenset[str]]]
@@ -119,6 +134,7 @@ class OrthologueMapping:
     queried_gene_ids: frozenset[str] = frozenset()
     queried_symbols: frozenset[str] = frozenset()
     source: str | None = SOURCE_COMPARA
+    reasons_by_species: dict[str, str] = field(default_factory=dict)
 
     @property
     def all_gene_ids(self) -> frozenset[str]:
@@ -143,6 +159,7 @@ class OrthologueMapping:
             "unresolved_species": sorted(self.unresolved_species),
             "queried_gene_ids": sorted(self.queried_gene_ids),
             "queried_symbols": sorted(self.queried_symbols),
+            "reasons_by_species": dict(sorted(self.reasons_by_species.items())),
         }
         if self.source == SOURCE_COMPARA:
             record["orthologue_types"] = sorted(ORTHOLOGUE_TYPES)
@@ -268,6 +285,16 @@ def mapping_from_table(
         queried_gene_ids=frozenset(genes),
         queried_symbols=frozenset(symbols),
         source=SOURCE_MAPPING_FILE,
+        reasons_by_species={
+            species: (
+                REASON_ORTHOLOGUES_FOUND
+                if stated.get(species)
+                else REASON_NO_ORTHOLOGUE
+                if species in resolved
+                else REASON_MAPPING_NOT_SUPPLIED
+            )
+            for species in sorted(wanted)
+        },
     )
 
 
@@ -335,11 +362,13 @@ async def resolve_orthologues(
             resolved_species=frozenset(),
             unresolved_species=frozenset(wanted),
             source=None,
+            reasons_by_species=dict.fromkeys(sorted(wanted), REASON_UNSUPPORTED_QUERY_SPECIES),
         )
 
     by_species: dict[str, set[str]] = {}
     resolved: set[str] = set()
     unresolved: set[str] = set()
+    reasons: dict[str, str] = {}
     deadline = time.monotonic() + budget if budget else None
 
     async with ensembl_session(session, timeout) as active:
@@ -348,6 +377,7 @@ async def resolve_orthologues(
             if target_slug is None:
                 logger.warning("Orthology lookup skipped for unregistered target species %r", species)
                 unresolved.add(species)
+                reasons[species] = REASON_UNSUPPORTED_TARGET_SPECIES
                 continue
             if _budget_spent(deadline):
                 logger.warning(
@@ -356,13 +386,19 @@ async def resolve_orthologues(
                     species,
                 )
                 unresolved.add(species)
+                reasons[species] = REASON_BUDGET_EXHAUSTED
                 continue
 
             # ID route first; the symbol route only if it resolved nothing.
-            found, failed = await _lookup_route(
-                active, "id", sorted(genes), query_slug, target_slug, base_url, timeout, species, deadline
+            id_outcome = (
+                await _lookup_route(
+                    active, "id", sorted(genes), query_slug, target_slug, base_url, timeout, species, deadline
+                )
+                if genes
+                else None
             )
-            if not found and symbols:
+            outcome = id_outcome
+            if (id_outcome is None or not id_outcome.found) and symbols:
                 logger.info(
                     "No %s orthologue from gene IDs %s; retrying on symbol(s) %s "
                     "(an input FASTA supplies transcript IDs, which Compara answers with an empty 200)",
@@ -370,19 +406,30 @@ async def resolve_orthologues(
                     sorted(genes) or "<none>",
                     sorted(symbols),
                 )
-                symbol_found, symbol_failed = await _lookup_route(
+                symbol_outcome = await _lookup_route(
                     active, "symbol", sorted(symbols), query_slug, target_slug, base_url, timeout, species, deadline
                 )
-                found |= symbol_found
-                failed = failed or symbol_failed
+                # The symbol route is the intended fallback for unrecognized transcript or gene IDs.
+                outcome = symbol_outcome
 
-            if failed and not found:
+            if outcome is None:
                 unresolved.add(species)
+                reasons[species] = REASON_UNRECOGNIZED_IDENTIFIER
+                continue
+            if outcome.found:
+                resolved.add(species)
+                by_species[species] = outcome.found
+                reasons[species] = REASON_ORTHOLOGUES_FOUND
+                logger.info("Resolved %d %s orthologue gene ID(s) for the query gene", len(outcome.found), species)
+                continue
+            failure_reason = _outcome_failure_reason(outcome)
+            if failure_reason:
+                unresolved.add(species)
+                reasons[species] = failure_reason
                 continue
             resolved.add(species)
-            if found:
-                by_species[species] = found
-            logger.info("Resolved %d %s orthologue gene ID(s) for the query gene", len(found), species)
+            reasons[species] = REASON_NO_ORTHOLOGUE
+            logger.info("Resolved no %s orthologue for the query gene", species)
 
     return OrthologueMapping(
         gene_ids_by_species={s: frozenset(g) for s, g in by_species.items()},
@@ -390,7 +437,72 @@ async def resolve_orthologues(
         unresolved_species=frozenset(unresolved),
         queried_gene_ids=frozenset(genes),
         queried_symbols=frozenset(symbols),
+        reasons_by_species=reasons,
     )
+
+
+@dataclass
+class _RouteOutcome:
+    """Evidence accumulated across identifiers on one Compara route."""
+
+    found: set[str] = field(default_factory=set)
+    valid_records: bool = False
+    reasons: set[str] = field(default_factory=set)
+
+
+def _outcome_failure_reason(outcome: _RouteOutcome) -> str | None:
+    """Return the stable unresolved reason, or None for a valid checked absence."""
+    if not outcome.valid_records and not outcome.reasons:
+        return REASON_UNRECOGNIZED_IDENTIFIER
+    priority = (
+        REASON_BUDGET_EXHAUSTED,
+        REASON_TRANSPORT_ERROR,
+        REASON_ERROR_RESPONSE,
+        REASON_HTTP_ERROR,
+        REASON_REQUEST_ERROR,
+        REASON_INVALID_RESPONSE,
+        REASON_UNRECOGNIZED_IDENTIFIER,
+    )
+    return next((reason for reason in priority if reason in outcome.reasons), None)
+
+
+def _request_failure_reason(error: Exception) -> str:
+    """Classify failed requests without treating them as evidence of orthologue absence."""
+    message = str(error).lower()
+    if "http 404" in message:
+        return REASON_UNRECOGNIZED_IDENTIFIER
+    if _is_unreachable(error) or "timeout" in message or "connection failed" in message:
+        return REASON_TRANSPORT_ERROR
+    if re.search(r"\b(?:http\s*)?[45]\d{2}\b", message):
+        return REASON_HTTP_ERROR
+    return REASON_REQUEST_ERROR
+
+
+def _valid_homology_records(payload: Any) -> tuple[set[str], bool, str | None]:
+    """Return IDs and whether payload includes valid query records.
+
+    An empty ``data`` array means Compara did not recognize the query. A no-orthologue
+    result requires at least one well-formed query record with an explicit homologies list.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return set(), False, REASON_INVALID_RESPONSE
+    records = payload["data"]
+    if not records:
+        return set(), False, REASON_UNRECOGNIZED_IDENTIFIER
+    valid_records = False
+    invalid = False
+    ids: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            invalid = True
+            continue
+        homologies = record.get("homologies")
+        if not isinstance(homologies, list):
+            invalid = True
+            continue
+        valid_records = True
+        ids |= _orthologue_ids({"data": [record]})
+    return ids, valid_records, REASON_INVALID_RESPONSE if invalid else None
 
 
 async def _lookup_route(
@@ -403,35 +515,46 @@ async def _lookup_route(
     timeout: int,
     species: str,
     deadline: float | None = None,
-) -> tuple[set[str], bool]:
-    """Query one Compara route for every identifier, returning (orthologue gene IDs, any failure).
+) -> _RouteOutcome:
+    """Query one Compara route for every identifier and preserve response quality.
 
     ``route`` is ``id`` or ``symbol`` -- the two ``/homology/{route}/{species}/{identifier}`` forms.
     ``target_species`` must be the Ensembl slug: ``mouse`` is rejected, ``mus_musculus`` works.
     ``;`` and ``&`` are both accepted as separators (verified live); ``&`` is the conventional form.
     """
-    found: set[str] = set()
-    failed = False
+    outcome = _RouteOutcome()
     for identifier in identifiers:
         if _budget_spent(deadline):
             logger.warning("Orthology budget spent before the %s route reached %s -> %s", route, identifier, species)
-            failed = True
+            outcome.reasons.add(REASON_BUDGET_EXHAUSTED)
             continue
         url = (
             f"{base_url}/homology/{route}/{query_slug}/{identifier}"
             f"?target_species={target_slug}&type=orthologues&format=condensed"
         )
         try:
-            payload = await _request_homologies(session, url, timeout, deadline=deadline)
+            response = await _request_homologies(session, url, timeout, deadline=deadline)
         except Exception as exc:  # noqa: BLE001 - degrade to the heuristic, never fail the screen
             logger.warning("Orthology %s lookup failed for %s -> %s: %s", route, identifier, species, exc)
-            failed = True
+            outcome.reasons.add(REASON_BUDGET_EXHAUSTED if _budget_spent(deadline) else _request_failure_reason(exc))
             continue
-        if payload is None:
-            failed = True
+        if response.reason:
+            outcome.reasons.add(response.reason)
             continue
-        found |= _orthologue_ids(payload)
-    return found, failed
+        ids, valid_records, reason = _valid_homology_records(response.payload)
+        outcome.found |= ids
+        outcome.valid_records |= valid_records
+        if reason:
+            outcome.reasons.add(reason)
+    return outcome
+
+
+@dataclass(frozen=True)
+class _HomologyResponse:
+    """A decoded response or a stable failure classification from the request helper."""
+
+    payload: Any | None = None
+    reason: str | None = None
 
 
 async def _request_homologies(
@@ -441,7 +564,7 @@ async def _request_homologies(
     attempts: int = ENSEMBL_MAX_ATTEMPTS,
     *,
     deadline: float | None = None,
-) -> Any | None:
+) -> _HomologyResponse:
     """One homology request, retrying Compara's two transient failure shapes.
 
     This endpoint intermittently fails a perfectly valid query, and does so in two ways that the
@@ -464,23 +587,28 @@ async def _request_homologies(
     turned an instant certificate rejection into a 6.3s per-route stall.
 
     Returns:
-        The decoded payload, or None when every attempt failed.
+        The decoded payload or a stable failure reason.
 
     Raises:
         Exception: The last transport error, when every attempt raised.
     """
     last_error: Exception | None = None
+    error_response = False
     for attempt in range(1, attempts + 1):
         reason: str
         try:
             payload = await ensembl_request_json(
                 session, "GET", url, headers={"Accept": "application/json"}, retry_cap=timeout
             )
+            if payload is None:
+                return _HomologyResponse(reason=REASON_UNRECOGNIZED_IDENTIFIER)
             if not (isinstance(payload, dict) and payload.get("error")):
-                return payload
+                return _HomologyResponse(payload=payload)
             reason = f"HTTP 200 with an error body: {payload['error']}"
+            error_response = True
         except Exception as exc:  # noqa: BLE001 - both shapes are retried; see the docstring
             last_error = exc
+            error_response = False
             reason = f"{type(exc).__name__}: {exc}"
 
         logger.warning("Compara lookup attempt %d/%d failed (%s) for %s", attempt, attempts, reason, url)
@@ -494,9 +622,11 @@ async def _request_homologies(
             break
         await asyncio.sleep(min(2.0 * attempt, float(timeout)))
 
+    if error_response:
+        return _HomologyResponse(reason=REASON_ERROR_RESPONSE)
     if last_error is not None:
         raise last_error
-    return None
+    return _HomologyResponse(reason=REASON_ERROR_RESPONSE)
 
 
 def _orthologue_ids(payload: Any) -> set[str]:

@@ -1,0 +1,351 @@
+{
+  "kind": "bwa_comparison",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "c7734f395f5bbd7b16c2872665a49513a1e601b6"
+  },
+  "session": "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa",
+  "threads": 1,
+  "mem3_mode": "compat",
+  "repetitions": 3,
+  "cache_state": "fresh per-backend index; OS page cache uncontrolled; alignment repeats reuse index",
+  "inputs": {
+    "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/reference.fasta": "472eb4f67f1248482965dec82f67f17947d19fb3423578a60bdf2ddb95616b8a",
+    "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta": "90b0b24ce80b08c2c46dd54f18fc32bab4115fe7aca68e1bbb59f99a6c907613"
+  },
+  "backends": {
+    "mem2": {
+      "path": "/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2",
+      "binary_sha256": "0582bdc561211abbbd5ac8a114fb25f692f02dc10e0bbeee41bd5d31f87c0a0d",
+      "version": {
+        "command": [
+          "/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2",
+          "version"
+        ],
+        "timeout_seconds": 120.0,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "2.2.1\n",
+        "stderr": "Looking to launch executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\", simd = .avx2\nLaunching executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\"\n",
+        "cpu_user_seconds": 0.0,
+        "cpu_system_seconds": 0.0,
+        "peak_rss_kib": 3968,
+        "wall_seconds": 1.006947912999749
+      },
+      "index": {
+        "command": [
+          "/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2",
+          "index",
+          "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta"
+        ],
+        "timeout_seconds": 120.0,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "ref_seq_len = 812\ncount = 0, 234, 406, 578, 812\nBWT[423] = 4\nCP_SHIFT = 6, CP_MASK = 63\nsizeof CP_OCC = 64\nmax_occ_ind = 12\n",
+        "stderr": "Looking to launch executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\", simd = .avx2\nLaunching executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\"\n[bwa_index] Pack FASTA... 0.00 sec\n* Entering FMI_search\ninit ticks = 650104\nref seq len = 812\nbinary seq ticks = 76988\nbuild suffix-array ticks = 205314\npos: 102, ref_seq_len__: 101\nbuild fm-index ticks = 782648\nTotal time taken: 0.0142\n",
+        "cpu_user_seconds": 0.0,
+        "cpu_system_seconds": 0.0,
+        "peak_rss_kib": 4480,
+        "wall_seconds": 1.0214037410005403
+      },
+      "index_members": {
+        "reference.fasta.0123": {
+          "bytes": 812,
+          "sha256": "d0e9dfa5c8225188f688702a852e5c89d04d5d77af9a6ea4fa4a19ffb06d5f54"
+        },
+        "reference.fasta.amb": {
+          "bytes": 8,
+          "sha256": "eb3d9c71942d30d3982d32b3f65b982e1d64cdee0b048db5dfdffb810a40b5ca"
+        },
+        "reference.fasta.ann": {
+          "bytes": 61,
+          "sha256": "775e8cc4f0cb72db333bebe36c0561239b20b1891217cfbd5ef0d299cbe32367"
+        },
+        "reference.fasta.bwt.2bit.64": {
+          "bytes": 1398,
+          "sha256": "4b61bc337abee6d73cf6302f6c8ab93cdc107d65d4a77a6b32995b93e1825d29"
+        },
+        "reference.fasta.pac": {
+          "bytes": 103,
+          "sha256": "2ab681669ba1587e5bfbd8b0206b9c51d9a125f166ce961f18ea377f31fd7de5"
+        }
+      },
+      "alignments": [
+        {
+          "command": [
+            "/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2",
+            "mem",
+            "-t",
+            "1",
+            "-a",
+            "-k",
+            "12",
+            "-T",
+            "15",
+            "-w",
+            "100",
+            "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta",
+            "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta"
+          ],
+          "timeout_seconds": 120.0,
+          "status": "ok",
+          "returncode": 0,
+          "stdout": "",
+          "stderr": "Looking to launch executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\", simd = .avx2\nLaunching executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\"\n-----------------------------\nExecuting in AVX2 mode!!\n-----------------------------\n* SA compression enabled with xfactor: 8\n* Ref file: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Entering FMI_search\n* Index file found. Loading index from /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta.bwt.2bit.64\n* Reference seq len for bi-index = 813\n* sentinel-index: 423\n* Count:\n0,\t1\n1,\t235\n2,\t407\n3,\t579\n4,\t813\n\n* Reading other elements of the index from files /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Index prefix: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Read 0 ALT contigs\n* Done reading Index!!\n* Reading reference genome..\n* Binary seq file = /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta.0123\n* Reference genome size: 812 bp\n* Done reading reference genome !!\n\n------------------------------------------\n1. Memory pre-allocation for Chaining: 139.3584 MB\n2. Memory pre-allocation for BSW: 239.6170 MB\n3. Memory pre-allocation for BWT: 77.3142 MB\n------------------------------------------\n* Threads used (compute): 1\n* No. of pipeline threads: 2\n\n[0000] read_chunk: 10000000, work_chunk_size: 256, nseq: 12\n\t[0000][ M::kt_pipeline] read 12 sequences (256 bp)...\n[0000] Calling mem_process_seqs.., task: 0\n[0000] 1. Calling kt_for - worker_bwt\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] 2. Calling kt_for - worker_aln\n[0000] 3. Calling kt_for - worker_sam\n\t[0000][ M::mem_process_seqs] Processed 12 reads in 0.000 CPU sec, 0.001 real sec\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] Computation ends..\nNo. of OMP threads: 1\nProcessor is running @3832.603579 MHz\nRuntime profile:\n\n\tTime taken for main_mem function: 0.00 sec\n\n\tIO times (sec) :\n\tReading IO time (reads) avg: 0.00, (0.00, 0.00)\n\tWriting IO time (SAM) avg: 0.00, (0.00, 0.00)\n\tReading IO time (Reference Genome) avg: 0.00, (0.00, 0.00)\n\tIndex read time avg: 0.00, (0.00, 0.00)\n\n\tOverall time (sec) (Excluding Index reading time):\n\tPROCESS() (Total compute time + (read + SAM) IO time) : 0.00\n\tMEM_PROCESS_SEQ() (Total compute time (Kernel + SAM)), avg: 0.00, (0.00, 0.00)\n\n\t SAM Processing time (sec):\n\t--WORKER_SAM avg: 0.00, (0.00, 0.00)\n\n\tKernels' compute time (sec):\n\tTotal kernel (smem+sal+bsw) time avg: 0.00, (0.00, 0.00)\n\t\tSMEM compute avg: 0.00, (0.00, 0.00)\n\t\tSAL compute avg: 0.00, (0.00, 0.00)\n\t\t\t\tMEM_SA avg: 0.00, (0.00, 0.00)\n\n\t\tBSW time, avg: 0.00, (0.00, 0.00)\n\nImportant parameter settings: \n\tBATCH_SIZE: 512\n\tMAX_SEQ_LEN_REF: 256\n\tMAX_SEQ_LEN_QER: 128\n\tMAX_SEQ_LEN8: 128\n\tSEEDS_PER_READ: 500\n\tSIMD_WIDTH8 X: 32\n\tSIMD_WIDTH16 X: 16\n\tAVG_SEEDS_PER_READ: 64\n",
+          "cpu_user_seconds": 0.0,
+          "cpu_system_seconds": 0.0,
+          "peak_rss_kib": 5120,
+          "wall_seconds": 1.0106775870008278
+        },
+        {
+          "command": [
+            "/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2",
+            "mem",
+            "-t",
+            "1",
+            "-a",
+            "-k",
+            "12",
+            "-T",
+            "15",
+            "-w",
+            "100",
+            "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta",
+            "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta"
+          ],
+          "timeout_seconds": 120.0,
+          "status": "ok",
+          "returncode": 0,
+          "stdout": "",
+          "stderr": "Looking to launch executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\", simd = .avx2\nLaunching executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\"\n-----------------------------\nExecuting in AVX2 mode!!\n-----------------------------\n* SA compression enabled with xfactor: 8\n* Ref file: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Entering FMI_search\n* Index file found. Loading index from /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta.bwt.2bit.64\n* Reference seq len for bi-index = 813\n* sentinel-index: 423\n* Count:\n0,\t1\n1,\t235\n2,\t407\n3,\t579\n4,\t813\n\n* Reading other elements of the index from files /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Index prefix: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Read 0 ALT contigs\n* Done reading Index!!\n* Reading reference genome..\n* Binary seq file = /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta.0123\n* Reference genome size: 812 bp\n* Done reading reference genome !!\n\n------------------------------------------\n1. Memory pre-allocation for Chaining: 139.3584 MB\n2. Memory pre-allocation for BSW: 239.6170 MB\n3. Memory pre-allocation for BWT: 77.3142 MB\n------------------------------------------\n* Threads used (compute): 1\n* No. of pipeline threads: 2\n\n[0000] read_chunk: 10000000, work_chunk_size: 256, nseq: 12\n\t[0000][ M::kt_pipeline] read 12 sequences (256 bp)...\n[0000] Calling mem_process_seqs.., task: 0\n[0000] 1. Calling kt_for - worker_bwt\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] 2. Calling kt_for - worker_aln\n[0000] 3. Calling kt_for - worker_sam\n\t[0000][ M::mem_process_seqs] Processed 12 reads in 0.000 CPU sec, 0.001 real sec\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] Computation ends..\nNo. of OMP threads: 1\nProcessor is running @3834.886926 MHz\nRuntime profile:\n\n\tTime taken for main_mem function: 0.00 sec\n\n\tIO times (sec) :\n\tReading IO time (reads) avg: 0.00, (0.00, 0.00)\n\tWriting IO time (SAM) avg: 0.00, (0.00, 0.00)\n\tReading IO time (Reference Genome) avg: 0.00, (0.00, 0.00)\n\tIndex read time avg: 0.00, (0.00, 0.00)\n\n\tOverall time (sec) (Excluding Index reading time):\n\tPROCESS() (Total compute time + (read + SAM) IO time) : 0.00\n\tMEM_PROCESS_SEQ() (Total compute time (Kernel + SAM)), avg: 0.00, (0.00, 0.00)\n\n\t SAM Processing time (sec):\n\t--WORKER_SAM avg: 0.00, (0.00, 0.00)\n\n\tKernels' compute time (sec):\n\tTotal kernel (smem+sal+bsw) time avg: 0.00, (0.00, 0.00)\n\t\tSMEM compute avg: 0.00, (0.00, 0.00)\n\t\tSAL compute avg: 0.00, (0.00, 0.00)\n\t\t\t\tMEM_SA avg: 0.00, (0.00, 0.00)\n\n\t\tBSW time, avg: 0.00, (0.00, 0.00)\n\nImportant parameter settings: \n\tBATCH_SIZE: 512\n\tMAX_SEQ_LEN_REF: 256\n\tMAX_SEQ_LEN_QER: 128\n\tMAX_SEQ_LEN8: 128\n\tSEEDS_PER_READ: 500\n\tSIMD_WIDTH8 X: 32\n\tSIMD_WIDTH16 X: 16\n\tAVG_SEEDS_PER_READ: 64\n",
+          "cpu_user_seconds": 0.0,
+          "cpu_system_seconds": 0.0,
+          "peak_rss_kib": 5120,
+          "wall_seconds": 1.0091228020028211
+        },
+        {
+          "command": [
+            "/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2",
+            "mem",
+            "-t",
+            "1",
+            "-a",
+            "-k",
+            "12",
+            "-T",
+            "15",
+            "-w",
+            "100",
+            "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta",
+            "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta"
+          ],
+          "timeout_seconds": 120.0,
+          "status": "ok",
+          "returncode": 0,
+          "stdout": "",
+          "stderr": "Looking to launch executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\", simd = .avx2\nLaunching executable \"/tmp/sirnaforge-aligners/mem2/bwa-mem2-2.2.1_x64-linux/bwa-mem2.avx2\"\n-----------------------------\nExecuting in AVX2 mode!!\n-----------------------------\n* SA compression enabled with xfactor: 8\n* Ref file: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Entering FMI_search\n* Index file found. Loading index from /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta.bwt.2bit.64\n* Reference seq len for bi-index = 813\n* sentinel-index: 423\n* Count:\n0,\t1\n1,\t235\n2,\t407\n3,\t579\n4,\t813\n\n* Reading other elements of the index from files /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Index prefix: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta\n* Read 0 ALT contigs\n* Done reading Index!!\n* Reading reference genome..\n* Binary seq file = /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem2/reference.fasta.0123\n* Reference genome size: 812 bp\n* Done reading reference genome !!\n\n------------------------------------------\n1. Memory pre-allocation for Chaining: 139.3584 MB\n2. Memory pre-allocation for BSW: 239.6170 MB\n3. Memory pre-allocation for BWT: 77.3142 MB\n------------------------------------------\n* Threads used (compute): 1\n* No. of pipeline threads: 2\n\n[0000] read_chunk: 10000000, work_chunk_size: 256, nseq: 12\n\t[0000][ M::kt_pipeline] read 12 sequences (256 bp)...\n[0000] Calling mem_process_seqs.., task: 0\n[0000] 1. Calling kt_for - worker_bwt\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] 2. Calling kt_for - worker_aln\n[0000] 3. Calling kt_for - worker_sam\n\t[0000][ M::mem_process_seqs] Processed 12 reads in 0.000 CPU sec, 0.001 real sec\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] Computation ends..\nNo. of OMP threads: 1\nProcessor is running @3836.645919 MHz\nRuntime profile:\n\n\tTime taken for main_mem function: 0.00 sec\n\n\tIO times (sec) :\n\tReading IO time (reads) avg: 0.00, (0.00, 0.00)\n\tWriting IO time (SAM) avg: 0.00, (0.00, 0.00)\n\tReading IO time (Reference Genome) avg: 0.00, (0.00, 0.00)\n\tIndex read time avg: 0.00, (0.00, 0.00)\n\n\tOverall time (sec) (Excluding Index reading time):\n\tPROCESS() (Total compute time + (read + SAM) IO time) : 0.00\n\tMEM_PROCESS_SEQ() (Total compute time (Kernel + SAM)), avg: 0.00, (0.00, 0.00)\n\n\t SAM Processing time (sec):\n\t--WORKER_SAM avg: 0.00, (0.00, 0.00)\n\n\tKernels' compute time (sec):\n\tTotal kernel (smem+sal+bsw) time avg: 0.00, (0.00, 0.00)\n\t\tSMEM compute avg: 0.00, (0.00, 0.00)\n\t\tSAL compute avg: 0.00, (0.00, 0.00)\n\t\t\t\tMEM_SA avg: 0.00, (0.00, 0.00)\n\n\t\tBSW time, avg: 0.00, (0.00, 0.00)\n\nImportant parameter settings: \n\tBATCH_SIZE: 512\n\tMAX_SEQ_LEN_REF: 256\n\tMAX_SEQ_LEN_QER: 128\n\tMAX_SEQ_LEN8: 128\n\tSEEDS_PER_READ: 500\n\tSIMD_WIDTH8 X: 32\n\tSIMD_WIDTH16 X: 16\n\tAVG_SEEDS_PER_READ: 64\n",
+          "cpu_user_seconds": 0.0,
+          "cpu_system_seconds": 0.0,
+          "peak_rss_kib": 5248,
+          "wall_seconds": 1.0098686619967339
+        }
+      ],
+      "query_membership": {
+        "complete": true,
+        "missing": [],
+        "unexpected": []
+      },
+      "exact_match_oracle": {
+        "equal": true,
+        "expected_count": 18,
+        "observed_count": 18,
+        "missing": [],
+        "unexpected": [],
+        "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+      },
+      "status": "ok",
+      "wall_summary": {
+        "median": 1.0098686619967339,
+        "min": 1.0091228020028211,
+        "max": 1.0106775870008278,
+        "samples": 3
+      }
+    },
+    "mem3": {
+      "path": "/tmp/sirnaforge-aligners/mem3/bwa-mem3-0.15.0/bwa-mem3",
+      "binary_sha256": "ce7e3c21aa3f8e4985d9ff6f896ec3a5ce22363395577cd5e4e966bf22d6ae3b",
+      "version": {
+        "command": [
+          "/tmp/sirnaforge-aligners/mem3/bwa-mem3-0.15.0/bwa-mem3",
+          "version"
+        ],
+        "timeout_seconds": 120.0,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "0.15.0\nCompiler: gcc 13.3.0\nSIMD floor: avx2 (x86-64-v3, Haswell 2013+); kernels: sse41 sse42 avx avx2 avx512bw\nSIMD runtime: avx2 (BWAMEM3_FORCE_TIER unset)\nmimalloc 3.3.0 (active)\n",
+        "stderr": "",
+        "cpu_user_seconds": 0.0,
+        "cpu_system_seconds": 0.0,
+        "peak_rss_kib": 10116,
+        "wall_seconds": 0.014305502998468
+      },
+      "index": {
+        "command": [
+          "/tmp/sirnaforge-aligners/mem3/bwa-mem3-0.15.0/bwa-mem3",
+          "index",
+          "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta"
+        ],
+        "timeout_seconds": 120.0,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "[bwa_index] --max-memory = 24.8 GiB (auto: 26.8 GiB detected less a reserve, cgroup-aware)\n[bwa_index] -t = 12 (auto: detected cores, cgroup-aware)\n[bwa_index] Pack FASTA... 0.00 sec\n* Entering FMI_search\n[libsais_build] N=812 threads=1 (user-requested=12)\n[libsais_build] estimate ~6504 B (budget 24.8 GiB)\n[libsais_build] phase 0 (doubled-pac + count) 0.00s\n[libsais_build] phase 1 (unpack 813 bases) 0.00s\n[libsais_build] phase 2 (libsais_gsa) 0.00s\n[libsais_build] phase 3 (streaming FM-index write) 0.00s, sentinel_index=423; total 0.00s\nTotal time taken: 0.0180\n",
+        "cpu_user_seconds": 0.0,
+        "cpu_system_seconds": 0.0,
+        "peak_rss_kib": 12808,
+        "wall_seconds": 0.0344887640021625
+      },
+      "index_members": {
+        "reference.fasta.amb": {
+          "bytes": 8,
+          "sha256": "eb3d9c71942d30d3982d32b3f65b982e1d64cdee0b048db5dfdffb810a40b5ca"
+        },
+        "reference.fasta.ann": {
+          "bytes": 61,
+          "sha256": "775e8cc4f0cb72db333bebe36c0561239b20b1891217cfbd5ef0d299cbe32367"
+        },
+        "reference.fasta.bwt.2bit.64": {
+          "bytes": 1406,
+          "sha256": "266a816096a554aed1d0749627afe3807afc9a4edb43163be54b75e183fd5021"
+        },
+        "reference.fasta.pac": {
+          "bytes": 103,
+          "sha256": "2ab681669ba1587e5bfbd8b0206b9c51d9a125f166ce961f18ea377f31fd7de5"
+        }
+      },
+      "alignments": [
+        {
+          "command": [
+            "/tmp/sirnaforge-aligners/mem3/bwa-mem3-0.15.0/bwa-mem3",
+            "mem",
+            "--compat=bwa-mem2",
+            "-t",
+            "1",
+            "-a",
+            "-k",
+            "12",
+            "-T",
+            "15",
+            "-w",
+            "100",
+            "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta",
+            "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta"
+          ],
+          "timeout_seconds": 120.0,
+          "status": "ok",
+          "returncode": 0,
+          "stdout": "",
+          "stderr": "-----------------------------\nExecuting in avx2 mode!!\n-----------------------------\n[M::main] mimalloc purge delay: -1 ms (-1 = never purge; set MIMALLOC_PURGE_DELAY to override)\n* Ref file: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Entering FMI_search\n* Index file found. Loading index from /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta.bwt.2bit.64\n* Reference seq len for bi-index = 813\n* sentinel-index: 423\n* Count:\n0,\t1\n1,\t235\n2,\t407\n3,\t579\n4,\t813\n\n* Reading other elements of the index from files /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Index prefix: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Read 0 ALT contigs\n* Done reading Index!!\n* SA compression enabled with xfactor: 8\n[M::main_mem] phase-2 SMEM lockstep width: 16 (width source: default)\n[M::main_mem] third-pass bwtseed lockstep: on (default), width 24 (width source: default), threads 1\n* pac-fetch: reference `.0123` not loaded; unpacking original bases from .pac on demand\n------------------------------------------\n1. Memory pre-allocation for Chaining: 1.0691 MB\n   per-thread chaining scratch: 1.0691 MB (1 threads)\n2. Memory pre-allocation for BSW: 32.2447 MB\n3. Memory pre-allocation for BWT (lazy SMEM buffers, 2176 B fixed): 0.0022 MB\n------------------------------------------\n* Threads used (compute): 1\n* No. of pipeline threads: 1\n\n[0000] read_chunk: 10000000, slice: 5000000, work_chunk_size: 256, nseq: 12\n\t[0000][ M::kt_pipeline] read 12 sequences (256 bp)...\n[0000] Reallocating initial memory allocations!!\n[0000] Calling mem_process_seqs.., task: 0\n[0000] 1. Calling kt_for - worker_bwt_aln (fused)\n[0000] 3. Calling kt_for - worker_sam\n\t[0000][ M::mem_process_seqs] Processed 12 reads in 0.013 CPU sec, 0.032 real sec\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] Computation ends..\nNo. of OMP threads: 1\nProcessor is running @3836.227781 MHz\nRuntime profile:\n\n\tTime taken for main_mem function: 0.07 sec\n\n\tIO times (sec) :\n\tReading IO time (reads) avg: 0.00, (0.00, 0.00)\n\tWriting IO time (SAM) avg: 0.00, (0.00, 0.00)\n\tReading IO time (Reference Genome) avg: 0.00, (0.00, 0.00)\n\tIndex read time avg: 0.00, (0.00, 0.00)\n\n\tOverall time (sec) (Excluding Index reading time):\n\tPROCESS() (Total compute time + (read + SAM) IO time) : 0.07\n\tMEM_PROCESS_SEQ() (Total compute time (Kernel + SAM)), avg: 0.03, (0.03, 0.03)\n\n\t SAM Processing time (sec):\n\t--WORKER_SAM avg: 0.00, (0.00, 0.00)\n\n\tKernels' compute time (sec):\n\tTotal kernel (smem+sal+bsw) time avg: 0.03, (0.03, 0.03)\n\t\tSMEM compute avg: 0.00, (0.00, 0.00)\n\t\tMEM_CHAIN avg: 0.01, (0.01, 0.01)\n\t\tSAL compute avg: 0.00, (0.00, 0.00)\n\t\t\t\tMEM_SA avg: 0.00, (0.00, 0.00)\n\n\t\tBSW time, avg: 0.01, (0.01, 0.01)\n\nImportant parameter settings: \n\tBATCH_SIZE: 512\n\tMAX_SEQ_LEN_REF: 256\n\tMAX_SEQ_LEN_QER: 128\n\tMAX_SEQ_LEN8: 1088\n\tSEEDS_PER_READ: 500\n\tAVG_SEEDS_PER_READ: 64\n",
+          "cpu_user_seconds": 0.0,
+          "cpu_system_seconds": 0.04,
+          "peak_rss_kib": 52072,
+          "wall_seconds": 0.08782351199988625
+        },
+        {
+          "command": [
+            "/tmp/sirnaforge-aligners/mem3/bwa-mem3-0.15.0/bwa-mem3",
+            "mem",
+            "--compat=bwa-mem2",
+            "-t",
+            "1",
+            "-a",
+            "-k",
+            "12",
+            "-T",
+            "15",
+            "-w",
+            "100",
+            "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta",
+            "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta"
+          ],
+          "timeout_seconds": 120.0,
+          "status": "ok",
+          "returncode": 0,
+          "stdout": "",
+          "stderr": "-----------------------------\nExecuting in avx2 mode!!\n-----------------------------\n[M::main] mimalloc purge delay: -1 ms (-1 = never purge; set MIMALLOC_PURGE_DELAY to override)\n* Ref file: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Entering FMI_search\n* Index file found. Loading index from /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta.bwt.2bit.64\n* Reference seq len for bi-index = 813\n* sentinel-index: 423\n* Count:\n0,\t1\n1,\t235\n2,\t407\n3,\t579\n4,\t813\n\n* Reading other elements of the index from files /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Index prefix: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Read 0 ALT contigs\n* Done reading Index!!\n* SA compression enabled with xfactor: 8\n[M::main_mem] phase-2 SMEM lockstep width: 16 (width source: default)\n[M::main_mem] third-pass bwtseed lockstep: on (default), width 24 (width source: default), threads 1\n* pac-fetch: reference `.0123` not loaded; unpacking original bases from .pac on demand\n------------------------------------------\n1. Memory pre-allocation for Chaining: 1.0691 MB\n   per-thread chaining scratch: 1.0691 MB (1 threads)\n2. Memory pre-allocation for BSW: 32.2447 MB\n3. Memory pre-allocation for BWT (lazy SMEM buffers, 2176 B fixed): 0.0022 MB\n------------------------------------------\n* Threads used (compute): 1\n* No. of pipeline threads: 1\n\n[0000] read_chunk: 10000000, slice: 5000000, work_chunk_size: 256, nseq: 12\n\t[0000][ M::kt_pipeline] read 12 sequences (256 bp)...\n[0000] Reallocating initial memory allocations!!\n[0000] Calling mem_process_seqs.., task: 0\n[0000] 1. Calling kt_for - worker_bwt_aln (fused)\n[0000] 3. Calling kt_for - worker_sam\n\t[0000][ M::mem_process_seqs] Processed 12 reads in 0.003 CPU sec, 0.003 real sec\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] Computation ends..\nNo. of OMP threads: 1\nProcessor is running @3836.020577 MHz\nRuntime profile:\n\n\tTime taken for main_mem function: 0.01 sec\n\n\tIO times (sec) :\n\tReading IO time (reads) avg: 0.00, (0.00, 0.00)\n\tWriting IO time (SAM) avg: 0.00, (0.00, 0.00)\n\tReading IO time (Reference Genome) avg: 0.00, (0.00, 0.00)\n\tIndex read time avg: 0.00, (0.00, 0.00)\n\n\tOverall time (sec) (Excluding Index reading time):\n\tPROCESS() (Total compute time + (read + SAM) IO time) : 0.01\n\tMEM_PROCESS_SEQ() (Total compute time (Kernel + SAM)), avg: 0.00, (0.00, 0.00)\n\n\t SAM Processing time (sec):\n\t--WORKER_SAM avg: 0.00, (0.00, 0.00)\n\n\tKernels' compute time (sec):\n\tTotal kernel (smem+sal+bsw) time avg: 0.00, (0.00, 0.00)\n\t\tSMEM compute avg: 0.00, (0.00, 0.00)\n\t\tMEM_CHAIN avg: 0.00, (0.00, 0.00)\n\t\tSAL compute avg: 0.00, (0.00, 0.00)\n\t\t\t\tMEM_SA avg: 0.00, (0.00, 0.00)\n\n\t\tBSW time, avg: 0.00, (0.00, 0.00)\n\nImportant parameter settings: \n\tBATCH_SIZE: 512\n\tMAX_SEQ_LEN_REF: 256\n\tMAX_SEQ_LEN_QER: 128\n\tMAX_SEQ_LEN8: 1088\n\tSEEDS_PER_READ: 500\n\tAVG_SEEDS_PER_READ: 64\n",
+          "cpu_user_seconds": 0.0,
+          "cpu_system_seconds": 0.0,
+          "peak_rss_kib": 52000,
+          "wall_seconds": 0.022031451000657398
+        },
+        {
+          "command": [
+            "/tmp/sirnaforge-aligners/mem3/bwa-mem3-0.15.0/bwa-mem3",
+            "mem",
+            "--compat=bwa-mem2",
+            "-t",
+            "1",
+            "-a",
+            "-k",
+            "12",
+            "-T",
+            "15",
+            "-w",
+            "100",
+            "/tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta",
+            "/home/hovland/sirnaforge/sirnaforge/scripts/performance/fixtures/guides.fasta"
+          ],
+          "timeout_seconds": 120.0,
+          "status": "ok",
+          "returncode": 0,
+          "stdout": "",
+          "stderr": "-----------------------------\nExecuting in avx2 mode!!\n-----------------------------\n[M::main] mimalloc purge delay: -1 ms (-1 = never purge; set MIMALLOC_PURGE_DELAY to override)\n* Ref file: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Entering FMI_search\n* Index file found. Loading index from /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta.bwt.2bit.64\n* Reference seq len for bi-index = 813\n* sentinel-index: 423\n* Count:\n0,\t1\n1,\t235\n2,\t407\n3,\t579\n4,\t813\n\n* Reading other elements of the index from files /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Index prefix: /tmp/sirnaforge-aligner-review/bwa-review-xsd2bqsa/mem3/reference.fasta\n* Read 0 ALT contigs\n* Done reading Index!!\n* SA compression enabled with xfactor: 8\n[M::main_mem] phase-2 SMEM lockstep width: 16 (width source: default)\n[M::main_mem] third-pass bwtseed lockstep: on (default), width 24 (width source: default), threads 1\n* pac-fetch: reference `.0123` not loaded; unpacking original bases from .pac on demand\n------------------------------------------\n1. Memory pre-allocation for Chaining: 1.0691 MB\n   per-thread chaining scratch: 1.0691 MB (1 threads)\n2. Memory pre-allocation for BSW: 32.2447 MB\n3. Memory pre-allocation for BWT (lazy SMEM buffers, 2176 B fixed): 0.0022 MB\n------------------------------------------\n* Threads used (compute): 1\n* No. of pipeline threads: 1\n\n[0000] read_chunk: 10000000, slice: 5000000, work_chunk_size: 256, nseq: 12\n\t[0000][ M::kt_pipeline] read 12 sequences (256 bp)...\n[0000] Reallocating initial memory allocations!!\n[0000] Calling mem_process_seqs.., task: 0\n[0000] 1. Calling kt_for - worker_bwt_aln (fused)\n[0000] 3. Calling kt_for - worker_sam\n\t[0000][ M::mem_process_seqs] Processed 12 reads in 0.003 CPU sec, 0.003 real sec\n[0000] read_chunk: 10000000, work_chunk_size: 0, nseq: 0\n[0000] Computation ends..\nNo. of OMP threads: 1\nProcessor is running @3834.720610 MHz\nRuntime profile:\n\n\tTime taken for main_mem function: 0.01 sec\n\n\tIO times (sec) :\n\tReading IO time (reads) avg: 0.00, (0.00, 0.00)\n\tWriting IO time (SAM) avg: 0.00, (0.00, 0.00)\n\tReading IO time (Reference Genome) avg: 0.00, (0.00, 0.00)\n\tIndex read time avg: 0.00, (0.00, 0.00)\n\n\tOverall time (sec) (Excluding Index reading time):\n\tPROCESS() (Total compute time + (read + SAM) IO time) : 0.01\n\tMEM_PROCESS_SEQ() (Total compute time (Kernel + SAM)), avg: 0.00, (0.00, 0.00)\n\n\t SAM Processing time (sec):\n\t--WORKER_SAM avg: 0.00, (0.00, 0.00)\n\n\tKernels' compute time (sec):\n\tTotal kernel (smem+sal+bsw) time avg: 0.00, (0.00, 0.00)\n\t\tSMEM compute avg: 0.00, (0.00, 0.00)\n\t\tMEM_CHAIN avg: 0.00, (0.00, 0.00)\n\t\tSAL compute avg: 0.00, (0.00, 0.00)\n\t\t\t\tMEM_SA avg: 0.00, (0.00, 0.00)\n\n\t\tBSW time, avg: 0.00, (0.00, 0.00)\n\nImportant parameter settings: \n\tBATCH_SIZE: 512\n\tMAX_SEQ_LEN_REF: 256\n\tMAX_SEQ_LEN_QER: 128\n\tMAX_SEQ_LEN8: 1088\n\tSEEDS_PER_READ: 500\n\tAVG_SEEDS_PER_READ: 64\n",
+          "cpu_user_seconds": 0.0,
+          "cpu_system_seconds": 0.01,
+          "peak_rss_kib": 51964,
+          "wall_seconds": 0.020478655002079904
+        }
+      ],
+      "query_membership": {
+        "complete": true,
+        "missing": [],
+        "unexpected": []
+      },
+      "exact_match_oracle": {
+        "equal": true,
+        "expected_count": 18,
+        "observed_count": 18,
+        "missing": [],
+        "unexpected": [],
+        "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+      },
+      "status": "ok",
+      "wall_summary": {
+        "median": 0.022031451000657398,
+        "min": 0.020478655002079904,
+        "max": 0.08782351199988625,
+        "samples": 3
+      }
+    }
+  },
+  "decision": "defer",
+  "parity": {
+    "equal": true,
+    "left_records": 32,
+    "right_records": 32,
+    "left_only_count": 0,
+    "right_only_count": 0,
+    "left_only_sample": [],
+    "right_only_sample": [],
+    "reference_headers_equal": true
+  },
+  "limitations": [
+    "SAM parity alone does not prove exhaustive biological correctness or downstream gate parity.",
+    "Synthetic runtime is startup dominated; representative transcriptome panels remain required.",
+    "No cross-backend index reuse is attempted; format compatibility remains unproven."
+  ],
+  "reason": "Adoption requires representative benchmarks, downstream evidence/gate parity, and integration checks."
+}

@@ -246,6 +246,14 @@ class OffTargetFilterCriteria(BaseModel):
     max_transcriptome_seed_perfect: int | None = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
     )
+    max_transcript_seed_sites: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum canonical siRNA seed-complementary transcript sites across required transcript-seed species; "
+            "None disables the optional transcript-seed liability gate"
+        ),
+    )
 
     # miRNA off-target thresholds
     max_mirna_perfect_seed: int | None = Field(

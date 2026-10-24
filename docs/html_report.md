@@ -12,14 +12,76 @@ published and every gate comes from the run's own resolved policy, so the report
 the run it describes. A hit table without the classification columns is **refused** rather than
 rendered.
 
-The file works identically over `file://`, from a static web server, and inside the Quilt Catalog with
-permissive HTML rendering disabled -- which is the default, and which withholds the
-`allow-same-origin` sandbox token. There are no sidecar files, no external URLs, no `fetch`, no
-cookies and no browser storage. Reader state lives in memory and in the URL fragment. A test in
+The HTML file works identically over `file://`, from a static web server, and inside the Quilt Catalog
+with permissive HTML rendering disabled -- which is the default, and which withholds the
+`allow-same-origin` sandbox token. The current compact reader has no runtime sidecar dependencies,
+`fetch`, cookies or browser storage. Reader state lives in memory and in the URL fragment. The CLI
+also writes an external diagnostics JSON beside the HTML; the report itself does not load it. A test in
 `tests/unit/test_reporting_payload.py` enforces this by scanning the rendered document for any
 `http(s)://` URL, any non-inline `src`/`href`, and any of `fetch(`, `XMLHttpRequest`, `localStorage`,
 `sessionStorage` or `document.cookie` -- it is the report's core constraint and it does not get relaxed
 to accommodate a feature.
+
+## miRNA reference and screening evidence
+
+The miRNA seed panel reads `manifest.json`'s versioned `reference_evidence` contract (schema 1).
+It distinguishes failed reference acquisition, failed screening, skipped screening, screening that
+was not requested, and unknown legacy evidence. Empty or missing hit tables never establish a
+completed screen. A completed-zero message requires an explicit completed producer outcome and
+the guide's presence in `screening.guide_sequences`; transcriptome submission is independent.
+When some requested species failed, successful species' matches remain visible with an incomplete
+evidence warning. Per-species diagnostics include recorded reasons and available source, release,
+acquisition mode, acquisition time, and raw/filtered SHA-256 provenance. External acquisition URLs
+remain in the run manifest rather than the HTML report.
+
+Stable warning identifiers, severity, text, remediation, and default visibility live in
+`reporting.evidence.WARNING_REGISTRY`. Unresolved guides are counted in a collapsible header
+diagnostic, which is omitted when every embedded guide has completed miRNA evidence. This diagnostic
+does not change pipeline gate verdicts: producer-recorded unavailable gates remain undecided under
+the report's existing gate semantics.
+
+Orthology diagnostics also preserve the resolver's per-species reason code. An unavailable mapping can
+therefore identify an unrecognized target ID, unsupported species, exhausted lookup budget, or a
+service/request failure; it is not presented as a no-match result.
+
+The miRNA card tests execute the actual embedded JavaScript using Node.js when available, covering
+status messages, guide coverage, partial positive evidence and source diagnostics. They skip that
+execution check when Node.js is unavailable; Python payload assertions still run. These focused tests
+do not execute browser layout or the other report interactions described below.
+
+## Report build diagnostics
+
+The report builder can include a separate JSON diagnostics mapping with phase durations, the process
+lifetime peak RSS, input file sizes and row counts, selected versus excluded columns, and the chunk size
+used to read each table. The peak is the process high-water mark, so it includes earlier work in the
+same process; it is not an isolated per-phase allocation measurement. Candidate, off-target and miRNA
+tables are read in bounded chunks and projected to columns used by the compact report's aggregation.
+This reduces parser overhead and avoids loading unrelated columns; the data-backed path below stages
+normalized guide, isoform, and hit-summary tables instead.
+
+The reporting artifact API stages projected candidate, off-target, and miRNA inputs into versioned
+Parquet tables with Arrow batches. `report_manifest.json` records table schemas, input and artifact
+checksums, row counts, the selected mode, and the thresholds used. Tables can be queried in bounded
+batches and exported as CSV/TSV with their Parquet source checksums recorded in the manifest. Exact
+distinct-guide counting uses a temporary SQLite index rather than retaining all guide names in memory.
+Automatic mode budgets are provisional performance budgets based on input bytes, candidate rows, and
+distinct guides; they are not biological defaults.
+
+`write_report_from_run(...)` returns a result bundle containing the output, selected mode, manifest, and
+diagnostics paths. Its `data_backed` mode builds normalized `guides`, `isoforms`, and
+`hit_summary` Parquet tables, renders every guide in the searchable summary, and stores candidate, hit,
+and miRNA rows in sibling JavaScript shards. The browser loads a shard with a relative classic-script
+URL when a reader opens a guide, which works offline with `file://` and from a static server without
+`fetch` or external runtime services. Global status and gate counts are recorded in the manifest;
+reader filters only select guides and do not change gate verdicts. The summary is in the HTML, while
+guide details stay in local sidecars. Its `paged_single_file` mode keeps the same complete summary and
+guide detail set in one HTML file, with 50 visible guides per page; search, status and gate filters
+recompute the page count over all guides rather than truncating the report. The production CLI still
+uses the compact `build_payload`/`write_report` path; mode selection is not wired into that command
+yet. The 1,200-guide fixture is a functional scaling check rather than a Martinelli or OligoGym
+acceptance benchmark. The data-backed reader currently supports search, status and individual gate
+result filtering plus candidate/hit/miRNA row detail; it does not yet include every compact reader
+control such as conservation selection, threshold editing, maps, carts or exports.
 
 ## The unit is the guide sequence
 
@@ -350,8 +412,8 @@ What is tested here, and what is not, because the two are easy to conflate. **Te
 `encodeHash` writes equals the set `applyHashFragment` reads back, derived from the source rather than
 listed, so the next control encoded and never parsed fails a test instead of shipping a URL that restores
 less than it carries. **Not tested:** that a reader who reloads the URL sees the same rows. The round trip
-itself is a property of the shipped JavaScript, and since the parity harness was deleted nothing executes
-that JavaScript -- so it is reviewed, not verified. See _What is verified, and what is only reviewed_.
+itself is a property of the shipped JavaScript, and the focused miRNA card checks do not exercise that
+round trip, so it is reviewed, not verified. See _What is verified, and what is only reviewed_.
 
 ## Exporting a selection
 
@@ -525,7 +587,8 @@ escaped, reversibly (the embedded literal parses back to the original), and appe
 companion assertion keeps the fixture from going vacuous: every reason code in `payload.py` must still fire
 on at least one guide. `tests/unit/test_reporting_payload.py` separately scans the document for external reach.
 
-**Reviewed, not verified.** Nothing executes the shipped JavaScript. There used to be a harness that
+**Other interactions: reviewed, not verified.** Beyond the miRNA card checks above, the interactions
+listed here have no execution coverage. There used to be a harness that
 rendered the report, sliced the substituted `<script>` out of it and ran the evaluator under Node; it has
 been deleted, with the Node dependency it needed. **Thirteen tests went with it.** What follows is what
 each of them held and nothing now holds -- stated per property rather than per test, so that a property two
@@ -656,7 +719,7 @@ The thirteenth deleted test, `test_node_absent_fails_loudly_rather_than_skipping
 `node` binary failed with an install hint instead of skipping. It was a property of the harness, not of the
 report, and nothing about the document is less covered for its going.
 
-This is a deliberate trade, not an oversight: an in-process JavaScript engine and a static
+For these other interactions, this is a deliberate trade: an in-process JavaScript engine and a static
 table-equality substitute were both considered and both declined in favour of less machinery. The cost
-is stated here so it is not discovered by a reader who trusted the page. Change any of the JavaScript
-above and someone has to read it, because nothing will run it.
+is stated here so it is not discovered by a reader who trusted the page. Changes to those interactions
+still need review; the focused miRNA card execution checks do not cover them.

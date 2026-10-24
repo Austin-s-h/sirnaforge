@@ -10,6 +10,14 @@ Gate descriptors come from the resolved run policy and ``hit_class`` comes from 
 the report cannot disagree with the run it describes.
 """
 
+from sirnaforge.reporting.artifacts import (
+    ReportArtifactStore,
+    ReportMode,
+    ReportModeFacts,
+    ReportModeThresholds,
+    resolve_report_mode,
+)
+from sirnaforge.reporting.data_backed import ReportWriteResult, write_report_from_run
 from sirnaforge.reporting.payload import (
     PAYLOAD_SCHEMA_VERSION,
     GuideEntry,
@@ -25,7 +33,14 @@ __all__ = [
     "GuideEntry",
     "ReportInputError",
     "ReportPayload",
+    "ReportArtifactStore",
+    "ReportWriteResult",
+    "ReportMode",
+    "ReportModeFacts",
+    "ReportModeThresholds",
     "build_payload",
+    "resolve_report_mode",
+    "write_report_from_run",
     "quilt_summarize_entries",
     "render_html",
     "write_quilt_summarize",

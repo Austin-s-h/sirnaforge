@@ -29,10 +29,10 @@ print(f"Built BWA index for {result['species']}: {result['index_prefix']}")
 PYEOF
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    bwa-mem2: \$(bwa-mem2 version 2>&1 | tail -n1)
+END_VERSIONS
     """
 
     stub:
@@ -44,9 +44,9 @@ PYEOF
     touch ${species}_index.pac
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    bwa-mem2: \$(bwa-mem2 version 2>&1 | tail -n1)
+END_VERSIONS
     """
 }

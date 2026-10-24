@@ -2,32 +2,24 @@
 
 > ## ⚠️ EXPERIMENTAL — results are not decision-grade
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects, tracked in
-> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any
-> decision without independent validation.** The known defects affect:
+> The ZFN arm remains **experimental**; remaining integration and validation work is tracked
+> in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for
+> decisions without independent validation.** Historical hg38 runtime runs did not validate
+> correct on-target recovery and remain non-authoritative.
 >
-> - **Half-site orientation.** With the default `require_opposite_strands=True`, the published
->   CCR5 pair `GTCATCCTCATC` / `AAACTGCAAAAG` does not match its own on-target site, because
->   both sequences occur on the hg38 plus strand. The undocumented convention is that
->   `right_half_site` must be given as the reverse complement of the published (−) text, and
->   there is no CLI escape hatch. The examples on this page therefore pass
->   `--zfn-right-half-site CTTTTGCAGTTT`, which does match; anything you copy from the
->   literature or from the [CCR5 benchmark page](ccr5_zfn_benchmark.md) needs the same
->   substitution.
-> - **FokI seed region and polarity weighting** on the right half-site, which guard the end of
->   the half-site farthest from FokI rather than the nearest.
-> - **Off-target region classification**, which can report a site inside a large containing gene
->   as `intergenic` and therefore undercount exonic/promoter hits used by the pass/fail filters.
-> - **`worst_site_score` and `best_offtarget_score` are inverted** in every exported artifact:
->   `worst_site_score` holds the _minimum_ site score and `best_offtarget_score` the _maximum_.
->   Among off-targets the highest-scoring site is the most dangerous one, so both field names
->   read backwards. Nothing in the output flags this — read the values, not the names.
-> - **The default `pyahocorasick` backend rejects mismatch budgets above 3** on a 12 bp
->   half-site and raises `ValueError` rather than searching. See
->   [CLI Reference](cli_reference.md) for the exact limit and the workaround.
+> Supply both half-sites **5′→3′ on their respective binding strands**. For the published
+> CCR5 plus-strand genomic text `GTCATCCTCATC` + spacer + `AAACTGCAAAAG`, use left query
+> `GTCATCCTCATC` and right query `CTTTTGCAGTTT`. Both FokI-proximal query regions are
+> their final (3′) bases. The default requires inward-facing `+...-` binding geometry.
 >
-> Because of the half-site convention issue, the ZFN validation runs recorded in this
-> documentation set are **not authoritative** and must be re-run once the convention is fixed.
+> This development revision fixes right-half-site seed/polarity, nested-interval annotation,
+> canonical mismatch-pattern expansion, empty CSV output, live FM-index cache identity,
+> boundary ownership and bridge CSV evidence loss. The public Nextflow route is still
+> unreachable and independent genomic/experimental validation remains outstanding.
+>
+> **Artifact migration:** new `worst_site_score` is the maximum concerning off-target
+> score (highest risk); `best_offtarget_score` is the minimum (lowest risk). Older v1
+> artifacts stored these values inverted and must be regenerated, not relabelled.
 
 This guide is the user-facing entry point for ZFN design and off-target analysis in siRNAforge.
 
@@ -84,10 +76,10 @@ sirnaforge zfn \
 
 `CTTTTGCAGTTT` is the reverse complement of the published CCR5 (−) half-site `AAACTGCAAAAG`.
 Passing the published text verbatim returns **0 sites**, including the on-target locus — see the
-half-site orientation defect in the banner above and
-[#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Keep `--zfn-max-mismatches` at 3 or
-below on the default backend, or the run aborts with `ValueError`
-([CLI Reference](cli_reference.md) has the numbers).
+orientation convention in the banner above and
+[#82](https://github.com/Austin-s-h/sirnaforge/issues/82). The default backend now supports the canonical 12 bp / 4-mismatch case. Highly
+degenerate queries can still exceed its pattern safety limit; compare with
+`exhaustive_python` before interpreting a result.
 
 Outputs are written under:
 
@@ -97,7 +89,7 @@ Outputs are written under:
 
 `candidate_summary.json` uses a stable envelope with:
 
-- `schema_version` (currently `zfn_candidate_summary.v1`)
+- `schema_version` (currently `zfn_candidate_summary.v2`)
 - `search_contract` (canonical half-sites, spacer list, mismatch budgets, dimer mode, algorithm)
 - `candidates` and `summary`
 
@@ -165,7 +157,8 @@ print(result.get_summary())
 `evaluate_pair` logs the experimental notice (issue
 [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)) at `WARNING` on first use, so it
 appears even in a script that configures no logging. `result.candidates[0].worst_site_score` and
-`.best_offtarget_score` are inverted, as described in the banner above.
+`.best_offtarget_score` now follow maximum-risk/minimum-risk semantics respectively.
+Regenerate older v1 artifacts as described in the banner above.
 
 ## API map for ZFN users
 

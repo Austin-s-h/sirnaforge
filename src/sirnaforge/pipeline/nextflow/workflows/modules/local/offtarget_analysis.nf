@@ -53,10 +53,10 @@ if result.get('error'):
 PYEOF
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//' || echo 'not available')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    bwa-mem2: \$(bwa-mem2 version 2>&1 | tail -n1 || echo 'not available')
+END_VERSIONS
     """
 
     stub:
@@ -92,12 +92,12 @@ PYEOF
         "detail": "stub run: no aligner executed"
       }
     }
-    EVIDENCE
+EVIDENCE
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//' || echo 'not available')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    bwa-mem2: \$(bwa-mem2 version 2>&1 | tail -n1 || echo 'not available')
+END_VERSIONS
     """
 }
