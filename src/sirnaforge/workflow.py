@@ -523,9 +523,23 @@ class WorkflowConfig:
                 "WorkflowConfig received both a resolved policy and different design_params; "
                 "pass one or the other so there is a single resolved configuration"
             )
-        self.design_params = (
-            resolved_policy.design_parameters if resolved_policy else (design_params or DesignParameters())
-        )
+        if resolved_policy is not None:
+            policy_threshold = resolved_policy.design_parameters.offtarget_filters.max_transcript_seed_sites
+            if max_transcript_seed_sites is not None and max_transcript_seed_sites != policy_threshold:
+                raise RunPolicyError(
+                    "WorkflowConfig received conflicting max_transcript_seed_sites and resolved_policy; "
+                    "configure the threshold through the resolved policy"
+                )
+            self.design_params = resolved_policy.design_parameters
+        else:
+            self.design_params = design_params or DesignParameters()
+            if max_transcript_seed_sites is not None:
+                if max_transcript_seed_sites < 0:
+                    raise RunPolicyError("max_transcript_seed_sites must be non-negative")
+                seed_filter_parameters = self.design_params.offtarget_filters.model_copy(
+                    update={"max_transcript_seed_sites": max_transcript_seed_sites}
+                )
+                self.design_params = self.design_params.model_copy(update={"offtarget_filters": seed_filter_parameters})
         self.resolved_policy = resolved_policy or describe_parameters(
             self.design_params, entry_point=EntryPoint.SCREENING_WORKFLOW, query_species=query_species
         )
@@ -569,9 +583,7 @@ class WorkflowConfig:
         self.mirna_reference_manifest = Path(mirna_reference_manifest) if mirna_reference_manifest else None
         self.target_intent_request = target_intent_request
         self.transcript_seed_scope = TranscriptSequenceScope(transcript_seed_scope)
-        if max_transcript_seed_sites is not None and max_transcript_seed_sites < 0:
-            raise ValueError("max_transcript_seed_sites must be non-negative")
-        self.max_transcript_seed_sites = max_transcript_seed_sites
+        self.max_transcript_seed_sites = self.design_params.offtarget_filters.max_transcript_seed_sites
         existing_seed_requirements = tuple(
             entry
             for entry in self.resolved_policy.evidence_requirements.channel_requirements
@@ -590,6 +602,8 @@ class WorkflowConfig:
             raise ValueError("transcript_seed_required_species must be a subset of transcript_seed_species")
         self.transcript_seed_species = normalized_seed_species
         self.transcript_seed_required_species = required_seed_species
+        if self.max_transcript_seed_sites is not None and not normalized_seed_species:
+            raise RunPolicyError("max_transcript_seed_sites requires at least one transcript-seed species")
         if normalized_seed_species:
             requirements = list(self.resolved_policy.evidence_requirements.channel_requirements)
             existing_by_species = {entry.species: entry for entry in existing_seed_requirements}
@@ -4541,11 +4555,14 @@ class SiRNAWorkflow:
 
             observed = sum(required_counts) if required_complete and required else None
             if self.config.max_transcript_seed_sites is not None:
+                seed_action = self._filter_action_for(
+                    "max_transcript_seed_sites", self.config.max_transcript_seed_sites
+                )
                 candidate.record_filter_verdict(
                     "max_transcript_seed_sites",
                     observed=observed,
                     passed=observed is None or observed <= self.config.max_transcript_seed_sites,
-                    action=FilterAction.FAIL,
+                    action=seed_action,
                     status=SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
                 )
             observations[candidate.id] = {

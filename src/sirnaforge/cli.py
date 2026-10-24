@@ -1566,6 +1566,7 @@ def workflow(  # noqa: PLR0912
             "default_overhang": ("overhang", overhang),
             "top_n": ("top_n_candidates", top_n_candidates),
             "max_off_target_count": ("max_off_targets", max_off_targets),
+            "max_transcript_seed_sites": ("max_transcript_seed_sites", max_transcript_seed_sites),
             "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
             "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
             "min_empirical_score": ("min_empirical", min_empirical),
@@ -1599,6 +1600,8 @@ def workflow(  # noqa: PLR0912
     )
     mode_enum = policy.design_mode
     resolved_filters = policy.design_parameters.filters
+    if policy.design_parameters.offtarget_filters.max_transcript_seed_sites is not None and not seed_species:
+        _fail_with_config_error("max_transcript_seed_sites requires --transcript-seed-species")
 
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
     log_destination.parent.mkdir(parents=True, exist_ok=True)

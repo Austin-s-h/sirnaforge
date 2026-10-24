@@ -141,6 +141,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("max_transcriptome_hits_1mm", "offtarget_filters", "max_transcriptome_hits_1mm"),
     SettingSpec("max_transcriptome_hits_2mm", "offtarget_filters", "max_transcriptome_hits_2mm"),
     SettingSpec("max_transcriptome_seed_perfect", "offtarget_filters", "max_transcriptome_seed_perfect"),
+    SettingSpec("max_transcript_seed_sites", "offtarget_filters", "max_transcript_seed_sites"),
     SettingSpec("max_mirna_perfect_seed", "offtarget_filters", "max_mirna_perfect_seed"),
     SettingSpec("max_mirna_1mm_seed", "offtarget_filters", "max_mirna_1mm_seed"),
     SettingSpec("fail_on_high_risk_mirna", "offtarget_filters", "fail_on_high_risk_mirna"),
@@ -548,6 +549,18 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             "species. The only targeted gate on a clipped or gapped hit with an intact seed, which "
             "carries a guide-level nm > 2 and so lands in no mismatch stratum; fails "
             "TRANSCRIPTOME_SEED_PERFECT."
+        ),
+        default_action=FilterAction.FAIL,
+    ),
+    _FilterSpec(
+        filter_id="max_transcript_seed_sites",
+        setting_key="max_transcript_seed_sites",
+        column="max_transcript_seed_sites_observed",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "Canonical 6mer, 7mer-A1, 7mer-m8 and 8mer siRNA seed-complementary sites in the full cDNA or "
+            "explicit 3′UTR references for required transcript-seed species."
         ),
         default_action=FilterAction.FAIL,
     ),

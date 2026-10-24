@@ -121,6 +121,7 @@ DECLARED_FILTER_IDS: tuple[str, ...] = (
     "max_transcriptome_hits_1mm",
     "max_transcriptome_hits_2mm",
     "max_transcriptome_seed_perfect",
+    "max_transcript_seed_sites",
     "max_mirna_perfect_seed",
     "max_mirna_1mm_seed",
     "fail_on_high_risk_mirna",

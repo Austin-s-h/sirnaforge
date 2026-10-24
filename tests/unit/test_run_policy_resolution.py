@@ -533,7 +533,7 @@ def test_every_filter_with_a_clearable_threshold_can_be_disabled_independently()
     """
     baseline = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
     switchable = switchable_filter_ids()
-    assert len(switchable) == 10, switchable
+    assert len(switchable) == 11, switchable
 
     for filter_id in switchable:
         policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={filter_id: "off"})
@@ -656,6 +656,31 @@ def test_an_undeclared_threshold_resolves_to_off_not_to_a_silent_pass():
         entry_point=EntryPoint.SCREENING_WORKFLOW, stated={"max_transcriptome_seed_perfect": 2}
     )
     assert opted_in.descriptor("max_transcriptome_seed_perfect").action is FilterAction.FAIL
+
+
+@pytest.mark.unit
+def test_transcript_seed_site_ceiling_is_an_optional_registry_gate():
+    """The public threshold resolves through policy, and no threshold keeps the new gate off."""
+    default = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+    descriptor = default.descriptor("max_transcript_seed_sites")
+    assert descriptor.threshold is None
+    assert descriptor.action is FilterAction.OFF
+
+    opted_in = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"max_transcript_seed_sites": 8},
+    )
+    descriptor = opted_in.descriptor("max_transcript_seed_sites")
+    assert descriptor.threshold == 8
+    assert descriptor.action is FilterAction.FAIL
+    assert opted_in.source_of("max_transcript_seed_sites") is SettingSource.EXPLICIT
+
+    warned = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"max_transcript_seed_sites": 8},
+        filter_actions={"max_transcript_seed_sites": "warn"},
+    )
+    assert warned.descriptor("max_transcript_seed_sites").action is FilterAction.WARN
 
 
 @pytest.mark.unit
