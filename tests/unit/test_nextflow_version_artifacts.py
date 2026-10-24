@@ -48,7 +48,7 @@ def test_version_fragment_has_no_terminator_or_launcher_diagnostic(
 ) -> None:
     """The real shell must terminate its heredoc and capture the numeric BWA version."""
     completed = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", render(block)],
+        ["bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", render(block)],
         cwd=tmp_path,
         env=tool_environment,
         capture_output=True,
@@ -71,7 +71,7 @@ def test_stub_evidence_heredoc_still_terminates(tmp_path: Path, tool_environment
     match = re.search(r'stub:\s*"""(.*?)"""', (MODULES / module).read_text(), re.S)
     assert match is not None
     completed = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", render(match.group(1))],
+        ["bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", render(match.group(1))],
         cwd=tmp_path,
         env=tool_environment,
         capture_output=True,
@@ -82,5 +82,8 @@ def test_stub_evidence_heredoc_still_terminates(tmp_path: Path, tool_environment
     evidence_files = list(tmp_path.glob("*evidence.json"))
     assert evidence_files
     for path in evidence_files:
+        if path.name == "mirna_reference_evidence.json":
+            assert json.loads(path.read_text())["mirna"]["screening"]["status"] == "failed"
+            continue
         assert json.loads(path.read_text())["schema_version"] == "2"
     assert (tmp_path / "versions.yml").exists()

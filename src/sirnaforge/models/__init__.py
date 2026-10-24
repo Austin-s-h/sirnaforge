@@ -66,6 +66,13 @@ from .sirna import (
     WeightVector,
 )
 from .transcript_annotation import Interval, TranscriptAnnotation, TranscriptAnnotationBundle
+from .transcript_seed import (
+    TranscriptSeedClass,
+    TranscriptSeedScanResult,
+    TranscriptSeedSite,
+    TranscriptSeedTranscript,
+    TranscriptSequenceScope,
+)
 from .variant import (
     ClinVarSignificance,
     VariantMode,
@@ -156,6 +163,12 @@ __all__ = [
     "Interval",
     "TranscriptAnnotation",
     "TranscriptAnnotationBundle",
+    # Transcript-seed site discovery
+    "TranscriptSeedClass",
+    "TranscriptSequenceScope",
+    "TranscriptSeedTranscript",
+    "TranscriptSeedSite",
+    "TranscriptSeedScanResult",
     # Variant models
     "VariantRecord",
     "VariantQuery",

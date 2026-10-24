@@ -61,6 +61,7 @@ class EvidenceProducer(str, Enum):
     Attributes:
         OFFTARGET_ANALYSIS: The transcriptome alignment task.
         MIRNA_SEED_ANALYSIS: The miRNA seed-matching task.
+        TRANSCRIPT_SEED_ANALYSIS: The transcript-seed site discovery task.
         AGGREGATE_RESULTS: The aggregation step, for units it can speak to directly.
         WORKFLOW_SYNTHESIS: ``workflow.py``, for an entry it derived rather than observed.
         BASIC_ANALYSIS: The Nextflow-unavailable fallback path.
@@ -69,6 +70,7 @@ class EvidenceProducer(str, Enum):
 
     OFFTARGET_ANALYSIS = "offtarget_analysis"
     MIRNA_SEED_ANALYSIS = "mirna_seed_analysis"
+    TRANSCRIPT_SEED_ANALYSIS = "transcript_seed_analysis"
     AGGREGATE_RESULTS = "aggregate_results"
     WORKFLOW_SYNTHESIS = "workflow_synthesis"
     BASIC_ANALYSIS = "basic_analysis"
@@ -323,6 +325,7 @@ def build_plan(
     guide_set_digest: str,
     transcriptome: Sequence[tuple[str, str | None]],
     mirna_species: Sequence[str],
+    transcript_seed_species: Sequence[str] = (),
     search_settings: Mapping[str, str | int | float | bool | None] | None = None,
 ) -> ScreeningPlan:
     """Build the expected plan from what a run requested, before any reference can be dropped.
@@ -350,6 +353,14 @@ def build_plan(
             search_settings=settings,
         )
         for species in mirna_species
+    ) + tuple(
+        ScreeningPlanEntry(
+            channel=ScreeningChannel.TRANSCRIPT_SEED,
+            species=species,
+            guide_set_digest=guide_set_digest,
+            search_settings=settings,
+        )
+        for species in transcript_seed_species
     )
     return ScreeningPlan(entries=entries)
 

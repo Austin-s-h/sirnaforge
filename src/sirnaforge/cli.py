@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeVar, cast
 
 import typer
@@ -65,6 +66,7 @@ from sirnaforge.config.run_policy import (
     switchable_filter_ids,
 )
 from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.core.target_intent import TargetIntentRequest
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import (
     GeneSearcher,
@@ -79,6 +81,7 @@ from sirnaforge.models.sirna import (
     DesignMode,
     ranking_score,
 )
+from sirnaforge.models.transcript_seed import TranscriptSequenceScope
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.models.zfn import (
     DimerMode,
@@ -1103,6 +1106,35 @@ def workflow(  # noqa: PLR0912
             "given on the command line. Unknown setting names are rejected, not ignored."
         ),
     ),
+    target_intent_config: Path | None = typer.Option(
+        None,
+        "--target-intent-config",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="JSON declaration of pan-isoform or isoform-selective target intent, resolved against full annotations.",
+    ),
+    transcript_seed_species: str | None = typer.Option(
+        None,
+        "--transcript-seed-species",
+        help="Comma-separated species to scan for canonical siRNA seed sites using resolved full transcriptome FASTAs.",
+    ),
+    transcript_seed_required_species: str | None = typer.Option(
+        None,
+        "--transcript-seed-required-species",
+        help="Subset of --transcript-seed-species required for candidate qualification; remaining species are exploratory.",
+    ),
+    transcript_seed_scope: TranscriptSequenceScope = typer.Option(
+        TranscriptSequenceScope.FULL_CDNA,
+        "--transcript-seed-scope",
+        help="Transcript sequence region scanned: full_cdna or three_prime_utr (requires explicit UTR annotation).",
+    ),
+    max_transcript_seed_sites: int | None = typer.Option(
+        None,
+        "--max-transcript-seed-sites",
+        min=0,
+        help="Optional per-guide site ceiling across required transcript-seed species.",
+    ),
     filter_action: list[str] = typer.Option(
         [],
         "--filter-action",
@@ -1220,6 +1252,14 @@ def workflow(  # noqa: PLR0912
         "mirgenedb",
         "--mirna-db",
         help="miRNA reference: mirgenedb (default), mirbase, or mirgenedb+mirbase (mature-only union)",
+    ),
+    mirna_reference_manifest: Path | None = typer.Option(
+        None,
+        "--mirna-reference-manifest",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="JSON manifest of pinned local miRNA FASTAs with source, species, release and SHA-256.",
     ),
     mirna_species: str | None = typer.Option(
         None,
@@ -1500,6 +1540,22 @@ def workflow(  # noqa: PLR0912
         actions = _parse_filter_actions(filter_action)
     except RunPolicyError as exc:
         _fail_with_config_error(str(exc))
+    try:
+        target_intent_request = (
+            TargetIntentRequest.model_validate_json(target_intent_config.read_text())
+            if target_intent_config is not None
+            else None
+        )
+        seed_species = parse_csv(transcript_seed_species) if transcript_seed_species else []
+        required_seed_species = parse_csv(transcript_seed_required_species) if transcript_seed_required_species else []
+        if required_seed_species and not seed_species:
+            raise ValueError("--transcript-seed-required-species requires --transcript-seed-species")
+        if set(required_seed_species) - set(seed_species):
+            raise ValueError("--transcript-seed-required-species must be a subset of --transcript-seed-species")
+        if max_transcript_seed_sites is not None and not seed_species:
+            raise ValueError("--max-transcript-seed-sites requires --transcript-seed-species")
+    except (OSError, ValueError, ValidationError) as exc:
+        _fail_with_config_error(f"Invalid target-intent or transcript-seed configuration: {exc}")
     stated = _stated_settings(
         ctx,
         {
@@ -1724,6 +1780,12 @@ def workflow(  # noqa: PLR0912
                     transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
+                    mirna_reference_manifest=mirna_reference_manifest,
+                    target_intent_request=target_intent_request,
+                    transcript_seed_species=seed_species if transcript_seed_species is not None else None,
+                    transcript_seed_required_species=required_seed_species,
+                    transcript_seed_scope=transcript_seed_scope,
+                    max_transcript_seed_sites=max_transcript_seed_sites,
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
@@ -1908,6 +1970,14 @@ def offtarget(
         "--mirna-db",
         help="miRNA reference: mirgenedb (default), mirbase, or mirgenedb+mirbase (mature-only union)",
     ),
+    mirna_reference_manifest: Path | None = typer.Option(
+        None,
+        "--mirna-reference-manifest",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="JSON manifest of pinned local miRNA FASTAs with source, species, release and SHA-256.",
+    ),
     mirna_species: str | None = typer.Option(
         None,
         "--mirna-species",
@@ -2090,6 +2160,7 @@ def offtarget(
                     transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
+                    mirna_reference_manifest=mirna_reference_manifest,
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
@@ -2931,6 +3002,12 @@ def benchmark_prepare(
         "--panel-transcripts",
         help="Optional FASTA of panel transcripts. Enables design_context_source=panel_transcript.",
     ),
+    native_observations_csv: Path | None = typer.Option(None, "--native-observations-csv", exists=True, dir_okay=False),
+    native_mappings_csv: Path | None = typer.Option(None, "--native-mappings-csv", exists=True, dir_okay=False),
+    native_reference_manifest: Path | None = typer.Option(
+        None, "--native-reference-manifest", exists=True, dir_okay=False
+    ),
+    native_reference_fasta: Path | None = typer.Option(None, "--native-reference-fasta", exists=True, dir_okay=False),
     paired_length: int | None = typer.Option(
         None,
         "--paired-length",
@@ -2971,6 +3048,10 @@ def benchmark_prepare(
             panel_id=panel,
             panel_csv=panel_csv,
             panel_transcripts=panel_transcripts,
+            native_observations_csv=native_observations_csv,
+            native_mappings_csv=native_mappings_csv,
+            native_reference_manifest=native_reference_manifest,
+            native_reference_fasta=native_reference_fasta,
             paired_length=paired_length,
             out_dir=out_dir,
             overwrite=overwrite,
@@ -3433,6 +3514,11 @@ def internal_zfn_aggregate_shards(
 def report(
     run_dir: Path = typer.Argument(..., help="A completed run output directory"),
     output: Path = typer.Option(Path("report.html"), "--output", "-o", help="Where to write the report"),
+    diagnostics_json: Path | None = typer.Option(
+        None,
+        "--diagnostics-json",
+        help="Builder diagnostics JSON (default: beside the HTML report).",
+    ),
     quilt_summarize: bool = typer.Option(
         False,
         "--quilt-summarize/--no-quilt-summarize",
@@ -3448,12 +3534,19 @@ def report(
     published table -- so it cannot disagree with the run it describes.
     """
     try:
-        payload = build_payload(run_dir)
+        payload = build_payload(run_dir, diagnostics=True)
     except ReportInputError as exc:
         console.print(f"❌ [red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
+    render_started = perf_counter()
     written = write_report(payload, output)
+    if payload.diagnostics is not None:
+        payload.diagnostics["phases_seconds"]["render_and_write"] = perf_counter() - render_started
+        payload.diagnostics["output_html_bytes"] = written.stat().st_size
+        diagnostics_path = diagnostics_json or written.with_suffix(".diagnostics.json")
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_path.write_text(json.dumps(payload.diagnostics, indent=2))
     summarize_line = ""
     if quilt_summarize:
         summarize_path = write_quilt_summarize(payload, written, run_dir)
