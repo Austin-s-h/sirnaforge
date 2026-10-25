@@ -22,7 +22,7 @@ class TestDesignParameters:
         assert params.top_n is None
         assert params.filters.gc_min == 35.0
         assert params.filters.gc_max == 60.0
-        assert params.offtarget_filters.max_off_target_count == 15
+        assert params.offtarget_filters.max_off_target_count is None
 
     def test_uncapped_top_n_does_not_truncate_but_an_explicit_cap_still_does(self):
         """The default must report everything, while an explicit ceiling stays honoured."""

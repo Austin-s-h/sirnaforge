@@ -249,7 +249,7 @@ def test_a_gate_that_is_off_still_makes_no_claim_when_the_screen_published_nothi
 
 @pytest.mark.unit
 def test_a_gate_scoped_to_every_screened_species_cannot_pass_on_a_zero_nobody_measured(tmp_path: Path) -> None:
-    """``max_off_target_count`` declares no species scope, and that is what used to let it pass.
+    """An explicitly enabled query-scoped gate is unknown when its requested screen never ran.
 
     A gate's evidence requirement is the channel x species pairs its own ``FilterScope`` names; an
     unrestricted scope means every species the run screened, which ``_integrate_offtarget_results``
@@ -261,10 +261,10 @@ def test_a_gate_scoped_to_every_screened_species_cannot_pass_on_a_zero_nobody_me
     workflow = _workflow(
         tmp_path,
         "unscoped_gate",
-        stated={"max_transcriptome_seed_perfect": 0},
+        stated={"max_off_target_count": 0, "max_transcriptome_seed_perfect": 0},
         screen_species=["human", "mouse"],
     )
-    assert workflow.config.resolved_policy.descriptor("max_off_target_count").scope.species == frozenset()
+    assert workflow.config.resolved_policy.descriptor("max_off_target_count").scope.species == frozenset({"human"})
     candidate = _candidate()
 
     _run_step5_without_a_screen(workflow, [candidate], "nextflow_unavailable")

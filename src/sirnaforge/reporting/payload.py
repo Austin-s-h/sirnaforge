@@ -117,8 +117,8 @@ class GuideEntry:
     liability_count: int
     mirna: list[dict[str, Any]]
     #: species -> liability alignments in that species, summing to :attr:`liability_count`. The
-    #: all-species number is what ``max_off_target_count`` gates; this is what a reader needs to ask
-    #: whether it would still reject the guide on one species (:func:`_liability_by_species`).
+    #: descriptive all-species number; the gate has its own query-species nm<=2 counter. This split
+    #: lets a reader inspect liabilities outside the gate's declared scope.
     liability_by_species: dict[str, int] = field(default_factory=dict)
     #: species -> {nm, seed_mismatches} for the best ortholog alignment. Empty when none was found.
     ortholog: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -748,7 +748,7 @@ def _liability_by_species(hits: pd.DataFrame) -> dict[str, int]:
 
     Half of every liability total on a multi-species run is non-human: 92,658 human against 91,536
     mouse, 25,243 macaque and 23,427 rat on one internal run of 232,864 alignments.
-    ``max_off_target_count`` is scoped to *all* species and rejected 3,317 of that run's guides, 782 of
+    The historical all-species ``max_off_target_count`` rejected 3,317 of that run's guides, 782 of
     them on nothing else -- and 458 of those 782 pass the same ceiling on human liabilities alone,
     against 448 total passes in the whole report. Which number a consumer reads decides whether it
     agrees with the run, so both are published and neither is called *the* liability count.

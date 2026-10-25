@@ -5993,9 +5993,9 @@ class SiRNAWorkflow:
             candidate.off_target_screened = not unscreened_candidate
 
             # Which channel x SPECIES pairs THIS candidate holds evidence for. Pairs, not channels: a
-            # gate whose scope is every screened species -- max_off_target_count is the live one --
-            # passed on a lower bound whenever a secondary species failed, because completeness was
-            # decided query-species-only. A candidate the aligner never saw holds nothing.
+            # gate whose scope is every screened species must not pass on a lower bound whenever a
+            # secondary species failed. Current transcriptome gates are query-species scoped. A
+            # candidate the aligner never saw holds nothing.
             complete_pairs: frozenset[tuple[str, str]] = (
                 frozenset() if never_submitted else run_complete_pairs - unscreened_pairs
             )
@@ -6148,6 +6148,7 @@ class SiRNAWorkflow:
             candidate.transcriptome_hits_0mm_query = transcriptome_query[0]
             candidate.transcriptome_hits_1mm_query = transcriptome_query[1]
             candidate.transcriptome_hits_2mm_query = transcriptome_query[2]
+            candidate.transcriptome_hits_query_le2 = sum(transcriptome_query.values())
             candidate.mirna_hits_0mm_seed_query = mirna_query_0mm_seed
             candidate.mirna_hits_high_risk_query = mirna_high_risk_query
             candidate.total_offtarget_hits_query = transcriptome_query_total + mirna_query_total
@@ -6193,7 +6194,7 @@ class SiRNAWorkflow:
                     mirna_0mm_seed=mirna_query_0mm_seed,
                     mirna_high_risk=mirna_high_risk_query,
                     total_hits=transcriptome_query_total + mirna_query_total,
-                    genuine_off_target_count=liabilities_counted(hit_counts),
+                    genuine_off_target_count=sum(transcriptome_query.values()),
                 ),
                 filter_criteria=filter_criteria,
                 complete_pairs=complete_pairs,

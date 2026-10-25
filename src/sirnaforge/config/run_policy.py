@@ -491,15 +491,17 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
     _FilterSpec(
         filter_id="max_off_target_count",
         setting_key="max_off_target_count",
-        column="off_target_count",
+        column="transcriptome_hits_query_le2",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(
-            "Genuine off-target sites over every screened species and every mismatch count, with "
-            "on-target, ortholog and repeat hits classified out and undecidable hits counted in; "
-            "fails EXCESS_OFF_TARGETS."
+            "Query-species genuine transcriptome liabilities with 0–2 mismatches, with on-target, "
+            "ortholog and repeat hits classified out and undecidable hits counted in; disabled by "
+            "default pending calibration of a scoped ceiling."
         ),
         default_action=FilterAction.FAIL,
+        scope_query_species=True,
+        scope_max_mismatches=2,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(

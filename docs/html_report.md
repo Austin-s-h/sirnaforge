@@ -342,20 +342,12 @@ can fail it" is a property of the gate rather than of this run's data.
 
 ## Liability, and the species it is counted in
 
-`max_off_target_count` compares the total over **every screened species**, and roughly half of that total
-is non-human on a four-species screen (92,658 human against 91,536 mouse, 25,243 macaque and 23,427 rat
-on one internal run). A guide that gate rejected may therefore carry no human liability at all, and the
-number on screen could not be decomposed. The index cell now shows the total and its split into the query
-species and the rest, the header states the run-wide split, and **one** selector re-scopes the column, its
-sort and the liability bound together -- one control rather than two over the same number, which is how a
-reader ends up believing the report says two things. The bound's own label names the species it counts,
-because "at most 3 liabilities" means something different either side of that selector, and a species this
-run did not screen is refused rather than adopted.
+`max_off_target_count` is an optional ceiling on query-species genuine liabilities with at most two
+mismatches. It is disabled by default until this scoped quantity is calibrated. The report still shows
+all-species liability totals and their per-species decomposition as descriptive evidence.
 
-The selector re-scopes a **question**, never a verdict. Applying `max_off_target_count` to human-only
-liabilities would be the report deciding something the run did not, so it is not offered: the payload
-publishes `liability_by_species` per guide and `liability_rows_by_species` run-wide, and re-thresholding
-still moves the all-species ceiling the run itself applied.
+The report does not re-scope a verdict: the gate definition records its query-species and mismatch
+scope, and re-thresholding uses that same measured count.
 
 ## Reader filters, which are not gates
 

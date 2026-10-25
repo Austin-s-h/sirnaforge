@@ -83,8 +83,10 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
             "--target-intent-config",
             str(intent),
             "--run-mode",
-            "exploratory",
+            "qualified",
             "--species",
+            "human",
+            "--query-species",
             "human",
             "--transcriptome-fasta",
             f"human:{fasta}",
@@ -157,7 +159,9 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
     qualified = pd.read_csv(output / "sirnaforge/candidates_qualified.csv")
     qualified_fasta = output / "sirnaforge/candidates_qualified.fasta"
     if expected_selective_pass:
-        assert guide in set(qualified["guide_sequence"])
+        assert guide in set(qualified["guide_sequence"]), target_candidates[
+            ["id", "selection_state", "passes_filters", "quality_issues"]
+        ].to_dict(orient="records")
         assert qualified_fasta.is_file()
         assert guide in qualified_fasta.read_text()
     else:

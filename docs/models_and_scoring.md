@@ -174,9 +174,9 @@ Specialized filtering for off-target analysis results, applied after screening:
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
-    # Genuine off-target count (on-target, ortholog and repeat hits excluded).
-    # None means "no gate", which is what --filter-action <id>=off sets.
-    max_off_target_count: int | None = 15
+    # Optional query-species genuine liabilities with <=2 mismatches.
+    # None disables this aggregate ceiling pending calibration.
+    max_off_target_count: int | None = None
 
     # Transcriptome GENUINE off-targets (mismatch tolerance)
     max_transcriptome_hits_0mm: int | None = 1    # Perfect matches
@@ -197,8 +197,8 @@ class OffTargetFilterCriteria(BaseModel):
 > record puts the clip on guide positions 16-21 and leaves guide positions 2-8 pairing perfectly:
 > it carries `nm = 6`, so it is counted in `transcriptome_hits_seed_0mm`,
 > `transcriptome_hits_total` and `off_target_count`, but in **none** of `_0mm`/`_1mm`/`_2mm`. Two
-> such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. With stock defaults
-> the only thing gating them is `max_off_target_count` (15), so a run of them can pass. Set
+> such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. They are excluded from
+> `max_off_target_count`, which is scoped to query-species liabilities with `nm<=2`. Set
 > `max_transcriptome_seed_perfect` to gate them directly — it is enforced (verdict
 > `TRANSCRIPTOME_SEED_PERFECT`) but ships as `None` because no ceiling has been calibrated against
 > truth data. Unlike the three mismatch thresholds it is **not** species-split: it is compared
@@ -631,7 +631,7 @@ Applied once transcriptome/miRNA screening has run, against `OffTargetFilterCrit
 | `MIRNA_PERFECT_SEED`          | perfect miRNA seed hits > `max_mirna_perfect_seed`                               | miRNA-mimicry risk                                 |
 | `HIGH_RISK_MIRNA`             | perfect seed + `offtarget_score` < 5.0                                           | Strong-binding miRNA mimicry                       |
 | `TOTAL_OFFTARGETS`            | combined transcriptome + miRNA hits > `max_total_offtarget_hits`                 | Aggregate specificity                              |
-| `EXCESS_OFF_TARGETS`          | genuine off-target count > `max_off_target_count`                                | Overall genuine-off-target ceiling                 |
+| `EXCESS_OFF_TARGETS`          | query-species genuine liabilities with `nm<=2` > `max_off_target_count`          | Optional scoped aggregate ceiling                  |
 
 Six of these seven verdicts previously existed only as raw strings assembled in `workflow.py`
 (`TRANSCRIPTOME_SEED_PERFECT` is new); they are all now members of `FilterStatus` (see 3.4), and
@@ -1013,9 +1013,9 @@ Target-site accessibility settings (see 2.5), on `DesignParameters.target_access
 `mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
 `melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
 in issue #80: they were declared but never enforced by `SiRNADesigner`, and re-deriving correct
-windows against truth data is deliberately out of scope. `max_off_target_count` (default `15`,
-range `0+`, justification: specificity) moved to `OffTargetFilterCriteria`, where it is enforced
-post-screen against the genuine off-target count (see 1.4 and 3.3).
+windows against truth data is deliberately out of scope. `max_off_target_count` (default `None`,
+range `0+`, query-species liabilities with at most two mismatches; disabled pending calibration)
+moved to `OffTargetFilterCriteria` (see 1.4 and 3.3).
 
 ## Appendix B: Scoring Weight Defaults
 

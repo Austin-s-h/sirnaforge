@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `max_off_target_count` is now an opt-in query-species liability ceiling over `nm<=2`. The previous
+  default of 15 was calibrated against an all-species, all-mismatch total and is not transferred to
+  the newly scoped metric; all-species `off_target_count` remains descriptive.
+
 - Recorded `unavailable`, `not_established` and legacy unknown gate states no longer fall through
   to numeric defaults. Threshold and guide panes scroll independently, and staged readers fit
   below their actual header height instead of overflowing the viewport.

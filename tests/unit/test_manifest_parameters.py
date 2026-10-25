@@ -145,9 +145,11 @@ def test_manifest_records_the_resolved_run_policy(tmp_path):
 
     # Actions, thresholds, comparators, scopes and term definitions, per gate.
     gates = {gate["filter_id"]: gate for gate in manifest["filters"]}
-    assert gates["max_off_target_count"]["threshold"] == 15
-    assert gates["max_off_target_count"]["action"] == "fail"
+    assert gates["max_off_target_count"]["threshold"] is None
+    assert gates["max_off_target_count"]["action"] == "off"
     assert gates["max_off_target_count"]["comparator"] == "le"
+    assert gates["max_off_target_count"]["scope"]["species"] == ["human"]
+    assert gates["max_off_target_count"]["scope"]["max_mismatches"] == 2
     assert gates["max_off_target_count"]["definition"]
     assert gates["max_transcriptome_hits_0mm"]["scope"]["species"] == ["human"]
     assert gates["max_mirna_1mm_seed"]["action"] == "off"

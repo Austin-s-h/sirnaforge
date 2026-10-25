@@ -379,10 +379,8 @@ appearance:textfield;-moz-appearance:textfield}
     <th scope="col" tabindex="0" aria-sort="none" data-k="guide">Guide<span class="si" aria-hidden="true"></span></th>
     <th scope="col" tabindex="0" aria-sort="none" data-k="composite">Score<span class="si" aria-hidden="true"></span></th>
     <th scope="col" tabindex="0" aria-sort="none" data-k="failed" title="gates failed / gates undecided">Gates<span class="si" aria-hidden="true"></span></th>
-    {# One liability column, decomposed in the cell rather than summarised in it. The bare total is the
-       number max_off_target_count gates, and it is also the number that cannot tell a human liability
-       from a non-human-index artefact: on one internal run roughly half of every liability total is
-       non-human. `#liabscope` re-scopes the sort, the emphasis and the liability bound together. #}
+    {# One descriptive liability column, decomposed in the cell. Its species selector controls only
+       the table's sort and emphasis; the gate keeps the query-species nm<=2 scope in its descriptor. #}
     <th scope="col" tabindex="0" aria-sort="none" data-k="liab" id="thliab"><span
       id="liablbl">Liab.</span><span class="si" aria-hidden="true"></span></th>
     <th scope="col" tabindex="0" aria-sort="none" data-k="rows"
@@ -488,24 +486,21 @@ G.forEach((g,i)=>{ g._i=i; });
 const INDEX_DRAW_MAX = 400;
 
 // ---- liabilities, decomposed by species ----------------------------------------------------------
-// A single all-species liability count is what `max_off_target_count` compares, and it is also the one
-// number that cannot tell a human liability from a non-human-index artefact. On one internal run about
-// half of every liability total is non-human, so a guide rejected on that ceiling may be carrying no
-// human liability at all -- and the reader had no way to see which. `liability_by_species` sums to
+// The descriptive all-species liability count cannot tell a query-species liability from a finding in
+// another index. `liability_by_species` sums to
 // `liability_count` (payload.GuideEntry), so the decomposition is exact rather than an estimate.
 // Species names are read from the run (SCREENED_SPECIES); a spelling hardcoded here would outlive the
 // screen that produced it. EMBED_SPECIES is the query species, the one the per-row detail is embedded
 // for, so it is named first and is what "the rest" is the rest of.
 const OTHER_SPECIES = SCREENED_SPECIES.filter(s => s !== EMBED_SPECIES);
 function liabOf(g, sp){ return (g.liability_by_species||{})[sp] || 0; }
-//: null means every screened species -- the gate's own scope, and the default, so nothing about the
-//: index or the liability bound changes meaning until a reader deliberately narrows it.
+//: null means every screened species. This affects the descriptive table only; the gate uses its
+//: separately published query-species nm<=2 count.
 let liabScope = null;
 function liabIn(g){ return liabScope===null ? g.liability_count : liabOf(g, liabScope); }
 function scopeLabel(){ return liabScope===null ? 'all screened species' : liabScope; }
 
-// Total first, because that is the gated number, then the split -- with the scoped part emphasised so
-// the column the reader chose to rank by is the one their eye lands on.
+// Total first, then the split -- with the selected descriptive scope emphasised for sorting.
 function liabCell(g){
   const total=g.liability_count;
   if(!SCREENED_SPECIES.length || !total) return String(total);
@@ -522,7 +517,7 @@ function liabCell(g){
 function liabTitle(g){
   if(!SCREENED_SPECIES.length) return 'no hit table in this run, so no species is recorded';
   return SCREENED_SPECIES.map(sp=>`${sp} ${liabOf(g,sp)}`).join(', ')
-    + ` — ${g.liability_count} in total, the count max_off_target_count compares`;
+    + ` — ${g.liability_count} total descriptive liabilities`;
 }
 
 const STATUS_RANK={pass:0,warn:1,unknown:2,fail:3};
@@ -789,8 +784,8 @@ function offtargetCard(g,idx){
   return `<div class="card"><h2>Off-targets by gene — ${g.liability_count} liabilit${g.liability_count===1?'y':'ies'}
       of ${g.offtarget_by_symbol.reduce((a,s)=>a+s.n,0)} alignments</h2>
     ${split?`<p class="empty" style="margin:-6px 0 10px">By species: ${split}. Only ${esc(EMBED_SPECIES)}
-      is a human liability; the rest is a non-human-index finding, and
-      <code>max_off_target_count</code> compares the total of both.</p>`:''}
+      is the query-species finding; the rest comes from other indexes. The optional gate uses its
+      separately published query-species count at nm≤2.</p>`:''}
     ${note}<div id="mx${idx}" style="height:230px"></div>
     <table><thead><tr><th>Gene</th><th>Class</th><th>Species</th><th>Alignments</th><th>Best nm</th></tr></thead>
     <tbody>${rows}</tbody></table>
@@ -1551,9 +1546,9 @@ function liabScopeControl(){
     <select id="liabscope" style="grid-column:span 2" aria-label="species the liability count is over">
       ${opt('','all screened species')}${SCREENED_SPECIES.map(sp=>opt(sp,sp)).join('')}</select></div>
     <div class="empty" style="font-size:11.5px;margin:-2px 0 5px">Every liability total on this page is
-    over all ${SCREENED_SPECIES.length} screened species, which is what <code>max_off_target_count</code>
-    compares. Narrowing to ${esc(EMBED_SPECIES)} asks the different question of whether a rejection is a
-    human liability or a non-human-index artefact; it re-scopes the column and the bound, never a verdict.</div>`;
+    over all ${SCREENED_SPECIES.length} screened species. Narrowing to ${esc(EMBED_SPECIES)} changes this
+    table's count and sort only. <code>max_off_target_count</code> keeps its declared query-species nm≤2
+    scope and is unaffected by this selector.</div>`;
 }
 
 // Set from JS, not the template, because the scope is a reader's choice and the species is run data.
@@ -1565,8 +1560,8 @@ function labelLiabColumn(){
   if(!th || !lbl) return;
   lbl.textContent = SCREENED_SPECIES.length ? `Liab. (${scopeLabel()})` : 'Liab.';
   th.title = SCREENED_SPECIES.length
-    ? `off-target liabilities: the total over all ${SCREENED_SPECIES.length} screened species -- the count `
-      + `max_off_target_count compares -- then the split into ${EMBED_SPECIES} and the rest. Sorted on `
+    ? `descriptive off-target liabilities over all ${SCREENED_SPECIES.length} screened species; `
+      + `max_off_target_count uses a separate query-species nm<=2 count. Split into ${EMBED_SPECIES} and the rest. Sorted on `
       + scopeLabel() + '.'
     : 'off-target liabilities in every screened species';
 }

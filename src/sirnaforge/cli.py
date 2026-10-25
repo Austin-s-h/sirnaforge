@@ -1451,9 +1451,9 @@ def workflow(  # noqa: PLR0912
         "--max-off-targets",
         min=0,
         help=(
-            f"Reject a candidate above this many genuine off-target sites (default: "
-            f"{default_for('max_off_target_count')}). Counts only hits left after on-target, "
-            "ortholog and repeat classification. Unlike --max-hits this changes the "
+            f"Reject a candidate above this many query-species genuine off-target sites with at most "
+            f"2 mismatches (default: {default_for('max_off_target_count')}; disabled until calibrated). "
+            "Unlike --max-hits this changes the "
             "PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
         ),
     ),

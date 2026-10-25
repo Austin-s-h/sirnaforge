@@ -916,12 +916,12 @@ def test_the_report_cannot_re_derive_a_pass_from_a_verdict_the_run_called_unknow
     workflow = _workflow(tmp_path, "report_unknown", run_mode=RunMode.QUALIFIED)
     candidate = _candidate()
     workflow._integrate_offtarget_results([candidate], dict(NO_HITS), screened_species=[], mirna_screened=False)
-    assert candidate.filter_verdicts["max_off_target_count"] == FilterEvaluation.UNKNOWN.value
+    assert candidate.filter_verdicts["max_transcriptome_hits_0mm"] == FilterEvaluation.UNKNOWN.value
 
     row = build_candidate_row(candidate)
     # off_target_count is exported and defaults to 0, so it is the fallback column that used to lie.
     assert row["off_target_count"] == 0
-    descriptor = workflow.config.resolved_policy.descriptor("max_off_target_count")
+    descriptor = workflow.config.resolved_policy.descriptor("max_transcriptome_hits_0mm")
     populated = {key for key, value in row.items() if value is not None}
     value, verdict_code, _ = evaluate_descriptor(descriptor, pd.Series(row), observed_column(descriptor, populated))
 
@@ -1125,32 +1125,35 @@ def test_a_gate_scope_follows_the_run_not_a_hard_coded_species(tmp_path: Path) -
 
 
 @pytest.mark.unit
-def test_a_missing_secondary_species_stops_an_all_species_gate_passing(tmp_path: Path) -> None:
-    """#100 defect 3: a gate counting every screened species cannot pass on a lower bound.
-
-    ``max_off_target_count`` declares an unrestricted scope, so it counts liabilities across every
-    screened species -- while completeness used to be decided for the query species alone. A run whose
-    secondary species never aligned therefore recorded a confident ``pass`` on an undercount and the
-    candidate qualified. Completeness is now channel x species, keyed off each gate's own declared
-    scope, so the evidence a gate requires is the evidence it counts.
-
-    The both-screened case is asserted alongside it: without that, making every gate unknown would
-    look like a fix.
-    """
+def test_query_species_ceiling_requires_query_species_evidence_only(tmp_path: Path) -> None:
+    """The aggregate ceiling's evidence scope is its query species and nm<=2 metric."""
     outcomes = {}
-    for screened, tag in ((["human", "mouse"], "both"), (["human"], "mouse_missing")):
-        workflow = _workflow(tmp_path, f"scope_{tag}", run_mode=RunMode.QUALIFIED, screen_species=["human", "mouse"])
+    for screened, tag in ((["human", "mouse"], "both"), (["mouse"], "query_missing")):
+        workflow = _workflow(
+            tmp_path,
+            f"scope_{tag}",
+            run_mode=RunMode.QUALIFIED,
+            screen_species=["human", "mouse"],
+            stated={"max_off_target_count": 15},
+            filter_actions={"max_off_target_count": "fail"},
+        )
         workflow._active_screen_species = ["human", "mouse"]
         candidate = _candidate()
         hits = [
-            {**_offtarget_hit(GUIDE, "human"), "nm": "3", "seed_mismatches": "3", "offtarget_score": "2.0"}
-            for _ in range(12)
+            {**_offtarget_hit(GUIDE, "human"), "nm": "1", "seed_mismatches": "1", "offtarget_score": "2.0"}
+            for _ in range(5)
         ]
         data = {
             "status": "completed",
             "results": {"probe": {"off_target_count": 12, "off_target_score": 2.0, "hits": hits}},
         }
-        workflow._integrate_offtarget_results([candidate], data, screened_species=screened, mirna_screened=True)
+        workflow._integrate_offtarget_results(
+            [candidate],
+            data,
+            screened_species=screened,
+            mirna_screened=True,
+            filter_criteria=workflow.config.design_params.offtarget_filters,
+        )
         result = _design_result(workflow, [candidate])
         workflow._apply_post_screen_ranking(result)
         outcomes[tag] = (
@@ -1159,8 +1162,8 @@ def test_a_missing_secondary_species_stops_an_all_species_gate_passing(tmp_path:
             [c.id for c in result.top_candidates],
         )
 
-    assert outcomes["both"] == (12, FilterEvaluation.PASS.value, ["probe"])
-    assert outcomes["mouse_missing"] == (None, FilterEvaluation.UNKNOWN.value, [])
+    assert outcomes["both"] == (5, FilterEvaluation.PASS.value, ["probe"])
+    assert outcomes["query_missing"] == (None, FilterEvaluation.UNKNOWN.value, [])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1199,7 +1202,13 @@ def test_re_applying_each_descriptor_reproduces_the_runs_verdict(tmp_path: Path)
     fixture carries hits at 0, 1 and 2 mismatches plus miRNA seed hits, so those gates decide rather
     than sitting inert.
     """
-    workflow = _workflow(tmp_path, "gate_parity", screen_species=["human"])
+    workflow = _workflow(
+        tmp_path,
+        "gate_parity",
+        screen_species=["human"],
+        stated={"max_off_target_count": 15},
+        filter_actions={"max_off_target_count": "fail"},
+    )
     candidate = _candidate()
     hits = (
         [_offtarget_hit(GUIDE, "human")] * 3
@@ -1211,7 +1220,13 @@ def test_re_applying_each_descriptor_reproduces_the_runs_verdict(tmp_path: Path)
         "status": "completed",
         "results": {"probe": {"off_target_count": len(hits), "off_target_score": 1.0, "hits": hits}},
     }
-    workflow._integrate_offtarget_results([candidate], data, screened_species=["human"], mirna_screened=True)
+    workflow._integrate_offtarget_results(
+        [candidate],
+        data,
+        screened_species=["human"],
+        mirna_screened=True,
+        filter_criteria=workflow.config.design_params.offtarget_filters,
+    )
 
     row = pd.Series(build_candidate_row(candidate))
     policy = workflow.config.resolved_policy

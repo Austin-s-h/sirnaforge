@@ -72,7 +72,7 @@ DOCUMENTED_MODELS = {
 
 CLASS_LINE = re.compile(r"^class ([A-Za-z]+)\(")
 FIELD_LINE = re.compile(r"^ {4}([a-z_0-9]+):\s*([A-Za-z|\[\]0-9 ]+?)\s*=\s*([^#\n]+?)\s*(?:#.*)?$")
-DEFAULT_IN_HELP = re.compile(r"default:\s*(-?[0-9]+(?:\.[0-9]+)?)")
+DEFAULT_IN_HELP = re.compile(r"default:\s*(-?[0-9]+(?:\.[0-9]+)?|None)")
 
 
 def _option_help(command_name: str, parameter: str) -> str:
@@ -134,7 +134,9 @@ def test_every_default_quoted_in_cli_help_matches_the_resolved_default():
         help_text = _option_help(command_name, parameter)
         quoted = DEFAULT_IN_HELP.search(help_text)
         assert quoted, f"{command_name} --{parameter} quotes no default; it should name one"
-        assert float(quoted.group(1)) == float(default_for(setting)), (
+        actual = default_for(setting)
+        quoted_value = None if quoted.group(1) == "None" else float(quoted.group(1))
+        assert quoted_value == actual if actual is None else quoted_value == float(actual), (
             f"{command_name} --{parameter} help says {quoted.group(1)}, the resolver applies {default_for(setting)}"
         )
 
@@ -205,15 +207,15 @@ def test_documented_field_annotations_agree_with_the_models_on_nullability():
 def test_the_documented_off_target_cap_is_the_enforced_one():
     """Both halves of the `8dce4ae` cap drift: the field description and the documentation."""
     cap = OffTargetFilterCriteria.model_fields["max_off_target_count"].get_default(call_default_factory=False)
-    assert cap == 15
+    assert cap is None
 
     count_description = str(SiRNACandidate.model_fields["off_target_count"].description)
     assert "≤3" not in count_description, "the reported column must not advertise a ceiling nothing applies"
-    assert "max_off_target_count" in count_description
+    assert "optional ceiling" in count_description
 
     for document in ("docs/models_and_scoring.md",):
         text = (REPO_ROOT / document).read_text()
-        assert "max_off_target_count: int | None = 15" in text
+        assert "max_off_target_count: int | None = None" in text
 
 
 @pytest.mark.unit

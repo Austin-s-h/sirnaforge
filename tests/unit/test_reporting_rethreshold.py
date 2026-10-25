@@ -518,11 +518,10 @@ def test_the_per_guide_scope_note_is_reserved_for_a_guide_the_report_is_not_reje
 def test_the_liability_column_and_its_bound_can_be_narrowed_to_one_species(tmp_path: Path) -> None:
     """One all-species count cannot tell a human liability from a non-human-index artefact.
 
-    ``max_off_target_count`` compares the total over every screened species, and on one internal run
-    about half of that total is non-human -- so a guide it rejected may carry no human liability at all.
+    The descriptive liability total covers every screened species, while ``max_off_target_count`` uses
+    a separate query-species nm<=2 counter. On one internal run about half of the total was non-human.
     The decomposition is on the guide (``liability_by_species``, which sums to ``liability_count``), the
-    index cell shows it, and one selector re-scopes the column, its sort and the liability bound
-    together rather than adding a second control over the same number.
+    index cell shows it, and one selector re-scopes only the descriptive column and its sort.
     """
     payload = build_payload(_graded_run(tmp_path))
     html = render_html(payload)

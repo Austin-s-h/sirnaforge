@@ -83,13 +83,14 @@ def test_report_diagnostics_record_projected_chunked_reads_without_changing_html
 
 _CANDIDATE_COLUMNS = (
     "id,guide_sequence,passenger_sequence,transcript_id,position,gc_content,asymmetry_score,"
-    "empirical_score,paired_fraction,design_score,composite_score,weight_vector,passes_filters"
+    "empirical_score,paired_fraction,design_score,composite_score,weight_vector,passes_filters,"
+    "transcriptome_hits_query_le2"
 )
 
 
 def _candidate_row(cid: str, guide: str, transcript: str, position: int, *, gc: float = 45.0) -> str:
     dna = guide.replace("U", "T")
-    return f"{cid},{dna},{dna},{transcript},{position},{gc},0.8,0.5,0.3,55.0,60.0,postscreen_sirna_v4,PASS"
+    return f"{cid},{dna},{dna},{transcript},{position},{gc},0.8,0.5,0.3,55.0,60.0,postscreen_sirna_v4,PASS,0"
 
 
 def _hit_row(guide: str, species: str, rname: str, nm: int, hit_class: str, symbol: str) -> dict[str, object]:
@@ -112,12 +113,22 @@ def _hit_row(guide: str, species: str, rname: str, nm: int, hit_class: str, symb
     }
 
 
-def _write_run(tmp_path: Path, candidates: list[str], hits: list[dict[str, object]]) -> Path:
+def _write_run(
+    tmp_path: Path, candidates: list[str], hits: list[dict[str, object]], *, max_off_targets: int | None = None
+) -> Path:
     run = tmp_path / "run"
     (run / "sirnaforge").mkdir(parents=True)
     (run / "off_target" / "results" / "aggregated").mkdir(parents=True)
     (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([_CANDIDATE_COLUMNS, *candidates]) + "\n")
-    (run / "sirnaforge" / "manifest.json").write_text(json.dumps({"gene_query": "TP53", "tool_version": "test"}))
+    manifest: dict[str, object] = {"gene_query": "TP53", "tool_version": "test"}
+    if max_off_targets is not None:
+        manifest["run_policy"] = resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW,
+            query_species="human",
+            screen_species=["human"],
+            stated={"max_off_target_count": max_off_targets},
+        ).as_manifest()
+    (run / "sirnaforge" / "manifest.json").write_text(json.dumps(manifest))
 
     table = run / "off_target" / "results" / "aggregated" / "combined_offtargets.tsv"
     if hits:
@@ -183,12 +194,13 @@ def _write_fully_evidenced_run(
     not evaluated for the whole run rather than for one row.
     """
     recorded = recorded or {}
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
     columns += "".join(f",{k}_verdict" for k in recorded)
     rows = []
     for n, guide in enumerate(guides, start=1):
-        row = _candidate_row(f"c{n}", guide, "ENST00000000001", 10 * n).rsplit(",", 1)[0] + f",{run_label}"
+        row = _candidate_row(f"c{n}", guide, "ENST00000000001", 10 * n).rsplit(",", 2)[0]
+        row += f",{run_label},0"
         row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
         row += "".join(f",{v}" for v in recorded.values())
         rows.append(row)
@@ -222,7 +234,7 @@ def _write_graded_run(tmp_path: Path, grades: Sequence[str]) -> Path:
     drop a guide by score alone. Every guide records what all seventeen gates observed, as the fixed
     design path does, and the run's own ``passes_filters`` label agrees with the status asked for.
     """
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     verdict_columns = sorted({column for column, _ in (_GRADE_RECORDED.get(g, ("", "")) for g in grades) if column})
     columns = (
         _CANDIDATE_COLUMNS
@@ -294,7 +306,7 @@ def test_a_gate_whose_column_the_run_does_not_export_is_unknown_not_pass(tmp_pat
     A gate the run exports no readable column for -- neither ``<filter_id>_observed`` nor the
     descriptor's own column -- is reported ``not established``, never flipped to pass.
     """
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     entry = build_payload(run).guides[0]
 
     assert entry.n_gates_unknown > 0, "the synthetic run exports none of the screening counters"
@@ -311,7 +323,7 @@ def test_an_integer_counter_is_read_rather_than_nulled(tmp_path: Path) -> None:
     whose threshold was rejecting 65% of its candidates.
     """
     columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [], max_off_targets=15)
     (run / "sirnaforge" / "candidates_all.csv").write_text(
         f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},7,7\n"
     )
@@ -334,7 +346,7 @@ def test_a_gate_reads_the_value_the_run_compared_not_a_wider_counter(tmp_path: P
     two disagree 17,600 hits against 63,801.
     """
     columns = _CANDIDATE_COLUMNS + ",transcriptome_hits_1mm,max_transcriptome_hits_1mm_observed"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     # 40 all-species hits would fail the ceiling of 10; the 2 the gate actually counted pass it.
     (run / "sirnaforge" / "candidates_all.csv").write_text(
         f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},40,2\n"
@@ -355,7 +367,12 @@ def test_an_empty_observed_column_falls_back_to_the_descriptor_column(tmp_path: 
     exported ``gc_content`` -- into unknowns.
     """
     columns = _CANDIDATE_COLUMNS + ",gc_content_max_observed"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST00000000001", 10)],
+        [],
+        max_off_targets=15,
+    )
     (run / "sirnaforge" / "candidates_all.csv").write_text(
         f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10, gc=45.0)},\n"
     )
@@ -1163,7 +1180,7 @@ def test_a_slider_domain_is_snapped_to_its_step_and_clamped_to_the_settings_own_
         + "".join(f",{v}" for v in values.values())
         for n, values in enumerate(observed, start=1)
     ]
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=59)
     (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
     payload = build_payload(run)
     by_id = {f["filter_id"]: f for f in payload.filters}
@@ -1221,21 +1238,19 @@ def test_an_inert_gates_domain_can_still_reach_a_threshold_that_changes_a_verdic
 
 @pytest.mark.unit
 def test_liability_is_published_per_species_as_well_as_summed_over_them(tmp_path: Path) -> None:
-    """The gate that rejects the most guides counts every species at once, and nothing decomposed it.
+    """The descriptive all-species count stays distinct from the scoped gate input.
 
     Run-wide liability alignments on one internal run: 92,658 human, 91,536 mouse, 25,243 macaque, 23,427
-    rat. ``max_off_target_count`` is scoped to all species and failed 3,317 guides, 782 of them on nothing
-    else -- and 458 of those 782 pass the same ceiling on human liabilities alone, against 448 passes in
-    the whole report. Both numbers are now published, because which one a reader takes decides whether
-    they agree with the run.
+    rat. The all-species liability total stays published per guide, while ``max_off_target_count`` reads
+    the separate query-species nm<=2 counter; a multi-species fixture guards against drifting the scopes.
     """
     hits = [_hit_row(GUIDE, "human", f"ENST0000001{i:04d}", 1, "off_target", f"HUMANGENE{i}") for i in range(3)]
     hits += [_hit_row(GUIDE, "mouse", f"ENSMUST0000{i:04d}", 1, "off_target", f"Mousegene{i}") for i in range(17)]
     hits += [_hit_row(GUIDE, "mouse", "ENSMUST9999999", 0, "ortholog", "Genex")]
     columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed,total_offtarget_hits_query"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], hits)
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], hits, max_off_targets=15)
     (run / "sirnaforge" / "candidates_all.csv").write_text(
-        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},20,20,3\n"
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},20,3,3\n"
     )
     payload = build_payload(run)
     entry = payload.guides[0]
@@ -1245,8 +1260,9 @@ def test_liability_is_published_per_species_as_well_as_summed_over_them(tmp_path
     assert entry.liability_count == 20, "the all-species number the gate compared"
     assert entry.liability_by_species == {"human": 3, "mouse": 17}, "the ortholog hit is not a liability"
     assert sum(entry.liability_by_species.values()) == entry.liability_count
-    assert entry.gates[index][1] == 1, "20 liabilities fail a ceiling of 15"
-    assert entry.liability_by_species["human"] <= ceiling, "and on human alone the same ceiling passes it"
+    assert entry.gates[index][0] == 3, "the gate reads the query-species nm<=2 counter"
+    assert entry.gates[index][1] == 0, "17 mouse liabilities do not fail a query-species ceiling of 15"
+    assert entry.liability_by_species["human"] <= ceiling
     assert entry.metrics["total_offtarget_hits_query"] == 3, "the query-species gate input #101 exports"
     assert payload.run["liability_rows_by_species"] == {"human": 3, "mouse": 17}
     assert payload.run["screened_species"] == ["human", "mouse"]
