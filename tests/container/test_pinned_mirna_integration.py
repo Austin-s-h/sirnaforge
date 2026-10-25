@@ -12,8 +12,9 @@ from release_artifacts import assert_report_rendered
 pytestmark = [pytest.mark.integration, pytest.mark.runs_in_container]
 
 
+@pytest.mark.parametrize("mode", ["compact_single_file", "paged_single_file", "data_backed"])
 @pytest.mark.parametrize("valid", [True, False])
-def test_fresh_pinned_mirbase_workflow(tmp_path: Path, valid: bool) -> None:
+def test_fresh_pinned_mirbase_workflow(tmp_path: Path, valid: bool, mode: str) -> None:
     """A verified local pin completes offline; a bad digest remains failed evidence."""
     reference = tmp_path / "mature.fa"
     reference.write_text(">hsa-synthetic-fixture\nACGUACGUACGUACGUACGUA\n")
@@ -49,6 +50,8 @@ def test_fresh_pinned_mirbase_workflow(tmp_path: Path, valid: bool) -> None:
             str(output),
             "--run-mode",
             "exploratory",
+            "--report-mode",
+            mode,
             "--species",
             "human",
             "--mirna-species",
@@ -86,3 +89,11 @@ def test_fresh_pinned_mirbase_workflow(tmp_path: Path, valid: bool) -> None:
     else:
         assert evidence["acquisition"]["reason"]
     assert_report_rendered(output)
+    diagnostics = json.loads((output / "sirnaforge/report.diagnostics.json").read_text())
+    assert diagnostics["mode_selection"]["mode"] == mode
+    if mode != "compact_single_file":
+        report_manifest = json.loads((output / "sirnaforge/report.data/report_manifest.json").read_text())
+        assert report_manifest["reference_evidence"]["state"] == ("complete" if valid else "acquisition_failed")
+        if not valid:
+            assert report_manifest["summary"]["evidence_warning_counts"]["MIRNA_ACQUISITION_FAILED"] > 0
+            assert report_manifest["summary"]["passes_without_unresolved_evidence"] == 0

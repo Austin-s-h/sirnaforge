@@ -11,6 +11,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from sirnaforge.reporting.artifacts import (
     ReportModeThresholds,
     _sha256,
 )
+from sirnaforge.reporting.evidence import WARNING_REGISTRY, guide_mirna_evidence, mirna_evidence
 from sirnaforge.reporting.payload import (
     _VERDICT_CODE,
     REPORT_READ_CHUNK_ROWS,
@@ -41,6 +43,25 @@ from sirnaforge.reporting.payload import (
 from sirnaforge.reporting.render import write_report
 
 _SHARD_GUIDES = 128
+_GUIDE_SCHEMA = pa.schema(
+    [
+        ("guide", pa.string()),
+        ("mirna_evidence_state", pa.string()),
+        ("mirna_warning_id", pa.string()),
+        ("unresolved_evidence", pa.bool_()),
+        ("candidate_rows", pa.int64()),
+        ("design_score", pa.float64()),
+        ("composite_score", pa.float64()),
+        ("run_verdict", pa.string()),
+        ("canonical_hit", pa.string()),
+        ("status", pa.string()),
+        ("gates", pa.string()),
+        ("n_failed_gates", pa.int64()),
+        ("n_unknown_gates", pa.int64()),
+        ("n_warned_gates", pa.int64()),
+        ("detail_shard", pa.int64()),
+    ]
+)
 
 
 @dataclass(frozen=True)
@@ -179,6 +200,17 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     caveats: list[str] = []
     _manifest_path, manifest = _read_manifest(run_dir, caveats)
     panel = _gate_panel(policy, manifest, caveats)
+    reference_evidence = mirna_evidence(manifest)
+    store.manifest["reference_evidence"] = {
+        key: value for key, value in reference_evidence.items() if key != "guide_sequences"
+    }
+    store.manifest["evidence_warning_registry"] = WARNING_REGISTRY
+    store.manifest["gate_panel"] = {
+        "source": panel.source,
+        "profile": panel.profile_name,
+        "run_mode": panel.run_mode,
+        "filters": [gate.model_dump(mode="json") for gate in panel.filters],
+    }
     identity = manifest.get("target_identity") if isinstance(manifest.get("target_identity"), dict) else {}
     identity_rows_raw = identity.get("transcripts") if isinstance(identity, dict) else []
     identity_rows = identity_rows_raw if isinstance(identity_rows_raw, list) else []
@@ -196,6 +228,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     }
     store.manifest["target_identity"] = identity
     populated: set[str] = set()
+    transcript_register: set[str] = set()
     temp_db = store.root / ".derive.sqlite"
     db = sqlite3.connect(temp_db)
     db.execute("PRAGMA journal_mode=OFF")
@@ -205,6 +238,8 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     for batch in store.iter_batches("candidates", batch_size=REPORT_READ_CHUNK_ROWS):
         records = batch.to_pylist()
         for record in records:
+            if record.get("transcript_id"):
+                transcript_register.add(str(record["transcript_id"]))
             for name, value in record.items():
                 if value is not None and str(value).strip():
                     populated.add(name)
@@ -303,9 +338,13 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                     "candidate_rows": sum(1 for item in rows if str(item.get("transcript_id") or "") == tx),
                 }
             )
+        diagnostic = guide_mirna_evidence(reference_evidence, guide)
         guide_records.append(
             {
                 "guide": guide,
+                "mirna_evidence_state": diagnostic["state"],
+                "mirna_warning_id": diagnostic["warning_id"],
+                "unresolved_evidence": bool(n_unknown or diagnostic["state"] not in {"complete", "not_requested"}),
                 "candidate_rows": len(rows),
                 "design_score": _float_or_none(best.get("design_score")),
                 "composite_score": _float_or_none(best.get("composite_score")),
@@ -314,7 +353,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                     "hit"
                     if set(iso_seen) & canonical_ids
                     else "not_hit"
-                    if canonical_ids and canonical_ids <= iso_seen
+                    if canonical_ids and canonical_ids <= transcript_register
                     else "not_established"
                 ),
                 "status": status,
@@ -322,7 +361,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                 "n_failed_gates": n_failed,
                 "n_unknown_gates": n_unknown,
                 "n_warned_gates": n_warned,
-                "detail_shard": "",
+                "detail_shard": None,
             }
         )
 
@@ -343,6 +382,16 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     _derive_hit_summary(store)
     store.manifest["summary"] = {
         "guides": len(guide_records),
+        "unresolved_guides": sum(row["unresolved_evidence"] for row in guide_records),
+        "passes_without_unresolved_evidence": sum(
+            row["status"] == "pass" and not row["unresolved_evidence"] for row in guide_records
+        ),
+        "mirna_unresolved_guides": sum(
+            row["mirna_evidence_state"] not in {"complete", "not_requested"} for row in guide_records
+        ),
+        "evidence_warning_counts": dict(
+            Counter(row["mirna_warning_id"] for row in guide_records if row["mirna_warning_id"])
+        ),
         "status_counts": {status: status_counts.get(status, 0) for status in STATUSES},
         "filters": [
             {
@@ -423,7 +472,13 @@ def _derive_hit_summary(store: ReportArtifactStore) -> None:
 
 def _write_records(store: ReportArtifactStore, name: str, records: list[dict[str, Any]]) -> None:
     path = store.root / f"{name}.parquet"
-    schema = pa.Table.from_pylist(records[:1]).schema if records else pa.schema([("_empty", pa.string())])
+    schema = (
+        _GUIDE_SCHEMA
+        if name == "guides"
+        else pa.Table.from_pylist(records[:1]).schema
+        if records
+        else pa.schema([("_empty", pa.string())])
+    )
     sink = _ParquetRecordSink(path, schema)
     for record in records:
         sink.append(record)
@@ -540,6 +595,9 @@ def _write_data_backed_html(store: ReportArtifactStore, output: Path, shard_dir:
     data = json.dumps(guides, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
     html = _DATA_BACKED_TEMPLATE.replace("__GUIDES__", data).replace("__MANIFEST__", manifest)
     html = html.replace("__MODE__", str(store.manifest["report_mode"]))
+    html = html.replace("__EVIDENCE_PANEL__", _evidence_panel(store.manifest))
+    unresolved_count = store.manifest["summary"]["unresolved_guides"]
+    html = html.replace("__UNRESOLVED_CONTROL__", _unresolved_control(unresolved_count))
     html = html.replace("__SHARD_DIR__", shard_dir).replace("__STATUS_COUNTS__", json.dumps(summary["status_counts"]))
     html = html.replace("<!--__INLINE_SHARDS__-->", "")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -556,12 +614,88 @@ def _write_paged_html(store: ReportArtifactStore, output: Path, shard_dir: Path)
     scripts = "\n".join(path.read_text() for path in sorted(shard_dir.glob("*.js")))
     html = _DATA_BACKED_TEMPLATE.replace("__GUIDES__", data).replace("__MANIFEST__", manifest)
     html = html.replace("__MODE__", str(store.manifest["report_mode"]))
+    html = html.replace("__EVIDENCE_PANEL__", _evidence_panel(store.manifest))
+    unresolved_count = store.manifest["summary"]["unresolved_guides"]
+    html = html.replace("__UNRESOLVED_CONTROL__", _unresolved_control(unresolved_count))
     html = html.replace("__SHARD_DIR__", "").replace(
         "__STATUS_COUNTS__", json.dumps(store.manifest["summary"]["status_counts"])
     )
     html = html.replace("<!--__INLINE_SHARDS__-->", f"<script>\n{scripts}\n</script>")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(html)
+
+
+def _unresolved_control(count: int) -> str:
+    hidden = " hidden" if count == 0 else ""
+    return f'<label{hidden}><input id="unresolved-only" type="checkbox">Show unresolved evidence ({count})</label>'
+
+
+def _evidence_panel(manifest: dict[str, Any]) -> str:
+    """Render shared evidence copy and an independently scrollable policy inspector."""
+    summary = manifest["summary"]
+    registry = manifest["evidence_warning_registry"]
+    notices = []
+    for warning_id, count in summary["evidence_warning_counts"].items():
+        warning = registry[warning_id]
+        notices.append(
+            f'<li data-warning-id="{escape(warning_id)}"><b>{escape(warning["title"])}</b> '
+            f"({count} guides)<p>{escape(warning['body'])}</p>"
+            f"<p>{escape(warning['remediation'])}</p></li>"
+        )
+    evidence = manifest["reference_evidence"]
+    sources = []
+    for source in evidence["sources"]:
+        references = "; ".join(
+            ", ".join(f"{key}: {value}" for key, value in reference.items()) for reference in source["references"]
+        )
+        reasons = "; ".join(
+            str(source[phase]["reason"]) for phase in ("acquisition", "screening") if source[phase].get("reason")
+        )
+        sources.append(
+            f"<li>{escape(str(source['source']))} / {escape(str(source['species']))}: "
+            f"{escape(source['state'])}<p>{escape(reasons)}</p><p>{escape(references)}</p></li>"
+        )
+    notice_html = ""
+    if notices:
+        notice_html = (
+            '<details id="evidence-notices"><summary>miRNA evidence notices</summary><ul>'
+            + "".join(notices)
+            + "</ul></details>"
+        )
+    panel = manifest["gate_panel"]
+    filters = []
+    for gate in panel["filters"]:
+        descriptor = gate["descriptor"]
+        scope = json.dumps(descriptor["scope"], sort_keys=True)
+        filters.append(
+            f"<details><summary>{escape(descriptor['filter_id'].replace('_', ' '))}</summary><dl>"
+            f"<dt>Setting</dt><dd>{escape(gate['setting_key'])}</dd>"
+            f"<dt>Threshold</dt><dd>{escape(descriptor['comparator'])} {escape(str(descriptor['threshold']))}</dd>"
+            f"<dt>Action</dt><dd>{escape(descriptor['action'])}</dd>"
+            f"<dt>Stage</dt><dd>{escape(descriptor['stage'])}</dd>"
+            f"<dt>Scope</dt><dd>{escape(scope)}</dd>"
+            f"<dt>Definition and units</dt><dd>{escape(gate['definition'])}</dd></dl></details>"
+        )
+    return (
+        '<aside aria-label="Evidence and thresholds">'
+        "<h2>Evidence</h2><p>Gate results use the published policy and observations. View filters do not change the run. "
+        "Unresolved evidence is listed separately; absent matches do not establish a clean screen.</p>"
+        + notice_html
+        + (
+            "<details><summary>miRNA reference provenance</summary><ul>" + "".join(sources) + "</ul></details>"
+            if sources
+            else ""
+        )
+        + "<h2>Thresholds</h2><p>Source: "
+        + escape(panel["source"])
+        + " · profile: "
+        + escape(panel["profile"])
+        + "</p>"
+        + "<p>Pass: criterion met. Warn: finding retained. Fail: criterion exceeded. "
+        "Unknown: active gate lacks evidence. Not evaluated: gate was off or unconfigured.</p>"
+        + "".join(filters)
+        + "</aside>"
+    )
 
 
 def _compact_manifest(run_dir: Path, mode: str, thresholds: ReportModeThresholds | None) -> dict[str, Any]:
@@ -627,16 +761,17 @@ def _peak_rss_bytes() -> int | None:
 
 
 _DATA_BACKED_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>siRNAforge data-backed report</title><style>body{font:14px system-ui;margin:0;color:#1a1d21;background:#fbfbfc}header{padding:18px 24px;background:white;border-bottom:1px solid #ddd}main{display:grid;grid-template-columns:minmax(420px,45%) 1fr;height:calc(100vh - 112px)}section{overflow:auto;padding:12px}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border-bottom:1px solid #ddd;padding:5px;text-align:left}.pill{padding:2px 6px;border-radius:8px;background:#eee}.fail{color:#b91c1c}.pass{color:#15803d}.warn{color:#92400e}.unknown{color:#6b7280}button{font:inherit;cursor:pointer}#details{white-space:normal}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
-<body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label><span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
-<main><section><table><thead><tr><th>Guide</th><th>Status</th><th>Rows</th><th>Design</th><th>Composite</th></tr></thead><tbody id="rows"></tbody></table></section><section id="details" aria-live="polite"><p>Select any guide to load its detail shard.</p></section></main>
+<title>siRNAforge data-backed report</title><style>body{font:14px system-ui;margin:0;color:#1a1d21;background:#fbfbfc}header{padding:18px 24px;background:white;border-bottom:1px solid #ddd}main{display:grid;grid-template-columns:minmax(220px,25%) minmax(350px,35%) 1fr;height:calc(100vh - 112px)}section,aside{overflow:auto;padding:12px}aside{border-right:1px solid #ddd;font-size:12px;overflow-wrap:anywhere}dd{margin-left:12px}details{margin:8px 0}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border-bottom:1px solid #ddd;padding:5px;text-align:left}.pill{padding:2px 6px;border-radius:8px;background:#eee}.fail{color:#b91c1c}.pass{color:#15803d}.warn{color:#92400e}.unknown{color:#6b7280}button{font:inherit;cursor:pointer}#details{white-space:normal}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
+<body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label>__UNRESOLVED_CONTROL__<span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
+<main>__EVIDENCE_PANEL__<section><table><thead><tr><th>Guide</th><th>Status</th><th>Rows</th><th>Design</th><th>Composite</th></tr></thead><tbody id="rows"></tbody></table></section><section id="details" aria-live="polite"><p>Select any guide to load its detail shard.</p></section></main>
 <!--__INLINE_SHARDS__-->
 <script>
 const PAGE_SIZE=50;let currentPage=0;const G=__GUIDES__, M=__MANIFEST__, SHARD_DIR='__SHARD_DIR__', STATUS_COUNTS=__STATUS_COUNTS__;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function renderRows(){const q=document.querySelector('#search').value.trim().toUpperCase(),st=document.querySelector('#status').value;
  const gate=document.querySelector('#gate').selectedIndex-1,result=document.querySelector('#gate-result').value;
- const shown=G.filter(g=>(!q||g.guide.includes(q))&&(!st||g.status===st)&&
+ const unresolved=document.querySelector('#unresolved-only').checked;
+ const shown=G.filter(g=>(!q||g.guide.includes(q))&&(!st||g.status===st)&&(!unresolved||g.unresolved_evidence)&&
    (gate<0||!result||JSON.parse(g.gates)[gate]?.[1]===Number(result)));
  const pageCount=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));currentPage=Math.min(currentPage,pageCount-1);
  const pageRows=shown.slice(currentPage*PAGE_SIZE,(currentPage+1)*PAGE_SIZE);
@@ -647,10 +782,12 @@ function renderRows(){const q=document.querySelector('#search').value.trim().toU
  document.querySelectorAll('[data-guide]').forEach(b=>b.addEventListener('click',()=>showGuide(b.dataset.guide)));
 }
 function loadShard(i){return new Promise((resolve,reject)=>{if(window.SF_DETAIL_SHARDS?.[i])return resolve();const s=document.createElement('script');s.src=`${SHARD_DIR}/guide-${String(i).padStart(5,'0')}.js`;s.onload=resolve;s.onerror=()=>reject(Error('Could not load local detail shard'));document.head.appendChild(s);});}
-async function showGuide(guide){const row=G.find(g=>g.guide===guide);if(!row)return;const panel=document.querySelector('#details');panel.textContent='Loading guide detail…';try{await loadShard(row.shard);const d=window.SF_DETAIL_SHARDS[row.shard][guide];panel.innerHTML=`<h2>${esc(guide)} · ${esc(row.status)}</h2><p>${row.candidate_rows} candidate rows · ${d.hits.length} classified hit rows · ${d.mirna.length} miRNA rows</p><h3>Candidate rows</h3><pre>${esc(JSON.stringify(d.candidates,null,2))}</pre><h3>Off-target rows</h3><pre>${esc(JSON.stringify(d.hits,null,2))}</pre><h3>miRNA rows</h3><pre>${esc(JSON.stringify(d.mirna,null,2))}</pre>`;}catch(e){panel.textContent=e.message;}}
-document.querySelector('#counts').textContent=Object.entries(STATUS_COUNTS).map(([k,v])=>`${k}: ${v}`).join(' · ')+` · total ${G.length}`;
+function evidenceCopy(row){const warning=M.evidence_warning_registry[row.mirna_warning_id];return warning?`<div data-warning-id="${esc(row.mirna_warning_id)}"><h3>${esc(warning.title)}</h3><p>${esc(warning.body)}</p><p>${esc(warning.remediation)}</p></div>`:'<p>miRNA screening completed for this submitted guide; the retained rows describe matches under its declared reference and settings.</p>';}
+async function showGuide(guide){const row=G.find(g=>g.guide===guide);if(!row)return;const panel=document.querySelector('#details');panel.textContent='Loading guide detail…';try{await loadShard(row.shard);const d=window.SF_DETAIL_SHARDS[row.shard][guide];panel.innerHTML=`<h2>${esc(guide)} · ${esc(row.status)}</h2>${evidenceCopy(row)}<p>${row.candidate_rows} candidate rows · ${d.hits.length} classified hit rows · ${d.mirna.length} miRNA rows</p><h3>Candidate rows</h3><pre>${esc(JSON.stringify(d.candidates,null,2))}</pre><h3>Off-target rows</h3><pre>${esc(JSON.stringify(d.hits,null,2))}</pre><h3>miRNA rows</h3><pre>${esc(JSON.stringify(d.mirna,null,2))}</pre>`;}catch(e){panel.textContent=e.message;}}
+document.querySelector('#counts').textContent='Gate results: '+Object.entries(STATUS_COUNTS).map(([k,v])=>`${k}: ${v}`).join(' · ')+` · total ${G.length} · ${M.summary.passes_without_unresolved_evidence} passes without unresolved evidence`;
 document.querySelector('#gatecounts').textContent=(M.summary.filters||[]).map(f=>`${f.filter_id}: ${f.rejects} reject, ${f.warns} warn, ${f.unknowns} unknown`).join(' · ');
 for(const f of M.summary.filters){const o=document.createElement('option');o.value=f.filter_id;o.textContent=f.filter_id;document.querySelector('#gate').appendChild(o);}
 document.querySelector('#previous').addEventListener('click',()=>{currentPage=Math.max(0,currentPage-1);renderRows()});document.querySelector('#next').addEventListener('click',()=>{currentPage++;renderRows()});
+document.querySelector('#unresolved-only').addEventListener('change',()=>{currentPage=0;renderRows()});
 document.querySelector('#search').addEventListener('input',()=>{currentPage=0;renderRows()});document.querySelector('#status').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate-result').addEventListener('change',()=>{currentPage=0;renderRows()});renderRows();
 </script></body></html>"""

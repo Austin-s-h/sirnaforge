@@ -1,6 +1,7 @@
 # The HTML report
 
-`sirnaforge report <run_dir>` turns a finished run directory into **one self-contained HTML file**.
+`sirnaforge report <run_dir>` builds an offline report, choosing a compact single file for small runs
+and staged modes for larger runs.
 
 ```bash
 sirnaforge report results/TP53 -o results/TP53/report.html
@@ -39,6 +40,15 @@ Stable warning identifiers, severity, text, remediation, and default visibility 
 diagnostic, which is omitted when every embedded guide has completed miRNA evidence. This diagnostic
 does not change pipeline gate verdicts: producer-recorded unavailable gates remain undecided under
 the report's existing gate semantics.
+
+Paged and data-backed readers use the same miRNA warning registry and guide-submission
+checks. Their evidence inspector shows source/release/acquisition/checksum provenance and
+remediation. “Show unresolved evidence” filters the guide index without changing gate
+results; it is hidden when no guide has unresolved evidence. Gate pass counts remain
+separate from the number of passes without unresolved evidence. A fixed, independently
+scrollable threshold inspector records setting, comparator/value, action, stage, scope,
+definition and policy source. Normalized guide tables have an explicit Arrow schema so
+nullable evidence identities or scores in the first guide cannot erase later values.
 
 Orthology diagnostics also preserve the resolver's per-species reason code. An unavailable mapping can
 therefore identify an unrecognized target ID, unsupported species, exhausted lookup budget, or a

@@ -83,6 +83,7 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     assert canonical["canonical_source"] == "test authority"
     guide_rows = pq.read_table(artifact_root / "guides.parquet").to_pylist()
     assert next(row for row in guide_rows if row["guide"] == guides[0])["canonical_hit"] == "hit"
+    assert next(row for row in guide_rows if row["guide"] == guides[1])["canonical_hit"] == "not_hit"
     assert manifest["reader"]["offline_file_origin_supported"] is True
     diagnostics = json.loads(output.with_suffix(".diagnostics.json").read_text())
     assert diagnostics["peak_memory_scope"] == "process_lifetime"
@@ -159,7 +160,7 @@ def test_paged_single_file_navigates_all_filtered_guides_and_opens_inline_detail
     bootstrap = r"""
 const vm=require('vm');global.window={};
 const elements={};function el(){return {value:'',selectedIndex:0,textContent:'',innerHTML:'',disabled:false,handlers:{},addEventListener(k,fn){this.handlers[k]=fn;}}}
-for(const id of ['#counts','#gatecounts','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
+for(const id of ['#counts','#gatecounts','#unresolved-only','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
 elements['#gate'].appendChild=()=>{};global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
 """
     code = (

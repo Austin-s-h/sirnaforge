@@ -153,3 +153,30 @@ Priority remains: finish CI; #123/#112 reference availability and honest evidenc
 #98/#102 independent biological validation. Keep partially completed issues open.
 In particular, #123 has bounded socket attempts but no proven strict total download
 deadline for a trickling server. No archive/mirror was automatically adopted.
+
+
+## Reference resilience acceptance checkpoint — 2026-10-25
+
+`ebd274f` replaces the per-socket-only acquisition behavior with a subprocess
+worker that is killed and reaped on a total per-attempt deadline. This supersedes
+the deadline gap identified above. The local-server regression sends bytes every
+20 ms, exceeds a one-second deadline, and proves the old cached FASTA and metadata
+survive unchanged. Normal downloads, gzip and decoding are checked through the
+actual installed worker. No third-party mirror/archive has been adopted.
+
+Paged and data-backed reports now consume the same source/guide evidence registry
+as compact reports. They expose source provenance and remediation, an unresolved
+view filter, separate gate-pass versus unresolved-evidence counts, and an
+independently scrolling threshold inspector. Normalized guide tables have a fixed
+Arrow schema; nullable fields in the first record no longer erase later values.
+The canonical non-hit branch now checks the full transcript register rather than
+the selected guide's own hit set.
+
+Validation: 2,117 integrated offline host tests passed (67 deselected) in 141.22s;
+all six valid/invalid pinned-reference cases passed through the installed public
+CLI, real Nextflow, and each of the three report modes with networking disabled
+in 80.80s. Ruff/format pass; mypy passes 132 source/script files; warnings-as-errors
+docs pass. Focused reader tests execute the unresolved filter and stable warning
+copy in Node without modifying recorded gate arrays. #123 is ready for closure
+with this evidence after publication. #112 remains open for its broader vocabulary
+and UI acceptance audit; #111/#113/#114 still need their remaining full criteria.
