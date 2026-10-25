@@ -85,7 +85,5 @@ def canonical_identity_link(
     resolver: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Link an Ensembl ID without treating another authority's release as Ensembl's."""
-    ensembl_release = (
-        canonical_release if canonical_source and canonical_source.startswith("Ensembl REST lookup") else None
-    )
+    ensembl_release = None if canonical_source and canonical_source.startswith("GENCODE") else canonical_release
     return source_link(identifier, "ensembl", release=ensembl_release, resolver=resolver)
