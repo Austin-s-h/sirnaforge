@@ -342,15 +342,8 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
             gene_symbol = str(
                 identity_row.get("gene_symbol") or row.get("gene_symbol") or row.get("gene_name") or ""
             ).strip()
-            if gene_id:
-                gene_key = f"id:{gene_id}"
-                gene_label = f"{gene_symbol} · {gene_id}" if gene_symbol else gene_id
-                guide_genes[gene_key] = {"key": gene_key, "label": gene_label}
-            elif gene_symbol:
-                gene_key = f"symbol:{gene_symbol.casefold()}"
-                guide_genes[gene_key] = {"key": gene_key, "label": gene_symbol}
-            else:
-                guide_genes["__unresolved__"] = {"key": "__unresolved__", "label": "Unknown target gene"}
+            gene_entry = _target_gene_entry(gene_id, gene_symbol)
+            guide_genes[gene_entry["key"]] = gene_entry
             if not tx or tx in iso_seen:
                 continue
             iso_seen.add(tx)
@@ -463,6 +456,9 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     isoform_sink.close()
     _derive_hit_summary(store)
     target_gene_entries = {entry["key"]: entry for row in guide_records for entry in json.loads(row["target_genes"])}
+    for identity_row in identity_by_transcript.values():
+        entry = _target_gene_entry(identity_row.get("gene_id"), identity_row.get("gene_symbol"))
+        target_gene_entries.setdefault(entry["key"], entry)
     known_target_genes = [entry for key, entry in target_gene_entries.items() if key != "__unresolved__"]
     store.manifest["summary"] = {
         "guides": len(guide_records),
@@ -880,6 +876,20 @@ def _float_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _target_gene_entry(gene_id: Any, gene_symbol: Any) -> dict[str, str]:
+    """Build one stable gene-filter key from available identity, preserving unresolved targets."""
+    identifier = str(gene_id or "").strip()
+    symbol = str(gene_symbol or "").strip()
+    if identifier:
+        return {
+            "key": f"id:{identifier}",
+            "label": f"{symbol} · {identifier}" if symbol else identifier,
+        }
+    if symbol:
+        return {"key": f"symbol:{symbol.casefold()}", "label": symbol}
+    return {"key": "__unresolved__", "label": "Unknown target gene"}
 
 
 def _peak_rss_bytes() -> int | None:
