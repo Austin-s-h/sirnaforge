@@ -35,6 +35,8 @@ N_CANDIDATES = 29_605
 N_HITS = 254_487
 N_MIRNA = 118_559
 N_NATIVE_OBSERVATIONS = 4_113
+MAX_HTML_BYTES = 10_000_000
+MAX_PEAK_RSS_BYTES = 1_000_000_000
 
 CANDIDATE_COLUMNS = [
     "id",
@@ -214,7 +216,10 @@ def measure() -> dict[str, Any]:
             "source_input_bytes": inputs["source_input_bytes"],
         }:
             raise RuntimeError(f"staged input counts differ from fixture declaration: {inputs}")
-        if report.stat().st_size >= 10_000_000 or sidecar_bytes <= report.stat().st_size:
+        peak_rss_bytes = result.diagnostics["peak_rss_bytes"]
+        if report.stat().st_size >= MAX_HTML_BYTES or peak_rss_bytes >= MAX_PEAK_RSS_BYTES:
+            raise RuntimeError("large report exceeded the HTML or process memory budget")
+        if sidecar_bytes <= report.stat().st_size:
             raise RuntimeError("large report missed the expected bounded-entrypoint/sidecar budget")
         return {
             "scope": "synthetic_resource_stress_only",
@@ -240,9 +245,14 @@ def measure() -> dict[str, Any]:
                 "detail_shards": len(manifest["detail_shards"]),
                 "guide_index_bytes": manifest["guide_index"]["bytes"],
             },
+            "budgets": {
+                "html_bytes_lt": MAX_HTML_BYTES,
+                "process_lifetime_peak_rss_bytes_lt": MAX_PEAK_RSS_BYTES,
+                "detail_sidecars_exceed_entrypoint": True,
+            },
             "diagnostics": {
                 "wall_seconds": wall_seconds,
-                "peak_rss_bytes": result.diagnostics["peak_rss_bytes"],
+                "peak_rss_bytes": peak_rss_bytes,
                 "peak_memory_scope": result.diagnostics["peak_memory_scope"],
                 "phases_seconds": result.diagnostics["phases_seconds"],
             },
