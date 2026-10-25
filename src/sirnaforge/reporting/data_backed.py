@@ -65,6 +65,7 @@ _GUIDE_SCHEMA = pa.schema(
         ("composite_score", pa.float64()),
         ("run_verdict", pa.string()),
         ("canonical_hit", pa.string()),
+        ("target_genes", pa.string()),
         ("status", pa.string()),
         ("gates", pa.string()),
         ("n_failed_gates", pa.int64()),
@@ -333,12 +334,26 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
             if gate[1] == unknown:
                 gate_effects[(i, "unknowns")] += 1
         iso_seen: set[str] = set()
+        guide_genes: dict[str, dict[str, str]] = {}
         for row in rows:
             tx = str(row.get("transcript_id") or "")
+            identity_row = identity_by_transcript.get(tx, {})
+            gene_id = str(identity_row.get("gene_id") or row.get("gene_id") or "").strip()
+            gene_symbol = str(
+                identity_row.get("gene_symbol") or row.get("gene_symbol") or row.get("gene_name") or ""
+            ).strip()
+            if gene_id:
+                gene_key = f"id:{gene_id}"
+                gene_label = f"{gene_symbol} · {gene_id}" if gene_symbol else gene_id
+                guide_genes[gene_key] = {"key": gene_key, "label": gene_label}
+            elif gene_symbol:
+                gene_key = f"symbol:{gene_symbol.casefold()}"
+                guide_genes[gene_key] = {"key": gene_key, "label": gene_symbol}
+            else:
+                guide_genes["__unresolved__"] = {"key": "__unresolved__", "label": "Unknown target gene"}
             if not tx or tx in iso_seen:
                 continue
             iso_seen.add(tx)
-            identity_row = identity_by_transcript.get(tx, {})
             canonical_status = identity_row.get("canonical_status") or "unknown"
             canonical_value = (
                 "canonical"
@@ -422,6 +437,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                     if canonical_ids and canonical_ids <= transcript_register
                     else "not_established"
                 ),
+                "target_genes": json.dumps([guide_genes[key] for key in sorted(guide_genes)], separators=(",", ":")),
                 "status": status,
                 "gates": json.dumps(gates, separators=(",", ":")),
                 "n_failed_gates": n_failed,
@@ -446,6 +462,8 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     _write_records(store, "guides", guide_records)
     isoform_sink.close()
     _derive_hit_summary(store)
+    target_gene_entries = {entry["key"]: entry for row in guide_records for entry in json.loads(row["target_genes"])}
+    known_target_genes = [entry for key, entry in target_gene_entries.items() if key != "__unresolved__"]
     store.manifest["summary"] = {
         "guides": len(guide_records),
         "unresolved_guides": sum(row["unresolved_evidence"] for row in guide_records),
@@ -469,6 +487,9 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
             for index, desc in enumerate(descriptors)
         ],
         "candidate_rows": sum(row["candidate_rows"] for row in guide_records),
+        "target_gene_options": sorted(known_target_genes, key=lambda entry: (entry["label"].casefold(), entry["key"])),
+        "gene_filter_available": len(known_target_genes) > 1 or "__unresolved__" in target_gene_entries,
+        "unresolved_target_identity": "__unresolved__" in target_gene_entries,
     }
     store.manifest["tables"].update(_table_metadata(store, "guides"))
     store.manifest["tables"].update(_table_metadata(store, "isoforms"))
@@ -684,6 +705,7 @@ def _write_data_backed_html(store: ReportArtifactStore, output: Path, shard_dir:
     html = html.replace("__EVIDENCE_PANEL__", _evidence_panel(store.manifest))
     unresolved_count = store.manifest["summary"]["unresolved_guides"]
     html = html.replace("__UNRESOLVED_CONTROL__", _unresolved_control(unresolved_count))
+    html = html.replace("__GENE_FILTER_CONTROL__", _gene_filter_control(store.manifest["summary"]))
     html = html.replace("__SHARD_DIR__", shard_dir).replace("__STATUS_COUNTS__", json.dumps(summary["status_counts"]))
     html = html.replace("<!--__INLINE_SHARDS__-->", "")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -703,6 +725,7 @@ def _write_paged_html(store: ReportArtifactStore, output: Path, shard_dir: Path)
     html = html.replace("__EVIDENCE_PANEL__", _evidence_panel(store.manifest))
     unresolved_count = store.manifest["summary"]["unresolved_guides"]
     html = html.replace("__UNRESOLVED_CONTROL__", _unresolved_control(unresolved_count))
+    html = html.replace("__GENE_FILTER_CONTROL__", _gene_filter_control(store.manifest["summary"]))
     html = html.replace("__SHARD_DIR__", "").replace(
         "__STATUS_COUNTS__", json.dumps(store.manifest["summary"]["status_counts"])
     )
@@ -714,6 +737,27 @@ def _write_paged_html(store: ReportArtifactStore, output: Path, shard_dir: Path)
 def _unresolved_control(count: int) -> str:
     hidden = " hidden" if count == 0 else ""
     return f'<label{hidden}><input id="unresolved-only" type="checkbox">Show unresolved evidence ({count})</label>'
+
+
+def _gene_filter_control(summary: dict[str, Any]) -> str:
+    """Render a gene filter only when the staged artifact confirms multiple or unresolved targets."""
+    if not summary.get("gene_filter_available"):
+        return ""
+    options = ['<option value="">All target genes</option>']
+    options.extend(
+        f'<option value="{escape(str(item["key"]), quote=True)}">{escape(str(item["label"]))}</option>'
+        for item in summary.get("target_gene_options", [])
+    )
+    if summary.get("unresolved_target_identity"):
+        options.append('<option value="__unresolved__">Unknown target gene</option>')
+    return (
+        '<label><input type="checkbox" id="geneenable" aria-controls="targetgene" '
+        'aria-expanded="false">Enable target gene filtering</label>'
+        '<label for="targetgene">Target gene</label>'
+        '<select id="targetgene" aria-label="Target gene" disabled>'
+        + "".join(options)
+        + '</select><span id="gene-state" role="status" aria-live="polite"></span>'
+    )
 
 
 def _evidence_panel(manifest: dict[str, Any]) -> str:
@@ -849,7 +893,7 @@ def _peak_rss_bytes() -> int | None:
 
 _DATA_BACKED_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>siRNAforge data-backed report</title><style>html,body{height:100%}body{display:flex;flex-direction:column;font:14px system-ui;margin:0;color:#1a1d21;background:#fbfbfc}header{flex:0 0 auto;padding:18px 24px;background:white;border-bottom:1px solid #ddd}main{display:grid;grid-template-columns:minmax(220px,25%) minmax(350px,35%) 1fr;grid-template-rows:minmax(0,1fr);flex:1 1 auto;min-height:0}section,aside{min-height:0;overflow:auto;padding:12px}aside{border-right:1px solid #ddd;font-size:12px;overflow-wrap:anywhere}dd{margin-left:12px}details{margin:8px 0}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border-bottom:1px solid #ddd;padding:5px;text-align:left}.pill{padding:2px 6px;border-radius:8px;background:#eee}.fail{color:#b91c1c}.pass{color:#15803d}.warn{color:#92400e}.unknown{color:#6b7280}button{font:inherit;cursor:pointer}#details{white-space:normal}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
-<body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label>__UNRESOLVED_CONTROL__<span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
+<body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label>__GENE_FILTER_CONTROL____UNRESOLVED_CONTROL__<span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
 <main>__EVIDENCE_PANEL__<section><table><thead><tr><th>Guide</th><th>Status</th><th>Rows</th><th>Design</th><th>Composite</th></tr></thead><tbody id="rows"></tbody></table></section><section id="details" aria-live="polite"><p>Select any guide to load its detail shard.</p></section></main>
 <!--__INLINE_SHARDS__-->
 <script>
@@ -857,17 +901,27 @@ const PAGE_SIZE=50;let currentPage=0;const G=__GUIDES__, M=__MANIFEST__, SHARD_D
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function renderRows(){const q=document.querySelector('#search').value.trim().toUpperCase(),st=document.querySelector('#status').value;
  const gate=document.querySelector('#gate').selectedIndex-1,result=document.querySelector('#gate-result').value;
- const unresolved=document.querySelector('#unresolved-only').checked;
+ const unresolved=document.querySelector('#unresolved-only')?.checked||false;
+ const geneEnabled=document.querySelector('#geneenable')?.checked||false,gene=document.querySelector('#targetgene')?.value||'';
  const shown=G.filter(g=>(!q||g.guide.includes(q))&&(!st||g.status===st)&&(!unresolved||g.unresolved_evidence)&&
+   (!geneEnabled||!gene||(JSON.parse(g.target_genes||'[]').some(item=>item.key===gene)))&&
    (gate<0||!result||JSON.parse(g.gates)[gate]?.[1]===Number(result)));
  const pageCount=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));currentPage=Math.min(currentPage,pageCount-1);
  const pageRows=shown.slice(currentPage*PAGE_SIZE,(currentPage+1)*PAGE_SIZE);
  document.querySelector('#page-info').textContent=`Page ${currentPage+1} of ${pageCount}`;
  document.querySelector('#previous').disabled=currentPage===0;document.querySelector('#next').disabled=currentPage>=pageCount-1;
  document.querySelector('#visible-count').textContent=`${shown.length} guides match current filters`;
+ const geneState=document.querySelector('#gene-state');if(geneState)geneState.textContent=geneEnabled&&gene?`Target gene filter active: ${gene}`:'';
  document.querySelector('#rows').innerHTML=pageRows.map(g=>`<tr><td><button data-guide="${esc(g.guide)}">${esc(g.guide)}</button></td><td class="${g.status}">${g.status}</td><td>${g.candidate_rows}</td><td>${g.design_score??'—'}</td><td>${g.composite_score??'—'}</td></tr>`).join('');
  document.querySelectorAll('[data-guide]').forEach(b=>b.addEventListener('click',()=>showGuide(b.dataset.guide)));
 }
+function restoreGeneState(){const toggle=document.querySelector('#geneenable'),select=document.querySelector('#targetgene');if(!toggle||!select)return;
+ const params=new URLSearchParams((window.location?.hash||'').replace(/^#/,''));
+ toggle.checked=params.get('gene-enabled')==='1';select.value=params.get('gene')||'';select.disabled=!toggle.checked;
+ toggle.setAttribute('aria-expanded',toggle.checked?'true':'false');}
+function syncGeneState(){if(!window.location)return;const toggle=document.querySelector('#geneenable'),select=document.querySelector('#targetgene');if(!toggle||!select)return;
+ const params=new URLSearchParams();if(toggle.checked){params.set('gene-enabled','1');if(select.value)params.set('gene',select.value);}
+ window.location.hash=params.toString();}
 function loadShard(i){return new Promise((resolve,reject)=>{if(window.SF_DETAIL_SHARDS?.[i])return resolve();const s=document.createElement('script');s.src=`${SHARD_DIR}/guide-${String(i).padStart(5,'0')}.js`;s.onload=resolve;s.onerror=()=>reject(Error('Could not load local detail shard'));document.head.appendChild(s);});}
 function sourceAnchor(link,label){
  if(!link||!link.url)return esc(label);
@@ -912,5 +966,9 @@ document.querySelector('#gatecounts').textContent=(M.summary.filters||[]).map(f=
 for(const f of M.summary.filters){const o=document.createElement('option');o.value=f.filter_id;o.textContent=f.filter_id;document.querySelector('#gate').appendChild(o);}
 document.querySelector('#previous').addEventListener('click',()=>{currentPage=Math.max(0,currentPage-1);renderRows()});document.querySelector('#next').addEventListener('click',()=>{currentPage++;renderRows()});
 document.querySelector('#unresolved-only').addEventListener('change',()=>{currentPage=0;renderRows()});
-document.querySelector('#search').addEventListener('input',()=>{currentPage=0;renderRows()});document.querySelector('#status').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate-result').addEventListener('change',()=>{currentPage=0;renderRows()});renderRows();
+document.querySelector('#search').addEventListener('input',()=>{currentPage=0;renderRows()});document.querySelector('#status').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate-result').addEventListener('change',()=>{currentPage=0;renderRows()});
+const geneToggle=document.querySelector('#geneenable'),geneSelect=document.querySelector('#targetgene');
+if(geneToggle&&geneSelect){restoreGeneState();geneToggle.addEventListener('change',()=>{geneSelect.disabled=!geneToggle.checked;geneToggle.setAttribute('aria-expanded',geneToggle.checked?'true':'false');syncGeneState();currentPage=0;renderRows();});
+ geneSelect.addEventListener('change',()=>{syncGeneState();currentPage=0;renderRows();});if(window.addEventListener)window.addEventListener('hashchange',()=>{restoreGeneState();currentPage=0;renderRows();});}
+renderRows();
 </script></body></html>"""

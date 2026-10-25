@@ -80,6 +80,8 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     # retain every guide as unknown rather than infer a pass from the run label.
     assert manifest["summary"]["status_counts"] == {"fail": 0, "unknown": n_guides, "warn": 0, "pass": 0}
     assert manifest["summary"]["candidate_rows"] == n_guides
+    assert manifest["summary"]["gene_filter_available"] is True
+    assert len(manifest["summary"]["target_gene_options"]) == n_guides
     assert pq.read_metadata(artifact_root / "hit_summary.parquet").num_rows == n_guides
     isoforms = pq.read_table(artifact_root / "isoforms.parquet").to_pylist()
     canonical = next(row for row in isoforms if row["transcript_id"] == "ENST0")
@@ -128,13 +130,18 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     ui_script.write_text(
         r"""
 const fs=require('fs'),vm=require('vm');global.window={};
-const elements={};function el(){return {value:'',selectedIndex:0,checked:false,textContent:'',innerHTML:'',disabled:false,handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){}}}
-for(const id of ['#counts','#gatecounts','#unresolved-only','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
+const elements={};function el(){return {value:'',selectedIndex:0,checked:false,textContent:'',innerHTML:'',disabled:false,attrs:{},handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){},setAttribute(k,v){this.attrs[k]=v;}}}
+for(const id of ['#counts','#gatecounts','#unresolved-only','#geneenable','#targetgene','#gene-state','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
 elements['#gate'].appendChild=()=>{};
+global.window.location={hash:''};window.addEventListener=()=>{};
 global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
 """
         + f"vm.runInThisContext({json.dumps(html_scripts[0])});\n"
         + f"vm.runInThisContext(fs.readFileSync({json.dumps(str(shard_path))},'utf8'));\n"
+        + "elements['#geneenable'].checked=true;elements['#targetgene'].value='id:ENSG1199';elements['#geneenable'].handlers.change();"
+        + "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(6);"
+        + "if(!window.location.hash.includes('gene=id%3AENSG1199'))process.exit(7);"
+        + "if(elements['#gene-state'].textContent!=='Target gene filter active: id:ENSG1199')process.exit(8);"
         + f"showGuide({json.dumps(guides[-1])}).then(()=>{{"
         + "const detail=elements['#details'].innerHTML;"
         + "for(const value of ['Canonical transcript','Other isoform','https://e110.ensembl.org/id/ENST1199','https://mirgenedb.org/show/hsa/Mir-24-P2'])"
@@ -143,6 +150,46 @@ global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElem
     )
     ui_result = subprocess.run([node, str(ui_script)], text=True, capture_output=True, check=True, timeout=10)
     assert ui_result.stdout == "ok"
+
+
+@pytest.mark.unit
+def test_data_backed_gene_filter_stays_hidden_for_single_gene_with_many_isoforms(tmp_path: Path) -> None:
+    """Transcript count alone does not turn a confirmed single-gene report into a multi-gene report."""
+    run = _write_run(
+        tmp_path,
+        [
+            _candidate_row("c1", GUIDE, "ENST1", 1),
+            _candidate_row("c2", GUIDE, "ENST2", 2),
+        ],
+        [],
+    )
+    manifest_path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": transcript,
+                "gene_id": "ENSG1",
+                "gene_symbol": "TP53",
+                "is_canonical": transcript == "ENST1",
+                "canonical_status": "established",
+                "canonical_source": "test authority",
+                "canonical_release": "110",
+            }
+            for transcript in ("ENST1", "ENST2")
+        ],
+        "resolvers": {"ensembl": {"template": "https://www.ensembl.org/id/{identifier}"}},
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    output = tmp_path / "single-gene.html"
+
+    write_report_from_run(run, output, mode="data_backed")
+
+    summary = json.loads((output.with_suffix(".data") / "report_manifest.json").read_text())["summary"]
+    assert summary["gene_filter_available"] is False
+    assert summary["target_gene_options"] == [{"key": "id:ENSG1", "label": "TP53 · ENSG1"}]
+    assert 'id="geneenable"' not in output.read_text()
 
 
 @pytest.mark.unit
