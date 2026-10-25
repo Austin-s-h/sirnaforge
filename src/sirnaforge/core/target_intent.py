@@ -7,6 +7,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from sirnaforge.data.base import TranscriptInfo
+from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.models.policy import FilterEvaluation, TargetIntent, TargetSelectivity
 
 
@@ -44,6 +45,7 @@ class ResolvedTargetIntent(BaseModel):
 
     intent: TargetIntent
     transcripts: tuple[ResolvedTranscript, ...]
+    unresolved_target_species: frozenset[str] = frozenset()
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -64,6 +66,7 @@ class TargetIntentEvaluation(BaseModel):
     uncovered_required_transcript_ids: frozenset[str]
     excluded_hit_transcript_ids: frozenset[str]
     missing_sequence_transcript_ids: frozenset[str]
+    unresolved_target_species: frozenset[str] = frozenset()
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -122,6 +125,7 @@ def resolve_target_intent(
     annotation_transcript_ids: Collection[str],
     annotation_provenance: str,
     enumeration_input_ids: Collection[str],
+    sequence_species: str | None = None,
 ) -> ResolvedTargetIntent:
     """Build an intent using the complete annotation set before design narrows enumeration.
 
@@ -176,9 +180,12 @@ def resolve_target_intent(
             )
         )
     denominator = required
+    target_species = frozenset(normalize_species_name(value) for value in request.target_species)
+    resolved_species = normalize_species_name(sequence_species) if sequence_species else None
+    unresolved_target_species = target_species - ({resolved_species} if resolved_species else set())
     intent = TargetIntent(
         selectivity=request.selectivity,
-        target_species=request.target_species,
+        target_species=target_species,
         offtarget_screen_species=request.offtarget_screen_species,
         required_transcript_ids=required,
         excluded_transcript_ids=excluded,
@@ -187,7 +194,11 @@ def resolve_target_intent(
         enumeration_inputs=enumeration_inputs,
         annotation_provenance=annotation_provenance.strip(),
     )
-    return ResolvedTargetIntent(intent=intent, transcripts=tuple(transcripts))
+    return ResolvedTargetIntent(
+        intent=intent,
+        transcripts=tuple(transcripts),
+        unresolved_target_species=unresolved_target_species,
+    )
 
 
 def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIntent) -> TargetIntentEvaluation:
@@ -213,7 +224,7 @@ def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIn
     missing = frozenset(identifier for identifier in required | forbidden if sequences.get(identifier) is None)
     if excluded_hits or uncovered_required - missing:
         verdict = TargetIntentVerdict.FAIL
-    elif missing:
+    elif missing or resolved.unresolved_target_species:
         verdict = TargetIntentVerdict.UNKNOWN
     else:
         verdict = TargetIntentVerdict.PASS
@@ -223,4 +234,5 @@ def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIn
         uncovered_required_transcript_ids=uncovered_required,
         excluded_hit_transcript_ids=excluded_hits,
         missing_sequence_transcript_ids=missing,
+        unresolved_target_species=resolved.unresolved_target_species,
     )

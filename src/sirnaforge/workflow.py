@@ -928,6 +928,7 @@ class SiRNAWorkflow:
                         f"source:{'input_fasta' if self.config.input_fasta else 'gene_search'}"
                     ),
                     enumeration_input_ids=[t.transcript_id for t in transcripts if t.transcript_id],
+                    sequence_species=self._query_species,
                 )
                 intent_path = self.config.output_dir / "target_intent" / "resolved_intent.json"
                 intent_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1462,6 +1463,7 @@ class SiRNAWorkflow:
                 "uncovered_required_transcript_ids": sorted(evaluation.uncovered_required_transcript_ids),
                 "excluded_hit_transcript_ids": sorted(evaluation.excluded_hit_transcript_ids),
                 "missing_sequence_transcript_ids": sorted(evaluation.missing_sequence_transcript_ids),
+                "unresolved_target_species": sorted(evaluation.unresolved_target_species),
             }
         self._target_intent_observations = observations
         output = self.config.output_dir / "target_intent" / "guide_observations.json"
@@ -1477,6 +1479,7 @@ class SiRNAWorkflow:
             "status": "resolved",
             "selectivity": str(resolved.intent.selectivity),
             "target_species": sorted(resolved.intent.target_species),
+            "unresolved_target_species": sorted(resolved.unresolved_target_species),
             "offtarget_screen_species": sorted(resolved.intent.offtarget_screen_species),
             "annotation_universe_count": len(resolved.intent.annotation_universe),
             "coverage_denominator": sorted(resolved.intent.coverage_denominator),

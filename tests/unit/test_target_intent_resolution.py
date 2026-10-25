@@ -34,12 +34,14 @@ def _resolve(
     enumeration_ids: list[str],
     required: frozenset[str] = frozenset(),
     excluded: frozenset[str] = frozenset(),
+    target_species: frozenset[str] = frozenset({"human"}),
+    sequence_species: str | None = "human",
 ):
     """Resolve a compact synthetic annotation fixture."""
     return resolve_target_intent(
         TargetIntentRequest(
             selectivity=selectivity,
-            target_species=frozenset({"human", "mouse"}),
+            target_species=target_species,
             offtarget_screen_species=frozenset({"rat"}),
             required_transcript_ids=required,
             excluded_transcript_ids=excluded,
@@ -48,7 +50,25 @@ def _resolve(
         annotation_transcript_ids=annotation_ids,
         annotation_provenance="test-annotation/v1",
         enumeration_input_ids=enumeration_ids,
+        sequence_species=sequence_species,
     )
+
+
+def test_non_query_target_species_stays_unknown_without_its_transcripts() -> None:
+    """A human transcript sequence cannot establish a declared mouse knockdown target."""
+    resolved = _resolve(
+        TargetSelectivity.PAN_ISOFORM,
+        [_transcript("ENST1", f"AAA{TARGET}AAA")],
+        annotation_ids=["ENST1"],
+        enumeration_ids=["ENST1"],
+        target_species=frozenset({"human", "mouse"}),
+    )
+
+    evaluation = evaluate_target_intent_guide(GUIDE, resolved)
+
+    assert resolved.unresolved_target_species == frozenset({"mouse"})
+    assert evaluation.verdict is TargetIntentVerdict.UNKNOWN
+    assert evaluation.unresolved_target_species == frozenset({"mouse"})
 
 
 def test_pan_isoform_freezes_full_annotation_denominator_before_enumeration_subset() -> None:
@@ -65,7 +85,7 @@ def test_pan_isoform_freezes_full_annotation_denominator_before_enumeration_subs
     result = evaluate_target_intent_guide(GUIDE, resolved)
     assert result.verdict is TargetIntentVerdict.FAIL
     assert result.uncovered_required_transcript_ids == frozenset({"ENST2"})
-    assert resolved.intent.target_species == frozenset({"human", "mouse"})
+    assert resolved.intent.target_species == frozenset({"human"})
     assert resolved.intent.offtarget_screen_species == frozenset({"rat"})
 
 
