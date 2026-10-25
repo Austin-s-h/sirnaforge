@@ -9,7 +9,11 @@ from sirnaforge.core.transcript_seed import run_transcript_seed_analysis
 from sirnaforge.models.evidence import EvidenceStatus
 from sirnaforge.models.policy import Requiredness, ScreeningChannel, TargetSelectivity
 from sirnaforge.models.sirna import SiRNACandidate
-from sirnaforge.models.transcript_seed import TranscriptSequenceScope
+from sirnaforge.models.transcript_seed import (
+    TRANSCRIPT_SEED_SITE_IDENTITY,
+    TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+    TranscriptSequenceScope,
+)
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 
 
@@ -40,6 +44,8 @@ def test_producer_scans_full_reference_and_publishes_counts_and_reference_checks
     assert envelopes[0].entry.counts.unresolved_gene_sites.value == 1
     summary = json.loads((tmp_path / "out" / "transcript_seed_human_summary.json").read_text())
     assert summary["reference_sha256"] == result["reference_sha256"]
+    assert summary["schema_version"] == TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION
+    assert summary["site_identity"] == TRANSCRIPT_SEED_SITE_IDENTITY
 
 
 def test_producer_marks_missing_three_prime_utr_annotation_unavailable(tmp_path) -> None:
@@ -82,17 +88,19 @@ def test_workflow_maps_only_reconciled_guide_observations_and_writes_provenance(
     )
     result_dir = tmp_path / "results" / "transcript_seed"
     result_dir.mkdir(parents=True)
-    (result_dir / "transcript_seed_mouse_summary.json").write_text(
-        json.dumps(
-            {
-                "species": "mouse",
-                "scope": "full_cdna",
-                "reference_sha256": "abc123",
-                "transcripts_scanned": 900,
-                "per_guide": {"submitted-guide": {"status": "complete", "site_count": 4}},
-            }
-        )
-    )
+    mouse_summary = {
+        "species": "mouse",
+        "schema_version": TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+        "site_identity": TRANSCRIPT_SEED_SITE_IDENTITY,
+        "scope": "full_cdna",
+        "reference_sha256": "abc123",
+        "transcripts_scanned": 900,
+        "per_guide": {"submitted-guide": {"status": "complete", "site_count": 4}},
+    }
+    mouse_summary["schema_version"] = "1"
+    mouse_summary.pop("site_identity")
+    mouse_summary_path = result_dir / "transcript_seed_mouse_summary.json"
+    mouse_summary_path.write_text(json.dumps(mouse_summary))
     workflow = object.__new__(SiRNAWorkflow)
     workflow.config = SimpleNamespace(
         transcript_seed_species=("mouse", "human"),
@@ -104,6 +112,16 @@ def test_workflow_maps_only_reconciled_guide_observations_and_writes_provenance(
     workflow._completed_evidence_pairs = frozenset({("transcript_seed", "mouse")})
     workflow._candidate_id_to_representative = {"candidate-1": "submitted-guide"}
 
+    legacy = workflow._collect_transcript_seed_observations(tmp_path / "results", [candidate])
+    legacy_observation = legacy["per_candidate"]["candidate-1"]
+    assert legacy_observation["required_species_site_count"] is None
+    assert legacy_observation["by_species"]["mouse"] == {"status": "unknown", "site_count": None}
+
+    mouse_summary["schema_version"] = TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION
+    mouse_summary["site_identity"] = TRANSCRIPT_SEED_SITE_IDENTITY
+    mouse_summary_path.write_text(json.dumps(mouse_summary))
+    candidate.filter_verdicts.clear()
+    candidate.filter_observed.clear()
     result = workflow._collect_transcript_seed_observations(tmp_path / "results", [candidate])
 
     assert result["status"] == "partial"
@@ -120,6 +138,8 @@ def test_workflow_maps_only_reconciled_guide_observations_and_writes_provenance(
         json.dumps(
             {
                 "species": "human",
+                "schema_version": TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+                "site_identity": TRANSCRIPT_SEED_SITE_IDENTITY,
                 "scope": "full_cdna",
                 "reference_sha256": "def456",
                 "transcripts_scanned": 1200,
@@ -179,4 +199,5 @@ def test_workflow_config_forwards_seed_channel_independently_and_freezes_target_
     assert requirements == {"mouse": Requiredness.REQUIRED, "human": Requiredness.EXPLORATORY}
     assert config.nextflow_config["transcript_seed_species"] == "mouse,human"
     assert config.nextflow_config["transcript_seed_scope"] == "full_cdna"
+    assert config.nextflow_config["transcript_seed_site_identity"] == TRANSCRIPT_SEED_SITE_IDENTITY
     assert config.max_transcript_seed_sites == 10

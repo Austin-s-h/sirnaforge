@@ -69,7 +69,8 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
             }
         TRANSCRIPT_SEED_ANALYSIS(
             ch_transcript_seed_input,
-            params.transcript_seed_scope ?: 'full_cdna'
+            params.transcript_seed_scope ?: 'full_cdna',
+            params.transcript_seed_site_identity ?: 'guide-transcript-scope-shared-seed-2-7.v1'
         )
         ch_versions = ch_versions.mix(TRANSCRIPT_SEED_ANALYSIS.out.versions)
         ch_transcript_seed_evidence = TRANSCRIPT_SEED_ANALYSIS.out.evidence

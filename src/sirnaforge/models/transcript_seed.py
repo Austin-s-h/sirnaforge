@@ -4,6 +4,9 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION = "2"
+TRANSCRIPT_SEED_SITE_IDENTITY = "guide-transcript-scope-shared-seed-2-7.v1"
+
 
 class TranscriptSeedClass(str, Enum):
     """Canonical seed-site geometry, named for the complementary target site."""

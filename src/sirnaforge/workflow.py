@@ -179,7 +179,11 @@ from sirnaforge.models.sirna import (
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.transcript_annotation import TranscriptAnnotation
-from sirnaforge.models.transcript_seed import TranscriptSequenceScope
+from sirnaforge.models.transcript_seed import (
+    TRANSCRIPT_SEED_SITE_IDENTITY,
+    TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+    TranscriptSequenceScope,
+)
 from sirnaforge.models.variant import VariantRecord
 from sirnaforge.models.zfn import (
     ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
@@ -661,6 +665,7 @@ class WorkflowConfig:
             self.nextflow_config.setdefault("transcript_seed_enabled", True)
             self.nextflow_config.setdefault("transcript_seed_species", ",".join(normalized_seed_species))
             self.nextflow_config.setdefault("transcript_seed_scope", self.transcript_seed_scope.value)
+            self.nextflow_config.setdefault("transcript_seed_site_identity", TRANSCRIPT_SEED_SITE_IDENTITY)
         self.mirna_database = mirna_database
         # One species vocabulary for the miRNA channel too, in the caller's own order (#100). The CLI
         # resolves --species into miRNA *database codes* -- `--species human,rhesus` becomes
@@ -4135,6 +4140,7 @@ class SiRNAWorkflow:
                 additional_params["transcript_seed_fastas"] = ",".join(seed_fastas)
             additional_params["transcript_seed_species"] = ",".join(self.config.transcript_seed_species)
             additional_params["transcript_seed_scope"] = self.config.transcript_seed_scope.value
+            additional_params["transcript_seed_site_identity"] = TRANSCRIPT_SEED_SITE_IDENTITY
             if self.config.max_transcript_seed_sites is not None:
                 additional_params["max_transcript_seed_sites"] = self.config.max_transcript_seed_sites
 
@@ -4165,7 +4171,7 @@ class SiRNAWorkflow:
                 continue
             value = additional_params[key]
             settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
-        for key in ("transcript_seed_scope", "max_transcript_seed_sites"):
+        for key in ("transcript_seed_scope", "transcript_seed_site_identity", "max_transcript_seed_sites"):
             if key in additional_params:
                 value = additional_params[key]
                 settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
@@ -4567,7 +4573,12 @@ class SiRNAWorkflow:
                 payload = json.loads(summary_path.read_text()) if summary_path.exists() else None
             except (OSError, json.JSONDecodeError):
                 payload = None
-            if isinstance(payload, dict) and payload.get("species") == species:
+            if (
+                isinstance(payload, dict)
+                and payload.get("species") == species
+                and payload.get("schema_version") == TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION
+                and payload.get("site_identity") == TRANSCRIPT_SEED_SITE_IDENTITY
+            ):
                 summaries[species] = payload
 
         required = set(self.config.transcript_seed_required_species)

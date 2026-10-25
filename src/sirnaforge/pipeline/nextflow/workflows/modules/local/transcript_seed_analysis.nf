@@ -6,6 +6,7 @@ process TRANSCRIPT_SEED_ANALYSIS {
     input:
     tuple val(species), path(transcriptome_fasta), path(candidates_fasta)
     val seed_scope
+    val site_identity
 
     output:
     path "transcript_seed_${species}_summary.json", emit: summary
@@ -29,6 +30,7 @@ result = run_transcript_seed_analysis(
     species='${species}',
     output_dir='.',
     scope='${seed_scope}',
+    site_identity='${site_identity}',
 )
 print(f"Transcript seed scope: {result['scope']}; sites: {result['site_count']}")
 PYEOF

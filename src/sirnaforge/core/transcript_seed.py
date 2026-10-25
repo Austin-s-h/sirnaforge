@@ -15,6 +15,8 @@ from sirnaforge.core.screening_evidence import EvidenceProducer, write_evidence
 from sirnaforge.models.evidence import EvidenceStatus, ObservedCount, ObservedCounts, ScreeningEvidenceEntry
 from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.models.transcript_seed import (
+    TRANSCRIPT_SEED_SITE_IDENTITY,
+    TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
     TranscriptSeedClass,
     TranscriptSeedScanResult,
     TranscriptSeedSite,
@@ -170,6 +172,7 @@ def run_transcript_seed_analysis(
     guide_set_digest: str | None = None,
     reference_id: str | None = None,
     utr3_manifest: str | Path | None = None,
+    site_identity: str = TRANSCRIPT_SEED_SITE_IDENTITY,
 ) -> dict[str, object]:
     """Run site discovery over one materialized full transcriptome and write evidence artifacts.
 
@@ -179,6 +182,8 @@ def run_transcript_seed_analysis(
     empty successful scan.
     """
     candidates_path = Path(candidates_file)
+    if site_identity != TRANSCRIPT_SEED_SITE_IDENTITY:
+        raise ValueError(f"unsupported transcript-seed site identity: {site_identity}")
     reference_path = Path(transcriptome_fasta)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -247,7 +252,8 @@ def run_transcript_seed_analysis(
         }
 
     payload: dict[str, object] = {
-        "schema_version": "1",
+        "schema_version": TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+        "site_identity": site_identity,
         "channel": ScreeningChannel.TRANSCRIPT_SEED.value,
         "status": status.value,
         "detail": detail,
