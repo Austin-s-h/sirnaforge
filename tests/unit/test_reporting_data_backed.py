@@ -154,7 +154,7 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
         r"""
 const fs=require('fs'),vm=require('vm');global.window={};
 const elements={};function el(){return {value:'',selectedIndex:0,checked:false,textContent:'',innerHTML:'',disabled:false,attrs:{},handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){},setAttribute(k,v){this.attrs[k]=v;}}}
-for(const id of ['#counts','#gatecounts','#unresolved-only','#geneenable','#targetgene','#gene-state','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
+for(const id of ['#counts','#gatecounts','#unresolved-only','#geneenable','#targetgene','#gene-state','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details','#candidate-transcript','#candidate-map','#candidate-map-context'])elements[id]=el();
 elements['#gate'].appendChild=()=>{};
 global.window.location={hash:''};window.addEventListener=()=>{};
 global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
@@ -166,6 +166,8 @@ global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElem
         + "const txInfo=detailData.isoforms.find(i=>i.transcript_id==='ENST1199');"
         + "const map=candidateMap(detailData.candidates,'ENST1199',txInfo);"
         + "if(!map.includes('role=\"img\"')||!map.includes('transcript position')||!map.includes('GENE1199 · ENST1199 · Other isoform'))process.exit(11);"
+        + "const sparse=candidateMap([{transcript_id:'tx',position:'',composite_score:'',design_score:'50'},{transcript_id:'tx',position:'10',composite_score:'',design_score:'50'},{transcript_id:'tx',position:'20',composite_score:'',design_score:''}],'tx');"
+        + "if(sparse.includes('Position 0;')||!sparse.includes('Position 10; score 50')||!sparse.includes('Position 20; score unavailable'))process.exit(14);"
         + "const context=candidateContext(detailData.candidates,detailData.isoforms);"
         + "if(!context.includes('GENE1199 · ENST1199 · Other isoform')||!context.includes('GENE1199 · ENST_ALT · Other isoform')||!context.includes('candidate-transcript'))process.exit(12);"
         + "elements['#geneenable'].checked=true;elements['#targetgene'].value='id:ENSG1199';elements['#geneenable'].handlers.change();"
@@ -179,6 +181,9 @@ global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElem
         + "const detail=elements['#details'].innerHTML;"
         + "for(const value of ['Canonical transcript','Other isoform','https://e110.ensembl.org/id/ENST1199','https://mirgenedb.org/show/hsa/Mir-24-P2'])"
         + "if(!detail.includes(value))process.exit(2);"
+        + "elements['#candidate-transcript'].value='ENST_ALT';elements['#candidate-transcript'].handlers.change();"
+        + "if(elements['#candidate-map-context'].textContent!=='GENE1199 · ENST_ALT · Other isoform')process.exit(15);"
+        + "if(!elements['#candidate-map'].innerHTML.includes('Candidate positions: GENE1199 · ENST_ALT · Other isoform'))process.exit(16);"
         + "process.stdout.write('ok');});\n"
     )
     ui_result = subprocess.run([node, str(ui_script)], text=True, capture_output=True, check=True, timeout=10)

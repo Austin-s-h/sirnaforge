@@ -1089,17 +1089,18 @@ function gateEvidenceCopy(row){
  return notices.length?`<h3>Unresolved gate evidence</h3><ul>${notices.join('')}</ul>`:'';
 }
 function evidenceCopy(row){const warning=M.evidence_warning_registry[row.mirna_warning_id];return warning?`<div data-warning-id="${esc(row.mirna_warning_id)}"><h3>${esc(warning.title)}</h3><p>${esc(warning.body)}</p><p>${esc(warning.remediation)}</p></div>`:'<p>miRNA screening completed for this submitted guide; the retained rows describe matches under its declared reference and settings.</p>';}
+function reportNumber(value){if(value==null||String(value).trim()==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:null;}
 function candidateMap(candidates,transcript,info={}){
- const rows=(candidates||[]).filter(c=>String(c.transcript_id||'')===transcript&&Number.isFinite(Number(c.position)));
+ const rows=(candidates||[]).filter(c=>String(c.transcript_id||'')===transcript).map(c=>({row:c,position:reportNumber(c.position),score:reportNumber(c.composite_score)??reportNumber(c.design_score)})).filter(c=>c.position!==null);
  if(!rows.length)return '<p>No candidate positions are recorded for this transcript.</p>';
  const canonical=info.canonical==='canonical'?'Canonical':info.canonical==='other_isoform'?'Other isoform':'Unknown canonical status';
  const identity=[info.gene_symbol||info.gene_id||'Unknown gene',transcript,canonical].join(' · ');
- const W=640,H=120,L=32,R=12,T=12,B=28,positions=rows.map(c=>Number(c.position));
+ const W=640,H=120,L=32,R=12,T=12,B=28,positions=rows.map(c=>c.position);
  const lo=positions.reduce((a,b)=>Math.min(a,b),Infinity),hi=positions.reduce((a,b)=>Math.max(a,b),-Infinity),span=hi-lo||1;
- const scores=rows.map(c=>Number(c.composite_score??c.design_score)).filter(Number.isFinite);
+ const scores=rows.map(c=>c.score).filter(v=>v!==null);
  const minScore=scores.length?scores.reduce((a,b)=>Math.min(a,b),Infinity):0,maxScore=scores.length?scores.reduce((a,b)=>Math.max(a,b),-Infinity):1,scoreSpan=maxScore-minScore||1;
- const dots=rows.map(c=>{const raw=Number(c.composite_score??c.design_score),x=L+(W-L-R)*(Number(c.position)-lo)/span,y=scores.length?H-B-(H-T-B)*(Number.isFinite(raw)?(raw-minScore)/scoreSpan:0.5):(T+H-B)/2;
-  return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"><title>Position ${esc(c.position)}; score ${Number.isFinite(raw)?esc(raw):'unavailable'}</title></circle>`;}).join('');
+ const dots=rows.map(c=>{const x=L+(W-L-R)*(c.position-lo)/span,y=scores.length?H-B-(H-T-B)*(c.score!==null?(c.score-minScore)/scoreSpan:0.5):(T+H-B)/2;
+  return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"><title>Position ${esc(c.row.position)}; score ${c.score!==null?esc(c.score):'unavailable'}</title></circle>`;}).join('');
  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Candidate positions: ${esc(identity)}"><title>Candidate positions: ${esc(identity)}</title><line x1="${L}" y1="${H-B}" x2="${W-R}" y2="${H-B}" stroke="#64748b"/><text x="${L}" y="${H-6}" font-size="10">${lo}</text><text x="${W-R}" y="${H-6}" text-anchor="end" font-size="10">${hi}</text><text x="${W/2}" y="${H-6}" text-anchor="middle" font-size="10">transcript position</text><g fill="#2563eb">${dots}</g></svg>`;
 }
 function candidateContext(candidates,isoforms){
