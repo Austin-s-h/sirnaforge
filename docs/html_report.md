@@ -135,22 +135,29 @@ distinct guides; they are not biological defaults.
 
 `write_report_from_run(...)` returns a result bundle containing the output, selected mode, manifest, and
 diagnostics paths. Its `data_backed` mode builds normalized `guides`, `isoforms`, and
-`hit_summary` Parquet tables, renders every guide in the searchable summary, and stores candidate, hit,
-and miRNA rows in sibling JavaScript shards. The browser loads a shard with a relative classic-script
-URL when a reader opens a guide, which works offline with `file://` and from a static server without
+`hit_summary` Parquet tables, including each guide's best per-species ortholog mismatch, seed, transcript
+and gene identity. It renders every guide in the searchable summary and stores candidate, hit, and
+miRNA rows in sibling JavaScript shards. The browser loads a shard with a relative classic-script URL
+when a reader opens a guide, which works offline with `file://` and from a static server without
 `fetch` or external runtime services. Global status and gate counts are recorded in the manifest;
 reader filters only select guides and do not change gate verdicts. The summary is in the HTML, while
 guide details stay in local sidecars. The CLI exposes `--mode auto|compact_single_file|paged_single_file|data_backed`,
 `--artifact-dir`, and six `--compact-max-*` / `--paged-max-*` budgets for automatic selection. These
 are provisional resource budgets, not maximum safe dataset sizes. Quilt registration in paged and
-data-backed modes uses report summary metadata without materializing the full guide payload. Its
-`paged_single_file` mode keeps the same complete summary and
-guide detail set in one HTML file, with 50 visible guides per page; search, status and gate filters
-recompute the page count over all guides rather than truncating the report. The 1,200-guide fixture is
-a functional scaling check rather than a Martinelli or OligoGym
-acceptance benchmark. The data-backed reader currently supports search, status and individual gate
-result filtering plus candidate/hit/miRNA row detail; it does not yet include every compact reader
-control such as conservation selection, threshold editing, maps, carts or exports.
+data-backed modes uses report summary metadata without materializing the full guide payload. Both
+staged modes support conditional target-gene filtering and accessible conservation species/seed
+filters; these update the index immediately and preserve state in the URL fragment. Selected
+conservation filters distinguish a completed screen with no conserved site from unavailable or
+incomplete mapping/screen evidence and explain zero-result views.
+
+`paged_single_file` keeps the complete summary and detail set in one HTML file, with 50 visible guides
+per page; search, status, gate, gene, and conservation filters recompute the page count over all guides
+rather than truncating the report. The scale regression uses all 4,113 native OligoGym guide
+observations plus 20,565 explicitly synthetic hit-stress rows. In a data-backed build, the searchable
+HTML index is under 10 MB and the hit details remain in larger sidecar shards. Synthetic hit rows
+exercise report resource behavior only and are not biological off-target results. The data-backed
+reader does not yet provide every compact control, including threshold editing, maps, carts, and
+exports.
 
 ## The unit is the guide sequence
 

@@ -1005,7 +1005,9 @@ function conservationDiagnostic(g,sp){
  if(!info)return {unavailable:true,label:'orthology evidence not established'};
  if(info.state==='unavailable')return {unavailable:true,label:({no_orthologue:'no orthologue found',unrecognized_identifier:'target identifier not recognized',mapping_not_supplied:'orthology mapping not supplied',unsupported_target_species:'target species is unsupported by the mapping source',unsupported_query_species:'query species is unsupported by the mapping source',budget_exhausted:'orthology lookup budget was exhausted',transport_error:'orthology service transport failed',error_response:'orthology service returned an error response',http_error:'orthology service returned an HTTP error',request_error:'orthology request failed',invalid_response:'orthology service returned an invalid response',orthologues_found:'orthologues were found, but no completed alignment was published'}[info.reason]||'orthology unavailable')};
  if(!info.screening_complete||!g.off_target_screened)return {unavailable:true,label:'screening completion not established for this guide'};
- return {unavailable:false,label:info.state==='resolved_empty'?'no ortholog mapping found':'no conserved site found in completed screen'};
+ if(info.state==='resolved_empty')return {unavailable:false,label:'no ortholog mapping found'};
+ if(info.state==='resolved')return {unavailable:false,label:'no conserved site found in completed screen'};
+ return {unavailable:true,label:'orthology evidence not established'};
 }
 function conservationFilterDiagnostic(){
  if(!F.conserved.size||G.some(g=>[...F.conserved].every(sp=>{const d=(JSON.parse(g.ortholog||'{}'))[sp];return d&&d.nm!==null&&d.nm<=1&&(d.nm!==1||!F.conservedSeed||d.seed_mismatches===0); })))return '';

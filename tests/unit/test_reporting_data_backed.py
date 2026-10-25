@@ -332,6 +332,11 @@ const mouse=el();mouse.value='mouse';global.document={querySelector:s=>elements[
         "if(conservationDiagnostic(G[3],'mouse').label!=='no conserved site found in completed screen')process.exit(9);"
     )
     code += (
+        "M.conservation_evidence.per_species.mouse.state='legacy';"
+        "const legacy=conservationDiagnostic(G[3],'mouse');"
+        "if(!legacy.unavailable||legacy.label!=='orthology evidence not established')process.exit(11);"
+    )
+    code += (
         f"G[0].ortholog={json.dumps(json.dumps({'mouse': {'nm': 1, 'seed_mismatches': 0, 'transcript_id': 'ENSMUST1', 'gene_symbol': 'GeneA'}}))};"
         f"window.SF_DETAIL_SHARDS={{0:{{{json.dumps(guides[0])}:{{candidates:[],hits:[],mirna:[],isoforms:[]}}}}}};"
         f"showGuide({json.dumps(guides[0])}).then(()=>{{const detail=elements['#details'].innerHTML;"
