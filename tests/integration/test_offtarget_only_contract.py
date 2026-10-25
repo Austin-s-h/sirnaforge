@@ -254,7 +254,8 @@ def test_a_screen_that_published_nothing_leaves_its_gates_undecided(
     _run(tmp_path, monkeypatch, _screen_published_nothing)
     everything = _rows(_tables(tmp_path) / "candidates_all.csv")
 
-    assert set(everything["max_off_target_count_verdict"]) == {FilterEvaluation.UNKNOWN.value}
+    # The aggregate ceiling is disabled by default until its query-species calibration is set.
+    assert set(everything["max_off_target_count_verdict"]) == {FilterEvaluation.NOT_EVALUATED.value}
     assert set(everything["max_transcriptome_hits_0mm_verdict"]) == {FilterEvaluation.UNKNOWN.value}
 
 

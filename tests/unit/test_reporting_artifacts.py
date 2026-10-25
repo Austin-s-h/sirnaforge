@@ -44,9 +44,13 @@ def test_parquet_store_projects_and_streams_source_tables_and_traces_exports(tmp
         [_hit_row(GUIDE, "human", "ENST9", 1, "off_target", "GENE9")],
     )
     candidate_path = run / "sirnaforge/candidates_all.csv"
-    candidate_path.write_text(
-        candidate_path.read_text().replace("\n", ",unused_column\n", 1).replace(",PASS\n", ",PASS,not-for-report\n")
-    )
+    with candidate_path.open(encoding="utf-8", newline="") as handle:
+        source_rows = list(csv.reader(handle))
+    source_rows[0].append("unused_column")
+    for row in source_rows[1:]:
+        row.append("not-for-report")
+    with candidate_path.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle).writerows(source_rows)
     store = ReportArtifactStore.from_run(run, tmp_path / "report.artifacts")
 
     manifest = json.loads((store.root / "report_manifest.json").read_text())
