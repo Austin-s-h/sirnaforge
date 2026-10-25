@@ -230,6 +230,16 @@ def test_paged_single_file_navigates_all_filtered_guides_and_opens_inline_detail
             for index, guide in enumerate(guides)
         ],
     )
+    manifest_path = run / "sirnaforge/manifest.json"
+    run_manifest = json.loads(manifest_path.read_text())
+    run_manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {"transcript_id": f"ENST{index}", "gene_id": f"ENSG{index}", "gene_symbol": f"GENE{index}"}
+            for index in range(n_guides)
+        ],
+    }
+    manifest_path.write_text(json.dumps(run_manifest))
     output = tmp_path / "paged.html"
     result = write_report_from_run(run, output, mode="paged_single_file")
 
@@ -244,15 +254,18 @@ def test_paged_single_file_navigates_all_filtered_guides_and_opens_inline_detail
     scripts = re.findall(r"<script>(.*?)</script>", output.read_text(), flags=re.DOTALL)
     bootstrap = r"""
 const vm=require('vm');global.window={};
-const elements={};function el(){return {value:'',selectedIndex:0,textContent:'',innerHTML:'',disabled:false,handlers:{},addEventListener(k,fn){this.handlers[k]=fn;}}}
-for(const id of ['#counts','#gatecounts','#unresolved-only','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
-elements['#gate'].appendChild=()=>{};global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
+const elements={};function el(){return {value:'',selectedIndex:0,textContent:'',innerHTML:'',disabled:false,checked:false,attrs:{},handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},setAttribute(k,v){this.attrs[k]=v;}}}
+for(const id of ['#counts','#gatecounts','#unresolved-only','#geneenable','#targetgene','#gene-state','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
+elements['#gate'].appendChild=()=>{};global.window.location={hash:''};window.addEventListener=()=>{};global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
 """
     code = (
         bootstrap
         + "\n".join(scripts)
         + "\nif(!elements['#page-info'].textContent.endsWith('of 3'))process.exit(2);"
         + "elements['#next'].handlers.click();if(!elements['#page-info'].textContent.startsWith('Page 2'))process.exit(3);"
+        + "elements['#geneenable'].checked=true;elements['#targetgene'].value='id:ENSG119';elements['#geneenable'].handlers.change();"
+        + "if(elements['#visible-count'].textContent!=='1 guides match current filters'||!window.location.hash.includes('gene=id%3AENSG119'))process.exit(7);"
+        + "elements['#geneenable'].checked=false;elements['#geneenable'].handlers.change();"
         + f"elements['#search'].value={json.dumps(guides[-1])};elements['#search'].handlers.input();"
         + "if(!elements['#visible-count'].textContent.startsWith('1 guides'))process.exit(4);"
         + "elements['#search'].value='';elements['#gate'].selectedIndex=1;const target=G.find(g=>g.guide==="
