@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -22,7 +21,7 @@ from sirnaforge.models.sirna import (
     OffTargetFilterCriteria,
     SiRNACandidate,
 )
-from sirnaforge.reporting import ReportPayload
+from sirnaforge.reporting import ReportWriteResult
 from sirnaforge.workflow import SiRNAWorkflow, WorkflowConfig
 from sirnaforge.workflow import console as workflow_console
 
@@ -185,32 +184,25 @@ def test_workflow_writes_html_report_beside_candidate_csvs(
 
     # The workflow hands over the policy it resolved, so the report cannot fall back to library
     # default thresholds and publish gates this run never applied.
-    monkeypatch.setattr(
-        "sirnaforge.workflow.build_payload",
-        lambda run_dir, *, policy, diagnostics: SimpleNamespace(
-            run_dir=run_dir, policy=policy, diagnostics={} if diagnostics else None
-        ),
-    )
-
-    def _write_report(payload: object, output: Path) -> Path:
-        assert isinstance(payload, SimpleNamespace)
-        assert payload.run_dir == workflow.config.output_dir
-        assert payload.policy is workflow.config.resolved_policy
-        payload.diagnostics["phases_seconds"] = {}
+    def _write_report(run_dir: Path, output: Path, **kwargs: object) -> ReportWriteResult:
+        assert run_dir == workflow.config.output_dir
+        assert kwargs["policy"] is workflow.config.resolved_policy
         assert (workflow.config.output_dir / "sirnaforge" / "manifest.json").exists()
         output.write_text("<html>report</html>")
-        return output
+        return _fake_report_result(output)
 
-    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_report)
+    monkeypatch.setattr("sirnaforge.workflow.write_report_from_run", _write_report)
 
     registered: dict[str, object] = {}
 
-    def _write_summarize(payload: object, report_path: Path, run_dir: Path, *, out_path: Path) -> Path:
-        registered.update(payload=payload, report_path=report_path, run_dir=run_dir, out_path=out_path)
+    def _write_summarize(
+        report_path: Path, run_dir: Path, summary: dict[str, object], facts: dict[str, object], *, out_path: Path
+    ) -> Path:
+        registered.update(report_path=report_path, run_dir=run_dir, summary=summary, facts=facts, out_path=out_path)
         out_path.write_text("[]")
         return out_path
 
-    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize", _write_summarize)
+    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize_from_run", _write_summarize)
 
     asyncio.run(workflow.step6_generate_reports(design_result))
 
@@ -227,32 +219,37 @@ def test_workflow_writes_html_report_beside_candidate_csvs(
     assert (workflow.config.output_dir / "quilt_summarize.json").exists()
 
 
-def _report_payload() -> ReportPayload:
-    """A minimal real payload, so the real Quilt registration writer can run over it.
-
-    Only ``run`` reaches that writer (it builds the report row's title and description); the guide and
-    filter tables belong to the renderer.
-    """
-    return ReportPayload(
-        schema_version="1.0.0",
-        run={
+def _fake_report_result(output: Path) -> ReportWriteResult:
+    """Build the report API result consumed by workflow registration and sidecar handling."""
+    artifact_dir = output.with_suffix(".data")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "summary": {
             "gene_query": "TP53",
             "guides": 1,
+            "candidate_rows": 1,
             "status_counts": {"pass": 1, "warn": 0, "unknown": 0, "fail": 0},
-            "embed_scope": "human, nm<=2",
-            "agreement": {"comparable": True, "contradicted_run_pass": 0, "overruled_run_fail": 0},
         },
-        filters=[],
-        guides=[],
-        provenance={},
+        "mode_facts": {"distinct_guides": 1, "candidate_rows": 1},
+    }
+    manifest_path = artifact_dir / "report_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    return ReportWriteResult(
+        output=output,
+        mode="compact_single_file",
+        manifest=manifest,
+        manifest_path=manifest_path,
+        diagnostics={},
+        diagnostics_path=output.with_suffix(".diagnostics.json"),
+        artifact_dir=artifact_dir,
     )
 
 
-def _write_html_report(payload: object, output: Path) -> Path:
-    """Stand-in for ``write_report``: writes the one file it promises and nothing else."""
+def _write_report_from_run(run_dir: Path, output: Path, **_kwargs: object) -> ReportWriteResult:
+    del run_dir
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("<html>report</html>")
-    return output
+    return _fake_report_result(output)
 
 
 def _registered_paths(summarize_path: Path) -> list[str]:
@@ -311,8 +308,7 @@ def test_completed_workflow_registers_its_own_run_summary(tmp_path: Path, monkey
     monkeypatch.setattr(SiRNAWorkflow, "step3_design_sirnas", _design)
     monkeypatch.setattr(SiRNAWorkflow, "step5_offtarget_analysis", _skip_screening)
     # The real write_quilt_summarize runs: its existence check is the behaviour under test.
-    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
-    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+    monkeypatch.setattr("sirnaforge.workflow.write_report_from_run", _write_report_from_run)
 
     asyncio.run(workflow.run_complete_workflow())
 
@@ -364,8 +360,7 @@ def test_workflow_without_a_json_summary_registers_no_summary_path(
     monkeypatch.setattr(SiRNAWorkflow, "step2_validate_orfs", _no_orfs)
     monkeypatch.setattr(SiRNAWorkflow, "step3_design_sirnas", _design)
     monkeypatch.setattr(SiRNAWorkflow, "step5_offtarget_analysis", _skip_screening)
-    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
-    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+    monkeypatch.setattr("sirnaforge.workflow.write_report_from_run", _write_report_from_run)
 
     asyncio.run(workflow.run_complete_workflow())
 
@@ -396,9 +391,8 @@ def test_a_failed_quilt_registration_neither_blames_the_report_nor_claims_a_file
     def _registration_fails(*args: object, **kwargs: object) -> Path:
         raise OSError("Read-only file system: run root")
 
-    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
-    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
-    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize", _registration_fails)
+    monkeypatch.setattr("sirnaforge.workflow.write_report_from_run", _write_report_from_run)
+    monkeypatch.setattr("sirnaforge.workflow.write_quilt_summarize_from_run", _registration_fails)
 
     workflow_console.export_text(clear=True)  # drop anything printed before this test
     with caplog.at_level(logging.WARNING):
@@ -409,12 +403,12 @@ def test_a_failed_quilt_registration_neither_blames_the_report_nor_claims_a_file
     assert (run_dir / "sirnaforge" / "report.html").exists(), "the report itself succeeded"
     assert not (run_dir / "quilt_summarize.json").exists()
 
-    assert "Self-contained HTML report" in printed
+    assert "HTML report (compact_single_file)" in printed
     assert "Quilt package summary" not in printed, "a file that was never written must not be announced"
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("Quilt package summary" in message for message in messages), "the failure that happened must be named"
-    assert not any("Failed to write self-contained HTML report" in message for message in messages), (
+    assert not any("Failed to write HTML report" in message for message in messages), (
         "the report succeeded, so nothing may say it failed"
     )
 
@@ -440,8 +434,7 @@ def test_an_absent_pass_fasta_is_not_announced(tmp_path: Path, monkeypatch: pyte
         processing_time=0.1,
     )
 
-    monkeypatch.setattr("sirnaforge.workflow.build_payload", lambda *_args, **_kwargs: _report_payload())
-    monkeypatch.setattr("sirnaforge.workflow.write_report", _write_html_report)
+    monkeypatch.setattr("sirnaforge.workflow.write_report_from_run", _write_report_from_run)
 
     workflow_console.export_text(clear=True)
     asyncio.run(workflow.step6_generate_reports(design_result))

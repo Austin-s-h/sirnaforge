@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 import pandas as pd
 from pandera.errors import SchemaError, SchemaErrors
 
+from sirnaforge.core.aligner_backend import normalize_aligner
 from sirnaforge.core.hit_annotation import unclassified_cells
 from sirnaforge.core.screening_evidence import (
     EvidenceProducer,
@@ -996,7 +997,7 @@ def scan_mirna_seed_matches_with_outcome(
 
 
 class BwaAnalyzer:
-    """BWA-MEM2 based analyzer for both transcriptome and miRNA seed off-target search."""
+    """BWA-compatible analyzer for transcriptome and miRNA seed off-target search."""
 
     def __init__(
         self,
@@ -1007,6 +1008,7 @@ class BwaAnalyzer:
         max_hits: int | None = None,
         seed_start: int = 2,
         seed_end: int = 8,
+        aligner: str = "bwa-mem2",
     ):
         """Initialize BWA-MEM2 analyzer.
 
@@ -1018,8 +1020,10 @@ class BwaAnalyzer:
             max_hits: Maximum hits to return (``None`` = no limit / exhaustive)
             seed_start: Seed region start (1-based)
             seed_end: Seed region end (1-based)
+            aligner: Selected BWA executable (MEM2 by default).
         """
         self.index_prefix = str(index_prefix)
+        self.aligner = normalize_aligner(aligner)
         self.mode = mode
         self.seed_length = seed_length
         self.min_score = min_score
@@ -1057,19 +1061,19 @@ class BwaAnalyzer:
 
         try:
             # Get absolute path to bwa-mem2 executable
-            bwa_path = _get_executable_path("bwa-mem2")
+            bwa_path = _get_executable_path(self.aligner)
             if not bwa_path:
-                raise FileNotFoundError("BWA-MEM2 executable not found in PATH")
+                raise FileNotFoundError(f"{self.aligner} executable not found in PATH")
 
             # Configure BWA parameters based on mode
             cmd = self._build_bwa_command(bwa_path, temp_fasta_path)
 
             _validate_command_args(cmd)
-            logger.info(f"Running BWA-MEM2 ({self.mode} mode): {' '.join(cmd)}")
+            logger.info(f"Running {self.aligner} ({self.mode} mode): {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=None, check=True)  # nosec B603
             results = self._parse_sam_output(result.stdout, sequences)
             results = self._filter_and_rank(results)
-            logger.info(f"BWA-MEM2 analysis completed: {len(results)} hits found")
+            logger.info(f"{self.aligner} analysis completed: {len(results)} hits found")
 
         except subprocess.CalledProcessError as e:
             logger.error(f"BWA-MEM2 failed: {e.stderr}")
@@ -1098,20 +1102,20 @@ class BwaAnalyzer:
         temp_fasta_path = create_temp_fasta(analysis_sequences)
 
         try:
-            bwa_path = _get_executable_path("bwa-mem2")
+            bwa_path = _get_executable_path(self.aligner)
             if not bwa_path:
-                raise FileNotFoundError("BWA-MEM2 executable not found in PATH")
+                raise FileNotFoundError(f"{self.aligner} executable not found in PATH")
 
             cmd = self._build_bwa_command(bwa_path, temp_fasta_path)
             _validate_command_args(cmd)
-            logger.info(f"Running BWA-MEM2 ({self.mode} mode): {' '.join(cmd)}")
+            logger.info(f"Running {self.aligner} ({self.mode} mode): {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=None, check=True)  # nosec B603
             parsed, processed_qnames = self._parse_sam_output_with_membership(result.stdout, sequences)
             ranked = self._filter_and_rank(parsed)
         except subprocess.CalledProcessError as e:
             stderr = (e.stderr or "").strip()
-            detail = f"BWA-MEM2 ({self.mode} mode) failed: {stderr.splitlines()[-1] if stderr else e}"
-            logger.error(f"BWA-MEM2 failed: {e.stderr}")
+            detail = f"{self.aligner} ({self.mode} mode) failed: {stderr.splitlines()[-1] if stderr else e}"
+            logger.error(f"{self.aligner} failed: {e.stderr}")
             return [], ExecutionOutcome(
                 completed=False,
                 submitted=submitted,
@@ -1123,7 +1127,7 @@ class BwaAnalyzer:
                 detail=detail,
             )
         except subprocess.TimeoutExpired:
-            logger.error("BWA-MEM2 timed out")
+            logger.error("%s timed out", self.aligner)
             return [], ExecutionOutcome(
                 completed=False,
                 submitted=submitted,
@@ -1132,7 +1136,7 @@ class BwaAnalyzer:
                 pre_cap_hits=0,
                 cap=self.max_hits,
                 truncated=False,
-                detail=f"BWA-MEM2 ({self.mode} mode) timed out",
+                detail=f"{self.aligner} ({self.mode} mode) timed out",
             )
         finally:
             Path(temp_fasta_path).unlink(missing_ok=True)
@@ -1149,7 +1153,7 @@ class BwaAnalyzer:
             cap=self.max_hits,
             truncated=truncated,
         )
-        logger.info(f"BWA-MEM2 analysis completed: {len(capped)} hits found")
+        logger.info(f"{self.aligner} analysis completed: {len(capped)} hits found")
         return capped, outcome
 
     def _prepare_sequences_for_analysis(self, sequences: dict[str, str]) -> dict[str, str]:
@@ -1594,12 +1598,13 @@ def create_temp_fasta(sequences: dict[str, str]) -> str:
     return temp_path
 
 
-def build_bwa_index(fasta_file: str | Path, index_prefix: str | Path) -> Path:
-    """Build BWA-MEM2 index for both transcriptome and miRNA off-target analysis."""
+def build_bwa_index(fasta_file: str | Path, index_prefix: str | Path, *, aligner: str = "bwa-mem2") -> Path:
+    """Build an index with the selected BWA backend."""
+    aligner_name = normalize_aligner(aligner)
     fasta_path = Path(fasta_file)
     index_prefix_path = Path(index_prefix)
 
-    logger.info(f"Building BWA-MEM2 index from {fasta_path} with prefix {index_prefix_path}")
+    logger.info("Building %s index from %s with prefix %s", aligner_name, fasta_path, index_prefix_path)
 
     if not fasta_path.exists():
         raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
@@ -1607,25 +1612,25 @@ def build_bwa_index(fasta_file: str | Path, index_prefix: str | Path) -> Path:
     index_prefix_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get absolute path to bwa-mem2 executable
-    bwa_path = _get_executable_path("bwa-mem2")
+    bwa_path = _get_executable_path(aligner_name)
     if not bwa_path:
-        raise FileNotFoundError("bwa-mem2 executable not found in PATH")
+        raise FileNotFoundError(f"{aligner_name} executable not found in PATH")
 
     cmd = [bwa_path, "index", "-p", str(index_prefix_path), str(fasta_path)]
     _validate_command_args(cmd)
 
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)  # nosec B603
-        if not validate_index_files(index_prefix_path, "bwa-mem2"):
+        if not validate_index_files(index_prefix_path, aligner_name):
             raise RuntimeError(
-                "BWA-MEM2 index files were not created correctly. This usually happens when the build "
+                f"{aligner_name} index files were not created correctly. This usually happens when the build "
                 "process runs out of memory (human transcriptomes can require 32GB+). Increase available RAM "
                 "or pre-build the index in an environment with more memory and retry."
             )
-        logger.info(f"BWA-MEM2 index built successfully: {index_prefix_path}")
+        logger.info("%s index built successfully: %s", aligner_name, index_prefix_path)
         return index_prefix_path
     except subprocess.CalledProcessError as e:
-        logger.error(f"BWA-MEM2 index build failed: {e.stderr}")
+        logger.error("%s index build failed: %s", aligner_name, e.stderr)
         raise
     except subprocess.TimeoutExpired:
         logger.error("BWA-MEM2 index build timed out")
@@ -1641,7 +1646,7 @@ def validate_index_files(index_prefix: str | Path, tool: str = "bwa") -> bool:
     """Validate that index files exist for given tool."""
     index_path = Path(index_prefix)
 
-    if tool in ("bwa", "bwa-mem2"):
+    if tool in ("bwa", "bwa-mem2", "bwa-mem3"):
         required_extensions = [".amb", ".ann", ".bwt.2bit.64", ".pac"]
     else:
         logger.warning(f"Unknown tool for index validation: {tool}")
@@ -1811,6 +1816,7 @@ def run_bwa_alignment_analysis(
     seed_end: int = 8,
     *,
     evidence_dir: str | Path | None = None,
+    aligner: str = "bwa-mem2",
 ) -> Path:
     """Run BWA-MEM2 alignment analysis for candidate sequences using Pydantic models.
 
@@ -1829,6 +1835,7 @@ def run_bwa_alignment_analysis(
         evidence_dir: When given, write a #100 transcriptome evidence envelope reporting whether
             this execution actually completed, additive and keyword-only so the ``.nf`` script
             block that calls this function by name is unaffected.
+        aligner: ``bwa-mem2`` (default) or the optional plain-mode ``bwa-mem3`` backend.
 
     Returns:
         Path to output directory containing results
@@ -1854,6 +1861,7 @@ def run_bwa_alignment_analysis(
         max_hits=max_hits,
         seed_start=seed_start,
         seed_end=seed_end,
+        aligner=aligner,
     )
 
     # The outcome-reporting path is only taken when a caller actually wants evidence: existing

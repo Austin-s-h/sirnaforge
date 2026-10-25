@@ -29,6 +29,7 @@ def tool_environment(tmp_path: Path) -> dict[str, str]:
     tools.mkdir()
     for name, body in {
         "python": 'if [ "$1" = --version ]; then echo "Python 3.12.0"; else echo "1.0.0"; fi',
+        "bwa-mem3": 'echo "3.0.0"',
         "bwa-mem2": 'echo "Launching executable bwa-mem2.avx2" >&2; echo "2.2.1"',
     }.items():
         executable = tools / name
@@ -37,18 +38,24 @@ def tool_environment(tmp_path: Path) -> dict[str, str]:
     return {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
 
 
-def render(text: str) -> str:
+def render(text: str, aligner: str = "bwa-mem2") -> str:
     """Apply the substitutions relevant to these fragments in Groovy GStrings."""
-    return text.replace("${task.process}", "TEST_PROCESS").replace("${species}", "human").replace(r"\$", "$")
+    return (
+        text.replace("${task.process}", "TEST_PROCESS")
+        .replace("${species}", "human")
+        .replace("${params.aligner ?: 'bwa-mem2'}", aligner)
+        .replace(r"\$", "$")
+    )
 
 
+@pytest.mark.parametrize("aligner", ["bwa-mem2", "bwa-mem3"])
 @pytest.mark.parametrize(("module", "index", "block"), BLOCKS, ids=[f"{m}-{i}" for m, i, _ in BLOCKS])
 def test_version_fragment_has_no_terminator_or_launcher_diagnostic(
-    tmp_path: Path, tool_environment: dict[str, str], module: str, index: int, block: str
+    tmp_path: Path, tool_environment: dict[str, str], module: str, index: int, block: str, aligner: str
 ) -> None:
     """The real shell must terminate its heredoc and capture the numeric BWA version."""
     completed = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", render(block)],
+        ["bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", render(block, aligner)],
         cwd=tmp_path,
         env=tool_environment,
         capture_output=True,
@@ -60,8 +67,9 @@ def test_version_fragment_has_no_terminator_or_launcher_diagnostic(
     assert versions.startswith('"TEST_PROCESS":\n')
     assert "END_VERSIONS" not in versions
     assert "python: 3.12.0" in versions
-    if "bwa-mem2:" in block:
-        assert "bwa-mem2: 2.2.1\n" in versions
+    if "params.aligner" in block:
+        version = "2.2.1" if aligner == "bwa-mem2" else "3.0.0"
+        assert f"{aligner}: {version}\n" in versions
         assert "Launching" not in versions
 
 

@@ -77,12 +77,18 @@ def write_report_from_run(
     phases: dict[str, float] = {}
     if mode == "compact_single_file":
         phase_started = time.perf_counter()
-        payload = build_payload(run_root, max_guides=None, diagnostics=True)
+        payload = build_payload(run_root, policy=policy, max_guides=None, diagnostics=True)
+        result_manifest = _compact_manifest(run_root, mode, thresholds)
+        result_manifest["summary"] = {
+            "gene_query": payload.run.get("gene_query", run_root.name),
+            "guides": payload.run.get("guides", 0),
+            "candidate_rows": payload.run.get("candidate_rows", 0),
+            "status_counts": payload.run.get("status_counts", {}),
+        }
         phases["payload_build"] = time.perf_counter() - phase_started
         phase_started = time.perf_counter()
         write_report(payload, output_path)
         phases["html_render_and_write"] = time.perf_counter() - phase_started
-        result_manifest = _compact_manifest(run_root, mode, thresholds)
         return _write_result_metadata(
             output_path, mode, result_manifest, payload.diagnostics or {}, phases, build_started
         )
@@ -94,7 +100,13 @@ def write_report_from_run(
     selected = str(store.manifest["report_mode"])
     if selected == "compact_single_file":
         phase_started = time.perf_counter()
-        payload = build_payload(run_root, max_guides=None, diagnostics=True)
+        payload = build_payload(run_root, policy=policy, max_guides=None, diagnostics=True)
+        store.manifest["summary"] = {
+            "gene_query": payload.run.get("gene_query", run_root.name),
+            "guides": payload.run.get("guides", 0),
+            "candidate_rows": payload.run.get("candidate_rows", 0),
+            "status_counts": payload.run.get("status_counts", {}),
+        }
         phases["payload_build"] = time.perf_counter() - phase_started
         phase_started = time.perf_counter()
         write_report(payload, output_path)

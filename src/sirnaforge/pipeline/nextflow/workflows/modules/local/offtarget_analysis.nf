@@ -44,7 +44,8 @@ result = offtarget_analysis_cli(
     bwa_k=${bwa_k},
     bwa_T=${bwa_T},
     seed_start=${seed_start},
-    seed_end=${seed_end}
+    seed_end=${seed_end},
+    aligner='${params.aligner ?: 'bwa-mem2'}'
 )
 
 print(f"Batch analysis for ${species}: {result['status']}")
@@ -55,7 +56,7 @@ PYEOF
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":
     python: \$(python --version | sed 's/Python //g')
-    bwa-mem2: \$(bwa-mem2 version 2>&1 | tail -n1 || echo 'not available')
+    ${params.aligner ?: 'bwa-mem2'}: \$(${params.aligner ?: 'bwa-mem2'} version 2>&1 | tail -n1 || echo 'not available')
 END_VERSIONS
     """
 
@@ -97,7 +98,7 @@ EVIDENCE
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":
     python: \$(python --version | sed 's/Python //g')
-    bwa-mem2: \$(bwa-mem2 version 2>&1 | tail -n1 || echo 'not available')
+    ${params.aligner ?: 'bwa-mem2'}: \$(${params.aligner ?: 'bwa-mem2'} version 2>&1 | tail -n1 || echo 'not available')
 END_VERSIONS
     """
 }

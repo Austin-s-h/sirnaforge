@@ -56,6 +56,7 @@ from sirnaforge.config.run_policy import (
     describe_parameters,
     resolve_run_policy,
 )
+from sirnaforge.core.aligner_backend import normalize_aligner
 from sirnaforge.core.design import (
     MiRNADesigner,
     SiRNADesigner,
@@ -201,7 +202,15 @@ from sirnaforge.provenance import (
     reported_term_partition,
     write_report_manifest,
 )
-from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
+from sirnaforge.reporting import (
+    ReportMode,
+    ReportModeThresholds,
+    ReportPayload,
+    ReportWriteResult,
+    write_quilt_summarize,
+    write_quilt_summarize_from_run,
+    write_report_from_run,
+)
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.ensembl_ids import strip_version
@@ -488,6 +497,10 @@ class WorkflowConfig:
         transcript_seed_required_species: Sequence[str] = (),
         transcript_seed_scope: TranscriptSequenceScope | str = TranscriptSequenceScope.FULL_CDNA,
         max_transcript_seed_sites: int | None = None,
+        aligner: str = "bwa-mem2",
+        report_mode: ReportMode = "auto",
+        report_artifact_dir: Path | None = None,
+        report_thresholds: ReportModeThresholds | None = None,
         **renamed: Any,
     ):
         """Initialize workflow configuration.
@@ -545,7 +558,16 @@ class WorkflowConfig:
         )
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
+        if report_mode not in ("auto", "compact_single_file", "paged_single_file", "data_backed"):
+            raise ValueError(f"Unsupported report mode: {report_mode}")
+        self.report_mode = report_mode
+        self.report_artifact_dir = report_artifact_dir
+        self.report_thresholds = report_thresholds
+        self.aligner = normalize_aligner(aligner)
         self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
+        configured_aligner = self.nextflow_config.get("aligner")
+        if configured_aligner is not None and normalize_aligner(str(configured_aligner)) != self.aligner:
+            raise ValueError("Conflicting aligner and nextflow_config aligner; select one backend consistently")
         stale_params = sorted(set(self.nextflow_config) & set(RENAMED_NEXTFLOW_PARAMS))
         if stale_params:
             raise ValueError(
@@ -846,7 +868,7 @@ class SiRNAWorkflow:
         # The payload and report path step 6 registered with Quilt, kept so the registration can be
         # re-issued once logs/workflow_summary.json exists. None until a report has been written, which
         # is what stops the re-issue from naming a summary no run produced.
-        self._report_registration: tuple[ReportPayload, Path] | None = None
+        self._report_registration: tuple[ReportPayload | ReportWriteResult, Path] | None = None
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete design workflow (siRNA/miRNA or ZFN)."""
@@ -1833,32 +1855,27 @@ class SiRNAWorkflow:
         # Rendering the report and registering it are two writes with two failure modes, so they get
         # two handlers (#103): a shared handler would mislog a successful render as failed whenever
         # only the registration write failed.
-        payload: ReportPayload | None = None
+        report_result: ReportWriteResult | None = None
         report_path: Path | None = None
         render_error: str | None = None
         try:
-            # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
-            # the gates it actually applied, and a default panel would report other thresholds.
-            payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy, diagnostics=True)
-            render_started = time.perf_counter()
-            report_path = write_report(payload, report_html_path)
-            if payload.diagnostics is not None:
-                payload.diagnostics["phases_seconds"]["render_and_write"] = time.perf_counter() - render_started
+            report_result = write_report_from_run(
+                self.config.output_dir,
+                report_html_path,
+                mode=self.config.report_mode,
+                artifact_dir=self.config.report_artifact_dir,
+                thresholds=self.config.report_thresholds,
+                policy=self.config.resolved_policy,
+            )
+            report_path = report_result.output
         except Exception as e:
             render_error = f"{type(e).__name__}: {e}"
-            logger.warning(f"Failed to write self-contained HTML report: {e}")
-
-        if payload is not None and payload.diagnostics is not None and report_path is not None:
-            try:
-                payload.diagnostics["output_html_bytes"] = report_path.stat().st_size
-                report_path.with_suffix(".diagnostics.json").write_text(json.dumps(payload.diagnostics, indent=2))
-            except OSError as exc:
-                logger.warning("HTML report written, but report diagnostics could not be published: %s", exc)
+            logger.warning(f"Failed to write HTML report: {e}")
 
         summarize_path: Path | None = None
-        if self.config.quilt_summarize and payload is not None and report_path is not None:
-            self._report_registration = (payload, report_path)
-            summarize_path = self._write_quilt_summarize(payload, report_path)
+        if self.config.quilt_summarize and report_result is not None and report_path is not None:
+            self._report_registration = (report_result, report_path)
+            summarize_path = self._write_quilt_summarize(report_result, report_path)
 
         # Unconditional, because manifest.json claims report.html only as PENDING, and the sidecar is
         # the only place the outcome can be recorded without rewriting the bytes the report quoted.
@@ -1891,11 +1908,13 @@ class SiRNAWorkflow:
                 "   - Selection exports: sirnaforge/ (candidates_qualified.csv/.fasta, candidates_provisional.csv)"
             )
         if report_path is not None and report_path.exists():
-            console.print("   - Self-contained HTML report: sirnaforge/report.html")
+            console.print(
+                f"   - HTML report ({report_result.mode if report_result else 'unknown'}): sirnaforge/report.html"
+            )
         if summarize_path is not None and summarize_path.exists():
             console.print("   - Quilt package summary: quilt_summarize.json")
 
-    def _write_quilt_summarize(self, payload: ReportPayload, report_path: Path) -> Path | None:
+    def _write_quilt_summarize(self, payload: ReportPayload | ReportWriteResult, report_path: Path) -> Path | None:
         """Register the run's artifacts where Quilt reads them; return the path, or ``None`` if it failed.
 
         At the run root, not beside the report: Quilt reads a summarize file only at the package root,
@@ -1905,6 +1924,14 @@ class SiRNAWorkflow:
         """
         out_path = Path(self.config.output_dir) / "quilt_summarize.json"
         try:
+            if isinstance(payload, ReportWriteResult):
+                return write_quilt_summarize_from_run(
+                    report_path,
+                    self.config.output_dir,
+                    payload.manifest.get("summary", {}),
+                    payload.manifest.get("mode_facts") or {},
+                    out_path=out_path,
+                )
             return write_quilt_summarize(payload, report_path, self.config.output_dir, out_path=out_path)
         except Exception as e:
             logger.warning(f"Failed to write Quilt package summary: {e}")
@@ -2284,7 +2311,7 @@ class SiRNAWorkflow:
         silence, so the degraded block says what went wrong instead of dropping the key.
         """
         try:
-            build = dict(build_identity())
+            build = dict(build_identity(aligner=self.config.aligner))
             # Omitted rather than nulled when no Nextflow screen ran: there is no pipeline to revise.
             if self._nextflow_cache_info is not None:
                 build["pipeline_revision"] = pipeline_revision_identity(
@@ -2502,13 +2529,16 @@ class SiRNAWorkflow:
                 "index_prefix": reference.index,
                 # The 12-hex cache stem is an md5 of a release-floating URL, so it identifies the
                 # request and not the bytes; it must never be read as a digest.
-                "path_scope": "container" if build_identity()["container"]["in_container"] else "host",
+                "path_scope": "container"
+                if build_identity(aligner=self.config.aligner)["container"]["in_container"]
+                else "host",
             },
         }
         entry.update(self._reference_bytes_provenance(reference, evidence))
         entry["index"] = index_attestation(
             Path(reference.index),
             reference_fasta_name=Path(reference.fasta).name if reference.fasta else None,
+            aligner=self.config.aligner,
         )
         entry["classification_index"] = self._classification_index_provenance(species)
         return entry
@@ -3559,7 +3589,7 @@ class SiRNAWorkflow:
         try:
             # Indexing belongs to the same Nextflow provider/image as alignment.
             # Reuse a valid cached index, otherwise hand the pipeline the FASTA.
-            manager = TranscriptomeManager(auto_build_indices=False)
+            manager = TranscriptomeManager(auto_build_indices=False, aligner=self.config.aligner)
 
             # Check if it's a pre-configured source
             if transcriptome_ref in manager.SOURCES:
@@ -4117,7 +4147,7 @@ class SiRNAWorkflow:
     def _plan_search_settings(additional_params: Mapping[str, Any]) -> dict[str, str | int | float | bool | None]:
         """The alignment settings a plan entry needs to be reproducible, as stated for this run."""
         settings: dict[str, str | int | float | bool | None] = {}
-        for key in ("max_hits", "bwa_k", "bwa_T", "seed_start", "seed_end"):
+        for key in ("aligner", "max_hits", "bwa_k", "bwa_T", "seed_start", "seed_end"):
             if key not in additional_params:
                 continue
             value = additional_params[key]
@@ -4247,6 +4277,7 @@ class SiRNAWorkflow:
         """
         if additional_params is None:
             additional_params = dict(self.config.nextflow_config)
+            additional_params["aligner"] = self.config.aligner
             # Recorded before resolution, never after: see _record_screening_plan (#100).
             self._record_screening_plan(input_fasta, additional_params)
             has_transcriptome = await self._resolve_screening_references(additional_params)
@@ -6751,6 +6782,10 @@ async def run_sirna_workflow(
     transcript_seed_required_species: Sequence[str] = (),
     transcript_seed_scope: TranscriptSequenceScope | str = TranscriptSequenceScope.FULL_CDNA,
     max_transcript_seed_sites: int | None = None,
+    aligner: str = "bwa-mem2",
+    report_mode: ReportMode = "auto",
+    report_artifact_dir: Path | None = None,
+    report_thresholds: ReportModeThresholds | None = None,
     **renamed: Any,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
@@ -6776,6 +6811,10 @@ async def run_sirna_workflow(
         transcript_seed_required_species: Subset of transcript_seed_species required for qualification; others are exploratory.
         transcript_seed_scope: Full cDNA or explicit 3′UTR; plain cDNA FASTA has no UTR annotation.
         max_transcript_seed_sites: Optional per-guide ceiling over requested transcript-seed species.
+        report_mode: HTML report layout selection; auto chooses from artifact size and row counts.
+        report_artifact_dir: Optional destination for normalized report artifacts.
+        report_thresholds: Optional deterministic auto-mode size and row-count limits.
+        aligner: Transcriptome alignment backend: bwa-mem2 or bwa-mem3 (plain mode).
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -6974,6 +7013,10 @@ async def run_sirna_workflow(
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         mirna_reference_manifest=mirna_reference_manifest,
+        aligner=aligner,
+        report_mode=report_mode,
+        report_artifact_dir=report_artifact_dir,
+        report_thresholds=report_thresholds,
         target_intent_request=target_intent_request,
         transcript_seed_species=transcript_seed_species,
         transcript_seed_required_species=transcript_seed_required_species,
@@ -7018,6 +7061,7 @@ async def run_offtarget_only_workflow(
     policy_config: Path | str | None = None,
     filter_actions: Mapping[str, Any] | None = None,
     mirna_reference_manifest: str | Path | None = None,
+    aligner: str = "bwa-mem2",
     **renamed: Any,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
@@ -7035,6 +7079,7 @@ async def run_offtarget_only_workflow(
         transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
             caller has already built. Replaces automatic references while retaining explicit FASTAs.
         mirna_reference_manifest: Optional JSON manifest of pinned local mature miRNA references.
+        aligner: Transcriptome alignment backend: bwa-mem2 or bwa-mem3 (plain mode).
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -7182,6 +7227,7 @@ async def run_offtarget_only_workflow(
         mirna_database=mirna_database,
         mirna_species=mirna_species,
         mirna_reference_manifest=mirna_reference_manifest,
+        aligner=aligner,
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,

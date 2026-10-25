@@ -7,10 +7,13 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pyarrow.parquet as pq
 import pytest
+from typer.testing import CliRunner
 
+from sirnaforge.cli import app
 from sirnaforge.reporting import data_backed as data_backed_module
 from sirnaforge.reporting import write_report_from_run
 from tests.unit.test_reporting_payload import GUIDE, _candidate_row, _hit_row, _write_run
@@ -175,3 +178,99 @@ elements['#gate'].appendChild=()=>{};global.document={querySelector:s=>elements[
     script_path.write_text(code)
     completed = subprocess.run([node, str(script_path)], text=True, capture_output=True, check=True, timeout=10)
     assert completed.stdout == "ok"
+
+
+@pytest.mark.unit
+def test_cli_data_backed_quilt_does_not_build_monolithic_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI report generation and Quilt registration stay on the summary-only path."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 1)], [])
+    output = tmp_path / "cli-report.html"
+
+    def forbidden_payload(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("data-backed CLI must not build the monolithic payload")
+
+    monkeypatch.setattr("sirnaforge.cli.build_payload", forbidden_payload)
+    result = CliRunner().invoke(
+        app, ["report", str(run), "-o", str(output), "--mode", "data_backed", "--quilt-summarize"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert output.exists() and output.with_name("cli-report.details").is_dir()
+    assert (tmp_path / "quilt_summarize.json").exists()
+    entries = json.loads((tmp_path / "quilt_summarize.json").read_text())
+    assert entries[0]["description"].startswith("1 guides:")
+
+
+@pytest.mark.unit
+def test_report_cli_forwards_mode_artifact_and_threshold_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public CLI passes user-selected report budgets into the writer API."""
+    calls: list[dict[str, object]] = []
+    run = tmp_path / "run"
+    run.mkdir()
+    output = tmp_path / "custom.html"
+    artifact_dir = tmp_path / "report-data"
+
+    def fake_writer(_run: Path, out: Path, **kwargs: object) -> object:
+        calls.append(kwargs)
+        out.write_text("<html></html>")
+        diagnostics_path = out.with_suffix(".diagnostics.json")
+        diagnostics_path.write_text("{}")
+        return SimpleNamespace(
+            output=out,
+            mode="paged_single_file",
+            manifest={"summary": {"guides": 0, "candidate_rows": 0, "status_counts": {}}},
+            diagnostics={},
+            diagnostics_path=diagnostics_path,
+        )
+
+    monkeypatch.setattr("sirnaforge.cli.write_report_from_run", fake_writer)
+    result = CliRunner().invoke(
+        app,
+        [
+            "report",
+            str(run),
+            "-o",
+            str(output),
+            "--mode",
+            "paged_single_file",
+            "--artifact-dir",
+            str(artifact_dir),
+            "--compact-max-input-bytes",
+            "111",
+            "--compact-max-candidate-rows",
+            "222",
+            "--compact-max-guides",
+            "3",
+            "--paged-max-input-bytes",
+            "444",
+            "--paged-max-candidate-rows",
+            "555",
+            "--paged-max-guides",
+            "6",
+            "--diagnostics-json",
+            str(tmp_path / "custom-diagnostics.json"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["mode"] == "paged_single_file"
+    assert calls[0]["artifact_dir"] == artifact_dir
+    assert calls[0]["thresholds"].compact_max_input_bytes == 111  # type: ignore[union-attr]
+    assert calls[0]["thresholds"].paged_max_guides == 6  # type: ignore[union-attr]
+    assert (tmp_path / "custom-diagnostics.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["compact_single_file", "auto"])
+def test_compact_cli_handles_absent_mode_facts(tmp_path: Path, mode: str) -> None:
+    """Compact reports can print their summary and register Quilt with nullable mode facts."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 1)], [])
+    output = tmp_path / "compact.html"
+    result = CliRunner().invoke(app, ["report", str(run), "-o", str(output), "--mode", mode, "--quilt-summarize"])
+    assert result.exit_code == 0, result.output
+    assert "1 guides from" in result.output
+    assert (tmp_path / "quilt_summarize.json").is_file()

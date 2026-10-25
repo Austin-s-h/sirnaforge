@@ -149,23 +149,32 @@ equivalence. Raw trials are in `bwa-mem3-v0.15.0-controlled.json` and
 The user accepted **plain mode** on 2026-10-24 and explicitly removed further
 exact BWA-MEM2 parity proof as a requirement. Compatibility-mode measurements
 remain historical evidence; they do not define the acceptance criterion.
-Proceed with plain-mode integration and verify parser compatibility, complete
-screening evidence and gate behavior. Exact SAM/tag equality is not a blocker.
+The optional `--aligner bwa-mem3` route now builds and records a MEM3-specific
+index, invokes plain `bwa-mem3 mem`, parses its SAM output, and records the
+selected executable version and index identity. BWA-MEM2 remains the default.
+A local MEM3 0.15.0 smoke built an index from a two-transcript FASTA and sent
+plain-mode SAM records through the existing hit parser, producing six parsed
+hits with transcript IDs, coordinates, strands, CIGAR, NM, and seed mismatch
+fields. Focused backend, parser, and cache tests passed. This checks the software
+path and output completeness for that fixture; it does not establish biological
+eligibility, gate behavior across representative workloads, or a general speedup.
+Exact SAM/tag equality is not a blocker.
 
 Outstanding before #122 can close:
 
 1. Run both profiles against pinned binaries, synthetic truth and representative
    cDNA panels, including large/high-hit and multispecies workloads. Hash inputs.
-2. Validate plain-mode outputs through the existing downstream parser: hit
-   classes/counts, seed/mismatch coordinates, completion/censoring and gate
-   verdicts must remain meaningful. Exact MEM2 parity is waived by the user.
+2. Exercise representative cDNA panels through the downstream parser and
+   evidence reconciliation, including hit classes/counts, seed/mismatch
+   coordinates, completion/censoring, and gate verdicts. Exact MEM2 parity is
+   waived by the user.
 3. Benchmark cold/warm indexing and alignment, small/large query batches, CPU/RSS,
    index size and end-to-end time. Fresh index construction does not make OS
    page caches cold. Never interpret fewer retained hits as a speedup.
-4. Prove index-format compatibility; add backend/version identity, rebuild and
-   cleanup/staging rules before changing cache reuse. Fixed assumptions reside
-   in `core/off_target.py`, `data/transcriptome_manager.py`, `provenance.py`,
-   `pipeline/nextflow_cli.py` and embedded Nextflow modules/subworkflows.
+4. Validate packaging and host/container Nextflow distribution of the selected
+   MEM3 executable. Index identity, rebuild, cleanup, and staging are now
+   backend-specific; test them with the supported packaged binary before
+   considering any default change.
 5. Validate host/container/Nextflow, binary/version checks, distribution support,
    fallback and rollback; then record adopt/defer with measured gains.
 

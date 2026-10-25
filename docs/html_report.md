@@ -74,11 +74,14 @@ and miRNA rows in sibling JavaScript shards. The browser loads a shard with a re
 URL when a reader opens a guide, which works offline with `file://` and from a static server without
 `fetch` or external runtime services. Global status and gate counts are recorded in the manifest;
 reader filters only select guides and do not change gate verdicts. The summary is in the HTML, while
-guide details stay in local sidecars. Its `paged_single_file` mode keeps the same complete summary and
+guide details stay in local sidecars. The CLI exposes `--mode auto|compact_single_file|paged_single_file|data_backed`,
+`--artifact-dir`, and six `--compact-max-*` / `--paged-max-*` budgets for automatic selection. These
+are provisional resource budgets, not maximum safe dataset sizes. Quilt registration in paged and
+data-backed modes uses report summary metadata without materializing the full guide payload. Its
+`paged_single_file` mode keeps the same complete summary and
 guide detail set in one HTML file, with 50 visible guides per page; search, status and gate filters
-recompute the page count over all guides rather than truncating the report. The production CLI still
-uses the compact `build_payload`/`write_report` path; mode selection is not wired into that command
-yet. The 1,200-guide fixture is a functional scaling check rather than a Martinelli or OligoGym
+recompute the page count over all guides rather than truncating the report. The 1,200-guide fixture is
+a functional scaling check rather than a Martinelli or OligoGym
 acceptance benchmark. The data-backed reader currently supports search, status and individual gate
 result filtering plus candidate/hit/miRNA row detail; it does not yet include every compact reader
 control such as conservation selection, threshold editing, maps, carts or exports.

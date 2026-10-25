@@ -41,8 +41,7 @@ from sirnaforge.utils.hashing import file_sha256
 PROVENANCE_SCHEMA_VERSION = "1.0"
 REPORT_MANIFEST_SCHEMA_VERSION = "1.0"
 
-#: The aligner the screen is built around. Named as a constant because its *version* is a declared
-#: non-availability everywhere it appears, and the two must not drift apart.
+#: Default transcriptome backend. Individual runs may select the optional MEM3 backend.
 ALIGNER_NAME = "bwa-mem2"
 
 #: Digests recorded by ``cache_utils`` are md5, while ``manifest.files.*`` is sha256. Republishing
@@ -467,8 +466,44 @@ def _dependency_identity(lock_root: Path | None) -> dict[str, Any]:
     }
 
 
-def _runtime_identity() -> dict[str, Any]:
-    """The interpreter, the ViennaRNA that drew the report's structures, and the aligner's absence."""
+def _aligner_identity(name: str) -> dict[str, Any]:
+    """Capture the selected executable and its reported version."""
+    executable = shutil.which(name)
+    if executable is None:
+        return {
+            "name": name,
+            "path": None,
+            "value": None,
+            "state": "executable_unavailable",
+            "reason": f"{name} was selected but no executable was found in PATH",
+        }
+    try:
+        result = subprocess.run(  # nosec B603
+            [executable, "version"], capture_output=True, text=True, timeout=10, check=True
+        )
+        version_lines = (result.stdout or result.stderr).strip().splitlines()
+        if not version_lines:
+            raise ValueError("empty version banner")
+        version = version_lines[0]
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return {
+            "name": name,
+            "path": executable,
+            "value": None,
+            "state": "version_probe_failed",
+            "reason": f"{name} was found at {executable} but its version probe failed: {exc}",
+        }
+    return {
+        "name": name,
+        "path": executable,
+        "value": version,
+        "state": "version_command",
+        "reason": f"reported by {executable} version",
+    }
+
+
+def _runtime_identity(aligner: str = ALIGNER_NAME) -> dict[str, Any]:
+    """The interpreter, ViennaRNA, and the selected aligner's observed version."""
     try:
         import RNA  # noqa: PLC0415
 
@@ -489,17 +524,7 @@ def _runtime_identity() -> dict[str, Any]:
     return {
         "python": {"version": platform.python_version(), "implementation": platform.python_implementation()},
         "viennarna": viennarna,
-        # path-present must never read as version-known: a conda pin is a constraint, not an observation.
-        "aligner": {
-            "name": ALIGNER_NAME,
-            "path": shutil.which(ALIGNER_NAME),
-            "value": None,
-            "state": "not_captured",
-            "reason": (
-                f"no code path captures a {ALIGNER_NAME} version; the pipeline's versions.yml recorded the "
-                "launcher banner plus 'not available'"
-            ),
-        },
+        "aligner": _aligner_identity(aligner),
         "probed_not_used": {"samtools": {"invoked": False}},
     }
 
@@ -548,8 +573,8 @@ def _release_verdict(vcs: dict[str, Any], container: dict[str, Any]) -> tuple[bo
     return False, "dev_worktree", detail
 
 
-@lru_cache(maxsize=1)
-def build_identity() -> dict[str, Any]:
+@lru_cache(maxsize=2)
+def build_identity(aligner: str = ALIGNER_NAME) -> dict[str, Any]:
     """The manifest's ``build`` block: what produced this run, and what it cannot claim.
 
     Cached for the process because it shells out to git; ``build_identity.cache_clear()`` is the way
@@ -570,7 +595,7 @@ def build_identity() -> dict[str, Any]:
         "vcs": vcs,
         "container": container,
         "dependencies": _dependency_identity(lock_root),
-        "runtime": _runtime_identity(),
+        "runtime": _runtime_identity(aligner),
     }
 
 
@@ -676,7 +701,9 @@ def pipeline_revision_identity(recorded: str | None, *, workflow_dir: Path | Non
     }
 
 
-def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = None) -> dict[str, Any]:
+def index_attestation(
+    index_prefix: Path, *, reference_fasta_name: str | None = None, aligner: str | None = None
+) -> dict[str, Any]:
     """Whether the index bytes this run aligned against can be shown to be the bytes someone built.
 
     bwa-mem2 aligns against the index files alone, so an index nobody stamped is unattested bytes and
@@ -686,11 +713,19 @@ def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = 
     real human index exceeds the full-digest budget, so a sampled digest must not read as a whole-file
     one.
     """
-    aligner_version = absent(
-        "not_captured",
-        f"no code path captures a {ALIGNER_NAME} version; see build.runtime.aligner",
-    )
     stamp = read_artifact_stamp(index_prefix)
+    stamp_inputs = dict(stamp.get("inputs") or {}) if stamp else {}
+    stamped_aligner = stamp_inputs.get("aligner")
+    if isinstance(stamped_aligner, dict) and isinstance(stamped_aligner.get("name"), str):
+        aligner = aligner or stamped_aligner["name"]
+        aligner_version = present(
+            stamped_aligner.get("version"),
+            "index_build_version_probe",
+            "captured by the selected aligner's version command when this index was built",
+        )
+    else:
+        aligner = aligner or ALIGNER_NAME
+        aligner_version = _aligner_version_identity(aligner)
     if stamp is None:
         return {
             "attested": False,
@@ -699,7 +734,7 @@ def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = 
                 "this index prefix has no .sirnaforge-cache.json sidecar, so the index bytes this run aligned "
                 "against are unattested"
             ),
-            "aligner": ALIGNER_NAME,
+            "aligner": aligner,
             "built_in_this_process": absent(
                 "no_stamp_for_this_index",
                 "no cache stamp beside this prefix records when the index was built, so nothing about it can be "
@@ -727,7 +762,7 @@ def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = 
         "attested": True,
         "state": "artifact_stamp",
         "reason": "the cache stamp beside this prefix records the inputs it was built from and its own bytes",
-        "aligner": ALIGNER_NAME,
+        "aligner": aligner,
         "built_in_this_process": _stamped_in_this_process(stamp.get("stamped_at")),
         "built_from_digest": built_from,
         "aligner_version": aligner_version,
@@ -737,6 +772,8 @@ def index_attestation(index_prefix: Path, *, reference_fasta_name: str | None = 
 
 def _stamped_input_digest(inputs: dict[str, Any], reference_fasta_name: str | None) -> str | None:
     """The stamp's digest for the reference FASTA, which is what binds index to reference."""
+    if isinstance(inputs.get("fasta"), str):
+        return str(inputs["fasta"])
     if reference_fasta_name:
         for key, digest in inputs.items():
             if str(key).endswith(f":{reference_fasta_name}"):
@@ -744,6 +781,14 @@ def _stamped_input_digest(inputs: dict[str, Any], reference_fasta_name: str | No
     if len(inputs) == 1:
         return str(next(iter(inputs.values())))
     return None
+
+
+def _aligner_version_identity(name: str) -> dict[str, Any]:
+    """Capture a version for a prebuilt or unstamped index's selected backend."""
+    identity = _aligner_identity(name)
+    if identity["value"] is None:
+        return absent(identity["state"], identity["reason"])
+    return present(identity["value"], identity["state"], identity["reason"])
 
 
 def _stamped_in_this_process(stamped_at: Any) -> dict[str, Any]:

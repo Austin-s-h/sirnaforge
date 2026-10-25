@@ -25,7 +25,11 @@ from sirnaforge.reporting.payload import (
     ReportPayload,
     build_payload,
 )
-from sirnaforge.reporting.quilt import quilt_summarize_entries, write_quilt_summarize
+from sirnaforge.reporting.quilt import (
+    quilt_summarize_entries,
+    write_quilt_summarize,
+    write_quilt_summarize_from_run,
+)
 from sirnaforge.reporting.render import render_html, write_report
 
 __all__ = [
@@ -44,5 +48,6 @@ __all__ = [
     "quilt_summarize_entries",
     "render_html",
     "write_quilt_summarize",
+    "write_quilt_summarize_from_run",
     "write_report",
 ]

@@ -14,7 +14,6 @@ import sys
 from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from pathlib import Path
-from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeVar, cast
 
 import typer
@@ -100,7 +99,15 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
-from sirnaforge.reporting import ReportInputError, build_payload, write_quilt_summarize, write_report
+from sirnaforge.reporting import (
+    ReportInputError,
+    ReportMode,
+    ReportModeThresholds,
+    build_payload,
+    write_quilt_summarize,
+    write_quilt_summarize_from_run,
+    write_report_from_run,
+)
 from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.parsing import parse_csv
@@ -1129,6 +1136,10 @@ def workflow(  # noqa: PLR0912
         "--transcript-seed-scope",
         help="Transcript sequence region scanned: full_cdna or three_prime_utr (requires explicit UTR annotation).",
     ),
+    report_mode: str = typer.Option(
+        "auto", "--report-mode", help="Report mode: auto, compact_single_file, paged_single_file, data_backed."
+    ),
+    aligner: str = typer.Option("bwa-mem2", "--aligner", help="Transcriptome aligner: bwa-mem2 or bwa-mem3."),
     max_transcript_seed_sites: int | None = typer.Option(
         None,
         "--max-transcript-seed-sites",
@@ -1534,6 +1545,10 @@ def workflow(  # noqa: PLR0912
     reference policies, designs candidates, and then runs off-target analysis on
     the selected top candidates.
     """
+    if aligner not in {"bwa-mem2", "bwa-mem3"}:
+        _fail_with_config_error("--aligner must be bwa-mem2 or bwa-mem3")
+    if report_mode not in {"auto", "compact_single_file", "paged_single_file", "data_backed"}:
+        _fail_with_config_error("--report-mode must be auto, compact_single_file, paged_single_file, or data_backed")
     # Resolve and validate the biological policy BEFORE anything creates a directory or a log file:
     # an invalid bound or an incompatible mode must cost nothing.
     try:
@@ -1790,6 +1805,8 @@ def workflow(  # noqa: PLR0912
                     transcript_seed_scope=transcript_seed_scope,
                     max_transcript_seed_sites=max_transcript_seed_sites,
                     transcriptome_fasta=transcriptome_fasta,
+                    aligner=aligner,
+                    report_mode=cast(ReportMode, report_mode),
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     ortholog_mapping_file=ortholog_mapping,
@@ -1904,7 +1921,7 @@ def workflow(  # noqa: PLR0912
 
 
 @app_command()
-def offtarget(
+def offtarget(  # noqa: PLR0912
     run_mode: str | None = typer.Option(
         None,
         "--run-mode",
@@ -2016,6 +2033,7 @@ def offtarget(
             "index was built from must be readable beside the prefix so hits can be resolved to genes."
         ),
     ),
+    aligner: str = typer.Option("bwa-mem2", "--aligner", help="Transcriptome aligner: bwa-mem2 or bwa-mem3."),
     ortholog_mapping: Path | None = typer.Option(
         None,
         "--ortholog-mapping",
@@ -2048,6 +2066,8 @@ def offtarget(
         - ``--offtarget-indices`` can override the indices used for alignment
           using ``species:/abs/path/index_prefix`` entries.
     """
+    if aligner not in {"bwa-mem2", "bwa-mem3"}:
+        _fail_with_config_error("--aligner must be bwa-mem2 or bwa-mem3")
     # Policy first: an invalid threshold must not cost a FASTA read, a download or a directory.
     try:
         actions = _parse_filter_actions(filter_action)
@@ -2171,6 +2191,7 @@ def offtarget(
                     log_file=effective_log,
                     nextflow_docker_image=nextflow_docker_image,
                     resolved_policy=policy,
+                    aligner=aligner,
                 )
             )
 
@@ -3528,8 +3549,20 @@ def report(
         help="Also write quilt_summarize.json beside the report, registering it and its evidence "
         "files so a published package renders the report in its package view",
     ),
+    mode: str = typer.Option(
+        "auto", "--mode", help="Report mode: auto, compact_single_file, paged_single_file, data_backed."
+    ),
+    artifact_dir: Path | None = typer.Option(
+        None, "--artifact-dir", help="Directory for projected report data (defaults beside the HTML)."
+    ),
+    compact_max_input_bytes: int = typer.Option(64 * 1024 * 1024, "--compact-max-input-bytes", min=0),
+    compact_max_candidate_rows: int = typer.Option(50_000, "--compact-max-candidate-rows", min=0),
+    compact_max_guides: int = typer.Option(5_000, "--compact-max-guides", min=0),
+    paged_max_input_bytes: int = typer.Option(512 * 1024 * 1024, "--paged-max-input-bytes", min=0),
+    paged_max_candidate_rows: int = typer.Option(500_000, "--paged-max-candidate-rows", min=0),
+    paged_max_guides: int = typer.Option(50_000, "--paged-max-guides", min=0),
 ) -> None:
-    """Build a single self-contained HTML report over a finished run.
+    """Build a compact, paged, or data-backed HTML report over a finished run.
 
     Works on any finished or archived run: it reads candidates_all.csv, the aggregated hit tables and
     manifest.json, and needs no live pipeline state. The report classifies nothing and applies no
@@ -3537,37 +3570,56 @@ def report(
     published table -- so it cannot disagree with the run it describes.
     """
     try:
-        payload = build_payload(run_dir, diagnostics=True)
-    except ReportInputError as exc:
+        if mode not in {"auto", "compact_single_file", "paged_single_file", "data_backed"}:
+            raise typer.BadParameter("mode must be auto, compact_single_file, paged_single_file, or data_backed")
+        thresholds = ReportModeThresholds(
+            compact_max_input_bytes=compact_max_input_bytes,
+            compact_max_candidate_rows=compact_max_candidate_rows,
+            compact_max_guides=compact_max_guides,
+            paged_max_input_bytes=paged_max_input_bytes,
+            paged_max_candidate_rows=paged_max_candidate_rows,
+            paged_max_guides=paged_max_guides,
+        )
+        result = write_report_from_run(
+            run_dir, output, mode=cast(ReportMode, mode), artifact_dir=artifact_dir, thresholds=thresholds
+        )
+    except (ReportInputError, ValueError) as exc:
         console.print(f"❌ [red]{exc}[/red]")
         raise typer.Exit(1) from exc
-
-    render_started = perf_counter()
-    written = write_report(payload, output)
-    if payload.diagnostics is not None:
-        payload.diagnostics["phases_seconds"]["render_and_write"] = perf_counter() - render_started
-        payload.diagnostics["output_html_bytes"] = written.stat().st_size
-        diagnostics_path = diagnostics_json or written.with_suffix(".diagnostics.json")
+    written = result.output
+    diagnostics_path = diagnostics_json or result.diagnostics_path
+    if diagnostics_path != result.diagnostics_path:
         diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
-        diagnostics_path.write_text(json.dumps(payload.diagnostics, indent=2))
+        diagnostics_path.write_text(json.dumps(result.diagnostics, indent=2) + "\n")
     summarize_line = ""
     if quilt_summarize:
-        summarize_path = write_quilt_summarize(payload, written, run_dir)
+        if result.mode == "compact_single_file":
+            payload = build_payload(run_dir, max_guides=None, diagnostics=False)
+            summarize_path = write_quilt_summarize(payload, written, run_dir)
+        else:
+            summarize_path = write_quilt_summarize_from_run(
+                written, run_dir, result.manifest.get("summary", {}), (result.manifest.get("mode_facts") or {})
+            )
         summarize_line = f"🧵 [bold blue]{summarize_path}[/bold blue]\n"
-
-    counts = payload.run["status_counts"]
+    summary = result.manifest.get("summary", {})
+    counts = summary.get("status_counts", {})
+    facts = result.manifest.get("mode_facts") or {}
+    counts = {key: counts.get(key, 0) for key in ("pass", "warn", "unknown", "fail")}
+    guides = summary.get("guides", facts.get("distinct_guides", 0))
+    candidate_rows = summary.get("candidate_rows", facts.get("candidate_rows", 0))
+    gene_query = summary.get("gene_query", result.manifest.get("source_run_label", run_dir.name))
     console.print(
         Panel.fit(
-            f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, self-contained)\n"
+            f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, {result.mode})\n"
             f"{summarize_line}"
-            f"{payload.run['guides']:,} guides from {payload.run['candidate_rows']:,} candidate rows\n"
+            f"{guides:,} guides from {candidate_rows:,} candidate rows\n"
             f"[green]{counts['pass']} pass[/green] · "
             f"[yellow]{counts['warn']} pass with a warning[/yellow] · "
             f"[yellow]{counts['unknown']} not established[/yellow] · [red]{counts['fail']} fail[/red]",
-            title=f"Report — {payload.run['gene_query']}",
+            title=f"Report — {gene_query}",
         )
     )
-    for caveat in payload.caveats:
+    for caveat in result.diagnostics.get("caveats", []):
         console.print(f"   ⚠️  {caveat}")
 
 
