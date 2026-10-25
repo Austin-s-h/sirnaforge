@@ -66,6 +66,7 @@ def _package_manifest(
         artifact["sha256"] = compressed_sha
         artifact["uncompressed_sha256"] = csv_sha
         if parts:
+            artifact.pop("path", None)
             artifact["parts"] = [part.relative_to(artifact_root).as_posix() for part in parts]
         else:
             artifact["path"] = compressed.relative_to(artifact_root).as_posix()
