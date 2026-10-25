@@ -23,6 +23,44 @@ also writes an external diagnostics JSON beside the HTML; the report itself does
 `sessionStorage` or `document.cookie` -- it is the report's core constraint and it does not get relaxed
 to accommodate a feature.
 
+## Evidence states and unresolved views
+
+Payload schema 1.4.0 adds per-guide `report_evidence`, with stable gate reason IDs
+and these report states:
+
+| State | Meaning |
+| --- | --- |
+| `pass` | The declared criterion is satisfied. |
+| `warn` | A finding is retained under the declared warning action. |
+| `fail` | The declared criterion is exceeded. |
+| `not_evaluated` | The gate was off or had no declared threshold. |
+| `unavailable` | Required observations are missing or explicitly unavailable. |
+| `not_established` | The producer did not establish the active gate's outcome. |
+
+Legacy `unknown` normalizes to `not_established`. Unsupported producer labels also
+remain unresolved; they cannot fall through to a passing numeric default. An active
+gate recorded as `not_evaluated` keeps its non-decision and reason, even if a numeric
+value was exported. This differs from an intentionally off gate. Existing gate
+triples and run outcomes remain available alongside these diagnostics. If a recorded
+pass/warn/fail conflicts with its exported observation and policy, the report quarantines
+it as unresolved and preserves the original state instead of silently deciding it again.
+
+Gate-pass counts are distinct from **passes without unresolved evidence**. Unavailable
+screening and undeclared run rejections are counted and inspectable rather than
+included in the clean-evidence tally. Resolved reports omit the unresolved banner.
+In compact reports, **Show unresolved guides** selects the unresolved preset and
+clears other list filters while preserving thresholds and gate observations. The
+preset travels in the URL. Staged readers provide the equivalent unresolved checkbox.
+
+All warning titles, bodies, remediation, severity and default visibility come from
+stable `WARNING_REGISTRY` IDs. Frozen threshold controls carry an
+`unevaluable_reason_id`; per-guide notices retain the original gate reason and scope.
+Threshold inspectors show the setting key, comparator/value, units, action, stage,
+scope and policy source. Unknown custom-setting units are explicitly undeclared.
+The compact threshold controls and guide index have separate scroll areas; staged
+readers likewise keep the threshold inspector and guide list independent. All readers
+size their panes below the actual header rather than assuming its height.
+
 ## miRNA reference and screening evidence
 
 The miRNA seed panel reads `manifest.json`'s versioned `reference_evidence` contract (schema 1).
@@ -37,7 +75,7 @@ remain in the run manifest rather than the HTML report.
 
 Stable warning identifiers, severity, text, remediation, and default visibility live in
 `reporting.evidence.WARNING_REGISTRY`. Unresolved guides are counted in a collapsible header
-diagnostic, which is omitted when every embedded guide has completed miRNA evidence. This diagnostic
+diagnostic, which is omitted when no required gate/screening evidence is unresolved. This diagnostic
 does not change pipeline gate verdicts: producer-recorded unavailable gates remain undecided under
 the report's existing gate semantics.
 
@@ -57,7 +95,25 @@ service/request failure; it is not presented as a no-match result.
 The miRNA card tests execute the actual embedded JavaScript using Node.js when available, covering
 status messages, guide coverage, partial positive evidence and source diagnostics. They skip that
 execution check when Node.js is unavailable; Python payload assertions still run. These focused tests
-do not execute browser layout or the other report interactions described below.
+do not execute browser layout. An optional local browser harness
+runs pinned Playwright/Chromium against six resolved/unresolved fixtures across all report modes.
+It checks file-origin shard loading, keyboard activation, active filter state, stable warning copy,
+unchanged gate/threshold arrays, independent scrolling, sticky header placement and viewport bounds.
+It also refuses unexpected network requests and saves synthetic reports, screenshots and results locally.
+
+To reproduce from a checkout:
+
+```bash
+uv sync --group dev
+npm ci --prefix tests/browser
+tests/browser/node_modules/.bin/playwright install chromium
+uv run python -m tests.browser.prepare_fixtures --output /tmp/sirnaforge-report-browser
+npm --prefix tests/browser test -- /tmp/sirnaforge-report-browser
+```
+
+On a minimal Linux image, Playwright's `install --with-deps chromium` also installs the
+browser's operating-system dependencies. This optional harness is a local development dependency;
+exported reports do not load Playwright or contact a service.
 
 ## Report build diagnostics
 

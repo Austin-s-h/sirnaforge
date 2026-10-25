@@ -9,12 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Report evidence schema 1.4.0: canonical availability states, stable generic gate-warning IDs,
+  separate clean-evidence counts, unresolved guide views and explicit threshold units/provenance.
+  Optional local Chromium acceptance checks cover all offline report modes.
+
 - Pinned local mature miRNA reference manifests for workflow and off-target commands,
   with staged Nextflow inputs, checksum validation and task-produced reference evidence.
   See [local miRNA references](docs/mirna_references.md).
 
 
 ### Fixed
+
+- Recorded `unavailable`, `not_established` and legacy unknown gate states no longer fall through
+  to numeric defaults. Threshold and guide panes scroll independently, and staged readers fit
+  below their actual header height instead of overflowing the viewport.
 
 - Native benchmark review preserves unpublished post-screen scores as missing and uses the
   supplied source weights for the current-profile comparison. Report register-neighbour lookup

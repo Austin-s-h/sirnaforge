@@ -180,3 +180,29 @@ docs pass. Focused reader tests execute the unresolved filter and stable warning
 copy in Node without modifying recorded gate arrays. #123 is ready for closure
 with this evidence after publication. #112 remains open for its broader vocabulary
 and UI acceptance audit; #111/#113/#114 still need their remaining full criteria.
+
+
+## Evidence UX acceptance checkpoint — 2026-10-25
+
+The #112 implementation is ready for publication and live CI verification. Report
+payload schema 1.4.0 normalizes pass/warn/fail/not-evaluated/unavailable/not-established
+states while retaining legacy unknown reasons and the producer's original state.
+Explicit non-decisions cannot fall through to passing numeric defaults. Contradictory
+recorded outcomes are quarantined as unresolved rather than silently recomputed.
+Both reference completion phases require an integer versioned contract.
+
+Generic gate warnings and frozen-control reasons use stable registry IDs. All three
+readers separate gate-pass counts from passes without unresolved evidence, omit empty
+unresolved banners, and offer an inspectable unresolved view. Threshold inspectors
+show setting/comparator/units/action/stage/scope/source. Compact thresholds/index scroll
+independently; all reader panes fit below the actual header. URL state and keyboard
+activation preserve the recorded gate arrays and thresholds.
+
+Validation: 2,151 integrated offline host tests passed (67 deselected) in 131.22s;
+six final installed-wheel pinned-reference/Nextflow cases passed offline in 72.84s;
+six real Chromium resolved/unresolved cases passed across all modes. Ruff/format,
+mypy over 132 source/script files, and warnings-as-errors docs pass. The pinned browser
+harness under tests/browser is optional and runs locally, saving synthetic HTML,
+screenshots and results. The user explicitly requested no browser job in CI. All live Actions on the preceding e11928e commit passed.
+Keep #112 open until the newly published checks are verified; then continue #111,
+#113 and #114 against their complete acceptance criteria.

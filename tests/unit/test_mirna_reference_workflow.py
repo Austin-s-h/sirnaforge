@@ -159,3 +159,25 @@ def test_producer_evidence_requires_current_success_and_guide_digest(tmp_path, a
         tmp_path, source="mirbase", species=["human"], skipped=False, allow_artifact=allowed, expected_digest=digest
     )
     assert contract["mirna"]["screening"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1"])
+def test_producer_contract_requires_integer_schema_version(tmp_path, version):
+    """Malformed completion metadata cannot be promoted merely because True compares equal to 1."""
+    artifact = tmp_path / "off_target/results/mirna/mirna_reference_evidence.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "schema_version": version,
+                "mirna": {
+                    "source": "mirbase",
+                    "requested_species": ["human"],
+                    "acquisition": {"status": "complete"},
+                    "screening": {"status": "complete"},
+                },
+            }
+        )
+    )
+    contract = read_reference_evidence(tmp_path, source="mirbase", species=["human"], skipped=False)
+    assert contract["mirna"]["screening"]["status"] == "unknown"

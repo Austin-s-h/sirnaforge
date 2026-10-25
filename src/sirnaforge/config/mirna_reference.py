@@ -52,7 +52,8 @@ def read_reference_evidence(
                 raise ValueError("Malformed reference evidence")
             mirna = payload["mirna"]
             if (
-                payload.get("schema_version") == 1
+                type(payload.get("schema_version")) is int
+                and payload.get("schema_version") == 1
                 and mirna.get("source") == source
                 and set(mirna.get("requested_species", [])) == set(species)
                 and (expected_digest is None or mirna.get("screening", {}).get("guide_set_digest") == expected_digest)

@@ -719,7 +719,7 @@ def test_mirna_card_uses_explicit_completion_and_guide_coverage(
     assert payload.guides[0].mirna_evidence["state"] == expected
     assert payload.run["mirna_unresolved_guides"] == (0 if expected == "complete" else 1)
     html = render_html(payload)
-    assert ('id="mirna-unresolved"' in html) == (expected != "complete")
+    assert 'id="evidence-unresolved"' in html, "this fixture also lacks required gate observations"
     card = _execute_mirna_card(html)
     assert message in card
     assert "mirbase" in card
@@ -786,14 +786,17 @@ def test_partial_mirna_sources_and_positive_rows_keep_failure_diagnostic(tmp_pat
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("schema_version", [None, 2, "1"])
+@pytest.mark.parametrize("schema_version", [None, 2, "1", True, 1.0])
 def test_unrecognized_mirna_contract_never_claims_completion(schema_version: object) -> None:
     """A future or malformed contract needs interpretation, even if it contains completion words."""
     data = mirna_evidence(
         {
             "reference_evidence": {
                 "schema_version": schema_version,
-                "mirna": {"screening": {"status": "complete", "guide_sequences": [GUIDE]}},
+                "mirna": {
+                    "acquisition": {"status": "complete"},
+                    "screening": {"status": "complete", "guide_sequences": [GUIDE]},
+                },
             }
         }
     )
@@ -810,10 +813,12 @@ def test_complete_mirna_matches_show_pinned_provenance_without_external_urls(tmp
         "schema_version": 1,
         "mirna": {
             "source": "combined",
+            "acquisition": {"status": "complete"},
             "screening": {"status": "complete", "guide_sequences": [GUIDE]},
             "sources": [
                 {
                     "species": "human",
+                    "acquisition": {"status": "complete"},
                     "screening": {"status": "complete"},
                     "references": {
                         "source": "combined",

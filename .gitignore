@@ -140,3 +140,6 @@ safety-report.json
 /tests/data/benchmarks/oligogym_native_smoke2/
 /tests/data/benchmarks/oligogym_native_design/references/representative/*.fa
 /docs/_static/oligogym_scoring/
+
+# Browser acceptance test dependencies
+/tests/browser/node_modules/

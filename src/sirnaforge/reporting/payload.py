@@ -42,7 +42,17 @@ from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, hit_class_of,
 from sirnaforge.core.hit_classification import HitClass
 from sirnaforge.models.policy import FilterAction, FilterComparator, FilterEvaluation
 from sirnaforge.models.sirna import FilterCriteria, OffTargetFilterCriteria
-from sirnaforge.reporting.evidence import WARNING_REGISTRY, conservation_evidence, guide_mirna_evidence, mirna_evidence
+from sirnaforge.reporting.evidence import (
+    EVIDENCE_STATES,
+    FILTER_UNITS,
+    GATE_REASON_IDS,
+    WARNING_REGISTRY,
+    conservation_evidence,
+    guide_mirna_evidence,
+    mirna_evidence,
+    normalize_evidence_state,
+    report_evidence,
+)
 from sirnaforge.reporting.links import source_link
 from sirnaforge.reporting.structure import layouts_for
 from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, uncovered_stretches
@@ -52,8 +62,9 @@ from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, u
 #: ``guides_dropped``/``guides_dropped_by_status``), and added per-filter ``rejects``/
 #: ``sole_rejects``/``inert``, per-guide ``liability_by_species``, and ``length``/``canonical`` on
 #: isoform and transcript rows. 1.3.0 adds producer-backed miRNA evidence states and warning metadata.
+#: 1.4.0 adds normalized gate evidence states, stable reasons and unresolved-evidence counts.
 #: CHANGELOG.md carries what 1.1.0 added.
-PAYLOAD_SCHEMA_VERSION = "1.3.0"
+PAYLOAD_SCHEMA_VERSION = "1.4.0"
 
 #: Hit rows embedded per guide. Everything outside this scope is carried as counts only -- a
 #: deliberate scope decision, not a limitation, so a guide with hits only outside it must render its
@@ -123,6 +134,7 @@ class GuideEntry:
     screen_query_id: str | None = None
     #: Producer-recorded miRNA screening state; independent of transcriptome submission.
     mirna_evidence: dict[str, Any] = field(default_factory=dict)
+    report_evidence: dict[str, Any] = field(default_factory=dict)
     canonical_hit: str = "not_established"
     target_genes: list[str] = field(default_factory=list)
 
@@ -246,6 +258,9 @@ REASON_RUN_UNKNOWN = 5
 #: A *reason*, not a verdict. A gate that is in force and undecided is published under the UNKNOWN
 #: verdict code and this reason (#103); see :func:`_evaluate`.
 REASON_RUN_NOT_EVALUATED = 6
+REASON_RUN_UNAVAILABLE = 7
+REASON_RUN_NOT_ESTABLISHED = 8
+REASON_RECORDED_CONFLICT = 9
 
 #: Verdict codes, keyed by the run's own vocabulary. ``not_evaluated`` (3) means the gate was never in
 #: force for this run -- off, or with no declared threshold -- and nothing else: an in-force gate the
@@ -340,7 +355,7 @@ def _verdict_code(passed: bool, action: str) -> int:
     return _VERDICT_CODE[FilterEvaluation.FAIL.value]
 
 
-def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[float | int | None, int, int]:
+def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[float | int | None, int, int]:  # noqa: PLR0911
     """Evaluate one descriptor against one candidate row, independently of every other gate.
 
     Returns ``unknown`` rather than a pass when the run exports no column the threshold can read, and
@@ -377,13 +392,16 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     # code keeps the two apart along with the value: UNKNOWN has no measurement to show, while
     # `not_evaluated` keeps the number the run recorded.
     recorded = _recorded_verdict(row, descriptor.filter_id)
-    if recorded in (FilterEvaluation.UNKNOWN.value, FilterEvaluation.NOT_EVALUATED.value):
-        run_unknown = recorded == FilterEvaluation.UNKNOWN.value
-        return (
-            None if run_unknown else value,
-            _VERDICT_CODE[FilterEvaluation.UNKNOWN.value],
-            REASON_RUN_UNKNOWN if run_unknown else REASON_RUN_NOT_EVALUATED,
-        )
+    state = normalize_evidence_state(recorded) if recorded is not None else None
+    if state in {"unavailable", "not_established", "not_evaluated"}:
+        reason = {
+            "unavailable": REASON_RUN_UNAVAILABLE,
+            "not_established": REASON_RUN_UNKNOWN
+            if str(recorded).strip().lower() == "unknown"
+            else REASON_RUN_NOT_ESTABLISHED,
+            "not_evaluated": REASON_RUN_NOT_EVALUATED,
+        }[state]
+        return value if state == "not_evaluated" else None, _VERDICT_CODE["unknown"], reason
     if column is None:
         return None, _VERDICT_CODE[FilterEvaluation.UNKNOWN.value], REASON_MISSING_COLUMN
     if value is None:
@@ -393,7 +411,10 @@ def _evaluate(descriptor: Any, row: pd.Series, column: str | None) -> tuple[floa
     # ``FilterComparator.passes`` (#103) so :func:`reevaluate_gates` and the report's JS restate
     # exactly this table, not a second copy that could drift from it.
     passed = descriptor.comparator.passes(value, descriptor.threshold)
-    return value, _verdict_code(passed, descriptor.action.value), REASON_OK
+    code = _verdict_code(passed, descriptor.action.value)
+    if state in {"pass", "warn", "fail"} and code != {"pass": 0, "warn": VERDICT_WARN, "fail": 1}[state]:
+        return value, _VERDICT_CODE["unknown"], REASON_RECORDED_CONFLICT
+    return value, code, REASON_OK
 
 
 def reevaluate_gates(
@@ -641,15 +662,27 @@ def _filter_view(
     observed = [value for value, _verdict, _reason in gates if value is not None]
     decided = sum(1 for _value, _verdict, reason in gates if reason == REASON_OK)
     reason: str | None = None
+    reason_id: str | None = None
     if descriptor.action.value == FilterAction.OFF.value:
+        reason_id = "GATE_FILTER_OFF"
         reason = "this run has the filter off, so it reached no verdict to re-threshold"
     elif descriptor.threshold is None:
+        reason_id = "GATE_THRESHOLD_UNDECLARED"
         reason = "no threshold is declared for this filter"
     elif column is None:
+        reason_id = "GATE_COLUMN_UNAVAILABLE"
         reason = f"the run exports neither {descriptor.filter_id}_observed nor {descriptor.column}"
+    elif not observed and gates and all(triple[2] in {5, 7, 8} for triple in gates):
+        reasons = {triple[2] for triple in gates}
+        reason_id = GATE_REASON_IDS[next(iter(reasons))] if len(reasons) == 1 else "GATE_OBSERVATIONS_UNDECIDED"
+        reason = WARNING_REGISTRY[reason_id]["body"].format(
+            filter_id=descriptor.filter_id, column=descriptor.column, read_column=column, n_guides=len(gates)
+        )
     elif not observed:
+        reason_id = "GATE_VALUE_UNAVAILABLE"
         reason = f"{column} is exported but empty for every guide in this run"
     elif not decided:
+        reason_id = "GATE_OBSERVATIONS_UNDECIDED"
         reason = (
             f"{column} is exported, but the run evaluated this gate for none of the {len(gates)} guides "
             "in this run, so no threshold can decide it"
@@ -658,11 +691,14 @@ def _filter_view(
     return {
         **descriptor.model_dump(mode="json"),
         "setting_key": setting_key,
+        "units": FILTER_UNITS.get(setting_key, "not declared"),
         "definition": definition,
         "scope_label": _scope_label(descriptor),
         "read_column": column,
         "evaluable": reason is None,
         "unevaluable_reason": reason,
+        "unevaluable_reason_id": reason_id,
+        "n_guides": len(gates),
         "control": None if reason is not None else _control_domain(descriptor.threshold, observed, bounds),
         "n_values": len(observed),
         # The setting's own declared limits, or None where the model states none. Beside the control
@@ -1300,6 +1336,12 @@ def build_payload(
             )
         )
         guides[-1].mirna_evidence = guide_mirna_evidence(mirna_status, str(guide))
+        guides[-1].report_evidence = report_evidence(
+            guides[-1].gates,
+            guides[-1].mirna_evidence,
+            undeclared_rejection=guides[-1].undeclared_run_rejection,
+            recorded_states=[_recorded_verdict(rows.iloc[0], desc.filter_id) for desc in descriptors],
+        )
         guides[-1].target_genes = sorted(
             {genes_by_transcript.get(str(tx), "__unresolved__") for tx in rows.get("transcript_id", [])}
         )
@@ -1370,6 +1412,12 @@ def build_payload(
         "conservation_evidence": conservation_evidence(manifest),
         "mirna_unresolved_guides": sum(g.mirna_evidence["state"] != "complete" for g in embedded),
         "evidence_warning_registry": WARNING_REGISTRY,
+        "evidence_states": EVIDENCE_STATES,
+        "gate_reason_ids": GATE_REASON_IDS,
+        "unresolved_guides": sum(g.report_evidence["unresolved"] for g in embedded),
+        "passes_without_unresolved_evidence": sum(
+            g.status == "pass" and not g.report_evidence["unresolved"] for g in embedded
+        ),
         "embed_scope": f"{EMBED_SPECIES}, nm<={EMBED_MAX_NM}",
         "gene_query": _gene_query(manifest, candidates),
         "status_counts": {s: sum(1 for g in embedded if g.status == s) for s in STATUSES},

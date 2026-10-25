@@ -21,6 +21,7 @@ from typing import Any
 
 from jinja2 import Environment, select_autoescape
 
+from sirnaforge.reporting.evidence import GATE_REASON_IDS, WARNING_REGISTRY
 from sirnaforge.reporting.payload import (
     EMBED_MAX_NM,
     EMBED_SPECIES,
@@ -155,7 +156,10 @@ padding:3px 9px;font:inherit;font-size:12px;color:var(--fg)}
 /* Tab-separated columns only line up if the text is not wrapped. */
 #carttsv{width:100%;height:96px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 border:1px solid var(--line);border-radius:5px;padding:7px;resize:vertical;white-space:pre;overflow:auto}
-#left{border-right:1px solid var(--line);overflow:auto;min-height:0;background:var(--card)}
+#left{border-right:1px solid var(--line);overflow:auto;min-height:0;background:var(--card);display:flex;flex-direction:column}
+#left>.searchbar{flex:0 0 auto}
+#left>.filters{flex:0 1 auto;min-height:32px;max-height:48%;overflow:auto}
+#index-scroll{flex:1 1 auto;min-height:0;overflow:auto}
 #right{overflow:auto;min-height:0;padding:20px 24px}
 #q{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;font-family:ui-monospace,monospace}
 .searchbar{padding:12px;position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--line);z-index:2}
@@ -163,6 +167,7 @@ table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-weight:600;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.04em;
 position:sticky;top:57px;background:var(--card);cursor:pointer;user-select:none}
+#idx th{top:0}
 #right th{position:static;top:auto}
 tbody tr{cursor:pointer}
 tbody tr:hover{background:#f3f4f6}
@@ -222,7 +227,8 @@ appearance:textfield;-moz-appearance:textfield}
   body{display:block;background:#fff}
   main{display:block;min-height:0}
   #left,#right{overflow:visible;min-height:0;border:0;padding:0}
-  #left{margin-bottom:14px}
+  #left{margin-bottom:14px;display:block}
+  #index-scroll{overflow:visible;min-height:0}
   .searchbar,.filters,.cartbtn,#carttsv{display:none}
   #idx th,.searchbar{position:static}
   .printonly{display:block}
@@ -257,11 +263,12 @@ appearance:textfield;-moz-appearance:textfield}
      an agreement -- so it says which thresholds it was computed at, and says when they are no longer
      the ones in force. #}
   <div class="sub" style="margin-top:6px">
-    <span class="pill v-pass"><span id="n_pass">{{ p.run.status_counts["pass"] }}</span> pass</span>
+    <span class="pill v-pass"><span id="n_pass">{{ p.run.status_counts["pass"] }}</span> gate pass</span>
     <span class="pill v-warn"><span id="n_warn">{{ p.run.status_counts["warn"] }}</span> pass, warned</span>
     <span class="pill v-unknown"><span id="n_unknown">{{ p.run.status_counts["unknown"] }}</span> not established</span>
     <span class="pill v-fail"><span id="n_fail">{{ p.run.status_counts["fail"] }}</span> fail</span>
     &nbsp;· over the {{ '{:,}'.format(p.run.guides) }} guides in this file<span id="cbasis"></span>
+    <div><span id="n_clean_pass">{{ p.run.passes_without_unresolved_evidence }}</span> passes without unresolved evidence</div>
     {% if p.run.agreement.comparable %}
     <div style="margin-top:3px">Against the run's own verdicts:
     <b>{{ p.run.agreement.contradicted_run_pass }}</b>/{{ p.run.agreement.run_pass_guides }} run PASS
@@ -311,11 +318,12 @@ appearance:textfield;-moz-appearance:textfield}
     </details>
     {% endif %}
   </div>
-  {% if p.run.mirna_unresolved_guides %}
-  <details class="sub" style="margin-top:6px" id="mirna-unresolved">
-    <summary>{{ p.run.mirna_unresolved_guides }} guides with unresolved miRNA screening — show evidence status</summary>
-    <p>miRNA screening completion is not established for these guides. Inspect the miRNA seed
-      resemblance panel for source-specific diagnostics; missing matches do not establish zero hits.</p>
+  {% if p.run.unresolved_guides %}
+  <details class="sub" style="margin-top:6px" id="evidence-unresolved">
+    <summary>{{ p.run.unresolved_guides }} guides with unresolved evidence</summary>
+    <p>Active gate or screening evidence is unavailable or not established. Inspect each guide's
+      evidence notices and recorded scope; absent matches do not establish zero hits.</p>
+    <button class="cartbtn" id="show-unresolved" aria-controls="idx" aria-pressed="false">Show unresolved guides</button>
   </details>
   {% endif %}
   {# Only ever seen on paper (`.printonly`), where the controls are dropped because they cannot be
@@ -336,6 +344,9 @@ appearance:textfield;-moz-appearance:textfield}
     <div class="fstat" id="fstat"></div>
     <div class="fsec">Gate thresholds <i>— moving one re-derives the verdict this run computed.
     Ranked by the guides each gate is solely responsible for rejecting in this file.</i></div>
+    <p class="empty">Source: {{ p.provenance.policy_source }} · profile {{ p.provenance.policy_profile }}.
+      Pass: criterion met. Warn: finding retained. Fail: criterion exceeded.
+      Not established/unavailable: active evidence is unresolved. Not evaluated: gate is off or unconfigured.</p>
     <div id="frows"></div>
     <div class="fsec">Reader filters <i>— these only select among rows; no verdict changes</i></div>
     <div id="rrows"></div>
@@ -361,6 +372,7 @@ appearance:textfield;-moz-appearance:textfield}
      way, and the blank pick header carried the same handler as the rest -- clicking it set `sortK` to
      undefined and every row's key to 0, silently destroying the sort. The pick column has no key, so
      `sortBy` refuses it; the six that do carry one are buttons in every sense a keyboard can tell. #}
+  <div id="index-scroll" role="region" aria-label="Guide index" tabindex="0">
   <table id="idx"><thead><tr>
     <th class="pick" scope="col"><span class="vh">In cart</span></th>
     <th scope="col" tabindex="0" aria-sort="none" data-k="status">Status<span class="si" aria-hidden="true"></span></th>
@@ -375,7 +387,7 @@ appearance:textfield;-moz-appearance:textfield}
       id="liablbl">Liab.</span><span class="si" aria-hidden="true"></span></th>
     <th scope="col" tabindex="0" aria-sort="none" data-k="rows"
       title="distinct isoforms carrying this guide, of all in the run">Isoforms<span class="si" aria-hidden="true"></span></th>
-  </tr></thead><tbody></tbody></table>
+  </tr></thead><tbody></tbody></table></div>
  </div>
  <div id="right">
    <div class="card" id="cartcard" style="display:none">
@@ -430,6 +442,7 @@ appearance:textfield;-moz-appearance:textfield}
 const G = GUIDES_JSON_PLACEHOLDER;
 const MIRNA_EVIDENCE = MIRNA_EVIDENCE_JSON_PLACEHOLDER;
 const EVIDENCE_WARNINGS = EVIDENCE_WARNINGS_JSON_PLACEHOLDER;
+const GATE_REASON_IDS = GATE_REASON_IDS_JSON_PLACEHOLDER;
 const CONSERVATION_EVIDENCE = CONSERVATION_EVIDENCE_JSON_PLACEHOLDER;
 const TARGET_GENES = TARGET_GENES_JSON_PLACEHOLDER;
 const GENE_FILTER_AVAILABLE = GENE_FILTER_AVAILABLE_JSON_PLACEHOLDER;
@@ -642,26 +655,31 @@ const REASON_OK=0, REASON_EMPTY_VALUE=2;
 function liveThreshold(f){
   return (evaluable(f) && Object.prototype.hasOwnProperty.call(T, f.filter_id)) ? T[f.filter_id] : f.threshold;
 }
+function evidenceText(warning, f={}, measured=false){
+  const text=(measured&&warning.body_if_measured)||warning.body;
+  const values={filter_id:f.filter_id||'',column:f.column||'',read_column:f.read_column||f.column||'',n_guides:f.n_guides??''};
+  return text.replace(/\{(filter_id|column|read_column|n_guides)\}/g,(_m,k)=>values[k]);
+}
+function hasUnresolvedEvidence(g){
+  return !!g.report_evidence?.unresolved || g._live?.status==='unknown';
+}
+function evidenceCard(g){
+  const entries=(g.report_evidence?.gates||[]).filter(e=>e.state==='unavailable'||e.state==='not_established');
+  const notices=entries.map(e=>{
+    const f=FILTERS[e.filter_index], w=EVIDENCE_WARNINGS[e.reason_id];if(!w)return '';
+    return `<li data-warning-id="${esc(e.reason_id)}"><b>${esc(f.filter_id)}: ${esc(w.title)}</b>
+      <p>${esc(evidenceText(w,f,g.gates[e.filter_index][0]!=null))}</p>${e.recorded_state_raw?`<p>Recorded state: ${esc(e.recorded_state_raw)}</p>`:''}<p>${esc(w.remediation)}</p></li>`;
+  });
+  if(g.report_evidence?.warning_ids.includes('UNDECLARED_RUN_REJECTION')){
+    const w=EVIDENCE_WARNINGS.UNDECLARED_RUN_REJECTION;
+    notices.push(`<li data-warning-id="UNDECLARED_RUN_REJECTION"><b>${esc(w.title)}</b><p>${esc(w.body)}</p><p>${esc(w.remediation)}</p></li>`);
+  }
+  return notices.length?`<div class="card"><h2>Unresolved gate evidence</h2><ul>${notices.join('')}</ul></div>`:'';
+}
 function gateReason(f,value,verdict,reason,threshold){
   const measured = (value!==null&&value!==undefined);
-  if(reason===1) return 'the run exports neither '+f.filter_id+'_observed nor '+f.column;
-  if(reason===2) return (f.read_column||f.column)+' is empty';
-  // An off gate still measured something on most runs. Saying only "filter is off" hid a real
-  // per-guide number -- and max_mirna_1mm_seed's own definition promises the number is reported.
-  if(reason===3) return measured ? 'filter is off; value measured, nothing acts on it'
-                                 : 'filter is off, and the run exports no value for '+f.column;
-  if(reason===4) return measured ? 'no threshold declared; value measured, nothing acts on it'
-                                 : 'no threshold declared, and no value exported';
-  // The run's own two non-decisions on a gate it DID hold in force. Both ship under the unknown verdict
-  // code, because "applied, evidence unavailable" is not "not applied" (payload.py:_evaluate, #103), and
-  // only the reason code tells them apart -- so only this column can. Reasons 5 and 6 used to fall
-  // through to the comparison line below, which printed a comparison that was never made and, for
-  // reason 6, one whose arithmetic contradicts the pill beside it: the run records a real measured value
-  // with no verdict, so `5 not ge 1` appeared next to `unknown` on a gate 5 does satisfy. A row that
-  // states a comparison the run did not make is the fabricated-evidence direction, in words.
-  if(reason===5) return 'the run recorded unknown for this gate; no value to re-compare';
-  if(reason===6) return measured ? 'the run did not evaluate this gate; value measured, no verdict applied'
-                                 : 'the run did not evaluate this gate';
+  const warningId=GATE_REASON_IDS[reason], warning=EVIDENCE_WARNINGS[warningId];
+  if(warning) return evidenceText(warning, f, measured);
   // States the comparison that produced `verdict`, against the threshold that produced it -- and names
   // the run's own value whenever that is not the same number, so the reader's threshold is never
   // silently substituted for the run's in a sentence the reader will quote.
@@ -973,6 +991,8 @@ function renderMapLegend(byClass, mp){
     .filter(e => e.key===GAPS_KEY ? mp.gaps : (byClass[e.key]||[]).length)
     .map(e => `<span style="margin-right:14px;white-space:nowrap">${swatch(e.fill)}${esc(e.label)}${
       e.key===GAPS_KEY ? '' : ` (${byClass[e.key].length.toLocaleString()})`}</span>`).join('');
+  const clean=document.getElementById('n_clean_pass');
+  if(clean) clean.textContent=G.filter(g=>g._live.status==='pass'&&!hasUnresolvedEvidence(g)).length.toLocaleString();
   const moved=FILTERS.filter(f=>liveThreshold(f)!==f.threshold).length;
   document.getElementById('maplegend').innerHTML =
     `<div style="font-size:11.5px;color:var(--mut);margin:6px 0 2px">${items}</div>`
@@ -1237,6 +1257,7 @@ function isRegisterRepresentative(g){
 // produced it: the property a reader cannot re-threshold their way out of.
 const PRESETS = {
   all:              {label:'All',                  test:(g,live)=>true},
+  unresolved:       {label:'Unresolved evidence',   test:(g,live)=>hasUnresolvedEvidence(g)},
   passing:          {label:'Passing',               test:(g,live)=>live.status==='pass'||live.status==='warn'},
   near_miss:        {label:'Near miss',             test:(g,live)=>live.n_gates_failed===1 && live.n_gates_unknown===0},
   off_target_clean: {label:'Off-target clean',      test:(g,live)=>offTargetClean(g)},
@@ -1348,8 +1369,10 @@ function passesFilters(g){
 }
 
 function buildPresetButtons(){
+  const unresolved=document.getElementById('show-unresolved');
+  if(unresolved) unresolved.setAttribute('aria-pressed',activePreset==='unresolved'?'true':'false');
   document.getElementById('presets').innerHTML = Object.entries(PRESETS).map(([k,p])=>
-    `<button class="cartbtn" data-preset="${k}"${k===activePreset?' style="border-color:var(--acc);color:var(--acc)"':''}>${esc(p.label)}</button>`).join('');
+    `<button class="cartbtn" data-preset="${k}" aria-pressed="${k===activePreset}"${k===activePreset?' style="border-color:var(--acc);color:var(--acc)"':''}>${esc(p.label)}</button>`).join('');
   document.querySelectorAll('#presets button').forEach(b=>b.onclick=()=>{
     activePreset=b.dataset.preset; buildPresetButtons(); applyFilters(); syncHash();
   });
@@ -1362,8 +1385,10 @@ function buildPresetButtons(){
 // because their threshold sits on the limit their own setting declares. Presenting all seventeen as
 // equals invited a reader to spend their attention on the ones that decide nothing.
 function gateEffect(f){
-  if(!evaluable(f))
-    return `<b>frozen</b> — ${esc(f.unevaluable_reason||'not re-thresholdable')}`;
+  if(!evaluable(f)){
+    const warning=EVIDENCE_WARNINGS[f.unevaluable_reason_id];
+    return `<b>frozen</b> — ${esc(warning?evidenceText(warning,f):f.unevaluable_reason||'not re-thresholdable')}`;
+  }
   if(f.inert)
     return `<b>inert in this run</b> — ${esc(f.inert_reason||'no guide in this file is failed or flagged by it')}`;
   const bits=[`<b>${(f.rejects||0).toLocaleString()} rejected</b>`];
@@ -1433,10 +1458,16 @@ function paintControl(f, moved){
 // and this is where that refusal is visible rather than a control nobody could use. An INERT gate keeps
 // its control, deliberately: it decided nothing at the run's threshold, which is not the same as being
 // unable to decide anything at any threshold.
+function thresholdMetadata(f){
+  return `<details class="gate-meta"><summary>${esc(f.filter_id.replace(/_/g,' '))} · policy and scope</summary>
+    <dl><dt>Setting key</dt><dd>${esc(f.setting_key)}</dd><dt>Run comparison</dt><dd>${esc(f.comparator)} ${fmt(f.threshold)}</dd>
+    <dt>Units</dt><dd>${esc(f.units||'not declared')}</dd><dt>Action</dt><dd>${esc(f.action)}</dd><dt>Stage</dt><dd>${esc(f.stage)}</dd><dt>Scope</dt><dd>${esc(f.scope_label)}</dd>
+    <dt>Definition</dt><dd>${esc(f.definition)}</dd></dl></details>`;
+}
 function gateRow(f){
   if(!evaluable(f)) return `<div class="frow" data-filter="${esc(f.filter_id)}">
       <span class="mono">${esc(f.filter_id)}</span>
-      <span class="empty" style="grid-column:span 2">${gateEffect(f)}</span></div>`;
+      <span class="empty" style="grid-column:span 2">${gateEffect(f)}</span></div>${thresholdMetadata(f)}`;
   const c = f.control || {};
   return `<div class="frow" data-filter="${esc(f.filter_id)}">
       <span title="${esc(f.definition||'')}"><span class="mono">${esc(f.filter_id)}</span> ${esc(f.comparator)}</span>
@@ -1447,7 +1478,7 @@ function gateRow(f){
         value="${T[f.filter_id]}"${offScale(f)?' disabled':''} style="grid-column:1/-1;width:100%"
         aria-label="${esc(f.filter_id)} slider">
       <div class="offscale" id="os_${esc(f.filter_id)}">${offScaleNote(f)}</div>
-      <div class="geffect">${gateEffect(f)}</div>`;
+      <div class="geffect">${gateEffect(f)}</div>${thresholdMetadata(f)}`;
 }
 
 function buildGateControls(){
@@ -1928,7 +1959,7 @@ function renderDetail(g){
        <div><b>Design score</b>${fmt(g.design_score)}</div>
        ${Object.entries(g.metrics).map(([k,v])=>`<div><b>${esc(k)}</b>${fmt(v)}</div>`).join('')}
      </div></div>
-   ${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(conservationCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
+   ${evidenceCard(g)}${card(gatesCard,g)}${card(structureCard,g)}${card(isoformCard,g)}${card(conservationCard,g)}${card(()=>offtargetCard(g,i),g)}${card(mirnaCard,g)}`;
   renderPlacement();
   if(g.offtarget_matrix.length) drawMatrix('mx'+i, g.offtarget_matrix);
 }
@@ -2019,6 +2050,12 @@ function wireUI(){
     }
   };
   document.getElementById('q').oninput = e => { F.q = e.target.value; applyFilters(); syncHash(); };
+  const unresolved=document.getElementById('show-unresolved');
+  if(unresolved) unresolved.onclick=()=>{
+    F.status=new Set(STATUS_KEYS);F.cons=new Set();F.q='';F.geneEnabled=false;F.gene='';
+    READER_FILTERS.forEach(f=>{R[f.k]=null;});activePreset='unresolved';
+    buildFilterUI();applyFilters();syncHash();
+  };
   // A deliberate choice of isoform is pinned, so the map stops following the selection off it.
   document.getElementById('tx').onchange = e => { curTx = e.target.value; txPinned = true; renderMap(); };
   document.getElementById('txfollow').onclick = () => {
@@ -2128,7 +2165,8 @@ def render_html(payload: ReportPayload) -> str:
     for placeholder, value in (
         ("GUIDES_JSON_PLACEHOLDER", guides),
         ("MIRNA_EVIDENCE_JSON_PLACEHOLDER", payload.run.get("mirna_evidence") or {}),
-        ("EVIDENCE_WARNINGS_JSON_PLACEHOLDER", payload.run.get("evidence_warning_registry") or {}),
+        ("EVIDENCE_WARNINGS_JSON_PLACEHOLDER", payload.run.get("evidence_warning_registry") or WARNING_REGISTRY),
+        ("GATE_REASON_IDS_JSON_PLACEHOLDER", payload.run.get("gate_reason_ids") or GATE_REASON_IDS),
         ("CONSERVATION_EVIDENCE_JSON_PLACEHOLDER", payload.run.get("conservation_evidence") or {}),
         ("TARGET_GENES_JSON_PLACEHOLDER", payload.run.get("target_genes") or []),
         ("GENE_FILTER_AVAILABLE_JSON_PLACEHOLDER", bool(payload.run.get("gene_filter_available"))),
