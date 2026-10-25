@@ -13,15 +13,15 @@ GUIDE = "AACCTGTAAG"
     [
         ("ACAGGT", [("6mer", 1, 6)]),
         ("ACAGGTA", [("7mer-A1", 1, 7)]),
-        ("TACAGGT", [("7mer-m8", 1, 7), ("6mer", 2, 7)]),
-        ("TACAGGTA", [("8mer", 1, 8), ("7mer-A1", 2, 8)]),
+        ("TACAGGT", [("7mer-m8", 1, 7)]),
+        ("TACAGGTA", [("8mer", 1, 8)]),
     ],
 )
 def test_seed_class_and_antiparallel_guide_geometry(
     target: str,
     expected_sites: list[tuple[str, int, int]],
 ) -> None:
-    """Report matches at each distinct transcript register."""
+    """Report one strongest canonical class per shared positions 2–7 site anchor."""
     result = scan_transcript_seed_sites(
         {"g": GUIDE},
         [TranscriptSeedTranscript(transcript_id="tx", gene_id="gene", cdna_sequence=target)],
@@ -39,12 +39,25 @@ def test_rna_dna_normalization_and_reverse_complement_orientation() -> None:
     )
     assert [(site.site_class.value, site.start, site.end) for site in result.sites] == [
         ("8mer", 4, 11),
-        ("7mer-A1", 5, 11),
     ]
     same_orientation = scan_transcript_seed_sites(
         {"g": GUIDE}, [TranscriptSeedTranscript(transcript_id="sense", cdna_sequence=GUIDE)]
     )
     assert same_orientation.site_count == 0
+
+
+def test_nested_canonical_classes_share_one_explicit_seed_core_identity() -> None:
+    """A stronger class does not double-count the same positions 2–7 pairing locus."""
+    result = scan_transcript_seed_sites(
+        {"g": GUIDE},
+        [TranscriptSeedTranscript(transcript_id="tx", cdna_sequence="TACAGGTA")],
+    )
+
+    assert result.site_count == 1
+    site = result.sites[0]
+    assert site.site_class.value == "8mer"
+    assert (site.start, site.end) == (1, 8)
+    assert (site.seed_core_start, site.seed_core_end) == (2, 7)
 
 
 def test_deduplicates_same_site_class_but_preserves_distinct_positions_and_guides() -> None:
@@ -79,11 +92,10 @@ def test_three_prime_utr_scope_restores_transcript_coordinates_and_tracks_missin
     )
     assert [(site.transcript_id, site.start, site.end, site.site_class.value) for site in result.sites] == [
         ("annotated", 5, 12, "8mer"),
-        ("annotated", 6, 12, "7mer-A1"),
     ]
     assert result.transcripts_scanned == 2
     assert result.transcripts_unavailable == ("missing",)
-    assert (result.site_count, result.transcript_count, result.gene_count) == (2, 1, 1)
+    assert (result.site_count, result.transcript_count, result.gene_count) == (1, 1, 1)
 
 
 def test_malformed_input_and_mismatched_utr_interval_fail_explicitly() -> None:

@@ -38,7 +38,13 @@ class TranscriptSeedTranscript(BaseModel):
 
 
 class TranscriptSeedSite(BaseModel):
-    """One canonical target-site match in transcript-oriented coordinates."""
+    """One canonical target-site match in transcript-oriented coordinates.
+
+    Sites are unique by guide, transcript, scope, and the target interval pairing to guide
+    positions 2–7. When overlapping motif classes share that core anchor, only the strongest
+    class is retained. ``start``/``end`` describe its full annotated motif and the core fields
+    make the site identity explicit.
+    """
 
     guide_id: str
     transcript_id: str
@@ -47,6 +53,8 @@ class TranscriptSeedSite(BaseModel):
     site_class: TranscriptSeedClass
     start: int = Field(ge=1, description="1-based inclusive transcript coordinate")
     end: int = Field(ge=1, description="1-based inclusive transcript coordinate")
+    seed_core_start: int = Field(ge=1, description="1-based start of the shared guide positions 2–7 anchor")
+    seed_core_end: int = Field(ge=1, description="1-based end of the shared guide positions 2–7 anchor")
     target_sequence: str
 
     model_config = ConfigDict(frozen=True)

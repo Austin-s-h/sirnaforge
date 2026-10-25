@@ -28,6 +28,7 @@ from sirnaforge.utils.hashing import file_sha256
 class _SitePattern:
     site_class: TranscriptSeedClass
     sequence: str
+    core_offset: int
 
 
 _SITE_PRIORITY = {
@@ -58,24 +59,25 @@ def _patterns(guide: str) -> tuple[_SitePattern, ...]:
     seed_2_8 = guide[1:8]
     seed_2_7 = guide[1:7]
     return (
-        _SitePattern(TranscriptSeedClass.EIGHTMER, _reverse_complement(seed_2_8) + "A"),
-        _SitePattern(TranscriptSeedClass.SEVENMER_M8, _reverse_complement(seed_2_8)),
-        _SitePattern(TranscriptSeedClass.SEVENMER_A1, _reverse_complement(seed_2_7) + "A"),
-        _SitePattern(TranscriptSeedClass.SIXMER, _reverse_complement(seed_2_7)),
+        _SitePattern(TranscriptSeedClass.EIGHTMER, _reverse_complement(seed_2_8) + "A", 1),
+        _SitePattern(TranscriptSeedClass.SEVENMER_M8, _reverse_complement(seed_2_8), 1),
+        _SitePattern(TranscriptSeedClass.SEVENMER_A1, _reverse_complement(seed_2_7) + "A", 0),
+        _SitePattern(TranscriptSeedClass.SIXMER, _reverse_complement(seed_2_7), 0),
     )
 
 
-def _find_pattern_hits(target: str, patterns: tuple[_SitePattern, ...]) -> dict[int, _SitePattern]:
-    """Return the most specific canonical class at each target start coordinate."""
-    hits: dict[int, _SitePattern] = {}
+def _find_pattern_hits(target: str, patterns: tuple[_SitePattern, ...]) -> dict[int, tuple[int, _SitePattern]]:
+    """Return the strongest canonical class for each shared seed positions 2–7 anchor."""
+    hits: dict[int, tuple[int, _SitePattern]] = {}
     for pattern in patterns:
         width = len(pattern.sequence)
         for local_start in range(0, len(target) - width + 1):
             if target[local_start : local_start + width] != pattern.sequence:
                 continue
-            previous = hits.get(local_start)
-            if previous is None or _SITE_PRIORITY[pattern.site_class] < _SITE_PRIORITY[previous.site_class]:
-                hits[local_start] = pattern
+            core_start = local_start + pattern.core_offset
+            previous = hits.get(core_start)
+            if previous is None or _SITE_PRIORITY[pattern.site_class] < _SITE_PRIORITY[previous[1].site_class]:
+                hits[core_start] = (local_start, pattern)
     return hits
 
 
@@ -100,7 +102,7 @@ def scan_transcript_seed_sites(
     if not prepared_guides:
         raise ValueError("at least one guide sequence is required")
 
-    sites: dict[tuple[str, str, TranscriptSequenceScope, int, TranscriptSeedClass], TranscriptSeedSite] = {}
+    sites: dict[tuple[str, str, TranscriptSequenceScope, int], TranscriptSeedSite] = {}
     unavailable: list[str] = []
     scanned = 0
     for transcript in transcripts:
@@ -119,10 +121,11 @@ def scan_transcript_seed_sites(
         scanned += 1
 
         for guide_id, patterns in prepared_guides.items():
-            hits_by_start = _find_pattern_hits(target, patterns)
-            for local_start, pattern in hits_by_start.items():
+            hits_by_core = _find_pattern_hits(target, patterns)
+            for local_core_start, (local_start, pattern) in hits_by_core.items():
                 transcript_start = start_offset + local_start + 1
-                key = (guide_id, transcript.transcript_id, scope, transcript_start, pattern.site_class)
+                core_start = start_offset + local_core_start + 1
+                key = (guide_id, transcript.transcript_id, scope, core_start)
                 sites[key] = TranscriptSeedSite(
                     guide_id=guide_id,
                     transcript_id=transcript.transcript_id,
@@ -131,13 +134,15 @@ def scan_transcript_seed_sites(
                     site_class=pattern.site_class,
                     start=transcript_start,
                     end=transcript_start + len(pattern.sequence) - 1,
+                    seed_core_start=core_start,
+                    seed_core_end=core_start + 5,
                     target_sequence=pattern.sequence,
                 )
 
     ordered = tuple(
         sorted(
             sites.values(),
-            key=lambda site: (site.transcript_id, site.start, site.guide_id, _SITE_PRIORITY[site.site_class]),
+            key=lambda site: (site.transcript_id, site.seed_core_start, site.guide_id),
         )
     )
     transcripts_with_sites = {site.transcript_id for site in ordered}

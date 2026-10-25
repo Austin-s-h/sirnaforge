@@ -223,7 +223,7 @@ def test_stub_run_emits_evidence_and_cannot_look_like_a_screen():
 @pytest.mark.requires_nextflow
 @pytest.mark.parametrize(
     ("scope", "status", "site_count"),
-    [("full_cdna", "complete", 2), ("three_prime_utr", "failed", None)],
+    [("full_cdna", "complete", 1), ("three_prime_utr", "failed", None)],
 )
 def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
     tmp_path: Path, scope: str, status: str, site_count: int | None
@@ -296,7 +296,7 @@ def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
     if status == "complete":
         assert summary["per_guide"]["g1"]["site_counts_by_class"] == {
             "6mer": 0,
-            "7mer-A1": 1,
+            "7mer-A1": 0,
             "7mer-m8": 0,
             "8mer": 1,
         }
