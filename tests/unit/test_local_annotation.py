@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import json
@@ -149,7 +150,10 @@ async def test_gencode_gene_and_sequence_lookup(gencode_files: tuple[Path, Path]
         await client.get_sequence("ENST1.2", SequenceType.PROTEIN)
 
 
-def test_gencode_canonical_provenance_is_isoform_specific_and_versioned(gencode_files: tuple[Path, Path]) -> None:
+@pytest.mark.asyncio
+async def test_gencode_canonical_provenance_is_isoform_specific_and_versioned(
+    gencode_files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A canonical tag belongs to its transcript and its annotation release is retained."""
     annotation, fasta = gencode_files
     source_metadata = LocalTranscriptModelClient(
@@ -172,8 +176,12 @@ def test_gencode_canonical_provenance_is_isoform_specific_and_versioned(gencode_
     with gzip.open(fasta, "at") as handle:
         handle.write(">ENST2.1|ENSG1.3|TP53-202|100|\n" + "C" * 50 + "\n")
 
+    async def inline_to_thread(function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
     client = GencodeClient(gtf_path=annotation, fasta_path=fasta, assembly="GRCh38")
-    _, transcripts = client._search_gene("TP53", include_sequence=True)
+    _, transcripts = await client.search_gene("TP53")
     by_id = {transcript.transcript_id: transcript for transcript in transcripts}
 
     assert by_id["ENST1.2"].is_canonical
