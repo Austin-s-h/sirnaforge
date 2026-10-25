@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import re
 import shutil
@@ -153,6 +154,53 @@ global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElem
     )
     ui_result = subprocess.run([node, str(ui_script)], text=True, capture_output=True, check=True, timeout=10)
     assert ui_result.stdout == "ok"
+
+
+@pytest.mark.unit
+def test_oligogym_scale_report_keeps_details_out_of_the_html_tail(tmp_path: Path) -> None:
+    """Native OligoGym guide observations complete in data-backed mode with synthetic hit stress rows."""
+    observations = Path("tests/data/benchmarks/oligogym_native_design/observations.csv")
+    with observations.open(encoding="utf-8", newline="") as handle:
+        source_rows = list(csv.DictReader(handle))
+    assert len(source_rows) == 4_113
+    guides = [str(row["full_guide_sequence"]) for row in source_rows]
+    candidates = [
+        _candidate_row(str(row["benchmark_id"]), guide, "", index + 1)
+        for index, (row, guide) in enumerate(zip(source_rows, guides, strict=True))
+    ]
+    # These alignments are intentionally synthetic and exist only to stress staged hit/detail handling.
+    hits = [
+        _hit_row(guide, "human", f"SYNTHETIC_TARGET_{index:06d}", 1, "off_target", "SYNTHETIC")
+        for index, guide in enumerate(guides)
+        for _ in range(5)
+    ]
+    run = _write_run(tmp_path, candidates, hits)
+    candidate_path = run / "sirnaforge/candidates_all.csv"
+    candidate_path.write_text(
+        "id,guide_sequence,transcript_id,position\n"
+        + "\n".join(f"oligogym-{index},{guide},,{index + 1}" for index, guide in enumerate(guides))
+        + "\n"
+    )
+    output = tmp_path / "oligogym-report.html"
+
+    result = write_report_from_run(run, output, mode="data_backed")
+
+    assert result.artifact_dir is not None
+    manifest = json.loads((result.artifact_dir / "report_manifest.json").read_text())
+    assert result.mode == "data_backed"
+    assert manifest["summary"]["candidate_rows"] == 4_113
+    assert manifest["summary"]["guides"] == len(set(guides))
+    assert manifest["tables"]["hits"]["rows"] == 4_113 * 5
+    assert len(manifest["detail_shards"]) == (len(set(guides)) + 127) // 128
+    assert manifest["diagnostics"]["peak_rss_bytes"] > 0
+    assert manifest["diagnostics"]["output_html_bytes"] == output.stat().st_size
+    detail_bytes = sum(item["bytes"] for item in manifest["detail_shards"])
+    assert output.stat().st_size < 10_000_000
+    assert detail_bytes > output.stat().st_size
+    assert "SYNTHETIC_TARGET_000000" not in output.read_text()
+    first_guide = pq.read_table(result.artifact_dir / "guides.parquet", columns=["guide"]).column(0)[0].as_py()
+    first_detail = result.output.with_name(f"{result.output.stem}.details") / manifest["detail_shards"][0]["file"]
+    assert first_guide in first_detail.read_text()
 
 
 @pytest.mark.unit
