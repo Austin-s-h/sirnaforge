@@ -505,6 +505,9 @@ def _declared_bounds(setting_key: str) -> _DeclaredBounds:
     spec = SETTING_BY_KEY.get(setting_key)
     model = _SETTING_MODELS.get(spec.model) if spec is not None else None
     field_info = model.model_fields.get(spec.field) if model is not None and spec is not None else None
+    if field_info is None and setting_key.startswith("species_liability_limits."):
+        metric = setting_key.rsplit(".", 1)[-1]
+        field_info = OffTargetFilterCriteria.SpeciesLiabilityLimits.model_fields.get(metric)
     if field_info is None:
         return _DeclaredBounds()
     bounds = _DeclaredBounds()

@@ -871,6 +871,15 @@ def test_complete_mirna_matches_show_pinned_provenance_without_external_urls(tmp
 
 
 @pytest.mark.unit
+def test_species_seed_count_controls_keep_nonnegative_declared_bounds() -> None:
+    """Dynamic seed controls retain the model's nonnegative threshold domain."""
+    bounds = reporting_payload._declared_bounds("species_liability_limits.human.transcript_seed_genes")
+
+    assert bounds.low == 0.0
+    assert bounds.high is None
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(("second_gene", "available"), [("ENSG1", False), ("ENSG2", True), (None, True)])
 def test_gene_filter_uses_distinct_recorded_genes_and_round_trips(
     tmp_path: Path, second_gene: str | None, available: bool

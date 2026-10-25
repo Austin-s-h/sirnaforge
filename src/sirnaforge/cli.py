@@ -1146,6 +1146,14 @@ def workflow(  # noqa: PLR0912
         min=0,
         help="Optional per-guide site ceiling across required transcript-seed species.",
     ),
+    species_liability_limits: str | None = typer.Option(
+        None,
+        "--species-liability-limits",
+        help=(
+            "JSON object keyed by species, with one or more ceilings and an action (fail or warn), e.g. "
+            '\'{"human":{"transcriptome_hits_0mm":0,"transcript_seed_genes":5,"action":"fail"}}\'.'
+        ),
+    ),
     filter_action: list[str] = typer.Option(
         [],
         "--filter-action",
@@ -1563,6 +1571,9 @@ def workflow(  # noqa: PLR0912
         )
         seed_species = parse_csv(transcript_seed_species) if transcript_seed_species else []
         required_seed_species = parse_csv(transcript_seed_required_species) if transcript_seed_required_species else []
+        parsed_species_limits = json.loads(species_liability_limits) if species_liability_limits else None
+        if parsed_species_limits is not None and not isinstance(parsed_species_limits, dict):
+            raise ValueError("--species-liability-limits must be a JSON object keyed by species")
         if required_seed_species and not seed_species:
             raise ValueError("--transcript-seed-required-species requires --transcript-seed-species")
         if set(required_seed_species) - set(seed_species):
@@ -1582,6 +1593,7 @@ def workflow(  # noqa: PLR0912
             "top_n": ("top_n_candidates", top_n_candidates),
             "max_off_target_count": ("max_off_targets", max_off_targets),
             "max_transcript_seed_sites": ("max_transcript_seed_sites", max_transcript_seed_sites),
+            "species_liability_limits": ("species_liability_limits", parsed_species_limits),
             "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
             "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
             "min_empirical_score": ("min_empirical", min_empirical),

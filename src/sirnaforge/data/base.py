@@ -1022,6 +1022,15 @@ class GencodeClient(AbstractDatabaseClient):
         include_sequence: bool = True,
     ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Find a human gene, symbol, or transcript in a local GENCODE release."""
+        # Fail before dispatching to a worker: missing configuration is a deterministic caller
+        # error, not blocking local file work. Keep an unconfigured provider from leaving an async
+        # request waiting on a worker.
+        if not self.gtf_path or not self.assembly:
+            raise DatabaseAccessError(
+                "GENCODE requires SIRNAFORGE_GENCODE_GTF and SIRNAFORGE_GENCODE_ASSEMBLY "
+                "(or explicit gtf_path and assembly arguments)",
+                "GENCODE",
+            )
         return await asyncio.to_thread(self._search_gene, query, include_sequence)
 
     def _search_gene(self, query: str, include_sequence: bool) -> tuple[GeneInfo, list[TranscriptInfo]]:

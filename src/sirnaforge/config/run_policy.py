@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -137,6 +138,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("min_empirical_score", "filters", "min_empirical_score"),
     SettingSpec("min_isoform_coverage", "filters", "min_isoform_coverage"),
     SettingSpec("max_off_target_count", "offtarget_filters", "max_off_target_count"),
+    SettingSpec("species_liability_limits", "offtarget_filters", "species_liability_limits"),
     SettingSpec("max_transcriptome_hits_0mm", "offtarget_filters", "max_transcriptome_hits_0mm"),
     SettingSpec("max_transcriptome_hits_1mm", "offtarget_filters", "max_transcriptome_hits_1mm"),
     SettingSpec("max_transcriptome_hits_2mm", "offtarget_filters", "max_transcriptome_hits_2mm"),
@@ -204,7 +206,20 @@ def _switch_off_value(spec: SettingSpec, filter_id: str) -> Any:
 
 def _model_default(spec: SettingSpec) -> Any:
     """The declared default of the field a setting lands on, so a profile cannot restate a number."""
-    return _MODEL_FOR_TARGET[spec.model].model_fields[spec.field].get_default(call_default_factory=False)
+    return _MODEL_FOR_TARGET[spec.model].model_fields[spec.field].get_default(call_default_factory=True)
+
+
+def _json_compatible(value: Any) -> Any:
+    """Convert typed Python settings to the JSON values recorded in policy provenance."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -1081,7 +1096,7 @@ def _check_finite_weights(scoring: ScoringWeights) -> None:
                 raise RunPolicyError(f"weight vector '{vector.name}' has a non-finite weight for term '{term}'")
 
 
-def _resolve_filters(
+def _resolve_filters(  # noqa: PLR0912
     *,
     parameters: DesignParameters,
     run_mode: RunMode,
@@ -1153,6 +1168,48 @@ def _resolve_filters(
                 evidence_exported=spec.evidence_exported,
             )
         )
+
+    species_limit_axes = {
+        "transcriptome_hits_0mm": (0, _LIABILITY_CLASSES),
+        "transcriptome_hits_1mm": (1, _LIABILITY_CLASSES),
+        "transcriptome_hits_2mm": (2, _LIABILITY_CLASSES),
+        "transcript_seed_sites": (None, ()),
+        "transcript_seed_transcripts": (None, ()),
+        "transcript_seed_genes": (None, ()),
+    }
+    for species, limits in sorted(parameters.offtarget_filters.species_liability_limits.items()):
+        slug = re.sub(r"[^a-z0-9]+", "_", species.casefold()).strip("_")
+        if not slug:
+            raise RunPolicyError("species liability limit keys must contain a letter or digit")
+        for metric, (max_mismatches, hit_classes) in species_limit_axes.items():
+            threshold = getattr(limits, metric)
+            if threshold is None:
+                continue
+            filter_id = f"species_liability_{slug}_{metric}"
+            action = limits.action if screening_ran else FilterAction.OFF
+            resolved.append(
+                ResolvedFilter(
+                    descriptor=FilterDescriptor(
+                        filter_id=filter_id,
+                        column=f"{filter_id}_observed",
+                        comparator=FilterComparator.LE,
+                        threshold=threshold,
+                        scope=FilterScope(
+                            species=frozenset({species}),
+                            max_mismatches=max_mismatches,
+                            hit_classes=frozenset(hit_classes),
+                        ),
+                        action=action,
+                        stage=FilterStage.POST_SCREEN,
+                    ),
+                    setting_key=f"species_liability_limits.{species}.{metric}",
+                    definition=(
+                        f"User-configured {metric.replace('_', ' ')} ceiling for {species}; "
+                        "this limit is not assigned a biological default."
+                    ),
+                    evidence_exported=True,
+                )
+            )
     return tuple(resolved)
 
 
@@ -1287,7 +1344,9 @@ def resolve_run_policy(
     )
 
     requested: list[SettingProvenance] = [
-        SettingProvenance(key=key, value=value, source=SettingSource.CONFIG_FILE, detail=str(config_file))
+        SettingProvenance(
+            key=key, value=_json_compatible(value), source=SettingSource.CONFIG_FILE, detail=str(config_file)
+        )
         for key, value in config_settings.items()
     ]
     # A run mode or design mode the file supplied is an override the file requested. Leaving both out
@@ -1301,7 +1360,7 @@ def resolve_run_policy(
         if source is SettingSource.CONFIG_FILE
     ]
     requested += [
-        SettingProvenance(key=key, value=value, source=SettingSource.EXPLICIT, detail=None)
+        SettingProvenance(key=key, value=_json_compatible(value), source=SettingSource.EXPLICIT, detail=None)
         for key, value in stated.items()
     ]
     requested += [
@@ -1329,7 +1388,9 @@ def resolve_run_policy(
         if layer.source is SettingSource.BUILTIN_PROFILE and spec.key in profile.exceptions:
             detail = f"{detail}; declared exception to the model field default ({profile.exceptions[spec.key]})"
         resolved_records.append(
-            SettingProvenance(key=spec.key, value=values[spec.key], source=layer.source, detail=detail)
+            SettingProvenance(
+                key=spec.key, value=_json_compatible(values[spec.key]), source=layer.source, detail=detail
+            )
         )
     for resolved_filter in filters:
         resolved_records.append(
@@ -1342,6 +1403,8 @@ def resolve_run_policy(
                     else SettingSource.RUN_MODE_RULE
                     if resolved_filter.descriptor.stage is FilterStage.POST_SCREEN
                     and resolved_run_mode is RunMode.DESIGN_ONLY
+                    else winners["species_liability_limits"].source
+                    if resolved_filter.setting_key.startswith("species_liability_limits.")
                     else SettingSource.BUILTIN_PROFILE
                 ),
                 detail=(

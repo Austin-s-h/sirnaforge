@@ -13,7 +13,7 @@ from the model instead of restating it.
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from sirnaforge.utils.typed_decorators import field_serializer_typed
 
@@ -213,7 +213,7 @@ class SettingProvenance(BaseModel):
     """
 
     key: str = Field(min_length=1, description="Stable setting name")
-    value: bool | int | float | str | None = Field(description="Resolved value; None means no value applies")
+    value: JsonValue = Field(description="Resolved JSON-compatible setting value; None means no value applies")
     source: SettingSource = Field(description="Authority that supplied the value")
     detail: str | None = Field(default=None, description="Why this source won, when that is not obvious")
 

@@ -864,6 +864,75 @@ def test_a_query_stratified_gate_declares_the_run_s_own_query_species():
 
 
 @pytest.mark.unit
+def test_species_liability_limits_are_resolved_as_explicit_species_scoped_filters():
+    """Configured species thresholds become scoped, exported filters with the chosen action."""
+    policy = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={
+            "species_liability_limits": {
+                "Homo sapiens": {
+                    "transcriptome_hits_0mm": 0,
+                    "transcript_seed_genes": 5,
+                    "action": "warn",
+                }
+            }
+        },
+    )
+
+    perfect = policy.filter("species_liability_human_transcriptome_hits_0mm")
+    genes = policy.filter("species_liability_human_transcript_seed_genes")
+    assert perfect.descriptor.scope.species == frozenset({"human"})
+    assert perfect.descriptor.scope.max_mismatches == 0
+    assert perfect.descriptor.threshold == 0
+    assert perfect.descriptor.action is FilterAction.WARN
+    assert genes.descriptor.scope.species == frozenset({"human"})
+    assert genes.descriptor.threshold == 5
+    assert genes.descriptor.action is FilterAction.WARN
+    assert perfect.evidence_exported is True
+    assert genes.evidence_exported is True
+    gene_action = next(record for record in policy.resolved if record.key == f"action.{genes.filter_id}")
+    assert gene_action.source.value == "explicit"
+
+    with pytest.raises(ValidationError, match="duplicate species liability limits"):
+        OffTargetFilterCriteria(
+            species_liability_limits={
+                "human": {"transcriptome_hits_0mm": 0},
+                "Homo sapiens": {"transcriptome_hits_1mm": 0},
+            }
+        )
+    with pytest.raises(ValidationError, match="collide in exported filter ids"):
+        OffTargetFilterCriteria(
+            species_liability_limits={
+                "cow-species": {"transcriptome_hits_0mm": 0},
+                "cow species": {"transcriptome_hits_1mm": 0},
+            }
+        )
+    typed_parameters = DesignParameters(
+        offtarget_filters=OffTargetFilterCriteria(
+            species_liability_limits={"human": {"transcriptome_hits_0mm": 0, "action": "warn"}}
+        )
+    )
+    typed_policy = describe_parameters(typed_parameters, entry_point=EntryPoint.SCREENING_WORKFLOW)
+    assert typed_policy.filter("species_liability_human_transcriptome_hits_0mm").descriptor.threshold == 0
+    assert typed_policy.as_manifest()["resolved_settings"]
+
+
+@pytest.mark.unit
+def test_cli_accepts_species_liability_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public workflow option resolves the same per-species descriptors as the API."""
+    policy = _cli_policy(
+        tmp_path,
+        monkeypatch,
+        "--species-liability-limits",
+        '{"human":{"transcriptome_hits_0mm":0,"action":"warn"}}',
+    )
+
+    resolved = policy.filter("species_liability_human_transcriptome_hits_0mm")
+    assert resolved.descriptor.threshold == 0
+    assert resolved.descriptor.action is FilterAction.WARN
+
+
+@pytest.mark.unit
 def test_a_boolean_flag_is_expressed_as_a_ceiling_of_zero():
     """fail_on_high_risk_mirna has no threshold field, so as data it is "at most zero hits"."""
     on = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW).descriptor("fail_on_high_risk_mirna")

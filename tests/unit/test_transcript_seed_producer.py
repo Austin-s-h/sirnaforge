@@ -3,6 +3,7 @@
 import json
 from types import SimpleNamespace
 
+from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.screening_evidence import collect_evidence
 from sirnaforge.core.target_intent import TargetIntentRequest
 from sirnaforge.core.transcript_seed import run_transcript_seed_analysis
@@ -69,6 +70,82 @@ def test_producer_resolves_seed_site_genes_from_ensembl_cdna_headers(tmp_path) -
     envelope = collect_evidence(tmp_path / "out")[0]
     assert envelope.entry.counts.distinct_genes.value == 1
     assert envelope.entry.counts.distinct_genes.is_lower_bound is False
+
+
+def test_per_species_seed_limits_fail_on_lower_bound_exceedance_but_withhold_unproven_pass(tmp_path) -> None:
+    """Seed site, transcript, and gene ceilings use per-species counts and lower-bound logic."""
+    policy = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={
+            "species_liability_limits": {
+                "human": {
+                    "transcript_seed_sites": 10,
+                    "transcript_seed_transcripts": 5,
+                    "transcript_seed_genes": 3,
+                    "action": "fail",
+                }
+            }
+        },
+    )
+    workflow = SiRNAWorkflow(
+        WorkflowConfig(
+            output_dir=tmp_path / "workflow",
+            gene_query="TP53",
+            resolved_policy=policy,
+            transcript_seed_species=["human"],
+            transcript_seed_required_species=["human"],
+        )
+    )
+    candidate = SiRNACandidate(
+        id="candidate",
+        transcript_id="ENST00000000001",
+        position=1,
+        guide_sequence="AACCTGTAAGAACCTGTAAGA",
+        passenger_sequence="TTTTTTTTTTTTTTTTTTTTT",
+        gc_content=50.0,
+        length=21,
+        asymmetry_score=0.7,
+        screen_query_id="guide",
+    )
+    result_dir = tmp_path / "results" / "transcript_seed"
+    result_dir.mkdir(parents=True)
+    summary_path = result_dir / "transcript_seed_human_summary.json"
+
+    def publish(gene_count: int) -> None:
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "species": "human",
+                    "schema_version": TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+                    "site_identity": TRANSCRIPT_SEED_SITE_IDENTITY,
+                    "per_guide": {
+                        "guide": {
+                            "status": "complete",
+                            "site_count": 12,
+                            "transcript_count": 6,
+                            "gene_count": gene_count,
+                            "gene_count_is_lower_bound": True,
+                        }
+                    },
+                }
+            )
+        )
+
+    workflow._completed_evidence_pairs = frozenset({("transcript_seed", "human")})
+    workflow._candidate_id_to_representative = {}
+    publish(0)
+    workflow._collect_transcript_seed_observations(result_dir.parent, [candidate])
+    assert candidate.filter_verdicts["species_liability_human_transcript_seed_sites"] == "fail"
+    assert candidate.filter_verdicts["species_liability_human_transcript_seed_transcripts"] == "fail"
+    assert candidate.filter_verdicts["species_liability_human_transcript_seed_genes"] == "unknown"
+    assert candidate.filter_observed["species_liability_human_transcript_seed_genes"] is None
+
+    over_limit = candidate.model_copy(deep=True)
+    over_limit.filter_verdicts.clear()
+    over_limit.filter_observed.clear()
+    publish(4)
+    workflow._collect_transcript_seed_observations(result_dir.parent, [over_limit])
+    assert over_limit.filter_verdicts["species_liability_human_transcript_seed_genes"] == "fail"
 
 
 def test_producer_marks_missing_three_prime_utr_annotation_unavailable(tmp_path) -> None:

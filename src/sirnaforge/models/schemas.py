@@ -555,9 +555,8 @@ class SiRNACandidateSchema(DataFrameModel):
         run's CSV never had, so only columns actually present in the frame are checked here.
         """
         allowed = {v.value for v in FilterEvaluation}
-        verdict_columns = [
-            column for filter_id in DECLARED_FILTER_IDS if (column := f"{filter_id}_verdict") in df.columns
-        ]
+        declared_columns = {f"{filter_id}_verdict" for filter_id in DECLARED_FILTER_IDS}
+        verdict_columns = [column for column in df.columns if column in declared_columns or column.endswith("_verdict")]
         return all(bool(df[column].map(lambda v: v in allowed).all()) for column in verdict_columns)
 
     @dataframe_check_typed

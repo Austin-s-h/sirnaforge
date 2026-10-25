@@ -43,6 +43,37 @@ def test_default_design_input_shortfalls_are_empty_and_immutable() -> None:
         inputs.design_input_shortfalls["transcript"] = "failed"
 
 
+def test_unknown_species_gate_only_withholds_when_its_species_is_required() -> None:
+    """An incomplete exploratory species limit cannot inherit another species' requiredness."""
+    view = CandidateView(
+        candidate_id="candidate",
+        ordinal=0,
+        passes_filters=True,
+        repeat_flagged=False,
+        scored_after_screening=True,
+        off_target_screened=True,
+        ranking_score=1.0,
+        unknown_filter_ids=frozenset({"species_liability_mouse_transcriptome_hits_0mm"}),
+    )
+    inputs = SelectionInputs(
+        run_mode=RunMode.QUALIFIED,
+        requirements=_human_transcriptome_requirements(UnknownEvidenceAction.FAIL),
+        completed_pairs=frozenset({("transcriptome", "human")}),
+        query_species="human",
+        filter_channels={"species_liability_mouse_transcriptome_hits_0mm": frozenset({ScreeningChannel.TRANSCRIPTOME})},
+        filter_evidence_pairs={
+            "species_liability_mouse_transcriptome_hits_0mm": frozenset({("transcriptome", "mouse")})
+        },
+        repeat_rejects=False,
+        top_n=10,
+    )
+
+    assert evidence_shortfall(view, inputs, required_only=True) == ()
+    assert evidence_shortfall(view, inputs, required_only=False) == (
+        "unknown:species_liability_mouse_transcriptome_hits_0mm",
+    )
+
+
 def _make_view(
     candidate_id: str, ordinal: int, *, off_target_screened: bool, passes_filters: bool = True
 ) -> CandidateView:

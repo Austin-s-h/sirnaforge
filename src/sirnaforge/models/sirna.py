@@ -1,6 +1,7 @@
 """Pydantic models for siRNA design data structures."""
 
 import json
+import re
 from enum import Enum
 from typing import Any, ClassVar
 
@@ -9,6 +10,7 @@ from pandera.typing import DataFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
 from sirnaforge.core.repeat_detection import DEFAULT_REPEAT_TRANSCRIPT_FRACTION
+from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterAction, FilterEvaluation
 from sirnaforge.models.schemas import SiRNACandidateSchema
@@ -200,6 +202,72 @@ class OffTargetFilterCriteria(BaseModel):
 
     Controls which siRNA candidates fail due to excessive off-target potential.
     """
+
+    class SpeciesLiabilityLimits(BaseModel):
+        """Uncalibrated, user-supplied ceilings for one species' independent liability channels."""
+
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        transcriptome_hits_0mm: int | None = Field(default=None, ge=0)
+        transcriptome_hits_1mm: int | None = Field(default=None, ge=0)
+        transcriptome_hits_2mm: int | None = Field(default=None, ge=0)
+        transcript_seed_sites: int | None = Field(default=None, ge=0)
+        transcript_seed_transcripts: int | None = Field(default=None, ge=0)
+        transcript_seed_genes: int | None = Field(default=None, ge=0)
+        action: FilterAction = Field(
+            default=FilterAction.FAIL,
+            description=(
+                "Action for this species' explicitly configured ceilings. Use fail for required evidence and warn "
+                "for exploratory/descriptive species; no numerical limit is supplied by default."
+            ),
+        )
+
+        @model_validator_typed(mode="after")
+        def require_at_least_one_limit(self) -> "OffTargetFilterCriteria.SpeciesLiabilityLimits":
+            """Reject empty per-species entries instead of implying a configured gate."""
+            if not any(
+                getattr(self, name) is not None
+                for name in (
+                    "transcriptome_hits_0mm",
+                    "transcriptome_hits_1mm",
+                    "transcriptome_hits_2mm",
+                    "transcript_seed_sites",
+                    "transcript_seed_transcripts",
+                    "transcript_seed_genes",
+                )
+            ):
+                raise ValueError("at least one species liability ceiling must be configured")
+            return self
+
+    species_liability_limits: dict[str, SpeciesLiabilityLimits] = Field(
+        default_factory=dict,
+        description=(
+            "Optional species-keyed transcriptome and transcript-seed ceilings. Each species entry sets one "
+            "explicit fail/warn action and one or more numeric limits; no universal limits are assumed."
+        ),
+    )
+
+    @field_validator_typed("species_liability_limits", mode="before")
+    @classmethod
+    def canonicalize_species_liability_keys(cls, value: Any) -> Any:
+        """Normalize species aliases and reject aliases that collide after normalization."""
+        if not isinstance(value, dict):
+            return value
+        normalized: dict[str, Any] = {}
+        for raw_species, limits in value.items():
+            species = normalize_species_name(str(raw_species)).strip().lower()
+            if species in normalized:
+                raise ValueError(f"duplicate species liability limits after normalization: {species}")
+            normalized[species] = limits
+        slugs: dict[str, str] = {}
+        for species in normalized:
+            slug = re.sub(r"[^a-z0-9]+", "_", species).strip("_")
+            if not slug:
+                raise ValueError("species liability limit keys must contain a letter or digit")
+            if slug in slugs:
+                raise ValueError(f"species liability keys collide in exported filter ids: {slugs[slug]} and {species}")
+            slugs[slug] = species
+        return normalized
 
     # Optional query-species, <=2-mismatch liability ceiling. The former default of 15 was
     # calibrated on an all-species, all-mismatch total and does not transfer to this scoped count.
@@ -1192,6 +1260,7 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
     passes_filters = pass_state.value if hasattr(pass_state, "value") else pass_state
     verdicts = candidate.filter_verdicts or {}
     observed = candidate.filter_observed or {}
+    dynamic_filter_ids = sorted((set(verdicts) | set(observed)) - set(DECLARED_FILTER_IDS))
 
     def _maybe_attr(name: str, default: Any = None) -> Any:
         return getattr(candidate, name, default)
@@ -1306,6 +1375,8 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # blank (a blank cell reads as a verdict).
         **{f"{filter_id}_verdict": verdicts.get(filter_id, _NOT_EVALUATED) for filter_id in DECLARED_FILTER_IDS},
         **{f"{filter_id}_observed": observed.get(filter_id) for filter_id in DECLARED_FILTER_IDS},
+        **{f"{filter_id}_verdict": verdicts[filter_id] for filter_id in dynamic_filter_ids if filter_id in verdicts},
+        **{f"{filter_id}_observed": observed[filter_id] for filter_id in dynamic_filter_ids if filter_id in observed},
     }
 
 

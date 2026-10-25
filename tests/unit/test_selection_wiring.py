@@ -75,19 +75,27 @@ def _candidate(candidate_id: str, *, design_score: float = 50.0) -> SiRNACandida
     )
 
 
-def _workflow(tmp_path: Path, name: str, *, run_mode: RunMode | None = None) -> SiRNAWorkflow:
+def _workflow(
+    tmp_path: Path,
+    name: str,
+    *,
+    run_mode: RunMode | None = None,
+    species_liability_limits: dict[str, object] | None = None,
+    screen_species: list[str] | None = None,
+) -> SiRNAWorkflow:
     """A workflow whose policy is resolved through the one resolver, as every real entry point does."""
     policy = resolve_run_policy(
         entry_point=EntryPoint.SCREENING_WORKFLOW,
         run_mode=run_mode,
         query_species="human",
-        screen_species=["human"],
+        screen_species=screen_species or ["human"],
+        stated={"species_liability_limits": species_liability_limits} if species_liability_limits else None,
     )
     config = WorkflowConfig(
         output_dir=tmp_path / name,
         gene_query="TP53",
         resolved_policy=policy,
-        screen_species=["human"],
+        screen_species=screen_species or ["human"],
         query_species="human",
     )
     workflow = SiRNAWorkflow(config)
@@ -329,6 +337,89 @@ def test_every_off_target_gate_is_evaluated_by_the_shared_evaluator(tmp_path: Pa
         OffTargetGateCounts(), criteria, _candidate("unscreened"), complete_pairs=frozenset()
     )
     assert undecided == (False, None)
+
+
+@pytest.mark.unit
+def test_species_transcriptome_ceiling_uses_its_own_counter_and_unknown_evidence(tmp_path: Path) -> None:
+    """A species ceiling reads that species' count and withholds a pass without its evidence."""
+    workflow = _workflow(
+        tmp_path,
+        "species-liability",
+        species_liability_limits={"human": {"transcriptome_hits_1mm": 1}},
+    )
+    candidate = _candidate("species-gated")
+    filter_id = "species_liability_human_transcriptome_hits_1mm"
+
+    workflow._check_offtarget_filters(
+        OffTargetGateCounts(
+            transcriptome_1mm=99,
+            transcriptome_by_species={"human": {"transcriptome_hits_1mm": 2}},
+        ),
+        workflow.config.design_params.offtarget_filters,
+        candidate,
+        complete_pairs=frozenset({("transcriptome", "human")}),
+    )
+    assert candidate.filter_observed[filter_id] == 2
+    assert candidate.filter_verdicts[filter_id] == FilterEvaluation.FAIL.value
+
+    unknown = _candidate("species-unknown")
+    workflow._check_offtarget_filters(
+        OffTargetGateCounts(transcriptome_by_species={"human": {"transcriptome_hits_1mm": 0}}),
+        workflow.config.design_params.offtarget_filters,
+        unknown,
+        complete_pairs=frozenset(),
+    )
+    assert unknown.filter_observed[filter_id] is None
+    assert unknown.filter_verdicts[filter_id] == FilterEvaluation.UNKNOWN.value
+
+
+@pytest.mark.unit
+def test_species_transcriptome_ceiling_counts_hits_during_workflow_integration(tmp_path: Path) -> None:
+    """Real integrated alignment rows populate the independently scoped species counter."""
+    workflow = _workflow(
+        tmp_path,
+        "species-hit-ingestion",
+        species_liability_limits={"mouse": {"transcriptome_hits_1mm": 0}},
+        screen_species=["human", "mouse"],
+    )
+    candidate = _candidate("mouse-hit")
+    workflow._integrate_offtarget_results(
+        [candidate],
+        {
+            "status": "completed",
+            "results": {
+                candidate.id: {
+                    "hits": [
+                        {
+                            "rname": "ENST00000999999",
+                            "species": "mouse",
+                            "nm": 1,
+                            "seed_mismatches": 1,
+                        }
+                    ],
+                    "off_target_score": 0.0,
+                }
+            },
+        },
+        screened_species=["human", "mouse"],
+        mirna_screened=True,
+    )
+
+    filter_id = "species_liability_mouse_transcriptome_hits_1mm"
+    assert candidate.filter_observed[filter_id] == 1
+    assert candidate.filter_verdicts[filter_id] == FilterEvaluation.FAIL.value
+
+    base = _select_and_report(workflow, [candidate])
+    row = _rows(base / "candidates_all.csv").iloc[0]
+    assert row[f"{filter_id}_observed"] == 1
+    assert row[f"{filter_id}_verdict"] == FilterEvaluation.FAIL.value
+    manifest_filter = next(
+        item
+        for item in json.loads((base / "manifest.json").read_text())["run_policy"]["filters"]
+        if item["filter_id"] == filter_id
+    )
+    assert manifest_filter["threshold"] == 0
+    assert manifest_filter["scope"]["species"] == ["mouse"]
 
 
 @pytest.mark.unit

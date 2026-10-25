@@ -374,6 +374,7 @@ class OffTargetGateCounts(NamedTuple):
     mirna_high_risk: int = 0
     total_hits: int = 0
     genuine_off_target_count: int = 0
+    transcriptome_by_species: Mapping[str, Mapping[str, int]] | None = None
 
 
 _ZERO_OFFTARGET_COUNTS = OffTargetGateCounts()
@@ -381,6 +382,11 @@ _ZERO_OFFTARGET_COUNTS = OffTargetGateCounts()
 _TRANSCRIPTOME_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPTOME})
 _MIRNA_SEED_CHANNEL = frozenset({ScreeningChannel.MIRNA_SEED})
 _TRANSCRIPT_SEED_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPT_SEED})
+_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS = (
+    "transcriptome_hits_0mm",
+    "transcriptome_hits_1mm",
+    "transcriptome_hits_2mm",
+)
 
 #: Which screening channel supplies each post-screen gate's count. One mapping, because
 #: ``_check_offtarget_filters`` and ``_apply_post_screen_ranking`` both need this answer and must not
@@ -3503,7 +3509,35 @@ class SiRNAWorkflow:
             requirements=policy.evidence_requirements if policy is not None else None,
             completed_pairs=self._completed_evidence_pairs,
             query_species=self._query_species,
-            filter_channels=POST_SCREEN_FILTER_CHANNELS,
+            filter_channels={
+                **POST_SCREEN_FILTER_CHANNELS,
+                **{
+                    resolved.filter_id: (
+                        _TRANSCRIPTOME_CHANNEL
+                        if resolved.setting_key.endswith(
+                            ("transcriptome_hits_0mm", "transcriptome_hits_1mm", "transcriptome_hits_2mm")
+                        )
+                        else _TRANSCRIPT_SEED_CHANNEL
+                    )
+                    for resolved in (policy.filters if policy is not None else ())
+                    if resolved.setting_key.startswith("species_liability_limits.")
+                },
+            },
+            filter_evidence_pairs={
+                resolved.filter_id: frozenset(
+                    (channel.value, species)
+                    for channel in (
+                        _TRANSCRIPTOME_CHANNEL
+                        if resolved.setting_key.endswith(
+                            ("transcriptome_hits_0mm", "transcriptome_hits_1mm", "transcriptome_hits_2mm")
+                        )
+                        else _TRANSCRIPT_SEED_CHANNEL
+                    )
+                    for species in resolved.descriptor.scope.species
+                )
+                for resolved in (policy.filters if policy is not None else ())
+                if resolved.setting_key.startswith("species_liability_limits.")
+            },
             repeat_rejects=repeat_action is FilterAction.FAIL,
             top_n=self.config.top_n,
             design_input_shortfalls=dict(self._design_input_shortfalls),
@@ -4558,7 +4592,7 @@ class SiRNAWorkflow:
             reason=_EXECUTION_ERROR_REASON if parsed.get("status") == "missing" else None,
         )
 
-    def _collect_transcript_seed_observations(
+    def _collect_transcript_seed_observations(  # noqa: PLR0912
         self, output_dir: Path, candidates: Sequence[SiRNACandidate]
     ) -> dict[str, Any]:
         """Attach producer observations to candidates without inferring zeros for missing evidence."""
@@ -4623,6 +4657,53 @@ class SiRNAWorkflow:
                     action=seed_action,
                     status=SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
                 )
+            policy = getattr(self.config, "resolved_policy", None)
+            if policy is not None:
+                seed_fields = {
+                    "transcript_seed_sites": "site_count",
+                    "transcript_seed_transcripts": "transcript_count",
+                    "transcript_seed_genes": "gene_count",
+                }
+                for resolved in policy.filters:
+                    if not resolved.setting_key.startswith("species_liability_limits."):
+                        continue
+                    metric = resolved.setting_key.rsplit(".", 1)[-1]
+                    result_field = seed_fields.get(metric)
+                    if result_field is None:
+                        continue
+                    limit_species = next(iter(resolved.descriptor.scope.species), None)
+                    if limit_species is None:
+                        continue
+                    result = by_species.get(limit_species)
+                    raw_value = result.get(result_field) if isinstance(result, dict) else None
+                    observed_value = raw_value if isinstance(raw_value, int) else None
+                    gate_complete_pairs = completed
+                    if (
+                        metric == "transcript_seed_genes"
+                        and isinstance(result, dict)
+                        and result.get("gene_count_is_lower_bound") is True
+                    ):
+                        gate_complete_pairs = completed - {(ScreeningChannel.TRANSCRIPT_SEED.value, limit_species)}
+                    gate = GateSpec(
+                        filter_id=resolved.filter_id,
+                        threshold=resolved.descriptor.threshold,
+                        action=resolved.descriptor.action,
+                        comparator=resolved.descriptor.comparator,
+                        channels=_TRANSCRIPT_SEED_CHANNEL,
+                        evidence_pairs=frozenset({(ScreeningChannel.TRANSCRIPT_SEED.value, limit_species)}),
+                    )
+                    outcome = evaluate_gate(gate, observed_value, complete_pairs=gate_complete_pairs)
+                    record_gate_outcome(
+                        candidate,
+                        outcome,
+                        status=SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
+                    )
+                    if (
+                        outcome.evaluation is FilterEvaluation.FAIL
+                        and outcome.action is FilterAction.WARN
+                        and "GATE_WARNED" not in candidate.quality_issues
+                    ):
+                        candidate.quality_issues.append("GATE_WARNED")
             observations[candidate.id] = {
                 "guide_set_id": query_id,
                 "scope": self.config.transcript_seed_scope.value,
@@ -5647,9 +5728,51 @@ class SiRNAWorkflow:
             observed[filter_id] = value
             statuses[filter_id] = status
 
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is not None:
+            species_counts = counts.transcriptome_by_species or {}
+            for resolved in policy.filters:
+                if not resolved.setting_key.startswith("species_liability_limits."):
+                    continue
+                metric = resolved.setting_key.rsplit(".", 1)[-1]
+                limit_species = next(iter(resolved.descriptor.scope.species), None)
+                if limit_species is None:
+                    continue
+                if metric.startswith("transcriptome_hits_"):
+                    channels = _TRANSCRIPTOME_CHANNEL
+                    gate_value: int | None = species_counts.get(limit_species, {}).get(metric)
+                elif metric.startswith("transcript_seed_"):
+                    # The transcript-seed producer writes its per-species result before this gate
+                    # on the normal path. Preserve it; this fallback supplies UNKNOWN on paths
+                    # where no producer result was reconciled.
+                    if resolved.filter_id in candidate.filter_verdicts:
+                        continue
+                    channels = _TRANSCRIPT_SEED_CHANNEL
+                    gate_value = None
+                else:
+                    continue
+                specs.append(
+                    GateSpec(
+                        filter_id=resolved.filter_id,
+                        threshold=resolved.descriptor.threshold,
+                        action=resolved.descriptor.action,
+                        comparator=resolved.descriptor.comparator,
+                        channels=channels,
+                        evidence_pairs=frozenset((channel.value, limit_species) for channel in channels),
+                    )
+                )
+                observed[resolved.filter_id] = gate_value
+                statuses[resolved.filter_id] = SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS
+
         outcomes = evaluate_gates(specs, observed, complete_pairs=complete_pairs)
         for outcome in outcomes:
             record_gate_outcome(candidate, outcome, status=statuses[outcome.filter_id])
+            if (
+                outcome.evaluation is FilterEvaluation.FAIL
+                and outcome.action is FilterAction.WARN
+                and "GATE_WARNED" not in candidate.quality_issues
+            ):
+                candidate.quality_issues.append("GATE_WARNED")
 
         rejection = first_rejection(outcomes)
         return rejection is not None, statuses[rejection.filter_id] if rejection is not None else None
@@ -6019,7 +6142,12 @@ class SiRNAWorkflow:
                 # zero was measured.
                 self._gate_offtarget_counts(
                     candidate,
-                    counts=_ZERO_OFFTARGET_COUNTS,
+                    counts=OffTargetGateCounts(
+                        transcriptome_by_species={
+                            species: dict.fromkeys(_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS, 0)
+                            for species in requested_species
+                        }
+                    ),
                     filter_criteria=filter_criteria,
                     complete_pairs=complete_pairs,
                     stats=stats,
@@ -6039,6 +6167,9 @@ class SiRNAWorkflow:
             transcriptome_query_total = 0
             transcriptome_human_total = 0
             transcriptome_seed_0mm = 0
+            transcriptome_by_species: dict[str, dict[str, int]] = {
+                species: dict.fromkeys(_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS, 0) for species in requested_species
+            }
             mirna_total = 0
             mirna_query_total = 0
             mirna_human_total = 0
@@ -6120,6 +6251,9 @@ class SiRNAWorkflow:
                         transcriptome_totals[nm] += 1
                         if treated_as_query:
                             transcriptome_query[nm] += 1
+                        transcriptome_by_species.setdefault(
+                            hit_species, dict.fromkeys(_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS, 0)
+                        )[_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS[nm]] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
@@ -6195,6 +6329,7 @@ class SiRNAWorkflow:
                     mirna_high_risk=mirna_high_risk_query,
                     total_hits=transcriptome_query_total + mirna_query_total,
                     genuine_off_target_count=sum(transcriptome_query.values()),
+                    transcriptome_by_species=transcriptome_by_species,
                 ),
                 filter_criteria=filter_criteria,
                 complete_pairs=complete_pairs,

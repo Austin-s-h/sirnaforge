@@ -71,6 +71,8 @@ class SelectionInputs:
         filter_channels: Screening channels backing each gate's count (``POST_SCREEN_FILTER_CHANNELS``
             in ``workflow.py``). A filter id absent here reads design-time or annotation evidence, so
             an incomplete channel never excuses it.
+        filter_evidence_pairs: Exact channel/species pairs backing dynamically scoped gates. When
+            supplied, these take precedence over channel-only requiredness for unknown verdicts.
         repeat_rejects: Whether a repeat-flagged candidate is rejected outright, decided by the
             ``max_repeat_transcript_fraction`` gate's own action.
         top_n: How many eligible candidates the shortlist keeps. ``None`` means every one of them,
@@ -87,6 +89,9 @@ class SelectionInputs:
     repeat_rejects: bool
     top_n: int | None
     design_input_shortfalls: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    filter_evidence_pairs: Mapping[str, frozenset[tuple[str, str]]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +194,12 @@ def evidence_shortfall(view: CandidateView, inputs: SelectionInputs, *, required
         in_scope_channels = {channel for channel, _ in in_scope_pairs}
         for filter_id in sorted(view.unknown_filter_ids):
             channels = inputs.filter_channels.get(filter_id)
-            if channels is None or not required_only or {c.value for c in channels} <= in_scope_channels:
+            exact_pairs = inputs.filter_evidence_pairs.get(filter_id)
+            if exact_pairs is not None:
+                in_scope = exact_pairs <= in_scope_pairs
+            else:
+                in_scope = channels is None or {c.value for c in channels} <= in_scope_channels
+            if not required_only or in_scope:
                 missing.append(f"unknown:{filter_id}")
 
     return tuple(dict.fromkeys(missing))
