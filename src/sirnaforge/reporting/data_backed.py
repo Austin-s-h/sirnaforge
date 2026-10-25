@@ -31,6 +31,7 @@ from sirnaforge.reporting.evidence import (
     FILTER_UNITS,
     GATE_REASON_IDS,
     WARNING_REGISTRY,
+    conservation_evidence,
     guide_mirna_evidence,
     mirna_evidence,
     report_evidence,
@@ -42,6 +43,7 @@ from sirnaforge.reporting.payload import (
     STATUSES,
     VERDICT_WARN,
     _evaluate,
+    _flag,
     _gate_panel,
     _normalise_guide,
     _read_manifest,
@@ -66,6 +68,8 @@ _GUIDE_SCHEMA = pa.schema(
         ("run_verdict", pa.string()),
         ("canonical_hit", pa.string()),
         ("target_genes", pa.string()),
+        ("ortholog", pa.string()),
+        ("off_target_screened", pa.bool_()),
         ("status", pa.string()),
         ("gates", pa.string()),
         ("n_failed_gates", pa.int64()),
@@ -216,6 +220,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     store.manifest["reference_evidence"] = {
         key: value for key, value in reference_evidence.items() if key != "guide_sequences"
     }
+    store.manifest["conservation_evidence"] = conservation_evidence(manifest)
     store.manifest["evidence_warning_registry"] = WARNING_REGISTRY
     store.manifest["evidence_states"] = EVIDENCE_STATES
     store.manifest["gate_reason_ids"] = GATE_REASON_IDS
@@ -431,6 +436,8 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                     else "not_established"
                 ),
                 "target_genes": json.dumps([guide_genes[key] for key in sorted(guide_genes)], separators=(",", ":")),
+                "ortholog": "{}",
+                "off_target_screened": _flag(best.get("off_target_screened")),
                 "status": status,
                 "gates": json.dumps(gates, separators=(",", ":")),
                 "n_failed_gates": n_failed,
@@ -452,9 +459,11 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     db.close()
     temp_db.unlink(missing_ok=True)
 
+    conservation_by_guide = _derive_hit_summary(store)
+    for record in guide_records:
+        record["ortholog"] = json.dumps(conservation_by_guide.get(record["guide"], {}), separators=(",", ":"))
     _write_records(store, "guides", guide_records)
     isoform_sink.close()
-    _derive_hit_summary(store)
     target_gene_entries = {entry["key"]: entry for row in guide_records for entry in json.loads(row["target_genes"])}
     for identity_row in identity_by_transcript.values():
         entry = _target_gene_entry(identity_row.get("gene_id"), identity_row.get("gene_symbol"))
@@ -492,27 +501,55 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
     (store.root / "report_manifest.json").write_text(json.dumps(store.manifest, indent=2) + "\n")
 
 
-def _derive_hit_summary(store: ReportArtifactStore) -> None:
+def _derive_hit_summary(store: ReportArtifactStore) -> dict[str, dict[str, dict[str, Any]]]:
     """Aggregate hit rows in SQLite so memory is bounded by the read batch, not the hit table."""
     db_path = store.root / ".hits.sqlite"
     db = sqlite3.connect(db_path)
     db.execute("PRAGMA journal_mode=OFF")
     db.execute("PRAGMA synchronous=OFF")
     db.execute("CREATE TABLE hits (guide TEXT,species TEXT,hit_class TEXT,nm_band TEXT,symbol TEXT)")
+    best_orthologs: dict[str, dict[str, tuple[tuple[float, float], dict[str, Any]]]] = {}
     if "hits" in store.manifest["tables"]:
         available = set(store.manifest["tables"]["hits"]["columns"])
         selected = [
-            name for name in ("qseq", "species", "hit_class", "nm", "hit_symbol", "matched_symbol") if name in available
+            name
+            for name in (
+                "qseq",
+                "species",
+                "hit_class",
+                "nm",
+                "seed_mismatches",
+                "rname",
+                "hit_symbol",
+                "matched_symbol",
+            )
+            if name in available
         ]
         for batch in store.iter_batches("hits", columns=selected):
             rows = []
             for row in batch.to_pylist():
                 nm = _float_or_none(row.get("nm"))
+                seed = _float_or_none(row.get("seed_mismatches"))
+                guide = _normalise_guide(row.get("qseq"))
+                species = str(row.get("species") or "query").strip() or "query"
+                if str(row.get("hit_class") or "").strip().casefold() == "ortholog" and nm is not None:
+                    rank = (nm, seed if seed is not None else math.inf)
+                    current = best_orthologs.setdefault(guide, {}).get(species)
+                    if current is None or rank < current[0]:
+                        best_orthologs[guide][species] = (
+                            rank,
+                            {
+                                "nm": int(nm) if nm.is_integer() else None,
+                                "seed_mismatches": int(seed) if seed is not None and seed.is_integer() else None,
+                                "transcript_id": str(row.get("rname") or "") or None,
+                                "gene_symbol": str(row.get("hit_symbol") or row.get("matched_symbol") or "") or None,
+                            },
+                        )
                 band = "unknown" if nm is None else "0" if nm == 0 else "1" if nm == 1 else "2" if nm == 2 else ">=3"
                 rows.append(
                     (
-                        _normalise_guide(row.get("qseq")),
-                        str(row.get("species") or "query"),
+                        guide,
+                        species,
                         str(row.get("hit_class") or "undetermined"),
                         band,
                         str(row.get("hit_symbol") or row.get("matched_symbol") or "unknown"),
@@ -553,6 +590,10 @@ def _derive_hit_summary(store: ReportArtifactStore) -> None:
     db.close()
     db_path.unlink(missing_ok=True)
     store.manifest["tables"].update(_table_metadata(store, "hit_summary"))
+    return {
+        guide: {species: value for species, (_rank, value) in by_species.items()}
+        for guide, by_species in best_orthologs.items()
+    }
 
 
 def _write_records(store: ReportArtifactStore, name: str, records: list[dict[str, Any]]) -> None:
@@ -702,6 +743,9 @@ def _write_data_backed_html(store: ReportArtifactStore, output: Path, shard_dir:
     unresolved_count = store.manifest["summary"]["unresolved_guides"]
     html = html.replace("__UNRESOLVED_CONTROL__", _unresolved_control(unresolved_count))
     html = html.replace("__GENE_FILTER_CONTROL__", _gene_filter_control(store.manifest["summary"]))
+    html = html.replace(
+        "__CONSERVATION_FILTER_CONTROL__", _conservation_filter_control(store.manifest["conservation_evidence"])
+    )
     html = html.replace("__SHARD_DIR__", shard_dir).replace("__STATUS_COUNTS__", json.dumps(summary["status_counts"]))
     html = html.replace("<!--__INLINE_SHARDS__-->", "")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -722,6 +766,9 @@ def _write_paged_html(store: ReportArtifactStore, output: Path, shard_dir: Path)
     unresolved_count = store.manifest["summary"]["unresolved_guides"]
     html = html.replace("__UNRESOLVED_CONTROL__", _unresolved_control(unresolved_count))
     html = html.replace("__GENE_FILTER_CONTROL__", _gene_filter_control(store.manifest["summary"]))
+    html = html.replace(
+        "__CONSERVATION_FILTER_CONTROL__", _conservation_filter_control(store.manifest["conservation_evidence"])
+    )
     html = html.replace("__SHARD_DIR__", "").replace(
         "__STATUS_COUNTS__", json.dumps(store.manifest["summary"]["status_counts"])
     )
@@ -753,6 +800,26 @@ def _gene_filter_control(summary: dict[str, Any]) -> str:
         '<select id="targetgene" aria-label="Target gene" disabled>'
         + "".join(options)
         + '</select><span id="gene-state" role="status" aria-live="polite"></span>'
+    )
+
+
+def _conservation_filter_control(evidence: dict[str, Any]) -> str:
+    """Render accessible per-species conservation filters backed by published orthology evidence."""
+    species = evidence.get("denominator_species") or list((evidence.get("per_species") or {}).keys())
+    species = list(dict.fromkeys(str(item) for item in species if item))
+    if not species:
+        return '<p id="conservation-unavailable">No conservation species were recorded for this run.</p>'
+    controls = "".join(
+        f'<label><input type="checkbox" data-conservation value="{escape(item, quote=True)}"> {escape(item)}</label>'
+        for item in species
+    )
+    return (
+        '<fieldset id="conservation-filters" aria-describedby="cons-state consdiagnostic">'
+        "<legend>Conserved in</legend>"
+        + controls
+        + '<label><input type="checkbox" id="cons-seed" checked> Allow one mismatch only outside guide positions 2–8</label>'
+        '<div id="cons-state" role="status" aria-live="polite"></div>'
+        '<div id="consdiagnostic" role="status" aria-live="polite"></div></fieldset>'
     )
 
 
@@ -903,7 +970,7 @@ def _peak_rss_bytes() -> int | None:
 
 _DATA_BACKED_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>siRNAforge data-backed report</title><style>html,body{height:100%}body{display:flex;flex-direction:column;font:14px system-ui;margin:0;color:#1a1d21;background:#fbfbfc}header{flex:0 0 auto;padding:18px 24px;background:white;border-bottom:1px solid #ddd}main{display:grid;grid-template-columns:minmax(220px,25%) minmax(350px,35%) 1fr;grid-template-rows:minmax(0,1fr);flex:1 1 auto;min-height:0}section,aside{min-height:0;overflow:auto;padding:12px}aside{border-right:1px solid #ddd;font-size:12px;overflow-wrap:anywhere}dd{margin-left:12px}details{margin:8px 0}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border-bottom:1px solid #ddd;padding:5px;text-align:left}.pill{padding:2px 6px;border-radius:8px;background:#eee}.fail{color:#b91c1c}.pass{color:#15803d}.warn{color:#92400e}.unknown{color:#6b7280}button{font:inherit;cursor:pointer}#details{white-space:normal}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
-<body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label>__GENE_FILTER_CONTROL____UNRESOLVED_CONTROL__<span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
+<body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label>__GENE_FILTER_CONTROL____CONSERVATION_FILTER_CONTROL____UNRESOLVED_CONTROL__<span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
 <main>__EVIDENCE_PANEL__<section><table><thead><tr><th>Guide</th><th>Status</th><th>Rows</th><th>Design</th><th>Composite</th></tr></thead><tbody id="rows"></tbody></table></section><section id="details" aria-live="polite"><p>Select any guide to load its detail shard.</p></section></main>
 <!--__INLINE_SHARDS__-->
 <script>
@@ -913,8 +980,10 @@ function renderRows(){const q=document.querySelector('#search').value.trim().toU
  const gate=document.querySelector('#gate').selectedIndex-1,result=document.querySelector('#gate-result').value;
  const unresolved=document.querySelector('#unresolved-only')?.checked||false;
  const geneEnabled=document.querySelector('#geneenable')?.checked||false,gene=document.querySelector('#targetgene')?.value||'';
+ const selectedSpecies=[...F.conserved];
  const shown=G.filter(g=>(!q||g.guide.includes(q))&&(!st||g.status===st)&&(!unresolved||g.unresolved_evidence)&&
    (!geneEnabled||!gene||(JSON.parse(g.target_genes||'[]').some(item=>item.key===gene)))&&
+   selectedSpecies.every(sp=>{const d=(JSON.parse(g.ortholog||'{}'))[sp];return d&&d.nm!==null&&d.nm<=1&&(d.nm!==1||!F.conservedSeed||d.seed_mismatches===0);})&&
    (gate<0||!result||JSON.parse(g.gates)[gate]?.[1]===Number(result)));
  const pageCount=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));currentPage=Math.min(currentPage,pageCount-1);
  const pageRows=shown.slice(currentPage*PAGE_SIZE,(currentPage+1)*PAGE_SIZE);
@@ -922,16 +991,40 @@ function renderRows(){const q=document.querySelector('#search').value.trim().toU
  document.querySelector('#previous').disabled=currentPage===0;document.querySelector('#next').disabled=currentPage>=pageCount-1;
  document.querySelector('#visible-count').textContent=`${shown.length} guides match current filters`;
  const geneState=document.querySelector('#gene-state');if(geneState)geneState.textContent=geneEnabled&&gene?`Target gene filter active: ${gene}`:'';
+ const conservationDiagnostic=document.querySelector('#consdiagnostic');if(conservationDiagnostic)conservationDiagnostic.textContent=conservationFilterDiagnostic();
+ const conservationState=document.querySelector('#cons-state');if(conservationState)conservationState.textContent=F.conserved.size?`Conservation filter active: ${[...F.conserved].sort().join(', ')}${F.conservedSeed?'; one mismatch permitted only outside positions 2–8':'; up to one mismatch including the seed'}`:'';
  document.querySelector('#rows').innerHTML=pageRows.map(g=>`<tr><td><button data-guide="${esc(g.guide)}">${esc(g.guide)}</button></td><td class="${g.status}">${g.status}</td><td>${g.candidate_rows}</td><td>${g.design_score??'—'}</td><td>${g.composite_score??'—'}</td></tr>`).join('');
  document.querySelectorAll('[data-guide]').forEach(b=>b.addEventListener('click',()=>showGuide(b.dataset.guide)));
 }
-function restoreGeneState(){const toggle=document.querySelector('#geneenable'),select=document.querySelector('#targetgene');if(!toggle||!select)return;
- const params=new URLSearchParams((window.location?.hash||'').replace(/^#/,''));
- toggle.checked=params.get('gene-enabled')==='1';select.value=params.get('gene')||'';select.disabled=!toggle.checked;
- toggle.setAttribute('aria-expanded',toggle.checked?'true':'false');}
-function syncGeneState(){if(!window.location)return;const toggle=document.querySelector('#geneenable'),select=document.querySelector('#targetgene');if(!toggle||!select)return;
- const params=new URLSearchParams();if(toggle.checked){params.set('gene-enabled','1');if(select.value)params.set('gene',select.value);}
- window.location.hash=params.toString();}
+const F={conserved:new Set(),conservedSeed:true};
+const CONSERVATION_SPECIES=(M.conservation_evidence?.denominator_species?.length?M.conservation_evidence.denominator_species:Object.keys(M.conservation_evidence?.per_species||{})).filter((sp,i,all)=>all.indexOf(sp)===i);
+function conservationDiagnostic(g,sp){
+ const d=(JSON.parse(g.ortholog||'{}'))[sp];if(d)return {unavailable:false,label:`ortholog alignment recorded (${d.nm} mismatches; seed ${d.seed_mismatches??'unknown'})`};
+ const evidence=M.conservation_evidence||{},info=(evidence.per_species||{})[sp];
+ if(evidence.attempted===false)return {unavailable:true,label:'orthology mapping intentionally skipped'};
+ if(!info)return {unavailable:true,label:'orthology evidence not established'};
+ if(info.state==='unavailable')return {unavailable:true,label:({no_orthologue:'no orthologue found',unrecognized_identifier:'target identifier not recognized',mapping_not_supplied:'orthology mapping not supplied',unsupported_target_species:'target species is unsupported by the mapping source',unsupported_query_species:'query species is unsupported by the mapping source',budget_exhausted:'orthology lookup budget was exhausted',transport_error:'orthology service transport failed',error_response:'orthology service returned an error response',http_error:'orthology service returned an HTTP error',request_error:'orthology request failed',invalid_response:'orthology service returned an invalid response',orthologues_found:'orthologues were found, but no completed alignment was published'}[info.reason]||'orthology unavailable')};
+ if(!info.screening_complete||!g.off_target_screened)return {unavailable:true,label:'screening completion not established for this guide'};
+ return {unavailable:false,label:info.state==='resolved_empty'?'no ortholog mapping found':'no conserved site found in completed screen'};
+}
+function conservationFilterDiagnostic(){
+ if(!F.conserved.size||G.some(g=>[...F.conserved].every(sp=>{const d=(JSON.parse(g.ortholog||'{}'))[sp];return d&&d.nm!==null&&d.nm<=1&&(d.nm!==1||!F.conservedSeed||d.seed_mismatches===0); })))return '';
+ const unavailable=[...F.conserved].map(sp=>{const n=G.filter(g=>conservationDiagnostic(g,sp).unavailable).length;return n?`${sp}: evidence unavailable or not established for ${n} guides`:'';}).filter(Boolean);
+ return unavailable.length?'No guides match the selected conservation filters. '+unavailable.join('; ')+'. This does not establish biological absence.':'No guides match the selected conservation filters in the published evidence.';
+}
+function conservationCard(row){const evidence=M.conservation_evidence||{},ortholog=JSON.parse(row.ortholog||'{}');
+ const entries=CONSERVATION_SPECIES.map(sp=>{const d=ortholog[sp];if(d)return `<li><b>${esc(sp)}</b>: ${d.nm} mismatches; seed ${esc(d.seed_mismatches??'unknown')}; transcript ${esc(d.transcript_id||'unknown')}; gene ${esc(d.gene_symbol||'unknown')}</li>`;
+  return `<li><b>${esc(sp)}</b>: ${esc(conservationDiagnostic(row,sp).label)}</li>`;}).join('');
+ return `<h3>Cross-species conservation</h3><p>Source: ${esc(evidence.source||'not established')} · release ${esc(evidence.release||'unknown')}.</p><ul>${entries||'<li>No conservation species were recorded.</li>'}</ul>`;
+}
+function restoreFilterState(){const toggle=document.querySelector('#geneenable'),select=document.querySelector('#targetgene'),params=new URLSearchParams((window.location?.hash||'').replace(/^#/,''));
+ if(toggle&&select){toggle.checked=params.get('gene-enabled')==='1';select.value=params.get('gene')||'';select.disabled=!toggle.checked;toggle.setAttribute('aria-expanded',toggle.checked?'true':'false');}
+ const tokens=(params.get('c')||'').split(',').filter(Boolean);F.conserved=new Set(tokens.filter(sp=>CONSERVATION_SPECIES.includes(sp)));F.conservedSeed=!tokens.includes('seed-relaxed');
+ document.querySelectorAll('[data-conservation]').forEach(box=>{box.checked=F.conserved.has(box.value);});const seed=document.querySelector('#cons-seed');if(seed)seed.checked=F.conservedSeed;
+}
+function syncFilterState(){if(!window.location)return;const toggle=document.querySelector('#geneenable'),select=document.querySelector('#targetgene'),params=new URLSearchParams();
+ if(toggle?.checked){params.set('gene-enabled','1');if(select?.value)params.set('gene',select.value);}
+ const tokens=[...F.conserved].sort();if(!F.conservedSeed)tokens.push('seed-relaxed');if(tokens.length)params.set('c',tokens.join(','));window.location.hash=params.toString();}
 function loadShard(i){return new Promise((resolve,reject)=>{if(window.SF_DETAIL_SHARDS?.[i])return resolve();const s=document.createElement('script');s.src=`${SHARD_DIR}/guide-${String(i).padStart(5,'0')}.js`;s.onload=resolve;s.onerror=()=>reject(Error('Could not load local detail shard'));document.head.appendChild(s);});}
 function sourceAnchor(link,label){
  if(!link||!link.url)return esc(label);
@@ -970,15 +1063,17 @@ async function showGuide(guide){const row=G.find(g=>g.guide===guide);if(!row)ret
   return `<tr><td>${context}</td><td>${identity}<br>${esc(i.canonical_source||'authority unknown')} · release ${esc(i.canonical_release||'unknown')}<br>status: ${esc(i.canonical_status||'unknown')}</td><td>${i.candidate_rows}</td></tr>`;
  }).join('');
  const canonical=row.canonical_hit==='hit'?'hit':row.canonical_hit==='not_hit'?'not hit':'not established';
- panel.innerHTML=`<h2>${esc(guide)} · ${esc(row.status)}</h2>${gateEvidenceCopy(row)}${evidenceCopy(row)}<h3>Canonical transcript</h3><p>Guide is ${canonical} on the canonical transcript.</p><h3>Target transcript identity</h3>${isoforms?`<table><thead><tr><th>Gene · transcript</th><th>Canonical status and provenance</th><th>Candidate rows</th></tr></thead><tbody>${isoforms}</tbody></table>`:'<p>No transcript identity is established for this guide.</p>'}<p>${row.candidate_rows} candidate rows · ${d.hits.length} classified hit rows · ${d.mirna.length} miRNA rows</p><h3>Named miRNA matches</h3>${d.mirna.length?`<table><thead><tr><th>miRNA</th><th>Database</th><th>Coordinate</th><th>Seed mismatches</th></tr></thead><tbody>${renderMirnaRows(d.mirna)}</tbody></table>`:'<p>No named miRNA matches were recorded.</p>'}<h3>Candidate rows</h3><pre>${esc(JSON.stringify(d.candidates,null,2))}</pre><h3>Off-target rows</h3><pre>${esc(JSON.stringify(d.hits,null,2))}</pre><h3>miRNA rows</h3><pre>${esc(JSON.stringify(d.mirna,null,2))}</pre>`;}catch(e){panel.textContent=e.message;}}
+ panel.innerHTML=`<h2>${esc(guide)} · ${esc(row.status)}</h2>${gateEvidenceCopy(row)}${evidenceCopy(row)}<h3>Canonical transcript</h3><p>Guide is ${canonical} on the canonical transcript.</p><h3>Target transcript identity</h3>${isoforms?`<table><thead><tr><th>Gene · transcript</th><th>Canonical status and provenance</th><th>Candidate rows</th></tr></thead><tbody>${isoforms}</tbody></table>`:'<p>No transcript identity is established for this guide.</p>'}<p>${row.candidate_rows} candidate rows · ${d.hits.length} classified hit rows · ${d.mirna.length} miRNA rows</p><h3>Named miRNA matches</h3>${d.mirna.length?`<table><thead><tr><th>miRNA</th><th>Database</th><th>Coordinate</th><th>Seed mismatches</th></tr></thead><tbody>${renderMirnaRows(d.mirna)}</tbody></table>`:'<p>No named miRNA matches were recorded.</p>'}<h3>Candidate rows</h3><pre>${esc(JSON.stringify(d.candidates,null,2))}</pre><h3>Off-target rows</h3><pre>${esc(JSON.stringify(d.hits,null,2))}</pre><h3>miRNA rows</h3><pre>${esc(JSON.stringify(d.mirna,null,2))}</pre>`;panel.innerHTML=panel.innerHTML.replace('<h3>Named miRNA matches</h3>',conservationCard(row)+'<h3>Named miRNA matches</h3>');}catch(e){panel.textContent=e.message;}}
 document.querySelector('#counts').textContent='Gate results: '+Object.entries(STATUS_COUNTS).map(([k,v])=>`${k}: ${v}`).join(' · ')+` · total ${G.length} · ${M.summary.passes_without_unresolved_evidence} passes without unresolved evidence`;
 document.querySelector('#gatecounts').textContent=(M.summary.filters||[]).map(f=>`${f.filter_id}: ${f.rejects} reject, ${f.warns} warn, ${f.unknowns} unknown`).join(' · ');
 for(const f of M.summary.filters){const o=document.createElement('option');o.value=f.filter_id;o.textContent=f.filter_id;document.querySelector('#gate').appendChild(o);}
 document.querySelector('#previous').addEventListener('click',()=>{currentPage=Math.max(0,currentPage-1);renderRows()});document.querySelector('#next').addEventListener('click',()=>{currentPage++;renderRows()});
 document.querySelector('#unresolved-only').addEventListener('change',()=>{currentPage=0;renderRows()});
 document.querySelector('#search').addEventListener('input',()=>{currentPage=0;renderRows()});document.querySelector('#status').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate').addEventListener('change',()=>{currentPage=0;renderRows()});document.querySelector('#gate-result').addEventListener('change',()=>{currentPage=0;renderRows()});
-const geneToggle=document.querySelector('#geneenable'),geneSelect=document.querySelector('#targetgene');
-if(geneToggle&&geneSelect){restoreGeneState();geneToggle.addEventListener('change',()=>{geneSelect.disabled=!geneToggle.checked;geneToggle.setAttribute('aria-expanded',geneToggle.checked?'true':'false');syncGeneState();currentPage=0;renderRows();});
- geneSelect.addEventListener('change',()=>{syncGeneState();currentPage=0;renderRows();});if(window.addEventListener)window.addEventListener('hashchange',()=>{restoreGeneState();currentPage=0;renderRows();});}
+const geneToggle=document.querySelector('#geneenable'),geneSelect=document.querySelector('#targetgene');restoreFilterState();
+if(geneToggle&&geneSelect){geneToggle.addEventListener('change',()=>{geneSelect.disabled=!geneToggle.checked;geneToggle.setAttribute('aria-expanded',geneToggle.checked?'true':'false');syncFilterState();currentPage=0;renderRows();});geneSelect.addEventListener('change',()=>{syncFilterState();currentPage=0;renderRows();});}
+document.querySelectorAll('[data-conservation]').forEach(box=>box.addEventListener('change',()=>{box.checked?F.conserved.add(box.value):F.conserved.delete(box.value);syncFilterState();currentPage=0;renderRows();}));
+const conservationSeed=document.querySelector('#cons-seed');if(conservationSeed)conservationSeed.addEventListener('change',()=>{F.conservedSeed=conservationSeed.checked;syncFilterState();currentPage=0;renderRows();});
+if(window.addEventListener)window.addEventListener('hashchange',()=>{restoreFilterState();currentPage=0;renderRows();});
 renderRows();
 </script></body></html>"""

@@ -142,7 +142,7 @@ global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElem
         + "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(6);"
         + "if(!window.location.hash.includes('gene=id%3AENSG1199'))process.exit(7);"
         + "if(elements['#gene-state'].textContent!=='Target gene filter active: id:ENSG1199')process.exit(8);"
-        + "elements['#geneenable'].checked=false;elements['#targetgene'].value='';restoreGeneState();renderRows();"
+        + "elements['#geneenable'].checked=false;elements['#targetgene'].value='';restoreFilterState();renderRows();"
         + "if(!elements['#geneenable'].checked||elements['#targetgene'].value!=='id:ENSG1199'||elements['#targetgene'].disabled)process.exit(9);"
         + "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(10);"
         + f"showGuide({json.dumps(guides[-1])}).then(()=>{{"
@@ -193,6 +193,107 @@ def test_data_backed_gene_filter_stays_hidden_for_single_gene_with_many_isoforms
     assert summary["gene_filter_available"] is False
     assert summary["target_gene_options"] == [{"key": "id:ENSG1", "label": "TP53 · ENSG1"}]
     assert 'id="geneenable"' not in output.read_text()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["paged_single_file", "data_backed"])
+def test_staged_conservation_filters_distinguish_matches_and_unavailable_evidence(tmp_path: Path, mode: str) -> None:
+    """Staged UI filters recorded ortholog evidence and explains unavailable zero-match cases."""
+    guides = [_base4(index) for index in range(4)]
+    run = _write_run(
+        tmp_path,
+        [_candidate_row(f"c{index}", guide, f"ENST{index}", index + 1) for index, guide in enumerate(guides)],
+        [
+            _hit_row(guides[0], "mouse", "ENSMUST1", 1, "ortholog", "GeneA"),
+            _hit_row(guides[1], "mouse", "ENSMUST2", 1, "ortholog", "GeneB"),
+        ],
+    )
+    candidate_path = run / "sirnaforge/candidates_all.csv"
+    candidate_lines = candidate_path.read_text().splitlines()
+    candidate_path.write_text(
+        candidate_lines[0]
+        + ",off_target_screened\n"
+        + "\n".join(line + "," + ("False" if index == 2 else "True") for index, line in enumerate(candidate_lines[1:]))
+        + "\n"
+    )
+    hit_path = run / "off_target/results/aggregated/combined_offtargets.tsv"
+    hit_lines = hit_path.read_text().splitlines()
+    hit_path.write_text(hit_lines[0] + "\n" + hit_lines[1] + "\n" + hit_lines[2].replace("\t0\t", "\t1\t", 1) + "\n")
+    manifest_path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["provenance"] = {
+        "databases": {
+            "orthology": {
+                "source": "Ensembl Compara",
+                "attempted": True,
+                "compara_release": {"value": "110"},
+                "conservation_scope": {
+                    "denominator_species": ["mouse"],
+                    "unscreened_in_denominator": {"value": []},
+                },
+                "per_species": [{"species": "mouse", "status": "resolved", "gene_ids": ["ENSG1"]}],
+            }
+        }
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    output = tmp_path / f"conservation-{mode}.html"
+    write_report_from_run(run, output, mode=mode)
+
+    artifact_root = output.with_suffix(".data")
+    staged = json.loads((artifact_root / "report_manifest.json").read_text())
+    assert staged["conservation_evidence"]["per_species"]["mouse"]["screening_complete"] is True
+    guide_rows = pq.read_table(artifact_root / "guides.parquet").to_pylist()
+    by_guide = {row["guide"]: row for row in guide_rows}
+    assert json.loads(by_guide[guides[0]]["ortholog"])["mouse"] == {
+        "nm": 1,
+        "seed_mismatches": 0,
+        "transcript_id": "ENSMUST1",
+        "gene_symbol": "GeneA",
+    }
+    assert json.loads(by_guide[guides[1]]["ortholog"])["mouse"] == {
+        "nm": 1,
+        "seed_mismatches": 1,
+        "transcript_id": "ENSMUST2",
+        "gene_symbol": "GeneB",
+    }
+    assert by_guide[guides[2]]["off_target_screened"] is False
+    assert by_guide[guides[3]]["off_target_screened"] is True
+    html = output.read_text()
+    assert '<fieldset id="conservation-filters"' in html
+    assert 'role="status" aria-live="polite"' in html
+    scripts = re.findall(r"<script>(.*?)</script>", html, flags=re.DOTALL)
+    bootstrap = r"""
+const vm=require('vm');global.window={location:{hash:'#c=mouse'},addEventListener(){}};
+const elements={};function el(){return {value:'',selectedIndex:0,checked:false,textContent:'',innerHTML:'',disabled:false,handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){},setAttribute(k,v){this[k]=v;}}}
+for(const id of ['#counts','#gatecounts','#unresolved-only','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#consdiagnostic','#cons-state','#cons-seed','#details'])elements[id]=el();
+const mouse=el();mouse.value='mouse';global.document={querySelector:s=>elements[s],querySelectorAll:s=>s==='[data-conservation]'?[mouse]:[],createElement:()=>el(),head:{appendChild(){}}};
+"""
+    code = bootstrap + "\n".join(scripts)
+    code += "if(!mouse.checked||elements['#cons-seed'].checked!==true)process.exit(2);"
+    code += "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(3);"
+    code += "mouse.checked=false;mouse.handlers.change();if(window.location.hash.includes('c='))process.exit(4);"
+    code += "mouse.checked=true;mouse.handlers.change();elements['#cons-seed'].checked=false;elements['#cons-seed'].handlers.change();"
+    code += "if(elements['#visible-count'].textContent!=='2 guides match current filters')process.exit(5);"
+    code += "G[0].ortholog='{}';elements['#cons-seed'].checked=true;elements['#cons-seed'].handlers.change();"
+    code += "if(elements['#visible-count'].textContent!=='0 guides match current filters')process.exit(6);"
+    code += (
+        "if(!elements['#consdiagnostic'].textContent.includes('does not establish biological absence'))process.exit(7);"
+    )
+    code += (
+        "if(conservationDiagnostic(G[3],'mouse').label!=='no conserved site found in completed screen')process.exit(9);"
+    )
+    code += (
+        f"G[0].ortholog={json.dumps(json.dumps({'mouse': {'nm': 1, 'seed_mismatches': 0, 'transcript_id': 'ENSMUST1', 'gene_symbol': 'GeneA'}}))};"
+        f"window.SF_DETAIL_SHARDS={{0:{{{json.dumps(guides[0])}:{{candidates:[],hits:[],mirna:[],isoforms:[]}}}}}};"
+        f"showGuide({json.dumps(guides[0])}).then(()=>{{const detail=elements['#details'].innerHTML;"
+        "for(const value of ['Cross-species conservation','Ensembl Compara','ENSMUST1','GeneA'])"
+        "if(!detail.includes(value))process.exit(8);});"
+    )
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the staged conservation UI test")
+    result = subprocess.run([node, "-e", code], check=False, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit
