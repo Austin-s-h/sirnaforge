@@ -125,10 +125,12 @@ class LocalTranscriptModelClient(AbstractTranscriptAnnotationClient):
         self.species = normalize_species_name(species)
         self.assembly = assembly
         self.base_url = self.path.as_uri()
+        self.annotation_version: str | None = None
         self._validate_source_header()
 
     def _validate_source_header(self) -> None:
         declared_builds = set()
+        declared_versions = set()
         with open_annotation(self.path) as handle:
             for line in handle:
                 if not line.startswith("#"):
@@ -136,8 +138,15 @@ class LocalTranscriptModelClient(AbstractTranscriptAnnotationClient):
                 declared = re.match(r"#!genome-build(?:-accession)?\s+(.+)", line.strip())
                 if declared:
                     declared_builds.add(declared[1].removeprefix("NCBI_Assembly:"))
+                version = re.match(r"#!annotation-version\s+(.+)", line.strip())
+                if version:
+                    declared_versions.add(version[1].strip())
         if declared_builds and self.assembly not in declared_builds:
             raise ValueError(f"File declares assembly {sorted(declared_builds)}, configured {self.assembly}")
+        if len(declared_versions) > 1:
+            raise ValueError(f"File declares conflicting annotation versions {sorted(declared_versions)}")
+        if declared_versions:
+            self.annotation_version = declared_versions.pop()
 
     def source_metadata(self) -> dict[str, str]:
         """Return the exact local source identity for workflow provenance."""
@@ -145,13 +154,16 @@ class LocalTranscriptModelClient(AbstractTranscriptAnnotationClient):
         with self.path.open("rb") as handle:
             while block := handle.read(1024 * 1024):
                 digest.update(block)
-        return {
+        metadata = {
             "provider": self.provider,
             "endpoint": self.base_url,
             "assembly": self.assembly,
             "species": self.species,
             "sha256": digest.hexdigest(),
         }
+        if self.annotation_version:
+            metadata["annotation_version"] = self.annotation_version
+        return metadata
 
     def _validate_reference(self, species: str, reference: ReferenceChoice) -> None:
         if normalize_species_name(species) != self.species:

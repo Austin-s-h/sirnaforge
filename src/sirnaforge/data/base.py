@@ -1022,26 +1022,35 @@ class GencodeClient(AbstractDatabaseClient):
         include_sequence: bool = True,
     ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Find a human gene, symbol, or transcript in a local GENCODE release."""
+        return await asyncio.to_thread(self._search_gene, query, include_sequence)
+
+    def _search_gene(self, query: str, include_sequence: bool) -> tuple[GeneInfo, list[TranscriptInfo]]:
+        """Resolve annotation and sequences in one worker to avoid repeated file/thread passes."""
         from sirnaforge.config.reference_policy import ReferenceChoice  # noqa: PLC0415 - lazy data models
 
         client = self.annotation_client()
-        bundle = await client.fetch_by_ids(
-            [query], species="human", reference=ReferenceChoice.explicit(client.assembly)
-        )
+        reference = ReferenceChoice.explicit(client.assembly)
+        client._validate_reference("human", reference)
+        bundle = client._bundle([query], [], reference)
         if not bundle.transcripts:
             raise GeneNotFoundError(query, "GENCODE")
         models = list(bundle.transcripts.values())
         if len({model.gene_id for model in models}) != 1:
             raise DatabaseAccessError(f"Ambiguous GENCODE gene query: {query}; use a versioned gene ID", "GENCODE")
-        sequences = await asyncio.to_thread(self._read_sequences, set(bundle.transcripts)) if include_sequence else {}
+        sequences = self._read_sequences(set(bundle.transcripts)) if include_sequence else {}
         transcripts = [
             TranscriptInfo(
                 transcript_id=model.transcript_id,
                 transcript_name=model.transcript_name,
                 is_canonical=model.is_canonical,
-                canonical_source="GENCODE explicit canonical/MANE tags"
-                if any(m.is_canonical for m in models)
-                else None,
+                canonical_source=(
+                    f"GENCODE explicit canonical/MANE tags (annotation {client.annotation_version})"
+                    if model.is_canonical and client.annotation_version
+                    else "GENCODE explicit canonical/MANE tags"
+                    if model.is_canonical
+                    else None
+                ),
+                canonical_release=client.annotation_version if model.is_canonical else None,
                 gene_id=model.gene_id,
                 gene_name=model.symbol,
                 transcript_type=model.biotype,
