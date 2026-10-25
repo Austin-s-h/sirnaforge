@@ -11,7 +11,9 @@ from __future__ import annotations
 import csv
 import json
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -302,6 +304,80 @@ def test_zfn_workflow_cli_smoke(tmp_path: Path) -> None:
     assert summary["left_half_site"] == CCR5_LEFT_HALF_SITE
     assert summary["right_half_site"] == CCR5_RIGHT_HALF_SITE
     assert summary["total_workflow_time_s"] >= 0
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+def test_zfn_public_nextflow_route_matches_direct_search(tmp_path: Path) -> None:
+    """The opt-in public route executes in real Nextflow with the direct route's full contract."""
+    genome_fasta = _build_ccr5_synthetic_genome(tmp_path)
+    direct_dir = tmp_path / "zfn_direct"
+    nextflow_dir = tmp_path / "zfn_nextflow"
+    base_command = [
+        "sirnaforge",
+        "workflow",
+        "CCR5_ZFN_ROUTE",
+        "--design-mode",
+        "zfn",
+        "--zfn-left-half-site",
+        CCR5_LEFT_HALF_SITE,
+        "--zfn-right-half-site",
+        CCR5_RIGHT_HALF_SITE,
+        "--zfn-search-space",
+        str(genome_fasta),
+        "--zfn-search-backend",
+        "exhaustive_python",
+        "--zfn-spacer-lengths",
+        "5,6",
+        "--zfn-max-mismatches",
+        "4",
+        "--zfn-algorithm",
+        "homology",
+    ]
+    test_env = os.environ.copy()
+    if shutil.which("sirnaforge", path=test_env.get("PATH")) is None:
+        test_env["PATH"] = f"{test_env.get('PATH', '')}{os.pathsep}{Path(sys.executable).parent}"
+
+    direct = subprocess.run(
+        [*base_command, "--output-dir", str(direct_dir)],
+        capture_output=True,
+        text=True,
+        env=test_env,
+        timeout=180,
+        check=False,
+    )
+    assert direct.returncode == 0, f"direct ZFN run failed:\n{direct.stdout[-2000:]}\n{direct.stderr[-2000:]}"
+
+    nextflow_env = test_env.copy()
+    nextflow_env["SIRNAFORGE_ZFN_USE_NEXTFLOW"] = "1"
+    nextflow_env["SIRNAFORGE_USE_LOCAL_EXECUTION"] = "true"
+    nextflow = subprocess.run(
+        [*base_command, "--output-dir", str(nextflow_dir)],
+        capture_output=True,
+        text=True,
+        env=nextflow_env,
+        timeout=300,
+        check=False,
+    )
+    assert nextflow.returncode == 0, f"Nextflow ZFN run failed:\n{nextflow.stdout[-3000:]}\n{nextflow.stderr[-3000:]}"
+
+    direct_csv = direct_dir / "sirnaforge" / "offtarget_sites.csv"
+    nextflow_csv = nextflow_dir / "sirnaforge" / "offtarget_sites.csv"
+    with direct_csv.open(newline="", encoding="utf-8") as handle:
+        direct_rows = list(csv.DictReader(handle))
+    with nextflow_csv.open(newline="", encoding="utf-8") as handle:
+        nextflow_rows = list(csv.DictReader(handle))
+    assert nextflow_rows == direct_rows
+
+    direct_candidate = json.loads((direct_dir / "sirnaforge" / "candidate_summary.json").read_text())["candidates"][0]
+    nextflow_candidate = json.loads((nextflow_dir / "sirnaforge" / "candidate_summary.json").read_text())["candidates"][
+        0
+    ]
+    assert nextflow_candidate == direct_candidate
+    assert (nextflow_dir / "off_target" / "zfn_nextflow" / "zfn_offtarget" / "offtarget_sites.csv").is_file()
+    assert (nextflow_dir / "logs" / "zfn_nextflow_contract.json").is_file()
+    assert not (nextflow_dir / "off_target" / ".zfn_nextflow_input.fa").exists()
 
 
 # ---------------------------------------------------------------------------

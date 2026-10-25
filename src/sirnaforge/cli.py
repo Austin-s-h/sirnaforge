@@ -83,6 +83,7 @@ from sirnaforge.models.sirna import (
 from sirnaforge.models.transcript_seed import TranscriptSequenceScope
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.models.zfn import (
+    ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
     DimerMode,
     GenomicAnnotationConfig,
     ZFNAlgorithm,
@@ -114,6 +115,7 @@ from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import describe_shortfall_reasons, run_offtarget_only_workflow, run_sirna_workflow
 from sirnaforge.zfn import emit_zfn_experimental_warning
+from sirnaforge.zfn.design import ZFNDesigner
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
     make_zfn_shard_manifest,
@@ -3529,6 +3531,53 @@ def internal_zfn_search_shard(
         annotation_file=annotation_file,
         output_sites_csv=output_sites_csv,
         output_summary_json=output_summary_json,
+    )
+
+
+@internal_command("zfn-search-full")
+def internal_zfn_search_full(
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    design_params_json: Path = typer.Option(..., "--design-params-json", exists=True, file_okay=True, dir_okay=False),
+    annotation_config_json: Path | None = typer.Option(None, "--annotation-config-json"),
+    search_space_index: Path | None = typer.Option(None, "--search-space-index"),
+    annotation_file: Path | None = typer.Option(None, "--annotation-file"),
+    output_sites_csv: Path = typer.Option(Path("offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("candidate_summary.json"), "--output-summary-json"),
+) -> None:
+    """Run one full-reference ZFN search for the public Nextflow workflow route."""
+    params = ZFNDesignParameters.model_validate_json(design_params_json.read_text(encoding="utf-8"))
+    updates: dict[str, Any] = {
+        "search_space_fasta": str(genome_fasta),
+        "search_space_reference": None,
+        "search_space_index": str(search_space_index) if search_space_index else None,
+    }
+    params = params.model_copy(update=updates, deep=True)
+    annotation = (
+        GenomicAnnotationConfig.model_validate_json(annotation_config_json.read_text(encoding="utf-8"))
+        if annotation_config_json is not None and annotation_config_json.name != "NO_ANNOTATION_CONFIG"
+        else None
+    )
+    if annotation is not None and annotation_file is not None and annotation_file.name != "NO_ANNOTATION":
+        annotation = annotation.model_copy(update={"annotation_path": str(annotation_file)}, deep=True)
+    result = ZFNDesigner().evaluate_pair(params, annotation)
+    output_sites_csv.parent.mkdir(parents=True, exist_ok=True)
+    result.save_offtargets_csv(str(output_sites_csv))
+    candidate_payloads = [candidate.model_dump(mode="json") for candidate in result.candidates]
+    for candidate, payload in zip(result.candidates, candidate_payloads, strict=True):
+        payload["on_target_result"] = candidate.component_scores.get("on_target_quality")
+    output_summary_json.parent.mkdir(parents=True, exist_ok=True)
+    output_summary_json.write_text(
+        json.dumps(
+            {
+                "schema_version": ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
+                "search_contract": params.canonical_search_contract().model_dump(mode="json"),
+                "candidates": candidate_payloads,
+                "summary": result.get_summary(),
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
     )
 
 

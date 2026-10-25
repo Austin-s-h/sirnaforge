@@ -190,6 +190,7 @@ from sirnaforge.models.zfn import (
     GenomicAnnotationConfig,
     ZFNDesignParameters,
     ZFNDesignResult,
+    ZFNOffTargetSite,
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
@@ -233,6 +234,8 @@ from sirnaforge.workflow_variant import (
 )
 from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.design import ZFNDesigner
+from sirnaforge.zfn.nextflow_bridge import _site_from_row
+from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -1134,10 +1137,13 @@ class SiRNAWorkflow:
 
             # Step 1: Evaluate pair (design + exhaustive off-target search)
             progress.update(main_task, description="[cyan]Running ZFN pair evaluation & off-target search...")
-            zfn_result: ZFNDesignResult = self.zfn_designer.evaluate_pair(
-                params=zfn_params,
-                annotation=annotation,
-            )
+            if self.config.nextflow_config.get("design_mode") == "zfn":
+                zfn_result = await self._run_zfn_nextflow_search(zfn_params, annotation, start_time)
+            else:
+                zfn_result = self.zfn_designer.evaluate_pair(
+                    params=zfn_params,
+                    annotation=annotation,
+                )
             progress.advance(main_task)
 
             # Step 2: Generate reports
@@ -1221,6 +1227,96 @@ class SiRNAWorkflow:
         console.print(f"\n✅ [bold green]ZFN workflow completed in {total_time:.1f}s[/bold green]")
 
         return summary
+
+    async def _run_zfn_nextflow_search(
+        self,
+        params: ZFNDesignParameters,
+        annotation: GenomicAnnotationConfig | None,
+        start_time: float,
+    ) -> ZFNDesignResult:
+        """Run the ZFN search through the embedded Nextflow route with the direct contract intact."""
+        searcher = ExhaustiveZFNOffTargetSearcher()
+        genome_fasta = searcher._resolve_search_space_fasta(params)
+        annotation_path = searcher._resolve_annotation_path(annotation) if annotation is not None else None
+        if annotation_path is not None and annotation is not None:
+            annotation.annotation_path = str(annotation_path)
+
+        # Freeze all search/ranking parameters for task processes and aggregation. Paths whose
+        # Nextflow staging location is executor-specific are supplied separately as path inputs.
+        contract = params.model_copy(
+            update={
+                "search_space_fasta": str(genome_fasta),
+                "search_space_reference": None,
+                "search_space_index": None,
+            },
+            deep=True,
+        )
+        contract_path = self.config.output_dir / "logs" / "zfn_nextflow_contract.json"
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(contract.model_dump_json(indent=2), encoding="utf-8")
+        annotation_config_path: Path | None = None
+        if annotation is not None:
+            annotation_config_path = self.config.output_dir / "logs" / "zfn_annotation_config.json"
+            annotation_config_path.write_text(annotation.model_dump_json(indent=2), encoding="utf-8")
+
+        dummy_input = self.config.output_dir / "off_target" / ".zfn_nextflow_input.fa"
+        dummy_input.parent.mkdir(parents=True, exist_ok=True)
+        dummy_input.write_text(">zfn_pipeline_placeholder\nACGT\n", encoding="utf-8")
+        nf_output_dir = self.config.output_dir / "off_target" / "zfn_nextflow"
+
+        sharding = params.sharding
+        run_params: dict[str, Any] = {
+            **self.config.nextflow_config,
+            "design_mode": "zfn",
+            "zfn_left_half_site": params.left_half_site,
+            "zfn_right_half_site": params.right_half_site,
+            "zfn_genome_fasta": str(genome_fasta),
+            "zfn_params_json": str(contract_path),
+            "zfn_algorithm": params.algorithm.value,
+            "zfn_dimer_mode": params.dimer_mode.value,
+            "zfn_spacer_lengths": ",".join(str(value) for value in params.spacer_constraints.allowed_spacer_lengths),
+            "zfn_max_mismatches": params.half_site_constraints.max_mismatches,
+            "zfn_sharding_enabled": sharding.enabled,
+            "zfn_shard_chunk_mb": max(1, sharding.chunk_size_bp // 1_000_000),
+            "zfn_shard_overlap_bp": sharding.overlap_bp,
+            "zfn_shard_chromosomes": ",".join(sharding.chromosomes),
+        }
+        if annotation_path is not None:
+            run_params["zfn_annotation"] = str(annotation_path)
+        if annotation_config_path is not None:
+            run_params["zfn_annotation_config_json"] = str(annotation_config_path)
+        if params.search_space_index:
+            run_params["zfn_search_space_index"] = params.search_space_index
+        runner, _ = self._setup_nextflow_runner([], run_params)
+        try:
+            if not self._validate_nextflow_environment(runner):
+                raise RuntimeError("SIRNAFORGE_ZFN_USE_NEXTFLOW=1 requires an installed Nextflow runtime")
+            result = await runner.run_offtarget_analysis(
+                input_file=dummy_input,
+                output_dir=nf_output_dir,
+                screen_species=[],
+                additional_params=run_params,
+                show_progress=False,
+            )
+        finally:
+            dummy_input.unlink(missing_ok=True)
+
+        sites_csv = nf_output_dir / "zfn_offtarget" / "offtarget_sites.csv"
+        if result.get("status") != "completed" or not sites_csv.is_file():
+            raise RuntimeError(f"Nextflow ZFN search completed without aggregated sites: {result}")
+        with sites_csv.open("r", encoding="utf-8", newline="") as handle:
+            sites: list[ZFNOffTargetSite] = [_site_from_row(row) for row in csv.DictReader(handle)]
+        if self.zfn_designer is None:
+            raise RuntimeError("ZFN designer not initialized for design_mode=zfn")
+        candidate = self.zfn_designer.build_candidate(params, sites)
+        return ZFNDesignResult(
+            parameters=params,
+            annotation=annotation,
+            candidates=[candidate],
+            off_target_sites=sites,
+            processing_time_s=max(0.0, time.perf_counter() - start_time),
+            tool_versions=self.zfn_designer.tool_versions(),
+        )
 
     # ──────────────────────────────────────────────────────
     #  Design stages 1-3: transcripts, ORFs, candidate enumeration

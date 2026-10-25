@@ -104,8 +104,10 @@ Expected artifacts:
 
 Advanced runtime controls:
 
-- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` is currently **inert**: the ZFN workflow always runs in-process, so
-  this flag does not switch execution to the Nextflow-backed search path (tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)).
+- `SIRNAFORGE_ZFN_USE_NEXTFLOW=1` opts the public ZFN workflow into the embedded Nextflow route.
+  The route runs the same typed, full-reference search in one process, preserving the direct path's
+  backend, mismatch, seed and ranking settings without loading the whole genome once per shard.
+  The direct Python route remains the default.
 - `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "chunk_size_mb": 3, "overlap_bp": 40000}'` for custom shard/window behavior on large references.
 
 (variant-targeting-documented-runs)=

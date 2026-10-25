@@ -19,6 +19,16 @@ nextflow.enable.dsl = 2
 include { SIRNA_OFFTARGET_ANALYSIS } from './subworkflows/local/sirna_offtarget_analysis'
 include { ZFN_OFFTARGET_ANALYSIS   } from './subworkflows/local/zfn_offtarget_analysis'
 
+def zfnOptionalPath(value, sentinelName) {
+    if (value) return file(value, checkIfExists: true)
+    def sentinelDir = java.nio.file.Files.createTempDirectory('sirnaforge_zfn_optional_').toFile()
+    def sentinel = new File(sentinelDir, sentinelName)
+    sentinel.text = ''
+    sentinel.deleteOnExit()
+    sentinelDir.deleteOnExit()
+    return file(sentinel.absolutePath, checkIfExists: true)
+}
+
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     NAMED WORKFLOW FOR PIPELINE
@@ -153,24 +163,24 @@ workflow SIRNAFORGE_OFFTARGET {
     //
     if (params.design_mode == 'zfn') {
         //
-        // ZFN mode: exhaustive paired half-site search (not BWA-MEM2)
+        // ZFN mode: one full-reference process preserves the same backend, search contract and
+        // memory behavior as the direct route. Shard-level helpers remain available for internal
+        // diagnostics, but this public path does not replicate a whole-genome load per shard.
         //
-        def zfn_genome = params.zfn_genome_fasta ? file(params.zfn_genome_fasta, checkIfExists: true) : file('NO_GENOME')
-        def zfn_annot  = params.zfn_annotation   ? file(params.zfn_annotation, checkIfExists: true) : file('NO_ANNOTATION')
+        if (!params.zfn_genome_fasta) error 'ZFN mode requires --zfn_genome_fasta'
+        if (!params.zfn_params_json) error 'ZFN mode requires --zfn_params_json (use the public sirnaforge workflow command)'
+        def zfn_genome = file(params.zfn_genome_fasta, checkIfExists: true)
+        def zfn_contract = file(params.zfn_params_json, checkIfExists: true)
+        def zfn_annot = zfnOptionalPath(params.zfn_annotation, 'NO_ANNOTATION')
+        def zfn_annotation_config = zfnOptionalPath(params.zfn_annotation_config_json, 'NO_ANNOTATION_CONFIG')
+        def zfn_index = zfnOptionalPath(params.zfn_search_space_index, 'NO_SEARCH_INDEX')
 
         ZFN_OFFTARGET_ANALYSIS(
-            params.zfn_left_half_site,
-            params.zfn_right_half_site,
             zfn_genome,
-            params.zfn_algorithm,
-            params.zfn_dimer_mode,
-            params.zfn_spacer_lengths,
-            params.zfn_max_mismatches,
+            zfn_contract,
             zfn_annot,
-            params.zfn_sharding_enabled,
-            params.zfn_shard_chunk_mb,
-            params.zfn_shard_overlap_bp,
-            params.zfn_shard_chromosomes
+            zfn_annotation_config,
+            zfn_index
         )
     } else {
         //

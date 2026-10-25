@@ -58,8 +58,8 @@ ZFN_EXPERIMENTAL_WARNING = (
     "  * pyahocorasick now supports canonical 12 bp / 4-mismatch searches. Highly "
     "degenerate inputs can still exceed the pattern safety limit and raise ValueError; "
     "exhaustive_python remains the comparison baseline.\n"
-    "  * The public workflow still uses the in-process engine. Nextflow integration and "
-    "representative genomic validation remain incomplete."
+    "  * The public workflow supports an opt-in Nextflow route; independent representative "
+    "genomic validation remains incomplete."
 )
 
 _notice_emitted = False

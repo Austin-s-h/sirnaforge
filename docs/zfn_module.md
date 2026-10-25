@@ -14,8 +14,8 @@
 >
 > This development revision fixes right-half-site seed/polarity, nested-interval annotation,
 > canonical mismatch-pattern expansion, empty CSV output, live FM-index cache identity,
-> boundary ownership and bridge CSV evidence loss. The public Nextflow route is still
-> unreachable and independent genomic/experimental validation remains outstanding.
+> boundary ownership and bridge CSV evidence loss. The public Nextflow route is available as an
+> opt-in full-reference task; independent genomic/experimental validation remains outstanding.
 >
 > **Artifact migration:** new `worst_site_score` is the maximum concerning off-target
 > score (highest risk); `best_offtarget_score` is the minimum (lowest risk). Older v1
