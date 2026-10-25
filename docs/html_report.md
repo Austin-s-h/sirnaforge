@@ -164,7 +164,7 @@ The reproducible historical-scale stress harness is
 `scripts/performance/measure_report_data_backed_scale.py`. It streams 29,605 candidate rows,
 254,487 synthetic off-target rows and 118,559 synthetic miRNA rows from 3,395 distinct native
 OligoGym guide sequences, then removes the generated run and report. On the recorded WSL2/Python
-3.11.13 environment, it completed in 18.4 seconds at 533 MB process-lifetime peak RSS, with a
+3.11.13 environment, it completed in 18.7 seconds at 529 MB process-lifetime peak RSS, with a
 61.5 KB HTML entrypoint and 165 MB of detail sidecars. Its explicit budgets are a report HTML below
 10 MB and process-lifetime peak RSS below 1 GB. The compact measurement record is
 `scripts/performance/measurements/report-data-backed-large.json`; the synthetic hit rows are resource
