@@ -1431,8 +1431,16 @@ class SiRNAWorkflow:
         if resolved is None:
             return
         observations: dict[str, dict[str, Any]] = {}
+        denominator = resolved.intent.coverage_denominator
         for candidate in candidates:
             evaluation = evaluate_target_intent_guide(candidate.guide_sequence, resolved)
+            coverage_numerator = evaluation.covered_transcript_ids & denominator
+            missing_denominator_sequences = evaluation.missing_sequence_transcript_ids & denominator
+            candidate.isoform_coverage = (
+                isoform_coverage_sub_score(len(coverage_numerator), len(denominator))
+                if not missing_denominator_sequences
+                else None
+            )
             candidate.filter_verdicts["target_intent"] = evaluation.verdict.value
             if evaluation.verdict is TargetIntentVerdict.FAIL:
                 if candidate.passes_filters is True:
@@ -1443,6 +1451,9 @@ class SiRNAWorkflow:
             observations[candidate.id] = {
                 "verdict": evaluation.verdict.value,
                 "covered_transcript_ids": sorted(evaluation.covered_transcript_ids),
+                "coverage_numerator_ids": sorted(coverage_numerator),
+                "coverage_denominator_ids": sorted(denominator),
+                "isoform_coverage": candidate.isoform_coverage,
                 "uncovered_required_transcript_ids": sorted(evaluation.uncovered_required_transcript_ids),
                 "excluded_hit_transcript_ids": sorted(evaluation.excluded_hit_transcript_ids),
                 "missing_sequence_transcript_ids": sorted(evaluation.missing_sequence_transcript_ids),
@@ -6379,7 +6390,11 @@ class SiRNAWorkflow:
             # candidate happened to be enumerated from. Absent for design_from_sequence/miRNA
             # paths, in which case the term stays inactive rather than computing a wrong number.
             guide_transcripts = self._guide_to_transcripts.get(normalize_guide_sequence(candidate.guide_sequence))
-            if guide_transcripts is not None:
+            if self._resolved_target_intent is not None:
+                # Target intent has already measured against its frozen annotation denominator;
+                # recomputing from the enumerated guide map would silently shrink coverage.
+                pass
+            elif guide_transcripts is not None:
                 isoform_cov = isoform_coverage_sub_score(
                     len(self._protein_coding_transcript_ids & guide_transcripts),
                     self._protein_coding_transcript_count,

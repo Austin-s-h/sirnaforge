@@ -98,6 +98,13 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
     target_candidates = candidates[candidates["guide_sequence"] == guide]
     assert not target_candidates.empty
     assert set(candidates["id"]) == set(observations)
+    coverage = target_candidates["isoform_coverage"].dropna().unique().tolist()
+    assert coverage == ([1.0] if expected_selective_pass else [0.5])
     target_verdicts = [observations[candidate_id]["verdict"] for candidate_id in target_candidates["id"]]
     assert ("pass" in target_verdicts) is expected_selective_pass
     assert ("fail" in target_verdicts) is not expected_selective_pass
+    assert all(
+        observations[candidate_id]["coverage_numerator_ids"] == ["ENST00000000001"]
+        and observations[candidate_id]["coverage_denominator_ids"] == expected_denominator
+        for candidate_id in target_candidates["id"]
+    )
