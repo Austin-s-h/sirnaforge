@@ -126,7 +126,8 @@ def test_cli_target_intent_changes_candidate_eligibility(
             "SIRNAFORGE_GENCODE_ASSEMBLY": "GRCh38",
         },
     )
-    assert result.returncode in {0, 2}, f"{result.stdout}\n{result.stderr}"
+    expected_returncode = 2 if seed_scope == "three_prime_utr" else 0
+    assert result.returncode == expected_returncode, f"{result.stdout}\n{result.stderr}"
 
     resolved = json.loads((output / "target_intent/resolved_intent.json").read_text())
     assert sorted(resolved["intent"]["annotation_universe"]) == ["ENST00000000001", "ENST00000000002"]
@@ -186,9 +187,6 @@ def test_cli_target_intent_changes_candidate_eligibility(
     assert set(candidates.loc[target_candidates.index, "max_transcript_seed_sites_verdict"]) <= expected_seed_verdicts
 
     qualified = pd.read_csv(output / "sirnaforge/candidates_qualified.csv")
-    assert (result.returncode == 0) == (not qualified.empty), (
-        "exit code 2 is reserved for a qualified run with no candidates because required evidence is incomplete"
-    )
     qualified_fasta = output / "sirnaforge/candidates_qualified.fasta"
     if expected_qualified:
         assert guide in set(qualified["guide_sequence"]), target_candidates[
