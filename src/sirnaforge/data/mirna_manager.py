@@ -13,6 +13,8 @@ import logging
 import math
 import os
 import re
+import subprocess  # nosec B404
+import sys
 import tempfile
 import time
 from collections.abc import Sequence
@@ -457,7 +459,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             cache_dir: Directory for caching databases (default: ~/.cache/sirnaforge/mirna)
             cache_ttl_days: Cache time-to-live in days
             pinned_references: Explicit mature FASTA pins keyed by source and species.
-            download_timeout: Socket timeout per live request, from 1 to 300 seconds.
+            download_timeout: Total deadline per live attempt, including transfer/decode, from 1 to 300 seconds.
             download_attempts: Maximum acquisition attempts, from 1 to 3.
             retry_backoff_seconds: Base exponential backoff, from 0 to 5 seconds.
         """
@@ -635,6 +637,39 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
         logger.info(f"Filtered to {filtered_count} {species} sequences")
         return output_handle.getvalue().strip()
 
+    def _download_file(self, source: ReferenceSource, timeout: int = 30) -> str | None:
+        """Bound DNS, redirects, trickling bodies and decoding with a killable worker.
+
+        A socket timeout alone restarts on each read and permits an indefinitely
+        slow response. subprocess.run kills and reaps this worker on deadline;
+        neither a background thread nor a partial reference survives a timeout.
+        """
+        logger.info("Downloading %s (%s): %s", source.name, source.species, source.url)
+        try:
+            # Fixed interpreter/worker; the URL is JSON stdin, never shell code.
+            result = subprocess.run(  # nosec B603
+                [sys.executable, str(Path(__file__).with_name("_mirna_download.py"))],
+                input=json.dumps({"url": source.url, "compressed": source.compressed, "timeout": timeout}),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("miRNA acquisition deadline exceeded after %ss for %s", timeout, source.url)
+            return None
+        except OSError as error:
+            logger.error("Cannot start miRNA download for %s: %s", source.url, error)
+            return None
+        if result.returncode != 0:
+            logger.error("Failed to download %s: %s", source.url, result.stderr.strip())
+            return None
+        if not result.stdout.strip():
+            logger.error("Received empty response from %s", source.url)
+            return None
+        return result.stdout
+
     def _download_available_source(self, source_name: str, source: MiRNASource) -> str | None:
         """Download supported references without substituting for a retired confidence subset."""
         if source_name == "mirbase_high_conf":
@@ -651,7 +686,7 @@ class MiRNADatabaseManager(ReferenceManager[MiRNASource]):
             if attempt + 1 < self.download_attempts:
                 time.sleep(self.retry_backoff_seconds * (2**attempt))
         logger.error(
-            "miRNA source %s/%s unavailable at %s after %s attempts (socket timeout %ss); "
+            "miRNA source %s/%s unavailable at %s after %s attempts (deadline %ss per attempt); "
             "supply a verified pinned mature FASTA through a reference manifest",
             source_name,
             source.species,

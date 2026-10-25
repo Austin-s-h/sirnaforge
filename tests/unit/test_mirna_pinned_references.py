@@ -2,9 +2,9 @@
 
 import hashlib
 import json
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.error import HTTPError
 
 import pytest
 
@@ -208,29 +208,30 @@ def test_invalid_manifest_fails_with_actionable_value_error(tmp_path, manifest):
         load_pinned_references(path)
 
 
-@pytest.mark.parametrize(
-    "error",
-    [TimeoutError("timed out"), HTTPError("https://www.mirbase.org/download/mature.fa", 503, "unavailable", {}, None)],
-)
-def test_live_failures_have_bounded_attempts_and_source_diagnostics(tmp_path, monkeypatch, caplog, error):
-    """Timeout and HTTP failures respect configured attempt and socket limits."""
+@pytest.mark.parametrize("failure", ["deadline", "http"])
+def test_live_failures_have_bounded_attempts_and_source_diagnostics(tmp_path, monkeypatch, caplog, failure):
+    """Deadline and HTTP failures respect attempt limits and retain actionable source details."""
     manager = MiRNADatabaseManager(
         cache_dir=tmp_path / "cache", download_timeout=7, download_attempts=3, retry_backoff_seconds=0.5
     )
     attempts = []
     delays = []
 
-    def unavailable(request, *, timeout):
-        attempts.append((request.full_url, timeout))
-        raise error
+    def unavailable(command, **kwargs):
+        options = json.loads(kwargs["input"])
+        attempts.append((options["url"], kwargs["timeout"], options["timeout"]))
+        if failure == "deadline":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="partial FASTA")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="HTTPError: HTTP Error 503: unavailable")
 
-    monkeypatch.setattr("urllib.request.urlopen", unavailable)
+    monkeypatch.setattr("sirnaforge.data.mirna_manager.subprocess.run", unavailable)
     monkeypatch.setattr("sirnaforge.data.mirna_manager.time.sleep", delays.append)
     assert manager.get_database("mirbase", "human") is None
-    assert attempts == [("https://www.mirbase.org/download/mature.fa", 7)] * 3
+    assert attempts == [("https://www.mirbase.org/download/mature.fa", 7, 7)] * 3
     assert delays == [0.5, 1.0]
     assert "after 3 attempts" in caplog.text
     assert "verified pinned mature FASTA" in caplog.text
+    assert not list(manager.cache_dir.glob("*.fa"))
 
 
 def test_live_retry_stops_after_success(tmp_path, monkeypatch):
